@@ -1,0 +1,1267 @@
+import assert from "node:assert/strict";
+import { Buffer as NodeBuffer } from "node:buffer";
+import { connect } from "node:net";
+import test from "node:test";
+
+import type { ChatDialogState } from "../ui/chat-state.js";
+import { ProfileValidationError } from "../model/profile.js";
+import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import {
+  ChatBridgeCommandOutcomeUnknownError,
+  ChatBridgePromptPersistenceUnknownError,
+  createChatBridge,
+  readJsonBody,
+} from "./chat-bridge.js";
+
+test("chat bridge isolates active sends by Session and keeps Session commands available", async () => {
+  let releaseSend!: () => void;
+  let markStarted!: () => void;
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let commandCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      commandCalls += 1;
+      return state;
+    },
+    handleSend: async (input) => {
+      if (input.sessionId === "s1") {
+        markStarted();
+        await sendGate;
+      }
+    },
+  });
+
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const sendBody = JSON.stringify({ prompt: "test", sessionId: "s1" });
+  const firstSend = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: sendBody,
+  });
+
+  try {
+    await started;
+    const secondSend = await fetch(endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: sendBody,
+    });
+    const otherSessionSend = await fetch(endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "other", sessionId: "s2" }),
+    });
+    const command = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    const settingsCommand = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+    });
+
+    assert.equal(secondSend.status, 409);
+    assert.deepEqual(await secondSend.json(), {
+      error: "This Session already has an active agent request.",
+      promptPersistence: "not_persisted",
+    });
+    assert.equal(otherSessionSend.status, 200);
+    assert.equal(command.status, 200);
+    assert.equal(settingsCommand.status, 409);
+    assert.deepEqual(await settingsCommand.json(), {
+      error: "Profile and global settings cannot change while an agent request is active.",
+    });
+    assert.equal(commandCalls, 1);
+  } finally {
+    releaseSend();
+    await firstSend;
+    await bridge.close();
+  }
+});
+
+test("chat bridge send errors report whether the prompt was persisted", async () => {
+  for (const promptPersistence of ["persisted", "not_persisted"] as const) {
+    const sendId = `send-${promptPersistence}`;
+    const state = {} as ChatDialogState;
+    const bridge = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async (_input, stream) => {
+        if (promptPersistence === "persisted") {
+          await stream.sessionEvent({
+            id: "user-event",
+            createdAt: "2026-08-03T00:00:00.000Z",
+            kind: "user",
+            content: "test",
+          });
+        }
+        throw new Error("Model request failed.");
+      },
+    });
+    const chatUrl = new URL(bridge.url);
+    const token = chatUrl.searchParams.get("token");
+
+    try {
+      const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+      const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Live-Smith-Send-Id": sendId,
+        },
+        body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+      });
+
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: "Model request failed.",
+        promptPersistence,
+      });
+      const errorEvent = await readSsePayload(events, "error");
+      assert.equal(errorEvent.promptPersistence, promptPersistence);
+      assert.equal(errorEvent.sendId, sendId);
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
+test("chat bridge treats an early handler failure as not persisted", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {
+      throw new Error("Unexpected send failure.");
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+
+    assert.deepEqual(await response.json(), {
+      error: "Unexpected send failure.",
+      promptPersistence: "not_persisted",
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge rejects an invalid send correlation ID before handling the prompt", async () => {
+  let sendCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {
+      sendCalls += 1;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "contains spaces",
+      },
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "X-Live-Smith-Send-Id must be a valid correlation ID.",
+      promptPersistence: "not_persisted",
+    });
+    assert.equal(sendCalls, 0);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge success SSE uses the caller's send correlation ID", async () => {
+  const sendId = "send-success-1";
+  const state = {
+    activeSessionId: "s2",
+    sessions: [{ id: "s1" }],
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": sendId,
+      },
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+
+    assert.equal(response.status, 200);
+    const doneEvent = await readSsePayload(events, "done");
+    assert.equal(doneEvent.sendId, sendId);
+    assert.equal(doneEvent.sessionId, "s1");
+    assert.deepEqual(
+      (doneEvent.state as ChatDialogState).sessionActivities,
+      [{
+        sessionId: "s1",
+        sendId,
+        status: "completed",
+        message: "Completed",
+        unread: true,
+      }],
+    );
+    const selected = await fetch(`${chatUrl.origin}/command?token=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "select_session", sessionId: "s1" }),
+    });
+    const selectedState = await selected.json() as ChatDialogState;
+    assert.equal(selectedState.sessionActivities?.[0]?.unread, false);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge reports commit-uncertain prompt persistence without downgrading a published user event", async () => {
+  for (const userEventPublished of [false, true]) {
+    const state = {} as ChatDialogState;
+    const sendId = `commit-uncertain-${userEventPublished}`;
+    const bridge = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async (_input, stream) => {
+        if (userEventPublished) {
+          await stream.sessionEvent({
+            id: "user-event",
+            createdAt: "2026-08-03T00:00:00.000Z",
+            kind: "user",
+            content: "test",
+          });
+        }
+        throw new ChatBridgePromptPersistenceUnknownError(
+          "Prompt storage commit could not be confirmed.",
+        );
+      },
+    });
+    const chatUrl = new URL(bridge.url);
+    const token = chatUrl.searchParams.get("token");
+
+    try {
+      const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+      const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Live-Smith-Send-Id": sendId,
+        },
+        body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+      });
+      const expected = userEventPublished ? "persisted" : "unknown";
+
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: "Prompt storage commit could not be confirmed.",
+        promptPersistence: expected,
+      });
+      const errorEvent = await readSsePayload(events, "error");
+      assert.equal(errorEvent.sendId, sendId);
+      assert.equal(errorEvent.sessionId, "s1");
+      assert.equal(errorEvent.promptPersistence, expected);
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
+test("chat bridge replays a pending confirmation to a newly connected event stream", async () => {
+  let markConfirmationPending!: () => void;
+  const confirmationPending = new Promise<void>((resolve) => {
+    markConfirmationPending = resolve;
+  });
+  let confirmationResult: boolean | undefined;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      const result = stream.requestConfirmation({
+        message: "Apply one change?",
+        groups: [{ title: "Song", rows: ["Set tempo to 124 BPM"] }],
+      });
+      markConfirmationPending();
+      confirmationResult = await result;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const sendId = "send-confirmation-1";
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Send-Id": sendId,
+    },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  try {
+    await confirmationPending;
+    const events = await fetch(endpoint("/events"));
+    const payload = await readSsePayload(events, "confirm_request");
+    assert.equal(payload.type, "confirm_request");
+    assert.equal(payload.sendId, sendId);
+    assert.equal(payload.sessionId, "s1");
+    assert.equal(payload.message, "Apply one change?");
+    assert.deepEqual(payload.groups, [
+      { title: "Song", rows: ["Set tempo to 124 BPM"] },
+    ]);
+    assert.equal(typeof payload.id, "string");
+
+    const confirmation = await fetch(endpoint("/confirm"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: payload.id, apply: false }),
+    });
+    assert.equal(confirmation.status, 200);
+    assert.equal((await send).status, 200);
+    assert.equal(confirmationResult, false);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("stop reports a non-terminal abort until the correlated send error completes", async () => {
+  let releaseCleanup!: () => void;
+  let markAborted!: () => void;
+  const cleanupGate = new Promise<void>((resolve) => {
+    releaseCleanup = resolve;
+  });
+  const aborted = new Promise<void>((resolve) => {
+    markAborted = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, _stream, signal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          markAborted();
+          resolve();
+        }, { once: true });
+      });
+      await cleanupGate;
+      throw signal.reason;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const events = await fetch(endpoint("/events"));
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Send-Id": "send-stop-terminal-1",
+    },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const stop = await fetch(endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "send-stop-terminal-1",
+      },
+      body: "{}",
+    });
+    await aborted;
+    assert.deepEqual(await stop.json(), {
+      ok: true,
+      terminal: false,
+      sendId: "send-stop-terminal-1",
+    });
+
+    releaseCleanup();
+    const errorEvent = await readSsePayload(events, "error");
+    assert.equal(errorEvent.sendId, "send-stop-terminal-1");
+    const sendResponse = await send;
+    assert.equal(sendResponse.status, 500);
+
+    const command = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    assert.equal(command.status, 200);
+  } finally {
+    releaseCleanup();
+    await bridge.close();
+  }
+});
+
+test("a delayed stop for an older send cannot abort the current send", async () => {
+  let releaseSend!: () => void;
+  let markStarted!: () => void;
+  let currentSignal: AbortSignal | undefined;
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, _stream, signal) => {
+      currentSignal = signal;
+      markStarted();
+      await sendGate;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Send-Id": "send-current-2",
+    },
+    body: JSON.stringify({ prompt: "current", sessionId: "s1" }),
+  });
+
+  try {
+    await started;
+    const stop = await fetch(endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "send-old-1",
+      },
+      body: "{}",
+    });
+
+    assert.deepEqual(await stop.json(), {
+      ok: true,
+      terminal: true,
+      sendId: "send-old-1",
+    });
+    assert.equal(currentSignal?.aborted, false);
+    releaseSend();
+    assert.equal((await send).status, 200);
+  } finally {
+    releaseSend();
+    await bridge.close();
+  }
+});
+
+test("chat bridge serializes command mutations", async () => {
+  let releaseCommand!: () => void;
+  let markStarted!: () => void;
+  const commandGate = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      markStarted();
+      await commandGate;
+      return state;
+    },
+    handleSend: async () => {},
+  });
+
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const commandBody = JSON.stringify({ kind: "new_session" });
+  const firstCommand = fetch(endpoint("/command"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: commandBody,
+  });
+
+  try {
+    await started;
+    const secondCommand = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: commandBody,
+    });
+    const send = await fetch(endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+
+    assert.equal(secondCommand.status, 409);
+    assert.equal(send.status, 409);
+  } finally {
+    releaseCommand();
+    await firstCommand;
+    await bridge.close();
+  }
+});
+
+test("state requested during an active command waits for the command terminal state", async () => {
+  let releaseCommand!: () => void;
+  let markStarted!: () => void;
+  const commandGate = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  const commandStarted = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let state = { status: "before" } as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      markStarted();
+      await commandGate;
+      state = { status: "after" } as ChatDialogState;
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const command = fetch(endpoint("/command"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "new_session" }),
+  });
+  let stateRequest: Promise<Response> | undefined;
+
+  try {
+    await commandStarted;
+    let stateSettled = false;
+    stateRequest = fetch(endpoint("/state")).then((response) => {
+      stateSettled = true;
+      return response;
+    });
+    const stateBeforeCommandTerminal = await Promise.race([
+      stateRequest.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]);
+    assert.equal(stateBeforeCommandTerminal, "pending");
+    assert.equal(stateSettled, false);
+
+    releaseCommand();
+    assert.deepEqual(await (await stateRequest).json(), { status: "after" });
+    assert.deepEqual(await (await command).json(), { status: "after" });
+  } finally {
+    releaseCommand();
+    await command.catch(() => undefined);
+    await stateRequest?.catch(() => undefined);
+    await bridge.close();
+  }
+});
+
+test("the command state fence starts before the command body finishes reading", async () => {
+  let markCommandFinished!: () => void;
+  const commandFinished = new Promise<void>((resolve) => {
+    markCommandFinished = resolve;
+  });
+  let state = { status: "before" } as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      state = { status: "after" } as ChatDialogState;
+      markCommandFinished();
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const body = JSON.stringify({ kind: "new_session" });
+  const socket = connect(Number(chatUrl.port), chatUrl.hostname);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write([
+    `POST /command?token=${token} HTTP/1.1`,
+    `Host: ${chatUrl.host}`,
+    "Content-Type: application/json",
+    `Content-Length: ${NodeBuffer.byteLength(body)}`,
+    "Connection: keep-alive",
+    "",
+    body.slice(0, 1),
+  ].join("\r\n"));
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  const stateRequest = fetch(`${chatUrl.origin}/state?token=${token}`);
+
+  try {
+    const stateBeforeBody = await Promise.race([
+      stateRequest.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]);
+    assert.equal(stateBeforeBody, "pending");
+
+    socket.write(body.slice(1));
+    await commandFinished;
+    assert.deepEqual(await (await stateRequest).json(), { status: "after" });
+  } finally {
+    socket.destroy();
+    await bridge.close();
+  }
+});
+
+test("the command state fence covers unknown-outcome reconciliation", async () => {
+  let releaseReconciliation!: () => void;
+  let markReconciliationStarted!: () => void;
+  const reconciliationGate = new Promise<void>((resolve) => {
+    releaseReconciliation = resolve;
+  });
+  const reconciliationStarted = new Promise<void>((resolve) => {
+    markReconciliationStarted = resolve;
+  });
+  const state = { status: "reconciled" } as ChatDialogState;
+  let buildCalls = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      buildCalls += 1;
+      if (buildCalls === 1) {
+        markReconciliationStarted();
+        await reconciliationGate;
+      }
+      return state;
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      throw new ChatBridgeCommandOutcomeUnknownError("Command outcome is unknown.");
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const command = fetch(endpoint("/command"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "new_session" }),
+  });
+  let stateRequest: Promise<Response> | undefined;
+
+  try {
+    await reconciliationStarted;
+    stateRequest = fetch(endpoint("/state"));
+    const stateBeforeReconciliation = await Promise.race([
+      stateRequest.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]);
+    assert.equal(stateBeforeReconciliation, "pending");
+
+    releaseReconciliation();
+    const commandResponse = await command;
+    assert.equal(commandResponse.status, 500);
+    assert.deepEqual(await (await stateRequest).json(), { status: "reconciled" });
+    assert.equal(buildCalls, 2);
+  } finally {
+    releaseReconciliation();
+    await command.catch(() => undefined);
+    await stateRequest?.catch(() => undefined);
+    await bridge.close();
+  }
+});
+
+test("chat bridge correlates command state with the request header without changing the body", async () => {
+  const state = { status: "updated" } as ChatDialogState;
+  let commandInput: unknown;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      commandInput = input;
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const events = await fetch(endpoint("/events"));
+
+  try {
+    const command = fetch(endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "command-correlation-1",
+      },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    const stateEvent = await readSsePayload(events, "state");
+    const response = await command;
+
+    assert.equal(response.status, 200);
+    assert.equal(
+      response.headers.get("x-live-smith-command-id"),
+      "command-correlation-1",
+    );
+    assert.equal(stateEvent.commandId, "command-correlation-1");
+    assert.deepEqual(stateEvent.state, state);
+    assert.deepEqual(commandInput, { kind: "new_session" });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge returns authoritative state when a command commit outcome is unknown", async () => {
+  const state = { status: "authoritative" } as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      throw new StorageCommitOutcomeUnknownError(new Error("directory sync failed"));
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+
+  try {
+    const response = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "command-unknown-1",
+      },
+      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+    });
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: "Storage mutation completed, but its durable commit could not be confirmed.",
+      commandId: "command-unknown-1",
+      commandOutcome: "unknown",
+      state,
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge marks an unknown command outcome as blocked when state reconciliation fails", async () => {
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      throw new Error("state unavailable");
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      throw new StorageCommitOutcomeUnknownError(new Error("directory sync failed"));
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const response = await fetch(`${chatUrl.origin}/command?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "command-unknown-2",
+      },
+      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+    });
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: "Storage mutation completed, but its durable commit could not be confirmed.",
+      commandId: "command-unknown-2",
+      commandOutcome: "unknown",
+      reconciliationRequired: true,
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("closing the chat bridge aborts an active command", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let commandSignal: AbortSignal | undefined;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (_input, signal) => {
+      commandSignal = signal;
+      markStarted();
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const command = fetch(`${chatUrl.origin}/command?token=${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "new_session" }),
+  });
+  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+
+  await started;
+  await bridge.close();
+  assert.equal(commandSignal?.aborted, true);
+  assert.equal((await command).status, 500);
+  assert.equal(await events.text(), "\n");
+});
+
+test("closing the chat bridge aborts an active send with an event stream connected", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let sendSignal: AbortSignal | undefined;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, _stream, signal) => {
+      sendSignal = signal;
+      markStarted();
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+
+  await started;
+  await bridge.close();
+  assert.equal(sendSignal?.aborted, true);
+  assert.equal((await send).status, 500);
+  assert.equal(await events.text(), "\n");
+});
+
+test("closing waits for an active handler to reach its terminal state", async () => {
+  let markStarted!: () => void;
+  let releaseSend!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {
+      markStarted();
+      await sendGate;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  await started;
+  let closeSettled = false;
+  const closing = bridge.close().then(() => {
+    closeSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false);
+
+  releaseSend();
+  await closing;
+  await send.catch(() => undefined);
+});
+
+test("closing destroys read-only chat and state requests without waiting for buildState", async () => {
+  for (const path of ["/state", "/chat"]) {
+    let releaseState!: () => void;
+    let markStarted!: () => void;
+    const stateGate = new Promise<void>((resolve) => {
+      releaseState = resolve;
+    });
+    const stateStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const state = {} as ChatDialogState;
+    const bridge = await createChatBridge({
+      buildState: async () => {
+        markStarted();
+        await stateGate;
+        return state;
+      },
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async () => {},
+    });
+    const chatUrl = new URL(bridge.url);
+    const token = chatUrl.searchParams.get("token");
+    const readRequest = fetch(`${chatUrl.origin}${path}?token=${token}`).then(
+      (response) => ({ response }),
+      (error: unknown) => ({ error }),
+    );
+    let closing: Promise<void> | undefined;
+
+    try {
+      await stateStarted;
+      closing = bridge.close();
+      let closeTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          closing,
+          new Promise<never>((_resolve, reject) => {
+            closeTimeout = setTimeout(
+              () => reject(new Error(`Bridge close waited for ${path} buildState.`)),
+              500,
+            );
+          }),
+        ]);
+      } finally {
+        if (closeTimeout !== undefined) clearTimeout(closeTimeout);
+      }
+      const readResult = await readRequest;
+      assert.ok("error" in readResult, `Expected ${path} connection to be destroyed.`);
+    } finally {
+      releaseState();
+      await readRequest;
+      await (closing ?? bridge.close());
+    }
+  }
+});
+
+test("a confirmation requested after bridge shutdown starts resolves without deadlocking", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let confirmationResult: boolean | undefined;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream, signal) => {
+      markStarted();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      confirmationResult = await stream.requestConfirmation({
+        message: "Late confirmation",
+        groups: [{ title: "Song", rows: ["Set tempo"] }],
+      });
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  await started;
+  await Promise.race([
+    bridge.close(),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("Bridge close timed out.")), 1_000);
+    }),
+  ]);
+  assert.equal(confirmationResult, false);
+  assert.equal((await send).status, 200);
+});
+
+test("closing destroys partial command and send bodies before handlers can start", async () => {
+  for (const path of ["/command", "/send"]) {
+    let commandCalls = 0;
+    let sendCalls = 0;
+    const state = {} as ChatDialogState;
+    const bridge = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => {
+        commandCalls += 1;
+        return state;
+      },
+      handleSend: async () => {
+        sendCalls += 1;
+      },
+    });
+    const chatUrl = new URL(bridge.url);
+    const token = chatUrl.searchParams.get("token");
+    const socket = connect(Number(chatUrl.port), chatUrl.hostname);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write([
+      `POST ${path}?token=${token} HTTP/1.1`,
+      `Host: ${chatUrl.host}`,
+      "Content-Type: application/json",
+      "Content-Length: 100",
+      "Connection: keep-alive",
+      "",
+      "{",
+    ].join("\r\n"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    try {
+      await Promise.race([
+        bridge.close(),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error(`Bridge close timed out for ${path}.`)), 1_000);
+        }),
+      ]);
+      assert.equal(commandCalls, 0);
+      assert.equal(sendCalls, 0);
+    } finally {
+      socket.destroy();
+    }
+  }
+});
+
+test("chat bridge strips configuration from send and session command payloads", async () => {
+  const state = {} as ChatDialogState;
+  let sendInput: unknown;
+  let commandInput: unknown;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      commandInput = input;
+      return state;
+    },
+    handleSend: async (input) => {
+      sendInput = input;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+
+  try {
+    const send = await fetch(endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "test",
+        sessionId: "s1",
+        settings: { apiKey: "must-not-pass" },
+      }),
+    });
+    assert.equal(send.status, 200);
+    assert.deepEqual(sendInput, { prompt: "test", sessionId: "s1" });
+
+    const command = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "new_session",
+        settings: { apiKey: "must-not-pass" },
+      }),
+    });
+    assert.equal(command.status, 200);
+    assert.deepEqual(commandInput, { kind: "new_session" });
+
+    const restore = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "restore_session",
+        sessionId: "session-previous",
+        projectKey: "must-not-pass",
+        scope: { identity: "must-not-pass" },
+        settings: { apiKey: "must-not-pass" },
+      }),
+    });
+    assert.equal(restore.status, 200);
+    assert.deepEqual(commandInput, {
+      kind: "restore_session",
+      sessionId: "session-previous",
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("credential-bearing bridge GET responses disable caching and referrers", async () => {
+  const state = {
+    settings: {
+      profiles: [{ apiKey: "secret-provider-key" }],
+    },
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html>secret-provider-key</html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+
+  try {
+    for (const path of ["/chat", "/state", "/events"]) {
+      const response = await fetch(endpoint(path));
+      assert.equal(
+        response.headers.get("cache-control"),
+        "no-store, private, max-age=0",
+      );
+      assert.equal(response.headers.get("pragma"), "no-cache");
+      assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+      if (path === "/events") await response.body?.cancel();
+    }
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge body parsing does not depend on an ambient Buffer constructor", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Buffer");
+  Object.defineProperty(globalThis, "Buffer", {
+    configurable: true,
+    value: undefined,
+    writable: true,
+  });
+  try {
+    async function* requestChunks(): AsyncGenerator<Uint8Array> {
+      yield NodeBuffer.from(JSON.stringify({ kind: "new_session" }));
+    }
+    assert.deepEqual(
+      await readJsonBody(requestChunks()),
+      { kind: "new_session" },
+    );
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "Buffer", descriptor);
+    else Reflect.deleteProperty(globalThis, "Buffer");
+  }
+});
+
+test("chat bridge preserves Profile validation fields in safe command errors", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      throw new ProfileValidationError("baseUrl", "Base URL is invalid.");
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const command = await fetch(`${chatUrl.origin}/command?token=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+
+    assert.equal(command.status, 400);
+    const body = await command.json() as Record<string, unknown>;
+    assert.equal(body.error, "Base URL is invalid.");
+    assert.equal(body.field, "baseUrl");
+    assert.equal(typeof body.commandId, "string");
+  } finally {
+    await bridge.close();
+  }
+});
+
+async function readSsePayload(
+  response: Response,
+  type: string,
+): Promise<Record<string, unknown>> {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  let received = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error(`Event stream ended before ${type}.`);
+      received += NodeBuffer.from(chunk.value).toString("utf8");
+      for (const block of received.split("\n\n")) {
+        const data = block.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice("data: ".length);
+        if (!data) continue;
+        const payload = JSON.parse(data) as Record<string, unknown>;
+        if (payload.type === type) return payload;
+      }
+    }
+  } finally {
+    await reader.cancel();
+  }
+}

@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { agentActionJsonSchemas } from "./action-schema.js";
+import { liveSmithTools } from "./tool-definitions.js";
+
+test("apply_live_actions exposes every validated action schema", () => {
+  const actionTypes = agentActionJsonSchemas().map((schema) => {
+    const properties = schema.properties as Record<string, Record<string, unknown>>;
+    return (properties.type?.enum as string[])[0];
+  });
+
+  assert.deepEqual(actionTypes.sort(), [
+    "clear_arrangement_range",
+    "configure_drum_pad",
+    "create_arrangement_audio_clip",
+    "create_audio_track",
+    "create_cue_point",
+    "create_midi_clip",
+    "create_midi_track",
+    "create_scene",
+    "create_session_audio_clip",
+    "create_session_midi_clip",
+    "create_take_lane",
+    "delete_clip",
+    "delete_cue_point",
+    "delete_device",
+    "delete_scene",
+    "delete_session_clip",
+    "delete_track",
+    "duplicate_device",
+    "duplicate_scene",
+    "duplicate_track",
+    "insert_chain_device",
+    "insert_device",
+    "rename_cue_point",
+    "rename_scene",
+    "rename_take_lane",
+    "rename_track",
+    "replace_midi_clip_segment",
+    "replace_simpler_sample",
+    "set_audio_clip_warp",
+    "set_clip_properties",
+    "set_device_parameter",
+    "set_tempo",
+    "set_track_arm",
+    "set_track_mixer_parameter",
+    "set_track_mute",
+    "set_track_solo",
+  ]);
+
+  const applyTool = liveSmithTools().find(
+    (tool) => tool.function.name === "apply_live_actions",
+  );
+  const parameters = applyTool?.function.parameters as {
+    properties?: {
+      actions?: { items?: { anyOf?: unknown[] } };
+      targets?: { additionalProperties?: unknown };
+    };
+  };
+  assert.equal(parameters.properties?.actions?.items?.anyOf?.length, actionTypes.length);
+  assert.ok(parameters.properties?.targets?.additionalProperties);
+});
+
+test("Live tools expose object-aware inspection without raw filesystem inputs", () => {
+  const tools = new Map(
+    liveSmithTools().map((tool) => [tool.function.name, tool.function]),
+  );
+
+  for (const name of [
+    "inspect_current_object",
+    "inspect_device_tree",
+    "inspect_mixer",
+    "inspect_clip",
+  ]) {
+    assert.ok(tools.has(name), `${name} should be available`);
+  }
+
+  const serialized = JSON.stringify([...tools.values()]);
+  assert.doesNotMatch(serialized, /filePath|absolute path/i);
+});

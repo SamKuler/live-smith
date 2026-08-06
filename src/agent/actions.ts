@@ -1,0 +1,646 @@
+import {
+  agentActionPromptExamples,
+  parseAgentAction,
+  type AgentAction,
+} from "./action-schema.js";
+import type { DevicePath } from "../live/device-tree.js";
+
+export type { AgentAction } from "./action-schema.js";
+
+export interface AgentPlanTarget {
+  trackName: string;
+}
+
+export interface AgentPlan {
+  message: string;
+  targets?: Record<string, AgentPlanTarget>;
+  actions: AgentAction[];
+}
+
+const referencePattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+export function requiresExplicitConfirmation(plan: AgentPlan): boolean {
+  return plan.actions.some(
+    (action) =>
+      action.type === "delete_track" ||
+      action.type === "delete_device" ||
+      action.type === "delete_scene" ||
+      action.type === "delete_cue_point" ||
+      action.type === "delete_clip" ||
+      action.type === "delete_session_clip" ||
+      action.type === "clear_arrangement_range" ||
+      action.type === "create_midi_clip" ||
+      action.type === "create_session_midi_clip" ||
+      action.type === "replace_midi_clip_segment" ||
+      action.type === "create_arrangement_audio_clip" ||
+      action.type === "create_session_audio_clip",
+  );
+}
+
+export type AgentObservationRequest =
+  | { type: "inspect_live_set" }
+  | { type: "inspect_current_object" }
+  | { type: "inspect_track"; trackName?: string }
+  | { type: "inspect_device"; trackName?: string; deviceName: string; deviceIndex?: number }
+  | {
+      type: "inspect_device_tree";
+      trackName?: string;
+      deviceName?: string;
+      devicePath?: DevicePath;
+    }
+  | { type: "inspect_mixer"; trackName?: string }
+  | {
+      type: "inspect_clip";
+      trackName?: string;
+      clipName?: string;
+      startBeat?: number;
+      slotIndex?: number;
+    }
+  | {
+      type: "inspect_midi_clip";
+      trackName?: string;
+      clipName?: string;
+      startBeat?: number;
+      noteOffset?: number;
+      noteLimit?: number;
+    }
+  | { type: "inspect_song_info" };
+
+export function validateAgentPlan(response: unknown): AgentPlan {
+  if (!isRecord(response)) {
+    throw new Error("Action plan must be a JSON object.");
+  }
+  const message = requiredPlanMessage(response.message);
+  if (!Array.isArray(response.actions)) {
+    throw new Error("Action plan requires an actions array.");
+  }
+  if (!response.actions.length) {
+    throw new Error("Action plan requires at least one action.");
+  }
+
+  for (const key of Object.keys(response)) {
+    if (key !== "message" && key !== "targets" && key !== "actions") {
+      throw new Error(`Action plan does not support property ${key}.`);
+    }
+  }
+
+  const targets = parsePlanTargets(response.targets);
+  const actions = response.actions.map(parseAgentAction);
+  for (const action of actions) {
+    validateMidiActionTiming(action);
+    validateActionLocators(action);
+  }
+  validateTrackReferenceGraph(targets, actions);
+  validateMidiSegmentRanges(actions);
+
+  return {
+    message,
+    ...(Object.keys(targets).length ? { targets } : {}),
+    actions,
+  };
+}
+
+export function summarizeActionPlan(plan: AgentPlan): string {
+  if (!plan.actions.length) return plan.message;
+
+  return [
+    plan.message,
+    "",
+    "Actions:",
+    ...plan.actions.map((action, index) => `${index + 1}. ${summarizeAgentAction(action)}`),
+  ].join("\n");
+}
+
+export function actionSystemPrompt(): string {
+  return [
+    "You are Live Smith, running inside Ableton Live with tools.",
+    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, and inspect_midi_clip to inspect the exact current Live state needed by the next edit.",
+    "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it. If Live rejects a device name, treat that runtime result as authoritative, do not retry the same name, inspect the partially changed Set, and choose a current alternative or explain that no safe alternative is known.",
+    "Use inspect_midi_clip before analyzing or rewriting MIDI harmony, melody, voicing, or chord correctness unless the exact notes are already in context. For long clips, follow noteOffset pagination until every note has been inspected.",
+    "If a user asks you to modify a device and you do not have the exact exposed parameter names in the current context, call inspect_device for a top-level device or inspect_device_tree for a nested Rack device first. Preserve and reuse the observed devicePath; do not guess Rack or chain indexes.",
+    "For newly inserted devices, first call apply_live_actions to create the track/device chain, then inspect the inserted devices, then call apply_live_actions again to set exact observed parameters. This staged workflow and a single complete confirmed plan are both supported; choose based on whether later steps require newly observed state.",
+    "Within one apply_live_actions call, use targets plus trackRef for existing tracks that may be renamed. Track-creating actions may declare ref for later actions in the same call. Never target a later action by a name created by an earlier rename.",
+    'Example for rename then edit in one call: {"message":"Build pads","targets":{"pads":{"trackName":"1-MIDI"}},"actions":[{"type":"rename_track","trackRef":"pads","newName":"Dream Pads"},{"type":"insert_device","trackRef":"pads","deviceName":"Auto Filter"}]}.',
+    "Use one apply_live_actions call when every note and device choice is already known and one confirmation is appropriate.",
+    "For MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
+    "replace_midi_clip_segment replaces every existing note that overlaps its range; it does not append. Each staged apply_live_actions call gets a separate confirmation and remains in the same Session. Never recreate the empty Clip or repeat a completed segment.",
+    "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
+    "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
+    "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. Use replace_simpler_sample or configure_drum_pad with a SampleSource that refers to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
+    "Arrangement and Session are different locations. Use startBeat for Arrangement Clips and slotIndex for Session Clips, inspect the exact location before editing, and disclose replacement or deletion behavior in the plan.",
+    "The SDK cannot browse preset packs, search the Live Browser, or insert a VST by plug-in identifier. Existing VST devices can still be inspected, have exposed parameters edited, and be duplicated or deleted through the generic device tools. Never claim that an unavailable preset, browser result, or VST was loaded.",
+    "For large device edits, split work into smaller tool calls instead of putting every device parameter into one huge call.",
+    "If a tool result reports completed or reused actions after a failure, do not repeat those actions. Inspect the track and continue only with missing steps.",
+    "Never guess parameter names. Use the exact names from observations, for example Auto Filter uses Env Amount / Env Attack / Env Release rather than Envelope.",
+    "To modify Live, call apply_live_actions. The user will confirm before the extension executes those actions.",
+    "After a tool result comes back, continue the loop: inspect more, apply actions, or provide a final concise answer.",
+    "Use inspect_song_info to check tempo, scale, and scene layout before making song-level changes.",
+    "Allowed apply_live_actions action types:",
+    ...agentActionPromptExamples(),
+    "Notes use MIDI pitch 0-127, startTime/duration in beats, velocity 1-127.",
+    "Parameter values must be normalized/internal values within the parameter min/max range shown in context.",
+    "Do not output unsupported actions, realtime audio/MIDI routing, Live Browser or preset search, direct third-party plugin loading, or filesystem paths.",
+  ].join("\n");
+}
+
+export function summarizeAgentAction(action: AgentAction): string {
+  switch (action.type) {
+    case "create_midi_track":
+      return `Create MIDI track${action.name ? ` "${action.name}"` : ""}${action.ref ? ` as track ref "${action.ref}"` : ""}.`;
+    case "create_audio_track":
+      return `Create audio track${action.name ? ` "${action.name}"` : ""}${action.ref ? ` as track ref "${action.ref}"` : ""}.`;
+    case "create_scene":
+      return `Create scene${action.name ? ` "${action.name}"` : ""}${action.index !== undefined ? ` at index ${action.index}` : ""}.`;
+    case "rename_scene":
+      return `Rename Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""} to "${action.newName}".`;
+    case "duplicate_scene":
+      return `Duplicate Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
+    case "delete_scene":
+      return `Delete Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
+    case "create_cue_point":
+      return `Create Cue Point${action.name ? ` "${action.name}"` : ""} at beat ${action.timeBeat}.`;
+    case "rename_cue_point":
+      return `Rename Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat} to "${action.newName}".`;
+    case "delete_cue_point":
+      return `Delete Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}.`;
+    case "create_midi_clip":
+      return `Create or replace MIDI clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} from beat ${action.startBeat} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
+    case "create_session_midi_clip":
+      return `Create or replace Session MIDI clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
+    case "replace_midi_clip_segment":
+      return `Replace notes in MIDI clip "${action.clipName}" on ${targetTrack(action)} at arrangement beat ${action.startBeat}, relative beats ${action.segmentStartTime}-${action.segmentStartTime + action.segmentDurationBeats}, with ${action.notes.length} notes.`;
+    case "insert_device":
+      return `Insert Live device "${action.deviceName}" on ${targetTrack(action)} ${action.index === undefined ? "at end" : `at index ${action.index}`}.`;
+    case "insert_chain_device":
+      return `Insert Live device "${action.deviceName}" in chain ${action.chainIndex} of Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} ${action.index === undefined ? "at end" : `at index ${action.index}`}.`;
+    case "set_device_parameter":
+      return `Set "${action.parameterName}" on "${action.deviceName}"${deviceLocatorText(action.devicePath, action.deviceIndex)} in ${targetTrack(action)} to ${action.value}.`;
+    case "duplicate_device":
+      return `Duplicate device "${action.deviceName}"${deviceLocatorText(action.devicePath, action.deviceIndex)} in ${targetTrack(action)}.`;
+    case "delete_device":
+      return `Delete device "${action.deviceName}"${deviceLocatorText(action.devicePath, action.deviceIndex)} from ${targetTrack(action)}.`;
+    case "replace_simpler_sample":
+      return `Replace the sample in Simpler "${action.simplerName}"${action.simplerPath ? ` at ${devicePathText(action.simplerPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
+    case "configure_drum_pad":
+      return `Configure MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
+    case "create_arrangement_audio_clip":
+      return `Create arrangement audio clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}${action.durationBeats ? ` for ${action.durationBeats} beats` : " at its natural duration"} using ${sampleSourceText(action.source)}.`;
+    case "create_session_audio_clip":
+      return `Create or replace Session audio clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
+    case "set_tempo":
+      return `Set tempo to ${action.tempo} BPM.`;
+    case "rename_track":
+      return `Rename ${targetTrack(action)} to "${action.newName}".`;
+    case "delete_track":
+      return `Delete ${targetTrack(action)}.`;
+    case "duplicate_track":
+      return `Duplicate ${targetTrack(action)}.`;
+    case "set_track_mute":
+      return `${action.mute ? "Mute" : "Unmute"} ${targetTrack(action)}.`;
+    case "set_track_solo":
+      return `${action.solo ? "Solo" : "Unsolo"} ${targetTrack(action)}.`;
+    case "set_track_arm":
+      return `${action.arm ? "Arm" : "Disarm"} ${targetTrack(action)}.`;
+    case "set_track_mixer_parameter":
+      return `Set ${action.parameter === "send" ? `send ${action.sendIndex}` : action.parameter} on ${targetTrack(action)} to ${action.value}.`;
+    case "create_take_lane":
+      return `Create Take Lane${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)}.`;
+    case "rename_take_lane":
+      return `Rename Take Lane ${action.laneIndex}${action.laneName ? ` "${action.laneName}"` : ""} on ${targetTrack(action)} to "${action.newName}".`;
+    case "set_clip_properties":
+      return `Set properties on ${clipLocatorText(action)} on ${targetTrack(action)}${clipPropertyText(action)}.`;
+    case "set_audio_clip_warp":
+      return `Set audio Warp on ${clipLocatorText(action)} on ${targetTrack(action)}${action.warping === undefined ? "" : `, warping ${action.warping ? "on" : "off"}`}${action.warpMode ? `, mode ${action.warpMode}` : ""}.`;
+    case "clear_arrangement_range":
+      return `Clear arrangement clips on ${targetTrack(action)} from beat ${action.startBeat} to ${action.endBeat}; clips crossing a boundary will be truncated.`;
+    case "delete_clip":
+      return `Delete arrangement clip${action.clipName ? ` "${action.clipName}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}.`;
+    case "delete_session_clip":
+      return `Delete Session clip${action.clipName ? ` "${action.clipName}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)}.`;
+    default:
+      return assertNever(action);
+  }
+}
+
+function requiredPlanMessage(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("Action plan requires string message.");
+  }
+  return value.trim();
+}
+
+function targetTrack(action: { trackName?: string; trackRef?: string }): string {
+  if (action.trackRef) return `track ref "${action.trackRef}"`;
+  return action.trackName ? `track "${action.trackName}"` : "the target track";
+}
+
+function deviceLocatorText(path?: DevicePath, legacyIndex?: number): string {
+  if (path) return ` at ${devicePathText(path)}`;
+  return legacyIndex === undefined ? "" : ` at deviceIndex ${legacyIndex}`;
+}
+
+function devicePathText(path: DevicePath): string {
+  return `devicePath ${JSON.stringify(path)}`;
+}
+
+function sampleSourceText(source: import("./action-schema.js").SampleSource): string {
+  switch (source.kind) {
+    case "selected":
+      return "the selected Live sample source";
+    case "arrangement_audio_clip":
+      return `arrangement audio clip${source.clipName ? ` "${source.clipName}"` : ""} on track "${source.trackName}" at beat ${source.startBeat}`;
+    case "session_audio_clip":
+      return `Session audio clip${source.clipName ? ` "${source.clipName}"` : ""} on track "${source.trackName}" in slot ${source.slotIndex}`;
+    case "simpler":
+      return `the sample in Simpler "${source.deviceName}" on track "${source.trackName}"`;
+  }
+}
+
+function clipLocatorText(action: {
+  clipName?: string;
+  startBeat?: number;
+  slotIndex?: number;
+}): string {
+  const name = action.clipName ? `clip "${action.clipName}"` : "the clip";
+  return action.slotIndex === undefined
+    ? `${name} at arrangement beat ${action.startBeat}`
+    : `${name} in Session slot ${action.slotIndex}`;
+}
+
+function clipPropertyText(action: Extract<AgentAction, { type: "set_clip_properties" }>): string {
+  return [
+    action.newName ? `, rename to "${action.newName}"` : "",
+    action.looping === undefined ? "" : `, looping ${action.looping ? "on" : "off"}`,
+    action.muted === undefined ? "" : `, muted ${action.muted ? "on" : "off"}`,
+    action.color === undefined ? "" : `, color ${action.color}`,
+  ].join("");
+}
+
+function validateActionLocators(action: AgentAction): void {
+  if (
+    (action.type === "set_device_parameter" ||
+      action.type === "duplicate_device" ||
+      action.type === "delete_device") &&
+    action.devicePath !== undefined &&
+    action.deviceIndex !== undefined
+  ) {
+    throw new Error("Use either devicePath or deviceIndex, not both.");
+  }
+  if (
+    (action.type === "replace_simpler_sample" ||
+      action.type === "configure_drum_pad") &&
+    action.source.kind === "simpler" &&
+    action.source.devicePath !== undefined &&
+    action.source.deviceIndex !== undefined
+  ) {
+    throw new Error("A Simpler sample source must use either devicePath or deviceIndex, not both.");
+  }
+  if (action.type === "set_track_mixer_parameter") {
+    if (action.parameter === "send" && action.sendIndex === undefined) {
+      throw new Error("set_track_mixer_parameter requires sendIndex when parameter is send.");
+    }
+    if (action.parameter !== "send" && action.sendIndex !== undefined) {
+      throw new Error("sendIndex is only supported when parameter is send.");
+    }
+  }
+  if (action.type === "set_clip_properties" || action.type === "set_audio_clip_warp") {
+    validateExclusiveClipLocator(action);
+  }
+  if (
+    action.type === "set_clip_properties" &&
+    action.newName === undefined &&
+    action.looping === undefined &&
+    action.muted === undefined &&
+    action.color === undefined
+  ) {
+    throw new Error("set_clip_properties requires at least one property change.");
+  }
+  if (
+    action.type === "set_audio_clip_warp" &&
+    action.warping === undefined &&
+    action.warpMode === undefined
+  ) {
+    throw new Error("set_audio_clip_warp requires warping or warpMode.");
+  }
+  if (
+    action.type === "clear_arrangement_range" &&
+    action.endBeat <= action.startBeat
+  ) {
+    throw new Error("clear_arrangement_range requires endBeat greater than startBeat.");
+  }
+  if (
+    action.type === "create_arrangement_audio_clip" ||
+    action.type === "create_session_audio_clip"
+  ) {
+    validateAudioCreationSettings(action.isWarped, action.loopSettings);
+  }
+}
+
+function validateExclusiveClipLocator(action: {
+  startBeat?: number;
+  slotIndex?: number;
+}): void {
+  const count = Number(action.startBeat !== undefined) + Number(action.slotIndex !== undefined);
+  if (count !== 1) {
+    throw new Error("Clip actions require exactly one of startBeat or slotIndex.");
+  }
+}
+
+function validateAudioCreationSettings(
+  isWarped: boolean | undefined,
+  loopSettings: import("./action-schema.js").ClipLoopSettingsInput | undefined,
+): void {
+  if (!loopSettings) return;
+  if (isWarped === undefined) {
+    throw new Error("Audio clip loopSettings require isWarped to be specified.");
+  }
+  if (loopSettings.startMarker > loopSettings.endMarker) {
+    throw new Error("loopSettings startMarker must not exceed endMarker.");
+  }
+  if (loopSettings.loopEnd - loopSettings.loopStart < 0.25) {
+    throw new Error("loopSettings loop length must be at least 0.25 beats.");
+  }
+  if (
+    !loopSettings.looping &&
+    (loopSettings.loopStart !== loopSettings.startMarker ||
+      loopSettings.loopEnd !== loopSettings.endMarker)
+  ) {
+    throw new Error(
+      "Non-looping loopSettings require loopStart/startMarker and loopEnd/endMarker to match.",
+    );
+  }
+  if (
+    isWarped === false &&
+    (loopSettings.looping ||
+      loopSettings.startMarker < 0 ||
+      loopSettings.endMarker < 0 ||
+      loopSettings.loopStart < 0 ||
+      loopSettings.loopEnd < 0)
+  ) {
+    throw new Error(
+      "Unwarped audio requires non-negative, non-looping loopSettings.",
+    );
+  }
+}
+
+function validateMidiActionTiming(action: AgentAction): void {
+  const tolerance = 1e-7;
+  if (
+    action.type === "create_midi_clip" ||
+    action.type === "create_session_midi_clip"
+  ) {
+    for (const note of action.notes) {
+      const end = note.startTime + note.duration;
+      if (note.startTime < -tolerance || end > action.durationBeats + tolerance) {
+        throw new Error(
+          `MIDI note at ${note.startTime} with duration ${note.duration} must stay inside the Clip bounds 0-${action.durationBeats}.`,
+        );
+      }
+    }
+    return;
+  }
+  if (action.type !== "replace_midi_clip_segment") return;
+
+  const segmentEnd = action.segmentStartTime + action.segmentDurationBeats;
+  for (const note of action.notes) {
+    const noteEnd = note.startTime + note.duration;
+    if (
+      note.startTime < action.segmentStartTime - tolerance ||
+      noteEnd > segmentEnd + tolerance
+    ) {
+      throw new Error(
+        `MIDI note at ${note.startTime} with duration ${note.duration} must stay inside the segment bounds ${action.segmentStartTime}-${segmentEnd}.`,
+      );
+    }
+  }
+}
+
+function validateMidiSegmentRanges(actions: AgentAction[]): void {
+  const tolerance = 1e-7;
+  const ranges = new Map<
+    string,
+    Array<{ actionNumber: number; start: number; end: number }>
+  >();
+
+  actions.forEach((action, index) => {
+    if (action.type !== "replace_midi_clip_segment") return;
+    const target = action.trackRef
+      ? `ref:${action.trackRef.toLocaleLowerCase()}`
+      : action.trackName
+        ? `name:${action.trackName.toLocaleLowerCase()}`
+        : "selected-track";
+    const key = [
+      target,
+      action.clipName.toLocaleLowerCase(),
+      String(action.startBeat),
+    ].join("\u0000");
+    const start = action.segmentStartTime;
+    const end = start + action.segmentDurationBeats;
+    const priorRanges = ranges.get(key) ?? [];
+    for (const prior of priorRanges) {
+      if (start < prior.end - tolerance && prior.start < end - tolerance) {
+        throw new Error(
+          `Actions ${prior.actionNumber} and ${index + 1} contain overlapping replacements for MIDI clip "${action.clipName}". Use non-overlapping ranges or separate confirmed stages.`,
+        );
+      }
+    }
+    priorRanges.push({ actionNumber: index + 1, start, end });
+    ranges.set(key, priorRanges);
+  });
+}
+
+function parsePlanTargets(value: unknown): Record<string, AgentPlanTarget> {
+  if (value === undefined) return {};
+  if (!isRecord(value)) throw new Error("Action plan targets must be an object.");
+  const targets: Record<string, AgentPlanTarget> = {};
+  const trackNames = new Set<string>();
+  for (const [ref, rawTarget] of Object.entries(value)) {
+    if (!referencePattern.test(ref)) {
+      throw new Error(`Plan target ref "${ref}" is invalid.`);
+    }
+    if (!isRecord(rawTarget)) {
+      throw new Error(`Plan target "${ref}" must be an object.`);
+    }
+    const keys = Object.keys(rawTarget);
+    if (keys.length !== 1 || keys[0] !== "trackName") {
+      throw new Error(`Plan target "${ref}" requires only trackName.`);
+    }
+    const trackName = requiredPlanTargetName(rawTarget.trackName, ref);
+    const normalizedName = trackName.toLocaleLowerCase();
+    if (trackNames.has(normalizedName)) {
+      throw new Error(
+        `Plan targets are ambiguous: track "${trackName}" is declared more than once.`,
+      );
+    }
+    trackNames.add(normalizedName);
+    targets[ref] = { trackName };
+  }
+  return targets;
+}
+
+function validateTrackReferenceGraph(
+  targets: Record<string, AgentPlanTarget>,
+  actions: AgentAction[],
+): void {
+  type TrackKind = "existing" | "midi" | "audio";
+  const declared = new Map<string, TrackKind>(
+    Object.keys(targets).map((ref) => [ref, "existing"]),
+  );
+  const declaredRefs = new Set(Object.keys(targets));
+  const futureRefs = new Set(
+    actions.flatMap((action) =>
+      (action.type === "create_midi_track" || action.type === "create_audio_track") &&
+          action.ref
+        ? [action.ref]
+        : [],
+    ),
+  );
+  const namesChangedEarlier = new Set<string>();
+  const deletedRefs = new Set<string>();
+
+  actions.forEach((action, index) => {
+    const actionNumber = index + 1;
+    if (hasTrackTarget(action)) {
+      if (
+        action.trackName &&
+        namesChangedEarlier.has(action.trackName.toLocaleLowerCase())
+      ) {
+        throw new Error(
+          `Action ${actionNumber} targets "${action.trackName}", a name created, renamed, or deleted by an earlier action. Declare the original track in targets and use trackRef, or use a staged apply call after observing the changed track.`,
+        );
+      }
+      if (action.trackName && action.trackRef) {
+        throw new Error(
+          `Action ${actionNumber} must use either trackName or trackRef, not both.`,
+        );
+      }
+      if (requiresNamedTrackTarget(action) && !action.trackName && !action.trackRef) {
+        throw new Error(
+          `Action ${actionNumber} requires either trackName or trackRef.`,
+        );
+      }
+      if (action.trackRef) {
+        const kind = declared.get(action.trackRef);
+        if (!kind) {
+          if (deletedRefs.has(action.trackRef)) {
+            throw new Error(
+              `Action ${actionNumber} uses trackRef "${action.trackRef}" after that track was deleted by an earlier action.`,
+            );
+          }
+          if (futureRefs.has(action.trackRef)) {
+            throw new Error(
+              `Action ${actionNumber} uses forward trackRef "${action.trackRef}" before it is created.`,
+            );
+          }
+          throw new Error(
+            `Action ${actionNumber} uses missing trackRef "${action.trackRef}". Declare it in targets or on an earlier track creation action.`,
+          );
+        }
+        if (
+          (action.type === "create_midi_clip" ||
+            action.type === "create_session_midi_clip" ||
+            action.type === "replace_midi_clip_segment") &&
+          kind === "audio"
+        ) {
+          throw new Error(
+            `Action ${actionNumber} cannot use audio trackRef "${action.trackRef}" for a MIDI clip.`,
+          );
+        }
+        if (
+          (action.type === "create_arrangement_audio_clip" ||
+            action.type === "create_session_audio_clip") &&
+          kind === "midi"
+        ) {
+          throw new Error(
+            `Action ${actionNumber} cannot use MIDI trackRef "${action.trackRef}" for an audio clip.`,
+          );
+        }
+        if (requiresObservedExistingTrack(action) && kind !== "existing") {
+          throw new Error(
+            `Action ${actionNumber} cannot perform this observed-state edit on newly created trackRef "${action.trackRef}" in the same call. Apply the creation, inspect the affected device or mixer, then use a staged apply call.`,
+          );
+        }
+      }
+    }
+
+    if (
+      (action.type === "create_midi_track" || action.type === "create_audio_track") &&
+      action.ref
+    ) {
+      if (declaredRefs.has(action.ref)) {
+        throw new Error(
+          `Action ${actionNumber} declares duplicate track ref "${action.ref}".`,
+        );
+      }
+      declaredRefs.add(action.ref);
+      declared.set(action.ref, action.type === "create_midi_track" ? "midi" : "audio");
+      futureRefs.delete(action.ref);
+    }
+    if (
+      (action.type === "create_midi_track" || action.type === "create_audio_track") &&
+      action.name
+    ) {
+      namesChangedEarlier.add(action.name.toLocaleLowerCase());
+    }
+    if (action.type === "rename_track") {
+      if (action.trackName) {
+        namesChangedEarlier.add(action.trackName.toLocaleLowerCase());
+      }
+      namesChangedEarlier.add(action.newName.toLocaleLowerCase());
+    }
+    if (action.type === "delete_track" && action.trackRef) {
+      declared.delete(action.trackRef);
+      deletedRefs.add(action.trackRef);
+    }
+    if (action.type === "delete_track" && action.trackName) {
+      namesChangedEarlier.add(action.trackName.toLocaleLowerCase());
+    }
+  });
+}
+
+function hasTrackTarget(
+  action: AgentAction,
+): action is AgentAction & { trackName?: string; trackRef?: string } {
+  return "trackName" in action || "trackRef" in action;
+}
+
+function requiresNamedTrackTarget(
+  action: AgentAction & { trackName?: string; trackRef?: string },
+): boolean {
+  return (
+    action.type === "rename_track" ||
+    action.type === "delete_track" ||
+    action.type === "duplicate_track"
+  );
+}
+
+function requiresObservedExistingTrack(action: AgentAction): boolean {
+  return (
+    action.type === "set_device_parameter" ||
+    action.type === "duplicate_device" ||
+    action.type === "delete_device" ||
+    action.type === "insert_chain_device" ||
+    action.type === "replace_simpler_sample" ||
+    action.type === "configure_drum_pad" ||
+    action.type === "set_track_mixer_parameter" ||
+    action.type === "set_clip_properties" ||
+    action.type === "set_audio_clip_warp" ||
+    action.type === "delete_session_clip" ||
+    action.type === "rename_take_lane"
+  );
+}
+
+function requiredPlanTargetName(value: unknown, ref: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Plan target "${ref}" requires non-empty trackName.`);
+  }
+  return value.trim();
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported action: ${JSON.stringify(value)}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

@@ -1,0 +1,315 @@
+      (function bootstrapLiveSmithUI() {
+        const factories = window.LiveSmithFactories;
+        if (!factories) throw new Error("Live Smith UI factories are missing.");
+
+        let applicationState = window.__LIVE_SMITH_STATE__;
+        const bridgeConfig = window.__LIVE_SMITH_BRIDGE__;
+        const hostAdapter = window.LiveSmithHostAdapter;
+        if (!hostAdapter) throw new Error("Live Smith host adapter is missing.");
+        delete window.__LIVE_SMITH_STATE__;
+        delete window.__LIVE_SMITH_BRIDGE__;
+        delete window.LiveSmithHostAdapter;
+        const getState = () => applicationState;
+        const setState = (nextState) => {
+          applicationState = nextState;
+        };
+
+        const bridgeClient = factories.createBridgeClient({
+          bridgeConfig,
+          getState,
+          hostAdapter,
+          setState,
+        });
+
+        const profileEditor = factories.createProfileEditor({
+          getState,
+          runCommand: bridgeClient.runCommand,
+          showStatus: bridgeClient.showStatus,
+        });
+
+        const capabilityPreview = factories.createCapabilityPreview({
+          getState,
+          hasAnySendInProgress: bridgeClient.hasAnySendInProgress,
+          profileEditor,
+          isOperationInProgress: bridgeClient.isOperationInProgress,
+          isSendInProgress: bridgeClient.isSendInProgress,
+        });
+
+        const sessionTimeline = factories.createSessionTimeline({
+          getState,
+          getAssistantDraft: bridgeClient.getAssistantDraft,
+          getPendingConfirmation: bridgeClient.getPendingConfirmation,
+          isCommandInProgress: bridgeClient.isCommandInProgress,
+          isOperationInProgress: bridgeClient.isOperationInProgress,
+          resolveConfirm: bridgeClient.resolveConfirm,
+          runCommand: bridgeClient.runCommand,
+        });
+
+        function renderStatusAndContext() {
+          const state = getState();
+          const status = document.getElementById("status");
+          status.textContent = state.status || "";
+          status.hidden = !state.status;
+          delete status.dataset.profileGate;
+          status.classList.remove("error");
+          document.getElementById("context").textContent = state.contextSummary || "";
+        }
+
+        function activeProfile() {
+          const state = getState();
+          return state.runtimeProfile?.profile || null;
+        }
+
+        function renderHeaderSummary() {
+          const profile = activeProfile();
+          document.getElementById("activeProfileName").textContent =
+            profile?.name || "Configure a Profile";
+          document.getElementById("activeProfileModel").textContent =
+            profile?.model || "Settings Required";
+          document.getElementById("profileSummaryButton").setAttribute(
+            "aria-label",
+            profile
+              ? `Profile ${profile.name}, model ${profile.model}. Open Profile Settings.`
+              : "No active Profile. Open Profile Settings.",
+          );
+        }
+
+        function setInspectorOpen(open) {
+          document.querySelector(".app").classList.toggle("inspector-open", open);
+          document.getElementById("inspectorPane").hidden = !open;
+          document.getElementById("inspectorToggleButton")
+            .setAttribute("aria-expanded", String(open));
+        }
+
+        function openInspector(tab) {
+          setInspectorOpen(true);
+          sessionTimeline.switchInspectorTab(tab || "settings");
+        }
+
+        function toggleInspector() {
+          const inspector = document.getElementById("inspectorPane");
+          if (inspector.hidden) openInspector("settings");
+          else setInspectorOpen(false);
+        }
+
+        function requestClose() {
+          const commandActive = bridgeClient.isCommandInProgress();
+          const sendActive = bridgeClient.hasAnySendInProgress();
+          const operationActive = commandActive || sendActive;
+          const draftDirty = profileEditor.getDraftState().dirty;
+          const warning = operationActive && draftDirty
+            ? "Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved."
+            : operationActive
+              ? "Close Live Smith? The current operation will stop where possible; completed changes stay saved."
+              : draftDirty
+                ? "Discard unsaved Profile changes and close Live Smith?"
+                : "";
+          if (warning && !confirm(warning)) return;
+          bridgeClient.closeWithResult({ kind: "close" });
+        }
+
+        function renderApplication() {
+          renderStatusAndContext();
+          renderHeaderSummary();
+          sessionTimeline.renderSessions();
+          sessionTimeline.renderTimeline();
+          capabilityPreview.updateReasoningVisibility();
+          capabilityPreview.updateDraftActions();
+        }
+
+        const commandFeedback = {
+          save_profile: {
+            controlId: "saveProfileButton",
+            busyLabel: "Saving…",
+            status: "Saving Profile…",
+          },
+          discover_models: {
+            controlId: "discoverModelsButton",
+            busyLabel: "Loading…",
+            status: "Loading Models…",
+          },
+          delete_profile: {
+            controlId: "deleteProfileButton",
+            busyLabel: "Deleting…",
+            status: "Deleting Profile…",
+          },
+          activate_profile: {
+            busyAriaLabel: "Switching Profile…",
+            controlId: "profileSelector",
+            status: "Switching Profile…",
+          },
+          save_global_settings: {
+            busyAriaLabel: "Saving Auto Approve Setting…",
+            controlId: "autoApprove",
+            status: "Saving Global Settings…",
+          },
+          new_session: {
+            busyLabel: "…",
+            controlId: "newSessionButton",
+            status: "Creating Session…",
+          },
+          select_session: { busyLabel: "Switching…", status: "Switching Session…" },
+          restore_session: { busyLabel: "Restoring…", status: "Restoring Session…" },
+          delete_session: {
+            busyLabel: "…",
+            controlId: "deleteSession",
+            status: "Deleting Session…",
+          },
+          rename_session: {
+            busyLabel: "…",
+            controlId: "renameSessionButton",
+            status: "Renaming Session…",
+          },
+        };
+        let activeCommandControl = null;
+        let activeCommandAriaLabel = null;
+        let activeCommandAriaWasChanged = false;
+        let activeCommandKind = null;
+
+        function restoreCommandFeedback() {
+          if (activeCommandControl?.isConnected) {
+            if (activeCommandControl.dataset.commandIdleLabel) {
+              activeCommandControl.textContent = activeCommandControl.dataset.commandIdleLabel;
+              delete activeCommandControl.dataset.commandIdleLabel;
+            }
+            if (activeCommandAriaWasChanged) {
+              if (activeCommandAriaLabel === null) {
+                activeCommandControl.removeAttribute("aria-label");
+              } else {
+                activeCommandControl.setAttribute("aria-label", activeCommandAriaLabel);
+              }
+            }
+          }
+          activeCommandControl = null;
+          activeCommandAriaLabel = null;
+          activeCommandAriaWasChanged = false;
+        }
+
+        function updateCommandFeedback(kind) {
+          if (kind === activeCommandKind) return;
+          restoreCommandFeedback();
+          activeCommandKind = kind;
+          const feedback = kind ? commandFeedback[kind] : null;
+          if (!feedback) return;
+          const focusedControl = document.activeElement?.matches(
+            "button, input, select, textarea",
+          )
+            ? document.activeElement
+            : null;
+          activeCommandControl = feedback.controlId
+            ? document.getElementById(feedback.controlId)
+            : focusedControl;
+          if (activeCommandControl && feedback.busyLabel) {
+            activeCommandControl.dataset.commandIdleLabel =
+              activeCommandControl.dataset.idleLabel || activeCommandControl.textContent;
+            activeCommandControl.textContent = feedback.busyLabel;
+          }
+          if (activeCommandControl && feedback.busyAriaLabel) {
+            activeCommandAriaLabel = activeCommandControl.getAttribute("aria-label");
+            activeCommandAriaWasChanged = true;
+            activeCommandControl.setAttribute("aria-label", feedback.busyAriaLabel);
+          }
+          if (feedback.status) bridgeClient.showStatus(feedback.status);
+        }
+
+        function setOperationState({ anySendInProgress, commandKind, sendInProgress }) {
+          const operationBusy = Boolean(commandKind) || sendInProgress;
+          const settingsBusy = Boolean(commandKind) || anySendInProgress;
+          updateCommandFeedback(commandKind);
+          document.getElementById("settingsPanel")
+            .setAttribute("aria-busy", String(settingsBusy));
+          document.getElementById("settingsLockNotice").hidden = !(
+            anySendInProgress && !sendInProgress
+          );
+          document.getElementById("autoApproveLockHint").hidden = !anySendInProgress;
+          const autoApprove = document.getElementById("autoApprove");
+          const autoApproveLabel = autoApprove.closest("label");
+          autoApproveLabel.title = anySendInProgress
+            ? "Auto-approve is locked while a Session is running."
+            : "Skip confirmation for undoable changes. Deletes and MIDI clip writes still require confirmation.";
+          document.getElementById("prompt").disabled = operationBusy;
+          document.querySelectorAll(".sessions-pane button, .sessions-pane input")
+            .forEach((control) => {
+              control.disabled = Boolean(commandKind);
+            });
+          document.querySelectorAll(
+            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea, #autoApprove",
+          ).forEach((control) => {
+            control.disabled = settingsBusy;
+          });
+          document.getElementById("sendButton").disabled = Boolean(commandKind);
+
+          if (!operationBusy) {
+            capabilityPreview.updateReasoningVisibility();
+            capabilityPreview.updateDraftActions();
+            sessionTimeline.renderSessions();
+          }
+        }
+
+        profileEditor.connectCapabilityView(capabilityPreview);
+        bridgeClient.connectView({
+          announceAssistantMessage: sessionTimeline.announceAssistantMessage,
+          clearFieldErrors: profileEditor.clearFieldErrors,
+          isDraftDirty: () => profileEditor.getDraftState().dirty,
+          render: renderApplication,
+          renderAssistantDraft: sessionTimeline.renderAssistantDraft,
+          renderSessions: sessionTimeline.renderSessions,
+          renderModelOptions: profileEditor.renderModelOptions,
+          renderSettingsForm: profileEditor.renderSettingsForm,
+          renderTimeline: sessionTimeline.renderTimeline,
+          setOperationState,
+          setConfirmationState: sessionTimeline.setConfirmationState,
+          showFieldError: (field, message) => {
+            openInspector("settings");
+            return profileEditor.showFieldError(field, message);
+          },
+          syncModelStateSource: profileEditor.syncModelStateSource,
+          updateCapabilityPreview: capabilityPreview.updateCapabilityPreview,
+          updateDraftActions: capabilityPreview.updateDraftActions,
+          updateReasoningVisibility: capabilityPreview.updateReasoningVisibility,
+        });
+        delete window.LiveSmithFactories;
+
+        window.LiveSmithUI = {
+          addProfile: profileEditor.addProfile,
+          deleteProfile: profileEditor.deleteProfile,
+          deleteActiveSession: sessionTimeline.deleteActiveSession,
+          discardProfileChanges: profileEditor.discardProfileChanges,
+          discoverModels: profileEditor.discoverModels,
+          duplicateProfile: profileEditor.duplicateProfile,
+          handleApiFamilyChange: profileEditor.handleApiFamilyChange,
+          handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
+          handleProfileSelection: profileEditor.handleProfileSelection,
+          handleSendButton: bridgeClient.handleSendButton,
+          markDraftDirty: profileEditor.markDraftDirty,
+          openInspector,
+          requestClose,
+          renameActiveSession: sessionTimeline.renameActiveSession,
+          runCommand: bridgeClient.runCommand,
+          saveAutoApprove: profileEditor.saveAutoApprove,
+          saveProfile: profileEditor.saveProfile,
+          toggleInspector,
+          toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
+        };
+
+        window.addEventListener("DOMContentLoaded", () => {
+          profileEditor.renderSettingsForm();
+          renderApplication();
+          setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));
+          sessionTimeline.switchInspectorTab("settings");
+          const prompt = document.getElementById("prompt");
+          prompt.value = "";
+          prompt.addEventListener("keydown", (event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              if (!bridgeClient.isOperationInProgress()) bridgeClient.handleSendButton();
+            }
+          });
+          bridgeClient.startEventStream();
+          const inspector = document.getElementById("inspectorPane");
+          const initialFocus = inspector.hidden
+            ? prompt
+            : document.getElementById("profileName");
+          initialFocus?.focus({ preventScroll: true });
+        });
+      })();

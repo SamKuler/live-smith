@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2f2f2f" />
+    <title>Live Smith</title>
+    <script>
+      window.__LIVE_SMITH_STATE__ = __STATE__;
+      window.__LIVE_SMITH_BRIDGE__ = __BRIDGE__;
+      __HOST_ADAPTER_SCRIPT__
+      __PROFILE_EDITOR_SCRIPT__
+      __BRIDGE_CLIENT_SCRIPT__
+      __CAPABILITY_PREVIEW_SCRIPT__
+      __SESSION_TIMELINE_SCRIPT__
+      __BOOTSTRAP_SCRIPT__
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #383838;
+        --chrome: #2f2f2f;
+        --pane: #404040;
+        --pane-2: #4e4e4e;
+        --field: #2c2c2c;
+        --line: #2a2a2a;
+        --line-soft: #343434;
+        --text: #f0f0f0;
+        --muted: #c3c3c3;
+        --quiet: #b0b0b0;
+        --accent: #ffa500;
+        --accent-soft: rgba(255, 165, 0, 0.12);
+        --accent-text: #211503;
+        --warn: #ffd166;
+        --danger: #ff6e57;
+        --trace: #7cb8e8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+
+      body {
+        margin: 0;
+        background: var(--chrome);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 13px;
+      }
+
+      .app {
+        display: grid;
+        grid-template-rows: 50px 1fr;
+        height: 100%;
+        background: var(--bg);
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        background: var(--chrome);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .profile-summary {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas: "signal name" "signal model";
+        align-items: center;
+        column-gap: 7px;
+        max-width: 330px;
+        height: 32px;
+        padding: 3px 9px;
+        color: var(--text);
+        text-align: left;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+      }
+
+      .profile-signal {
+        grid-area: signal;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+
+      .profile-summary-name,
+      .profile-summary-model {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .profile-summary-name {
+        grid-area: name;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .profile-summary-model {
+        grid-area: model;
+        color: var(--quiet);
+        font-size: 10px;
+      }
+
+      .profile-summary:hover {
+        border-color: #5e5e5e;
+        background: #353535;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: 196px minmax(420px, 1fr);
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .app.inspector-open main {
+        grid-template-columns: 196px minmax(420px, 1fr) 340px;
+      }
+
+      .sessions-pane,
+      .chat-pane,
+      .inspector-pane {
+        min-height: 0;
+        border-right: 1px solid var(--line);
+        background: var(--pane);
+      }
+
+      .sessions-pane {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        overflow: hidden;
+      }
+
+      .inspector-pane {
+        border-right: 0;
+      }
+
+      .pane-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        height: 40px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line-soft);
+        color: var(--muted);
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+      }
+
+      .session-actions {
+        display: flex;
+        gap: 5px;
+      }
+
+      .sessions {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+        min-height: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        padding: 10px;
+      }
+
+      .session-row {
+        display: grid;
+        gap: 3px;
+        width: 100%;
+        min-height: 52px;
+        padding: 9px;
+        text-align: left;
+        color: var(--text);
+        background: var(--pane-2);
+        border: 1px solid var(--line-soft);
+        border-radius: 4px;
+      }
+
+      .session-entry {
+        min-width: 0;
+      }
+
+      .session-row[aria-pressed="true"] {
+        border-color: rgba(255, 165, 0, 0.65);
+        background: var(--accent-soft);
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+
+      .session-row:not(:disabled):hover {
+        border-color: #5e5e5e;
+        background: #565656;
+      }
+
+      .session-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-title-line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .session-unread-dot {
+        flex: 0 0 auto;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 2px var(--accent-soft);
+      }
+
+      .session-unread-dot.failed {
+        background: var(--danger);
+        box-shadow: 0 0 0 2px rgba(255, 110, 87, 0.14);
+      }
+
+      .session-meta {
+        overflow: hidden;
+        color: var(--quiet);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
+      }
+
+      .session-empty {
+        padding: 12px 8px;
+        color: var(--quiet);
+        font-size: 12px;
+        text-align: center;
+        line-height: 1.4;
+      }
+
+      .session-section-label {
+        margin-top: 8px;
+        padding: 8px 2px 2px;
+        border-top: 1px solid var(--line-soft);
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .recoverable-session-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border: 1px dashed var(--line);
+        border-radius: 4px;
+        background: var(--pane-2);
+      }
+
+      .recoverable-session-copy {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      .restore-session-button {
+        min-height: 32px;
+        padding-inline: 9px;
+      }
+
+      .session-rename-input {
+        height: 52px;
+        padding: 0 9px;
+        font-size: 13px;
+      }
+
+      .chat-pane {
+        display: grid;
+        grid-template-rows: 1fr auto auto auto;
+        min-width: 0;
+        background: var(--bg);
+      }
+
+      .composer-options {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px 0;
+        background: var(--chrome);
+      }
+
+      .composer-lock-hint {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.3;
+      }
+
+      .timeline {
+        min-height: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        padding: 18px;
+        background: var(--bg);
+        scrollbar-gutter: stable;
+      }
+
+      .timeline-item {
+        display: grid;
+        gap: 6px;
+        max-width: 82%;
+        margin-bottom: 14px;
+      }
+
+      .timeline-item.user {
+        margin-left: auto;
+      }
+
+      .timeline-label {
+        color: var(--quiet);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .timeline-content {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        line-height: 1.5;
+        padding: 11px 12px;
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+        background: var(--pane-2);
+      }
+
+      .timeline-item.user .timeline-content {
+        color: var(--accent-text);
+        background: var(--accent);
+        border-color: transparent;
+      }
+
+      .timeline-item.tool_call,
+      .timeline-item.tool_result,
+      .timeline-item.apply_requested,
+      .timeline-item.apply_result,
+      .timeline-item.error {
+        max-width: 96%;
+      }
+
+      details.timeline-item {
+        margin-bottom: 8px;
+      }
+
+      details.timeline-item > summary {
+        display: block;
+        cursor: pointer;
+        padding: 4px 8px 4px 22px;
+        position: relative;
+        border-radius: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      details.timeline-item > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      details.timeline-item > summary::before {
+        content: "";
+        position: absolute;
+        left: 8px;
+        top: 50%;
+        width: 0;
+        height: 0;
+        margin-top: -3px;
+        border-left: 5px solid currentColor;
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transition: transform 120ms ease;
+      }
+
+      details.timeline-item[open] > summary::before {
+        transform: rotate(90deg);
+      }
+
+      details.timeline-item > summary:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      details.timeline-item > .timeline-content {
+        margin-top: 4px;
+        font-size: 12px;
+      }
+
+      .timeline-item.tool_call > summary,
+      .timeline-item.tool_result > summary {
+        color: var(--trace);
+      }
+
+      .timeline-item.apply_requested > summary,
+      .timeline-item.apply_result > summary {
+        color: var(--warn);
+      }
+
+      .timeline-item.error > summary {
+        color: var(--danger);
+      }
+
+      .timeline-item.tool_call .timeline-content,
+      .timeline-item.tool_result .timeline-content {
+        padding: 8px 10px;
+        color: #d9ecfb;
+        background: rgba(124, 184, 232, 0.08);
+        border-color: rgba(124, 184, 232, 0.35);
+      }
+
+      .timeline-item.apply_requested .timeline-content,
+      .timeline-item.apply_result .timeline-content {
+        padding: 8px 10px;
+        color: #fff3c8;
+        background: rgba(255, 209, 102, 0.08);
+        border-color: rgba(255, 209, 102, 0.35);
+      }
+
+      .timeline-item.error .timeline-content {
+        color: #ffe1dc;
+        background: rgba(255, 110, 87, 0.1);
+        border-color: rgba(255, 110, 87, 0.45);
+      }
+
+      .confirm-card {
+        max-width: 96%;
+        margin-bottom: 14px;
+        padding: 12px;
+        border: 1px solid rgba(255, 165, 0, 0.55);
+        border-radius: 6px;
+        background: var(--accent-soft);
+      }
+
+      .confirm-title {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+
+      .confirm-message {
+        margin: 0 0 8px;
+        color: var(--muted);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        line-height: 1.45;
+      }
+
+      .confirm-group-title {
+        margin: 8px 0 4px;
+        color: var(--quiet);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .confirm-rows {
+        display: grid;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .confirm-rows li {
+        padding: 5px 8px;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 4px;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+        line-height: 1.35;
+      }
+
+      .confirm-buttons {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .confirm-buttons button {
+        height: 30px;
+        min-width: 78px;
+        padding: 0 12px;
+      }
+
+      .empty {
+        max-width: 360px;
+        margin: 0;
+        padding: 10px 12px;
+        color: var(--quiet);
+        border: 1px dashed var(--line-soft);
+        border-radius: 6px;
+        background: var(--pane);
+      }
+
+      .status {
+        max-height: 70px;
+        min-height: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        padding: 0 18px 8px;
+        color: var(--muted);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .status[hidden] {
+        display: none;
+        padding: 0;
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        padding: 12px;
+        border-top: 1px solid var(--line);
+        background: var(--chrome);
+      }
+
+      textarea,
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--field);
+        color: var(--text);
+        border-radius: 4px;
+        font: inherit;
+      }
+
+      textarea {
+        height: 76px;
+        resize: none;
+        padding: 10px;
+        line-height: 1.4;
+      }
+
+      input,
+      select {
+        height: 30px;
+        padding: 0 8px;
+      }
+
+      textarea:focus,
+      input:focus,
+      select:focus {
+        outline: 0;
+        border-color: var(--accent);
+      }
+
+      button:focus-visible,
+      textarea:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 5px;
+        font: inherit;
+        cursor: pointer;
+        transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      .primary {
+        align-self: end;
+        min-width: 82px;
+        height: 36px;
+        padding: 0 13px;
+        color: var(--accent-text);
+        background: var(--accent);
+        font-weight: 700;
+      }
+
+      .primary:not(:disabled):hover {
+        background: #ffb733;
+      }
+
+      .primary.stop {
+        color: #fff;
+        background: var(--danger);
+      }
+
+      .primary.stop:not(:disabled):hover {
+        background: #ff8570;
+      }
+
+      .secondary,
+      .icon-button {
+        color: var(--text);
+        background: var(--pane-2);
+        border: 1px solid var(--line-soft);
+      }
+
+      .secondary:not(:disabled):hover,
+      .icon-button:not(:disabled):hover {
+        background: #5a5a5a;
+        border-color: #6a6a6a;
+      }
+
+      .secondary {
+        height: 30px;
+        padding: 0 10px;
+      }
+
+      .icon-button {
+        width: 28px;
+        height: 28px;
+      }
+
+      .inspector-pane {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-width: 0;
+        overflow: hidden;
+        background: var(--pane);
+      }
+
+      .inspector-pane[hidden] {
+        display: none;
+      }
+
+      .tab-bar {
+        display: flex;
+        border-bottom: 1px solid var(--line-soft);
+        background: var(--chrome);
+      }
+
+      .tab-bar button {
+        flex: 1;
+        height: 36px;
+        padding: 0 10px;
+        color: var(--quiet);
+        background: transparent;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        transition: color 120ms, border-color 120ms;
+      }
+
+      .tab-bar button:hover {
+        color: var(--text);
+      }
+
+      .tab-bar button.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+      }
+
+      .tab-panel {
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+        overscroll-behavior: contain;
+      }
+
+      .tab-panel[hidden] {
+        display: none;
+      }
+
+      .settings-panel {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        overflow: hidden;
+      }
+
+      .settings-scroll {
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+        overscroll-behavior: contain;
+      }
+
+      .settings {
+        display: grid;
+        gap: 14px;
+        padding: 12px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .settings-lock-notice {
+        margin: 12px 12px 0;
+        padding: 8px 10px;
+        color: var(--warn);
+        background: rgba(255, 209, 102, 0.08);
+        border: 1px solid rgba(255, 209, 102, 0.35);
+        border-radius: 4px;
+        line-height: 1.4;
+      }
+
+      .settings-lock-notice[hidden] {
+        display: none;
+      }
+
+      .settings-section {
+        display: grid;
+        gap: 9px;
+      }
+
+      .settings-section + .settings-section {
+        padding-top: 14px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .settings-section h2 {
+        margin: 0;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      .field {
+        display: grid;
+        gap: 4px;
+      }
+
+      label {
+        color: var(--quiet);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .key-row,
+      .model-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 6px;
+      }
+
+      .profile-actions {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 5px;
+      }
+
+      .profile-actions button {
+        min-width: 0;
+        padding: 0 5px;
+      }
+
+      .draft-status {
+        color: var(--quiet);
+        font-size: 11px;
+      }
+
+      .draft-status.dirty {
+        color: var(--accent);
+      }
+
+      .settings-actions {
+        position: static;
+        z-index: 2;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 12px;
+        border-top: 1px solid var(--line);
+        background: var(--chrome);
+      }
+
+      .settings details {
+        border-top: 1px solid var(--line-soft);
+        padding-top: 8px;
+      }
+
+      .settings details > summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+
+      .settings details > summary:hover {
+        color: var(--text);
+      }
+
+      .advanced-fields {
+        display: grid;
+        gap: 9px;
+      }
+
+      .settings textarea {
+        height: 100px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+
+      .toggle-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        cursor: pointer;
+        text-transform: none;
+        color: var(--text);
+        font-size: 13px;
+      }
+
+      .toggle-label input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+
+      .toggle-hint {
+        color: var(--quiet);
+        font-size: 11px;
+      }
+
+      .field-error {
+        color: var(--danger);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .context {
+        min-height: 0;
+        overflow: auto;
+        white-space: pre-wrap;
+        color: var(--muted);
+        line-height: 1.4;
+        padding: 12px;
+        scrollbar-gutter: stable;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Live Smith</h1>
+        <div class="header-actions">
+          <button id="profileSummaryButton" class="profile-summary" type="button" aria-label="Open Profile Settings" onclick="LiveSmithUI.openInspector('settings')">
+            <span class="profile-signal" aria-hidden="true"></span>
+            <span id="activeProfileName" class="profile-summary-name"></span>
+            <span id="activeProfileModel" class="profile-summary-model" translate="no"></span>
+          </button>
+          <button id="inspectorToggleButton" class="secondary" type="button" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()">Settings</button>
+          <button id="closeButton" class="icon-button" type="button" title="Close" aria-label="Close Live Smith" onclick="LiveSmithUI.requestClose()">&#215;</button>
+        </div>
+      </header>
+      <main>
+        <aside class="sessions-pane">
+          <div class="pane-header">
+            <span>Sessions</span>
+            <div class="session-actions">
+              <button id="newSessionButton" class="icon-button" type="button" title="New Session" aria-label="New Session" data-idle-label="+" onclick="LiveSmithUI.runCommand('new_session')">+</button>
+              <button id="renameSessionButton" class="icon-button" type="button" title="Rename Session" aria-label="Rename Session" data-idle-label="&#9998;" onclick="LiveSmithUI.renameActiveSession()">&#9998;</button>
+              <button id="deleteSession" class="icon-button" type="button" title="Delete Session" aria-label="Delete Session" data-idle-label="-" onclick="LiveSmithUI.deleteActiveSession()">-</button>
+            </div>
+          </div>
+          <div id="sessions" class="sessions"></div>
+        </aside>
+
+        <section class="chat-pane">
+          <div id="timeline" class="timeline" aria-label="Conversation"></div>
+          <div id="conversationAnnouncements" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div class="composer-options">
+            <label class="toggle-label" title="Skip confirmation for undoable changes. Deletes and MIDI clip writes still require confirmation.">
+              <input id="autoApprove" name="autoApprove" type="checkbox" aria-describedby="autoApproveLockHint" onchange="LiveSmithUI.saveAutoApprove()" />
+              <span>Auto-approve undoable changes</span>
+            </label>
+            <span id="autoApproveLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>Locked while a Session is running.</span>
+          </div>
+          <div class="composer">
+            <label class="visually-hidden" for="prompt">Message Live Smith</label>
+            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
+            <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>
+          </div>
+        </section>
+
+        <aside id="inspectorPane" class="inspector-pane" aria-label="Inspector" hidden>
+          <div class="tab-bar" role="tablist" aria-label="Inspector Views">
+            <button id="settingsTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel" tabindex="0" onclick="LiveSmithUI.openInspector('settings')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Settings</button>
+            <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Context</button>
+          </div>
+          <div id="settingsPanel" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="settingsTab" aria-busy="false">
+            <div class="settings-scroll">
+              <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile and global settings are locked while another Session is running. You can keep working in this Session.</div>
+              <div class="settings">
+              <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
+                <h2 id="profileSettingsHeading">Profile</h2>
+                <div class="field">
+                  <label for="profileSelector">Saved profile</label>
+                  <select id="profileSelector" name="profileSelector" autocomplete="off" onchange="LiveSmithUI.handleProfileSelection()"></select>
+                </div>
+                <div class="profile-actions">
+                  <button class="secondary" type="button" onclick="LiveSmithUI.addProfile()">Add</button>
+                  <button id="duplicateProfileButton" class="secondary" type="button" onclick="LiveSmithUI.duplicateProfile()">Duplicate</button>
+                  <button id="deleteProfileButton" class="secondary" type="button" data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()">Delete</button>
+                </div>
+                <div class="field">
+                  <label for="profileName">Profile name</label>
+                  <input id="profileName" name="profileName" autocomplete="off" oninput="LiveSmithUI.markDraftDirty(this)" />
+                </div>
+              </section>
+
+              <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
+                <h2 id="connectionSettingsHeading">Connection</h2>
+                <div class="field">
+                  <label for="apiFamily">API family</label>
+                  <select id="apiFamily" name="apiFamily" autocomplete="off" onchange="LiveSmithUI.handleApiFamilyChange()">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="apiMode">API mode</label>
+                  <select id="apiMode" name="apiMode" autocomplete="off" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                </div>
+                <div class="field">
+                  <label for="apiKey">API key</label>
+                  <div class="key-row">
+                    <input id="apiKey" name="apiKey" type="password" autocomplete="off" spellcheck="false" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    <button id="apiKeyVisibilityButton" class="secondary" type="button" aria-controls="apiKey" aria-pressed="false" onclick="LiveSmithUI.toggleApiKeyVisibility()">Show</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="baseUrl">Base URL</label>
+                  <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" oninput="LiveSmithUI.markDraftDirty(this)" />
+                </div>
+                <div class="field">
+                  <label for="model">Model</label>
+                  <div class="model-row">
+                    <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
+                  </div>
+                  <datalist id="modelOptions"></datalist>
+                </div>
+              </section>
+
+              <section id="generationSettingsSection" class="settings-section" aria-labelledby="generationSettingsHeading">
+                <h2 id="generationSettingsHeading">Generation</h2>
+                <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
+                <div class="field">
+                  <label for="temperature">Temperature</label>
+                  <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="Provider default…" oninput="LiveSmithUI.markDraftDirty(this)" />
+                </div>
+                <div class="field">
+                  <label for="maxOutputTokens">Requested max output tokens</label>
+                  <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                  <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                </div>
+                <div id="reasoningModeRow" class="field">
+                  <label for="reasoningMode">Reasoning</label>
+                  <select id="reasoningMode" name="reasoningMode" aria-describedby="reasoningHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                  <span id="reasoningHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true" hidden>Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced.</span>
+                </div>
+                <div id="reasoningEffortRow" class="field" hidden>
+                  <label for="reasoningEffort">Reasoning effort</label>
+                  <select id="reasoningEffort" name="reasoningEffort" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                </div>
+                <div id="reasoningBudgetRow" class="field" hidden>
+                  <label for="reasoningBudgetTokens">Thinking budget</label>
+                  <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
+                </div>
+              </section>
+
+              <section id="advancedSettingsSection" class="settings-section" aria-labelledby="advancedSettingsHeading">
+                <h2 id="advancedSettingsHeading">Advanced</h2>
+                <details>
+                  <summary>Capabilities and Extra Body</summary>
+                  <div class="advanced-fields">
+                  <div class="field">
+                    <label for="overrideTools">Tools capability</label>
+                    <select id="overrideTools" name="overrideTools" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideStreaming">Streaming capability</label>
+                    <select id="overrideStreaming" name="overrideStreaming" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideTemperature">Temperature capability</label>
+                    <select id="overrideTemperature" name="overrideTemperature" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="supported">Supported</option><option value="unsupported">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field"><label for="overrideMaxOutputTokens">Model output limit</label><input id="overrideMaxOutputTokens" name="overrideMaxOutputTokens" type="number" min="1" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
+                  <div class="field">
+                    <label for="overrideReasoningSupported">Reasoning capability</label>
+                    <select id="overrideReasoningSupported" name="overrideReasoningSupported" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideReasoningCanDisable">Can disable reasoning</label>
+                    <select id="overrideReasoningCanDisable" name="overrideReasoningCanDisable" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="true">Yes</option><option value="false">No</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideReasoningStrategy">Reasoning strategy</label>
+                    <select id="overrideReasoningStrategy" name="overrideReasoningStrategy" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="effort">Effort</option><option value="adaptive-thinking">Adaptive thinking</option><option value="budget-thinking">Budget thinking</option><option value="none">None</option>
+                    </select>
+                  </div>
+                  <div class="field"><label for="overrideReasoningEfforts">Allowed efforts (comma separated)</label><input id="overrideReasoningEfforts" name="overrideReasoningEfforts" autocomplete="off" spellcheck="false" placeholder="low, medium, high…" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
+                  <div class="field">
+                    <label for="overrideReasoningBudget">Thinking budget capability</label>
+                    <select id="overrideReasoningBudget" name="overrideReasoningBudget" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field"><label for="extraBody">Extra Body JSON</label><textarea id="extraBody" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
+                  </div>
+                </details>
+              </section>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <span id="draftStatus" class="draft-status"></span>
+              <button id="discardProfileButton" class="secondary" type="button" onclick="LiveSmithUI.discardProfileChanges()">Discard</button>
+              <button id="saveProfileButton" class="secondary" type="button" data-idle-label="Save Changes" onclick="LiveSmithUI.saveProfile()">Save Changes</button>
+            </div>
+          </div>
+          <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" hidden>
+            <div id="context" class="context"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>

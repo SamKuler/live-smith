@@ -1,0 +1,894 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createBridgeClient = function createBridgeClient({
+        bridgeConfig,
+        getState,
+        hostAdapter,
+        setState,
+      }) {
+      let view = null;
+
+      function connectView(nextView) {
+        view = nextView;
+      }
+
+      function requireView() {
+        if (!view) throw new Error("Bridge client is not connected to the UI.");
+        return view;
+      }
+      function activeSessionId() {
+        return getState().activeSessionId;
+      }
+
+      function createSendId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+        return `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function createCommandId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+        return `command-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function isActiveSendPayload(payload) {
+        const attempt = payload.sessionId
+          ? sendAttemptsBySession.get(payload.sessionId)
+          : null;
+        return Boolean(attempt && payload.sendId === attempt.id);
+      }
+
+      let eventSource = null;
+      const assistantDraftsBySession = new Map();
+      const composerDraftsBySession = new Map();
+      const pendingConfirmationsBySession = new Map();
+      const confirmationResolutionsBySession = new Map();
+      const sendAttemptsBySession = new Map();
+      let commandInProgress = null;
+      let commandReconciliationBlocked = false;
+      let activeCommandAttempt = null;
+      const commandSseReconciliationTimeoutMs = 5000;
+      const stopPollIntervalMs = 250;
+
+      function activeSendAttempt() {
+        return sendAttemptsBySession.get(activeSessionId()) || null;
+      }
+
+      function activePendingConfirmation() {
+        return pendingConfirmationsBySession.get(activeSessionId()) || null;
+      }
+
+      function activeAssistantDraft() {
+        return assistantDraftsBySession.get(activeSessionId()) || "";
+      }
+
+      function attemptIsCurrent(attempt) {
+        return Boolean(
+          attempt && sendAttemptsBySession.get(attempt.sessionId) === attempt,
+        );
+      }
+
+      function isOperationInProgress() {
+        return Boolean(activeSendAttempt()) || Boolean(commandInProgress) || commandReconciliationBlocked;
+      }
+
+      function syncOperationState() {
+        requireView().setOperationState({
+          commandKind: commandInProgress ||
+            (commandReconciliationBlocked ? "reconciliation_required" : null),
+          anySendInProgress: sendAttemptsBySession.size > 0,
+          sendInProgress: Boolean(activeSendAttempt()),
+        });
+      }
+
+      function bridgeUrl(path) {
+        if (!bridgeConfig || !bridgeConfig.baseUrl) {
+          throw new Error("Live Smith bridge configuration is missing.");
+        }
+        const separator = path.includes("?") ? "&" : "?";
+        return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token || "")}`;
+      }
+
+      async function runCommand(kind, extra) {
+        const sessionCommand = [
+          "new_session",
+          "select_session",
+          "delete_session",
+          "rename_session",
+        ].includes(kind);
+        if (sendAttemptsBySession.size && !sessionCommand) {
+          showStatus("Profile and global settings cannot change while an agent request is active.");
+          return false;
+        }
+        if (commandInProgress || commandReconciliationBlocked) return false;
+        const payload = { kind, ...(extra || {}) };
+        let resolveSseOutcome;
+        let resolveSseUnavailable;
+        const attempt = {
+          id: createCommandId(),
+          kind,
+          sseOutcome: new Promise((resolve) => {
+            resolveSseOutcome = resolve;
+          }),
+          resolveSseOutcome: (outcome) => resolveSseOutcome(outcome),
+          sseUnavailable: new Promise((resolve) => {
+            resolveSseUnavailable = resolve;
+          }),
+          resolveSseUnavailable: () => resolveSseUnavailable({ type: "reconcile" }),
+        };
+
+        activeCommandAttempt = attempt;
+        commandInProgress = kind;
+        syncOperationState();
+        if (["save_profile", "discover_models"].includes(kind)) {
+          requireView().clearFieldErrors();
+        }
+        let commandError = null;
+        let commandWarning = null;
+        let commandSucceeded = false;
+        try {
+          const httpOutcome = postBridge(
+            "/command",
+            payload,
+            { "X-Live-Smith-Command-Id": attempt.id },
+          ).then(
+            (state) => ({ type: "state", state, source: "http" }),
+            (error) => ({ type: "error", error, source: "http" }),
+          );
+          let outcome = await Promise.race([httpOutcome, attempt.sseOutcome]);
+          if (
+            outcome.type === "error" &&
+            outcome.source === "http" &&
+            !outcome.error.httpStatus &&
+            outcome.error.commandOutcome !== "unknown"
+          ) {
+            const networkError = outcome.error;
+            showStatus("Lost the command response. Waiting for authoritative bridge state…", true);
+            outcome = await waitForCommandSseOutcome(attempt);
+            if (outcome.type === "reconcile") {
+              outcome = await reconcileInterruptedCommand(networkError, kind);
+            }
+          }
+          if (activeCommandAttempt !== attempt) return false;
+          if (outcome.type === "state") {
+            applyCommandState(kind, outcome.state);
+            commandSucceeded = true;
+          } else if (outcome.type === "reconciled") {
+            commandWarning = outcome.message;
+            commandSucceeded = true;
+          } else if (
+            outcome.error.commandOutcome === "unknown" &&
+            outcome.error.state
+          ) {
+            applyCommandState(kind, outcome.error.state);
+            commandWarning = outcome.error.message || String(outcome.error);
+            commandSucceeded = true;
+          } else {
+            commandError = outcome.error;
+            if (outcome.error.reconciliationRequired) {
+              commandReconciliationBlocked = true;
+            }
+          }
+        } finally {
+          if (activeCommandAttempt === attempt) activeCommandAttempt = null;
+          commandInProgress = null;
+          syncOperationState();
+        }
+        if (commandSucceeded) syncActiveSessionUi();
+        if (commandWarning) showStatus(commandWarning, true);
+        if (commandError) {
+          const message = commandError.message || String(commandError);
+          if (
+            !commandError.field ||
+            !requireView().showFieldError(commandError.field, message)
+          ) {
+            showStatus(message, true);
+          } else {
+            showStatus("");
+          }
+        }
+        return commandSucceeded;
+      }
+
+      async function waitForCommandSseOutcome(attempt) {
+        let timeoutId;
+        const timeout = new Promise((resolve) => {
+          timeoutId = window.setTimeout(
+            () => resolve({ type: "reconcile" }),
+            commandSseReconciliationTimeoutMs,
+          );
+        });
+        try {
+          return await Promise.race([
+            attempt.sseOutcome,
+            attempt.sseUnavailable,
+            timeout,
+          ]);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      }
+
+      async function reconcileInterruptedCommand(originalError, kind) {
+        const originalMessage = originalError?.message || "The command response was lost.";
+        try {
+          const refreshed = await refreshState(undefined, kind);
+          if (!refreshed) throw new Error("The bridge did not return current state.");
+          return {
+            type: "reconciled",
+            message: `${originalMessage} Authoritative state was refreshed; verify the command outcome before continuing.`,
+          };
+        } catch (error) {
+          const reconciliationError = new Error(
+            `${originalMessage} Current state could not be reconciled: ${error.message || String(error)} Close and reopen Live Smith before continuing.`,
+          );
+          reconciliationError.reconciliationRequired = true;
+          return { type: "error", error: reconciliationError, source: "reconcile" };
+        }
+      }
+
+      function applyCommandState(kind, state) {
+        const previousSessionId = activeSessionId();
+        const prompt = document.getElementById("prompt");
+        if (prompt) composerDraftsBySession.set(previousSessionId, prompt.value);
+        setState(state);
+        requireView().syncModelStateSource(state.modelStateSource);
+        if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
+          requireView().renderSettingsForm();
+        } else if (kind === "save_global_settings") {
+          document.getElementById("autoApprove").checked =
+            Boolean(state.settings.autoApprove);
+        } else if (kind === "discover_models") {
+          requireView().renderModelOptions();
+          requireView().updateCapabilityPreview();
+        }
+        if (prompt && state.activeSessionId !== previousSessionId) {
+          prompt.value = composerDraftsBySession.get(state.activeSessionId) || "";
+        }
+        requireView().render();
+      }
+
+      function mergeBackgroundState(state, sessionId) {
+        const current = getState();
+        if (Array.isArray(state.sessionActivities)) {
+          const activity = state.sessionActivities.find(
+            (entry) => entry.sessionId === sessionId,
+          );
+          if (activity) {
+            current.sessionActivities = [
+              ...(current.sessionActivities || []).filter(
+                (entry) => entry.sessionId !== sessionId,
+              ),
+              activity,
+            ];
+          }
+        }
+      }
+
+      function setLocalActivity(sessionId, sendId, status, message) {
+        const activities = getState().sessionActivities || [];
+        const current = activities.find((entry) => entry.sessionId === sessionId);
+        const next = {
+          ...(current || {}),
+          sessionId,
+          sendId,
+          status,
+          message,
+          unread: current?.unread || false,
+        };
+        getState().sessionActivities = [
+          ...activities.filter((entry) => entry.sessionId !== sessionId),
+          next,
+        ];
+      }
+
+      function syncActiveSessionUi() {
+        const attempt = activeSendAttempt();
+        const button = document.getElementById("sendButton");
+        button.textContent = attempt ? "Stop" : "Send";
+        button.classList.toggle("stop", Boolean(attempt));
+        syncOperationState();
+        if (attempt?.progress) showStatus(attempt.progress, attempt.progressIsError);
+        else {
+          const activity = (getState().sessionActivities || []).find(
+            (entry) => entry.sessionId === activeSessionId(),
+          );
+          if (activity?.status === "failed") showStatus(activity.message || "Agent request failed.", true);
+          else showStatus(getState().status || "");
+        }
+        requireView().renderSessions();
+        requireView().renderTimeline();
+      }
+
+      function setAttemptStatus(attempt, message, isError) {
+        if (!attempt) return;
+        attempt.progress = message;
+        attempt.progressIsError = Boolean(isError);
+        if (activeSessionId() === attempt.sessionId && attemptIsCurrent(attempt)) {
+          showStatus(message, isError);
+        }
+      }
+
+      async function sendPrompt() {
+        const sessionId = activeSessionId();
+        const promptControl = document.getElementById("prompt");
+        if (!promptControl.value.trim()) {
+          showStatus("Enter a request for Live Smith.", true);
+          promptControl.focus({ preventScroll: true });
+          return;
+        }
+        const payload = {
+          prompt: promptControl.value,
+          sessionId,
+        };
+
+        if (
+          isOperationInProgress() ||
+          requireView().isDraftDirty() ||
+          !getState().settings.activeProfileId
+        ) return;
+        assistantDraftsBySession.set(sessionId, "");
+        composerDraftsBySession.set(sessionId, "");
+        const attempt = {
+          id: createSendId(),
+          sessionId,
+          payload,
+          progress: "Starting agent loop",
+          progressIsError: false,
+          failureHandled: false,
+        };
+        sendAttemptsBySession.set(sessionId, attempt);
+        setSendInProgress(sessionId, true);
+        showStatus("Starting agent loop");
+        promptControl.value = "";
+
+        try {
+          const response = await fetch(bridgeUrl("/send"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Live-Smith-Send-Id": attempt.id,
+            },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const error = new Error(result.error || `${response.status} ${response.statusText}`);
+            error.httpStatus = response.status;
+            if (["persisted", "not_persisted", "unknown"].includes(result.promptPersistence)) {
+              error.promptPersistence = result.promptPersistence;
+            }
+            if (typeof result.field === "string") error.field = result.field;
+            throw error;
+          }
+          if (!attemptIsCurrent(attempt)) return;
+          const refreshed = await refreshState(attempt);
+          if (!attemptIsCurrent(attempt)) return;
+          if (refreshed !== true) {
+            setAttemptStatus(
+              attempt,
+              "The send completed, but authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.",
+              true,
+            );
+            return;
+          }
+          settleSendAttempt(attempt);
+          if (activeSessionId() === sessionId) showStatus("");
+        } catch (error) {
+          const message = error.message || String(error);
+          if (!error.httpStatus && !error.promptPersistence) {
+            await recoverInterruptedSend(attempt, message);
+          } else {
+            await handleSendFailure(
+              attempt,
+              message,
+              error.promptPersistence || "unknown",
+              error.field,
+            );
+          }
+        }
+      }
+
+      async function recoverInterruptedSend(attempt, message) {
+        if (!attempt || attempt.failureHandled || !attemptIsCurrent(attempt)) return;
+        if (attempt.recoveryInProgress) {
+          await attempt.recoveryInProgress;
+          return;
+        }
+        const recovery = (async () => {
+          setAttemptStatus(
+            attempt,
+            `${message} Stopping the active agent request…`,
+            true,
+          );
+          while (attemptIsCurrent(attempt) && !attempt.failureHandled) {
+            try {
+              const result = await postBridge(
+                "/stop",
+                {},
+                { "X-Live-Smith-Send-Id": attempt.id },
+              );
+              if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
+              if (result.terminal === true) {
+                let refreshed = false;
+                try {
+                  refreshed = await refreshState(attempt) === true;
+                } catch {
+                  refreshed = false;
+                }
+                if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
+                if (refreshed) {
+                  finishInterruptedSend(attempt, message);
+                } else {
+                  setAttemptStatus(
+                    attempt,
+                    `${message} The agent request stopped, but current state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
+                    true,
+                  );
+                }
+                return;
+              }
+              setAttemptStatus(
+                attempt,
+                `${message} Stop requested; waiting for the agent request to reach a terminal state…`,
+                true,
+              );
+              if (!(await waitForStopPoll(attempt))) return;
+            } catch {
+              if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
+              setAttemptStatus(
+                attempt,
+                `${message} The stop request could not be confirmed. Retry Stop or close Live Smith.`,
+                true,
+              );
+              return;
+            }
+          }
+        })();
+        attempt.recoveryInProgress = recovery;
+        try {
+          await recovery;
+        } finally {
+          if (attempt.recoveryInProgress === recovery) attempt.recoveryInProgress = null;
+        }
+      }
+
+      function waitForStopPoll(attempt) {
+        if (!attemptIsCurrent(attempt) || attempt.failureHandled) {
+          return Promise.resolve(false);
+        }
+        return new Promise((resolve) => {
+          const finish = (shouldPoll) => {
+            if (attempt.stopPollTimer !== null) {
+              window.clearTimeout(attempt.stopPollTimer);
+            }
+            attempt.stopPollTimer = null;
+            attempt.stopPollWake = null;
+            resolve(shouldPoll);
+          };
+          attempt.stopPollWake = () => finish(false);
+          attempt.stopPollTimer = window.setTimeout(
+            () => finish(attemptIsCurrent(attempt) && !attempt.failureHandled),
+            stopPollIntervalMs,
+          );
+        });
+      }
+
+      function cancelSendRecovery(attempt) {
+        if (!attempt) return;
+        const wake = attempt.stopPollWake;
+        if (attempt.stopPollTimer !== null && attempt.stopPollTimer !== undefined) {
+          window.clearTimeout(attempt.stopPollTimer);
+        }
+        attempt.stopPollTimer = null;
+        attempt.stopPollWake = null;
+        if (wake) wake();
+      }
+
+      function settleSendAttempt(attempt) {
+        if (!attemptIsCurrent(attempt)) return false;
+        cancelSendRecovery(attempt);
+        attempt.failureHandled = true;
+        assistantDraftsBySession.set(attempt.sessionId, "");
+        pendingConfirmationsBySession.delete(attempt.sessionId);
+        confirmationResolutionsBySession.delete(attempt.sessionId);
+        sendAttemptsBySession.delete(attempt.sessionId);
+        setSendInProgress(attempt.sessionId, false);
+        if (activeSessionId() === attempt.sessionId) {
+          requireView().renderTimeline();
+        }
+        return true;
+      }
+
+      function finishInterruptedSend(attempt, message) {
+        if (!settleSendAttempt(attempt)) return;
+        if (activeSessionId() === attempt.sessionId) {
+          showStatus(
+            `${message} The interrupted request was stopped; check the timeline before trying again.`,
+            true,
+          );
+        }
+      }
+
+      async function handleSendFailure(attempt, message, persistence, field) {
+        if (
+          !attempt ||
+          attempt.failureHandled ||
+          attempt.failureObserved ||
+          !attemptIsCurrent(attempt)
+        ) return;
+        attempt.failureObserved = true;
+        cancelSendRecovery(attempt);
+        pendingConfirmationsBySession.delete(attempt.sessionId);
+        confirmationResolutionsBySession.delete(attempt.sessionId);
+        if (activeSessionId() === attempt.sessionId) requireView().renderTimeline();
+        if (persistence === "not_persisted") {
+          composerDraftsBySession.set(attempt.sessionId, attempt.payload.prompt);
+          if (!settleSendAttempt(attempt)) return;
+          if (activeSessionId() === attempt.sessionId) {
+            document.getElementById("prompt").value = attempt.payload.prompt;
+            if (!field || !requireView().showFieldError(field, message)) {
+              showStatus(message, true);
+            } else {
+              showStatus("");
+            }
+            requireView().renderTimeline();
+          }
+          return;
+        }
+        let refreshed = false;
+        try {
+          refreshed = await refreshState(attempt) === true;
+        } catch {
+          refreshed = false;
+        }
+        if (!attemptIsCurrent(attempt)) return;
+        const guidance = persistence === "persisted"
+          ? "The prompt is already in this session; check the timeline before trying again."
+          : "The send result is unknown; check the timeline before trying again.";
+        if (!refreshed) {
+          setAttemptStatus(
+            attempt,
+            `${message} ${guidance} Authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
+            true,
+          );
+          return;
+        }
+        if (!settleSendAttempt(attempt)) return;
+        if (activeSessionId() === attempt.sessionId) {
+          showStatus(
+            persistence === "persisted"
+              ? "Request stopped. The prompt and error are saved in this Session; check the timeline before continuing."
+              : `${message} ${guidance}`,
+            true,
+          );
+        }
+      }
+
+      async function postBridge(path, payload, extraHeaders) {
+        const response = await fetch(bridgeUrl(path), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(extraHeaders || {}) },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(result.error || `${response.status} ${response.statusText}`);
+          error.httpStatus = response.status;
+          if (typeof result.field === "string") error.field = result.field;
+          if (result.commandOutcome === "unknown") error.commandOutcome = "unknown";
+          if (result.state && typeof result.state === "object") error.state = result.state;
+          if (result.reconciliationRequired === true) error.reconciliationRequired = true;
+          throw error;
+        }
+        return result;
+      }
+
+      async function refreshState(expectedSendAttempt, commandKind) {
+        if (
+          expectedSendAttempt &&
+          !attemptIsCurrent(expectedSendAttempt)
+        ) return;
+        const response = await fetch(bridgeUrl("/state"));
+        if (!response.ok) return false;
+        const state = await response.json();
+        if (
+          expectedSendAttempt &&
+          !attemptIsCurrent(expectedSendAttempt)
+        ) return;
+        if (commandKind) {
+          applyCommandState(commandKind, state);
+        } else {
+          if (
+            expectedSendAttempt?.sessionId === activeSessionId() &&
+            state.activeSessionId === activeSessionId()
+          ) {
+            setState(state);
+          } else {
+            mergeBackgroundState(
+              state,
+              expectedSendAttempt?.sessionId || state.activeSessionId,
+            );
+          }
+          requireView().syncModelStateSource(state.modelStateSource);
+          requireView().renderModelOptions();
+          requireView().updateCapabilityPreview();
+          requireView().render();
+        }
+        return true;
+      }
+
+      function showStatus(message, isError) {
+        const status = document.getElementById("status");
+        status.textContent = message || "";
+        status.hidden = !message;
+        status.classList.toggle("error", Boolean(isError));
+      }
+
+      function setSendInProgress(sessionId, value) {
+        if (activeSessionId() === sessionId) {
+          const button = document.getElementById("sendButton");
+          button.textContent = value ? "Stop" : "Send";
+          button.classList.toggle("stop", value);
+        }
+        syncOperationState();
+        if (activeSessionId() !== sessionId) requireView().renderSessions();
+      }
+
+      function handleSendButton() {
+        if (activeSendAttempt()) {
+          void stopAgent();
+        } else {
+          void sendPrompt();
+        }
+      }
+
+      async function stopAgent() {
+        const attempt = activeSendAttempt();
+        if (!attempt) return;
+        await recoverInterruptedSend(attempt, "Agent request stopped.");
+      }
+
+      async function resolveConfirm(id, apply) {
+        const attempt = activeSendAttempt();
+        const confirmation = activePendingConfirmation();
+        const activeResolution = confirmationResolutionsBySession.get(activeSessionId());
+        if (
+          !attempt ||
+          !confirmation ||
+          confirmation.sendId !== attempt.id ||
+          confirmation.id !== id ||
+          activeResolution?.sendId === attempt.id
+        ) return;
+        const resolution = { sendId: attempt.id, confirmationId: id };
+        confirmationResolutionsBySession.set(attempt.sessionId, resolution);
+        requireView().setConfirmationState(true);
+        try {
+          await postBridge("/confirm", { id, apply });
+          if (
+            confirmationResolutionsBySession.get(attempt.sessionId) !== resolution ||
+            !attemptIsCurrent(attempt)
+          ) return;
+          if (
+            pendingConfirmationsBySession.get(attempt.sessionId)?.sendId === attempt.id &&
+            pendingConfirmationsBySession.get(attempt.sessionId)?.id === id
+          ) {
+            pendingConfirmationsBySession.delete(attempt.sessionId);
+            if (activeSessionId() === attempt.sessionId) {
+              requireView().renderTimeline();
+            }
+          }
+          if (activeSessionId() === attempt.sessionId) showStatus("");
+        } catch (error) {
+          if (
+            confirmationResolutionsBySession.get(attempt.sessionId) === resolution &&
+            attemptIsCurrent(attempt)
+          ) {
+            await recoverInterruptedSend(attempt, error.message || String(error));
+          }
+        } finally {
+          if (confirmationResolutionsBySession.get(attempt.sessionId) === resolution) {
+            confirmationResolutionsBySession.delete(attempt.sessionId);
+            if (attemptIsCurrent(attempt) && activeSessionId() === attempt.sessionId) {
+              requireView().setConfirmationState(false);
+            }
+          }
+        }
+      }
+
+      function appendSessionEvent(sessionId, event) {
+        if (event.kind === "assistant") {
+          assistantDraftsBySession.set(sessionId, "");
+        }
+        if (activeSessionId() !== sessionId) return;
+        const state = getState();
+        state.events = (state.events || []).filter((item) => item.id !== event.id);
+        state.events.push(event);
+        if (event.kind === "assistant") {
+          requireView().announceAssistantMessage(event.content);
+        }
+        requireView().renderTimeline();
+      }
+
+      function startEventStream() {
+        if (eventSource) return;
+        eventSource = new EventSource(bridgeUrl("/events"));
+        eventSource.onmessage = (message) => {
+          const payload = JSON.parse(message.data);
+          if (payload.sendId && !payload.sessionId) {
+            const attempt = [...sendAttemptsBySession.values()]
+              .find((entry) => entry.id === payload.sendId);
+            if (attempt) payload.sessionId = attempt.sessionId;
+          }
+          if (payload.type === "assistant_delta") {
+            if (!isActiveSendPayload(payload)) return;
+            const draft = (assistantDraftsBySession.get(payload.sessionId) || "") + payload.delta;
+            assistantDraftsBySession.set(payload.sessionId, draft);
+            if (activeSessionId() === payload.sessionId) {
+              requireView().renderAssistantDraft();
+            }
+            return;
+          }
+          if (payload.type === "session_event") {
+            if (!isActiveSendPayload(payload)) return;
+            appendSessionEvent(payload.sessionId, payload.event);
+            return;
+          }
+          if (payload.type === "progress") {
+            if (!isActiveSendPayload(payload)) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            if (attempt) {
+              attempt.progress = payload.message;
+              attempt.progressIsError = false;
+            }
+            setLocalActivity(payload.sessionId, payload.sendId, "running", payload.message);
+            if (activeSessionId() === payload.sessionId) showStatus(payload.message);
+            requireView().renderSessions();
+            return;
+          }
+          if (payload.type === "confirm_request") {
+            if (!isActiveSendPayload(payload)) return;
+            pendingConfirmationsBySession.set(payload.sessionId, {
+              sendId: payload.sendId,
+              id: payload.id,
+              message: payload.message,
+              groups: payload.groups || [],
+            });
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            if (attempt) {
+              attempt.progress = "Waiting for your confirmation";
+              attempt.progressIsError = false;
+            }
+            setLocalActivity(
+              payload.sessionId,
+              payload.sendId,
+              "waiting_confirmation",
+              "Waiting for confirmation",
+            );
+            if (activeSessionId() === payload.sessionId) {
+              showStatus("Waiting for your confirmation");
+              requireView().renderTimeline();
+            }
+            requireView().renderSessions();
+            return;
+          }
+          if (payload.type === "confirm_resolved") {
+            if (!isActiveSendPayload(payload)) return;
+            const pendingConfirmation = pendingConfirmationsBySession.get(payload.sessionId);
+            if (
+              pendingConfirmation &&
+              pendingConfirmation.sendId === payload.sendId &&
+              pendingConfirmation.id === payload.id
+            ) {
+              pendingConfirmationsBySession.delete(payload.sessionId);
+              if (activeSessionId() === payload.sessionId) requireView().renderTimeline();
+            }
+            setLocalActivity(payload.sessionId, payload.sendId, "running", "Continuing");
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            if (attempt) {
+              attempt.progress = "Continuing";
+              attempt.progressIsError = false;
+            }
+            requireView().renderSessions();
+            return;
+          }
+          if (payload.type === "state") {
+            if (
+              !activeCommandAttempt ||
+              payload.commandId !== activeCommandAttempt.id
+            ) return;
+            activeCommandAttempt.resolveSseOutcome({
+              type: "state",
+              state: payload.state,
+              source: "sse",
+            });
+            return;
+          }
+          if (payload.type === "done") {
+            if (!isActiveSendPayload(payload)) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            cancelSendRecovery(attempt);
+            if (
+              payload.sessionId === activeSessionId() &&
+              payload.state.activeSessionId === activeSessionId()
+            ) {
+              setState(payload.state);
+              requireView().syncModelStateSource(payload.state.modelStateSource);
+              requireView().renderModelOptions();
+              requireView().updateCapabilityPreview();
+            } else {
+              mergeBackgroundState(payload.state, payload.sessionId);
+            }
+            settleSendAttempt(attempt);
+            if (activeSessionId() === payload.sessionId) showStatus("");
+            requireView().render();
+            return;
+          }
+          if (payload.type === "error") {
+            if (payload.sendId !== undefined) {
+              if (!isActiveSendPayload(payload)) return;
+              if (payload.state) mergeBackgroundState(payload.state, payload.sessionId);
+              void handleSendFailure(
+                sendAttemptsBySession.get(payload.sessionId),
+                payload.message,
+                payload.promptPersistence || "unknown",
+                payload.field,
+              );
+              return;
+            }
+            if (payload.commandId !== undefined) {
+              if (
+                !activeCommandAttempt ||
+                payload.commandId !== activeCommandAttempt.id
+              ) return;
+              const error = new Error(payload.message);
+              if (typeof payload.field === "string") error.field = payload.field;
+              if (payload.commandOutcome === "unknown") error.commandOutcome = "unknown";
+              if (payload.state && typeof payload.state === "object") error.state = payload.state;
+              if (payload.reconciliationRequired === true) {
+                error.reconciliationRequired = true;
+              }
+              activeCommandAttempt.resolveSseOutcome({
+                type: "error",
+                error,
+                source: "sse",
+              });
+              return;
+            }
+            if (!payload.field || !requireView().showFieldError(payload.field, payload.message)) {
+              showStatus(payload.message, true);
+            } else {
+              showStatus("");
+            }
+            pendingConfirmationsBySession.delete(activeSessionId());
+            confirmationResolutionsBySession.delete(activeSessionId());
+            requireView().renderTimeline();
+          }
+        };
+        eventSource.onerror = () => {
+          const attempt = activeSendAttempt();
+          if (attempt) {
+            setAttemptStatus(attempt, "Lost connection to Live Smith bridge.", true);
+          }
+          activeCommandAttempt?.resolveSseUnavailable();
+        };
+      }
+
+      return {
+        closeWithResult: hostAdapter.closeWithResult,
+        connectView,
+        getAssistantDraft: activeAssistantDraft,
+        getPendingConfirmation: activePendingConfirmation,
+        handleSendButton,
+        isSendInProgress: () => Boolean(activeSendAttempt()),
+        hasAnySendInProgress: () => sendAttemptsBySession.size > 0,
+        isOperationInProgress,
+        isCommandInProgress: () => Boolean(commandInProgress) || commandReconciliationBlocked,
+        resolveConfirm,
+        runCommand,
+        showStatus,
+        startEventStream,
+      };
+      };

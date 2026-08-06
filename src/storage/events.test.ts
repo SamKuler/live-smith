@@ -1,0 +1,215 @@
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import test from "node:test";
+
+import {
+  appendSessionEvent,
+  deleteSessionEvents,
+  loadSessionEvents,
+  SessionEventsCorruptionError,
+} from "./events.js";
+
+test("appendSessionEvent stores ordered user/tool_call/tool_result events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const sessionId = "session-001";
+
+  await appendSessionEvent(dir, sessionId, {
+    kind: "user",
+    content: "Add a bass line",
+  });
+  await appendSessionEvent(dir, sessionId, {
+    kind: "tool_call",
+    content: "create_midi_track",
+    name: "create_midi_track",
+  });
+  await appendSessionEvent(dir, sessionId, {
+    kind: "tool_result",
+    content: "Created MIDI track",
+    name: "create_midi_track",
+  });
+
+  const events = await loadSessionEvents(dir, sessionId);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["user", "tool_call", "tool_result"],
+  );
+  assert.equal(events[1]?.name, "create_midi_track");
+});
+
+test("appendSessionEvent accepts non-tool event kinds", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const sessionId = "session-001";
+
+  await appendSessionEvent(dir, sessionId, {
+    kind: "assistant",
+    content: "I can set that up.",
+  });
+  await appendSessionEvent(dir, sessionId, {
+    kind: "apply_requested",
+    content: "Apply 1 action?",
+    name: "confirm_apply",
+  });
+
+  const events = await loadSessionEvents(dir, sessionId);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["assistant", "apply_requested"],
+  );
+  assert.equal(events[1]?.name, "confirm_apply");
+});
+
+test("concurrent appendSessionEvent calls preserve every event", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const sessionId = "concurrent-session";
+  const contents = Array.from({ length: 32 }, (_, index) => `event-${index}`);
+
+  await Promise.all(
+    contents.map((content) =>
+      appendSessionEvent(dir, sessionId, { kind: "assistant", content }),
+    ),
+  );
+
+  const events = await loadSessionEvents(dir, sessionId);
+  assert.equal(events.length, contents.length);
+  assert.deepEqual(
+    events.map((event) => event.content).sort(),
+    contents.sort(),
+  );
+});
+
+test("loadSessionEvents tolerates missing files", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+
+  const events = await loadSessionEvents(dir, "missing-session");
+
+  assert.deepEqual(events, []);
+});
+
+test("corrupt event storage blocks reads and appends without changing bytes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "corrupt-session.json");
+  const original = "{invalid";
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    loadSessionEvents(dir, "corrupt-session"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  await assert.rejects(
+    appendSessionEvent(dir, "corrupt-session", {
+      kind: "user",
+      content: "Must not overwrite",
+    }),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("unsafe session IDs cannot escape the event directory", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const settingsPath = path.join(dir, "live-smith-settings.json");
+  const original = "settings sentinel";
+  await fs.writeFile(settingsPath, original);
+
+  await assert.rejects(
+    appendSessionEvent(dir, "../live-smith-settings", {
+      kind: "user",
+      content: "Do not overwrite settings",
+    }),
+    /Session ID is invalid/,
+  );
+  await assert.rejects(
+    deleteSessionEvents(dir, "../live-smith-settings"),
+    /Session ID is invalid/,
+  );
+  assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+});
+
+test("one invalid persisted event blocks append instead of dropping the item", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "partial-session.json");
+  const original = JSON.stringify([{
+    id: "event-valid",
+    createdAt: new Date().toISOString(),
+    kind: "user",
+    content: "Recoverable",
+  }, { id: "event-invalid" }]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    appendSessionEvent(dir, "partial-session", {
+      kind: "assistant",
+      content: "Must not overwrite",
+    }),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("duplicate persisted event IDs block reads and appends without changing bytes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "duplicate-session.json");
+  const original = JSON.stringify([
+    {
+      id: "event-duplicate",
+      createdAt: new Date().toISOString(),
+      kind: "user",
+      content: "First",
+    },
+    {
+      id: "event-duplicate",
+      createdAt: new Date().toISOString(),
+      kind: "assistant",
+      content: "Second",
+    },
+  ]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    loadSessionEvents(dir, "duplicate-session"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  await assert.rejects(
+    appendSessionEvent(dir, "duplicate-session", {
+      kind: "user",
+      content: "Must not overwrite",
+    }),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("session event storage keeps an in-memory fallback when storage directory is missing", async () => {
+  const sessionId = `memory-${Date.now()}`;
+  await appendSessionEvent(undefined, sessionId, {
+    kind: "error",
+    content: "No storage available",
+  });
+
+  assert.deepEqual(
+    (await loadSessionEvents(undefined, sessionId)).map((event) => event.kind),
+    ["error"],
+  );
+  await deleteSessionEvents(undefined, sessionId);
+  assert.deepEqual(await loadSessionEvents(undefined, sessionId), []);
+});
+
+test("deleteSessionEvents removes a session event log", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  await appendSessionEvent(dir, "session-001", {
+    kind: "user",
+    content: "Delete me",
+  });
+
+  await deleteSessionEvents(dir, "session-001");
+
+  assert.deepEqual(await loadSessionEvents(dir, "session-001"), []);
+});

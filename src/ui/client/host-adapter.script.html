@@ -1,0 +1,21 @@
+      window.LiveSmithHostAdapter = (function createLiveSmithHostAdapter() {
+        const isWebKit = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
+        const isWebView2 = window.chrome && window.chrome.webview;
+
+        function sendMessage(message) {
+          if (isWebKit) {
+            window.webkit.messageHandlers.live.postMessage(message);
+          } else if (isWebView2) {
+            window.chrome.webview.postMessage(message);
+          }
+        }
+
+        return {
+          closeWithResult(result) {
+            sendMessage({
+              method: "close_and_send",
+              params: [JSON.stringify(result)],
+            });
+          },
+        };
+      })();

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.ablx
+.env
+.env.*
+!.env.example
+.DS_Store
+.claude/
+.agents/
+.codex/
+.idea/
+.vscode/
+
+extensions-sdk-1/*
+!extensions-sdk-1/README.md

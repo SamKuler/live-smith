@@ -1,0 +1,501 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createProfileEditor = function createProfileEditor({
+        getState,
+        runCommand,
+        showStatus,
+      }) {
+      let capabilityView = null;
+
+      function connectCapabilityView(view) {
+        capabilityView = view;
+      }
+
+      function requireCapabilityView() {
+        if (!capabilityView) throw new Error("Profile editor is not connected to capability controls.");
+        return capabilityView;
+      }
+
+      let draftProfile = null;
+      let savedProfileSnapshot = null;
+      let draftDirty = false;
+      let modelStateSource = null;
+      let renderedModelOptionsMatchConnection = false;
+      const controlIdByProfileField = {
+        name: "profileName",
+        apiFamily: "apiFamily",
+        apiMode: "apiMode",
+        apiKey: "apiKey",
+        baseUrl: "baseUrl",
+        model: "model",
+        "parameters.temperature": "temperature",
+        "parameters.maxOutputTokens": "maxOutputTokens",
+        "parameters.reasoning.mode": "reasoningMode",
+        "parameters.reasoning.effort": "reasoningEffort",
+        "parameters.reasoning.budgetTokens": "reasoningBudgetTokens",
+        "advanced.extraBody": "extraBody",
+        "advanced.capabilityOverrides.tools": "overrideTools",
+        "advanced.capabilityOverrides.streaming": "overrideStreaming",
+        "advanced.capabilityOverrides.temperature": "overrideTemperature",
+        "advanced.capabilityOverrides.maxOutputTokens": "overrideMaxOutputTokens",
+        "advanced.capabilityOverrides.reasoning.supported": "overrideReasoningSupported",
+        "advanced.capabilityOverrides.reasoning.canDisable": "overrideReasoningCanDisable",
+        "advanced.capabilityOverrides.reasoning.strategy": "overrideReasoningStrategy",
+        "advanced.capabilityOverrides.reasoning.efforts": "overrideReasoningEfforts",
+        "advanced.capabilityOverrides.reasoning.budgetTokens": "overrideReasoningBudget",
+      };
+
+      function cloneValue(value) {
+        return value == null ? value : JSON.parse(JSON.stringify(value));
+      }
+
+      function clearFieldError(control) {
+        if (!control?.id) return;
+        const errorId = `${control.id}Error`;
+        document.getElementById(errorId)?.remove();
+        control.removeAttribute("aria-invalid");
+        const describedBy = (control.getAttribute("aria-describedby") || "")
+          .split(/\s+/)
+          .filter((id) => id && id !== errorId);
+        if (describedBy.length) {
+          control.setAttribute("aria-describedby", describedBy.join(" "));
+        } else {
+          control.removeAttribute("aria-describedby");
+        }
+      }
+
+      function clearFieldErrors() {
+        for (const control of document.querySelectorAll('[aria-invalid="true"]')) {
+          clearFieldError(control);
+        }
+        for (const error of document.querySelectorAll(".field-error")) error.remove();
+      }
+
+      function showFieldError(field, message) {
+        const controlId = controlIdByProfileField[field];
+        const control = controlId ? document.getElementById(controlId) : null;
+        const container = control?.closest(".field");
+        if (!control || !container) return false;
+        clearFieldErrors();
+        control.closest("details")?.setAttribute("open", "");
+        const error = document.createElement("span");
+        error.id = `${control.id}Error`;
+        error.className = "field-error";
+        error.textContent = message;
+        container.append(error);
+        control.setAttribute("aria-invalid", "true");
+        const describedBy = new Set(
+          (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean),
+        );
+        describedBy.add(error.id);
+        control.setAttribute("aria-describedby", [...describedBy].join(" "));
+        control.focus();
+        return true;
+      }
+
+      function showProfileFormError(error) {
+        const message = error instanceof SyntaxError
+          ? "Extra Body must be valid JSON."
+          : error.message || String(error);
+        if (!showFieldError("advanced.extraBody", message)) {
+          showStatus(message, true);
+        }
+      }
+
+      function createProfileId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+        return `profile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function blankProfile(source) {
+        if (source) {
+          const copy = cloneValue(source);
+          copy.id = createProfileId();
+          copy.name = `${source.name} Copy`;
+          return copy;
+        }
+        return {
+          id: createProfileId(),
+          name: "",
+          apiFamily: "openai",
+          apiMode: "responses",
+          baseUrl: "",
+          apiKey: "",
+          model: "",
+          parameters: {
+            maxOutputTokens: 8192,
+            reasoning: { mode: "default" },
+          },
+          advanced: {},
+        };
+      }
+
+      function activeSavedProfile() {
+        const settings = getState().settings;
+        return (settings.profiles || []).find((profile) => profile.id === settings.activeProfileId) || null;
+      }
+
+      function modelSourceFor(profile) {
+        if (!profile) return null;
+        return {
+          profileId: profile.profileId || profile.id || "",
+          apiFamily: profile.apiFamily || "",
+          apiMode: profile.apiMode || "",
+          baseUrl: String(profile.baseUrl || "").trim().replace(/\/+$/, ""),
+          apiKey: String(profile.apiKey || "").trim(),
+          model: String(profile.model || "").trim(),
+        };
+      }
+
+      function currentModelSource() {
+        return modelSourceFor({
+          id: draftProfile?.id || "",
+          apiFamily: document.getElementById("apiFamily").value,
+          apiMode: document.getElementById("apiMode").value,
+          baseUrl: document.getElementById("baseUrl").value,
+          apiKey: document.getElementById("apiKey").value,
+          model: document.getElementById("model").value,
+        });
+      }
+
+      function syncModelStateSource(profile) {
+        modelStateSource = modelSourceFor(profile);
+      }
+
+      function modelStateMatchesCurrentConnection() {
+        const current = currentModelSource();
+        if (!modelStateSource || !current) return false;
+        return ["profileId", "apiFamily", "apiMode", "baseUrl", "apiKey"]
+          .every((key) => modelStateSource[key] === current[key]);
+      }
+
+      function modelStateMatchesCurrentProfile() {
+        const current = currentModelSource();
+        return modelStateMatchesCurrentConnection() &&
+          modelStateSource.model === current.model;
+      }
+
+      function selectedSavedProfile() {
+        const id = document.getElementById("profileSelector")?.value;
+        return (getState().settings.profiles || []).find((profile) => profile.id === id) || null;
+      }
+
+      function profileFromForm() {
+        const temperatureControl = document.getElementById("temperature");
+        const temperatureRaw = temperatureControl.disabled
+          ? ""
+          : temperatureControl.value.trim();
+        const budgetRaw = document.getElementById("reasoningBudgetTokens").value.trim();
+        const extraRaw = document.getElementById("extraBody").value.trim();
+        let extraBody;
+        if (extraRaw) {
+          extraBody = JSON.parse(extraRaw);
+          if (!extraBody || Array.isArray(extraBody) || typeof extraBody !== "object") {
+            throw new Error("Extra Body must be a JSON object.");
+          }
+        }
+        const reasoning = {
+          mode: document.getElementById("reasoningMode").value,
+        };
+        const effort = document.getElementById("reasoningEffort").value;
+        if (reasoning.mode === "enabled" && effort) reasoning.effort = effort;
+        const budget = Number(budgetRaw);
+        if (reasoning.mode === "enabled" && budgetRaw && Number.isFinite(budget) && budget > 0) {
+          reasoning.budgetTokens = budget;
+        }
+        const overrides = capabilityOverridesFromForm();
+        const advanced = {};
+        if (Object.keys(overrides).length) advanced.capabilityOverrides = overrides;
+        if (extraBody) advanced.extraBody = extraBody;
+        const temperature = Number(temperatureRaw);
+        return {
+          id: draftProfile?.id || createProfileId(),
+          name: document.getElementById("profileName").value.trim(),
+          apiFamily: document.getElementById("apiFamily").value,
+          apiMode: document.getElementById("apiMode").value,
+          apiKey: document.getElementById("apiKey").value.trim(),
+          baseUrl: document.getElementById("baseUrl").value.trim(),
+          model: document.getElementById("model").value.trim(),
+          parameters: {
+            maxOutputTokens: Number(document.getElementById("maxOutputTokens").value),
+            ...(temperatureRaw && Number.isFinite(temperature) ? { temperature } : {}),
+            reasoning,
+          },
+          advanced,
+        };
+      }
+
+      function capabilityOverridesFromForm() {
+        const overrides = {};
+        copyBooleanOverride(overrides, "tools", "overrideTools");
+        copyBooleanOverride(overrides, "streaming", "overrideStreaming");
+        const temperature = document.getElementById("overrideTemperature").value;
+        if (temperature !== "inherit") overrides.temperature = temperature;
+        const max = document.getElementById("overrideMaxOutputTokens").value.trim();
+        if (max) overrides.maxOutputTokens = Number(max);
+
+        const reasoning = {};
+        copyBooleanOverride(reasoning, "supported", "overrideReasoningSupported");
+        copyBooleanOverride(reasoning, "canDisable", "overrideReasoningCanDisable");
+        copyBooleanOverride(reasoning, "budgetTokens", "overrideReasoningBudget");
+        const strategy = document.getElementById("overrideReasoningStrategy").value;
+        if (strategy !== "inherit") reasoning.strategy = strategy;
+        const efforts = document.getElementById("overrideReasoningEfforts").value
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (efforts.length) reasoning.efforts = [...new Set(efforts)];
+        if (Object.keys(reasoning).length) overrides.reasoning = reasoning;
+        return overrides;
+      }
+
+      function copyBooleanOverride(target, key, elementId) {
+        const value = document.getElementById(elementId).value;
+        if (value !== "inherit") target[key] = value === "true";
+      }
+
+      function markDraftDirty(control) {
+        draftDirty = true;
+        getState().status = undefined;
+        clearFieldError(control);
+        if (
+          renderedModelOptionsMatchConnection !== modelStateMatchesCurrentConnection()
+        ) {
+          renderModelOptions();
+        }
+        requireCapabilityView().updateDraftActions();
+        requireCapabilityView().updateCapabilityPreview();
+      }
+
+      function markDraftDirtyForCapabilityAdjustment() {
+        draftDirty = true;
+        getState().status = undefined;
+        requireCapabilityView().updateDraftActions();
+      }
+
+      function toggleApiKeyVisibility() {
+        const field = document.getElementById("apiKey");
+        const button = document.getElementById("apiKeyVisibilityButton");
+        const visible = field.type === "password";
+        field.type = visible ? "text" : "password";
+        button.textContent = visible ? "Hide" : "Show";
+        button.setAttribute("aria-pressed", String(visible));
+      }
+
+      function handleApiFamilyChange() {
+        const familyControl = document.getElementById("apiFamily");
+        const family = familyControl.value;
+        renderApiModes(family);
+        markDraftDirty(familyControl);
+      }
+
+      function addProfile() {
+        if (draftDirty && !confirm("Discard unsaved profile changes?")) return;
+        setDraftProfile(blankProfile(), null, true);
+      }
+
+      function duplicateProfile() {
+        if (!draftProfile) return;
+        if (draftDirty && !confirm("Duplicate the current unsaved values?")) return;
+        let current;
+        try {
+          current = profileFromForm();
+        } catch (error) {
+          showProfileFormError(error);
+          return;
+        }
+        setDraftProfile(blankProfile(current), null, true);
+      }
+
+      function discardProfileChanges() {
+        const target = savedProfileSnapshot || activeSavedProfile();
+        if (target) {
+          setDraftProfile(target, target, false);
+        } else {
+          setDraftProfile(blankProfile(), null, true);
+        }
+      }
+
+      async function saveProfile() {
+        let profile;
+        try {
+          profile = profileFromForm();
+        } catch (error) {
+          showProfileFormError(error);
+          return;
+        }
+        await runCommand("save_profile", { profile });
+      }
+
+      async function deleteProfile() {
+        if (!savedProfileSnapshot) return;
+        if (!confirm(`Delete profile “${savedProfileSnapshot.name}”?`)) return;
+        await runCommand("delete_profile", { profileId: savedProfileSnapshot.id });
+      }
+
+      async function discoverModels() {
+        let profile;
+        try {
+          profile = profileFromForm();
+        } catch (error) {
+          showProfileFormError(error);
+          return;
+        }
+        await runCommand("discover_models", { profile });
+      }
+
+      async function handleProfileSelection() {
+        const next = selectedSavedProfile();
+        if (!next) return;
+        if (draftDirty && !confirm("Discard unsaved profile changes?")) {
+          document.getElementById("profileSelector").value = draftProfile?.id || "";
+          return;
+        }
+        const activated = await runCommand("activate_profile", { profileId: next.id });
+        if (!activated) {
+          document.getElementById("profileSelector").value = draftProfile?.id || "";
+        }
+      }
+
+      async function saveAutoApprove() {
+        const saved = await runCommand("save_global_settings", {
+          autoApprove: document.getElementById("autoApprove").checked,
+        });
+        if (!saved) {
+          document.getElementById("autoApprove").checked =
+            Boolean(getState().settings.autoApprove);
+        }
+      }
+
+      function renderSettingsForm() {
+        const state = getState();
+        document.getElementById("autoApprove").checked = Boolean(state.settings.autoApprove);
+        const profiles = state.settings.profiles || [];
+        const selector = document.getElementById("profileSelector");
+        selector.replaceChildren();
+        for (const profile of profiles) {
+          selector.append(new Option(profile.name, profile.id));
+        }
+        const active = activeSavedProfile();
+        syncModelStateSource(state.modelStateSource);
+        setDraftProfile(active || blankProfile(), active, !active);
+      }
+
+      function setDraftProfile(profile, saved, isNew) {
+        clearFieldErrors();
+        draftProfile = cloneValue(profile);
+        savedProfileSnapshot = cloneValue(saved);
+        draftDirty = isNew;
+        const selector = document.getElementById("profileSelector");
+        const savedIds = new Set(
+          (getState().settings.profiles || []).map((entry) => entry.id),
+        );
+        for (const option of [...selector.options]) {
+          if (!savedIds.has(option.value)) option.remove();
+        }
+        if (isNew && ![...selector.options].some((option) => option.value === profile.id)) {
+          selector.append(new Option("Unsaved profile", profile.id));
+        }
+        selector.value = profile.id;
+        document.getElementById("profileName").value = profile.name || "";
+        document.getElementById("apiFamily").value = profile.apiFamily || "openai";
+        renderApiModes(profile.apiFamily || "openai", profile.apiMode);
+        document.getElementById("apiKey").value = profile.apiKey || "";
+        document.getElementById("apiKey").type = "password";
+        document.getElementById("apiKeyVisibilityButton").textContent = "Show";
+        document.getElementById("apiKeyVisibilityButton").setAttribute("aria-pressed", "false");
+        document.getElementById("baseUrl").value = profile.baseUrl || "";
+        document.getElementById("model").value = profile.model || "";
+        document.getElementById("temperature").value = profile.parameters?.temperature ?? "";
+        document.getElementById("maxOutputTokens").value = profile.parameters.maxOutputTokens;
+        document.getElementById("reasoningBudgetTokens").value = profile.parameters?.reasoning?.budgetTokens || "";
+        document.getElementById("reasoningMode").dataset.requestedValue =
+          profile.parameters?.reasoning?.mode || "default";
+        document.getElementById("reasoningEffort").dataset.requestedValue =
+          profile.parameters?.reasoning?.effort || "";
+        populateCapabilityOverrides(profile.advanced?.capabilityOverrides || {});
+        document.getElementById("extraBody").value = profile.advanced?.extraBody
+          ? JSON.stringify(profile.advanced.extraBody, null, 2)
+          : "";
+        renderModelOptions();
+        requireCapabilityView().updateCapabilityPreview();
+        requireCapabilityView().updateDraftActions();
+      }
+
+      function renderApiModes(family, selected) {
+        const mode = document.getElementById("apiMode");
+        mode.replaceChildren();
+        if (family === "openai") {
+          mode.append(new Option("Responses", "responses"));
+          mode.append(new Option("Chat Completions", "chat-completions"));
+        } else {
+          mode.append(new Option("Messages", "messages"));
+        }
+        if ([...mode.options].some((option) => option.value === selected)) mode.value = selected;
+      }
+
+      function populateCapabilityOverrides(overrides) {
+        setBooleanOverride("overrideTools", overrides.tools);
+        setBooleanOverride("overrideStreaming", overrides.streaming);
+        document.getElementById("overrideTemperature").value = overrides.temperature || "inherit";
+        document.getElementById("overrideMaxOutputTokens").value = overrides.maxOutputTokens || "";
+        const reasoning = overrides.reasoning || {};
+        setBooleanOverride("overrideReasoningSupported", reasoning.supported);
+        setBooleanOverride("overrideReasoningCanDisable", reasoning.canDisable);
+        setBooleanOverride("overrideReasoningBudget", reasoning.budgetTokens);
+        document.getElementById("overrideReasoningStrategy").value = reasoning.strategy || "inherit";
+        document.getElementById("overrideReasoningEfforts").value = (reasoning.efforts || []).join(", ");
+      }
+
+      function setBooleanOverride(id, value) {
+        document.getElementById(id).value = value === undefined ? "inherit" : String(value);
+      }
+
+      function renderModelOptions() {
+        const state = getState();
+        const models = document.getElementById("modelOptions");
+        models.replaceChildren();
+        renderedModelOptionsMatchConnection = modelStateMatchesCurrentConnection();
+        const availableModels = renderedModelOptionsMatchConnection
+          ? state.availableModels || []
+          : [];
+        for (const model of availableModels) {
+          const option = document.createElement("option");
+          option.value = model.id;
+          option.label = model.displayName || model.id;
+          models.append(option);
+        }
+      }
+
+      return {
+        addProfile,
+        capabilityOverridesFromForm,
+        clearFieldError,
+        clearFieldErrors,
+        cloneValue,
+        connectCapabilityView,
+        deleteProfile,
+        discardProfileChanges,
+        discoverModels,
+        duplicateProfile,
+        getDraftState: () => ({
+          profile: draftProfile,
+          savedProfile: savedProfileSnapshot,
+          dirty: draftDirty,
+        }),
+        handleApiFamilyChange,
+        handleProfileSelection,
+        markDraftDirty,
+        markDraftDirtyForCapabilityAdjustment,
+        modelStateMatchesCurrentConnection,
+        modelStateMatchesCurrentProfile,
+        renderModelOptions,
+        renderSettingsForm,
+        saveAutoApprove,
+        saveProfile,
+        showFieldError,
+        syncModelStateSource,
+        toggleApiKeyVisibility,
+      };
+      };

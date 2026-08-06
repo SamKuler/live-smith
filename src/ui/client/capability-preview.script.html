@@ -1,0 +1,256 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createCapabilityPreview = function createCapabilityPreview({
+        getState,
+        hasAnySendInProgress,
+        profileEditor,
+        isOperationInProgress,
+        isSendInProgress,
+      }) {
+      function updateReasoningVisibility() {
+        const settingsLocked = isOperationInProgress() || hasAnySendInProgress();
+        const selection = selectedModelCapabilities();
+        const capability = selection.capability;
+        const reasoning = capability && capability.reasoning;
+        const supported = Boolean(reasoning && reasoning.supported);
+        const budgetSupported = Boolean(reasoning && reasoning.budgetTokens);
+        const modeSelect = document.getElementById("reasoningMode");
+        const effortSelect = document.getElementById("reasoningEffort");
+        const effortRow = document.getElementById("reasoningEffortRow");
+        const budgetRow = document.getElementById("reasoningBudgetRow");
+        const hint = document.getElementById("reasoningHint");
+        if (hint) {
+          hint.hidden = supported && selection.authoritative.reasoning;
+          hint.textContent = selection.authoritative.reasoning
+            ? "Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced."
+            : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.";
+        }
+        let adjusted = false;
+        const requestedMode = modeSelect.dataset.requestedValue ?? modeSelect.value ?? "default";
+        delete modeSelect.dataset.requestedValue;
+        const requestedEffort = effortSelect.dataset.requestedValue ?? effortSelect.value;
+        delete effortSelect.dataset.requestedValue;
+        const budgetInput = document.getElementById("reasoningBudgetTokens");
+        if (selection.authoritative.reasoning) {
+          modeSelect.replaceChildren(new Option("Provider default", "default"));
+          if (supported && reasoning.canDisable) modeSelect.append(new Option("Disabled", "disabled"));
+          if (supported) modeSelect.append(new Option("Enabled", "enabled"));
+          modeSelect.value = [...modeSelect.options].some((option) => option.value === requestedMode)
+            ? requestedMode
+            : "default";
+          if (modeSelect.value !== requestedMode) {
+            profileEditor.clearFieldError(modeSelect);
+            adjusted = true;
+          } else if (!supported) {
+            profileEditor.clearFieldError(modeSelect);
+          }
+
+          const efforts = supported && Array.isArray(reasoning.efforts) ? reasoning.efforts : [];
+          effortSelect.replaceChildren(new Option("Provider default", ""));
+          for (const effort of efforts) {
+            effortSelect.append(new Option(effort[0].toUpperCase() + effort.slice(1), effort));
+          }
+          effortSelect.value = modeSelect.value === "enabled" && efforts.includes(requestedEffort)
+            ? requestedEffort
+            : "";
+          if (effortSelect.value !== requestedEffort) {
+            profileEditor.clearFieldError(effortSelect);
+            adjusted = true;
+          }
+          effortRow.hidden = modeSelect.value !== "enabled" || !efforts.length;
+          if (effortRow.hidden) profileEditor.clearFieldError(effortSelect);
+          budgetRow.hidden = modeSelect.value !== "enabled" || !budgetSupported;
+          if (budgetRow.hidden && budgetInput.value) {
+            budgetInput.value = "";
+            profileEditor.clearFieldError(budgetInput);
+            adjusted = true;
+          }
+          if (budgetRow.hidden) profileEditor.clearFieldError(budgetInput);
+          budgetInput.disabled = settingsLocked || budgetRow.hidden;
+        } else {
+          preserveUnknownReasoningControls({
+            budgetInput,
+            budgetRow,
+            effortRow,
+            effortSelect,
+            modeSelect,
+            requestedEffort,
+            requestedMode,
+            settingsLocked,
+          });
+        }
+        const temperatureInput = document.getElementById("temperature");
+        const temperatureUnsupported = selection.authoritative.temperature &&
+          capability.temperature === "unsupported";
+        if (temperatureUnsupported && temperatureInput.value) {
+          temperatureInput.value = "";
+          profileEditor.clearFieldError(temperatureInput);
+          adjusted = true;
+        }
+        if (temperatureUnsupported) profileEditor.clearFieldError(temperatureInput);
+        temperatureInput.disabled = settingsLocked || temperatureUnsupported;
+        if (adjusted) profileEditor.markDraftDirtyForCapabilityAdjustment();
+      }
+
+      function preserveUnknownReasoningControls({
+        budgetInput,
+        budgetRow,
+        effortRow,
+        effortSelect,
+        modeSelect,
+        requestedEffort,
+        requestedMode,
+        settingsLocked,
+      }) {
+        if (![...modeSelect.options].some((option) => option.value === "default")) {
+          modeSelect.prepend(new Option("Provider default", "default"));
+        }
+        if (
+          requestedMode !== "default" &&
+          ![...modeSelect.options].some((option) => option.value === requestedMode)
+        ) {
+          modeSelect.append(new Option(
+            requestedMode === "enabled" ? "Enabled" : "Disabled",
+            requestedMode,
+          ));
+        }
+        modeSelect.value = requestedMode;
+        if (
+          requestedEffort &&
+          ![...effortSelect.options].some((option) => option.value === requestedEffort)
+        ) {
+          effortSelect.append(new Option(
+            requestedEffort[0].toUpperCase() + requestedEffort.slice(1),
+            requestedEffort,
+          ));
+        }
+        effortSelect.value = requestedEffort;
+        effortRow.hidden = modeSelect.value !== "enabled" || !requestedEffort;
+        budgetRow.hidden = modeSelect.value !== "enabled" || !budgetInput.value;
+        budgetInput.disabled = settingsLocked || budgetRow.hidden;
+      }
+
+      function selectedModelCapabilities() {
+        const state = getState();
+        const modelId = document.getElementById("model")?.value.trim() || "";
+        const discovered = profileEditor.modelStateMatchesCurrentConnection()
+          ? (state.availableModels || []).find((model) => model.id === modelId)
+          : null;
+        const stateCapabilities = profileEditor.modelStateMatchesCurrentProfile()
+          ? state.capabilities
+          : null;
+        const baseCapability = discovered?.capabilities || stateCapabilities;
+        const capability = profileEditor.cloneValue(baseCapability) || {
+          tools: true,
+          streaming: true,
+          temperature: "supported",
+          reasoning: {
+            supported: false,
+            canDisable: false,
+            efforts: [],
+            budgetTokens: false,
+            strategy: "none",
+          },
+        };
+        let overrides = {};
+        try { overrides = profileEditor.capabilityOverridesFromForm(); } catch {}
+        for (const key of ["tools", "streaming", "temperature", "maxOutputTokens"]) {
+          if (overrides[key] !== undefined) capability[key] = overrides[key];
+        }
+        capability.reasoning = capability.reasoning || {};
+        Object.assign(capability.reasoning, overrides.reasoning || {});
+        return {
+          capability,
+          authoritative: {
+            maxOutputTokens: Boolean(baseCapability) || overrides.maxOutputTokens !== undefined,
+            reasoning: Boolean(baseCapability) || overrides.reasoning?.supported !== undefined,
+            temperature: Boolean(baseCapability) || overrides.temperature !== undefined,
+          },
+        };
+      }
+
+      function updateCapabilityPreview() {
+        updateReasoningVisibility();
+        const selection = selectedModelCapabilities();
+        const capability = selection.capability;
+        const modelLimit = capability.maxOutputTokens;
+        const outputTokensInput = document.getElementById("maxOutputTokens");
+        const trustedModelLimit = selection.authoritative.maxOutputTokens
+          ? modelLimit
+          : undefined;
+        outputTokensInput.max = String(trustedModelLimit ?? 1000000);
+        const requestedOutputTokens = Number(outputTokensInput.value);
+        if (
+          trustedModelLimit !== undefined &&
+          Number.isFinite(requestedOutputTokens) &&
+          requestedOutputTokens > trustedModelLimit
+        ) {
+          outputTokensInput.value = String(trustedModelLimit);
+          profileEditor.clearFieldError(outputTokensInput);
+          profileEditor.markDraftDirtyForCapabilityAdjustment();
+        }
+        document.getElementById("maxOutputTokensHint").textContent = trustedModelLimit === undefined
+          ? "Model output limit is unknown; the provider validates this request."
+          : `Model output limit: ${trustedModelLimit}.`;
+      }
+
+      function updateDraftActions() {
+        const draft = profileEditor.getDraftState();
+        const sendInProgress = isSendInProgress();
+        const operationInProgress = isOperationInProgress();
+        const settingsOperationInProgress = operationInProgress || hasAnySendInProgress();
+        const hasSaved = Boolean(draft.savedProfile);
+        document.getElementById("saveProfileButton").disabled = settingsOperationInProgress || !draft.profile || !draft.dirty;
+        document.getElementById("discardProfileButton").disabled = settingsOperationInProgress || !draft.dirty;
+        document.getElementById("deleteProfileButton").disabled = settingsOperationInProgress || !hasSaved;
+        document.getElementById("duplicateProfileButton").disabled = settingsOperationInProgress || !draft.profile;
+        const badge = document.getElementById("draftStatus");
+        badge.textContent = draft.dirty ? "Unsaved changes" : "Saved";
+        badge.classList.toggle("dirty", draft.dirty);
+        const previewBadge = document.getElementById("draftPreviewLabel");
+        previewBadge.hidden = !draft.dirty;
+        previewBadge.textContent = draft.dirty ? "Unsaved Draft preview" : "";
+        const send = document.getElementById("sendButton");
+        if (sendInProgress) {
+          send.disabled = false;
+        } else if (operationInProgress) {
+          send.disabled = true;
+        } else {
+          const noActive = !getState().settings.activeProfileId;
+          send.disabled = draft.dirty || noActive;
+          send.title = draft.dirty
+            ? "Save or discard profile changes before sending."
+            : noActive
+              ? "Create and save a profile before sending."
+              : "";
+          updateProfileGateStatus(
+            noActive
+              ? "Create and save a model profile before sending."
+              : draft.dirty
+                ? "Save or discard profile changes before sending."
+                : "",
+          );
+        }
+      }
+
+      function updateProfileGateStatus(message) {
+        const status = document.getElementById("status");
+        if (message) {
+          if (!getState().status || status.dataset.profileGate === "true") {
+            status.textContent = message;
+            status.hidden = false;
+            status.dataset.profileGate = "true";
+            status.classList.remove("error");
+          }
+        } else if (status.dataset.profileGate === "true") {
+          status.textContent = "";
+          status.hidden = true;
+          delete status.dataset.profileGate;
+        }
+      }
+
+      return {
+        updateCapabilityPreview,
+        updateDraftActions,
+        updateReasoningVisibility,
+      };
+      };

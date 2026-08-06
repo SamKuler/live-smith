@@ -1,0 +1,581 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createSessionTimeline = function createSessionTimeline({
+        getState,
+        getAssistantDraft,
+        getPendingConfirmation,
+        isCommandInProgress,
+        isOperationInProgress,
+        resolveConfirm,
+        runCommand,
+      }) {
+      const sessionDateFormatter = new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        month: "short",
+      });
+      let focusedConfirmationId = null;
+      let confirmationReturnFocus = null;
+
+      function handleConfirmationKeydown(event) {
+        const confirmation = getPendingConfirmation();
+        if (!confirmation) return;
+        const card = document.querySelector(".confirm-card");
+        if (!card) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          resolveConfirm(confirmation.id, false);
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const controls = [...card.querySelectorAll("button")]
+          .filter((control) => !control.disabled);
+        if (!controls.length) {
+          event.preventDefault();
+          return;
+        }
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (!card.contains(document.activeElement)) {
+          event.preventDefault();
+          first.focus();
+        } else if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+
+      document.addEventListener("keydown", handleConfirmationKeydown);
+
+      function switchInspectorTab(tab) {
+        const settingsPanel = document.getElementById("settingsPanel");
+        const contextPanel = document.getElementById("contextPanel");
+        const settingsTab = document.getElementById("settingsTab");
+        const contextTab = document.getElementById("contextTab");
+        const settingsActive = tab === "settings";
+        settingsTab.classList.toggle("active", settingsActive);
+        settingsTab.setAttribute("aria-selected", String(settingsActive));
+        settingsTab.tabIndex = settingsActive ? 0 : -1;
+        contextTab.classList.toggle("active", !settingsActive);
+        contextTab.setAttribute("aria-selected", String(!settingsActive));
+        contextTab.tabIndex = settingsActive ? -1 : 0;
+        settingsPanel.hidden = tab !== "settings";
+        contextPanel.hidden = tab !== "context";
+      }
+
+      function handleInspectorTabKeydown(event) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const currentTab = event.currentTarget?.id === "contextTab"
+          ? "context"
+          : "settings";
+        const targetTab = event.key === "Home"
+          ? "settings"
+          : event.key === "End"
+            ? "context"
+            : currentTab === "settings"
+              ? "context"
+              : "settings";
+        switchInspectorTab(targetTab);
+        document.getElementById(`${targetTab}Tab`).focus();
+      }
+
+      function formatSessionDate(isoString) {
+        if (typeof isoString !== "string") return "";
+        const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) return "";
+        return sessionDateFormatter.format(date);
+      }
+
+      function focusSessionRow(sessionId) {
+        const entry = [...document.querySelectorAll(".session-entry")]
+          .find((candidate) => candidate.dataset.sessionId === sessionId);
+        entry?.querySelector(".session-row")?.focus({ preventScroll: true });
+      }
+
+      function startRenameSession(sessionId, entry, row, titleEl) {
+        if (isOperationInProgress()) return;
+        if (entry.querySelector(".session-rename-input")) return;
+        const current = titleEl.textContent;
+        const input = document.createElement("input");
+        input.className = "session-rename-input";
+        input.name = "sessionName";
+        input.autocomplete = "off";
+        input.value = current;
+        input.setAttribute("aria-label", "Session Name");
+        let settled = false;
+        const restoreRow = () => {
+          row.hidden = false;
+          input.remove();
+        };
+        const commit = (restoreFocus) => {
+          if (settled) return;
+          settled = true;
+          const newTitle = input.value.trim();
+          let command = null;
+          if (newTitle && newTitle !== current) {
+            command = runCommand("rename_session", { sessionId, title: newTitle });
+          }
+          restoreRow();
+          if (restoreFocus) {
+            if (command) command.then(() => focusSessionRow(sessionId));
+            else focusSessionRow(sessionId);
+          }
+        };
+        const cancel = () => {
+          if (settled) return;
+          settled = true;
+          restoreRow();
+          row.focus();
+        };
+        input.addEventListener("blur", () => commit(false));
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit(true); }
+          if (e.key === "Escape") { e.preventDefault(); cancel(); }
+        });
+        row.hidden = true;
+        entry.append(input);
+        input.focus();
+        input.select();
+      }
+
+      function activeSession() {
+        const state = getState();
+        return state.sessions.find((session) => session.id === state.activeSessionId) || null;
+      }
+
+      function renameActiveSession() {
+        const session = activeSession();
+        if (!session) return;
+        const entry = [...document.querySelectorAll(".session-entry")]
+          .find((candidate) => candidate.dataset.sessionId === session.id);
+        const row = entry?.querySelector(".session-row");
+        const title = entry?.querySelector(".session-title");
+        if (entry && row && title) startRenameSession(session.id, entry, row, title);
+      }
+
+      function deleteActiveSession() {
+        const session = activeSession();
+        if (!session) return;
+        if (!confirm(`Delete session “${session.title}”?`)) return;
+        runCommand("delete_session", { sessionId: session.id });
+      }
+
+      function restorePreviousSession(session) {
+        if (
+          !confirm(
+            `Restore session “${session.title}” to the current ${session.scope.kind} “${session.scope.label}”? Names are only a hint; restore only if this is the same Live object.`,
+          )
+        ) return;
+        runCommand("restore_session", { sessionId: session.id });
+      }
+
+      function renderSessions() {
+        const state = getState();
+        const operationInProgress = isOperationInProgress();
+        const navigationBlocked = isCommandInProgress();
+        const activities = new Map(
+          (state.sessionActivities || []).map((activity) => [activity.sessionId, activity]),
+        );
+        const list = document.getElementById("sessions");
+        list.replaceChildren();
+
+        if (!state.sessions.length) {
+          const empty = document.createElement("div");
+          empty.className = "session-empty";
+          empty.textContent = "No sessions yet. Use New Session to create one.";
+          list.append(empty);
+        }
+
+        for (const session of state.sessions) {
+          const entry = document.createElement("div");
+          entry.className = "session-entry";
+          entry.dataset.sessionId = session.id;
+          const row = document.createElement("button");
+          row.className = "session-row";
+          row.type = "button";
+          row.disabled = navigationBlocked;
+          const isActive = session.id === state.activeSessionId;
+          row.setAttribute("aria-pressed", isActive ? "true" : "false");
+          let selectionPromise = null;
+          row.onclick = (event) => {
+            if (isActive) return;
+            selectionPromise ||= runCommand("select_session", { sessionId: session.id });
+            if (event.detail === 0) {
+              selectionPromise.then(() => focusSessionRow(session.id));
+            }
+            return selectionPromise;
+          };
+
+          const title = document.createElement("span");
+          title.className = "session-title";
+          title.textContent = session.title || session.scope.label;
+          row.addEventListener("dblclick", async (e) => {
+            e.preventDefault();
+            if (isActive) {
+              startRenameSession(session.id, entry, row, title);
+              return;
+            }
+            const selected = await (selectionPromise || runCommand(
+              "select_session",
+              { sessionId: session.id },
+            ));
+            if (selected) renameActiveSession();
+          });
+          row.addEventListener("keydown", (e) => {
+            if (e.key !== "F2") return;
+            e.preventDefault();
+            startRenameSession(session.id, entry, row, title);
+          });
+          const meta = document.createElement("span");
+          meta.className = "session-meta";
+          const date = formatSessionDate(session.updatedAt || session.createdAt);
+          const activity = activities.get(session.id);
+          const activityLabel = activity
+            ? {
+                running: "Working",
+                waiting_confirmation: "Needs approval",
+                completed: "Completed",
+                failed: "Failed",
+                stopped: "Stopped",
+              }[activity.status]
+            : "";
+          meta.textContent = activityLabel ||
+            (date ? `${session.scope.kind} · ${date}` : `${session.scope.kind} / ${session.scope.label}`);
+          const titleLine = document.createElement("span");
+          titleLine.className = "session-title-line";
+          titleLine.append(title);
+          if (activity?.unread && !isActive) {
+            const dot = document.createElement("span");
+            dot.className = `session-unread-dot ${activity.status}`;
+            dot.setAttribute("aria-label", `${activityLabel || "Update"} unread`);
+            dot.title = activityLabel || "Session updated";
+            titleLine.append(dot);
+          }
+          row.append(titleLine, meta);
+          entry.append(row);
+          list.append(entry);
+        }
+
+        const recoverableSessions = state.recoverableSessions || [];
+        if (recoverableSessions.length) {
+          const heading = document.createElement("div");
+          heading.className = "session-section-label";
+          heading.textContent = "Previous sessions";
+          list.append(heading);
+
+          for (const session of recoverableSessions) {
+            const card = document.createElement("div");
+            card.className = "recoverable-session-card";
+            const copy = document.createElement("div");
+            copy.className = "recoverable-session-copy";
+            const title = document.createElement("span");
+            title.className = "session-title";
+            title.textContent = session.title || session.scope.label;
+            const meta = document.createElement("span");
+            meta.className = "session-meta";
+            const date = formatSessionDate(session.updatedAt || session.createdAt);
+            meta.textContent = date
+              ? `${session.scope.kind} · ${date}`
+              : `${session.scope.kind} · previous activation`;
+            copy.append(title, meta);
+            const restore = document.createElement("button");
+            restore.className = "secondary restore-session-button";
+            restore.type = "button";
+            restore.dataset.sessionId = session.id;
+            restore.disabled = navigationBlocked;
+            restore.textContent = "Restore";
+            restore.setAttribute(
+              "aria-label",
+              `Restore previous session ${session.title || session.scope.label} to the current Live object`,
+            );
+            restore.onclick = () => restorePreviousSession(session);
+            card.append(copy, restore);
+            list.append(card);
+          }
+        }
+
+        document.getElementById("deleteSession").disabled = operationInProgress || !state.activeSessionId;
+        document.getElementById("renameSessionButton").disabled = operationInProgress || !state.activeSessionId;
+      }
+
+      function buildAssistantDraftItem(content) {
+        const item = document.createElement("article");
+        item.className = "timeline-item assistant streaming";
+        const label = document.createElement("div");
+        label.className = "timeline-label";
+        label.textContent = "Live Smith / streaming";
+        const body = document.createElement("div");
+        body.className = "timeline-content";
+        body.textContent = content;
+        item.append(label, body);
+        return item;
+      }
+
+      function announceAssistantMessage(content) {
+        const announcements = document.getElementById("conversationAnnouncements");
+        announcements.textContent = content ? `Live Smith: ${content}` : "";
+      }
+
+      function setConfirmationState(pending) {
+        const card = document.querySelector(".confirm-card");
+        if (!card) return;
+        card.setAttribute("aria-busy", String(pending));
+        for (const button of card.querySelectorAll("button")) {
+          button.disabled = pending;
+        }
+        if (!pending) {
+          card.querySelector("[data-confirm-cancel]")?.focus({ preventScroll: true });
+        }
+      }
+
+      function setConfirmationModalActive(active, card) {
+        for (const element of document.querySelectorAll(
+          "header, .inspector-pane, .composer-options, .composer",
+        )) {
+          if (active) element.setAttribute("inert", "");
+          else element.removeAttribute("inert");
+        }
+        const timeline = document.getElementById("timeline");
+        for (const child of timeline.children) {
+          if (child === card) continue;
+          if (active) child.setAttribute("inert", "");
+          else child.removeAttribute("inert");
+        }
+      }
+
+      function renderAssistantDraft() {
+        const timeline = document.getElementById("timeline");
+        const nearBottom =
+          timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
+        const assistantDraft = getAssistantDraft();
+        let item = timeline.querySelector(".timeline-item.assistant.streaming");
+        if (!assistantDraft) {
+          item?.remove();
+          return;
+        }
+
+        timeline.querySelector(".empty")?.remove();
+        if (!item) {
+          item = buildAssistantDraftItem(assistantDraft);
+          const confirmation = timeline.querySelector(".confirm-card");
+          timeline.insertBefore(item, confirmation);
+        } else {
+          item.querySelector(".timeline-content").textContent = assistantDraft;
+        }
+        if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+      }
+
+      function renderTimeline() {
+        const state = getState();
+        const assistantDraft = getAssistantDraft();
+        const pendingConfirmation = getPendingConfirmation();
+        const timeline = document.getElementById("timeline");
+        const focusBeforeRender = document.activeElement;
+        const detailsState = new Map(
+          [...timeline.querySelectorAll("details.timeline-item[data-event-id]")]
+            .map((details) => [details.dataset.eventId, details.open]),
+        );
+        const focusedSummaryEventId = focusBeforeRender?.matches("summary")
+          ? focusBeforeRender.closest("details[data-event-id]")?.dataset.eventId
+          : null;
+        const nearBottom =
+          timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
+        timeline.replaceChildren();
+
+        const events = state.events || [];
+
+        if (!events.length && !assistantDraft && !pendingConfirmation) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No messages in this session yet.";
+          timeline.append(empty);
+        }
+
+        for (const event of events) {
+          const item = buildTimelineItem(event);
+          if (item instanceof HTMLDetailsElement && detailsState.has(event.id)) {
+            item.open = detailsState.get(event.id);
+          }
+          timeline.append(item);
+        }
+
+        if (assistantDraft) {
+          timeline.append(buildAssistantDraftItem(assistantDraft));
+        }
+
+        if (pendingConfirmation) {
+          const confirmation = buildConfirmCard(pendingConfirmation);
+          timeline.append(confirmation);
+          setConfirmationModalActive(true, confirmation);
+          if (focusedConfirmationId !== pendingConfirmation.id) {
+            confirmationReturnFocus = focusBeforeRender;
+            focusedConfirmationId = pendingConfirmation.id;
+          }
+          if (!confirmation.contains(document.activeElement)) {
+            confirmation.querySelector("[data-confirm-cancel]")
+              ?.focus({ preventScroll: true });
+          }
+        } else {
+          setConfirmationModalActive(false, null);
+          const hadConfirmation = focusedConfirmationId !== null;
+          const returnFocus = confirmationReturnFocus;
+          focusedConfirmationId = null;
+          confirmationReturnFocus = null;
+          if (hadConfirmation && returnFocus?.isConnected && !returnFocus.disabled) {
+            returnFocus.focus({ preventScroll: true });
+          } else if (hadConfirmation) {
+            document.getElementById("sendButton")?.focus({ preventScroll: true });
+          } else if (focusedSummaryEventId) {
+            const focusedDetails = [...timeline.querySelectorAll("details[data-event-id]")]
+              .find((details) => details.dataset.eventId === focusedSummaryEventId);
+            focusedDetails?.querySelector("summary")?.focus({ preventScroll: true });
+          }
+        }
+
+        if (nearBottom || pendingConfirmation) {
+          timeline.scrollTop = timeline.scrollHeight;
+        }
+      }
+
+      function buildConfirmCard(confirm) {
+        const card = document.createElement("article");
+        card.className = "confirm-card";
+        card.setAttribute("role", "alertdialog");
+        card.setAttribute("aria-modal", "true");
+        card.setAttribute("aria-labelledby", "pendingConfirmationTitle");
+
+        const groups = Array.isArray(confirm.groups) ? confirm.groups : [];
+        const actionCount = groups.reduce(
+          (count, group) => count + (Array.isArray(group.rows) ? group.rows.length : 0),
+          0,
+        );
+
+        const title = document.createElement("div");
+        title.id = "pendingConfirmationTitle";
+        title.className = "confirm-title";
+        title.textContent = `Apply ${actionCount} ${actionCount === 1 ? "change" : "changes"} to the Live Set?`;
+
+        const message = document.createElement("p");
+        message.id = "pendingConfirmationMessage";
+        message.className = "confirm-message";
+        message.textContent = confirm.message || "";
+        card.setAttribute("aria-describedby", message.id);
+
+        card.append(title, message);
+
+        for (const group of groups) {
+          const heading = document.createElement("div");
+          heading.className = "confirm-group-title";
+          heading.textContent = group.title;
+          const list = document.createElement("ul");
+          list.className = "confirm-rows";
+          for (const row of group.rows) {
+            const item = document.createElement("li");
+            item.textContent = row;
+            list.append(item);
+          }
+          card.append(heading, list);
+        }
+
+        const buttons = document.createElement("div");
+        buttons.className = "confirm-buttons";
+        const cancel = document.createElement("button");
+        cancel.className = "secondary";
+        cancel.type = "button";
+        cancel.dataset.confirmCancel = "";
+        cancel.textContent = "Cancel";
+        cancel.onclick = () => resolveConfirm(confirm.id, false);
+        const apply = document.createElement("button");
+        apply.className = "primary";
+        apply.type = "button";
+        apply.textContent = "Apply";
+        apply.onclick = () => resolveConfirm(confirm.id, true);
+        buttons.append(cancel, apply);
+        card.append(buttons);
+
+        return card;
+      }
+
+      function isCollapsedKind(kind) {
+        return (
+          kind === "tool_call" ||
+          kind === "tool_result" ||
+          kind === "apply_requested" ||
+          kind === "apply_result" ||
+          kind === "error"
+        );
+      }
+
+      function buildTimelineItem(event) {
+        const eventContent = event.content || "";
+        const contentLines = eventContent.split("\n");
+        const collapsed = isCollapsedKind(event.kind);
+        const content = document.createElement("div");
+        content.className = "timeline-content";
+        content.textContent = collapsed && contentLines.length > 1
+          ? contentLines.slice(1).join("\n")
+          : eventContent;
+
+        if (collapsed) {
+          const item = document.createElement("details");
+          item.className = `timeline-item ${event.kind}`;
+          item.dataset.eventId = event.id;
+          if (event.kind === "error") item.open = true;
+
+          const summary = document.createElement("summary");
+          summary.className = "timeline-label";
+          const firstLine = contentLines[0] || "";
+          summary.textContent = `${eventLabel(event)} — ${truncate(firstLine, 96)}`;
+
+          item.append(summary, content);
+          return item;
+        }
+
+        const item = document.createElement("article");
+        item.className = `timeline-item ${event.kind}`;
+        item.dataset.eventId = event.id;
+
+        const label = document.createElement("div");
+        label.className = "timeline-label";
+        label.textContent = eventLabel(event);
+
+        item.append(label, content);
+        return item;
+      }
+
+      function truncate(value, max) {
+        return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+      }
+
+      function eventLabel(event) {
+        if (event.kind === "user") return "You";
+        if (event.kind === "assistant") return "Live Smith";
+        if (event.kind === "tool_call") return `Tool call${event.name ? ` / ${event.name}` : ""}`;
+        if (event.kind === "tool_result") return `Tool result${event.name ? ` / ${event.name}` : ""}`;
+        if (event.kind === "apply_requested") return "Apply request";
+        if (event.kind === "apply_result") {
+          return /^Live action plan (?:partially completed|could not complete)/i.test(
+            event.content || "",
+          ) ? "Partial Apply" : "Apply Result";
+        }
+        if (event.kind === "error") return "Error";
+        return event.kind;
+      }
+
+      return {
+        announceAssistantMessage,
+        deleteActiveSession,
+        handleInspectorTabKeydown,
+        renderAssistantDraft,
+        renderSessions,
+        renderTimeline,
+        renameActiveSession,
+        setConfirmationState,
+        switchInspectorTab,
+      };
+      };
