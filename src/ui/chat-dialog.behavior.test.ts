@@ -6,6 +6,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 
 import { AgentPartialCompletionError } from "../agent/loop.js";
 import type { SavedProfile } from "../model/profile.js";
+import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 
@@ -38,6 +39,7 @@ interface DialogHarness {
   failNextConfirmation(error: string): void;
   failNextSend(error: string, promptPersistence?: string): void;
   failNextState(error: string): void;
+  flushAnimationFrames(): number;
   rejectNextSend(error: string): void;
   rejectNextCommand(error: string): void;
   rejectNextCommandResponse(error: string): void;
@@ -65,11 +67,13 @@ const chatTemplate = fs.readFileSync(
   new URL("./templates/chat-dialog.html", import.meta.url),
   "utf8",
 );
+const markdownRendererScript = await buildMarkdownRendererScript(false);
 const clientScripts = {
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
   capabilityPreview: readClientScript("capability-preview"),
   hostAdapter: readClientScript("host-adapter"),
+  markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
   sessionTimeline: readClientScript("session-timeline"),
 };
@@ -218,6 +222,8 @@ async function createDialogHarness(
     onerror: (() => void) | null;
   }> = [];
   const hostMessages: unknown[] = [];
+  const animationFrames = new Map<number, FrameRequestCallback>();
+  let nextAnimationFrameId = 1;
   let confirmResult = true;
   let nextCommandError: {
     error: string;
@@ -255,6 +261,19 @@ async function createDialogHarness(
       virtualConsole,
       beforeParse(window) {
         window.addEventListener("error", (event) => errors.push(event.error));
+        Object.defineProperty(window, "requestAnimationFrame", {
+          configurable: true,
+          value: (callback: FrameRequestCallback) => {
+            const id = nextAnimationFrameId;
+            nextAnimationFrameId += 1;
+            animationFrames.set(id, callback);
+            return id;
+          },
+        });
+        Object.defineProperty(window, "cancelAnimationFrame", {
+          configurable: true,
+          value: (id: number) => animationFrames.delete(id),
+        });
         Object.defineProperty(window, "webkit", {
           configurable: true,
           value: {
@@ -543,6 +562,12 @@ async function createDialogHarness(
     },
     failNextState(error) {
       nextStateError = { error };
+    },
+    flushAnimationFrames() {
+      const pending = [...animationFrames.values()];
+      animationFrames.clear();
+      for (const callback of pending) callback(0);
+      return pending.length;
     },
     rejectNextSend(error) {
       nextSendRejection = new Error(error);
@@ -1705,7 +1730,7 @@ test("Session metadata uses locale-aware date formatting and ignores invalid dat
   }
 });
 
-test("assistant deltas update one draft node without rebuilding existing timeline items", async () => {
+test("assistant delta bursts coalesce without rebuilding existing timeline items", async () => {
   const state = stateFixture();
   state.events = [{
     id: "event-1",
@@ -1723,37 +1748,59 @@ test("assistant deltas update one draft node without rebuilding existing timelin
     assert.ok(sendId);
     const existingEvent = harness.document.querySelector(".timeline-item.user");
     assert.ok(existingEvent);
+    const markdownRenderer = harness.window.LiveSmithMarkdown;
+    assert.ok(markdownRenderer);
+    const renderInto = markdownRenderer.renderInto;
+    let renderCount = 0;
+    markdownRenderer.renderInto = (target, source) => {
+      renderCount += 1;
+      renderInto(target, source);
+    };
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "I’ll widen" });
+    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "I’ll add **wide" });
+    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " chords**" });
+    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " with `Wavetable`." });
+    assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
+    assert.equal(renderCount, 0);
+    assert.equal(harness.flushAnimationFrames(), 1);
+
     const firstDraft = harness.document.querySelector(".timeline-item.streaming");
     assert.ok(firstDraft);
-    assert.equal(firstDraft.querySelector(".timeline-content")?.textContent, "I’ll widen");
+    assert.equal(firstDraft.querySelector("strong")?.textContent, "wide chords");
+    assert.equal(firstDraft.querySelector("code")?.textContent, "Wavetable");
+    assert.equal(renderCount, 1);
     assert.equal(
       harness.document.querySelector("#conversationAnnouncements")?.textContent,
       "",
     );
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " the chorus." });
+    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " Done." });
+    assert.equal(harness.flushAnimationFrames(), 1);
     const secondDraft = harness.document.querySelector(".timeline-item.streaming");
     assert.equal(secondDraft, firstDraft);
     assert.equal(harness.document.querySelector(".timeline-item.user"), existingEvent);
     assert.equal(
       secondDraft?.querySelector(".timeline-content")?.textContent,
-      "I’ll widen the chorus.",
+      "I’ll add wide chords with Wavetable. Done.",
     );
+    assert.equal(renderCount, 2);
+
+    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " Stale." });
     harness.emitServerEvent({
       type: "session_event",
       sendId,
       event: {
         id: "event-2",
         kind: "assistant",
-        content: "I’ll widen the chorus.",
+        content: "I’ll add wide chords with Wavetable. Done.",
         createdAt: "2026-08-01T00:03:00.000Z",
       },
     });
+    assert.equal(harness.flushAnimationFrames(), 0);
+    assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
     assert.equal(
       harness.document.querySelector("#conversationAnnouncements")?.textContent,
-      "Live Smith: I’ll widen the chorus.",
+      "Live Smith: I’ll add wide chords with Wavetable. Done.",
     );
     assert.deepEqual(harness.errors, []);
     harness.releaseHeldSend();
@@ -2915,6 +2962,7 @@ test("HTTP send completion clears stale streaming and confirmation UI before ter
 
     harness.releaseHeldSend();
     await harness.settle();
+    assert.equal(harness.flushAnimationFrames(), 0);
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
     assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
     assert.equal(harness.document.querySelector(".confirm-card"), null);
@@ -2938,6 +2986,7 @@ test("stopping a send clears its unpersisted streaming draft", async () => {
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
     harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Partial response" });
+    harness.flushAnimationFrames();
     assert.ok(harness.document.querySelector(".timeline-item.streaming"));
 
     harness.click("#sendButton");
@@ -2964,6 +3013,7 @@ test("a reconciled send failure clears its unpersisted streaming draft", async (
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
     harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Partial response" });
+    harness.flushAnimationFrames();
     assert.ok(harness.document.querySelector(".timeline-item.streaming"));
 
     harness.releaseHeldSend();
@@ -3027,6 +3077,132 @@ test("multiline user and assistant messages keep their first line", async () => 
       "Drums are ready\nBass is next",
     ]);
     assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("short user messages use a compact bubble", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-short-user",
+    createdAt: "2026-08-06T00:00:00.000Z",
+    kind: "user",
+    content: "可以",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const item = harness.document.querySelector<HTMLElement>(".timeline-item.user");
+    assert.ok(item);
+    assert.equal(harness.window.getComputedStyle(item).width, "fit-content");
+    assert.equal(item.querySelector(".timeline-content")?.textContent, "可以");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("conversation Markdown uses the bundled safe renderer", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-markdown-assistant",
+    createdAt: "2026-08-06T00:00:01.000Z",
+    kind: "assistant",
+    content: [
+      "## Arrangement",
+      "",
+      "Use **Wavetable** with `Auto Filter`.",
+      "",
+      "- Chords",
+      "  - Wavetable",
+      "",
+      "[Ableton](https://www.ableton.com \"Ableton Live\")",
+      "[unsafe](javascript:alert(1))",
+      "",
+      "| Track | Device |",
+      "| --- | --- |",
+      "| Lead | Wavetable |",
+      "",
+      "<img src=x onerror=alert(1)>",
+    ].join("\n"),
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const content = harness.document.querySelector<HTMLElement>(
+      ".timeline-item.assistant .timeline-content",
+    );
+    assert.ok(content);
+    const paragraph = content.querySelector("p");
+    assert.ok(paragraph);
+    assert.equal(harness.window.getComputedStyle(content).whiteSpace, "normal");
+    assert.equal(
+      harness.window.getComputedStyle(paragraph).whiteSpace,
+      "pre-wrap",
+    );
+    assert.equal(content.querySelector("h2")?.textContent, "Arrangement");
+    assert.equal(content.querySelector("strong")?.textContent, "Wavetable");
+    assert.equal(content.querySelector("code")?.textContent, "Auto Filter");
+    assert.equal(content.querySelector("ul ul li")?.textContent, "Wavetable");
+    const link = content.querySelector<HTMLAnchorElement>("a");
+    assert.ok(link);
+    assert.equal(link.href, "https://www.ableton.com/");
+    assert.equal(link.title, "Ableton Live");
+    assert.equal(link.rel, "noopener noreferrer");
+    const table = content.querySelector("table");
+    assert.ok(table);
+    assert.equal(table.querySelector("td")?.textContent, "Lead");
+    const tableScrollContainer = table.parentElement;
+    assert.ok(tableScrollContainer);
+    assert.equal(
+      tableScrollContainer.classList.contains("markdown-table-scroll"),
+      true,
+    );
+    assert.equal(harness.window.getComputedStyle(table).display, "table");
+    assert.equal(
+      harness.window.getComputedStyle(tableScrollContainer).overflowX,
+      "auto",
+    );
+    assert.equal(content.querySelector('a[href^="javascript:"]'), null);
+    assert.equal(content.querySelector("img"), null);
+    assert.match(content.textContent ?? "", /<img src=x onerror=alert\(1\)>/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("streaming Markdown falls back to plain text when rendering fails", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.input("#prompt", "Stream Markdown");
+    harness.holdNextSend();
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    const markdownRenderer = harness.window.LiveSmithMarkdown;
+    assert.ok(markdownRenderer);
+    const renderInto = markdownRenderer.renderInto;
+    markdownRenderer.renderInto = () => {
+      throw new Error("Renderer failed");
+    };
+
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      delta: "Use **Wavetable** safely.",
+    });
+    assert.equal(harness.flushAnimationFrames(), 1);
+    const content = harness.document.querySelector(
+      ".timeline-item.streaming .timeline-content",
+    );
+    assert.equal(content?.textContent, "Use **Wavetable** safely.");
+    assert.equal(content?.classList.contains("markdown-body"), false);
+    assert.deepEqual(harness.errors, []);
+
+    markdownRenderer.renderInto = renderInto;
+    harness.releaseHeldSend();
+    await harness.settle();
   } finally {
     harness.close();
   }

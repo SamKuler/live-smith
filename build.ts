@@ -6,12 +6,15 @@ import { argv, pid as processId } from "node:process";
 import * as vm from "node:vm";
 import ts from "typescript";
 
+import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
+
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
   entry: string;
 };
 const production = argv.includes("--production");
 
 verifySourceRuntimeBoundaries("src");
+const markdownRendererScript = await buildMarkdownRendererScript(production);
 
 const buildResult = await esbuild.build({
   entryPoints: ["src/extension.ts"],
@@ -25,6 +28,9 @@ const buildResult = await esbuild.build({
   minify: production,
   sourcemap: !production,
   loader: { ".html": "text" },
+  define: {
+    __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
+  },
 });
 
 const outputFiles = buildResult.outputFiles ?? [];

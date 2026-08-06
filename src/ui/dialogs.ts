@@ -9,6 +9,8 @@ import bootstrapScript from "./client/bootstrap.script.html";
 import type { ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 
+declare const __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: string;
+
 export function resultUrl(title: string, body: string): string {
   return toDataUrl(
     resultDialog
@@ -27,6 +29,7 @@ export function chatHtml(
     bridgeClient: bridgeClientScript,
     capabilityPreview: capabilityPreviewScript,
     hostAdapter: hostAdapterScript,
+    markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     profileEditor: profileEditorScript,
     sessionTimeline: sessionTimelineScript,
   });

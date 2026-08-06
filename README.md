@@ -28,6 +28,10 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Shows model/tool/apply/error events in the active chat session.
+- Renders user and assistant messages with locally bundled, sanitized Markdown,
+  including headings, emphasis, nested lists, quotes, safe links, tables, and
+  code blocks. Raw HTML remains inert text, while tool traces and errors
+  preserve their exact text.
 - Shows grouped Apply diffs. Changes require `Apply` by default; Auto approve
   may skip confirmation for undoable actions. Deletes and MIDI clip
   writes that may replace existing notes always require explicit confirmation.

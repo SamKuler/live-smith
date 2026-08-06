@@ -42,6 +42,7 @@
 
       let eventSource = null;
       const assistantDraftsBySession = new Map();
+      const assistantDraftRenderFramesBySession = new Map();
       const composerDraftsBySession = new Map();
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
@@ -62,6 +63,24 @@
 
       function activeAssistantDraft() {
         return assistantDraftsBySession.get(activeSessionId()) || "";
+      }
+
+      function scheduleAssistantDraftRender(sessionId) {
+        if (assistantDraftRenderFramesBySession.has(sessionId)) return;
+        const frameId = window.requestAnimationFrame(() => {
+          assistantDraftRenderFramesBySession.delete(sessionId);
+          if (activeSessionId() === sessionId) {
+            requireView().renderAssistantDraft();
+          }
+        });
+        assistantDraftRenderFramesBySession.set(sessionId, frameId);
+      }
+
+      function cancelAssistantDraftRender(sessionId) {
+        const frameId = assistantDraftRenderFramesBySession.get(sessionId);
+        if (frameId === undefined) return;
+        window.cancelAnimationFrame(frameId);
+        assistantDraftRenderFramesBySession.delete(sessionId);
       }
 
       function attemptIsCurrent(attempt) {
@@ -491,6 +510,7 @@
       function settleSendAttempt(attempt) {
         if (!attemptIsCurrent(attempt)) return false;
         cancelSendRecovery(attempt);
+        cancelAssistantDraftRender(attempt.sessionId);
         attempt.failureHandled = true;
         assistantDraftsBySession.set(attempt.sessionId, "");
         pendingConfirmationsBySession.delete(attempt.sessionId);
@@ -701,6 +721,7 @@
 
       function appendSessionEvent(sessionId, event) {
         if (event.kind === "assistant") {
+          cancelAssistantDraftRender(sessionId);
           assistantDraftsBySession.set(sessionId, "");
         }
         if (activeSessionId() !== sessionId) return;
@@ -728,7 +749,7 @@
             const draft = (assistantDraftsBySession.get(payload.sessionId) || "") + payload.delta;
             assistantDraftsBySession.set(payload.sessionId, draft);
             if (activeSessionId() === payload.sessionId) {
-              requireView().renderAssistantDraft();
+              scheduleAssistantDraftRender(payload.sessionId);
             }
             return;
           }

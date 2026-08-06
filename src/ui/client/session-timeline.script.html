@@ -303,6 +303,17 @@
         document.getElementById("renameSessionButton").disabled = operationInProgress || !state.activeSessionId;
       }
 
+      function renderMarkdown(target, source) {
+        const content = String(source || "");
+        const markdownRenderer = window.LiveSmithMarkdown;
+        try {
+          if (!markdownRenderer) throw new Error("Markdown renderer is unavailable.");
+          markdownRenderer.renderInto(target, content);
+        } catch {
+          target.classList.remove("markdown-body");
+          target.textContent = content;
+        }
+      }
       function buildAssistantDraftItem(content) {
         const item = document.createElement("article");
         item.className = "timeline-item assistant streaming";
@@ -311,7 +322,7 @@
         label.textContent = "Live Smith / streaming";
         const body = document.createElement("div");
         body.className = "timeline-content";
-        body.textContent = content;
+        renderMarkdown(body, content);
         item.append(label, body);
         return item;
       }
@@ -365,7 +376,7 @@
           const confirmation = timeline.querySelector(".confirm-card");
           timeline.insertBefore(item, confirmation);
         } else {
-          item.querySelector(".timeline-content").textContent = assistantDraft;
+          renderMarkdown(item.querySelector(".timeline-content"), assistantDraft);
         }
         if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
       }
@@ -517,9 +528,11 @@
         const collapsed = isCollapsedKind(event.kind);
         const content = document.createElement("div");
         content.className = "timeline-content";
-        content.textContent = collapsed && contentLines.length > 1
+        const visibleContent = collapsed && contentLines.length > 1
           ? contentLines.slice(1).join("\n")
           : eventContent;
+        if (collapsed) content.textContent = visibleContent;
+        else renderMarkdown(content, visibleContent);
 
         if (collapsed) {
           const item = document.createElement("details");
