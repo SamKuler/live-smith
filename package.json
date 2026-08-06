@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc --noEmit && tsx build.ts --production",
     "build:dev": "tsc --noEmit && tsx build.ts",
-    "start": "npm run build:dev && extensions-cli run",
+    "start": "npm run build:dev && extensions-cli run --storage-directory .live-smith-data",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "package": "npm run build && extensions-cli package && npm run verify:package",
     "verify:package": "tsx scripts/verify-package.ts"

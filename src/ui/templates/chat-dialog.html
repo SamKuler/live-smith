@@ -940,7 +940,7 @@
               <input id="autoApprove" name="autoApprove" type="checkbox" aria-describedby="autoApproveLockHint" onchange="LiveSmithUI.saveAutoApprove()" />
               <span>Auto-approve undoable changes</span>
             </label>
-            <span id="autoApproveLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>Locked while a Session is running.</span>
+            <span id="autoApproveLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>Changes apply to the next proposed action.</span>
           </div>
           <div class="composer">
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
@@ -956,7 +956,7 @@
           </div>
           <div id="settingsPanel" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="settingsTab" aria-busy="false">
             <div class="settings-scroll">
-              <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile and global settings are locked while another Session is running. You can keep working in this Session.</div>
+              <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
               <div class="settings">
               <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
                 <h2 id="profileSettingsHeading">Profile</h2>

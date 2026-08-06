@@ -225,7 +225,7 @@
           const autoApprove = document.getElementById("autoApprove");
           const autoApproveLabel = autoApprove.closest("label");
           autoApproveLabel.title = anySendInProgress
-            ? "Auto-approve is locked while a Session is running."
+            ? "Changes apply to the next proposed action. Deletes and MIDI clip writes still require confirmation."
             : "Skip confirmation for undoable changes. Deletes and MIDI clip writes still require confirmation.";
           document.getElementById("prompt").disabled = operationBusy;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
@@ -233,10 +233,11 @@
               control.disabled = Boolean(commandKind);
             });
           document.querySelectorAll(
-            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea, #autoApprove",
+            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
+          autoApprove.disabled = Boolean(commandKind);
           document.getElementById("sendButton").disabled = Boolean(commandKind);
 
           if (!operationBusy) {

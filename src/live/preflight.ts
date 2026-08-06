@@ -618,15 +618,42 @@ function clipContentIdentity(clip: import("@ableton-extensions/sdk").Clip<"1.0.0
     loopEnd: clip.loopEnd,
     color: clip.color,
     muted: clip.muted,
-    ...(clip instanceof MidiClip ? { notes: clip.notes } : {}),
+    ...(clip instanceof MidiClip
+      ? { notes: clip.notes.map(midiNoteIdentity) }
+      : {}),
     ...(clip instanceof AudioClip
       ? {
           filePath: clip.filePath,
           warping: clip.warping,
           warpMode: clip.warpMode,
-          warpMarkers: clip.warpMarkers,
+          warpMarkers: clip.warpMarkers.map(warpMarkerIdentity),
         }
       : {}),
+  };
+}
+
+function midiNoteIdentity(
+  note: import("@ableton-extensions/sdk").NoteDescription,
+): object {
+  return {
+    pitch: note.pitch,
+    startTime: note.startTime,
+    duration: note.duration,
+    velocity: note.velocity,
+    muted: note.muted,
+    probability: note.probability,
+    velocityDeviation: note.velocityDeviation,
+    releaseVelocity: note.releaseVelocity,
+    selected: note.selected,
+  };
+}
+
+function warpMarkerIdentity(
+  marker: import("@ableton-extensions/sdk").WarpMarker,
+): object {
+  return {
+    sampleTime: marker.sampleTime,
+    beatTime: marker.beatTime,
   };
 }
 
@@ -645,5 +672,11 @@ function requireHandleIdentity(value: unknown, label: string): string {
 }
 
 function fingerprint(type: AgentAction["type"], state: object): string {
-  return JSON.stringify({ type, state });
+  return JSON.stringify(
+    { type, state },
+    (_key, value: unknown) =>
+      typeof value === "bigint"
+        ? { $liveSmithBigInt: value.toString() }
+        : value,
+  );
 }

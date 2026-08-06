@@ -328,12 +328,18 @@ async function createDialogHarness(
               }
               const command = body as {
                 kind?: string;
+                autoApprove?: boolean;
                 profile?: SavedProfile;
                 profileId?: string;
                 sessionId?: string;
                 title?: string;
               };
-              if (command.kind === "save_profile" && command.profile) {
+              if (
+                command.kind === "save_global_settings" &&
+                typeof command.autoApprove === "boolean"
+              ) {
+                serverState.settings.autoApprove = command.autoApprove;
+              } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
                 );
@@ -1085,7 +1091,7 @@ test("a running Session can be left in the background and shows an unread comple
     );
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#autoApprove")?.disabled,
-      true,
+      false,
     );
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#saveProfileButton")?.disabled,
@@ -1097,7 +1103,7 @@ test("a running Session can be left in the background and shows an unread comple
     );
     assert.match(
       harness.document.querySelector("#autoApprove")?.closest("label")?.getAttribute("title") ?? "",
-      /locked while a Session is running/i,
+      /next proposed action/i,
     );
     assert.equal(
       harness.document.querySelector("#autoApprove")?.getAttribute("aria-describedby"),
@@ -1114,6 +1120,21 @@ test("a running Session can be left in the background and shows an unread comple
     assert.match(
       harness.document.querySelector("#settingsLockNotice")?.textContent ?? "",
       /another Session is running/i,
+    );
+
+    harness.click("#autoApprove");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "save_global_settings", autoApprove: true },
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.checked,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.disabled,
+      true,
     );
 
     const selectedLeadRow = harness.document.querySelector<HTMLButtonElement>(

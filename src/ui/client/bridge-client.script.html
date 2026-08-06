@@ -98,8 +98,9 @@
           "delete_session",
           "rename_session",
         ].includes(kind);
-        if (sendAttemptsBySession.size && !sessionCommand) {
-          showStatus("Profile and global settings cannot change while an agent request is active.");
+        const allowedDuringSend = sessionCommand || kind === "save_global_settings";
+        if (sendAttemptsBySession.size && !allowedDuringSend) {
+          showStatus("Profile settings cannot change while an agent request is active.");
           return false;
         }
         if (commandInProgress || commandReconciliationBlocked) return false;

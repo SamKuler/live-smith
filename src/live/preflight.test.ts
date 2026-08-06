@@ -81,6 +81,38 @@ test("replace_midi_clip_segment snapshot detects clip edits while confirmation i
   assert.notEqual(after, before);
 });
 
+test("MIDI clip snapshots ignore opaque bigint note metadata while tracking musical fields", async () => {
+  const clip = midiClip(101n);
+  const note = {
+    pitch: 48,
+    startTime: 0,
+    duration: 2,
+    velocity: 90,
+    hostIdentity: 9001n,
+  };
+  clip.notes = [note as never];
+  const track = midiTrack(11n, [clip]);
+  const context = liveContext(track);
+  const action = {
+    type: "replace_midi_clip_segment" as const,
+    trackName: "Bass",
+    clipName: "Phrase",
+    startBeat: 0,
+    segmentStartTime: 0,
+    segmentDurationBeats: 2,
+    notes: [{ pitch: 36, startTime: 0, duration: 1, velocity: 100 }],
+  };
+
+  const original = await captureLiveActionPreflightSnapshot(context, action, {});
+  note.hostIdentity = 9002n;
+  const metadataChanged = await captureLiveActionPreflightSnapshot(context, action, {});
+  note.pitch = 49;
+  const pitchChanged = await captureLiveActionPreflightSnapshot(context, action, {});
+
+  assert.equal(metadataChanged, original);
+  assert.notEqual(pitchChanged, original);
+});
+
 test("delete_clip snapshot binds the resolved clip by handle identity", async () => {
   const clips = [midiClip(101n)];
   const track = midiTrack(11n, clips);
@@ -525,6 +557,37 @@ test("Scene, Cue Point, and Take Lane snapshots bind exact host identities", asy
   assert.notEqual(sceneAfter, sceneBefore);
   assert.notEqual(cueAfter, cueBefore);
   assert.notEqual(laneAfter, laneBefore);
+});
+
+test("rename_scene snapshots deterministically encode bigint values returned by the host", async () => {
+  const scene = sdkObject<Scene<"1.0.0">>(Scene.prototype, {
+    handle: { id: 910n },
+    name: "Intro",
+    tempo: 120n,
+    signatureNumerator: 4n,
+    signatureDenominator: 4n,
+  });
+  const context = {
+    application: {
+      song: {
+        handle: { id: 1n },
+        tracks: [],
+        scenes: [scene],
+        cuePoints: [],
+      },
+    },
+  } as never;
+  const action = {
+    type: "rename_scene" as const,
+    sceneIndex: 0,
+    newName: "Verse",
+  };
+
+  const before = await captureLiveActionPreflightSnapshot(context, action, {});
+  Reflect.set(scene, "signatureNumerator", 3n);
+  const after = await captureLiveActionPreflightSnapshot(context, action, {});
+
+  assert.notEqual(after, before);
 });
 
 test("preflight snapshots fail closed when a target handle identity is unavailable", async () => {

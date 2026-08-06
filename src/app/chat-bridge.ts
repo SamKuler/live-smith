@@ -358,9 +358,9 @@ export async function createChatBridge(
           sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
           return;
         }
-        if (activeSendsBySession.size > 0 && !isSessionCommand(input)) {
+        if (activeSendsBySession.size > 0 && !isCommandAllowedDuringSend(input)) {
           sendJson(response, {
-            error: "Profile and global settings cannot change while an agent request is active.",
+            error: "Profile settings cannot change while an agent request is active.",
           }, 409);
           return;
         }
@@ -786,6 +786,10 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "restore_session" ||
     input.kind === "delete_session" ||
     input.kind === "rename_session";
+}
+
+function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {
+  return isSessionCommand(input) || input.kind === "save_global_settings";
 }
 
 function inputRecord(value: unknown): Record<string, unknown> {

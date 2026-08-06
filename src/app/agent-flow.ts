@@ -494,13 +494,16 @@ export async function runAgentFlow(
           onSessionEvent: (event) => stream.sessionEvent(event),
           withActionExecutionLock: (operation) =>
             liveMutationQueue.run(signal, operation),
-          confirmActions: (plan) =>
-            settingsForRequest.autoApprove && !requiresExplicitConfirmation(plan)
-              ? Promise.resolve(true)
-              : stream.requestConfirmation({
-                  message: plan.message,
-                  groups: actionDiffGroups(plan.actions, plan.targets),
-                }),
+          confirmActions: async (plan) => {
+            if (await autoApproveEnabledForPlan(
+              context.environment.storageDirectory,
+              plan,
+            )) return true;
+            return stream.requestConfirmation({
+              message: plan.message,
+              groups: actionDiffGroups(plan.actions, plan.targets),
+            });
+          },
         },
       );
     } catch (error) {
@@ -523,6 +526,14 @@ export async function runAgentFlow(
   } finally {
     await bridge.close();
   }
+}
+
+export async function autoApproveEnabledForPlan(
+  storageDirectory: string | undefined,
+  plan: AgentPlan,
+): Promise<boolean> {
+  if (requiresExplicitConfirmation(plan)) return false;
+  return (await loadAgentSettings(storageDirectory)).autoApprove;
 }
 
 export async function handleAgentRequest(
@@ -572,7 +583,8 @@ export async function handleAgentRequest(
     const loopResult = await runAgentLoop({
       maxConsecutiveFailures: maxConsecutiveAgentFailures,
       maxIterations: 12,
-      maxToolCalls: 32,
+      maxTotalIterations: 64,
+      maxToolCallsPerTurn: 32,
       signal: callbacks.signal,
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);

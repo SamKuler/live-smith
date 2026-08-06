@@ -31,6 +31,9 @@
 - Shows grouped Apply diffs. Changes require `Apply` by default; Auto approve
   may skip confirmation for undoable actions. Deletes and MIDI clip
   writes that may replace existing notes always require explicit confirmation.
+  Auto approve can be changed while a Session is running; the current value is
+  read for the next proposed Apply decision and does not alter a confirmation
+  that is already open.
 
 ## Capabilities
 
@@ -68,11 +71,19 @@ The extension does not execute arbitrary code from the model. It parses and
 validates a small JSON action schema. Changes require confirmation by default;
 Auto approve may skip confirmation for undoable actions, while deletes
 and MIDI create-or-replace actions always require explicit confirmation. The
-agent loop is capped at 12 planning steps and 32 tool calls per request.
+agent loop uses a rolling 12-step no-mutation window: every successful or
+partially successful Live write renews that window, so a large project is not
+stopped merely because it has many stages. Observation-only or repeatedly
+failing loops stop when they make no mutation progress. A broad 64-step
+per-request runaway guard preserves completed work and asks the agent to
+continue in the same Session. There is no accumulated tool-call quota; only an
+oversized batch in one model turn is rejected without execution and returned to
+the model so it can regroup the unfinished stage.
 If a confirmed multi-action plan partially succeeds, the completed actions and
 exact failed action are persisted and returned to the model so it can inspect
-the Set and continue only with missing work; it does not automatically replay
-the completed actions.
+the Set and continue only with missing work. It does not automatically replay
+completed actions, and an exact device insertion rejected by Live cannot be
+retried under another equivalent track selector during the same request.
 
 Confirmation and Live Undo are different boundaries. One confirmation may
 authorize an ordered plan with multiple Undo entries because the 1.0.0 beta SDK
@@ -206,16 +217,24 @@ On POSIX systems, Live Smith restricts the directory and JSON files to the
 current user. If the SDK does not provide a storage directory, data falls back
 to process memory and will not survive an Extension Host restart.
 
-During development, make the location explicit so it is easy to inspect or
-back up:
+During development, `npm start` uses the Git-ignored `.live-smith-data/`
+directory in this repository. Profiles saved while running the extension are
+therefore retained when the Extension Host restarts. The settings file is:
+
+```sh
+.live-smith-data/live-smith-settings.json
+```
+
+To use another persistent location, pass it after the npm argument separator;
+the later CLI value overrides the development default:
 
 ```sh
 npm start -- --storage-directory /absolute/path/to/live-smith-data
 ```
 
-This path is persistent data, not the SDK temporary directory. The current
-pre-release build does not migrate files written under earlier development
-names or schemas.
+These paths contain private persistent data, not SDK temporary files. Do not
+commit, share, or sync them. The current pre-release build does not migrate
+files written under earlier development names or schemas.
 
 If you use `npm start` without passing `--live`, also create `.env` with
 `EXTENSION_HOST_PATH` as described in the SDK quick start.

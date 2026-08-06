@@ -484,6 +484,47 @@ test("runAgentLoop returns post-confirmation target changes to the model without
   assert.equal(executeCalls, 0);
 });
 
+test("preflight failures do not tell the model to split a valid plan as if its JSON were too large", async () => {
+  const modelInputs: AgentLoopModelInput[] = [];
+  let modelCalls = 0;
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => {
+      modelInputs.push(input);
+      modelCalls += 1;
+      return modelCalls === 1
+        ? {
+            content: "Renaming the Scene.",
+            toolCalls: [{
+              id: "rename-scene",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Rename Intro",
+                actions: [{
+                  type: "rename_scene",
+                  sceneIndex: 0,
+                  newName: "Intro",
+                }],
+              }),
+            }],
+          }
+        : { content: "I will inspect the current Scene state.", toolCalls: [] };
+    },
+    observe: async () => "Scenes refreshed.",
+    preflightActions: async () => {
+      throw new TypeError("Do not know how to serialize a BigInt");
+    },
+    confirmActions: async () => true,
+    executeActions: async () => [],
+  });
+
+  const failure = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  assert.match(failure, /could not verify current Live state/i);
+  assert.match(failure, /not evidence.*payload.*too large/i);
+  assert.doesNotMatch(failure, /split it into smaller tool calls|valid, complete JSON/i);
+});
+
 test("runAgentLoop returns malformed tool arguments to the model instead of throwing", async () => {
   const modelInputs: AgentLoopModelInput[] = [];
   const executedPlans: string[] = [];
@@ -544,7 +585,7 @@ test("runAgentLoop returns malformed tool arguments to the model instead of thro
   assert.match(modelInputs[2]?.messages.at(-1)?.content ?? "", /Created MIDI track/);
 });
 
-test("runAgentLoop stops successful loops at the configured iteration limit", async () => {
+test("runAgentLoop stops observation-only loops after the rolling no-mutation window", async () => {
   const observedRequests: string[] = [];
   const modelInputs: AgentLoopModelInput[] = [];
 
@@ -574,22 +615,39 @@ test("runAgentLoop stops successful loops at the configured iteration limit", as
 
   assert.equal(observedRequests.length, 4);
   assert.equal(modelInputs.length, 4);
-  assert.match(result.message, /safety limit of 4 planning steps/);
+  assert.match(result.message, /4 planning steps without completing another Live mutation/);
 });
 
-test("runAgentLoop stops before exceeding the configured tool call limit", async () => {
+test("runAgentLoop returns excessive one-turn tool fanout to the model for repair", async () => {
   let observed = 0;
+  const modelInputs: AgentLoopModelInput[] = [];
   const result = await runAgentLoop({
     maxConsecutiveFailures: 2,
-    maxToolCalls: 2,
-    askModel: async (): Promise<ModelTurn> => ({
-      content: "Inspecting.",
-      toolCalls: [1, 2, 3].map((number) => ({
-        id: `inspect_${number}`,
-        name: "inspect_live_set",
-        arguments: "{}",
-      })),
-    }),
+    maxToolCallsPerTurn: 2,
+    askModel: async (input): Promise<ModelTurn> => {
+      modelInputs.push(input);
+      if (input.iteration === 1) {
+        return {
+          content: "Inspecting too much at once.",
+          toolCalls: [1, 2, 3].map((number) => ({
+            id: `inspect_${number}`,
+            name: "inspect_live_set",
+            arguments: "{}",
+          })),
+        };
+      }
+      if (input.iteration === 2) {
+        return {
+          content: "Regrouping into one inspection.",
+          toolCalls: [{
+            id: "inspect_repaired",
+            name: "inspect_live_set",
+            arguments: "{}",
+          }],
+        };
+      }
+      return { content: "Done.", toolCalls: [] };
+    },
     observe: async () => {
       observed += 1;
       return "ok";
@@ -598,8 +656,82 @@ test("runAgentLoop stops before exceeding the configured tool call limit", async
     executeActions: async () => [],
   });
 
-  assert.equal(observed, 2);
-  assert.match(result.message, /safety limit of 2 tool calls/);
+  assert.equal(observed, 1);
+  assert.equal(result.message, "Done.");
+  const rejectedResults = modelInputs[1]?.messages.filter(
+    (message) => message.role === "tool",
+  ) ?? [];
+  assert.equal(rejectedResults.length, 3);
+  assert.match(rejectedResults[0]?.content ?? "", /returned 3 tool calls.*limit of 2/i);
+});
+
+test("successful Live mutations renew the rolling planning window", async () => {
+  let executions = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxIterations: 2,
+    maxTotalIterations: 8,
+    askModel: async (input): Promise<ModelTurn> =>
+      input.iteration <= 4
+        ? {
+            content: `Building stage ${input.iteration}.`,
+            toolCalls: [{
+              id: `apply_${input.iteration}`,
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: `Create stage ${input.iteration}`,
+                actions: [{
+                  type: "create_midi_track",
+                  name: `Stage ${input.iteration}`,
+                }],
+              }),
+            }],
+          }
+        : { content: "All four stages are complete.", toolCalls: [] },
+    observe: async () => "",
+    preflightActions: async () => async () => {},
+    confirmActions: async () => true,
+    executeActions: async () => {
+      executions += 1;
+      return [`Completed stage ${executions}.`];
+    },
+  });
+
+  assert.equal(executions, 4);
+  assert.equal(result.message, "All four stages are complete.");
+});
+
+test("continuously mutating loops still stop at the hard planning ceiling", async () => {
+  let executions = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxIterations: 2,
+    maxTotalIterations: 4,
+    askModel: async (input): Promise<ModelTurn> => ({
+      content: `Building stage ${input.iteration}.`,
+      toolCalls: [{
+        id: `apply_${input.iteration}`,
+        name: "apply_live_actions",
+        arguments: JSON.stringify({
+          message: `Create stage ${input.iteration}`,
+          actions: [{
+            type: "create_midi_track",
+            name: `Stage ${input.iteration}`,
+          }],
+        }),
+      }],
+    }),
+    observe: async () => "",
+    preflightActions: async () => async () => {},
+    confirmActions: async () => true,
+    executeActions: async () => {
+      executions += 1;
+      return [`Completed stage ${executions}.`];
+    },
+  });
+
+  assert.equal(executions, 4);
+  assert.match(result.message, /hard safety limit of 4 planning steps/i);
 });
 
 test("runAgentLoop aborts before executing tools after a stopped model request", async () => {
@@ -1147,6 +1279,155 @@ test("a first-action Live rejection returns current state to the model for repai
     /could not complete its first action.*Current Live state after the failure:.*devices=Auto Filter/is,
   );
   assert.equal(eventKinds.includes("error"), false);
+});
+
+test("an exact device insertion rejected by Live cannot be retried through another track selector", async () => {
+  const modelInputs: AgentLoopModelInput[] = [];
+  const executedDevices: string[] = [];
+  let modelCalls = 0;
+  let confirmations = 0;
+
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => {
+      modelInputs.push(input);
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: "Trying the requested legacy delay.",
+          toolCalls: [{
+            id: "legacy-delay-ref",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Add Ping Pong Delay",
+              targets: { lead: { trackName: "Lead" } },
+              actions: [{
+                type: "insert_device",
+                trackRef: "lead",
+                deviceName: "Ping Pong Delay",
+              }],
+            }),
+          }],
+        };
+      }
+      if (modelCalls === 2) {
+        return {
+          content: "Trying the same device by observed track name.",
+          toolCalls: [{
+            id: "legacy-delay-name",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Retry Ping Pong Delay",
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Ping Pong Delay",
+              }],
+            }),
+          }],
+        };
+      }
+      if (modelCalls === 3) {
+        return {
+          content: "The exact device is unavailable, so I will use Delay.",
+          toolCalls: [{
+            id: "current-delay",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Add current Delay",
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Delay",
+              }],
+            }),
+          }],
+        };
+      }
+      return { content: "The available Delay device is in place.", toolCalls: [] };
+    },
+    observe: async () => 'Track "Lead" devices=none',
+    preflightActions: async (plan) => {
+      const action = plan.actions[0];
+      assert.equal(action?.type, "insert_device");
+      const deviceKey = `insert-device:track-101:${action.deviceName.toLowerCase()}`;
+      return Object.assign(
+        async () => undefined,
+        { actionKeys: [[deviceKey]] },
+      );
+    },
+    confirmActions: async () => {
+      confirmations += 1;
+      return true;
+    },
+    executeActions: async (plan) => {
+      const action = plan.actions[0];
+      assert.equal(action?.type, "insert_device");
+      executedDevices.push(action.deviceName);
+      if (action.deviceName === "Ping Pong Delay") {
+        throw new AgentPartialCompletionError(
+          [],
+          new Error("Failed to insert device"),
+          0,
+          action,
+          "Lead",
+        );
+      }
+      return ['Inserted "Delay" on track "Lead".'];
+    },
+  });
+
+  assert.equal(result.message, "The available Delay device is in place.");
+  assert.deepEqual(executedDevices, ["Ping Pong Delay", "Delay"]);
+  assert.equal(confirmations, 2);
+  assert.match(
+    modelInputs[2]?.messages.at(-1)?.content ?? "",
+    /exact device insertion.*already rejected by Live/i,
+  );
+});
+
+test("an unresolved Live rejection cannot silently end on stale assistant text", async () => {
+  let modelCalls = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (): Promise<ModelTurn> => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: "Adding Drum Rack.",
+          toolCalls: [{
+            id: "drum-rack",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Add Drum Rack",
+              actions: [{
+                type: "insert_device",
+                trackName: "Drums",
+                deviceName: "Drum Rack",
+              }],
+            }),
+          }],
+        };
+      }
+      return { content: "", toolCalls: [] };
+    },
+    observe: async () => 'Track "Drums" devices=none',
+    preflightActions: async () => async () => undefined,
+    confirmActions: async () => true,
+    executeActions: async (plan) => {
+      throw new AgentPartialCompletionError(
+        [],
+        new Error("Failed to insert device"),
+        0,
+        plan.actions[0],
+        "Drums",
+      );
+    },
+  });
+
+  assert.match(result.message, /stopped with unfinished Live work/i);
+  assert.match(result.message, /Failed to insert device/i);
+  assert.notEqual(result.message, "Adding Drum Rack.");
 });
 
 test("completed actions cannot be resubmitted during partial-plan repair", async () => {

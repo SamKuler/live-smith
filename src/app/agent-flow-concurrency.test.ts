@@ -11,11 +11,30 @@ import type { SavedProfile } from "../model/profile.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
 import { createSession, listSessions } from "../storage/sessions.js";
-import { saveSavedProfile } from "../storage/settings.js";
+import { saveGlobalSettings, saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
-import { runAgentFlow } from "./agent-flow.js";
+import { autoApproveEnabledForPlan, runAgentFlow } from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
+
+test("Auto approve is reread for each new plan and never bypasses explicit confirmation", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-auto-approve-"));
+  const undoablePlan = {
+    message: "Set tempo",
+    actions: [{ type: "set_tempo" as const, tempo: 128 }],
+  };
+  const destructivePlan = {
+    message: "Delete Bass",
+    actions: [{ type: "delete_track" as const, trackName: "Bass" }],
+  };
+
+  await saveGlobalSettings(directory, { autoApprove: false });
+  assert.equal(await autoApproveEnabledForPlan(directory, undoablePlan), false);
+
+  await saveGlobalSettings(directory, { autoApprove: true });
+  assert.equal(await autoApproveEnabledForPlan(directory, undoablePlan), true);
+  assert.equal(await autoApproveEnabledForPlan(directory, destructivePlan), false);
+});
 
 test("concurrent state and discovery responses each keep models, capabilities, and source from one profile", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-state-race-"));

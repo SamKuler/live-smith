@@ -71,6 +71,11 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
     });
+    const profileCommand = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "activate_profile", profileId: "profile-1" }),
+    });
 
     assert.equal(secondSend.status, 409);
     assert.deepEqual(await secondSend.json(), {
@@ -79,11 +84,12 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     });
     assert.equal(otherSessionSend.status, 200);
     assert.equal(command.status, 200);
-    assert.equal(settingsCommand.status, 409);
-    assert.deepEqual(await settingsCommand.json(), {
-      error: "Profile and global settings cannot change while an agent request is active.",
+    assert.equal(settingsCommand.status, 200);
+    assert.equal(profileCommand.status, 409);
+    assert.deepEqual(await profileCommand.json(), {
+      error: "Profile settings cannot change while an agent request is active.",
     });
-    assert.equal(commandCalls, 1);
+    assert.equal(commandCalls, 2);
   } finally {
     releaseSend();
     await firstSend;

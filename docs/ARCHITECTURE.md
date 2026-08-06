@@ -103,13 +103,19 @@ src/
 7. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
-   tempo, mute, solo, and device parameter value; Auto approve cannot bypass it.
+   tempo, mute, solo, and device parameter value. Host `bigint` values are
+   encoded deterministically at this fingerprint boundary instead of being
+   passed to ordinary JSON serialization; Auto approve cannot bypass the guard.
 8. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
    other action-relevant state performs no mutation and returns a failed tool
    result so the model can inspect again before proposing a new confirmation.
 9. `agent/loop.ts` executes the bounded apply loop without inspecting provider
-   or protocol data.
+   or protocol data. Successful and partially successful Live writes renew a
+   rolling no-mutation budget; observations do not. The loop has no accumulated
+   tool-call quota, but returns excessive one-turn tool fanout to the model for
+   regrouping without executing that batch, and retains a broad per-request
+   runaway ceiling.
 
 One confirmation is an authorization boundary, not a promise of one Live Undo
 entry. The 1.0.0 beta SDK does not allow awaiting inside a transaction, so an
@@ -224,13 +230,19 @@ client-supplied scope/project data and atomically rebinds the chosen history to
 the current server-owned opening scope.
 Model context uses the latest 24 user/assistant events. The bridge permits one
 active send per Session while different Sessions may observe and plan in
-parallel. Session select/create/restore/rename/delete commands remain available during
-background sends, but Profile, model-discovery, and global-setting writes are
-locked in both the dialog and bridge while any send is active. Confirmed Live
-mutations enter one process-wide queue; after acquiring
+parallel. Session select/create/restore/rename/delete commands remain available
+during background sends, but Profile and model-discovery writes are locked in
+both the dialog and bridge while any send is active. The global Auto approve
+toggle is the exception: it remains writable during a send and is read again
+immediately before each new Apply decision. Profile and RuntimeProfile state
+remain the request-start snapshot, and a confirmation already open is not
+changed. Confirmed Live mutations enter one process-wide queue; after acquiring
 the queue lock, each plan repeats its preflight immediately before execution.
-The agent loop also enforces iteration, tool-call, cancellation, and
-consecutive-failure limits. Command and send SSE
+The agent loop enforces a rolling 12-step no-mutation window, a broad 64-step
+per-request runaway ceiling, a per-model-turn tool fanout limit, cancellation,
+and consecutive-failure limits. Completed Live mutations renew only the rolling
+window, so normal multi-stage work can continue; accumulated tool calls are not
+used as a project-size limit. Command and send SSE
 events carry the initiating request's correlation ID, and Stop identifies its
 target send, so delayed state, completion, error, or cancellation traffic cannot
 affect a later operation. State reads that arrive during a command wait for the

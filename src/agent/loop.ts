@@ -41,8 +41,12 @@ export interface AgentActionPreflightGuard<ExecutionBindings = undefined> {
 
 export interface AgentLoopOptions<ExecutionBindings = undefined> {
   maxConsecutiveFailures: number;
+  /** Rolling number of planning steps allowed without a completed Live mutation. */
   maxIterations?: number;
-  maxToolCalls?: number;
+  /** Broad runaway guard; this is not renewed by progress. */
+  maxTotalIterations?: number;
+  /** Protocol guard for one assistant turn, not an accumulated request budget. */
+  maxToolCallsPerTurn?: number;
   signal?: AbortSignal;
   askModel(input: AgentLoopModelInput): Promise<ModelTurn>;
   observe(request: AgentObservationRequest): Promise<string>;
@@ -122,7 +126,17 @@ export class AgentPartialCompletionError extends Error {
 
 interface AgentRecoveryState {
   readonly completedActionKeys: Set<string>;
+  readonly rejectedActionKeys: Set<string>;
   requiredObservation: AgentObservationRequest | undefined;
+  unresolvedFailure: string | undefined;
+}
+
+interface ToolCallExecutionResult {
+  toolContent: string;
+  userMessage: string;
+  cancelled: boolean;
+  failed: boolean;
+  mutationProgress: boolean;
 }
 
 class AgentRecoveryPlanError extends Error {
@@ -137,21 +151,30 @@ export async function runAgentLoop(
 ): Promise<AgentLoopResult> {
   const messages: ModelConversationMessage[] = [];
   const maxIterations = options.maxIterations ?? 12;
-  const maxToolCalls = options.maxToolCalls ?? 32;
+  const maxTotalIterations = options.maxTotalIterations ?? 64;
+  const maxToolCallsPerTurn = options.maxToolCallsPerTurn ?? 32;
   let lastMessage = "";
   let consecutiveFailures = 0;
-  let toolCallCount = 0;
+  let mutationProgressDeadline = Math.min(maxIterations, maxTotalIterations);
   const recoveryState: AgentRecoveryState = {
     completedActionKeys: new Set(),
+    rejectedActionKeys: new Set(),
     requiredObservation: undefined,
+    unresolvedFailure: undefined,
   };
 
   for (let iteration = 1; ; iteration += 1) {
     throwIfAborted(options.signal);
-    if (iteration > maxIterations) {
+    if (iteration > maxTotalIterations) {
       return stopAtSafetyLimit(
         options,
-        `Stopped after reaching the safety limit of ${maxIterations} planning steps. Please continue with a narrower request.`,
+        `Reached the hard safety limit of ${maxTotalIterations} planning steps in one request. Continue the project in this Session; completed Live work and conversation context are preserved.`,
+      );
+    }
+    if (iteration > mutationProgressDeadline) {
+      return stopAtSafetyLimit(
+        options,
+        `Stopped after ${maxIterations} planning steps without completing another Live mutation. Continue in this Session with the unfinished stage or inspect the latest error.`,
       );
     }
 
@@ -179,21 +202,39 @@ export async function runAgentLoop(
     }
 
     if (!turn.toolCalls.length) {
+      if (!turn.content?.trim() && recoveryState.unresolvedFailure) {
+        return {
+          message: [
+            "Live Smith stopped with unfinished Live work.",
+            recoveryState.unresolvedFailure,
+            "Continue in this Session to choose an available alternative or finish the remaining stage.",
+          ].join("\n"),
+        };
+      }
       return {
         message: lastMessage || "Done.",
       };
     }
 
+    if (turn.toolCalls.length > maxToolCallsPerTurn) {
+      const content = `This model turn returned ${turn.toolCalls.length} tool calls, exceeding the per-turn safety limit of ${maxToolCallsPerTurn}. None were executed. Regroup the same unfinished stage into fewer tool calls; completed Live work is preserved.`;
+      answerToolCallsWithoutExecution(messages, turn.toolCalls, content);
+      await emitTraceEvent(options, { kind: "error", content });
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= options.maxConsecutiveFailures) {
+        return {
+          message: [
+            content,
+            "",
+            `Stopped after ${consecutiveFailures} consecutive failed tool-call batches.`,
+          ].join("\n"),
+        };
+      }
+      continue;
+    }
+
     for (const [toolCallIndex, toolCall] of turn.toolCalls.entries()) {
       throwIfAborted(options.signal);
-      if (toolCallCount >= maxToolCalls) {
-        skipRemainingToolCalls(messages, turn.toolCalls, toolCallIndex);
-        return stopAtSafetyLimit(
-          options,
-          `Stopped after reaching the safety limit of ${maxToolCalls} tool calls. Please continue with a narrower request.`,
-        );
-      }
-      toolCallCount += 1;
       await options.onProgress?.(progressLabelForToolCall(toolCall));
       await emitTraceEvent(options, {
         kind: "tool_call",
@@ -208,6 +249,13 @@ export async function runAgentLoop(
         content: result.toolContent,
       });
 
+      if (result.mutationProgress) {
+        mutationProgressDeadline = Math.min(
+          maxTotalIterations,
+          iteration + maxIterations,
+        );
+      }
+
       if (result.cancelled) {
         skipRemainingToolCalls(messages, turn.toolCalls, toolCallIndex + 1);
         return {
@@ -220,7 +268,9 @@ export async function runAgentLoop(
         // stop early - otherwise the next model request is rejected for having
         // unanswered tool calls.
         skipRemainingToolCalls(messages, turn.toolCalls, toolCallIndex + 1);
-        consecutiveFailures += 1;
+        consecutiveFailures = result.mutationProgress
+          ? 0
+          : consecutiveFailures + 1;
         if (consecutiveFailures >= options.maxConsecutiveFailures) {
           return {
             message: [
@@ -260,16 +310,25 @@ function skipRemainingToolCalls(
   }
 }
 
+function answerToolCallsWithoutExecution(
+  messages: ModelConversationMessage[],
+  toolCalls: ModelToolCall[],
+  content: string,
+): void {
+  for (const toolCall of toolCalls) {
+    messages.push({
+      role: "tool",
+      toolCallId: toolCall.id,
+      content,
+    });
+  }
+}
+
 async function executeToolCall(
   options: AgentLoopOptions<unknown>,
   toolCall: ModelToolCall,
   recoveryState: AgentRecoveryState,
-): Promise<{
-  toolContent: string;
-  userMessage: string;
-  cancelled: boolean;
-  failed: boolean;
-}> {
+): Promise<ToolCallExecutionResult> {
   let applyPlan: AgentPlan | undefined;
   let applyActionKeys: readonly (readonly string[])[] | undefined;
   try {
@@ -294,6 +353,7 @@ async function executeToolCall(
         userMessage: observation,
         cancelled: false,
         failed: false,
+        mutationProgress: false,
       };
     }
 
@@ -312,6 +372,12 @@ async function executeToolCall(
         throw new AgentRecoveryPlanError(
           `Action ${repeatedActionIndex + 1} repeats work already completed earlier in this agent request: ${summarizeAgentAction(plan.actions[repeatedActionIndex]!)} Continue with missing work only.`,
         );
+      }
+      const rejectedActionIndex = plan.actions.findIndex((action) =>
+        recoveryState.rejectedActionKeys.has(agentActionKey(action))
+      );
+      if (rejectedActionIndex >= 0) {
+        throw rejectedDeviceInsertionError(plan, rejectedActionIndex);
       }
       if (!options.preflightActions) {
         throw new AgentActionPreflightError(
@@ -338,6 +404,12 @@ async function executeToolCall(
           throw new AgentRecoveryPlanError(
             `Action ${repeatedSemanticActionIndex + 1} repeats work already completed earlier in this agent request: ${summarizeAgentAction(plan.actions[repeatedSemanticActionIndex]!)} Continue with missing work only.`,
           );
+        }
+        const rejectedSemanticActionIndex = applyActionKeys?.findIndex((keys) =>
+          keys.some((key) => recoveryState.rejectedActionKeys.has(key))
+        ) ?? -1;
+        if (rejectedSemanticActionIndex >= 0) {
+          throw rejectedDeviceInsertionError(plan, rejectedSemanticActionIndex);
         }
         throwIfAborted(options.signal);
       } catch (error) {
@@ -373,6 +445,7 @@ async function executeToolCall(
           userMessage: `${summary}\n\nActions were not applied.`,
           cancelled: true,
           failed: false,
+          mutationProgress: false,
         };
       }
 
@@ -405,11 +478,13 @@ async function executeToolCall(
         throw new AgentApplyResultReportingError(results, error);
       }
       throwIfAborted(options.signal);
+      recoveryState.unresolvedFailure = undefined;
       return {
         toolContent: content,
         userMessage: content,
         cancelled: false,
         failed: false,
+        mutationProgress: plan.actions.length > 0,
       };
     }
 
@@ -429,6 +504,12 @@ async function executeToolCall(
         );
       }
       throwIfAborted(options.signal);
+      recoveryState.unresolvedFailure = failureContent;
+      recordRejectedDeviceInsertion(
+        recoveryState,
+        error,
+        applyActionKeys,
+      );
       if (error.failedActionIndex !== undefined && error.failedActionIndex > 0) {
         const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
         const hasGranularCompletionKeys = error.completedActionKeys.some(
@@ -491,6 +572,7 @@ async function executeToolCall(
         userMessage: content,
         cancelled: false,
         failed: true,
+        mutationProgress: error.completedResults.length > 0,
       };
     }
     if (error instanceof AgentRecoveryPlanError) {
@@ -505,6 +587,7 @@ async function executeToolCall(
         userMessage: content,
         cancelled: false,
         failed: true,
+        mutationProgress: false,
       };
     }
     if (
@@ -512,6 +595,21 @@ async function executeToolCall(
       error instanceof AgentApplyResultReportingError
     ) {
       throw error;
+    }
+    if (error instanceof AgentActionPreflightError) {
+      throwIfAborted(options.signal);
+      const content = [
+        `Live Smith could not verify current Live state for this action plan: ${error.message}`,
+        "This is a Live-state preflight failure, not evidence that the JSON arguments are invalid or that the payload is too large. Inspect the relevant Live object and repair its target or state assumptions. Do not split or simplify the requested work solely because of this error.",
+      ].join("\n");
+      await emitTraceEvent(options, { kind: "error", content });
+      return {
+        toolContent: content,
+        userMessage: content,
+        cancelled: false,
+        failed: true,
+        mutationProgress: false,
+      };
     }
     throwIfAborted(options.signal);
     const message = errorMessage(error);
@@ -525,8 +623,38 @@ async function executeToolCall(
       userMessage: content,
       cancelled: false,
       failed: true,
+      mutationProgress: false,
     };
   }
+}
+
+function recordRejectedDeviceInsertion(
+  recoveryState: AgentRecoveryState,
+  error: AgentPartialCompletionError,
+  applyActionKeys: readonly (readonly string[])[] | undefined,
+): void {
+  const failedAction = error.failedAction;
+  const failedActionIndex = error.failedActionIndex;
+  if (
+    failedActionIndex === undefined ||
+    !failedAction ||
+    (failedAction.type !== "insert_device" &&
+      failedAction.type !== "insert_chain_device")
+  ) return;
+
+  recoveryState.rejectedActionKeys.add(agentActionKey(failedAction));
+  for (const key of applyActionKeys?.[failedActionIndex] ?? []) {
+    recoveryState.rejectedActionKeys.add(key);
+  }
+}
+
+function rejectedDeviceInsertionError(
+  plan: AgentPlan,
+  actionIndex: number,
+): AgentRecoveryPlanError {
+  return new AgentRecoveryPlanError(
+    `Action ${actionIndex + 1} repeats an exact device insertion already rejected by Live in this agent request: ${summarizeAgentAction(plan.actions[actionIndex]!)} Choose an observed available alternative or continue with other missing work instead.`,
+  );
 }
 
 function recoveryRequestForFailure(
