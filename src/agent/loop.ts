@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+
 import {
+  observationRequestForAction,
   validateAgentPlan,
   summarizeAgentAction,
   summarizeActionPlan,
@@ -22,8 +25,22 @@ export type AgentLoopTraceEvent =
   | { kind: "tool_call"; name: string; content: string }
   | { kind: "tool_result"; name: string; content: string }
   | { kind: "apply_requested"; content: string }
-  | { kind: "apply_result"; content: string }
+  | {
+      kind: "apply_result";
+      content: string;
+      recovery?: AgentRecoveryLedgerUpdate;
+    }
   | { kind: "error"; content: string };
+
+export interface AgentRecoveryLedgerUpdate {
+  active: boolean;
+  completedActionDigests: string[];
+}
+
+export interface AgentLoopInitialRecoveryState {
+  completedActionDigests: readonly string[];
+  unresolvedFailure: string;
+}
 
 export interface AgentLoopModelInput {
   messages: ModelConversationMessage[];
@@ -34,19 +51,32 @@ export interface AgentLoopResult {
   message: string;
 }
 
+export interface AgentActionExecutionOutcome {
+  results: string[];
+  mutationCount: number;
+  incompleteRecovery?: {
+    completedActionKeys: readonly (readonly string[])[];
+    failedActionIndex?: number;
+    failureMessage: string;
+  };
+}
+
 export interface AgentActionPreflightGuard<ExecutionBindings = undefined> {
   (): Promise<ExecutionBindings>;
   readonly actionKeys?: readonly (readonly string[])[];
 }
 
 export interface AgentLoopOptions<ExecutionBindings = undefined> {
+  /** Stops the same repeated model argument/protocol violation; distinct repairs do not count. */
   maxConsecutiveFailures: number;
-  /** Rolling number of planning steps allowed without a completed Live mutation. */
+  /** Rolling number of planning steps allowed without new Live information or mutation. */
   maxIterations?: number;
-  /** Broad runaway guard; this is not renewed by progress. */
-  maxTotalIterations?: number;
   /** Protocol guard for one assistant turn, not an accumulated request budget. */
   maxToolCallsPerTurn?: number;
+  /** Stops repeated host repair attempts that make no actual Live mutation. */
+  maxHostFailuresWithoutMutation?: number;
+  /** Persisted replay guard from the latest unfinished operation in this Session. */
+  initialRecoveryState?: AgentLoopInitialRecoveryState;
   signal?: AbortSignal;
   askModel(input: AgentLoopModelInput): Promise<ModelTurn>;
   observe(request: AgentObservationRequest): Promise<string>;
@@ -55,12 +85,12 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   ): Promise<AgentActionPreflightGuard<ExecutionBindings>>;
   confirmActions(plan: AgentPlan): Promise<boolean>;
   withActionExecutionLock?(
-    operation: () => Promise<string[]>,
-  ): Promise<string[]>;
+    operation: () => Promise<AgentActionExecutionOutcome>,
+  ): Promise<AgentActionExecutionOutcome>;
   executeActions(
     plan: AgentPlan,
     bindings: ExecutionBindings,
-  ): Promise<string[]>;
+  ): Promise<AgentActionExecutionOutcome>;
   onProgress?(message: string): Promise<void> | void;
   onEvent?(event: AgentLoopTraceEvent): Promise<void> | void;
 }
@@ -105,6 +135,7 @@ export class AgentPartialCompletionError extends Error {
     readonly failedAction?: AgentAction,
     readonly failedTrackName?: string,
     readonly completedActionKeys: readonly (readonly string[])[] = [],
+    readonly completedMutationCount: number = completedResults.length,
   ) {
     super([
       completedResults.length
@@ -126,7 +157,7 @@ export class AgentPartialCompletionError extends Error {
 
 interface AgentRecoveryState {
   readonly completedActionKeys: Set<string>;
-  readonly rejectedActionKeys: Set<string>;
+  readonly completedActionDigests: Set<string>;
   requiredObservation: AgentObservationRequest | undefined;
   unresolvedFailure: string | undefined;
 }
@@ -137,6 +168,8 @@ interface ToolCallExecutionResult {
   cancelled: boolean;
   failed: boolean;
   mutationProgress: boolean;
+  progressKey?: string;
+  failureKind?: "arguments" | "observation" | "host" | "internal";
 }
 
 class AgentRecoveryPlanError extends Error {
@@ -146,35 +179,49 @@ class AgentRecoveryPlanError extends Error {
   }
 }
 
+class AgentToolArgumentsError extends Error {
+  constructor(cause: unknown) {
+    super(errorMessage(cause), { cause });
+    this.name = "AgentToolArgumentsError";
+  }
+}
+
+class AgentObservationError extends Error {
+  constructor(readonly request: AgentObservationRequest, cause: unknown) {
+    super(errorMessage(cause), { cause });
+    this.name = "AgentObservationError";
+  }
+}
+
 export async function runAgentLoop(
   options: AgentLoopOptions<unknown>,
 ): Promise<AgentLoopResult> {
   const messages: ModelConversationMessage[] = [];
   const maxIterations = options.maxIterations ?? 12;
-  const maxTotalIterations = options.maxTotalIterations ?? 64;
   const maxToolCallsPerTurn = options.maxToolCallsPerTurn ?? 32;
+  const maxHostFailuresWithoutMutation =
+    options.maxHostFailuresWithoutMutation ?? 6;
   let lastMessage = "";
-  let consecutiveFailures = 0;
-  let mutationProgressDeadline = Math.min(maxIterations, maxTotalIterations);
+  let repeatedArgumentFailures = 0;
+  let lastArgumentFailure = "";
+  let hostFailuresWithoutMutation = 0;
+  let planningProgressDeadline = maxIterations;
+  const observedProgress = new Set<string>();
   const recoveryState: AgentRecoveryState = {
     completedActionKeys: new Set(),
-    rejectedActionKeys: new Set(),
+    completedActionDigests: new Set(
+      options.initialRecoveryState?.completedActionDigests ?? [],
+    ),
     requiredObservation: undefined,
-    unresolvedFailure: undefined,
+    unresolvedFailure: options.initialRecoveryState?.unresolvedFailure,
   };
 
   for (let iteration = 1; ; iteration += 1) {
     throwIfAborted(options.signal);
-    if (iteration > maxTotalIterations) {
+    if (iteration > planningProgressDeadline) {
       return stopAtSafetyLimit(
         options,
-        `Reached the hard safety limit of ${maxTotalIterations} planning steps in one request. Continue the project in this Session; completed Live work and conversation context are preserved.`,
-      );
-    }
-    if (iteration > mutationProgressDeadline) {
-      return stopAtSafetyLimit(
-        options,
-        `Stopped after ${maxIterations} planning steps without completing another Live mutation. Continue in this Session with the unfinished stage or inspect the latest error.`,
+        `Stopped after ${maxIterations} planning steps without new Live information or a completed Live mutation. Continue in this Session with the unfinished stage or inspect the latest error.`,
       );
     }
 
@@ -196,37 +243,45 @@ export async function runAgentLoop(
         : {}),
     });
 
-    if (turn.content?.trim()) {
-      lastMessage = turn.content.trim();
-      await emitTraceEvent(options, { kind: "assistant", content: lastMessage });
-    }
-
     if (!turn.toolCalls.length) {
-      if (!turn.content?.trim() && recoveryState.unresolvedFailure) {
-        return {
-          message: [
-            "Live Smith stopped with unfinished Live work.",
-            recoveryState.unresolvedFailure,
-            "Continue in this Session to choose an available alternative or finish the remaining stage.",
-          ].join("\n"),
-        };
+      const finalText = turn.content?.trim();
+      if (recoveryState.unresolvedFailure) {
+        const message = unfinishedWorkMessage(
+          recoveryState.unresolvedFailure,
+          finalText,
+        );
+        await emitTraceEvent(options, { kind: "error", content: message });
+        return { message };
+      }
+      if (finalText) {
+        lastMessage = finalText;
+        await emitTraceEvent(options, { kind: "assistant", content: lastMessage });
       }
       return {
         message: lastMessage || "Done.",
       };
     }
 
+    if (turn.content?.trim()) {
+      lastMessage = turn.content.trim();
+      await emitTraceEvent(options, { kind: "assistant", content: lastMessage });
+    }
+
     if (turn.toolCalls.length > maxToolCallsPerTurn) {
       const content = `This model turn returned ${turn.toolCalls.length} tool calls, exceeding the per-turn safety limit of ${maxToolCallsPerTurn}. None were executed. Regroup the same unfinished stage into fewer tool calls; completed Live work is preserved.`;
       answerToolCallsWithoutExecution(messages, turn.toolCalls, content);
       await emitTraceEvent(options, { kind: "error", content });
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= options.maxConsecutiveFailures) {
+      if (content === lastArgumentFailure) repeatedArgumentFailures += 1;
+      else {
+        lastArgumentFailure = content;
+        repeatedArgumentFailures = 1;
+      }
+      if (repeatedArgumentFailures >= options.maxConsecutiveFailures) {
         return {
           message: [
             content,
             "",
-            `Stopped after ${consecutiveFailures} consecutive failed tool-call batches.`,
+            `Stopped after the same invalid tool-call batch repeated ${repeatedArgumentFailures} times.`,
           ].join("\n"),
         };
       }
@@ -249,11 +304,16 @@ export async function runAgentLoop(
         content: result.toolContent,
       });
 
+      const newObservationProgress = result.progressKey !== undefined &&
+        !observedProgress.has(result.progressKey);
+      if (result.progressKey !== undefined) observedProgress.add(result.progressKey);
+      if (result.mutationProgress || newObservationProgress) {
+        planningProgressDeadline = iteration + maxIterations;
+      }
       if (result.mutationProgress) {
-        mutationProgressDeadline = Math.min(
-          maxTotalIterations,
-          iteration + maxIterations,
-        );
+        hostFailuresWithoutMutation = 0;
+      } else if (result.failed && result.failureKind === "host") {
+        hostFailuresWithoutMutation += 1;
       }
 
       if (result.cancelled) {
@@ -268,24 +328,62 @@ export async function runAgentLoop(
         // stop early - otherwise the next model request is rejected for having
         // unanswered tool calls.
         skipRemainingToolCalls(messages, turn.toolCalls, toolCallIndex + 1);
-        consecutiveFailures = result.mutationProgress
-          ? 0
-          : consecutiveFailures + 1;
-        if (consecutiveFailures >= options.maxConsecutiveFailures) {
+        if (
+          hostFailuresWithoutMutation >= maxHostFailuresWithoutMutation
+        ) {
+          const safetyMessage =
+            `Stopped after ${hostFailuresWithoutMutation} host failures without a completed Live mutation. ` +
+            "This bounds unproductive repair churn; it is not a total workflow or tool-call limit.";
+          return stopAtSafetyLimit(
+            options,
+            recoveryState.unresolvedFailure
+              ? `${safetyMessage}\n\n${unfinishedWorkMessage(recoveryState.unresolvedFailure)}`
+              : safetyMessage,
+          );
+        }
+        if (result.failureKind === "arguments") {
+          if (result.toolContent === lastArgumentFailure) repeatedArgumentFailures += 1;
+          else {
+            lastArgumentFailure = result.toolContent;
+            repeatedArgumentFailures = 1;
+          }
+        } else {
+          repeatedArgumentFailures = 0;
+          lastArgumentFailure = "";
+        }
+        if (repeatedArgumentFailures >= options.maxConsecutiveFailures) {
+          const stopMessage =
+            `Stopped after the same invalid tool error repeated ${repeatedArgumentFailures} times.`;
+          await emitTraceEvent(options, { kind: "error", content: stopMessage });
           return {
             message: [
               result.userMessage,
               "",
-              `Stopped after ${consecutiveFailures} consecutive failed tool calls.`,
+              stopMessage,
             ].join("\n"),
           };
         }
         break;
       }
 
-      consecutiveFailures = 0;
+      repeatedArgumentFailures = 0;
+      lastArgumentFailure = "";
     }
   }
+}
+
+function unfinishedWorkMessage(
+  failure: string,
+  modelFinalText?: string,
+): string {
+  return [
+    "Live Smith stopped with unfinished Live work.",
+    failure,
+    modelFinalText
+      ? `The model returned final text without resolving that Live failure: ${modelFinalText}`
+      : "",
+    "Continue in this Session to choose an available alternative or finish the remaining stage.",
+  ].filter(Boolean).join("\n");
 }
 
 async function stopAtSafetyLimit(
@@ -333,9 +431,19 @@ async function executeToolCall(
   let applyActionKeys: readonly (readonly string[])[] | undefined;
   try {
     if (isObservationTool(toolCall.name)) {
-      const request = observationRequestFromToolCall(toolCall);
+      let request: AgentObservationRequest;
+      try {
+        request = observationRequestFromToolCall(toolCall);
+      } catch (error) {
+        throw new AgentToolArgumentsError(error);
+      }
       throwIfAborted(options.signal);
-      const observation = await options.observe(request);
+      let observation: string;
+      try {
+        observation = await options.observe(request);
+      } catch (error) {
+        throw new AgentObservationError(request, error);
+      }
       throwIfAborted(options.signal);
       if (
         recoveryState.requiredObservation &&
@@ -354,30 +462,35 @@ async function executeToolCall(
         cancelled: false,
         failed: false,
         mutationProgress: false,
+        progressKey: observation,
       };
     }
 
     if (toolCall.name === "apply_live_actions") {
-      const plan = actionPlanFromToolCall(toolCall);
+      let plan: AgentPlan;
+      try {
+        plan = actionPlanFromToolCall(toolCall);
+      } catch (error) {
+        throw new AgentToolArgumentsError(error);
+      }
       applyPlan = plan;
+      if (plan.resolvesPriorFailure && !recoveryState.unresolvedFailure) {
+        throw new AgentRecoveryPlanError(
+          "resolvesPriorFailure is only valid while this Session has an unfinished Live operation. Omit it for normal work.",
+        );
+      }
       if (recoveryState.requiredObservation) {
         throw new AgentRecoveryPlanError(
           "Live state could not be refreshed after the previous partial apply. Inspect the affected Live object successfully before proposing another mutation.",
         );
       }
       const repeatedActionIndex = plan.actions.findIndex((action) =>
-        recoveryState.completedActionKeys.has(agentActionKey(action))
+        hasCompletedActionIdentity(recoveryState, agentActionKey(action))
       );
       if (repeatedActionIndex >= 0) {
         throw new AgentRecoveryPlanError(
-          `Action ${repeatedActionIndex + 1} repeats work already completed earlier in this agent request: ${summarizeAgentAction(plan.actions[repeatedActionIndex]!)} Continue with missing work only.`,
+          `Action ${repeatedActionIndex + 1} repeats work already completed in this Session's unfinished operation: ${summarizeAgentAction(plan.actions[repeatedActionIndex]!)} Continue with missing work only.`,
         );
-      }
-      const rejectedActionIndex = plan.actions.findIndex((action) =>
-        recoveryState.rejectedActionKeys.has(agentActionKey(action))
-      );
-      if (rejectedActionIndex >= 0) {
-        throw rejectedDeviceInsertionError(plan, rejectedActionIndex);
       }
       if (!options.preflightActions) {
         throw new AgentActionPreflightError(
@@ -398,18 +511,12 @@ async function executeToolCall(
         }
         applyActionKeys = revalidateActions.actionKeys;
         const repeatedSemanticActionIndex = applyActionKeys?.findIndex((keys) =>
-          keys.some((key) => recoveryState.completedActionKeys.has(key))
+          keys.some((key) => hasCompletedActionIdentity(recoveryState, key))
         ) ?? -1;
         if (repeatedSemanticActionIndex >= 0) {
           throw new AgentRecoveryPlanError(
-            `Action ${repeatedSemanticActionIndex + 1} repeats work already completed earlier in this agent request: ${summarizeAgentAction(plan.actions[repeatedSemanticActionIndex]!)} Continue with missing work only.`,
+            `Action ${repeatedSemanticActionIndex + 1} repeats work already completed in this Session's unfinished operation: ${summarizeAgentAction(plan.actions[repeatedSemanticActionIndex]!)} Continue with missing work only.`,
           );
-        }
-        const rejectedSemanticActionIndex = applyActionKeys?.findIndex((keys) =>
-          keys.some((key) => recoveryState.rejectedActionKeys.has(key))
-        ) ?? -1;
-        if (rejectedSemanticActionIndex >= 0) {
-          throw rejectedDeviceInsertionError(plan, rejectedSemanticActionIndex);
         }
         throwIfAborted(options.signal);
       } catch (error) {
@@ -465,26 +572,89 @@ async function executeToolCall(
         }
         return options.executeActions(plan, bindings);
       };
-      const results = options.withActionExecutionLock
+      const outcome = options.withActionExecutionLock
         ? await options.withActionExecutionLock(executeConfirmedActions)
         : await executeConfirmedActions();
-      const content = ["Applied:", ...results.map((item) => `- ${item}`)].join("\n");
+      if (outcome.incompleteRecovery) {
+        const recovery = outcome.incompleteRecovery;
+        const hasGranularCompletionKeys = recovery.completedActionKeys.some(
+          (keys) => keys.some((key) => key.startsWith("live-action-step:")),
+        );
+        const completedActionCount = (recovery.failedActionIndex ?? 0) + (
+          !hasGranularCompletionKeys &&
+          outcome.results.length > (recovery.failedActionIndex ?? 0)
+            ? 1
+            : 0
+        );
+        for (const action of plan.actions.slice(0, completedActionCount)) {
+          rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
+        }
+        for (const keys of recovery.completedActionKeys) {
+          for (const key of keys) rememberCompletedActionIdentity(recoveryState, key);
+        }
+        const content = [
+          `Live action plan partially completed after ${outcome.results.length} action(s).`,
+          ...outcome.results.map((item) => `Completed: ${item}`),
+          "The completed actions will not be retried automatically.",
+          recovery.failureMessage,
+        ].join("\n");
+        recoveryState.unresolvedFailure = content;
+        try {
+          await emitTraceEvent(options, {
+            kind: "apply_result",
+            content,
+            recovery: recoveryLedgerUpdate(recoveryState),
+          });
+        } catch (error) {
+          throw new AgentApplyResultReportingError(outcome.results, error);
+        }
+        throwIfAborted(options.signal);
+        return {
+          toolContent: content,
+          userMessage: content,
+          cancelled: false,
+          failed: true,
+          mutationProgress: outcome.mutationCount > 0,
+          failureKind: "host",
+        };
+      }
+      const content = ["Applied:", ...outcome.results.map((item) => `- ${item}`)].join("\n");
+      const recoveryActive = recoveryState.unresolvedFailure !== undefined;
+      const clearsRecovery = recoveryActive && plan.resolvesPriorFailure === true;
+      if (recoveryActive && !clearsRecovery) {
+        for (const [index, action] of plan.actions.entries()) {
+          rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
+          for (const key of applyActionKeys?.[index] ?? []) {
+            rememberCompletedActionIdentity(recoveryState, key);
+          }
+        }
+      }
+      const recoveryUpdate = clearsRecovery
+        ? { active: false, completedActionDigests: [] }
+        : recoveryActive
+          ? recoveryLedgerUpdate(recoveryState)
+          : undefined;
       try {
         await emitTraceEvent(options, {
           kind: "apply_result",
           content,
+          ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
         });
       } catch (error) {
-        throw new AgentApplyResultReportingError(results, error);
+        throw new AgentApplyResultReportingError(outcome.results, error);
       }
       throwIfAborted(options.signal);
-      recoveryState.unresolvedFailure = undefined;
+      if (clearsRecovery) {
+        recoveryState.unresolvedFailure = undefined;
+        recoveryState.completedActionKeys.clear();
+        recoveryState.completedActionDigests.clear();
+      }
       return {
         toolContent: content,
         userMessage: content,
         cancelled: false,
         failed: false,
-        mutationProgress: plan.actions.length > 0,
+        mutationProgress: outcome.mutationCount > 0,
       };
     }
 
@@ -492,24 +662,7 @@ async function executeToolCall(
   } catch (error) {
     if (error instanceof AgentPartialCompletionError) {
       const failureContent = error.message;
-      try {
-        await emitTraceEvent(options, {
-          kind: "apply_result",
-          content: failureContent,
-        });
-      } catch (reportingError) {
-        throw new AgentApplyResultReportingError(
-          error.completedResults,
-          reportingError,
-        );
-      }
-      throwIfAborted(options.signal);
       recoveryState.unresolvedFailure = failureContent;
-      recordRejectedDeviceInsertion(
-        recoveryState,
-        error,
-        applyActionKeys,
-      );
       if (error.failedActionIndex !== undefined && error.failedActionIndex > 0) {
         const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
         const hasGranularCompletionKeys = error.completedActionKeys.some(
@@ -522,13 +675,13 @@ async function executeToolCall(
             : 0
         );
         for (const action of failedPlan.actions.slice(0, completedActionCount)) {
-          recoveryState.completedActionKeys.add(agentActionKey(action));
+          rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
         }
         const semanticKeys = error.completedActionKeys.length
           ? error.completedActionKeys
           : (applyActionKeys ?? []).slice(0, completedActionCount);
         for (const keys of semanticKeys) {
-          for (const key of keys) recoveryState.completedActionKeys.add(key);
+          for (const key of keys) rememberCompletedActionIdentity(recoveryState, key);
         }
       } else if (
         error.failedActionIndex === 0 &&
@@ -539,13 +692,29 @@ async function executeToolCall(
           (keys) => keys.some((key) => key.startsWith("live-action-step:")),
         );
         if (!hasGranularCompletionKeys) {
-          recoveryState.completedActionKeys.add(agentActionKey(failedPlan.actions[0]!));
+          rememberCompletedActionIdentity(
+            recoveryState,
+            agentActionKey(failedPlan.actions[0]!),
+          );
         }
         const semanticKeys = error.completedActionKeys[0] ?? applyActionKeys?.[0] ?? [];
         for (const key of semanticKeys) {
-          recoveryState.completedActionKeys.add(key);
+          rememberCompletedActionIdentity(recoveryState, key);
         }
       }
+      try {
+        await emitTraceEvent(options, {
+          kind: "apply_result",
+          content: failureContent,
+          recovery: recoveryLedgerUpdate(recoveryState),
+        });
+      } catch (reportingError) {
+        throw new AgentApplyResultReportingError(
+          error.completedResults,
+          reportingError,
+        );
+      }
+      throwIfAborted(options.signal);
       const requiredObservation = recoveryRequestForFailure(error);
       recoveryState.requiredObservation = requiredObservation;
       let recoveryObservation = "";
@@ -564,15 +733,19 @@ async function executeToolCall(
         "Current Live state after the failure:",
         recoveryObservation,
         recoveryObservationAvailable
-          ? "Use this refreshed state or inspect a narrower target, keep every completed or reused action, and continue only with missing work. Treat an exact device name rejected by Live as unavailable in this host; choose a current alternative instead of retrying the same name."
-          : "Inspect the affected Live object successfully before applying anything else. Keep every completed or reused action, and continue only with missing work. Treat an exact device name rejected by Live as unavailable in this host; choose a current alternative instead of retrying the same name.",
+          ? "Use this refreshed state or inspect a narrower target, keep every completed action, and continue only with missing work. The beta SDK did not identify the failure cause; do not infer that the device name is unavailable. Repair only what the observed state supports."
+          : "Inspect the affected Live object successfully before applying anything else. Keep every completed action and continue only with missing work. The beta SDK did not identify the failure cause; do not infer that the device name is unavailable.",
       ].join("\n");
       return {
         toolContent: content,
         userMessage: content,
         cancelled: false,
         failed: true,
-        mutationProgress: error.completedResults.length > 0,
+        mutationProgress: error.completedMutationCount > 0,
+        ...(recoveryObservationAvailable
+          ? { progressKey: recoveryProgressKey(error, requiredObservation) }
+          : {}),
+        failureKind: "host",
       };
     }
     if (error instanceof AgentRecoveryPlanError) {
@@ -588,6 +761,43 @@ async function executeToolCall(
         cancelled: false,
         failed: true,
         mutationProgress: false,
+        failureKind: "host",
+      };
+    }
+    if (error instanceof AgentToolArgumentsError) {
+      throwIfAborted(options.signal);
+      const content = [
+        `Tool call "${toolCall.name}" has invalid arguments: ${error.message}`,
+        "Correct the tool fields and types, then retry. Do not change the musical request or split valid work solely because of this argument error.",
+      ].join("\n");
+      await emitTraceEvent(options, {
+        kind: "tool_result",
+        name: toolCall.name,
+        content,
+      });
+      return {
+        toolContent: content,
+        userMessage: content,
+        cancelled: false,
+        failed: true,
+        mutationProgress: false,
+        failureKind: "arguments",
+      };
+    }
+    if (error instanceof AgentObservationError) {
+      throwIfAborted(options.signal);
+      const content = [
+        `Live observation "${error.request.type}" failed: ${error.message}`,
+        "The tool arguments were accepted. Reinspect the current object or a narrower target; do not infer missing Live state and do not split the requested edit solely because of this observation failure.",
+      ].join("\n");
+      await emitTraceEvent(options, { kind: "error", content });
+      return {
+        toolContent: content,
+        userMessage: content,
+        cancelled: false,
+        failed: true,
+        mutationProgress: false,
+        failureKind: "observation",
       };
     }
     if (
@@ -609,13 +819,14 @@ async function executeToolCall(
         cancelled: false,
         failed: true,
         mutationProgress: false,
+        failureKind: "host",
       };
     }
     throwIfAborted(options.signal);
     const message = errorMessage(error);
     const content = [
       `Tool call "${toolCall.name}" failed: ${message}`,
-      "Retry with valid, complete JSON arguments. Do not repeat actions reported as completed or reused. If the planned edit is large, split it into smaller tool calls. If setting device parameters, inspect the device first and use exact observed parameter names.",
+      "The failure category is unknown. Preserve completed actions, inspect relevant Live state when possible, and retry only a repair supported by evidence.",
     ].join("\n");
     await emitTraceEvent(options, { kind: "error", content });
     return {
@@ -624,37 +835,9 @@ async function executeToolCall(
       cancelled: false,
       failed: true,
       mutationProgress: false,
+      failureKind: "internal",
     };
   }
-}
-
-function recordRejectedDeviceInsertion(
-  recoveryState: AgentRecoveryState,
-  error: AgentPartialCompletionError,
-  applyActionKeys: readonly (readonly string[])[] | undefined,
-): void {
-  const failedAction = error.failedAction;
-  const failedActionIndex = error.failedActionIndex;
-  if (
-    failedActionIndex === undefined ||
-    !failedAction ||
-    (failedAction.type !== "insert_device" &&
-      failedAction.type !== "insert_chain_device")
-  ) return;
-
-  recoveryState.rejectedActionKeys.add(agentActionKey(failedAction));
-  for (const key of applyActionKeys?.[failedActionIndex] ?? []) {
-    recoveryState.rejectedActionKeys.add(key);
-  }
-}
-
-function rejectedDeviceInsertionError(
-  plan: AgentPlan,
-  actionIndex: number,
-): AgentRecoveryPlanError {
-  return new AgentRecoveryPlanError(
-    `Action ${actionIndex + 1} repeats an exact device insertion already rejected by Live in this agent request: ${summarizeAgentAction(plan.actions[actionIndex]!)} Choose an observed available alternative or continue with other missing work instead.`,
-  );
 }
 
 function recoveryRequestForFailure(
@@ -662,112 +845,54 @@ function recoveryRequestForFailure(
 ): AgentObservationRequest {
   const action = error.failedAction;
   if (!action) return { type: "inspect_live_set" };
-  if (
-    action.type === "set_tempo" ||
-    action.type === "create_scene" ||
-    action.type === "rename_scene" ||
-    action.type === "duplicate_scene" ||
-    action.type === "delete_scene" ||
-    action.type === "create_cue_point" ||
-    action.type === "rename_cue_point" ||
-    action.type === "delete_cue_point"
-  ) {
-    return { type: "inspect_song_info" };
-  }
-  const trackName = error.failedTrackName ?? (
-    "trackName" in action ? action.trackName : undefined
-  );
-  if (action.type === "set_device_parameter" && !action.devicePath) {
-    return {
-      type: "inspect_device",
-      ...(trackName ? { trackName } : {}),
-      deviceName: action.deviceName,
-      ...(action.deviceIndex === undefined
-        ? {}
-        : { deviceIndex: action.deviceIndex }),
-    };
-  }
-  if (
-    action.type === "set_device_parameter" ||
-    action.type === "duplicate_device" ||
-    action.type === "delete_device"
-  ) {
-    return {
-      type: "inspect_device_tree",
-      ...(trackName ? { trackName } : {}),
-      deviceName: action.deviceName,
-      ...(action.devicePath ? { devicePath: action.devicePath } : {}),
-    };
-  }
-  if (action.type === "insert_chain_device") {
-    return {
-      type: "inspect_device_tree",
-      ...(trackName ? { trackName } : {}),
-      deviceName: action.rackName,
-      ...(action.rackPath ? { devicePath: action.rackPath } : {}),
-    };
-  }
-  if (action.type === "replace_simpler_sample") {
-    return {
-      type: "inspect_device_tree",
-      ...(trackName ? { trackName } : {}),
-      deviceName: action.simplerName,
-      ...(action.simplerPath ? { devicePath: action.simplerPath } : {}),
-    };
-  }
-  if (action.type === "configure_drum_pad") {
-    return {
-      type: "inspect_device_tree",
-      ...(trackName ? { trackName } : {}),
-      deviceName: action.rackName,
-      ...(action.rackPath ? { devicePath: action.rackPath } : {}),
-    };
-  }
-  if (action.type === "set_track_mixer_parameter") {
-    return {
-      type: "inspect_mixer",
-      ...(trackName ? { trackName } : {}),
-    };
-  }
-  if (
-    action.type === "create_session_midi_clip" ||
-    action.type === "create_session_audio_clip" ||
-    action.type === "delete_session_clip"
-  ) {
-    return {
-      type: "inspect_clip",
-      ...(trackName ? { trackName } : {}),
-      ...(action.type === "delete_session_clip" && action.clipName
-        ? { clipName: action.clipName }
-        : {}),
-      slotIndex: action.slotIndex,
-    };
-  }
-  if (action.type === "set_clip_properties" || action.type === "set_audio_clip_warp") {
-    return {
-      type: "inspect_clip",
-      ...(trackName ? { trackName } : {}),
-      ...(action.clipName ? { clipName: action.clipName } : {}),
-      ...(action.startBeat === undefined ? {} : { startBeat: action.startBeat }),
-      ...(action.slotIndex === undefined ? {} : { slotIndex: action.slotIndex }),
-    };
-  }
-  if (action.type === "replace_midi_clip_segment") {
-    return {
-      type: "inspect_midi_clip",
-      ...(trackName ? { trackName } : {}),
-      clipName: action.clipName,
-      startBeat: action.startBeat,
-    };
-  }
-  if (trackName) {
-    return { type: "inspect_track", trackName };
-  }
-  return { type: "inspect_live_set" };
+  return observationRequestForAction(action, error.failedTrackName);
+}
+
+function recoveryProgressKey(
+  error: AgentPartialCompletionError,
+  request: AgentObservationRequest,
+): string {
+  return `automatic-recovery:${JSON.stringify({
+    request,
+    failedActionIndex: error.failedActionIndex,
+    failedAction: error.failedAction,
+    completedActionKeys: error.completedActionKeys,
+    completedMutationCount: error.completedMutationCount,
+    cause: errorMessage(error.cause),
+  })}`;
 }
 
 function agentActionKey(action: AgentAction): string {
   return JSON.stringify(action);
+}
+
+export function digestActionIdentity(identity: string): string {
+  return createHash("sha256").update(identity, "utf8").digest("hex");
+}
+
+function hasCompletedActionIdentity(
+  recoveryState: AgentRecoveryState,
+  identity: string,
+): boolean {
+  return recoveryState.completedActionKeys.has(identity) ||
+    recoveryState.completedActionDigests.has(digestActionIdentity(identity));
+}
+
+function rememberCompletedActionIdentity(
+  recoveryState: AgentRecoveryState,
+  identity: string,
+): void {
+  recoveryState.completedActionKeys.add(identity);
+  recoveryState.completedActionDigests.add(digestActionIdentity(identity));
+}
+
+function recoveryLedgerUpdate(
+  recoveryState: AgentRecoveryState,
+): AgentRecoveryLedgerUpdate {
+  return {
+    active: true,
+    completedActionDigests: [...recoveryState.completedActionDigests].sort(),
+  };
 }
 
 function observationCoversRecovery(
@@ -778,8 +903,12 @@ function observationCoversRecovery(
   switch (required.type) {
     case "inspect_live_set":
     case "inspect_current_object":
-    case "inspect_song_info":
       return true;
+    case "inspect_song_info":
+      return actual.type === "inspect_song_info" && (
+        required.itemOffset === undefined ||
+        (actual.itemOffset ?? 0) === required.itemOffset
+      );
     case "inspect_track":
       return actual.type === "inspect_track" &&
         optionalTextMatches(actual.trackName, required.trackName);
@@ -837,34 +966,76 @@ function observationRequestFromToolCall(
   const args = parseToolArguments(toolCall.arguments);
   switch (toolCall.name) {
     case "inspect_live_set":
+      assertOnlyKeys(args, [], `${toolCall.name} arguments`);
       return { type: "inspect_live_set" };
     case "inspect_current_object":
-      return { type: "inspect_current_object" };
+      assertOnlyKeys(
+        args,
+        [...observationItemPageKeys, ...observationParameterPageKeys],
+        `${toolCall.name} arguments`,
+      );
+      return {
+        type: "inspect_current_object",
+        ...observationItemPageProps(args),
+        ...observationParameterPageProps(args),
+      };
     case "inspect_track":
+      assertOnlyKeys(
+        args,
+        ["trackName", ...observationItemPageKeys, ...observationParameterPageKeys],
+        `${toolCall.name} arguments`,
+      );
       return {
         type: "inspect_track",
         ...optionalStringProp(args.trackName, "trackName"),
+        ...observationItemPageProps(args),
+        ...observationParameterPageProps(args),
       };
     case "inspect_device":
+      assertOnlyKeys(
+        args,
+        ["trackName", "deviceName", "deviceIndex", ...observationParameterPageKeys],
+        `${toolCall.name} arguments`,
+      );
       return {
         type: "inspect_device",
         ...optionalStringProp(args.trackName, "trackName"),
         deviceName: requiredString(args.deviceName, "deviceName"),
-        ...optionalNumberProp(args.deviceIndex, "deviceIndex"),
+        ...optionalIntegerProp(args.deviceIndex, "deviceIndex", 0),
+        ...observationParameterPageProps(args),
       };
     case "inspect_device_tree":
+      assertOnlyKeys(
+        args,
+        [
+          "trackName",
+          "deviceName",
+          "devicePath",
+          ...observationItemPageKeys,
+          ...observationParameterPageKeys,
+        ],
+        `${toolCall.name} arguments`,
+      );
       return {
         type: "inspect_device_tree",
         ...optionalStringProp(args.trackName, "trackName"),
         ...optionalStringProp(args.deviceName, "deviceName"),
         ...optionalDevicePathProp(args.devicePath),
+        ...observationItemPageProps(args),
+        ...observationParameterPageProps(args),
       };
     case "inspect_mixer":
+      assertOnlyKeys(args, ["trackName"], `${toolCall.name} arguments`);
       return {
         type: "inspect_mixer",
         ...optionalStringProp(args.trackName, "trackName"),
       };
     case "inspect_clip": {
+      assertOnlyKeys(
+        args,
+        ["trackName", "clipName", "startBeat", "slotIndex"],
+        `${toolCall.name} arguments`,
+      );
       const request = {
         type: "inspect_clip" as const,
         ...optionalStringProp(args.trackName, "trackName"),
@@ -878,6 +1049,11 @@ function observationRequestFromToolCall(
       return request;
     }
     case "inspect_midi_clip":
+      assertOnlyKeys(
+        args,
+        ["trackName", "clipName", "startBeat", "noteOffset", "noteLimit"],
+        `${toolCall.name} arguments`,
+      );
       return {
         type: "inspect_midi_clip",
         ...optionalStringProp(args.trackName, "trackName"),
@@ -887,10 +1063,43 @@ function observationRequestFromToolCall(
         ...optionalIntegerProp(args.noteLimit, "noteLimit", 1, 256),
       };
     case "inspect_song_info":
-      return { type: "inspect_song_info" };
+      assertOnlyKeys(args, observationItemPageKeys, `${toolCall.name} arguments`);
+      return { type: "inspect_song_info", ...observationItemPageProps(args) };
     default:
       throw new Error(`Unsupported observation tool: ${toolCall.name}`);
   }
+}
+
+const observationItemPageKeys = ["itemOffset", "itemLimit"] as const;
+const observationParameterPageKeys = [
+  "parameterOffset",
+  "parameterLimit",
+  "valueItemOffset",
+  "valueItemLimit",
+] as const;
+
+function observationItemPageProps(args: Record<string, unknown>): {
+  itemOffset?: number;
+  itemLimit?: number;
+} {
+  return {
+    ...optionalIntegerProp(args.itemOffset, "itemOffset", 0),
+    ...optionalIntegerProp(args.itemLimit, "itemLimit", 1, 100),
+  };
+}
+
+function observationParameterPageProps(args: Record<string, unknown>): {
+  parameterOffset?: number;
+  parameterLimit?: number;
+  valueItemOffset?: number;
+  valueItemLimit?: number;
+} {
+  return {
+    ...optionalIntegerProp(args.parameterOffset, "parameterOffset", 0),
+    ...optionalIntegerProp(args.parameterLimit, "parameterLimit", 1, 100),
+    ...optionalIntegerProp(args.valueItemOffset, "valueItemOffset", 0),
+    ...optionalIntegerProp(args.valueItemLimit, "valueItemLimit", 1, 100),
+  };
 }
 
 function actionPlanFromToolCall(toolCall: ModelToolCall): AgentPlan {
@@ -907,7 +1116,7 @@ function parseToolArguments(value: string): Record<string, unknown> {
     // handled below
   }
 
-  throw new Error(`Invalid JSON arguments for tool call: ${value}`);
+  throw new Error("Invalid JSON arguments for tool call.");
 }
 
 function isObservationTool(name: string): boolean {
@@ -987,11 +1196,19 @@ function requiredString(value: unknown, key: string): string {
 }
 
 function optionalStringProp(value: unknown, key: string): Record<string, string> {
-  return typeof value === "string" && value.trim() ? { [key]: value.trim() } : {};
+  if (value === undefined) return {};
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Tool call ${key} must be a non-empty string when provided.`);
+  }
+  return { [key]: value.trim() };
 }
 
 function optionalNumberProp(value: unknown, key: string): Record<string, number> {
-  return typeof value === "number" && Number.isFinite(value) ? { [key]: value } : {};
+  if (value === undefined) return {};
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Tool call ${key} must be a finite number when provided.`);
+  }
+  return { [key]: value };
 }
 
 function optionalIntegerProp(

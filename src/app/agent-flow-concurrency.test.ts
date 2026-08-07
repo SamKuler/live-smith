@@ -500,7 +500,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
           [previous.id],
         );
 
-        const response = await fetch(endpoint("/command"), {
+        const rejected = await fetch(endpoint("/command"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -508,6 +508,16 @@ test("a prior-activation Session is restored only to the server-owned current Li
             sessionId: previous.id,
             projectKey: "attacker-controlled",
             scope: { kind: "track", identity: "attacker-controlled", label: "Wrong" },
+          }),
+        });
+        assert.equal(rejected.status, 400);
+
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "restore_session",
+            sessionId: previous.id,
           }),
         });
         assert.equal(response.status, 200);

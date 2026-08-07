@@ -20,10 +20,13 @@ import {
   type AgentPlan,
 } from "../agent/actions.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { findBestParameterMatch } from "./parameter-match.js";
-import { devicePathLabel, resolveDeviceTarget } from "./device-tree.js";
+import { findExactParameterMatch } from "./parameter-match.js";
 import {
-  equalsLoose,
+  devicePathLabel,
+  resolveDevicePath,
+  resolveDeviceTarget,
+} from "./device-tree.js";
+import {
   findReusableMidiClip,
   resolveArrangementClip,
   resolveClipLocator,
@@ -38,26 +41,53 @@ import {
 import { resolveSampleSource } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
 import {
+  bindAgentPlanTargets,
   liveActionIdentityKeys,
   requireBoundTrack,
   type AgentPlanBindings,
+  type BoundActionObjects,
 } from "./action-bindings.js";
 
 type Api = ExtensionContext<"1.0.0">;
+
+export interface AgentPlanExecutionOutcome {
+  results: string[];
+  mutationCount: number;
+}
+
+interface NoMutationActionOutcome {
+  result: string;
+  mutated: false;
+}
 
 export async function executeAgentPlan(
   context: Api,
   plan: AgentPlan,
   target: LiveTarget,
   signal?: AbortSignal,
-  initialBindings: AgentPlanBindings = {
-    tracks: new Map(),
-    actionTracks: new Map(),
-  },
+  initialBindings?: AgentPlanBindings,
 ): Promise<string[]> {
+  return (await executeAgentPlanWithProgress(
+    context,
+    plan,
+    target,
+    signal,
+    initialBindings,
+  )).results;
+}
+
+export async function executeAgentPlanWithProgress(
+  context: Api,
+  plan: AgentPlan,
+  target: LiveTarget,
+  signal?: AbortSignal,
+  initialBindings?: AgentPlanBindings,
+): Promise<AgentPlanExecutionOutcome> {
+  const bindings = initialBindings ?? bindAgentPlanTargets(context, plan, target);
   const results: string[] = [];
+  let mutationCount = 0;
   const completedActionKeys: string[][] = [];
-  const tracks = new Map(initialBindings.tracks);
+  const tracks = new Map(bindings.tracks);
 
   for (const [actionIndex, action] of plan.actions.entries()) {
     let identityTrack = trackForActionIdentity(
@@ -66,7 +96,7 @@ export async function executeAgentPlan(
       actionIndex,
       target,
       tracks,
-      initialBindings.actionTracks,
+      bindings.actionTracks,
     );
     try {
       throwIfAborted(signal);
@@ -76,16 +106,18 @@ export async function executeAgentPlan(
         actionIndex,
         target,
         tracks,
-        initialBindings.actionTracks,
+        bindings.actionTracks,
+        bindings.actionObjects,
       );
-      results.push(result);
+      results.push(typeof result === "string" ? result : result.result);
+      if (typeof result === "string" ? true : result.mutated) mutationCount += 1;
       identityTrack ??= trackForActionIdentity(
         context,
         action,
         actionIndex,
         target,
         tracks,
-        initialBindings.actionTracks,
+        bindings.actionTracks,
       );
       completedActionKeys.push(liveActionIdentityKeys(action, identityTrack));
     } catch (error) {
@@ -96,7 +128,7 @@ export async function executeAgentPlan(
           actionIndex,
           target,
           tracks,
-          initialBindings.actionTracks,
+          bindings.actionTracks,
         );
         const currentActionKeys = error.completedActionKeys.length
           ? error.completedActionKeys
@@ -113,9 +145,10 @@ export async function executeAgentPlan(
             actionIndex,
             target,
             tracks,
-            initialBindings.actionTracks,
+            bindings.actionTracks,
           ),
           [...completedActionKeys, ...currentActionKeys],
+          mutationCount + error.completedMutationCount,
         );
       }
       throw new AgentPlanExecutionError(
@@ -128,14 +161,15 @@ export async function executeAgentPlan(
           actionIndex,
           target,
           tracks,
-          initialBindings.actionTracks,
+          bindings.actionTracks,
         ),
         completedActionKeys,
+        mutationCount,
       );
     }
   }
 
-  return results;
+  return { results, mutationCount };
 }
 
 export class AgentPlanExecutionError extends Error {
@@ -146,6 +180,7 @@ export class AgentPlanExecutionError extends Error {
     readonly failedAction?: AgentAction,
     readonly failedTrackName?: string,
     readonly completedActionKeys: readonly (readonly string[])[] = [],
+    readonly completedMutationCount: number = completedResults.length,
   ) {
     super([
       completedResults.length
@@ -221,17 +256,11 @@ async function executeAction(
   target: LiveTarget,
   tracks: Map<string, Track<"1.0.0">>,
   actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
-): Promise<string> {
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): Promise<string | NoMutationActionOutcome> {
+  const bound = actionObjects.get(actionIndex);
   switch (action.type) {
     case "create_midi_track": {
-      const existing = actionTracks.get(actionIndex);
-      if (existing) {
-        if (!(existing instanceof MidiTrack)) {
-          throw new Error("The preflight-bound reusable track is not a MIDI track.");
-        }
-        if (action.ref) tracks.set(action.ref, existing);
-        return `Reused existing MIDI track "${existing.name}".`;
-      }
       const track = await context.application.song.createMidiTrack();
       if (action.ref) tracks.set(action.ref, track);
       const createdName = safeObjectName(track, "unnamed MIDI track");
@@ -248,14 +277,6 @@ async function executeAction(
       return `Created MIDI track "${safeObjectName(track, createdName)}".`;
     }
     case "create_audio_track": {
-      const existing = actionTracks.get(actionIndex);
-      if (existing) {
-        if (!(existing instanceof AudioTrack)) {
-          throw new Error("The preflight-bound reusable track is not an audio track.");
-        }
-        if (action.ref) tracks.set(action.ref, existing);
-        return `Reused existing audio track "${existing.name}".`;
-      }
       const track = await context.application.song.createAudioTrack();
       if (action.ref) tracks.set(action.ref, track);
       const createdName = safeObjectName(track, "unnamed audio track");
@@ -287,17 +308,22 @@ async function executeAction(
       return `Created scene "${safeObjectName(scene, createdName)}".`;
     }
     case "rename_scene": {
-      const scene = resolveScene(
+      const scene = bound?.scene ?? resolveScene(
         context.application.song,
         action.sceneIndex,
         action.sceneName,
       );
       const oldName = scene.name;
+      if (oldName === action.newName) {
+        return noMutation(
+          `Kept Session View Scene ${action.sceneIndex} named "${oldName}" because it already matches.`,
+        );
+      }
       scene.name = action.newName;
       return `Renamed Scene ${action.sceneIndex} from "${oldName}" to "${scene.name}".`;
     }
     case "duplicate_scene": {
-      const scene = resolveScene(
+      const scene = bound?.scene ?? resolveScene(
         context.application.song,
         action.sceneIndex,
         action.sceneName,
@@ -306,7 +332,7 @@ async function executeAction(
       return `Duplicated Scene ${action.sceneIndex} "${scene.name}" as "${duplicate.name}".`;
     }
     case "delete_scene": {
-      const scene = resolveScene(
+      const scene = bound?.scene ?? resolveScene(
         context.application.song,
         action.sceneIndex,
         action.sceneName,
@@ -333,17 +359,22 @@ async function executeAction(
       return `Created Cue Point "${safeObjectName(cuePoint, createdName)}" at beat ${action.timeBeat}.`;
     }
     case "rename_cue_point": {
-      const cuePoint = resolveCuePoint(
+      const cuePoint = bound?.cuePoint ?? resolveCuePoint(
         context.application.song,
         action.timeBeat,
         action.cueName,
       );
       const oldName = cuePoint.name;
+      if (oldName === action.newName) {
+        return noMutation(
+          `Kept Cue Point "${oldName}" at beat ${action.timeBeat} because it already matches.`,
+        );
+      }
       cuePoint.name = action.newName;
       return `Renamed Cue Point "${oldName}" at beat ${action.timeBeat} to "${cuePoint.name}".`;
     }
     case "delete_cue_point": {
-      const cuePoint = resolveCuePoint(
+      const cuePoint = bound?.cuePoint ?? resolveCuePoint(
         context.application.song,
         action.timeBeat,
         action.cueName,
@@ -362,13 +393,20 @@ async function executeAction(
         actionTracks,
       );
       if (action.name) {
-        const existing = findReusableMidiClip(
-          track,
-          action.name,
-          action.startBeat,
-          action.durationBeats,
-        );
+        const existing = bound?.clip instanceof MidiClip
+          ? bound.clip
+          : findReusableMidiClip(
+              track,
+              action.name,
+              action.startBeat,
+              action.durationBeats,
+            );
         if (existing) {
+          if (midiNotesEqual(existing.notes, action.notes)) {
+            return noMutation(
+              `Kept existing MIDI clip "${existing.name}" on track "${track.name}" because its notes already match.`,
+            );
+          }
           existing.notes = action.notes;
           return `Updated existing MIDI clip "${existing.name}" on track "${track.name}" with ${action.notes.length} notes.`;
         }
@@ -406,7 +444,7 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const slot = requireSessionSlot(track, action.slotIndex);
+      const slot = bound?.slot ?? requireSessionSlot(track, action.slotIndex);
       return createSessionMidiClip(
         track,
         slot,
@@ -425,7 +463,7 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const resolvedClip = resolveArrangementClip(
+      const resolvedClip = bound?.clip ?? resolveArrangementClip(
         track,
         action.startBeat,
         action.clipName,
@@ -451,22 +489,23 @@ async function executeAction(
       });
       const removedCount = resolvedClip.notes.length - preserved.length;
       const merged = [...preserved, ...action.notes].sort(compareMidiNotes);
+      if (midiNotesEqual(resolvedClip.notes, merged)) {
+        return noMutation(
+          `Kept relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}" because the resulting notes already match.`,
+        );
+      }
       resolvedClip.notes = merged;
       return `Replaced relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${removedCount} notes, added ${action.notes.length}, final ${merged.length} notes.`;
     }
     case "insert_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
       const index = action.index ?? track.devices.length;
-      const existing = track.devices[index];
-      if (existing && equalsLoose(existing.name, action.deviceName)) {
-        return `Reused existing "${existing.name}" at deviceIndex ${index} on track "${track.name}".`;
-      }
       const device = await track.insertDevice(action.deviceName, index);
       return `Inserted "${device.name}" on track "${track.name}".`;
     }
     case "insert_chain_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.rackName,
@@ -482,16 +521,12 @@ async function executeAction(
         );
       }
       const index = action.index ?? chain.devices.length;
-      const existing = chain.devices[index];
-      if (existing && equalsLoose(existing.name, action.deviceName)) {
-        return `Reused existing "${existing.name}" at chain device index ${index} in Rack "${resolved.device.name}" on track "${track.name}".`;
-      }
       const device = await chain.insertDevice(action.deviceName, index);
       return `Inserted "${device.name}" in chain ${action.chainIndex} of Rack "${resolved.device.name}" on track "${track.name}".`;
     }
     case "set_device_parameter": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.deviceName,
@@ -499,7 +534,7 @@ async function executeAction(
         action.deviceIndex,
       );
       const device = resolved.device;
-      const parameter = findBestParameterMatch(action.parameterName, device.parameters);
+      const parameter = findExactParameterMatch(action.parameterName, device.parameters);
       if (!parameter) {
         const available = device.parameters.map((item) => item.name).join(", ");
         throw new Error(
@@ -511,12 +546,17 @@ async function executeAction(
           `Value ${action.value} for parameter "${parameter.name}" on device "${device.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the device again and use a value inside that range.`,
         );
       }
+      if (sameNumericValue(await parameter.getValue(), action.value)) {
+        return noMutation(
+          `Kept "${parameter.name}" on "${device.name}" at ${devicePathLabel(resolved.path)} in track "${track.name}" at ${action.value} because it already matches.`,
+        );
+      }
       await parameter.setValue(action.value);
       return `Set "${parameter.name}" on "${device.name}" at ${devicePathLabel(resolved.path)} in track "${track.name}" to ${action.value}.`;
     }
     case "duplicate_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.deviceName,
@@ -528,7 +568,7 @@ async function executeAction(
     }
     case "delete_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.deviceName,
@@ -541,7 +581,7 @@ async function executeAction(
     }
     case "replace_simpler_sample": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.simplerName,
@@ -550,9 +590,11 @@ async function executeAction(
       if (!(resolved.device instanceof Simpler)) {
         throw new Error(`Device "${resolved.device.name}" is not Simpler.`);
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
       if (resolved.device.sample?.filePath === source.filePath) {
-        return `Reused sample "${source.label}" in Simpler "${resolved.device.name}" on track "${track.name}".`;
+        return noMutation(
+          `Reused sample "${source.label}" in Simpler "${resolved.device.name}" on track "${track.name}".`,
+        );
       }
       try {
         await resolved.device.replaceSample(source.filePath);
@@ -563,7 +605,7 @@ async function executeAction(
     }
     case "configure_drum_pad": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = resolveDeviceTarget(
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
         track,
         target,
         action.rackName,
@@ -572,13 +614,16 @@ async function executeAction(
       if (!(resolved.device instanceof DrumRack)) {
         throw new Error(`Device "${resolved.device.name}" is not a Drum Rack.`);
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
       return configureDrumPad(
         track,
         resolved.device,
         action.receivingNote,
         source.filePath,
         source.label,
+        action.mode,
+        action.simplerPath,
+        bound?.secondaryDeviceTarget,
       );
     }
     case "create_arrangement_audio_clip": {
@@ -590,7 +635,7 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const source = resolveSampleSource(context, action.source, target);
+      const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
       let clip: AudioClip<"1.0.0">;
       try {
         clip = await track.createAudioClip({
@@ -631,8 +676,8 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const slot = requireSessionSlot(track, action.slotIndex);
-      const source = resolveSampleSource(context, action.source, target);
+      const slot = bound?.slot ?? requireSessionSlot(track, action.slotIndex);
+      const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
       return createSessionAudioClip(
         track,
         slot,
@@ -645,12 +690,20 @@ async function executeAction(
       );
     }
     case "set_tempo": {
+      if (sameNumericValue(context.application.song.tempo, action.tempo)) {
+        return noMutation(`Kept tempo at ${action.tempo} BPM because it already matches.`);
+      }
       context.application.song.tempo = action.tempo;
       return `Set tempo to ${action.tempo} BPM.`;
     }
     case "rename_track": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
       const oldName = track.name;
+      if (oldName === action.newName) {
+        return noMutation(
+          `Kept track "${oldName}" named "${action.newName}" because it already matches.`,
+        );
+      }
       track.name = action.newName;
       return `Renamed track "${oldName}" to "${track.name}".`;
     }
@@ -667,22 +720,37 @@ async function executeAction(
     }
     case "set_track_mute": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      if (track.mute === action.mute) {
+        return noMutation(
+          `Kept track "${track.name}" ${action.mute ? "muted" : "unmuted"} because it already matches.`,
+        );
+      }
       track.mute = action.mute;
       return `${action.mute ? "Muted" : "Unmuted"} track "${track.name}".`;
     }
     case "set_track_solo": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      if (track.solo === action.solo) {
+        return noMutation(
+          `Kept track "${track.name}" ${action.solo ? "soloed" : "unsoloed"} because it already matches.`,
+        );
+      }
       track.solo = action.solo;
       return `${action.solo ? "Soloed" : "Unsoloed"} track "${track.name}".`;
     }
     case "set_track_arm": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      if (track.arm === action.arm) {
+        return noMutation(
+          `Kept track "${track.name}" ${action.arm ? "armed" : "disarmed"} because it already matches.`,
+        );
+      }
       track.arm = action.arm;
       return `${action.arm ? "Armed" : "Disarmed"} track "${track.name}".`;
     }
     case "set_track_mixer_parameter": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const parameter = resolveTrackMixerParameter(
+      const parameter = bound?.mixerParameter ?? resolveTrackMixerParameter(
         track,
         action.parameter,
         action.sendIndex,
@@ -690,6 +758,11 @@ async function executeAction(
       if (action.value < parameter.min || action.value > parameter.max) {
         throw new Error(
           `Value ${action.value} for mixer parameter "${parameter.name}" on track "${track.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the mixer again and use a value inside that range.`,
+        );
+      }
+      if (sameNumericValue(await parameter.getValue(), action.value)) {
+        return noMutation(
+          `Kept mixer parameter "${parameter.name}" on track "${track.name}" at ${action.value} because it already matches.`,
         );
       }
       await parameter.setValue(action.value);
@@ -715,19 +788,28 @@ async function executeAction(
     }
     case "rename_take_lane": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const lane = resolveTakeLane(track, action.laneIndex, action.laneName);
+      const lane = bound?.takeLane ?? resolveTakeLane(
+        track,
+        action.laneIndex,
+        action.laneName,
+      );
       const oldName = lane.name;
+      if (oldName === action.newName) {
+        return noMutation(
+          `Kept Take Lane ${action.laneIndex} named "${oldName}" on track "${track.name}" because it already matches.`,
+        );
+      }
       lane.name = action.newName;
       return `Renamed Take Lane ${action.laneIndex} from "${oldName}" to "${lane.name}" on track "${track.name}".`;
     }
     case "set_clip_properties": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const clip = resolveClipLocator(track, action);
+      const clip = bound?.clip ?? resolveClipLocator(track, action);
       return setClipProperties(track, clip, action);
     }
     case "set_audio_clip_warp": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const clip = resolveClipLocator(track, action);
+      const clip = bound?.clip ?? resolveClipLocator(track, action);
       if (!(clip instanceof AudioClip)) {
         throw new Error(`Clip "${clip.name}" on track "${track.name}" is not an audio clip.`);
       }
@@ -735,21 +817,42 @@ async function executeAction(
     }
     case "clear_arrangement_range": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      if (!track.arrangementClips.some((clip) =>
+        clip.startTime < action.endBeat &&
+        clip.startTime + clip.duration > action.startBeat
+      )) {
+        return noMutation(
+          `Kept arrangement beats ${action.startBeat}-${action.endBeat} clear on track "${track.name}" because no Clip overlaps that range.`,
+        );
+      }
       await track.clearClipsInRange(action.startBeat, action.endBeat);
       return `Cleared arrangement clips on track "${track.name}" from beat ${action.startBeat} to ${action.endBeat}; boundary-crossing clips were truncated.`;
     }
     case "delete_clip": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const clip = resolveArrangementClip(track, action.startBeat, action.clipName);
+      const clip = bound?.clip ?? resolveArrangementClip(
+        track,
+        action.startBeat,
+        action.clipName,
+      );
       const name = clip.name;
       await track.deleteClip(clip);
       return `Deleted clip "${name}" from track "${track.name}".`;
     }
     case "delete_session_clip": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const clip = resolveSessionClip(track, action.slotIndex, action.clipName);
+      const clip = bound?.clip ?? resolveSessionClip(
+        track,
+        action.slotIndex,
+        action.clipName,
+      );
       const name = clip.name;
-      const slot = requireSessionSlot(track, action.slotIndex);
+      const slot = bound?.slot ?? requireSessionSlot(track, action.slotIndex);
+      if (bound?.clip && !sameHostObject(slot.clip, bound.clip)) {
+        throw new Error(
+          `Session slot ${action.slotIndex} changed earlier in this plan; refusing to delete a different Clip than the one confirmed.`,
+        );
+      }
       await slot.deleteClip();
       return `Deleted Session clip "${name}" from slot ${action.slotIndex} on track "${track.name}".`;
     }
@@ -763,18 +866,28 @@ async function createSessionMidiClip(
   durationBeats: number,
   notes: Extract<AgentAction, { type: "create_session_midi_clip" }>["notes"],
   name?: string,
-): Promise<string> {
+): Promise<string | NoMutationActionOutcome> {
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
   try {
     let clip = slot.clip;
     if (clip instanceof MidiClip && Math.abs(clip.duration - durationBeats) < 0.0001) {
+      let changed = false;
       if (name && clip.name !== name) {
         clip.name = name;
+        changed = true;
         completedResults.push(`Renamed Session MIDI clip in slot ${slotIndex} to "${name}".`);
         completedKeys.push([clipStepKey(track, slotIndex, "rename")]);
       }
-      clip.notes = notes;
+      if (!midiNotesEqual(clip.notes, notes)) {
+        clip.notes = notes;
+        changed = true;
+      }
+      if (!changed) {
+        return noMutation(
+          `Kept Session MIDI clip "${clip.name}" in slot ${slotIndex} on track "${track.name}" because its requested name, duration, and notes already match.`,
+        );
+      }
       return `Updated Session MIDI clip "${clip.name}" in slot ${slotIndex} on track "${track.name}" with ${notes.length} notes.`;
     }
     if (clip) {
@@ -815,14 +928,28 @@ async function createSessionAudioClip(
   name?: string,
   isWarped?: boolean,
   loopSettings?: import("../agent/action-schema.js").ClipLoopSettingsInput,
-): Promise<string> {
+): Promise<string | NoMutationActionOutcome> {
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
   try {
     const existing = slot.clip;
-    if (existing instanceof AudioClip && existing.filePath === filePath) {
-      if (name && existing.name !== name) existing.name = name;
-      return `Reused Session audio clip "${existing.name}" in slot ${slotIndex} on track "${track.name}" from "${sampleLabel}".`;
+    if (
+      existing instanceof AudioClip &&
+      existing.filePath === filePath &&
+      sessionAudioSettingsMatch(existing, isWarped, loopSettings)
+    ) {
+      if (name && existing.name !== name) {
+        existing.name = name;
+        completedResults.push(
+          `Renamed Session audio clip in slot ${slotIndex} to "${name}".`,
+        );
+        completedKeys.push([clipStepKey(track, slotIndex, "rename")]);
+      }
+      return completedResults.length
+        ? `Updated Session audio clip "${existing.name}" in slot ${slotIndex} on track "${track.name}" from "${sampleLabel}".`
+        : noMutation(
+            `Reused Session audio clip "${existing.name}" in slot ${slotIndex} on track "${track.name}" from "${sampleLabel}" because all requested settings already match.`,
+          );
     }
     if (existing) {
       const deletedName = existing.name;
@@ -861,33 +988,49 @@ async function createSessionAudioClip(
   }
 }
 
+function sessionAudioSettingsMatch(
+  clip: AudioClip<"1.0.0">,
+  isWarped: boolean | undefined,
+  settings: import("../agent/action-schema.js").ClipLoopSettingsInput | undefined,
+): boolean {
+  if (isWarped !== undefined && clip.warping !== isWarped) return false;
+  if (!settings) return true;
+  return (
+    clip.looping === settings.looping &&
+    clip.startMarker === settings.startMarker &&
+    clip.endMarker === settings.endMarker &&
+    clip.loopStart === settings.loopStart &&
+    clip.loopEnd === settings.loopEnd
+  );
+}
+
 function setClipProperties(
   track: Track<"1.0.0">,
   clip: Clip<"1.0.0">,
   action: Extract<AgentAction, { type: "set_clip_properties" }>,
-): string {
+): string | NoMutationActionOutcome {
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
   const location = action.slotIndex === undefined
     ? `arrangement beat ${action.startBeat}`
     : `Session slot ${action.slotIndex}`;
   try {
-    if (action.newName !== undefined) {
+    if (action.newName !== undefined && clip.name !== action.newName) {
       clip.name = action.newName;
       completedResults.push(`Renamed clip at ${location} to "${action.newName}".`);
       completedKeys.push([clipStepKey(track, location, "rename")]);
     }
-    if (action.looping !== undefined) {
+    if (action.looping !== undefined && clip.looping !== action.looping) {
       clip.looping = action.looping;
       completedResults.push(`Set looping ${action.looping ? "on" : "off"} for clip "${clip.name}".`);
       completedKeys.push([clipStepKey(track, location, "looping")]);
     }
-    if (action.muted !== undefined) {
+    if (action.muted !== undefined && clip.muted !== action.muted) {
       clip.muted = action.muted;
       completedResults.push(`${action.muted ? "Muted" : "Unmuted"} clip "${clip.name}".`);
       completedKeys.push([clipStepKey(track, location, "muted")]);
     }
-    if (action.color !== undefined) {
+    if (action.color !== undefined && clip.color !== action.color) {
       clip.color = action.color;
       completedResults.push(`Set color ${action.color} for clip "${clip.name}".`);
       completedKeys.push([clipStepKey(track, location, "color")]);
@@ -903,6 +1046,11 @@ function setClipProperties(
       completedKeys,
     );
   }
+  if (!completedResults.length) {
+    return noMutation(
+      `Kept clip "${clip.name}" at ${location} on track "${track.name}" because all requested properties already match.`,
+    );
+  }
   return `Updated clip "${clip.name}" at ${location} on track "${track.name}".`;
 }
 
@@ -910,17 +1058,20 @@ function setAudioClipWarp(
   track: Track<"1.0.0">,
   clip: AudioClip<"1.0.0">,
   action: Extract<AgentAction, { type: "set_audio_clip_warp" }>,
-): string {
+): string | NoMutationActionOutcome {
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
   try {
-    if (action.warping !== undefined) {
+    if (action.warping !== undefined && clip.warping !== action.warping) {
       clip.warping = action.warping;
       completedResults.push(`Set warping ${action.warping ? "on" : "off"} for audio clip "${clip.name}".`);
       completedKeys.push([clipStepKey(track, clip.name, "warping")]);
     }
-    if (action.warpMode !== undefined) {
-      clip.warpMode = warpMode(action.warpMode);
+    const requestedWarpMode = action.warpMode === undefined
+      ? undefined
+      : warpMode(action.warpMode);
+    if (requestedWarpMode !== undefined && clip.warpMode !== requestedWarpMode) {
+      clip.warpMode = requestedWarpMode;
       completedResults.push(`Set Warp mode ${action.warpMode} for audio clip "${clip.name}".`);
       completedKeys.push([clipStepKey(track, clip.name, "warp-mode")]);
     }
@@ -933,6 +1084,11 @@ function setAudioClipWarp(
       undefined,
       undefined,
       completedKeys,
+    );
+  }
+  if (!completedResults.length) {
+    return noMutation(
+      `Kept Warp settings for audio clip "${clip.name}" on track "${track.name}" because they already match.`,
     );
   }
   return `Updated Warp settings for audio clip "${clip.name}" on track "${track.name}".`;
@@ -978,7 +1134,10 @@ async function configureDrumPad(
   receivingNote: number,
   filePath: string,
   sampleLabel: string,
-): Promise<string> {
+  mode: Extract<AgentAction, { type: "configure_drum_pad" }>["mode"],
+  simplerPath?: Extract<AgentAction, { type: "configure_drum_pad" }>["simplerPath"],
+  boundSimpler?: import("./device-tree.js").ResolvedDeviceTarget,
+): Promise<string | NoMutationActionOutcome> {
   const matches = rack.chains.filter((chain) => chain.receivingNote === receivingNote);
   if (matches.length > 1) {
     throw new Error(
@@ -986,9 +1145,48 @@ async function configureDrumPad(
     );
   }
 
+  let chain = matches[0];
+  if (mode === "replace_existing_simpler") {
+    if (!chain) {
+      throw new Error(
+        `Drum Rack "${rack.name}" has no pad receiving MIDI note ${receivingNote}. Use mode fill_empty_pad to create it.`,
+      );
+    }
+    if (!simplerPath) {
+      throw new Error("replace_existing_simpler requires an exact simplerPath.");
+    }
+    const resolved = boundSimpler ?? resolveDevicePath(track, simplerPath);
+    if (!(resolved.device instanceof Simpler)) {
+      throw new Error(
+        `Device at ${devicePathLabel(simplerPath)} is "${resolved.device.name}", not Simpler.`,
+      );
+    }
+    if (resolved.parent !== chain) {
+      throw new Error(
+        `Simpler at ${devicePathLabel(simplerPath)} is not directly on Drum Rack pad ${receivingNote}.`,
+      );
+    }
+    if (resolved.device.sample?.filePath === filePath) {
+      return noMutation(
+        `Kept the existing sample "${sampleLabel}" on Drum Rack pad ${receivingNote} on track "${track.name}".`,
+      );
+    }
+    try {
+      await resolved.device.replaceSample(filePath);
+    } catch (error) {
+      throw sanitizeSampleError(error, filePath);
+    }
+    return `Replaced the sample in Simpler at ${devicePathLabel(simplerPath)} on Drum Rack pad ${receivingNote} on track "${track.name}" with "${sampleLabel}".`;
+  }
+
+  if (chain?.devices.length) {
+    throw new Error(
+      `Drum Rack pad ${receivingNote} is not empty; it contains ${chain.devices.map((device) => `"${device.name}"`).join(", ")}. Inspect the pad and use mode replace_existing_simpler with an exact simplerPath, or compose primitive device actions.`,
+    );
+  }
+
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
-  let chain = matches[0];
   try {
     if (!chain) {
       const inserted = await rack.insertChain(rack.chains.length);
@@ -1011,37 +1209,23 @@ async function configureDrumPad(
       ]);
     }
 
-    const simplers = chain.devices.filter(
-      (device): device is Simpler<"1.0.0"> => device instanceof Simpler,
+    const inserted = await chain.insertDevice("Simpler", 0);
+    completedResults.push(
+      `Inserted Simpler on Drum Rack pad ${receivingNote}.`,
     );
-    if (simplers.length > 1) {
-      throw new Error(
-        `Drum pad ${receivingNote} contains ${simplers.length} Simpler devices; specify the intended device manually.`,
-      );
-    }
-    let simpler = simplers[0];
-    if (!simpler) {
-      const inserted = await chain.insertDevice("Simpler", chain.devices.length);
-      completedResults.push(
-        `Inserted Simpler on Drum Rack pad ${receivingNote}.`,
-      );
-      completedKeys.push([
-        drumPadStepKey(track, rack, receivingNote, "insert-simpler"),
-      ]);
-      if (!(inserted instanceof Simpler)) {
-        throw new Error("Live inserted a device that is not Simpler.");
-      }
-      simpler = inserted;
+    completedKeys.push([
+      drumPadStepKey(track, rack, receivingNote, "insert-simpler"),
+    ]);
+    if (!(inserted instanceof Simpler)) {
+      throw new Error("Live inserted a device that is not Simpler.");
     }
 
-    if (simpler.sample?.filePath !== filePath) {
-      try {
-        await simpler.replaceSample(filePath);
-      } catch (error) {
-        throw sanitizeSampleError(error, filePath);
-      }
+    try {
+      await inserted.replaceSample(filePath);
+    } catch (error) {
+      throw sanitizeSampleError(error, filePath);
     }
-    return `Configured Drum Rack pad ${receivingNote} on track "${track.name}" with sample "${sampleLabel}".`;
+    return `Filled empty Drum Rack pad ${receivingNote} on track "${track.name}" with sample "${sampleLabel}".`;
   } catch (error) {
     if (!completedResults.length) throw error;
     throw new AgentPlanExecutionError(
@@ -1078,8 +1262,30 @@ function objectHandleKey(
   return id === undefined || id === null ? fallback.trim().toLowerCase() : String(id);
 }
 
+function sameHostObject(
+  left: { handle?: { id?: unknown } } | null | undefined,
+  right: { handle?: { id?: unknown } },
+): boolean {
+  if (left === right) return true;
+  const leftId = left?.handle?.id;
+  const rightId = right.handle?.id;
+  return leftId !== undefined && leftId !== null &&
+    rightId !== undefined && rightId !== null &&
+    String(leftId) === String(rightId);
+}
+
 function sanitizeSampleError(_error: unknown, _filePath: string): Error {
-  return new Error("Live could not load the observed audio sample.");
+  return new Error(
+    "Live could not complete the requested audio-sample operation; the beta SDK did not expose a safe cause.",
+  );
+}
+
+function noMutation(result: string): NoMutationActionOutcome {
+  return { result, mutated: false };
+}
+
+function sameNumericValue(left: number, right: number): boolean {
+  return Math.abs(left - right) < 1e-7;
 }
 
 function trackForAction(
@@ -1139,12 +1345,42 @@ function createdMidiClipResult(
 }
 
 function compareMidiNotes(
-  left: { startTime: number; pitch: number; duration: number },
-  right: { startTime: number; pitch: number; duration: number },
+  left: { startTime: number; pitch: number; duration: number; velocity?: number },
+  right: { startTime: number; pitch: number; duration: number; velocity?: number },
 ): number {
   return left.startTime - right.startTime ||
     left.pitch - right.pitch ||
-    left.duration - right.duration;
+    left.duration - right.duration ||
+    (left.velocity ?? 0) - (right.velocity ?? 0);
+}
+
+function midiNotesEqual(
+  left: readonly {
+    pitch: number;
+    startTime: number;
+    duration: number;
+    velocity?: number;
+  }[],
+  right: readonly {
+    pitch: number;
+    startTime: number;
+    duration: number;
+    velocity?: number;
+  }[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort(compareMidiNotes);
+  const sortedRight = [...right].sort(compareMidiNotes);
+  return sortedLeft.every((note, index) => {
+    const candidate = sortedRight[index]!;
+    return note.pitch === candidate.pitch &&
+      sameNumericValue(note.startTime, candidate.startTime) &&
+      sameNumericValue(note.duration, candidate.duration) &&
+      (note.velocity === undefined
+        ? candidate.velocity === undefined
+        : candidate.velocity !== undefined &&
+          sameNumericValue(note.velocity, candidate.velocity));
+  });
 }
 
 function safeObjectName(value: { readonly name: string }, fallback: string): string {

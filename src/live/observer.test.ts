@@ -170,3 +170,164 @@ test("inspect_track reports Session slot indexes in the same zero-based form use
   assert.match(result, /slot index 1: empty/);
   assert.doesNotMatch(result, /slot 2:/);
 });
+
+test("inspect_device pages exact parameters and indexed value items", async () => {
+  const parameters = Array.from({ length: 21 }, (_, parameterIndex) => ({
+    name: `Parameter ${parameterIndex}`,
+    min: 0,
+    max: 20,
+    defaultValue: 0,
+    isQuantized: true,
+    valueItems: Array.from({ length: 15 }, (_, itemIndex) => ({
+      name: `Item ${itemIndex}`,
+    })),
+    getValue: async () => parameterIndex,
+  }));
+  const device = Object.defineProperties(Object.create(Simpler.prototype), {
+    handle: { enumerable: true, value: { id: "simpler-1" } },
+    name: { enumerable: true, value: "Paged Device" },
+    parameters: { enumerable: true, value: parameters },
+    sample: { enumerable: true, value: null },
+  });
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: "track-1" } },
+    name: { enumerable: true, value: "Lead" },
+    devices: { enumerable: true, value: [device] },
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_device",
+      trackName: "Lead",
+      deviceName: "Paged Device",
+      parameterOffset: 18,
+      parameterLimit: 2,
+      valueItemOffset: 12,
+      valueItemLimit: 2,
+    },
+    { track },
+  );
+
+  assert.match(result, /parameters page: offset=18, shown=2, total=21, nextOffset=20/);
+  assert.match(result, /\[18\] Parameter 18/);
+  assert.match(result, /\[19\] Parameter 19/);
+  assert.doesNotMatch(result, /Parameter 17|Parameter 20/);
+  assert.match(result, /items\(offset=12, total=15, nextOffset=14\)=\[12\] Item 12, \[13\] Item 13/);
+
+  const pastEnd = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_device",
+      trackName: "Lead",
+      deviceName: "Paged Device",
+      parameterOffset: 999,
+    },
+    { track },
+  );
+  assert.match(
+    pastEnd,
+    /parameters page: offset=21, shown=0, total=21, nextOffset=none, range=empty/,
+  );
+});
+
+test("inspect_device_tree pages devices without losing absolute paths", async () => {
+  const devices = Array.from({ length: 3 }, (_, index) =>
+    Object.defineProperties(Object.create(Simpler.prototype), {
+      handle: { enumerable: true, value: { id: `simpler-${index}` } },
+      name: { enumerable: true, value: `Simpler ${index}` },
+      parameters: { enumerable: true, value: [] },
+      sample: { enumerable: true, value: null },
+    })
+  );
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: "track-1" } },
+    name: { enumerable: true, value: "Lead" },
+    devices: { enumerable: true, value: devices },
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    { type: "inspect_device_tree", trackName: "Lead", itemOffset: 1, itemLimit: 1 },
+    { track },
+  );
+
+  assert.match(result, /devices page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(result, /"deviceIndex":1.*Simpler 1/);
+  assert.doesNotMatch(result, /Simpler 0|Simpler 2/);
+});
+
+test("inspect_song_info and inspect_track expose continuation offsets", async () => {
+  const scenes = Array.from({ length: 3 }, (_, index) => ({
+    name: `Scene ${index}`,
+    tempo: 120 + index,
+  }));
+  const cuePoints = Array.from({ length: 3 }, (_, index) => ({
+    name: `Cue ${index}`,
+    time: index * 8,
+  }));
+  const songResult = await observeLive(
+    {
+      application: {
+        song: {
+          tempo: 120,
+          gridQuantization: 6,
+          gridIsTriplet: false,
+          scaleMode: false,
+          scaleName: "Major",
+          rootNote: 0,
+          tracks: [],
+          scenes,
+          cuePoints,
+        },
+      },
+    } as never,
+    { type: "inspect_song_info", itemOffset: 1, itemLimit: 1 },
+    {},
+  );
+  assert.match(songResult, /scenes page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(songResult, /Scene index 1: "Scene 1"/);
+  assert.match(songResult, /Cue Points page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(songResult, /Cue Point beat 8: "Cue 1"/);
+
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: "track-1" } },
+    name: { enumerable: true, value: "Lead" },
+    mute: { enumerable: true, value: false },
+    solo: { enumerable: true, value: false },
+    arm: { enumerable: true, value: false },
+    arrangementClips: { enumerable: true, value: [] },
+    clipSlots: { enumerable: true, value: [{}, {}, {}].map(() => ({ clip: undefined })) },
+    takeLanes: { enumerable: true, value: [] },
+    devices: { enumerable: true, value: [] },
+  });
+  const trackResult = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    { type: "inspect_track", trackName: "Lead", itemOffset: 1, itemLimit: 1 },
+    { track },
+  );
+  assert.match(trackResult, /clip slots page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(trackResult, /slot index 1: empty/);
+  assert.doesNotMatch(trackResult, /slot index 0|slot index 2/);
+});
+
+test("inspect_track distinguishes unavailable Take Lanes from an empty collection", async () => {
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: "track-1" } },
+    name: { enumerable: true, value: "Lead" },
+    mute: { enumerable: true, value: false },
+    solo: { enumerable: true, value: false },
+    arm: { enumerable: true, value: false },
+    arrangementClips: { enumerable: true, value: [] },
+    clipSlots: { enumerable: true, value: [] },
+    takeLanes: { enumerable: true, get: () => { throw new Error("unavailable"); } },
+    devices: { enumerable: true, value: [] },
+  });
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    { type: "inspect_track", trackName: "Lead" },
+    { track },
+  );
+  assert.match(result, /take lanes=unavailable/i);
+  assert.doesNotMatch(result, /take lanes=0/);
+});

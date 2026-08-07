@@ -6,6 +6,7 @@ import {
   AudioTrack,
   ClipSlot,
   CuePoint,
+  Device,
   DrumChain,
   DrumRack,
   MidiClip,
@@ -21,6 +22,7 @@ import {
 import {
   AgentPlanExecutionError,
   executeAgentPlan,
+  executeAgentPlanWithProgress,
 } from "./executor.js";
 
 test("a bound trackRef survives rename before clip and device actions", async () => {
@@ -61,7 +63,11 @@ test("a bound trackRef survives rename before clip and device actions", async ()
     },
     {},
     undefined,
-    { tracks: new Map([["pads", track]]), actionTracks: new Map() },
+    {
+      tracks: new Map([["pads", track]]),
+      actionTracks: new Map(),
+      actionObjects: new Map(),
+    },
   );
 
   assert.equal(track.name, "Final Dream Pads");
@@ -212,9 +218,9 @@ test("replace_midi_clip_segment rechecks the current clip duration before mutati
   assert.equal(clip.notes, originalNotes);
 });
 
-test("a creator ref reuses only its preflight-bound track handle", async () => {
-  const insertedOnConfirmed: string[] = [];
-  const insertedOnReplacement: string[] = [];
+test("a creator ref always creates a new track even when the name already exists", async () => {
+  const insertedOnExisting: string[] = [];
+  const insertedOnCreated: string[] = [];
   const midiTrack = (id: string, inserted: string[]) => Object.defineProperties(
     Object.create(MidiTrack.prototype),
     {
@@ -230,37 +236,61 @@ test("a creator ref reuses only its preflight-bound track handle", async () => {
       },
     },
   );
-  const confirmedTrack = midiTrack("confirmed", insertedOnConfirmed);
-  const replacement = midiTrack("replacement", insertedOnReplacement);
+  const existingTrack = midiTrack("existing", insertedOnExisting);
+  const createdTrack = midiTrack("created", insertedOnCreated);
 
   await executeAgentPlan(
     {
       application: {
         song: {
-          tracks: [replacement],
-          createMidiTrack: async () => {
-            throw new Error("must not create a replacement track");
-          },
+          tracks: [existingTrack],
+          createMidiTrack: async () => createdTrack,
         },
       },
     } as never,
     {
-      message: "Reuse the confirmed Lead track",
+      message: "Create another Lead track",
       actions: [
         { type: "create_midi_track", ref: "lead", name: "Lead" },
         { type: "insert_device", trackRef: "lead", deviceName: "Auto Filter" },
       ],
     },
     {},
-    undefined,
-    {
-      tracks: new Map(),
-      actionTracks: new Map([[0, confirmedTrack]]),
-    },
   );
 
-  assert.deepEqual(insertedOnConfirmed, ["Auto Filter"]);
-  assert.deepEqual(insertedOnReplacement, []);
+  assert.deepEqual(insertedOnExisting, []);
+  assert.deepEqual(insertedOnCreated, ["Auto Filter"]);
+});
+
+test("insert_device inserts another instance instead of reusing the device at that index", async () => {
+  const existingDevice = { name: "Auto Filter", parameters: [] };
+  const insertions: Array<{ name: string; index: number }> = [];
+  const track = {
+    name: "Lead",
+    handle: { id: "track-1" },
+    devices: [existingDevice],
+    insertDevice: async (name: string, index: number) => {
+      insertions.push({ name, index });
+      return { name };
+    },
+  };
+
+  const result = await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Layer another filter",
+      actions: [{
+        type: "insert_device",
+        trackName: "Lead",
+        deviceName: "Auto Filter",
+        index: 0,
+      }],
+    },
+    {},
+  );
+
+  assert.deepEqual(insertions, [{ name: "Auto Filter", index: 0 }]);
+  assert.match(result[0] ?? "", /Inserted "Auto Filter"/);
 });
 
 test("plain trackName execution consumes the preflight-bound handle", async () => {
@@ -288,6 +318,7 @@ test("plain trackName execution consumes the preflight-bound handle", async () =
     {
       tracks: new Map(),
       actionTracks: new Map([[0, confirmedTrack as never]]),
+      actionObjects: new Map(),
     },
   );
 
@@ -412,6 +443,7 @@ test("Simpler, mixer, and arm actions use observed Live objects without exposing
     name: "Track Volume",
     min: 0,
     max: 1,
+    getValue: async () => mixerValue,
     setValue: async (value: number) => {
       mixerValue = value;
     },
@@ -493,14 +525,51 @@ test("sample-loading host errors cannot expose observed filesystem paths", async
     ),
     (error: unknown) => {
       assert.ok(error instanceof AgentPlanExecutionError);
-      assert.match(error.message, /could not load the observed audio sample/i);
+      assert.match(error.message, /could not complete the requested audio-sample operation/i);
       assert.doesNotMatch(error.message, /Users\/alice|Secret Samples|kick\.wav/);
       return true;
     },
   );
 });
 
-test("configure_drum_pad reuses the matching pad and its Simpler", async () => {
+test("executeAgentPlanWithProgress reports an already-matching sample as no mutation", async () => {
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: "sample-1" },
+    filePath: "/samples/kick.wav",
+  });
+  const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
+    handle: { id: "simpler-1" },
+    name: "Simpler",
+    parameters: [],
+    sample: source,
+    replaceSample: async () => assert.fail("matching sample must not be replaced"),
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Drums",
+    devices: [simpler],
+  });
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Keep the sample",
+      actions: [{
+        type: "replace_simpler_sample",
+        trackName: "Drums",
+        simplerName: "Simpler",
+        simplerPath: { deviceIndex: 0 },
+        source: { kind: "selected" },
+      }],
+    },
+    { object: source },
+  );
+
+  assert.equal(outcome.mutationCount, 0);
+  assert.match(outcome.results[0] ?? "", /Reused sample/i);
+});
+
+test("configure_drum_pad replaces only the explicitly targeted existing Simpler", async () => {
   const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
     handle: { id: "sample-1" },
     filePath: "/samples/snare.wav",
@@ -549,6 +618,11 @@ test("configure_drum_pad reuses the matching pad and its Simpler", async () => {
         rackName: "Drum Rack",
         rackPath: { deviceIndex: 0 },
         receivingNote: 38,
+        mode: "replace_existing_simpler",
+        simplerPath: {
+          deviceIndex: 0,
+          nested: [{ chainIndex: 0, deviceIndex: 0 }],
+        },
         source: { kind: "selected" },
       }],
     },
@@ -557,6 +631,58 @@ test("configure_drum_pad reuses the matching pad and its Simpler", async () => {
 
   assert.equal(replacements, 1);
   assert.match(results[0] ?? "", /pad 38.*snare\.wav/i);
+});
+
+test("configure_drum_pad refuses to fill a pad that already contains devices", async () => {
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: "sample-1" },
+    filePath: "/samples/snare.wav",
+  });
+  let replacements = 0;
+  const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
+    handle: { id: "simpler-1" },
+    name: "Simpler",
+    parameters: [],
+    sample: null,
+    replaceSample: async () => {
+      replacements += 1;
+      return source;
+    },
+  });
+  const chain = sdkObject<DrumChain<"1.0.0">>(DrumChain.prototype, {
+    handle: { id: "chain-1" },
+    receivingNote: 38,
+    devices: [simpler],
+  });
+  const rack = sdkObject<DrumRack<"1.0.0">>(DrumRack.prototype, {
+    handle: { id: "rack-1" },
+    name: "Drum Rack",
+    parameters: [],
+    chains: [chain],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Drums",
+    devices: [rack],
+  });
+
+  await assert.rejects(executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Fill only an empty pad",
+      actions: [{
+        type: "configure_drum_pad",
+        trackName: "Drums",
+        rackName: "Drum Rack",
+        rackPath: { deviceIndex: 0 },
+        receivingNote: 38,
+        mode: "fill_empty_pad",
+        source: { kind: "selected" },
+      }],
+    },
+    { object: source },
+  ), /pad 38.*not empty.*replace_existing_simpler/i);
+  assert.equal(replacements, 0);
 });
 
 test("configure_drum_pad reports granular host mutations before a later failure", async () => {
@@ -594,6 +720,7 @@ test("configure_drum_pad reports granular host mutations before a later failure"
           rackName: "Drum Rack",
           rackPath: { deviceIndex: 0 },
           receivingNote: 36,
+          mode: "fill_empty_pad",
           source: { kind: "selected" },
         }],
       },
@@ -659,6 +786,70 @@ test("Session MIDI creation explicitly replaces an occupied slot and configures 
   assert.equal(created.name, "Lead Loop");
   assert.deepEqual(created.notes, notes);
   assert.match(results[0] ?? "", /Session MIDI clip.*slot 0/i);
+});
+
+test("delete_session_clip refuses to delete a replacement created earlier in the plan", async () => {
+  const original = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-original" },
+    name: "Original",
+    duration: 8,
+    notes: [],
+  });
+  const replacement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-replacement" },
+    name: "Replacement",
+    duration: 4,
+    notes: [],
+  });
+  let deletes = 0;
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "slot-1" },
+    clip: original,
+    deleteClip: async () => {
+      deletes += 1;
+      (slot as unknown as { clip: MidiClip<"1.0.0"> | null }).clip = null;
+    },
+    createMidiClip: async () => {
+      (slot as unknown as { clip: MidiClip<"1.0.0"> | null }).clip = replacement;
+      return replacement;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    clipSlots: [slot],
+  });
+
+  await assert.rejects(
+    executeAgentPlan(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Replace, then delete the original",
+        actions: [
+          {
+            type: "create_session_midi_clip",
+            trackName: "Lead",
+            slotIndex: 0,
+            durationBeats: 4,
+            name: "Replacement",
+            notes: [],
+          },
+          {
+            type: "delete_session_clip",
+            trackName: "Lead",
+            slotIndex: 0,
+            clipName: "Original",
+          },
+        ],
+      },
+      {},
+    ),
+    /Session slot 0 changed earlier in this plan/i,
+  );
+
+  assert.equal(deletes, 1);
+  assert.equal(slot.clip, replacement);
 });
 
 test("audio clip creation consumes an observed source internally for Arrangement and Session", async () => {
@@ -736,6 +927,155 @@ test("audio clip creation consumes an observed source internally for Arrangement
   assert.doesNotMatch(results.join("\n"), /private\/audio/);
 });
 
+test("same-source Session audio applies requested Warp and loop settings", async () => {
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: "sample-1" },
+    filePath: "/private/audio/loop.wav",
+  });
+  const existing = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Old Loop",
+    filePath: "/private/audio/loop.wav",
+    warping: false,
+    looping: false,
+    startMarker: 0,
+    endMarker: 8,
+    loopStart: 0,
+    loopEnd: 8,
+  });
+  const created = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-2" },
+    name: "New Audio",
+    filePath: "/private/audio/loop.wav",
+    warping: true,
+    looping: true,
+    startMarker: 1,
+    endMarker: 7,
+    loopStart: 2,
+    loopEnd: 6,
+  });
+  const createArgs: unknown[] = [];
+  let deletes = 0;
+  let creates = 0;
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    clip: existing,
+    deleteClip: async () => { deletes += 1; },
+    createAudioClip: async (args: unknown) => {
+      creates += 1;
+      createArgs.push(args);
+      return created;
+    },
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    devices: [],
+    arrangementClips: [],
+    clipSlots: [slot],
+  });
+
+  const results = await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Update the existing loop",
+      actions: [{
+        type: "create_session_audio_clip",
+        trackName: "Audio",
+        source: { kind: "selected" },
+        slotIndex: 0,
+        name: "Warped Loop",
+        isWarped: true,
+        loopSettings: {
+          looping: true,
+          startMarker: 1,
+          endMarker: 7,
+          loopStart: 2,
+          loopEnd: 6,
+        },
+      }],
+    },
+    { object: source },
+  );
+
+  assert.equal(deletes, 1);
+  assert.equal(creates, 1);
+  assert.deepEqual(createArgs, [{
+    filePath: "/private/audio/loop.wav",
+    isWarped: true,
+    loopSettings: {
+      looping: true,
+      startMarker: 1,
+      endMarker: 7,
+      loopStart: 2,
+      loopEnd: 6,
+    },
+  }]);
+  assert.equal(created.name, "Warped Loop");
+  assert.match(results[0] ?? "", /Created Session audio clip/i);
+});
+
+test("a Warp-only Session audio mismatch deletes and recreates the slot Clip", async () => {
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: "sample-1" },
+    filePath: "/private/audio/loop.wav",
+  });
+  const existing = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Old Loop",
+    filePath: "/private/audio/loop.wav",
+    warping: false,
+    looping: false,
+    startMarker: 0,
+    endMarker: 8,
+    loopStart: 0,
+    loopEnd: 8,
+  });
+  const created = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-2" },
+    name: "New Loop",
+    filePath: "/private/audio/loop.wav",
+    warping: true,
+  });
+  let deletes = 0;
+  const createArgs: unknown[] = [];
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    clip: existing,
+    deleteClip: async () => { deletes += 1; },
+    createAudioClip: async (args: unknown) => {
+      createArgs.push(args);
+      return created;
+    },
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    devices: [],
+    arrangementClips: [],
+    clipSlots: [slot],
+  });
+
+  await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Enable Warp",
+      actions: [{
+        type: "create_session_audio_clip",
+        trackName: "Audio",
+        source: { kind: "selected" },
+        slotIndex: 0,
+        isWarped: true,
+      }],
+    },
+    { object: source },
+  );
+
+  assert.equal(deletes, 1);
+  assert.deepEqual(createArgs, [{
+    filePath: "/private/audio/loop.wav",
+    isWarped: true,
+  }]);
+});
+
 test("clip property, Warp, range clear, and Session delete actions use exact clips", async () => {
   const clip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
     name: "Vocal",
@@ -754,12 +1094,17 @@ test("clip property, Warp, range clear, and Session delete actions use exact cli
       sessionDeletes += 1;
     },
   });
+  const arrangementClip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    name: "Range Clip",
+    startTime: 8,
+    duration: 4,
+  });
   const cleared: Array<[number, number]> = [];
   const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
     handle: { id: "track-1" },
     name: "Audio",
     devices: [],
-    arrangementClips: [],
+    arrangementClips: [arrangementClip],
     clipSlots: [slot],
     clearClipsInRange: async (start: number, end: number) => {
       cleared.push([start, end]);
@@ -785,7 +1130,7 @@ test("clip property, Warp, range clear, and Session delete actions use exact cli
           type: "set_audio_clip_warp",
           trackName: "Audio",
           slotIndex: 0,
-          clipName: "Vocal Edited",
+          clipName: "Vocal",
           warping: true,
           warpMode: "complex_pro",
         },
@@ -799,7 +1144,7 @@ test("clip property, Warp, range clear, and Session delete actions use exact cli
           type: "delete_session_clip",
           trackName: "Audio",
           slotIndex: 0,
-          clipName: "Vocal Edited",
+          clipName: "Vocal",
         },
       ],
     },
@@ -863,8 +1208,8 @@ test("Scene and Cue Point actions resolve exact indexes, beats, and expected nam
         { type: "duplicate_scene", sceneIndex: 0 },
         { type: "create_cue_point", timeBeat: 32, name: "Outro" },
         { type: "rename_cue_point", timeBeat: 16, cueName: "Old Drop", newName: "Drop" },
-        { type: "delete_cue_point", timeBeat: 16, cueName: "Drop" },
-        { type: "delete_scene", sceneIndex: 0, sceneName: "Drop" },
+        { type: "delete_cue_point", timeBeat: 16, cueName: "Old Drop" },
+        { type: "delete_scene", sceneIndex: 0, sceneName: "Verse" },
       ],
     },
     {},
@@ -876,6 +1221,188 @@ test("Scene and Cue Point actions resolve exact indexes, beats, and expected nam
   assert.equal(cue.name, "Drop");
   assert.deepEqual(deletedCues, [cue]);
   assert.deepEqual(deletedScenes, [scene]);
+});
+
+test("structural Scene actions keep the originally confirmed Scene handles", async () => {
+  const scenes = ["A", "B", "C"].map((name, index) =>
+    sdkObject<Scene<"1.0.0">>(Scene.prototype, {
+      handle: { id: `scene-${index}` },
+      name,
+    })
+  );
+  const deleted: string[] = [];
+  const song = {
+    tracks: [],
+    scenes,
+    cuePoints: [],
+    deleteScene: async (scene: Scene<"1.0.0">) => {
+      deleted.push(scene.name);
+      song.scenes.splice(song.scenes.indexOf(scene), 1);
+    },
+  };
+
+  await executeAgentPlan(
+    { application: { song } } as never,
+    {
+      message: "Delete A and B",
+      actions: [
+        { type: "delete_scene", sceneIndex: 0, sceneName: "A" },
+        { type: "delete_scene", sceneIndex: 1, sceneName: "B" },
+      ],
+    },
+    {},
+  );
+
+  assert.deepEqual(deleted, ["A", "B"]);
+  assert.deepEqual(song.scenes.map((scene) => scene.name), ["C"]);
+});
+
+test("structural Device actions keep the originally confirmed Device handles", async () => {
+  const devices = [0, 1, 2].map((index) =>
+    sdkObject<Device<"1.0.0">>(Device.prototype, {
+      handle: { id: `device-${index}` },
+      name: "Utility",
+      parameters: [],
+    })
+  );
+  const deleted: string[] = [];
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices,
+    deleteDevice: async (device: Device<"1.0.0">) => {
+      deleted.push(String(device.handle.id));
+      track.devices.splice(track.devices.indexOf(device), 1);
+    },
+  });
+
+  await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Delete the first two Utilities",
+      actions: [
+        { type: "delete_device", trackName: "Lead", deviceName: "Utility", deviceIndex: 0 },
+        { type: "delete_device", trackName: "Lead", deviceName: "Utility", deviceIndex: 1 },
+      ],
+    },
+    {},
+  );
+
+  assert.deepEqual(deleted, ["device-0", "device-1"]);
+  assert.deepEqual(track.devices.map((device) => device.handle.id), ["device-2"]);
+});
+
+test("already-matching scalar writes do not count as Live mutations", async () => {
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    mute: false,
+    solo: true,
+    arm: false,
+  });
+  const song = { tracks: [track], tempo: 120 };
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song } } as never,
+    {
+      message: "Keep current values",
+      actions: [
+        { type: "set_tempo", tempo: 120 },
+        { type: "rename_track", trackName: "Lead", newName: "Lead" },
+        { type: "set_track_mute", trackName: "Lead", mute: false },
+        { type: "set_track_solo", trackName: "Lead", solo: true },
+        { type: "set_track_arm", trackName: "Lead", arm: false },
+      ],
+    },
+    {},
+  );
+
+  assert.equal(outcome.mutationCount, 0);
+  assert.equal(outcome.results.length, 5);
+});
+
+test("already-matching parameter and Clip writes do not invoke SDK setters", async () => {
+  let parameterWrites = 0;
+  const parameter = {
+    handle: { id: "parameter-1" },
+    name: "Gain",
+    min: 0,
+    max: 1,
+    getValue: async () => 0.5,
+    setValue: async () => {
+      parameterWrites += 1;
+    },
+  };
+  const device = sdkObject<Device<"1.0.0">>(Device.prototype, {
+    handle: { id: "device-1" },
+    name: "Utility",
+    parameters: [parameter],
+  });
+  const clip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Vocal",
+    looping: false,
+    muted: false,
+    color: 0,
+    warping: false,
+    warpMode: WarpMode.Beats,
+  });
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "slot-1" },
+    clip,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    devices: [device],
+    clipSlots: [slot],
+    mixer: { volume: parameter, panning: parameter, sends: [] },
+  });
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Keep exact settings",
+      actions: [
+        {
+          type: "set_device_parameter",
+          trackName: "Audio",
+          deviceName: "Utility",
+          deviceIndex: 0,
+          parameterName: "Gain",
+          value: 0.5,
+        },
+        {
+          type: "set_track_mixer_parameter",
+          trackName: "Audio",
+          parameter: "volume",
+          value: 0.5,
+        },
+        {
+          type: "set_clip_properties",
+          trackName: "Audio",
+          slotIndex: 0,
+          clipName: "Vocal",
+          looping: false,
+          muted: false,
+          color: 0,
+        },
+        {
+          type: "set_audio_clip_warp",
+          trackName: "Audio",
+          slotIndex: 0,
+          clipName: "Vocal",
+          warping: false,
+          warpMode: "beats",
+        },
+      ],
+    },
+    {},
+  );
+
+  assert.equal(outcome.mutationCount, 0);
+  assert.equal(parameterWrites, 0);
 });
 
 test("Take Lane creation and rename use exact lane identities", async () => {

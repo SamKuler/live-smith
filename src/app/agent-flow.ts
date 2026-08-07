@@ -3,19 +3,20 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 import {
   AgentPartialCompletionError,
   runAgentLoop,
+  type AgentActionExecutionOutcome,
   type AgentActionPreflightGuard,
   type AgentLoopTraceEvent,
 } from "../agent/loop.js";
 import { throwIfAborted } from "../runtime/host.js";
 import {
+  observationRequestForAction,
   requiresExplicitConfirmation,
-  type AgentObservationRequest,
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import {
   AgentPlanExecutionError,
-  executeAgentPlan,
+  executeAgentPlanWithProgress,
 } from "../live/executor.js";
 import {
   interactionContextForScope,
@@ -99,16 +100,18 @@ import {
   runtimeProfileForSavedProfile,
 } from "./model-request.js";
 import {
+  activeRecoveryLedgerFromEvents,
   conversationHistoryFromEvents,
   getOrCreateDefaultSession,
   nextNewChatTitle,
   projectKeyForContext,
+  recoveryContextFromEvents,
   recoverableSessionsForScope,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 
 type Api = ExtensionContext<"1.0.0">;
-const maxConsecutiveAgentFailures = 3;
+const maxConsecutiveInvalidToolCalls = 3;
 
 export interface AgentFlowDependencies {
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
@@ -555,9 +558,16 @@ export async function handleAgentRequest(
     projectKey,
     sessionId,
   );
-  const history = conversationHistoryFromEvents(
-    await loadSessionEvents(context.environment.storageDirectory, session.id),
+  const priorEvents = await loadSessionEvents(
+    context.environment.storageDirectory,
+    session.id,
   );
+  const history = conversationHistoryFromEvents(priorEvents);
+  const recoveryContext = recoveryContextFromEvents(priorEvents);
+  const initialRecoveryState = activeRecoveryLedgerFromEvents(priorEvents);
+  const requestLiveContext = recoveryContext
+    ? `${interaction.summary}\n\n${recoveryContext}`
+    : interaction.summary;
   let userEvent: SessionEvent;
   try {
     userEvent = await appendUserEvent(
@@ -581,16 +591,17 @@ export async function handleAgentRequest(
   try {
     await callbacks.onProgress("Starting agent loop");
     const loopResult = await runAgentLoop({
-      maxConsecutiveFailures: maxConsecutiveAgentFailures,
+      maxConsecutiveFailures: maxConsecutiveInvalidToolCalls,
       maxIterations: 12,
-      maxTotalIterations: 64,
       maxToolCallsPerTurn: 32,
+      maxHostFailuresWithoutMutation: 6,
+      ...(initialRecoveryState ? { initialRecoveryState } : {}),
       signal: callbacks.signal,
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
         const turn = await requestTurn({
           prompt,
-          liveContext: interaction.summary,
+          liveContext: requestLiveContext,
           runtimeProfile,
           history,
           agentMessages: input.messages,
@@ -612,9 +623,9 @@ export async function handleAgentRequest(
       confirmActions: callbacks.confirmActions,
       executeActions: async (plan, rawBindings) => {
         const bindings = rawBindings as AgentPlanBindings;
-        let results: string[];
+        let outcome: AgentActionExecutionOutcome;
         try {
-          results = await executeAgentPlan(
+          outcome = await executeAgentPlanWithProgress(
             context,
             plan,
             interaction.target,
@@ -628,7 +639,18 @@ export async function handleAgentRequest(
             error.completedResults.length &&
             isAbortCause(error.cause, callbacks.signal)
           ) {
-            results = error.completedResults;
+            outcome = {
+              results: error.completedResults,
+              mutationCount: error.completedMutationCount,
+              incompleteRecovery: {
+                completedActionKeys: error.completedActionKeys,
+                ...(error.failedActionIndex === undefined
+                  ? {}
+                  : { failedActionIndex: error.failedActionIndex }),
+                failureMessage:
+                  "The request was stopped before every confirmed Live action completed.",
+              },
+            };
           } else if (error instanceof AgentPlanExecutionError) {
             throw new AgentPartialCompletionError(
               error.completedResults,
@@ -637,13 +659,14 @@ export async function handleAgentRequest(
               error.failedAction,
               error.failedTrackName,
               error.completedActionKeys,
+              error.completedMutationCount,
             );
           } else {
             throw error;
           }
         }
         await callbacks.onProgress("Updating chat history");
-        return results;
+        return outcome;
       },
       ...(callbacks.withActionExecutionLock
         ? { withActionExecutionLock: callbacks.withActionExecutionLock }
@@ -814,7 +837,7 @@ async function captureAgentPlanPreflightSnapshots(
       : interaction.target;
     await observer(
       context,
-      actionPreflightRequest(action),
+      observationRequestForAction(action),
       actionTarget,
     );
     throwIfAborted(signal);
@@ -824,128 +847,6 @@ async function captureAgentPlanPreflightSnapshots(
   return snapshots;
 }
 
-function actionPreflightRequest(
-  action: AgentPlan["actions"][number],
-): AgentObservationRequest {
-  switch (action.type) {
-    case "create_midi_track":
-    case "create_audio_track":
-      return { type: "inspect_live_set" };
-    case "create_scene":
-    case "rename_scene":
-    case "duplicate_scene":
-    case "delete_scene":
-    case "create_cue_point":
-    case "rename_cue_point":
-    case "delete_cue_point":
-    case "set_tempo":
-      return { type: "inspect_song_info" };
-    case "create_midi_clip":
-    case "insert_device":
-    case "create_arrangement_audio_clip":
-    case "clear_arrangement_range":
-      return {
-        type: "inspect_track",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-      };
-    case "create_session_midi_clip":
-    case "create_session_audio_clip":
-    case "delete_session_clip":
-      return {
-        type: "inspect_clip",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        ...("clipName" in action && action.clipName
-          ? { clipName: action.clipName }
-          : {}),
-        slotIndex: action.slotIndex,
-      };
-    case "replace_midi_clip_segment":
-      return {
-        type: "inspect_midi_clip",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        clipName: action.clipName,
-        startBeat: action.startBeat,
-      };
-    case "set_device_parameter":
-      if (!action.devicePath) {
-        return {
-          type: "inspect_device",
-          ...(action.trackName ? { trackName: action.trackName } : {}),
-          deviceName: action.deviceName,
-          ...(action.deviceIndex !== undefined
-            ? { deviceIndex: action.deviceIndex }
-            : {}),
-        };
-      }
-      return {
-        type: "inspect_device_tree",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        deviceName: action.deviceName,
-        ...(action.devicePath ? { devicePath: action.devicePath } : {}),
-      };
-    case "insert_chain_device":
-      return {
-        type: "inspect_device_tree",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        deviceName: action.rackName,
-        ...(action.rackPath ? { devicePath: action.rackPath } : {}),
-      };
-    case "duplicate_device":
-    case "delete_device":
-      return {
-        type: "inspect_device_tree",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        deviceName: action.deviceName,
-        ...(action.devicePath ? { devicePath: action.devicePath } : {}),
-      };
-    case "replace_simpler_sample":
-      return {
-        type: "inspect_device_tree",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        deviceName: action.simplerName,
-        ...(action.simplerPath ? { devicePath: action.simplerPath } : {}),
-      };
-    case "configure_drum_pad":
-      return {
-        type: "inspect_device_tree",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        deviceName: action.rackName,
-        ...(action.rackPath ? { devicePath: action.rackPath } : {}),
-      };
-    case "rename_track":
-    case "delete_track":
-    case "duplicate_track":
-    case "set_track_mute":
-    case "set_track_solo":
-    case "set_track_arm":
-    case "create_take_lane":
-    case "rename_take_lane":
-      return {
-        type: "inspect_track",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-      };
-    case "set_track_mixer_parameter":
-      return {
-        type: "inspect_mixer",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-      };
-    case "set_clip_properties":
-    case "set_audio_clip_warp":
-      return {
-        type: "inspect_clip",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-        ...(action.clipName ? { clipName: action.clipName } : {}),
-        ...(action.startBeat === undefined ? {} : { startBeat: action.startBeat }),
-        ...(action.slotIndex === undefined ? {} : { slotIndex: action.slotIndex }),
-      };
-    case "delete_clip":
-      return {
-        type: "inspect_track",
-        ...(action.trackName ? { trackName: action.trackName } : {}),
-      };
-  }
-}
-
 interface AgentRequestCallbacks {
   signal: AbortSignal;
   onDelta(delta: string): Promise<void> | void;
@@ -953,8 +854,8 @@ interface AgentRequestCallbacks {
   onSessionEvent(event: SessionEvent): Promise<void> | void;
   confirmActions(plan: AgentPlan): Promise<boolean>;
   withActionExecutionLock?(
-    operation: () => Promise<string[]>,
-  ): Promise<string[]>;
+    operation: () => Promise<AgentActionExecutionOutcome>,
+  ): Promise<AgentActionExecutionOutcome>;
 }
 
 function scopeKey(scope: LiveInteractionContext["scope"]): string {
@@ -985,6 +886,9 @@ async function appendAgentLoopTraceEvent(
   return appendSessionEvent(storageDirectory, sessionId, {
     kind: event.kind,
     content: event.content,
+    ...(event.kind === "apply_result" && event.recovery
+      ? { recovery: event.recovery }
+      : {}),
   });
 }
 

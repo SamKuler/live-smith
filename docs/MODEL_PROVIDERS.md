@@ -61,7 +61,9 @@ recoverable Profiles or credentials.
 - Treats `response.completed` and `response.incomplete` as terminal lifecycle
   events and cancels the reader without waiting for EOF or `[DONE]`.
 - Rejects tool calls unless the overall response is complete and every call has
-  a non-empty, unique protocol ID.
+  a non-empty, unique protocol ID, a non-empty function name, and a string
+  argument representation. A malformed declared call invalidates the entire
+  turn even when text output is also present.
 
 ### OpenAI Chat Completions
 
@@ -74,8 +76,11 @@ recoverable Profiles or credentials.
   responses fail before any tool call can run.
 - Preserves unknown JSON-compatible assistant fields for compatible endpoints
   that require them during later tool turns.
-- Rejects missing, empty, or duplicate tool-call IDs before any Live action can
-  run.
+- Rejects missing, empty, or duplicate tool-call IDs, empty function names, and
+  missing or non-string argument representations before any Live action can
+  run. Every call must have type `function`, `tool_calls` must be an array, and
+  the parsed calls must agree bidirectionally with the terminal finish reason.
+  Ordinary assistant text cannot hide a malformed or missing declared call.
 
 ### Anthropic Messages
 
@@ -91,8 +96,10 @@ recoverable Profiles or credentials.
 - Requires a complete `end_turn`, `tool_use`, or `stop_sequence` stop reason;
   truncation, refusal, pause, context exhaustion, unknown reasons, and missing
   terminal metadata fail before any tool call can run.
-- Rejects missing, empty, or duplicate tool-use IDs before any Live action can
-  run.
+- Rejects missing, empty, or duplicate tool-use IDs, empty tool names, and
+  non-object tool input before any Live action can run. Parsed `tool_use` blocks
+  must agree bidirectionally with the terminal stop reason. Ordinary text blocks
+  cannot hide a malformed or missing declared `tool_use` block.
 
 ## Capability resolution
 

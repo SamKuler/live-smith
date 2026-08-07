@@ -4,8 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { MidiTrack } from "@ableton-extensions/sdk";
+import { Device, MidiTrack } from "@ableton-extensions/sdk";
 
+import {
+  observationRequestForAction,
+  type AgentAction,
+} from "../agent/actions.js";
 import { agentSystemInstructions } from "../agent/system-instructions.js";
 import { resolveModelCapabilities } from "../model/capabilities.js";
 import type {
@@ -14,7 +18,11 @@ import type {
 } from "../model/contracts.js";
 import type { ModelTool } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
-import { loadSessionEvents, type SessionEvent } from "../storage/events.js";
+import {
+  appendSessionEvent,
+  loadSessionEvents,
+  type SessionEvent,
+} from "../storage/events.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import { createSession, listSessions, type AgentSession } from "../storage/sessions.js";
 import {
@@ -29,10 +37,12 @@ import {
   resolveDiscoveredModels,
 } from "./model-request.js";
 import {
+  activeRecoveryLedgerFromEvents,
   conversationHistoryFromEvents,
   getOrCreateDefaultSession,
   nextNewChatTitle,
   projectKeyForContext,
+  recoveryContextFromEvents,
   recoverableSessionsForScope,
 } from "./session-context.js";
 
@@ -199,24 +209,8 @@ test("projectKeyForContext changes when the current Live Set handle changes", ()
   assert.notEqual(projectKeyForContext(context as never), first);
 });
 
-test("action preflight observes the relevant current Live state for every action", async () => {
-  const observed: unknown[] = [];
-  const context = {
-    application: {
-      song: {
-        tracks: ["Lead", "Old", "Bass", "Drums", "Audio"].map(
-          (name, index) => ({ name, handle: { id: `track-${index}` } }),
-        ),
-      },
-    },
-  };
-
-  await preflightAgentPlan(
-    context as never,
-    { target: {} } as never,
-    {
-      message: "Preflight all action families",
-      actions: [
+test("shared action routing covers every core Live action", () => {
+  const actions: AgentAction[] = [
         { type: "create_midi_track", name: "Bass" },
         { type: "create_audio_track", name: "Vocals" },
         { type: "create_scene", name: "Verse" },
@@ -257,15 +251,8 @@ test("action preflight observes the relevant current Live state for every action
           clipName: "Vocal take",
           startBeat: 8,
         },
-      ],
-    },
-    new AbortController().signal,
-    async (_context, request) => {
-      observed.push(request);
-      return "ok";
-    },
-    () => "stable-target",
-  );
+  ];
+  const observed = actions.map((action) => observationRequestForAction(action));
 
   assert.deepEqual(observed, [
     { type: "inspect_live_set" },
@@ -295,24 +282,8 @@ test("action preflight observes the relevant current Live state for every action
   ]);
 });
 
-test("action preflight routes every extended Live object action to its narrow observation", async () => {
-  const observed: unknown[] = [];
-  const context = {
-    application: {
-      song: {
-        tracks: ["Lead", "Drums", "Audio", "Vocals"].map(
-          (name, index) => ({ name, handle: { id: `extended-track-${index}` } }),
-        ),
-      },
-    },
-  };
-
-  await preflightAgentPlan(
-    context as never,
-    { target: {} } as never,
-    {
-      message: "Preflight extended action families",
-      actions: [
+test("shared action routing covers every extended Live object action", () => {
+  const actions: AgentAction[] = [
         { type: "rename_scene", sceneIndex: 0, sceneName: "Intro", newName: "Verse" },
         { type: "duplicate_scene", sceneIndex: 0, sceneName: "Verse" },
         { type: "delete_scene", sceneIndex: 1, sceneName: "Draft" },
@@ -338,7 +309,7 @@ test("action preflight routes every extended Live object action to its narrow ob
           type: "duplicate_device",
           trackName: "Lead",
           deviceName: "Serum",
-          devicePath: { deviceIndex: 1 },
+          deviceIndex: 1,
         },
         {
           type: "delete_device",
@@ -359,6 +330,7 @@ test("action preflight routes every extended Live object action to its narrow ob
           rackName: "Drum Rack",
           rackPath: { deviceIndex: 0 },
           receivingNote: 36,
+          mode: "fill_empty_pad",
           source: { kind: "selected" },
         },
         {
@@ -411,20 +383,13 @@ test("action preflight routes every extended Live object action to its narrow ob
           slotIndex: 2,
           clipName: "Draft",
         },
-      ],
-    },
-    new AbortController().signal,
-    async (_context, request) => {
-      observed.push(request);
-      return "ok";
-    },
-    () => "stable-target",
-  );
+  ];
+  const observed = actions.map((action) => observationRequestForAction(action));
 
   assert.deepEqual(observed, [
-    { type: "inspect_song_info" },
-    { type: "inspect_song_info" },
-    { type: "inspect_song_info" },
+    { type: "inspect_song_info", itemOffset: 0, itemLimit: 1 },
+    { type: "inspect_song_info", itemOffset: 0, itemLimit: 1 },
+    { type: "inspect_song_info", itemOffset: 1, itemLimit: 1 },
     { type: "inspect_song_info" },
     { type: "inspect_song_info" },
     { type: "inspect_song_info" },
@@ -436,10 +401,10 @@ test("action preflight routes every extended Live object action to its narrow ob
       devicePath: { deviceIndex: 0 },
     },
     {
-      type: "inspect_device_tree",
+      type: "inspect_device",
       trackName: "Lead",
       deviceName: "Serum",
-      devicePath: { deviceIndex: 1 },
+      deviceIndex: 1,
     },
     {
       type: "inspect_device_tree",
@@ -504,7 +469,23 @@ test("action preflight guard blocks a target identity change after confirmation"
 
 test("action preflight guard blocks a value overwritten by another queued Session", async () => {
   let currentValue = 0.25;
-  const track = { name: "Lead", handle: { id: "lead-track" } };
+  const parameter = {
+    name: "Frequency",
+    handle: { id: "frequency-parameter" },
+    min: 0,
+    max: 1,
+    getValue: async () => currentValue,
+  };
+  const device = Object.defineProperties(Object.create(Device.prototype), {
+    name: { enumerable: true, value: "Auto Filter" },
+    handle: { enumerable: true, value: { id: "auto-filter-device" } },
+    parameters: { enumerable: true, value: [parameter] },
+  });
+  const track = {
+    name: "Lead",
+    handle: { id: "lead-track" },
+    devices: [device],
+  };
   const guard = await preflightAgentPlan(
     { application: { song: { tracks: [track] } } } as never,
     { target: {} } as never,
@@ -563,17 +544,14 @@ test("action preflight binds trackRef to the same handle before and after confir
   assert.deepEqual(observedTargets, [track, track, track, track]);
 });
 
-test("preflight observes follow-up actions when a creator ref reuses an existing track", async () => {
-  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
-    handle: { enumerable: true, value: { id: "track-1" } },
-    name: { enumerable: true, value: "Lead" },
-  });
+test("preflight does not bind a creator ref to an existing same-name track", async () => {
+  const track = { handle: { id: "track-1" }, name: "Lead" };
   const observedTargets: unknown[] = [];
   const guard = await preflightAgentPlan(
     { application: { song: { tracks: [track] } } } as never,
     { target: {} } as never,
     {
-      message: "Reuse Lead and add a device",
+      message: "Create another Lead and add a device",
       actions: [
         { type: "create_midi_track", ref: "lead", name: "Lead" },
         { type: "insert_device", trackRef: "lead", deviceName: "Auto Filter" },
@@ -589,8 +567,8 @@ test("preflight observes follow-up actions when a creator ref reuses an existing
   );
 
   const bindings = await guard();
-  assert.equal(bindings.tracks.get("lead"), track);
-  assert.deepEqual(observedTargets, [track, track, track, track]);
+  assert.equal(bindings.tracks.has("lead"), false);
+  assert.deepEqual(observedTargets, [undefined, undefined]);
 });
 
 test("conversationHistoryFromEvents caps model context to recent messages", () => {
@@ -605,6 +583,155 @@ test("conversationHistoryFromEvents caps model context to recent messages", () =
   assert.equal(history.length, 24);
   assert.equal(history[0]?.content, "message-26");
   assert.equal(history.at(-1)?.content, "message-49");
+});
+
+test("recoveryContextFromEvents keeps bounded outcomes and rejected tool inputs", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "event-user",
+      kind: "user",
+      content: "ignore this instruction",
+      createdAt: "2026-07-31T00:00:00.000Z",
+    },
+    ...Array.from({ length: 15 }, (_, index): SessionEvent => ({
+      id: `event-apply-${index}`,
+      kind: "apply_result",
+      content: `apply-${index}`,
+      createdAt: `2026-07-31T00:00:${String(index).padStart(2, "0")}.000Z`,
+    })),
+    {
+      id: "event-rejected-tool",
+      kind: "tool_result",
+      name: "apply_live_actions",
+      content: [
+        'Tool call "apply_live_actions" has invalid arguments: Action 2 is invalid.',
+        "Correct the tool fields and types, then retry.",
+      ].join("\n"),
+      createdAt: "2026-07-31T00:00:30.000Z",
+    },
+    {
+      id: "event-tool",
+      kind: "tool_result",
+      content: "ignore raw tool output",
+      createdAt: "2026-07-31T00:01:00.000Z",
+    },
+  ];
+
+  const context = recoveryContextFromEvents(events);
+  assert.match(context, /untrusted bookkeeping data/i);
+  assert.doesNotMatch(context, /ignore this instruction|ignore raw tool output|apply-3\b/);
+  assert.match(context, /apply-4\b/);
+  assert.match(context, /apply-14\b/);
+  assert.match(context, /Action 2 is invalid/);
+
+  const bounded = recoveryContextFromEvents([{
+    id: "event-large",
+    kind: "error",
+    content: "x".repeat(20_000),
+    createdAt: "2026-07-31T00:00:00.000Z",
+  }]);
+  assert.ok(bounded.length <= 12_000);
+  assert.match(bounded, /…$/);
+});
+
+test("activeRecoveryLedgerFromEvents uses the latest structured Apply state", () => {
+  const digest = "b".repeat(64);
+  const laterDigest = "c".repeat(64);
+  const active: SessionEvent = {
+    id: "event-active-recovery",
+    kind: "apply_result",
+    content: "The device chain is unfinished.",
+    recovery: { active: true, completedActionDigests: [digest] },
+    createdAt: "2026-07-31T00:00:00.000Z",
+  };
+  assert.deepEqual(activeRecoveryLedgerFromEvents([active]), {
+    completedActionDigests: [digest],
+    unresolvedFailure: "The device chain is unfinished.",
+  });
+  assert.deepEqual(activeRecoveryLedgerFromEvents([
+    active,
+    {
+      id: "event-intermediate-recovery",
+      kind: "apply_result",
+      content: "Applied an intermediate repair stage.",
+      recovery: {
+        active: true,
+        completedActionDigests: [digest, laterDigest],
+      },
+      createdAt: "2026-07-31T00:00:30.000Z",
+    },
+  ]), {
+    completedActionDigests: [digest, laterDigest],
+    unresolvedFailure: "The device chain is unfinished.",
+  });
+  assert.equal(activeRecoveryLedgerFromEvents([
+    active,
+    {
+      id: "event-cleared-recovery",
+      kind: "apply_result",
+      content: "The remaining device was applied.",
+      recovery: { active: false, completedActionDigests: [] },
+      createdAt: "2026-07-31T00:01:00.000Z",
+    },
+  ]), undefined);
+});
+
+test("handleAgentRequest includes persisted apply recovery in the next model request", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-recovery-context-"));
+  const existing = await createSession(dir, {
+    title: "Bass work",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  });
+  await appendSessionEvent(dir, existing.id, {
+    kind: "apply_result",
+    content: "Completed: Inserted Auto Filter. Failed: Inserted Delay.",
+  });
+  const profile: SavedProfile = {
+    id: "provider-recovery",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "secret-provider-key",
+    baseUrl: "https://example.test/v1",
+    model: "model-a",
+    parameters: {
+      maxOutputTokens: 1024,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  };
+  let liveContext = "";
+
+  const result = await handleAgentRequest(
+    { environment: { storageDirectory: dir } } as never,
+    {
+      defaultPrompt: "Continue",
+      summary: "Track: Bass",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    },
+    "Continue the device chain",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    existing.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async (request) => {
+      liveContext = request.liveContext;
+      return { content: "I will continue from the recorded outcome.", toolCalls: [] };
+    },
+  );
+
+  assert.equal(result, "I will continue from the recorded outcome.");
+  assert.match(liveContext, /^Track: Bass/);
+  assert.match(liveContext, /untrusted bookkeeping data/i);
+  assert.match(liveContext, /Completed: Inserted Auto Filter/);
 });
 
 test("getOrCreateDefaultSession rejects a preferred session from another project", async () => {
@@ -800,7 +927,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
   );
 });
 
-test("a partial composite creation failure is reported to the model without a terminal Session error", async () => {
+test("a partial composite creation failure remains explicitly unfinished", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-partial-create-"));
   const profile: SavedProfile = {
     id: "provider-partial-create",
@@ -879,6 +1006,7 @@ test("a partial composite creation failure is reported to the model without a te
       },
   );
 
+  assert.match(result, /unfinished Live work/i);
   assert.match(result, /will not create it again/);
   assert.equal(modelCalls, 2);
   assert.equal(createCalls, 1);
@@ -893,7 +1021,7 @@ test("a partial composite creation failure is reported to the model without a te
   assert.ok(partialResult);
   assert.match(partialResult.content, /Created MIDI track "MIDI 1"/);
   assert.match(partialResult.content, /Track naming failed/);
-  assert.equal(events.some((event) => event.kind === "error"), false);
+  assert.equal(events.some((event) => event.kind === "error"), true);
 });
 
 test("a tenth device rejection preserves nine completed actions and repairs in the same agent request", async () => {
@@ -1038,6 +1166,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
             name: "apply_live_actions",
             arguments: JSON.stringify({
               message: "Insert current Delay only",
+              resolvesPriorFailure: true,
               actions: [{
                 type: "insert_device",
                 trackName: "Lead",
@@ -1073,6 +1202,222 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
     ),
     true,
   );
+});
+
+test("completed action replay protection persists across sends and clears after repair", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-send-ledger-"));
+  const profile: SavedProfile = {
+    id: "provider-cross-send-ledger",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "secret-provider-key",
+    baseUrl: "https://example.test/v1",
+    model: "model-a",
+    parameters: {
+      maxOutputTokens: 1024,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  };
+  const devices: Array<{
+    handle: { id: bigint };
+    name: string;
+    parameters: never[];
+  }> = [];
+  const attemptedDevices: string[] = [];
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: 142n } },
+    name: { enumerable: true, value: "Lead", writable: true },
+    mute: { enumerable: true, value: false, writable: true },
+    solo: { enumerable: true, value: false, writable: true },
+    arm: { enumerable: true, value: false, writable: true },
+    arrangementClips: { enumerable: true, value: [] },
+    clipSlots: { enumerable: true, value: [] },
+    devices: { enumerable: true, value: devices },
+    insertDevice: {
+      enumerable: true,
+      value: async (name: string) => {
+        attemptedDevices.push(name);
+        if (name === "Unavailable Device") {
+          throw new Error("Failed to insert device");
+        }
+        const device = {
+          handle: { id: BigInt(500 + devices.length) },
+          name,
+          parameters: [],
+        };
+        devices.push(device);
+        return device;
+      },
+    },
+  }) as MidiTrack<"1.0.0">;
+  const context = {
+    environment: { storageDirectory: dir },
+    application: { song: { handle: { id: 1n }, tracks: [track] } },
+  } as never;
+  const interaction = {
+    defaultPrompt: "Test",
+    summary: 'MIDI track "Lead"\ndevices=none',
+    target: { track },
+    scope: { kind: "track", identity: "142", label: "Lead" },
+  } as const;
+  const callbacks = {
+    signal: new AbortController().signal,
+    onDelta: () => {},
+    onProgress: () => {},
+    onSessionEvent: () => {},
+    confirmActions: async () => true,
+  };
+
+  let firstCalls = 0;
+  const firstResult = await handleAgentRequest(
+    context,
+    interaction,
+    "Build the chain",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    undefined,
+    callbacks,
+    async () => {
+      firstCalls += 1;
+      return firstCalls === 1
+        ? {
+            content: "Building the chain.",
+            toolCalls: [{
+              id: "initial-cross-send-plan",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Build the chain",
+                targets: { lead: { trackName: "Lead" } },
+                actions: [
+                  {
+                    type: "insert_device",
+                    trackRef: "lead",
+                    deviceName: "Auto Filter",
+                  },
+                  {
+                    type: "insert_device",
+                    trackRef: "lead",
+                    deviceName: "Unavailable Device",
+                  },
+                ],
+              }),
+            }],
+          }
+        : { content: "I will continue this later.", toolCalls: [] };
+    },
+  );
+  assert.match(firstResult, /unfinished Live work/i);
+  assert.deepEqual(attemptedDevices, ["Auto Filter", "Unavailable Device"]);
+
+  const [session] = await listSessions(dir, "project-a");
+  assert.ok(session);
+  let secondCalls = 0;
+  const secondInputs: ModelConversationMessage[][] = [];
+  const secondResult = await handleAgentRequest(
+    context,
+    interaction,
+    "Continue only the missing work",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    session.id,
+    callbacks,
+    async (request) => {
+      secondInputs.push(request.agentMessages);
+      secondCalls += 1;
+      if (secondCalls === 1) {
+        return {
+          content: "Retrying the whole chain.",
+          toolCalls: [{
+            id: "cross-send-repeat",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Retry completed filter",
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Auto Filter",
+              }],
+            }),
+          }],
+        };
+      }
+      if (secondCalls === 2) {
+        return {
+          content: "Applying only the missing device.",
+          toolCalls: [{
+            id: "cross-send-repair",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Insert only Delay",
+              resolvesPriorFailure: true,
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Delay",
+              }],
+            }),
+          }],
+        };
+      }
+      return { content: "The missing device is now in place.", toolCalls: [] };
+    },
+  );
+  assert.equal(secondResult, "The missing device is now in place.");
+  assert.match(
+    secondInputs[1]?.at(-1)?.content ?? "",
+    /repeats work already completed.*Auto Filter/is,
+  );
+  assert.deepEqual(attemptedDevices, [
+    "Auto Filter",
+    "Unavailable Device",
+    "Delay",
+  ]);
+
+  let thirdCalls = 0;
+  const thirdResult = await handleAgentRequest(
+    context,
+    interaction,
+    "Add another Auto Filter intentionally",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    session.id,
+    callbacks,
+    async () => {
+      thirdCalls += 1;
+      return thirdCalls === 1
+        ? {
+            content: "Adding another instance.",
+            toolCalls: [{
+              id: "post-clear-repeat",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Add another Auto Filter",
+                actions: [{
+                  type: "insert_device",
+                  trackName: "Lead",
+                  deviceName: "Auto Filter",
+                }],
+              }),
+            }],
+          }
+        : { content: "Another Auto Filter was added.", toolCalls: [] };
+    },
+  );
+  assert.equal(thirdResult, "Another Auto Filter was added.");
+  assert.deepEqual(attemptedDevices, [
+    "Auto Filter",
+    "Unavailable Device",
+    "Delay",
+    "Auto Filter",
+  ]);
+
+  const events = await loadSessionEvents(dir, session.id);
+  const recoveryEvents = events.filter((event) => event.recovery);
+  assert.equal(recoveryEvents.some((event) => event.recovery?.active), true);
+  assert.equal(recoveryEvents.at(-1)?.recovery?.active, false);
+  assert.equal(activeRecoveryLedgerFromEvents(events), undefined);
 });
 
 test("a created-track action cannot be repeated after a later rename fails", async () => {
@@ -1188,6 +1533,23 @@ test("a created-track action cannot be repeated after a later rename fails", asy
       }
       if (modelCalls === 2) {
         return {
+          content: "Retrying the completed track creation under a new alias.",
+          toolCalls: [{
+            id: "repeat-created-track",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Create Lead again",
+              actions: [{
+                type: "create_midi_track",
+                name: "Lead",
+                ref: "replacement",
+              }],
+            }),
+          }],
+        };
+      }
+      if (modelCalls === 3) {
+        return {
           content: "Retrying the inserted instrument by current track name.",
           toolCalls: [{
             id: "repeat-wavetable",
@@ -1203,7 +1565,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
           }],
         };
       }
-      if (modelCalls === 3) {
+      if (modelCalls === 4) {
         return {
           content: "Keeping the instrument and retrying only the missing rename.",
           toolCalls: [{
@@ -1211,6 +1573,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
             name: "apply_live_actions",
             arguments: JSON.stringify({
               message: "Rename only",
+              resolvesPriorFailure: true,
               actions: [{ type: "rename_track", trackName: "Lead", newName: "Lead 2" }],
             }),
           }],
@@ -1221,8 +1584,9 @@ test("a created-track action cannot be repeated after a later rename fails", asy
   );
 
   assert.equal(result, "Lead 2 is ready.");
-  assert.equal(modelCalls, 4);
+  assert.equal(modelCalls, 5);
   assert.equal(confirmations, 2);
+  assert.equal(tracks.length, 1);
   assert.equal(insertAttempts, 1);
   assert.equal(renameAttempts, 2);
   assert.equal(currentName, "Lead 2");
@@ -1317,6 +1681,8 @@ test("a stopped Live action publishes completed mutations before propagating can
   assert.ok(applyResult);
   assert.match(applyResult.content, /Created scene "One"/);
   assert.doesNotMatch(applyResult.content, /Created scene "Two"/);
+  assert.equal(applyResult.recovery?.active, true);
+  assert.ok(applyResult.recovery?.completedActionDigests.length);
   assert.equal(
     publishedEvents.find((event) => event.kind === "apply_result")?.content,
     applyResult.content,

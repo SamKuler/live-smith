@@ -18,20 +18,25 @@ src/
     model-request.ts
       Builds provider-neutral transport requests and capability previews.
     session-context.ts
-      Selects scoped sessions and derives bounded model history from events.
+      Selects scoped sessions and derives bounded conversation and recovery
+      context from events.
 
   agent/
     action-schema.ts
       Single-source action descriptors that derive types, JSON schemas,
       runtime parsing, and model examples.
     actions.ts
-      Plan validation, confirmation summaries, and the action prompt.
+      Plan validation, confirmation summaries, the action prompt, and the
+      shared action-to-observation routing used by preflight and recovery.
     loop.ts
       Provider-neutral bounded tool loop with cancellation and safety limits.
     progress.ts, system-instructions.ts
       Agent-facing progress labels and model instructions.
 
   live/
+    action-bindings.ts
+      Binds existing action targets to SDK handles and revalidates them after
+      confirmation so ordered structural edits cannot drift to another object.
     context.ts
       Converts Live objects and selections into model-readable context.
     observer.ts
@@ -111,11 +116,17 @@ src/
    other action-relevant state performs no mutation and returns a failed tool
    result so the model can inspect again before proposing a new confirmation.
 9. `agent/loop.ts` executes the bounded apply loop without inspecting provider
-   or protocol data. Successful and partially successful Live writes renew a
-   rolling no-mutation budget; observations do not. The loop has no accumulated
-   tool-call quota, but returns excessive one-turn tool fanout to the model for
-   regrouping without executing that batch, and retains a broad per-request
-   runaway ceiling.
+   or protocol data. Successful or partially successful Live writes and new,
+   distinct observations renew a rolling no-progress budget. Repeating the same
+   observation and result does not. Execution returns an explicit mutation count,
+   so a successful idempotent no-op does not renew the window. The first
+   automatic post-failure observation has a failure-scoped progress key, so it
+   renews the window even if identical state text was observed earlier;
+   repeating the same failure does not. There is no accumulated request or
+   tool-call quota; excessive one-turn tool fanout is returned to the model for
+   regrouping without executing that batch. A separate six-failure host budget
+   stops changing failure variants that produce no Live mutation; any actual
+   mutation resets it, so productive large workflows remain uncapped.
 
 One confirmation is an authorization boundary, not a promise of one Live Undo
 entry. The 1.0.0 beta SDK does not allow awaiting inside a transaction, so an
@@ -192,11 +203,27 @@ transport before changing the registry.
 
 When actions in one `apply_live_actions` call depend on a track that is renamed
 or created earlier in that call, express the dependency with top-level
-`targets`, creator `ref`, and consumer `trackRef`. Preflight binds existing refs
-and every name-based action target to SDK handles, then revalidates them inside
-the extension-activation-wide mutation queue after confirmation. All dialogs
-opened by that activation share the queue. Do not infer aliases from display-name changes. Use staged
-apply/inspect/apply calls when later actions require state only Live can return.
+`targets`, creator `ref`, and consumer `trackRef`. Top-level targets and every
+name-based action target bind to existing SDK handles. Existing Scenes, Cue
+Points, Devices and their parents, Clips, Clip Slots, Take Lanes, mixer
+parameters, and sample sources are bound per action as well. Execution uses
+those objects directly, so an earlier delete or insertion cannot make a later
+index/path resolve to a different object. Because the SDK deletes a Session Clip
+through its Slot rather than through a Clip argument, execution also verifies
+that the Slot still contains the bound Clip before deleting. A creator `ref` never
+binds to a same-name existing track: execution always creates a new track and
+binds the returned handle for later actions. Preflight revalidates existing
+handles inside the extension-activation-wide mutation queue after confirmation.
+All dialogs opened by that activation share the queue. Do not infer aliases from
+display-name changes. Use staged apply/inspect/apply calls when later actions
+require state only Live can return.
+
+Scene creation, duplication, and deletion shift Session View row indexes. The
+validator therefore rejects a structural Scene edit followed in the same plan
+by a Scene-index target, Session Clip Slot target, or Session audio source. This
+is staged explicitly: apply the structural edit, inspect the resulting Session
+View, then submit the index-dependent work. Prebinding a prior Slot and silently
+using it after an insertion would authorize a different sequential meaning.
 
 Whole-Clip MIDI authoring uses `create_midi_clip` and accepts 0-4096 notes per
 action. An empty named Clip is the staging anchor for longer work.
@@ -206,14 +233,29 @@ notes whose intervals overlap its range, preserves non-overlapping notes, and
 sorts the result deterministically. Plans reject overlapping segment actions
 for the same Clip. Preflight fingerprints the full current Clip and execution
 rechecks the segment against the current Clip duration before assigning notes.
+Every note must state its velocity explicitly; validation never invents a hidden
+musical default.
 
 Extensions SDK 1.0.0-beta.0 accepts an exact built-in name through
 `insertDevice`, but exposes no Browser, installed-device catalog, list, or
 search API, and its insertion failure callback carries no host detail. The
 agent therefore must not present a bundled name list as current-host truth.
 Rejected insertions are runtime evidence: the persisted partial result names the
-failed action, the model re-inspects the Set, and it continues only with missing
-work using a different current name when one is known.
+failed action, but does not prove that the device name is unavailable. The model
+re-inspects the target and continues only with missing work using a changed name,
+placement, or target only when observed evidence supports that repair. Repeating
+an insertion is a literal request for another instance; the executor never
+silently reuses a same-name device. Device parameters resolve by exact observed
+name after case/whitespace normalization, never by substring guessing.
+
+Drum Pad configuration also has explicit intent. Filling an empty pad refuses to
+overwrite a chain that already contains devices. Replacing a sample requires an
+exact observed Simpler path and changes only that Simpler, preserving the rest
+of the Rack chain. Both replacement forms require explicit confirmation.
+Sample confirmations show the complete observed source locator, including an
+Arrangement start beat and a Simpler path/index. Session audio creation is
+explicitly create-or-replace: a source, Warp, or loop mismatch deletes the
+existing slot Clip before recreating it with the requested settings.
 
 The model never executes arbitrary JavaScript or unrestricted filesystem/API
 operations.
@@ -228,7 +270,10 @@ Set identifier across activation, matching prior-activation kind/label pairs are
 shown only as recovery candidates. An explicit `restore_session` command ignores
 client-supplied scope/project data and atomically rebinds the chosen history to
 the current server-owned opening scope.
-Model context uses the latest 24 user/assistant events. The bridge permits one
+Model context uses the latest 24 user/assistant events plus a separate bounded
+projection of the latest 12 persisted Apply results, rejected tool inputs, and
+errors (at most 12,000 characters). Recovery records are labelled untrusted
+bookkeeping data and never gain instruction authority. The bridge permits one
 active send per Session while different Sessions may observe and plan in
 parallel. Session select/create/restore/rename/delete commands remain available
 during background sends, but Profile and model-discovery writes are locked in
@@ -238,11 +283,18 @@ immediately before each new Apply decision. Profile and RuntimeProfile state
 remain the request-start snapshot, and a confirmation already open is not
 changed. Confirmed Live mutations enter one process-wide queue; after acquiring
 the queue lock, each plan repeats its preflight immediately before execution.
-The agent loop enforces a rolling 12-step no-mutation window, a broad 64-step
-per-request runaway ceiling, a per-model-turn tool fanout limit, cancellation,
-and consecutive-failure limits. Completed Live mutations renew only the rolling
-window, so normal multi-stage work can continue; accumulated tool calls are not
-used as a project-size limit. Command and send SSE
+The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
+tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call
+limit. Distinct validation errors are treated as an evolving repair attempt and
+do not trigger the short repeated-error stop; they remain bounded by the rolling
+no-progress window. Distinct host failures have an additional consecutive
+no-mutation budget; this is not a total tool or workflow quota.
+Completed Live mutations and new distinct observations renew the rolling window;
+there is no fixed total-step ceiling, so normal multi-stage work can continue.
+Host observation, preflight, and execution failures are classified separately
+and returned for evidence-based recovery rather than being counted as malformed
+arguments. Observation argument objects reject unknown fields and invalid
+optional values instead of silently falling back to the selected object. Command and send SSE
 events carry the initiating request's correlation ID, and Stop identifies its
 target send, so delayed state, completion, error, or cancellation traffic cannot
 affect a later operation. State reads that arrive during a command wait for the
@@ -266,13 +318,44 @@ known, the exact device for parameter failures, otherwise song or Set state).
 Another mutation is gated until that refresh or an explicit inspection succeeds,
 and an in-loop ledger rejects semantic resubmission of actions already completed
 by the failed plan, using resolved Live track identity so `trackRef` cannot be
-changed to an equivalent `trackName` to bypass the guard. The model can therefore propose only missing work without
-depending on a guessed device catalog. Consecutive failures still stop
-at the configured limit. If the result cannot be persisted, the failure remains
-fatal so the model can never retry without knowing what already changed. Device parameter values outside the
-freshly observed range are rejected rather than silently clamped after confirmation. Command mutations
+changed to an equivalent `trackName` to bypass the guard. The model can therefore
+propose only missing work without depending on a guessed device catalog.
+Persisted Apply/rejected-tool/error recovery context is available on the next
+send in the same Session, not only inside one in-memory loop. Partial Apply and
+partial Stop events also persist a strict recovery ledger containing only
+SHA-256 semantic action-identity digests. The next send hydrates that ledger to
+reject an equivalent replay before confirmation. Creator actions retain a
+canonical song-level identity before and after Live returns the created Track,
+independent of the temporary `ref`. Successful intermediate repair Applies add
+their completed identities to the still-active ledger. Only a final successful
+repair plan that explicitly sets `resolvesPriorFailure` persists the cleared
+state. Tool-free completion prose remains subordinate to an active unresolved
+failure. The same invalid tool error still
+stops at the configured repeated-error limit. If the result cannot be persisted,
+the failure remains fatal so the model can never retry without knowing what
+already changed. Device parameter values outside the freshly observed range are
+rejected rather than silently clamped after confirmation. Command mutations
 whose follow-up state cannot be built use the same unknown-outcome reconciliation
 path as uncertain storage commits. Closing the dialog aborts active work and
 waits for send and command handlers to finish their terminal cleanup. Read-only
 chat/state connections are destroyed instead, so an unresponsive state build
 cannot prevent the modal flow from returning.
+
+Scene actions describe Session View structure: `sceneIndex` identifies the
+target, `newName` is the desired name, and `sceneName` is only an optional exact
+current-name guard. Arrangement section markers use Cue Points. Preflight and
+post-failure recovery share one action-to-observation router: indexed Scene
+requests page directly to the target, while a top-level Device selected by
+`deviceIndex` uses the exact indexed Device inspection rather than an ambiguous
+name-only tree lookup. Validation errors retain the action position and type and
+give deterministic target-field repair guidance without rewriting model
+arguments. Timeline details preserve a long first error line when its summary
+must be truncated, and failed or partial Applies open by default, so the UI and
+model both retain the complete diagnostic. Confirmation rows preserve the
+validated plan's original order and action numbers; category headings may repeat
+rather than reordering mutations before the user authorizes them.
+
+Bridge JSON inputs are strict route-specific contracts. Send accepts only
+`prompt` and `sessionId`; Session and Profile commands accept only their
+command-specific fields; confirmation and Stop reject body fields they do not
+own. Every JSON body is bounded to 1 MiB before parsing.

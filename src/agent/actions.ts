@@ -1,4 +1,5 @@
 import {
+  agentActionExample,
   agentActionPromptExamples,
   parseAgentAction,
   type AgentAction,
@@ -14,7 +15,20 @@ export interface AgentPlanTarget {
 export interface AgentPlan {
   message: string;
   targets?: Record<string, AgentPlanTarget>;
+  resolvesPriorFailure?: boolean;
   actions: AgentAction[];
+}
+
+export interface ObservationItemPage {
+  itemOffset?: number;
+  itemLimit?: number;
+}
+
+export interface ObservationParameterPage {
+  parameterOffset?: number;
+  parameterLimit?: number;
+  valueItemOffset?: number;
+  valueItemLimit?: number;
 }
 
 const referencePattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -33,21 +47,29 @@ export function requiresExplicitConfirmation(plan: AgentPlan): boolean {
       action.type === "create_session_midi_clip" ||
       action.type === "replace_midi_clip_segment" ||
       action.type === "create_arrangement_audio_clip" ||
-      action.type === "create_session_audio_clip",
+      action.type === "create_session_audio_clip" ||
+      action.type === "replace_simpler_sample" ||
+      (action.type === "configure_drum_pad" &&
+        action.mode === "replace_existing_simpler"),
   );
 }
 
 export type AgentObservationRequest =
   | { type: "inspect_live_set" }
-  | { type: "inspect_current_object" }
-  | { type: "inspect_track"; trackName?: string }
-  | { type: "inspect_device"; trackName?: string; deviceName: string; deviceIndex?: number }
-  | {
+  | ({ type: "inspect_current_object" } & ObservationItemPage & ObservationParameterPage)
+  | ({ type: "inspect_track"; trackName?: string } & ObservationItemPage & ObservationParameterPage)
+  | ({
+      type: "inspect_device";
+      trackName?: string;
+      deviceName: string;
+      deviceIndex?: number;
+    } & ObservationParameterPage)
+  | ({
       type: "inspect_device_tree";
       trackName?: string;
       deviceName?: string;
       devicePath?: DevicePath;
-    }
+    } & ObservationItemPage & ObservationParameterPage)
   | { type: "inspect_mixer"; trackName?: string }
   | {
       type: "inspect_clip";
@@ -64,7 +86,150 @@ export type AgentObservationRequest =
       noteOffset?: number;
       noteLimit?: number;
     }
-  | { type: "inspect_song_info" };
+  | ({ type: "inspect_song_info" } & ObservationItemPage);
+
+export function observationRequestForAction(
+  action: AgentAction,
+  trackNameOverride?: string,
+): AgentObservationRequest {
+  const trackName = trackNameOverride ?? (
+    "trackName" in action ? action.trackName : undefined
+  );
+  const optionalTrackName = trackName ? { trackName } : {};
+
+  switch (action.type) {
+    case "create_midi_track":
+    case "create_audio_track":
+      return trackNameOverride
+        ? { type: "inspect_track", trackName: trackNameOverride }
+        : { type: "inspect_live_set" };
+    case "create_scene":
+      return action.index !== undefined && action.index >= 0
+        ? {
+            type: "inspect_song_info",
+            itemOffset: action.index,
+            itemLimit: 1,
+          }
+        : { type: "inspect_song_info" };
+    case "rename_scene":
+    case "duplicate_scene":
+    case "delete_scene":
+      return {
+        type: "inspect_song_info",
+        itemOffset: action.sceneIndex,
+        itemLimit: 1,
+      };
+    case "create_cue_point":
+    case "rename_cue_point":
+    case "delete_cue_point":
+    case "set_tempo":
+      return { type: "inspect_song_info" };
+    case "create_midi_clip":
+    case "create_arrangement_audio_clip":
+    case "clear_arrangement_range":
+    case "rename_track":
+    case "delete_track":
+    case "duplicate_track":
+    case "set_track_mute":
+    case "set_track_solo":
+    case "set_track_arm":
+    case "create_take_lane":
+    case "rename_take_lane":
+    case "delete_clip":
+      return { type: "inspect_track", ...optionalTrackName };
+    case "insert_device":
+      return {
+        type: "inspect_track",
+        ...optionalTrackName,
+        ...(action.index === undefined
+          ? {}
+          : { itemOffset: action.index, itemLimit: 1 }),
+      };
+    case "create_session_midi_clip":
+    case "create_session_audio_clip":
+    case "delete_session_clip":
+      return {
+        type: "inspect_clip",
+        ...optionalTrackName,
+        ...(action.type === "delete_session_clip" && action.clipName
+          ? { clipName: action.clipName }
+          : {}),
+        slotIndex: action.slotIndex,
+      };
+    case "replace_midi_clip_segment":
+      return {
+        type: "inspect_midi_clip",
+        ...optionalTrackName,
+        clipName: action.clipName,
+        startBeat: action.startBeat,
+      };
+    case "set_device_parameter":
+      return action.devicePath
+        ? {
+            type: "inspect_device_tree",
+            ...optionalTrackName,
+            deviceName: action.deviceName,
+            devicePath: action.devicePath,
+          }
+        : {
+            type: "inspect_device",
+            ...optionalTrackName,
+            deviceName: action.deviceName,
+            ...(action.deviceIndex === undefined
+              ? {}
+              : { deviceIndex: action.deviceIndex }),
+          };
+    case "duplicate_device":
+    case "delete_device":
+      return !action.devicePath && action.deviceIndex !== undefined
+        ? {
+            type: "inspect_device",
+            ...optionalTrackName,
+            deviceName: action.deviceName,
+            deviceIndex: action.deviceIndex,
+          }
+        : {
+            type: "inspect_device_tree",
+            ...optionalTrackName,
+            deviceName: action.deviceName,
+            ...(action.devicePath ? { devicePath: action.devicePath } : {}),
+          };
+    case "insert_chain_device":
+      return {
+        type: "inspect_device_tree",
+        ...optionalTrackName,
+        deviceName: action.rackName,
+        ...(action.rackPath ? { devicePath: action.rackPath } : {}),
+      };
+    case "replace_simpler_sample":
+      return {
+        type: "inspect_device_tree",
+        ...optionalTrackName,
+        deviceName: action.simplerName,
+        ...(action.simplerPath ? { devicePath: action.simplerPath } : {}),
+      };
+    case "configure_drum_pad":
+      return {
+        type: "inspect_device_tree",
+        ...optionalTrackName,
+        deviceName: action.rackName,
+        ...(action.rackPath ? { devicePath: action.rackPath } : {}),
+      };
+    case "set_track_mixer_parameter":
+      return { type: "inspect_mixer", ...optionalTrackName };
+    case "set_clip_properties":
+    case "set_audio_clip_warp":
+      return {
+        type: "inspect_clip",
+        ...optionalTrackName,
+        ...(action.clipName ? { clipName: action.clipName } : {}),
+        ...(action.startBeat === undefined ? {} : { startBeat: action.startBeat }),
+        ...(action.slotIndex === undefined ? {} : { slotIndex: action.slotIndex }),
+      };
+    default:
+      return assertNever(action);
+  }
+}
 
 export function validateAgentPlan(response: unknown): AgentPlan {
   if (!isRecord(response)) {
@@ -79,23 +244,59 @@ export function validateAgentPlan(response: unknown): AgentPlan {
   }
 
   for (const key of Object.keys(response)) {
-    if (key !== "message" && key !== "targets" && key !== "actions") {
+    if (
+      key !== "message" &&
+      key !== "targets" &&
+      key !== "resolvesPriorFailure" &&
+      key !== "actions"
+    ) {
       throw new Error(`Action plan does not support property ${key}.`);
     }
   }
+  if (
+    response.resolvesPriorFailure !== undefined &&
+    typeof response.resolvesPriorFailure !== "boolean"
+  ) {
+    throw new Error("resolvesPriorFailure must be a boolean when provided.");
+  }
 
   const targets = parsePlanTargets(response.targets);
-  const actions = response.actions.map(parseAgentAction);
-  for (const action of actions) {
-    validateMidiActionTiming(action);
-    validateActionLocators(action);
+  const actions = response.actions.map((action, index) => {
+    try {
+      return parseAgentAction(action);
+    } catch (error) {
+      const actionType = isRecord(action) && typeof action.type === "string"
+        ? action.type
+        : undefined;
+      throw contextualActionValidationError(
+        index,
+        actionType,
+        error,
+      );
+    }
+  });
+  actions.forEach((action, index) => {
+    try {
+      validateMidiActionTiming(action);
+      validateActionLocators(action);
+    } catch (error) {
+      throw contextualActionValidationError(index, action.type, error);
+    }
+  });
+  try {
+    validateTrackReferenceGraph(targets, actions);
+    validateMidiSegmentRanges(actions);
+    validateSceneIndexStability(actions);
+  } catch (error) {
+    throw contextualizeIndexedPlanError(error, actions);
   }
-  validateTrackReferenceGraph(targets, actions);
-  validateMidiSegmentRanges(actions);
 
   return {
     message,
     ...(Object.keys(targets).length ? { targets } : {}),
+    ...(response.resolvesPriorFailure === true
+      ? { resolvesPriorFailure: true }
+      : {}),
     actions,
   };
 }
@@ -105,6 +306,9 @@ export function summarizeActionPlan(plan: AgentPlan): string {
 
   return [
     plan.message,
+    ...(plan.resolvesPriorFailure
+      ? ["", "Recovery: resolve the prior unfinished Live operation after this plan succeeds."]
+      : []),
     "",
     "Actions:",
     ...plan.actions.map((action, index) => `${index + 1}. ${summarizeAgentAction(action)}`),
@@ -115,7 +319,8 @@ export function actionSystemPrompt(): string {
   return [
     "You are Live Smith, running inside Ableton Live with tools.",
     "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, and inspect_midi_clip to inspect the exact current Live state needed by the next edit.",
-    "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it. If Live rejects a device name, treat that runtime result as authoritative, do not retry the same name, inspect the partially changed Set, and choose a current alternative or explain that no safe alternative is known.",
+    "Observation collections and device parameters are paged. When a result reports nextOffset, call the same inspection again with the corresponding itemOffset, parameterOffset, or valueItemOffset until the exact target is visible. Never infer an omitted item.",
+    "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it, and the beta SDK does not expose the rejection cause. If insertion fails, preserve the failure as cause-unknown, inspect the current device chain, and decide from observed state whether to adjust placement, retry after a state repair, choose another exact name, or explain that no safe repair is known.",
     "Use inspect_midi_clip before analyzing or rewriting MIDI harmony, melody, voicing, or chord correctness unless the exact notes are already in context. For long clips, follow noteOffset pagination until every note has been inspected.",
     "If a user asks you to modify a device and you do not have the exact exposed parameter names in the current context, call inspect_device for a top-level device or inspect_device_tree for a nested Rack device first. Preserve and reuse the observed devicePath; do not guess Rack or chain indexes.",
     "For newly inserted devices, first call apply_live_actions to create the track/device chain, then inspect the inserted devices, then call apply_live_actions again to set exact observed parameters. This staged workflow and a single complete confirmed plan are both supported; choose based on whether later steps require newly observed state.",
@@ -126,15 +331,17 @@ export function actionSystemPrompt(): string {
     "replace_midi_clip_segment replaces every existing note that overlaps its range; it does not append. Each staged apply_live_actions call gets a separate confirmation and remains in the same Session. Never recreate the empty Clip or repeat a completed segment.",
     "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
     "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
-    "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. Use replace_simpler_sample or configure_drum_pad with a SampleSource that refers to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
+    "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
     "Arrangement and Session are different locations. Use startBeat for Arrangement Clips and slotIndex for Session Clips, inspect the exact location before editing, and disclose replacement or deletion behavior in the plan.",
+    "Scenes are Session View rows even when Live currently shows Arrangement. Only create, rename, duplicate, or delete Scenes when the user requested Session View structure or the observed workflow requires it; use Cue Points for Arrangement song-section markers. For rename_scene, sceneIndex identifies the target and newName is the desired name. sceneName is only an optional exact observed current-name guard; omit sceneName when it is unknown or blank.",
     "The SDK cannot browse preset packs, search the Live Browser, or insert a VST by plug-in identifier. Existing VST devices can still be inspected, have exposed parameters edited, and be duplicated or deleted through the generic device tools. Never claim that an unavailable preset, browser result, or VST was loaded.",
     "For large device edits, split work into smaller tool calls instead of putting every device parameter into one huge call.",
     "If a tool result reports completed or reused actions after a failure, do not repeat those actions. Inspect the track and continue only with missing steps.",
+    "While repairing an unfinished Apply, successful intermediate apply_live_actions calls remain part of the same recovery operation and their completed actions also become replay-protected. Set resolvesPriorFailure to true only on the final repair Apply that completes or safely replaces every missing step. Omit it while more repair work remains. Do not use it when no prior Live failure is active.",
     "Never guess parameter names. Use the exact names from observations, for example Auto Filter uses Env Amount / Env Attack / Env Release rather than Envelope.",
     "To modify Live, call apply_live_actions. The user will confirm before the extension executes those actions.",
     "After a tool result comes back, continue the loop: inspect more, apply actions, or provide a final concise answer.",
-    "Use inspect_song_info to check tempo, scale, and scene layout before making song-level changes.",
+    "Use inspect_song_info to check tempo, scale, Session View Scene layout, and Arrangement Cue Points before making song-level changes.",
     "Allowed apply_live_actions action types:",
     ...agentActionPromptExamples(),
     "Notes use MIDI pitch 0-127, startTime/duration in beats, velocity 1-127.",
@@ -150,19 +357,19 @@ export function summarizeAgentAction(action: AgentAction): string {
     case "create_audio_track":
       return `Create audio track${action.name ? ` "${action.name}"` : ""}${action.ref ? ` as track ref "${action.ref}"` : ""}.`;
     case "create_scene":
-      return `Create scene${action.name ? ` "${action.name}"` : ""}${action.index !== undefined ? ` at index ${action.index}` : ""}.`;
+      return `Create Session View Scene${action.name ? ` "${action.name}"` : ""}${action.index !== undefined ? ` at index ${action.index}` : ""}.`;
     case "rename_scene":
-      return `Rename Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""} to "${action.newName}".`;
+      return `Rename Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""} to "${action.newName}".`;
     case "duplicate_scene":
-      return `Duplicate Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
+      return `Duplicate Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
     case "delete_scene":
-      return `Delete Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
+      return `Delete Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}.`;
     case "create_cue_point":
-      return `Create Cue Point${action.name ? ` "${action.name}"` : ""} at beat ${action.timeBeat}.`;
+      return `Create Arrangement Cue Point${action.name ? ` "${action.name}"` : ""} at beat ${action.timeBeat}.`;
     case "rename_cue_point":
-      return `Rename Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat} to "${action.newName}".`;
+      return `Rename Arrangement Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat} to "${action.newName}".`;
     case "delete_cue_point":
-      return `Delete Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}.`;
+      return `Delete Arrangement Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}.`;
     case "create_midi_clip":
       return `Create or replace MIDI clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} from beat ${action.startBeat} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
     case "create_session_midi_clip":
@@ -182,11 +389,13 @@ export function summarizeAgentAction(action: AgentAction): string {
     case "replace_simpler_sample":
       return `Replace the sample in Simpler "${action.simplerName}"${action.simplerPath ? ` at ${devicePathText(action.simplerPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
     case "configure_drum_pad":
-      return `Configure MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
+      return action.mode === "fill_empty_pad"
+        ? `Fill empty MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`
+        : `Replace the sample in Simpler at ${devicePathText(action.simplerPath!)} on MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
     case "create_arrangement_audio_clip":
-      return `Create arrangement audio clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}${action.durationBeats ? ` for ${action.durationBeats} beats` : " at its natural duration"} using ${sampleSourceText(action.source)}.`;
+      return `Create arrangement audio clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}${action.durationBeats ? ` for ${action.durationBeats} beats` : " at its natural duration"} using ${sampleSourceText(action.source)}${audioSettingsText(action)}.`;
     case "create_session_audio_clip":
-      return `Create or replace Session audio clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
+      return `Create or replace Session audio clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} using ${sampleSourceText(action.source)}${audioSettingsText(action)}. If the source, Warp state, or loop settings differ, delete the existing slot Clip before recreating it.`;
     case "set_tempo":
       return `Set tempo to ${action.tempo} BPM.`;
     case "rename_track":
@@ -252,8 +461,20 @@ function sampleSourceText(source: import("./action-schema.js").SampleSource): st
     case "session_audio_clip":
       return `Session audio clip${source.clipName ? ` "${source.clipName}"` : ""} on track "${source.trackName}" in slot ${source.slotIndex}`;
     case "simpler":
-      return `the sample in Simpler "${source.deviceName}" on track "${source.trackName}"`;
+      return `the sample in Simpler "${source.deviceName}"${deviceLocatorText(source.devicePath, source.deviceIndex)} on track "${source.trackName}"`;
   }
+}
+
+function audioSettingsText(action: {
+  isWarped?: boolean;
+  loopSettings?: import("./action-schema.js").ClipLoopSettingsInput;
+}): string {
+  return [
+    action.isWarped === undefined ? "" : `, warped ${action.isWarped}`,
+    action.loopSettings
+      ? `, loop ${action.loopSettings.loopStart}-${action.loopSettings.loopEnd}, markers ${action.loopSettings.startMarker}-${action.loopSettings.endMarker}, looping ${action.loopSettings.looping}`
+      : "",
+  ].join("");
 }
 
 function clipLocatorText(action: {
@@ -294,6 +515,21 @@ function validateActionLocators(action: AgentAction): void {
     action.source.deviceIndex !== undefined
   ) {
     throw new Error("A Simpler sample source must use either devicePath or deviceIndex, not both.");
+  }
+  if (action.type === "configure_drum_pad") {
+    if (
+      action.mode === "replace_existing_simpler" &&
+      action.simplerPath === undefined
+    ) {
+      throw new Error(
+        "configure_drum_pad mode replace_existing_simpler requires simplerPath from inspect_device_tree.",
+      );
+    }
+    if (action.mode === "fill_empty_pad" && action.simplerPath !== undefined) {
+      throw new Error(
+        "configure_drum_pad simplerPath is only supported with mode replace_existing_simpler.",
+      );
+    }
   }
   if (action.type === "set_track_mixer_parameter") {
     if (action.parameter === "send" && action.sendIndex === undefined) {
@@ -449,6 +685,56 @@ function validateMidiSegmentRanges(actions: AgentAction[]): void {
   });
 }
 
+function validateSceneIndexStability(actions: AgentAction[]): void {
+  let structuralSceneActionIndex: number | undefined;
+  actions.forEach((action, index) => {
+    const dependency = sceneIndexDependency(action);
+    if (
+      structuralSceneActionIndex !== undefined &&
+      dependency !== undefined
+    ) {
+      throw new Error(
+        `Actions ${structuralSceneActionIndex + 1} and ${index + 1} combine a structural Scene edit with a later ${dependency}. Scene insertion, duplication, and deletion shift Session View indexes, while preflight must bind existing objects before confirmation. Use a staged apply call, inspect the resulting Session View, then address the later index.`,
+      );
+    }
+    if (isStructuralSceneAction(action)) {
+      structuralSceneActionIndex = index;
+    }
+  });
+}
+
+function isStructuralSceneAction(action: AgentAction): boolean {
+  return action.type === "create_scene" ||
+    action.type === "duplicate_scene" ||
+    action.type === "delete_scene";
+}
+
+function sceneIndexDependency(action: AgentAction): string | undefined {
+  if (
+    action.type === "rename_scene" ||
+    action.type === "duplicate_scene" ||
+    action.type === "delete_scene"
+  ) {
+    return "Scene index target";
+  }
+  if (
+    action.type === "create_session_midi_clip" ||
+    action.type === "create_session_audio_clip" ||
+    action.type === "delete_session_clip" ||
+    ((action.type === "set_clip_properties" ||
+      action.type === "set_audio_clip_warp") && action.slotIndex !== undefined)
+  ) {
+    return "Session slot target";
+  }
+  if (
+    "source" in action &&
+    action.source.kind === "session_audio_clip"
+  ) {
+    return "Session source slot";
+  }
+  return undefined;
+}
+
 function parsePlanTargets(value: unknown): Record<string, AgentPlanTarget> {
   if (value === undefined) return {};
   if (!isRecord(value)) throw new Error("Action plan targets must be an object.");
@@ -510,8 +796,11 @@ function validateTrackReferenceGraph(
         );
       }
       if (action.trackName && action.trackRef) {
+        const repair = targets[action.trackRef]
+          ? ` trackRef "${action.trackRef}" is declared in targets, so remove trackName from this action.`
+          : " Remove one of the two target fields.";
         throw new Error(
-          `Action ${actionNumber} must use either trackName or trackRef, not both.`,
+          `Action ${actionNumber} must use either trackName or trackRef, not both.${repair}`,
         );
       }
       if (requiresNamedTrackTarget(action) && !action.trackName && !action.trackRef) {
@@ -596,6 +885,62 @@ function validateTrackReferenceGraph(
       namesChangedEarlier.add(action.trackName.toLocaleLowerCase());
     }
   });
+}
+
+function validationErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function contextualActionValidationError(
+  actionIndex: number,
+  actionType: string | undefined,
+  error: unknown,
+): Error {
+  const message = validationErrorMessage(error);
+  const typeLabel = actionType ? ` (${actionType})` : "";
+  const example = actionType ? agentActionExample(actionType) : undefined;
+  const exampleSuffix = example && !message.includes(`Valid ${actionType} example:`)
+    ? ` Valid ${actionType} example: ${example}.`
+    : "";
+  return new Error(
+    `Action ${actionIndex + 1}${typeLabel} is invalid: ${message}${exampleSuffix}`,
+    { cause: error },
+  );
+}
+
+function contextualizeIndexedPlanError(
+  error: unknown,
+  actions: AgentAction[],
+): Error {
+  const message = validationErrorMessage(error);
+  const single = /^Action (\d+) (.*)$/s.exec(message);
+  if (single) {
+    const actionIndex = Number(single[1]) - 1;
+    const action = actions[actionIndex];
+    if (action) {
+      return contextualActionValidationError(
+        actionIndex,
+        action.type,
+        new Error(single[2], { cause: error }),
+      );
+    }
+  }
+
+  const pair = /^Actions (\d+) and (\d+) (.*)$/s.exec(message);
+  if (pair) {
+    const firstIndex = Number(pair[1]) - 1;
+    const secondIndex = Number(pair[2]) - 1;
+    const first = actions[firstIndex];
+    const second = actions[secondIndex];
+    if (first && second) {
+      return new Error(
+        `Actions ${firstIndex + 1} and ${secondIndex + 1} (${first.type}, ${second.type}) are invalid: ${pair[3]}`,
+        { cause: error },
+      );
+    }
+  }
+
+  return error instanceof Error ? error : new Error(message);
 }
 
 function hasTrackTarget(

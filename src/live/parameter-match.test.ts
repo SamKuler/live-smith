@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findBestParameterMatch } from "./parameter-match.js";
+import { findExactParameterMatch } from "./parameter-match.js";
 
-test("findBestParameterMatch accepts model wording with extra on/off suffix", () => {
-  const match = findBestParameterMatch("Oscillator B On", [
+test("findExactParameterMatch accepts only case and spacing normalization", () => {
+  const match = findExactParameterMatch("  oscillator   B ", [
     { name: "Oscillator B" },
     { name: "Oscillator C" },
   ]);
@@ -12,19 +12,26 @@ test("findBestParameterMatch accepts model wording with extra on/off suffix", ()
   assert.equal(match?.name, "Oscillator B");
 });
 
-test("findBestParameterMatch accepts common oscillator abbreviations", () => {
-  const match = findBestParameterMatch("Osc B On", [
+test("findExactParameterMatch rejects aliases and partial names", () => {
+  const match = findExactParameterMatch("Osc B On", [
     { name: "Oscillator A" },
     { name: "Oscillator B" },
   ]);
 
-  assert.equal(match?.name, "Oscillator B");
+  assert.equal(match, undefined);
 });
 
-test("findBestParameterMatch returns undefined when no safe match exists", () => {
-  const match = findBestParameterMatch("Filter Frequency", [
-    { name: "Oscillator B" },
-    { name: "Transpose" },
+test("findExactParameterMatch rejects duplicate exact names as ambiguous", () => {
+  assert.throws(() => findExactParameterMatch("Frequency", [
+    { name: "Frequency" },
+    { name: "frequency" },
+  ]), /2 parameters named "Frequency"/i);
+});
+
+test("findExactParameterMatch does not choose a substring match", () => {
+  const match = findExactParameterMatch("Frequency", [
+    { name: "LFO Frequency" },
+    { name: "Filter Frequency" },
   ]);
 
   assert.equal(match, undefined);

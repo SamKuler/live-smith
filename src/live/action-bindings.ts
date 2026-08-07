@@ -1,12 +1,37 @@
 import {
-  AudioTrack,
   MidiTrack,
+  type Clip,
+  type ClipSlot,
+  type CuePoint,
+  type DeviceParameter,
   type ExtensionContext,
+  type Scene,
+  type TakeLane,
   type Track,
 } from "@ableton-extensions/sdk";
 
 import type { AgentAction, AgentPlan } from "../agent/actions.js";
-import { equalsLoose, resolveTrack } from "./resolve.js";
+import {
+  resolveDevicePath,
+  resolveDeviceTarget,
+  type ResolvedDeviceTarget,
+} from "./device-tree.js";
+import {
+  findReusableMidiClip,
+  resolveArrangementClip,
+  resolveClipLocator,
+  resolveCuePoint,
+  resolveScene,
+  resolveSessionClip,
+  resolveTakeLane,
+  resolveMidiTrack,
+  resolveTrackMixerParameter,
+  resolveTrack,
+} from "./resolve.js";
+import {
+  resolveSampleSource,
+  type ResolvedSampleSource,
+} from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
 
 type Api = ExtensionContext<"1.0.0">;
@@ -15,6 +40,20 @@ type Api = ExtensionContext<"1.0.0">;
 export interface AgentPlanBindings {
   readonly tracks: ReadonlyMap<string, Track<"1.0.0">>;
   readonly actionTracks: ReadonlyMap<number, Track<"1.0.0">>;
+  readonly actionObjects: ReadonlyMap<number, BoundActionObjects>;
+}
+
+/** Existing non-Track host objects resolved before a plan starts mutating Live. */
+export interface BoundActionObjects {
+  readonly scene?: Scene<"1.0.0">;
+  readonly cuePoint?: CuePoint<"1.0.0">;
+  readonly deviceTarget?: ResolvedDeviceTarget;
+  readonly secondaryDeviceTarget?: ResolvedDeviceTarget;
+  readonly clip?: Clip<"1.0.0">;
+  readonly slot?: ClipSlot<"1.0.0">;
+  readonly takeLane?: TakeLane<"1.0.0">;
+  readonly mixerParameter?: DeviceParameter<"1.0.0">;
+  readonly sampleSource?: ResolvedSampleSource;
 }
 
 export function bindAgentPlanTargets(
@@ -28,47 +67,27 @@ export function bindAgentPlanTargets(
   }
   const actionTracks = new Map<number, Track<"1.0.0">>();
   plan.actions.forEach((action, index) => {
-    const reusableTrack = reusableTrackForCreator(context, action);
-    if (reusableTrack) {
-      actionTracks.set(index, reusableTrack);
-      if (
-        (action.type === "create_midi_track" || action.type === "create_audio_track") &&
-        action.ref
-      ) {
-        tracks.set(action.ref, reusableTrack);
-      }
-      return;
-    }
     if (!hasTrackTarget(action)) return;
     if (action.trackRef) {
       const track = tracks.get(action.trackRef);
       if (track) actionTracks.set(index, track);
       return;
     }
-    actionTracks.set(index, resolveTrack(context, action.trackName, target));
+    actionTracks.set(
+      index,
+      requiresMidiTrack(action)
+        ? resolveMidiTrack(context, action.trackName, target)
+        : resolveTrack(context, action.trackName, target),
+    );
   });
-  return { tracks, actionTracks };
-}
-
-function reusableTrackForCreator(
-  context: Api,
-  action: AgentAction,
-): Track<"1.0.0"> | undefined {
-  if (action.type === "create_midi_track") {
-    const name = action.name;
-    if (!name) return undefined;
-    return context.application.song.tracks.find(
-      (track) => track instanceof MidiTrack && equalsLoose(track.name, name),
-    );
-  }
-  if (action.type === "create_audio_track") {
-    const name = action.name;
-    if (!name) return undefined;
-    return context.application.song.tracks.find(
-      (track) => track instanceof AudioTrack && equalsLoose(track.name, name),
-    );
-  }
-  return undefined;
+  const actionObjects = bindActionObjects(
+    context,
+    plan,
+    target,
+    tracks,
+    actionTracks,
+  );
+  return { tracks, actionTracks, actionObjects };
 }
 
 export function assertSameExistingPlanTargets(
@@ -93,6 +112,19 @@ export function assertSameExistingPlanTargets(
       throw new Error(`Live track bound to action ${index + 1} changed.`);
     }
   }
+  if (before.actionObjects.size !== after.actionObjects.size) {
+    throw new Error("The set of action-bound Live objects changed.");
+  }
+  for (const [index, previousObjects] of before.actionObjects) {
+    const currentObjects = after.actionObjects.get(index);
+    if (
+      !currentObjects ||
+      JSON.stringify(boundObjectIdentity(currentObjects)) !==
+        JSON.stringify(boundObjectIdentity(previousObjects))
+    ) {
+      throw new Error(`Live object bound to action ${index + 1} changed.`);
+    }
+  }
 }
 
 export function boundTrackForAction(
@@ -100,10 +132,24 @@ export function boundTrackForAction(
   actionIndex: number,
   bindings: AgentPlanBindings,
 ): Track<"1.0.0"> | undefined {
+  return boundTrackFromMaps(
+    action,
+    actionIndex,
+    bindings.tracks,
+    bindings.actionTracks,
+  );
+}
+
+function boundTrackFromMaps(
+  action: AgentAction,
+  actionIndex: number,
+  tracks: ReadonlyMap<string, Track<"1.0.0">>,
+  actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+): Track<"1.0.0"> | undefined {
   if ("trackRef" in action && action.trackRef) {
-    return bindings.tracks.get(action.trackRef);
+    return tracks.get(action.trackRef);
   }
-  return bindings.actionTracks.get(actionIndex);
+  return actionTracks.get(actionIndex);
 }
 
 export function liveActionIdentityKeys(
@@ -133,6 +179,9 @@ export function liveActionIdentityKeys(
   }
 
   const targets = new Set<string>();
+  if (action.type === "create_midi_track" || action.type === "create_audio_track") {
+    targets.add("song-or-creator");
+  }
   const handleId = (track as { handle?: { id?: unknown } } | undefined)?.handle?.id;
   if (handleId !== undefined && handleId !== null) {
     targets.add(`track-handle:${String(handleId)}`);
@@ -165,9 +214,16 @@ export function requireBoundTrack(
 }
 
 function trackHandleId(track: Track<"1.0.0">): string {
-  const id = (track as { handle?: { id?: unknown } }).handle?.id;
+  return hostObjectHandleId(track, `Live track "${track.name}"`);
+}
+
+function hostObjectHandleId(
+  value: { handle?: { id?: unknown } },
+  label: string,
+): string {
+  const id = value.handle?.id;
   if (id === undefined || id === null) {
-    throw new Error(`Could not verify Live track "${track.name}" handle identity.`);
+    throw new Error(`Could not verify ${label} handle identity.`);
   }
   return String(id);
 }
@@ -176,4 +232,239 @@ function hasTrackTarget(
   action: AgentAction,
 ): action is AgentAction & { trackName?: string; trackRef?: string } {
   return "trackName" in action || "trackRef" in action;
+}
+
+function requiresMidiTrack(action: AgentAction): boolean {
+  return action.type === "create_midi_clip" ||
+    action.type === "create_session_midi_clip" ||
+    action.type === "replace_midi_clip_segment";
+}
+
+function bindActionObjects(
+  context: Api,
+  plan: AgentPlan,
+  target: LiveTarget,
+  tracks: ReadonlyMap<string, Track<"1.0.0">>,
+  actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+): ReadonlyMap<number, BoundActionObjects> {
+  const result = new Map<number, BoundActionObjects>();
+  plan.actions.forEach((action, index) => {
+    const binding: WritableBoundActionObjects = {};
+    if (hasSampleSource(action)) {
+      binding.sampleSource = resolveSampleSource(context, action.source, target);
+    }
+
+    const track = boundTrackFromMaps(action, index, tracks, actionTracks);
+    switch (action.type) {
+      case "rename_scene":
+      case "duplicate_scene":
+      case "delete_scene":
+        binding.scene = resolveScene(
+          context.application.song,
+          action.sceneIndex,
+          action.sceneName,
+        );
+        break;
+      case "rename_cue_point":
+      case "delete_cue_point":
+        binding.cuePoint = resolveCuePoint(
+          context.application.song,
+          action.timeBeat,
+          action.cueName,
+        );
+        break;
+      case "create_midi_clip":
+        if (track instanceof MidiTrack && action.name) {
+          const clip = findReusableMidiClip(
+            track,
+            action.name,
+            action.startBeat,
+            action.durationBeats,
+          );
+          if (clip) binding.clip = clip;
+        }
+        break;
+      case "create_session_midi_clip":
+      case "create_session_audio_clip":
+        if (track) binding.slot = sessionSlot(track, action.slotIndex);
+        break;
+      case "replace_midi_clip_segment":
+        if (track) {
+          binding.clip = resolveArrangementClip(
+            track,
+            action.startBeat,
+            action.clipName,
+          );
+        }
+        break;
+      case "insert_chain_device":
+        if (track) {
+          binding.deviceTarget = resolveDeviceTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+          );
+        }
+        break;
+      case "set_device_parameter":
+      case "duplicate_device":
+      case "delete_device":
+        if (track) {
+          binding.deviceTarget = resolveDeviceTarget(
+            track,
+            target,
+            action.deviceName,
+            action.devicePath,
+            action.deviceIndex,
+          );
+        }
+        break;
+      case "replace_simpler_sample":
+        if (track) {
+          binding.deviceTarget = resolveDeviceTarget(
+            track,
+            target,
+            action.simplerName,
+            action.simplerPath,
+          );
+        }
+        break;
+      case "configure_drum_pad":
+        if (track) {
+          binding.deviceTarget = resolveDeviceTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+          );
+          if (action.simplerPath) {
+            binding.secondaryDeviceTarget = resolveDevicePath(
+              track,
+              action.simplerPath,
+            );
+          }
+        }
+        break;
+      case "set_track_mixer_parameter":
+        if (track) {
+          binding.mixerParameter = resolveTrackMixerParameter(
+            track,
+            action.parameter,
+            action.sendIndex,
+          );
+        }
+        break;
+      case "rename_take_lane":
+        if (track) {
+          binding.takeLane = resolveTakeLane(
+            track,
+            action.laneIndex,
+            action.laneName,
+          );
+        }
+        break;
+      case "set_clip_properties":
+      case "set_audio_clip_warp":
+        if (track) binding.clip = resolveClipLocator(track, action);
+        break;
+      case "delete_clip":
+        if (track) {
+          binding.clip = resolveArrangementClip(
+            track,
+            action.startBeat,
+            action.clipName,
+          );
+        }
+        break;
+      case "delete_session_clip":
+        if (track) {
+          binding.slot = sessionSlot(track, action.slotIndex);
+          binding.clip = resolveSessionClip(
+            track,
+            action.slotIndex,
+            action.clipName,
+          );
+        }
+        break;
+    }
+
+    if (Object.values(binding).some((value) => value !== undefined)) {
+      result.set(index, binding);
+    }
+  });
+  return result;
+}
+
+type WritableBoundActionObjects = {
+  -readonly [Key in keyof BoundActionObjects]?: BoundActionObjects[Key];
+};
+
+function sessionSlot(
+  track: Track<"1.0.0">,
+  slotIndex: number,
+): ClipSlot<"1.0.0"> {
+  const slot = track.clipSlots[slotIndex];
+  if (!slot) {
+    throw new Error(
+      `Could not find Session slot ${slotIndex} on track "${track.name}".`,
+    );
+  }
+  return slot;
+}
+
+function hasSampleSource(
+  action: AgentAction,
+): action is AgentAction & { source: import("../agent/action-schema.js").SampleSource } {
+  return "source" in action;
+}
+
+function boundObjectIdentity(binding: BoundActionObjects): Record<string, unknown> {
+  return {
+    ...(binding.scene
+      ? { scene: hostObjectHandleId(binding.scene, "Scene") }
+      : {}),
+    ...(binding.cuePoint
+      ? { cuePoint: hostObjectHandleId(binding.cuePoint, "Cue Point") }
+      : {}),
+    ...(binding.deviceTarget
+      ? { deviceTarget: deviceTargetIdentity(binding.deviceTarget) }
+      : {}),
+    ...(binding.secondaryDeviceTarget
+      ? { secondaryDeviceTarget: deviceTargetIdentity(binding.secondaryDeviceTarget) }
+      : {}),
+    ...(binding.clip
+      ? { clip: hostObjectHandleId(binding.clip, "Clip") }
+      : {}),
+    ...(binding.slot
+      ? { slot: hostObjectHandleId(binding.slot, "Clip slot") }
+      : {}),
+    ...(binding.takeLane
+      ? { takeLane: hostObjectHandleId(binding.takeLane, "Take Lane") }
+      : {}),
+    ...(binding.mixerParameter
+      ? {
+          mixerParameter: hostObjectHandleId(
+            binding.mixerParameter,
+            "mixer parameter",
+          ),
+        }
+      : {}),
+    ...(binding.sampleSource
+      ? {
+          sampleSource: hostObjectHandleId(
+            binding.sampleSource.object,
+            "sample source",
+          ),
+        }
+      : {}),
+  };
+}
+
+function deviceTargetIdentity(target: ResolvedDeviceTarget): Record<string, unknown> {
+  return {
+    device: hostObjectHandleId(target.device, "Device"),
+    parent: hostObjectHandleId(target.parent, "Device parent"),
+    path: target.path,
+  };
 }

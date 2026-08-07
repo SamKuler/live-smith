@@ -38,6 +38,70 @@ import { audioFileLabel } from "./context.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
+interface ObservationPageRequest {
+  itemOffset?: number;
+  itemLimit?: number;
+  parameterOffset?: number;
+  parameterLimit?: number;
+  valueItemOffset?: number;
+  valueItemLimit?: number;
+}
+
+interface Page<T> {
+  items: T[];
+  offset: number;
+  total: number;
+  nextOffset?: number;
+}
+
+function pageOf<T>(
+  items: readonly T[],
+  requestedOffset: number | undefined,
+  requestedLimit: number | undefined,
+  defaultLimit: number,
+): Page<T> {
+  const offset = Math.min(requestedOffset ?? 0, items.length);
+  const limit = Math.min(requestedLimit ?? defaultLimit, 100);
+  const pageItems = items.slice(offset, offset + limit);
+  const nextOffset = offset + pageItems.length < items.length
+    ? offset + pageItems.length
+    : undefined;
+  return {
+    items: pageItems,
+    offset,
+    total: items.length,
+    ...(nextOffset === undefined ? {} : { nextOffset }),
+  };
+}
+
+function pageHeader(label: string, page: Page<unknown>): string {
+  const range = page.items.length
+    ? `${page.offset}-${page.offset + page.items.length - 1}`
+    : "empty";
+  return `${label} page: offset=${page.offset}, shown=${page.items.length}, total=${page.total}, nextOffset=${page.nextOffset ?? "none"}, range=${range}`;
+}
+
+function observationPageFields(
+  request: ObservationPageRequest,
+): ObservationPageRequest {
+  return {
+    ...(request.itemOffset === undefined ? {} : { itemOffset: request.itemOffset }),
+    ...(request.itemLimit === undefined ? {} : { itemLimit: request.itemLimit }),
+    ...(request.parameterOffset === undefined
+      ? {}
+      : { parameterOffset: request.parameterOffset }),
+    ...(request.parameterLimit === undefined
+      ? {}
+      : { parameterLimit: request.parameterLimit }),
+    ...(request.valueItemOffset === undefined
+      ? {}
+      : { valueItemOffset: request.valueItemOffset }),
+    ...(request.valueItemLimit === undefined
+      ? {}
+      : { valueItemLimit: request.valueItemLimit }),
+  };
+}
+
 export async function observeLive(
   context: Api,
   request: AgentObservationRequest,
@@ -47,10 +111,10 @@ export async function observeLive(
     case "inspect_live_set":
       return summarizeLiveSet(context);
     case "inspect_current_object":
-      return summarizeCurrentObject(context, target);
+      return summarizeCurrentObject(context, request, target);
     case "inspect_track": {
       const track = resolveTrack(context, request.trackName, target);
-      return summarizeTrackWithDevices(track);
+      return summarizeTrackWithDevices(track, request);
     }
     case "inspect_device": {
       const track = resolveTrack(context, request.trackName, target);
@@ -61,6 +125,7 @@ export async function observeLive(
         device.parameters,
         false,
         request.deviceIndex ?? track.devices.indexOf(device),
+        request,
       );
     }
     case "inspect_device_tree":
@@ -93,16 +158,20 @@ export async function observeLive(
       );
     }
     case "inspect_song_info":
-      return summarizeSongInfo(context);
+      return summarizeSongInfo(context, request);
   }
 }
 
-async function summarizeCurrentObject(context: Api, target: LiveTarget): Promise<string> {
+async function summarizeCurrentObject(
+  context: Api,
+  request: Extract<AgentObservationRequest, { type: "inspect_current_object" }>,
+  target: LiveTarget,
+): Promise<string> {
   const object = target.object;
   if (!object) {
     throw new Error("No selected Live object is available for this Session.");
   }
-  if (object instanceof Track) return summarizeTrackWithDevices(object);
+  if (object instanceof Track) return summarizeTrackWithDevices(object, request);
   if (object instanceof Device) {
     const track = resolveTrack(context, undefined, target);
     const path = findDevicePath(track, object);
@@ -111,7 +180,12 @@ async function summarizeCurrentObject(context: Api, target: LiveTarget): Promise
     }
     return summarizeDeviceTree(
       context,
-      { type: "inspect_device_tree", deviceName: object.name, devicePath: path },
+      {
+        type: "inspect_device_tree",
+        deviceName: object.name,
+        devicePath: path,
+        ...observationPageFields(request),
+      },
       target,
     );
   }
@@ -129,9 +203,11 @@ async function summarizeCurrentObject(context: Api, target: LiveTarget): Promise
     return `Selected Cue Point "${object.name}" at beat ${object.time}.`;
   }
   if (object instanceof TakeLane) {
+    const page = pageOf(object.clips, request.itemOffset, request.itemLimit, 24);
     return [
       `Selected Take Lane "${object.name}" has ${object.clips.length} clips:`,
-      ...object.clips.slice(0, 24).map((clip) => `  - ${summarizeClipReference(clip)}`),
+      pageHeader("clips", page),
+      ...page.items.map((clip) => `  - ${summarizeClipReference(clip)}`),
     ].join("\n");
   }
   return `Selected Live object: ${(object as DataModelObject<"1.0.0">).constructor.name}`;
@@ -165,8 +241,12 @@ async function summarizeDeviceTree(
     return `Track "${track.name}" has no devices${rootPath ? " at the requested path" : ""}.`;
   }
 
-  const lines = [`Device tree on track "${track.name}":`];
-  for (const { device, parent, path, depth } of entries.slice(0, 96)) {
+  const devicePage = pageOf(entries, request.itemOffset, request.itemLimit, 96);
+  const lines = [
+    `Device tree on track "${track.name}":`,
+    pageHeader("devices", devicePage),
+  ];
+  for (const { device, parent, path, depth } of devicePage.items) {
     const details = [
       `type=${deviceTypeName(device)}`,
       `parameters=${device.parameters.length}`,
@@ -179,14 +259,26 @@ async function summarizeDeviceTree(
     lines.push(
       `${"  ".repeat(depth)}- ${devicePathLabel(path)} Device "${device.name}" ${details.join(" ")}`,
     );
-    for (const parameter of device.parameters.slice(0, 18)) {
-      lines.push(`${"  ".repeat(depth + 1)}${await describeParameter(parameter)}`);
-    }
-    if (device.parameters.length > 18) {
-      lines.push(`${"  ".repeat(depth + 1)}... ${device.parameters.length - 18} more parameters omitted.`);
+    const parameterPage = pageOf(
+      device.parameters,
+      request.parameterOffset,
+      request.parameterLimit,
+      18,
+    );
+    lines.push(
+      `${"  ".repeat(depth + 1)}${pageHeader("parameters", parameterPage)}`,
+    );
+    for (const [index, parameter] of parameterPage.items.entries()) {
+      lines.push(
+        `${"  ".repeat(depth + 1)}${await describeParameter(
+          parameter,
+          parameterPage.offset + index,
+          request.valueItemOffset,
+          request.valueItemLimit,
+        )}`,
+      );
     }
   }
-  if (entries.length > 96) lines.push(`... ${entries.length - 96} more devices omitted.`);
   return lines.join("\n");
 }
 
@@ -198,7 +290,9 @@ async function summarizeMixer(track: Track<"1.0.0">): Promise<string> {
   ];
   return [
     `Mixer on track "${track.name}" has ${parameters.length} parameters:`,
-    ...(await Promise.all(parameters.map(describeParameter))),
+    ...(await Promise.all(parameters.map((parameter, index) =>
+      describeParameter(parameter, index)
+    ))),
   ].join("\n");
 }
 
@@ -290,9 +384,14 @@ function deviceTypeName(device: Device<"1.0.0">): string {
   return device.constructor.name || "Device";
 }
 
-function summarizeSongInfo(context: Api): string {
+function summarizeSongInfo(
+  context: Api,
+  request: Extract<AgentObservationRequest, { type: "inspect_song_info" }>,
+): string {
   const song = context.application.song;
   const cuePoints = song.cuePoints ?? [];
+  const scenePage = pageOf(song.scenes, request.itemOffset, request.itemLimit, 16);
+  const cuePointPage = pageOf(cuePoints, request.itemOffset, request.itemLimit, 32);
   const lines = [
     `Tempo: ${song.tempo} BPM`,
     `Grid: ${gridLabel(song.gridQuantization)}${song.gridIsTriplet ? " (triplet)" : ""}`,
@@ -300,18 +399,14 @@ function summarizeSongInfo(context: Api): string {
     `Tracks: ${song.tracks.length}`,
     `Scenes: ${song.scenes.length}`,
     `Cue Points: ${cuePoints.length}`,
+    pageHeader("scenes", scenePage),
   ];
-  for (const [i, scene] of song.scenes.slice(0, 16).entries()) {
-    lines.push(`  Scene index ${i}: "${scene.name}" tempo=${scene.tempo || "-"}`);
+  for (const [i, scene] of scenePage.items.entries()) {
+    lines.push(`  Scene index ${scenePage.offset + i}: "${scene.name}" tempo=${scene.tempo || "-"}`);
   }
-  if (song.scenes.length > 16) {
-    lines.push(`  ... ${song.scenes.length - 16} more scenes omitted.`);
-  }
-  for (const cuePoint of cuePoints.slice(0, 32)) {
+  lines.push(pageHeader("Cue Points", cuePointPage));
+  for (const cuePoint of cuePointPage.items) {
     lines.push(`  Cue Point beat ${cuePoint.time}: "${cuePoint.name}"`);
-  }
-  if (cuePoints.length > 32) {
-    lines.push(`  ... ${cuePoints.length - 32} more Cue Points omitted.`);
   }
   return lines.join("\n");
 }
@@ -337,44 +432,73 @@ function summarizeLiveSet(context: Api): string {
   ].join("\n");
 }
 
-async function summarizeTrackWithDevices(track: Track<"1.0.0">): Promise<string> {
-  const takeLanes = safeTakeLanes(track);
+async function summarizeTrackWithDevices(
+  track: Track<"1.0.0">,
+  request: ObservationPageRequest,
+): Promise<string> {
+  const arrangementPage = pageOf(
+    track.arrangementClips,
+    request.itemOffset,
+    request.itemLimit,
+    12,
+  );
+  const slotPage = pageOf(track.clipSlots, request.itemOffset, request.itemLimit, 12);
+  const takeLaneResult = safeTakeLanes(track);
+  const takeLanePage = takeLaneResult.available
+    ? pageOf(takeLaneResult.items, request.itemOffset, request.itemLimit, 16)
+    : undefined;
+  const devicePage = pageOf(track.devices, request.itemOffset, request.itemLimit, 24);
   const lines = [
     `${trackTypeLabel(track)} track "${track.name}"`,
     `mute=${track.mute}, solo=${track.solo}, armed=${track.arm}`,
     `arrangement clips=${track.arrangementClips.length}`,
-    ...track.arrangementClips
-      .slice(0, 12)
+    pageHeader("arrangement clips", arrangementPage),
+    ...arrangementPage.items
       .map((clip) => `  - ${summarizeClipReference(clip)}`),
     `clip slots=${track.clipSlots.length}`,
-    ...track.clipSlots
-      .slice(0, 12)
+    pageHeader("clip slots", slotPage),
+    ...slotPage.items
       .map((slot, index) =>
         slot.clip
-          ? `  - slot index ${index}: ${summarizeClipReference(slot.clip)}`
-          : `  - slot index ${index}: empty`,
+          ? `  - slot index ${slotPage.offset + index}: ${summarizeClipReference(slot.clip)}`
+          : `  - slot index ${slotPage.offset + index}: empty`,
       ),
-    `take lanes=${takeLanes.length}`,
-    ...takeLanes
-      .slice(0, 16)
-      .map((lane, index) =>
-        `  - lane index ${index}: "${lane.name}" clips=${lane.clips.length}`,
-      ),
-    `devices=${track.devices.map((device, index) => `${index}: ${device.name}`).join(", ") || "none"}`,
+    takeLaneResult.available
+      ? `take lanes=${takeLaneResult.items.length}`
+      : "take lanes=unavailable (Live did not expose this collection)",
+    ...(takeLanePage
+      ? [
+          pageHeader("take lanes", takeLanePage),
+          ...takeLanePage.items.map((lane, index) =>
+            `  - lane index ${takeLanePage.offset + index}: "${lane.name}" clips=${lane.clips.length}`
+          ),
+        ]
+      : []),
+    pageHeader("devices", devicePage),
+    `devices=${devicePage.items.map((device, index) => `${devicePage.offset + index}: ${device.name}`).join(", ") || "none in this page"}`,
   ];
 
-  for (const [index, device] of track.devices.entries()) {
-    lines.push(await summarizeDevice(track.name, device.name, device.parameters, true, index));
+  for (const [index, device] of devicePage.items.entries()) {
+    lines.push(await summarizeDevice(
+      track.name,
+      device.name,
+      device.parameters,
+      true,
+      devicePage.offset + index,
+      request,
+    ));
   }
 
   return lines.join("\n");
 }
 
-function safeTakeLanes(track: Track<"1.0.0">): TakeLane<"1.0.0">[] {
+function safeTakeLanes(track: Track<"1.0.0">):
+  | { available: true; items: TakeLane<"1.0.0">[] }
+  | { available: false } {
   try {
-    return track.takeLanes;
+    return { available: true, items: track.takeLanes };
   } catch {
-    return [];
+    return { available: false };
   }
 }
 
@@ -459,36 +583,57 @@ async function summarizeDevice(
   parameters: DeviceParameter<"1.0.0">[],
   compact = false,
   deviceIndex?: number,
+  request: ObservationPageRequest = {},
 ): Promise<string> {
-  const limit = compact ? 18 : 80;
-  const shown = parameters.slice(0, limit);
+  const parameterPage = pageOf(
+    parameters,
+    request.parameterOffset,
+    request.parameterLimit,
+    compact ? 18 : 80,
+  );
   const lines = [
     `Device "${deviceName}"${deviceIndex !== undefined ? ` at deviceIndex ${deviceIndex}` : ""} on track "${trackName}" has ${parameters.length} parameters:`,
-    ...(await Promise.all(shown.map(describeParameter))),
+    pageHeader("parameters", parameterPage),
+    ...(await Promise.all(parameterPage.items.map((parameter, index) =>
+      describeParameter(
+        parameter,
+        parameterPage.offset + index,
+        request.valueItemOffset,
+        request.valueItemLimit,
+      )
+    ))),
   ];
-
-  if (parameters.length > shown.length) {
-    lines.push(`... ${parameters.length - shown.length} more parameters omitted.`);
-  }
 
   return lines.join("\n");
 }
 
-async function describeParameter(parameter: DeviceParameter<"1.0.0">): Promise<string> {
+async function describeParameter(
+  parameter: DeviceParameter<"1.0.0">,
+  parameterIndex?: number,
+  valueItemOffset?: number,
+  valueItemLimit?: number,
+): Promise<string> {
   const value = await parameter.getValue().catch(() => undefined);
   const valueText = value === undefined ? "unknown" : String(value);
-  const valueItems = parameter.valueItems
-    .slice(0, 12)
-    .map((item) => item.name)
+  const valueItemPage = pageOf(
+    parameter.valueItems,
+    valueItemOffset,
+    valueItemLimit,
+    12,
+  );
+  const valueItems = valueItemPage.items
+    .map((item, index) => `[${valueItemPage.offset + index}] ${item.name}`)
     .join(", ");
   return [
-    `  - ${parameter.name}`,
+    `  - ${parameterIndex === undefined ? "" : `[${parameterIndex}] `}${parameter.name}`,
     `min=${parameter.min}`,
     `max=${parameter.max}`,
     `current=${valueText}`,
     `default=${parameter.defaultValue}`,
     `quantized=${parameter.isQuantized}`,
-    valueItems ? `items=${valueItems}` : "",
+    valueItemPage.total > 0 || valueItemOffset !== undefined
+      ? `items(offset=${valueItemPage.offset}, total=${valueItemPage.total}, nextOffset=${valueItemPage.nextOffset ?? "none"})=${valueItems || "none in this page"}`
+      : "",
   ]
     .filter(Boolean)
     .join(", ");

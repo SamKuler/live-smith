@@ -394,7 +394,6 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
   if (!isRecord(value) || !Array.isArray(value.content)) {
     throw new Error("Anthropic Messages returned no content blocks.");
   }
-  assertCompleteAnthropicStopReason(value.stop_reason);
   const contentBlocks = value.content as Array<Record<string, unknown>>;
   const text = contentBlocks
     .flatMap((block) => block.type === "text" && typeof block.text === "string" ? [block.text] : [])
@@ -404,13 +403,21 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
   const toolCalls = contentBlocks.flatMap((block): ModelToolCall[] => {
     if (block.type !== "tool_use") return [];
     const id = requireUniqueToolCallId(block.id, seenToolCallIds);
-    if (typeof block.name !== "string") return [];
+    if (typeof block.name !== "string" || !block.name.trim()) {
+      throw new Error(
+        "Anthropic Messages returned a tool_use with a missing or empty name.",
+      );
+    }
+    if (!isRecord(block.input)) {
+      throw new Error("Anthropic Messages returned a tool_use with invalid input.");
+    }
     return [{
       id,
       name: block.name,
-      arguments: JSON.stringify(block.input ?? {}) ?? "{}",
+      arguments: JSON.stringify(block.input),
     }];
   });
+  assertCompleteAnthropicStopReason(value.stop_reason, toolCalls.length);
   if (!text && !toolCalls.length) {
     throw new Error("Anthropic Messages returned an empty response.");
   }
@@ -435,8 +442,24 @@ function requireUniqueToolCallId(value: unknown, seen: Set<string>): string {
   return value;
 }
 
-function assertCompleteAnthropicStopReason(value: unknown): void {
-  if (value === "end_turn" || value === "tool_use" || value === "stop_sequence") {
+function assertCompleteAnthropicStopReason(
+  value: unknown,
+  toolCallCount: number,
+): void {
+  if (value === "tool_use") {
+    if (toolCallCount === 0) {
+      throw new Error(
+        "Anthropic Messages returned stop_reason tool_use without a tool_use block.",
+      );
+    }
+    return;
+  }
+  if (value === "end_turn" || value === "stop_sequence") {
+    if (toolCallCount > 0) {
+      throw new Error(
+        `Anthropic Messages returned tool_use blocks with stop_reason ${value}.`,
+      );
+    }
     return;
   }
   if (typeof value === "string") {

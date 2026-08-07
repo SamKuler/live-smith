@@ -28,6 +28,7 @@ const sensitiveResponseHeaders = {
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
 } as const;
+const maxRequestBodyBytes = 1024 * 1024;
 
 export interface ChatBridgeSendInput {
   prompt: string;
@@ -51,8 +52,8 @@ export class ChatBridgeCommandOutcomeUnknownError extends Error {
 }
 
 class ChatBridgeRequestValidationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "ChatBridgeRequestValidationError";
   }
 }
@@ -472,13 +473,15 @@ export async function createChatBridge(
       }
 
       if (request.method === "POST" && url.pathname === "/confirm") {
-        const input = await readRequestBody<{ id?: string; apply?: boolean }>(request);
+        const input = parseConfirmationInput(
+          await readRequestBody<unknown>(request),
+        );
         if (closing) {
           sendJson(response, { error: "Live Smith bridge is closing." }, 503);
           return;
         }
-        const pending = input.id ? pendingConfirmations.get(input.id) : undefined;
-        if (pending && input.id) {
+        const pending = pendingConfirmations.get(input.id);
+        if (pending) {
           pendingConfirmations.delete(input.id);
           const apply = input.apply === true;
           pending.resolve(apply);
@@ -498,6 +501,11 @@ export async function createChatBridge(
 
       if (request.method === "POST" && url.pathname === "/stop") {
         const stoppedSendId = stopSendIdForRequest(request);
+        assertOnlyInputKeys(
+          inputRecord(await readRequestBody<unknown>(request)),
+          [],
+          "Stop request",
+        );
         const activeSend = activeSendsById.get(stoppedSendId);
         if (activeSend) {
           resolveConfirmationsForSend(stoppedSendId, false);
@@ -728,16 +736,32 @@ export async function readJsonBody<T>(
   request: AsyncIterable<string | Uint8Array>,
 ): Promise<T> {
   const chunks: Buffer[] = [];
+  let byteLength = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    byteLength += buffer.byteLength;
+    if (byteLength > maxRequestBodyBytes) {
+      throw new ChatBridgeRequestValidationError(
+        `Request body exceeds ${maxRequestBodyBytes} bytes.`,
+      );
+    }
+    chunks.push(buffer);
   }
 
   const raw = Buffer.concat(chunks).toString("utf8");
-  return (raw ? JSON.parse(raw) : {}) as T;
+  try {
+    return (raw ? JSON.parse(raw) : {}) as T;
+  } catch (cause) {
+    throw new ChatBridgeRequestValidationError(
+      "Request body must contain valid JSON.",
+      { cause },
+    );
+  }
 }
 
 function parseSendInput(value: unknown): ChatBridgeSendInput {
   const input = inputRecord(value);
+  assertOnlyInputKeys(input, ["prompt", "sessionId"], "Send request");
   return {
     prompt: inputString(input, "prompt"),
     sessionId: inputString(input, "sessionId"),
@@ -748,36 +772,63 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   const input = inputRecord(value);
   const kind = inputString(input, "kind");
   if (kind === "save_profile" || kind === "discover_models") {
-    if (!isRecord(input.profile)) throw new Error("profile must be an object.");
-    return kind === "save_profile"
-      ? { kind, profile: input.profile as unknown as DraftProfile }
-      : { kind, profile: input.profile as unknown as DraftProfile };
+    assertOnlyInputKeys(input, ["kind", "profile"], `${kind} command`);
+    if (!isRecord(input.profile)) {
+      throw new ChatBridgeRequestValidationError("profile must be an object.");
+    }
+    return { kind, profile: input.profile as unknown as DraftProfile };
   }
   if (kind === "delete_profile" || kind === "activate_profile") {
+    assertOnlyInputKeys(input, ["kind", "profileId"], `${kind} command`);
     return { kind, profileId: inputString(input, "profileId") };
   }
   if (kind === "save_global_settings") {
+    assertOnlyInputKeys(input, ["kind", "autoApprove"], `${kind} command`);
     if (typeof input.autoApprove !== "boolean") {
-      throw new Error("autoApprove must be a boolean.");
+      throw new ChatBridgeRequestValidationError("autoApprove must be a boolean.");
     }
     return { kind, autoApprove: input.autoApprove };
   }
-  if (kind === "new_session") return { kind };
+  if (kind === "new_session") {
+    assertOnlyInputKeys(input, ["kind"], `${kind} command`);
+    return { kind };
+  }
   if (
     kind === "select_session" ||
     kind === "restore_session" ||
     kind === "delete_session"
   ) {
+    assertOnlyInputKeys(input, ["kind", "sessionId"], `${kind} command`);
     return { kind, sessionId: inputString(input, "sessionId") };
   }
   if (kind === "rename_session") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "title"],
+      `${kind} command`,
+    );
     return {
       kind,
       sessionId: inputString(input, "sessionId"),
       title: inputString(input, "title"),
     };
   }
-  throw new Error(`Unsupported command ${kind}.`);
+  throw new ChatBridgeRequestValidationError(`Unsupported command ${kind}.`);
+}
+
+function parseConfirmationInput(
+  value: unknown,
+): { id: string; apply: boolean } {
+  const input = inputRecord(value);
+  assertOnlyInputKeys(input, ["id", "apply"], "Confirmation request");
+  const id = inputString(input, "id");
+  if (!id.trim()) {
+    throw new ChatBridgeRequestValidationError("id must be a non-empty string.");
+  }
+  if (typeof input.apply !== "boolean") {
+    throw new ChatBridgeRequestValidationError("apply must be a boolean.");
+  }
+  return { id, apply: input.apply };
 }
 
 function isSessionCommand(input: ChatBridgeCommandInput): boolean {
@@ -793,14 +844,32 @@ function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {
 }
 
 function inputRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error("Request body must be an object.");
+  if (!isRecord(value)) {
+    throw new ChatBridgeRequestValidationError("Request body must be an object.");
+  }
   return value;
 }
 
 function inputString(record: Record<string, unknown>, key: string): string {
   const value = record[key];
-  if (typeof value !== "string") throw new Error(`${key} must be a string.`);
+  if (typeof value !== "string") {
+    throw new ChatBridgeRequestValidationError(`${key} must be a string.`);
+  }
   return value;
+}
+
+function assertOnlyInputKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(record).find((key) => !allowedKeys.has(key));
+  if (unknown) {
+    throw new ChatBridgeRequestValidationError(
+      `${label} does not support property ${unknown}.`,
+    );
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

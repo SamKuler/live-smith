@@ -51,11 +51,12 @@ export function createOpenAIChatTransport(
       if (!choice) {
         throw new Error("OpenAI Chat Completions returned no message.");
       }
-      assertCompleteChatFinishReason(choice.finish_reason);
-      return turnFromRawMessage(
+      const turn = turnFromRawMessage(
         choice.message,
         "OpenAI Chat Completions",
       );
+      assertCompleteChatFinishReason(choice.finish_reason, turn.toolCalls.length);
+      return turn;
       });
     },
   };
@@ -125,9 +126,11 @@ async function streamChatTurn(
       await request.onDelta?.(delta.content);
     }
     accumulateUnknownDelta(rawMessage, delta);
-    const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+    const calls = toolCallsArray(delta.tool_calls, "OpenAI Chat Completions");
     for (const entry of calls) {
-      if (!isRecord(entry)) continue;
+      if (!isRecord(entry)) {
+        throw new Error("OpenAI Chat Completions returned a malformed tool call.");
+      }
       const index = typeof entry.index === "number" ? entry.index : 0;
       rawToolCalls.set(
         index,
@@ -136,8 +139,6 @@ async function streamChatTurn(
     }
   }
 
-  assertCompleteChatFinishReason(finishReason);
-
   const completedRawToolCalls = [...rawToolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, toolCall]) => toolCall);
@@ -145,6 +146,7 @@ async function streamChatTurn(
     completedRawToolCalls,
     "OpenAI Chat Completions",
   );
+  assertCompleteChatFinishReason(finishReason, toolCalls.length);
   if (completedRawToolCalls.length) {
     rawMessage.tool_calls = completedRawToolCalls;
   }
@@ -164,8 +166,26 @@ function chatCompletionChoice(value: unknown): Record<string, unknown> | undefin
   return isRecord(choice) ? choice : undefined;
 }
 
-function assertCompleteChatFinishReason(value: unknown): void {
-  if (value === "stop" || value === "tool_calls") return;
+function assertCompleteChatFinishReason(
+  value: unknown,
+  toolCallCount: number,
+): void {
+  if (value === "tool_calls") {
+    if (toolCallCount === 0) {
+      throw new Error(
+        "OpenAI Chat Completions returned finish_reason tool_calls without a tool call.",
+      );
+    }
+    return;
+  }
+  if (value === "stop") {
+    if (toolCallCount > 0) {
+      throw new Error(
+        "OpenAI Chat Completions returned tool calls with finish_reason stop.",
+      );
+    }
+    return;
+  }
   if (typeof value === "string") {
     throw new Error(
       `OpenAI Chat Completions stopped with finish_reason ${value}.`,
@@ -184,7 +204,7 @@ function turnFromRawMessage(
   const content = typeof value.content === "string" && value.content.trim()
     ? value.content
     : null;
-  const rawCalls = Array.isArray(value.tool_calls) ? value.tool_calls : [];
+  const rawCalls = toolCallsArray(value.tool_calls, label);
   const toolCalls = normalizedToolCalls(rawCalls, label);
   if (!content && !toolCalls.length) throw new Error(`${label} returned an empty response.`);
   return {
@@ -197,24 +217,39 @@ function turnFromRawMessage(
   };
 }
 
+function toolCallsArray(value: unknown, label: string): unknown[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} returned tool_calls in an invalid format.`);
+  }
+  return value;
+}
+
 function normalizedToolCalls(
   rawCalls: unknown[],
   label: string,
 ): ModelToolCall[] {
   const seenIds = new Set<string>();
-  return rawCalls.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
+  return rawCalls.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new Error(`${label} returned a malformed tool call.`);
+    }
+    if (entry.type !== "function") {
+      throw new Error(`${label} returned a tool call with invalid type.`);
+    }
     const id = requireUniqueToolCallId(entry.id, seenIds, label);
     const fn = isRecord(entry.function) ? entry.function : undefined;
-    return typeof fn?.name === "string"
-        ? [{
-            id,
-            name: fn.name,
-            arguments: typeof fn.arguments === "string" && fn.arguments
-              ? fn.arguments
-              : "{}",
-          }]
-        : [];
+    if (typeof fn?.name !== "string" || !fn.name.trim()) {
+      throw new Error(`${label} returned a tool call with a missing or empty name.`);
+    }
+    if (typeof fn.arguments !== "string" || !fn.arguments.trim()) {
+      throw new Error(`${label} returned a tool call with invalid arguments.`);
+    }
+    return {
+      id,
+      name: fn.name,
+      arguments: fn.arguments,
+    };
   });
 }
 

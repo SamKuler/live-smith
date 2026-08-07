@@ -271,6 +271,101 @@ test("Anthropic Messages rejects missing, empty, and duplicate tool-use IDs in b
   }
 });
 
+test("Anthropic Messages rejects malformed declared tool use even when text is present", async () => {
+  const malformedBlocks = [
+    { id: "tool-missing-name", input: {} },
+    { id: "tool-empty-name", name: "   ", input: {} },
+    { id: "tool-bad-input", name: "inspect", input: "not-an-object" },
+  ];
+  for (const streaming of [false, true]) {
+    for (const block of malformedBlocks) {
+      const content = [
+        { type: "text", text: "I finished the task." },
+        { type: "tool_use", ...block },
+      ];
+      const events = [
+        { type: "message_start", message: { content: [], stop_reason: null } },
+        ...content.map((contentBlock, index) => ({
+          type: "content_block_start",
+          index,
+          content_block: contentBlock,
+        })),
+        { type: "message_delta", delta: { stop_reason: "tool_use" } },
+        { type: "message_stop" },
+      ];
+      const payload = streaming
+        ? events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join("")
+        : JSON.stringify({ stop_reason: "tool_use", content });
+      const transport = createAnthropicMessagesTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+      await assert.rejects(
+        transport.createToolTurn(req),
+        /tool_use.*(?:name|input)/i,
+      );
+    }
+  }
+});
+
+test("Anthropic Messages requires tool blocks to match the terminal stop reason", async () => {
+  const cases = [
+    {
+      stopReason: "tool_use",
+      content: [{ type: "text", text: "I finished the task." }],
+      error: /tool_use without a tool_use block/i,
+    },
+    {
+      stopReason: "end_turn",
+      content: [
+        { type: "text", text: "I finished the task." },
+        { type: "tool_use", id: "tool-with-end", name: "inspect", input: {} },
+      ],
+      error: /tool_use blocks with stop_reason end_turn/i,
+    },
+  ];
+
+  for (const streaming of [false, true]) {
+    for (const item of cases) {
+      const events = [
+        { type: "message_start", message: { content: [], stop_reason: null } },
+        ...item.content.map((contentBlock, index) => ({
+          type: "content_block_start",
+          index,
+          content_block: contentBlock,
+        })),
+        { type: "message_delta", delta: { stop_reason: item.stopReason } },
+        { type: "message_stop" },
+      ];
+      const payload = streaming
+        ? events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join("")
+        : JSON.stringify({ stop_reason: item.stopReason, content: item.content });
+      const transport = createAnthropicMessagesTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+
+      await assert.rejects(transport.createToolTurn(req), item.error);
+    }
+  }
+});
+
 test("Anthropic endpoint does not duplicate a configured /v1 suffix", async () => {
   let url = "";
   const transport = createAnthropicMessagesTransport({

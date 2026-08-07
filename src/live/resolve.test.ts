@@ -113,6 +113,26 @@ test("resolveDeviceTarget uses the exact selected nested Device", () => {
   assert.equal(resolved.device, selected);
 });
 
+test("an explicit deviceIndex takes precedence over the selected Device", () => {
+  const selected = Object.defineProperties(Object.create(Simpler.prototype), {
+    name: { enumerable: true, value: "Simpler" },
+  });
+  const indexed = Object.defineProperties(Object.create(Simpler.prototype), {
+    name: { enumerable: true, value: "Simpler" },
+  });
+  const track = fakeTrack("Lead", [selected, indexed]);
+
+  const resolved = resolveDeviceTarget(
+    track,
+    { track, object: selected },
+    "Simpler",
+    undefined,
+    1,
+  );
+
+  assert.equal(resolved.device, indexed);
+});
+
 test("resolveDeviceTarget rejects a mismatched nested Device name", () => {
   const simpler = Object.defineProperties(Object.create(Simpler.prototype), {
     name: { enumerable: true, value: "Actual Simpler" },

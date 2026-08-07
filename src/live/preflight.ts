@@ -3,7 +3,6 @@ import {
   AudioClip,
   DrumRack,
   MidiClip,
-  MidiTrack,
   RackDevice,
   Simpler,
   type Chain,
@@ -14,10 +13,9 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { AgentAction } from "../agent/actions.js";
-import { findBestParameterMatch } from "./parameter-match.js";
-import { resolveDeviceTarget } from "./device-tree.js";
+import { findExactParameterMatch } from "./parameter-match.js";
+import { resolveDevicePath, resolveDeviceTarget } from "./device-tree.js";
 import {
-  equalsLoose,
   findReusableMidiClip,
   resolveArrangementClip,
   resolveClipLocator,
@@ -44,37 +42,13 @@ export async function captureLiveActionPreflightSnapshot(
 
   switch (action.type) {
     case "create_midi_track": {
-      const matches = action.name
-        ? song.tracks.filter(
-            (track) =>
-              track instanceof MidiTrack && equalsLoose(track.name, action.name!),
-          )
-        : [];
-      if (action.ref && matches.length > 1) {
-        throw new Error(
-          `Track ref "${action.ref}" is ambiguous because ${matches.length} MIDI tracks match "${action.name}".`,
-        );
-      }
       return fingerprint(action.type, {
         song: songIdentity,
-        matchingTracks: matches.map((track) => requireHandleIdentity(track, "MIDI track")),
       });
     }
     case "create_audio_track": {
-      const matches = action.name
-        ? song.tracks.filter(
-            (track) =>
-              track instanceof AudioTrack && equalsLoose(track.name, action.name!),
-          )
-        : [];
-      if (action.ref && matches.length > 1) {
-        throw new Error(
-          `Track ref "${action.ref}" is ambiguous because ${matches.length} audio tracks match "${action.name}".`,
-        );
-      }
       return fingerprint(action.type, {
         song: songIdentity,
-        matchingTracks: matches.map((track) => requireHandleIdentity(track, "audio track")),
       });
     }
     case "create_scene":
@@ -189,7 +163,6 @@ export async function captureLiveActionPreflightSnapshot(
         track: trackIdentity(track),
         rackPath: resolved.path,
         rack: await deviceContentIdentity(resolved.device),
-        chain: await chainContentIdentity(chain),
       });
     }
     case "set_device_parameter": {
@@ -201,7 +174,7 @@ export async function captureLiveActionPreflightSnapshot(
         action.devicePath,
         action.deviceIndex,
       );
-      const parameter = findBestParameterMatch(action.parameterName, device.parameters);
+      const parameter = findExactParameterMatch(action.parameterName, device.parameters);
       if (!parameter) {
         throw new Error(
           `Could not verify parameter "${action.parameterName}" on device "${device.name}".`,
@@ -270,12 +243,6 @@ export async function captureLiveActionPreflightSnapshot(
         track: trackIdentity(track),
         path: resolved.path,
         simpler: await deviceContentIdentity(resolved.device),
-        currentSample: resolved.device.sample
-          ? {
-              id: requireHandleIdentity(resolved.device.sample, "Simpler sample"),
-              filePath: resolved.device.sample.filePath,
-            }
-          : null,
         source: sampleSourceIdentity(source),
       });
     }
@@ -297,6 +264,25 @@ export async function captureLiveActionPreflightSnapshot(
         throw new Error(
           `Drum Rack "${resolved.device.name}" has ${matchingChains.length} chains receiving MIDI note ${action.receivingNote}; resolve the duplicate pads in Live first.`,
         );
+      }
+      if (action.mode === "replace_existing_simpler") {
+        const chain = matchingChains[0];
+        if (!chain) {
+          throw new Error(
+            `Drum Rack "${resolved.device.name}" has no pad receiving MIDI note ${action.receivingNote}. Use mode fill_empty_pad to create it.`,
+          );
+        }
+        const simpler = resolveDevicePath(track, action.simplerPath!);
+        if (!(simpler.device instanceof Simpler)) {
+          throw new Error(
+            `${JSON.stringify(action.simplerPath)} is "${simpler.device.name}", not Simpler.`,
+          );
+        }
+        if (simpler.parent !== chain) {
+          throw new Error(
+            `The Simpler at ${JSON.stringify(action.simplerPath)} is not directly on Drum Rack pad ${action.receivingNote}.`,
+          );
+        }
       }
       const source = resolveSampleSource(context, action.source, target);
       return fingerprint(action.type, {
@@ -570,6 +556,16 @@ async function deviceContentIdentity(device: Device<"1.0.0">): Promise<object> {
     parameters,
     ...(device instanceof RackDevice
       ? { chains: await Promise.all(device.chains.map(chainContentIdentity)) }
+      : {}),
+    ...(device instanceof Simpler
+      ? {
+          sample: device.sample
+            ? {
+                id: requireHandleIdentity(device.sample, "Simpler sample"),
+                filePath: device.sample.filePath,
+              }
+            : null,
+        }
       : {}),
   };
 }

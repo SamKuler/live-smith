@@ -1099,7 +1099,7 @@ test("closing destroys partial command and send bodies before handlers can start
   }
 });
 
-test("chat bridge strips configuration from send and session command payloads", async () => {
+test("chat bridge rejects configuration and unknown fields on narrow request paths", async () => {
   const state = {} as ChatDialogState;
   let sendInput: unknown;
   let commandInput: unknown;
@@ -1128,8 +1128,9 @@ test("chat bridge strips configuration from send and session command payloads", 
         settings: { apiKey: "must-not-pass" },
       }),
     });
-    assert.equal(send.status, 200);
-    assert.deepEqual(sendInput, { prompt: "test", sessionId: "s1" });
+    assert.equal(send.status, 400);
+    assert.match((await send.json() as { error: string }).error, /does not support property settings/i);
+    assert.equal(sendInput, undefined);
 
     const command = await fetch(endpoint("/command"), {
       method: "POST",
@@ -1139,8 +1140,9 @@ test("chat bridge strips configuration from send and session command payloads", 
         settings: { apiKey: "must-not-pass" },
       }),
     });
-    assert.equal(command.status, 200);
-    assert.deepEqual(commandInput, { kind: "new_session" });
+    assert.equal(command.status, 400);
+    assert.match((await command.json() as { error: string }).error, /does not support property settings/i);
+    assert.equal(commandInput, undefined);
 
     const restore = await fetch(endpoint("/command"), {
       method: "POST",
@@ -1153,11 +1155,9 @@ test("chat bridge strips configuration from send and session command payloads", 
         settings: { apiKey: "must-not-pass" },
       }),
     });
-    assert.equal(restore.status, 200);
-    assert.deepEqual(commandInput, {
-      kind: "restore_session",
-      sessionId: "session-previous",
-    });
+    assert.equal(restore.status, 400);
+    assert.match((await restore.json() as { error: string }).error, /does not support property projectKey/i);
+    assert.equal(commandInput, undefined);
   } finally {
     await bridge.close();
   }
@@ -1214,6 +1214,18 @@ test("chat bridge body parsing does not depend on an ambient Buffer constructor"
     if (descriptor) Object.defineProperty(globalThis, "Buffer", descriptor);
     else Reflect.deleteProperty(globalThis, "Buffer");
   }
+});
+
+test("chat bridge rejects request bodies larger than one MiB", async () => {
+  async function* oversizedBody(): AsyncGenerator<Uint8Array> {
+    yield NodeBuffer.alloc(1024 * 1024, 0x20);
+    yield NodeBuffer.from("x");
+  }
+
+  await assert.rejects(
+    readJsonBody(oversizedBody()),
+    /request body exceeds 1048576 bytes/i,
+  );
 });
 
 test("chat bridge preserves Profile validation fields in safe command errors", async () => {

@@ -60,6 +60,55 @@ test("appendSessionEvent accepts non-tool event kinds", async () => {
   assert.equal(events[1]?.name, "confirm_apply");
 });
 
+test("apply results persist a strict structured recovery ledger", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const digest = "a".repeat(64);
+  await appendSessionEvent(dir, "session-recovery", {
+    kind: "apply_result",
+    content: "One action completed before the host failure.",
+    recovery: {
+      active: true,
+      completedActionDigests: [digest],
+    },
+  });
+  await appendSessionEvent(dir, "session-recovery", {
+    kind: "apply_result",
+    content: "The remaining action completed.",
+    recovery: {
+      active: false,
+      completedActionDigests: [],
+    },
+  });
+
+  const events = await loadSessionEvents(dir, "session-recovery");
+  assert.deepEqual(events.map((event) => event.recovery), [
+    { active: true, completedActionDigests: [digest] },
+    { active: false, completedActionDigests: [] },
+  ]);
+});
+
+test("malformed recovery ledgers are rejected as event-log corruption", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "bad-recovery.json");
+  await fs.writeFile(target, JSON.stringify([{
+    id: "event-bad-recovery",
+    createdAt: new Date().toISOString(),
+    kind: "apply_result",
+    content: "Do not trust raw action identity data.",
+    recovery: {
+      active: true,
+      completedActionDigests: ['insert_device:{"apiKey":"secret"}'],
+    },
+  }]));
+
+  await assert.rejects(
+    loadSessionEvents(dir, "bad-recovery"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+});
+
 test("concurrent appendSessionEvent calls preserve every event", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
   const sessionId = "concurrent-session";

@@ -1420,6 +1420,47 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
   }
 });
 
+test("Live Set confirmations render mixed action categories in execution order", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.input("#prompt", "Replace a scratch track");
+    harness.holdNextSend();
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      id: "confirm-ordered",
+      message: "Replace the scratch track in order.",
+      groups: [
+        { title: "Delete", rows: ['1. - track "Scratch"'] },
+        { title: "Create", rows: ['2. + MIDI track "Replacement"'] },
+        { title: "Song", rows: ["3. ~ Tempo = 132 BPM"] },
+      ],
+    });
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll(".confirm-rows li")]
+        .map((item) => item.textContent),
+      [
+        '1. - track "Scratch"',
+        '2. + MIDI track "Replacement"',
+        "3. ~ Tempo = 132 BPM",
+      ],
+    );
+
+    harness.clickButton("Cancel");
+    await harness.settle();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("a failed confirmation request terminates the send before dismissing the decision", async () => {
   const harness = await createDialogHarness();
   try {
@@ -3052,6 +3093,39 @@ test("an expanded timeline Error does not repeat its summary line in the body", 
   }
 });
 
+test("a rejected tool input is labelled and keeps its complete first line", async () => {
+  const state = stateFixture();
+  const firstLine = [
+    'Tool call "apply_live_actions" has invalid arguments:',
+    "Action 2 must use either trackName or trackRef, not both.",
+  ].join(" ");
+  state.events = [{
+    id: "event-long-error",
+    createdAt: "2026-08-06T00:00:00.000Z",
+    kind: "tool_result",
+    name: "apply_live_actions",
+    content: [firstLine, "Correct the tool fields and types, then retry."].join("\n"),
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const details = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-item.tool_result",
+    );
+    assert.equal(details?.open, true);
+    assert.equal(
+      details?.querySelector(".timeline-content")?.textContent,
+      `${firstLine}\nCorrect the tool fields and types, then retry.`,
+    );
+    assert.match(
+      details?.querySelector("summary")?.textContent ?? "",
+      /^Tool input rejected \/ apply_live_actions — .*…$/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("multiline user and assistant messages keep their first line", async () => {
   const state = stateFixture();
   state.events = [
@@ -3233,14 +3307,41 @@ test("an expanded partial Apply Result does not repeat its summary line", async 
     const item = harness.document.querySelector<HTMLDetailsElement>(
       ".timeline-item.apply_result",
     );
+    assert.equal(item?.open, true);
     assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Partial Apply —"), true);
-    item?.setAttribute("open", "");
     const itemText = item?.textContent ?? "";
     assert.equal(
       itemText.match(/Live action plan partially completed after 9 action\(s\)\./g)?.length,
       1,
     );
     assert.match(itemText, /Failed action 10: Insert Live device "Ping Pong Delay"/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a zero-completion Apply failure is labeled failed and opened by default", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-failed-apply",
+    createdAt: "2026-08-06T00:00:00.000Z",
+    kind: "apply_result",
+    content: [
+      "Live action plan could not complete its first action.",
+      'Failed action 1: Insert Live device "Drift" on track "Arp".',
+      "No actions from this plan were completed.",
+      "Failed to insert device",
+    ].join("\n"),
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const item = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-item.apply_result",
+    );
+    assert.equal(item?.open, true);
+    assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Apply Failed —"), true);
+    assert.match(item?.textContent ?? "", /No actions from this plan were completed/);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

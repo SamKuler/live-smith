@@ -32,7 +32,8 @@
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
   preserve their exact text.
-- Shows grouped Apply diffs. Changes require `Apply` by default; Auto approve
+- Shows categorized Apply diffs in the exact execution order, with original
+  action numbers. Changes require `Apply` by default; Auto approve
   may skip confirmation for undoable actions. Deletes and MIDI clip
   writes that may replace existing notes always require explicit confirmation.
   Auto approve can be changed while a Session is running; the current value is
@@ -45,7 +46,7 @@ The action executor exposes a deliberately bounded set of Live mutations:
 
 | Area | Supported operations |
 | --- | --- |
-| Set structure | Set tempo; create, rename, duplicate, or delete Scenes; create, rename, or delete Cue Points. |
+| Set structure | Set tempo; create, rename, duplicate, or delete Session View Scenes; create, rename, or delete Arrangement Cue Points. |
 | Tracks and mixer | Create MIDI or audio tracks; rename, duplicate, mute, solo, arm, or delete tracks; set volume, panning, and sends. |
 | MIDI Clips | Create or replace Arrangement and Session MIDI Clips with up to 4096 notes per action; replace bounded ranges of an Arrangement MIDI Clip. |
 | Audio Clips | Create Arrangement or Session audio Clips from an observed sample source; edit Clip properties and warp settings; clear Arrangement ranges; delete Arrangement or Session Clips. |
@@ -56,7 +57,8 @@ The action executor exposes a deliberately bounded set of Live mutations:
 Creating a MIDI clip requires a MIDI target. A plan that creates a new track
 declares a local `ref` on `create_midi_track`, and later actions use the matching
 `trackRef`, so the entire plan remains visible in one Apply diff without relying
-on a mutable display name. A named clip with the same track,
+on a mutable display name. Creation is literal: an existing same-name track is
+never silently reused. A named clip with the same track,
 start beat, and duration is a create-or-replace operation: its notes are
 replaced only after explicit confirmation, and the Apply diff says so. Clip
 deletion uses an exact Arrangement start beat or an exact Session slot index.
@@ -69,25 +71,37 @@ Clip, and fills non-overlapping relative-time ranges with separately confirmed
 existing notes whose durations overlap the range are removed, while notes
 outside it are preserved. The executor rechecks the complete Clip immediately
 before every write, so a concurrent edit from another Session invalidates the
-pending plan instead of being overwritten.
+pending plan instead of being overwritten. Every MIDI note includes an explicit
+velocity; Live Smith does not inject a hidden musical default.
 
 The extension does not execute arbitrary code from the model. It parses and
 validates a small JSON action schema. Changes require confirmation by default;
 Auto approve may skip confirmation for undoable actions, while deletes
 and MIDI create-or-replace actions always require explicit confirmation. The
-agent loop uses a rolling 12-step no-mutation window: every successful or
-partially successful Live write renews that window, so a large project is not
-stopped merely because it has many stages. Observation-only or repeatedly
-failing loops stop when they make no mutation progress. A broad 64-step
-per-request runaway guard preserves completed work and asks the agent to
-continue in the same Session. There is no accumulated tool-call quota; only an
-oversized batch in one model turn is rejected without execution and returned to
-the model so it can regroup the unfinished stage.
+agent loop uses a rolling 12-step no-progress window: every successful or
+partially successful Live write and every new distinct observation renews that
+window, so a large project is not stopped merely because it has many stages.
+Repeating the same observation/result or completing only idempotent no-op Applies
+does not renew the window. The first successful automatic refresh for a distinct
+failed Apply does renew it even when the rendered state text was seen earlier;
+repeating the same failure does not. There is no fixed total-step ceiling or
+accumulated tool-call quota; only an oversized batch in one model turn is
+rejected without execution and returned to the model so it can regroup the
+unfinished stage. Six consecutive host repair failures without a real Live
+mutation stop that unproductive repair run; any actual mutation resets this
+separate budget, so it does not cap a productive multi-stage project.
 If a confirmed multi-action plan partially succeeds, the completed actions and
 exact failed action are persisted and returned to the model so it can inspect
 the Set and continue only with missing work. It does not automatically replay
 completed actions, and an exact device insertion rejected by Live cannot be
-retried under another equivalent track selector during the same request.
+retried under another equivalent track selector. A compact structured ledger
+stores only SHA-256 action-identity digests, so this protection survives the
+next send in the same Session. Intermediate successful repair stages extend the
+same ledger instead of clearing it; only a final successful repair Apply marked
+`resolvesPriorFailure` clears the operation. Creator identity is independent of
+the model's temporary `ref`, so changing an alias cannot create the same Track
+again. Tool-free model text can never turn an unresolved partial Apply into a
+successful result.
 
 Confirmation and Live Undo are different boundaries. One confirmation may
 authorize an ordered plan with multiple Undo entries because the 1.0.0 beta SDK
@@ -95,19 +109,39 @@ requires dependent asynchronous mutations (such as create, then rename) to run
 as sequential transactions. The UI does not claim that a complete confirmed
 plan is always one Undo step.
 
+Before confirmation, Live Smith binds every existing Track, Scene, Cue Point,
+Device, Clip, Clip Slot, Take Lane, mixer parameter, and sample source used by
+the plan to its opaque SDK handle. Execution consumes those handles instead of
+resolving later actions through indexes or paths changed by earlier actions in
+the same plan. A replacement while confirmation is open invalidates the plan.
+Because creating, duplicating, or deleting a Scene shifts every Session row,
+plans must stage any later Scene-index, Clip Slot, or Session-source operation:
+apply the structural Scene edit, inspect the resulting Session View, then apply
+the index-based work.
+
 ### Device and content boundaries
 
 The current Extensions SDK does not expose Live's Browser, preset search, or an
 installed-device catalog. Live Smith therefore:
 
 - Inserts a native Live device using an exact built-in name and treats Live's
-  success or rejection as authoritative.
+  success or rejection as authoritative without guessing the cause of a beta-SDK
+  failure. A repeated insertion creates another instance; it is not implicit reuse.
 - Cannot load a VST by plug-in identifier. Existing VST devices can still be
   inspected, have exposed parameters edited, and be duplicated or deleted.
 - Treats a newly inserted Drum Rack or Simpler as empty until a sample source is
-  explicitly configured.
+  explicitly configured. Filling an empty Drum Pad refuses occupied content;
+  replacing an existing sample requires the exact observed Simpler path and
+  preserves the rest of the chain.
 - Reuses only selected or observed Live sample sources; the model never receives
-  or supplies arbitrary filesystem paths.
+  or supplies arbitrary filesystem paths. Apply confirmation displays the exact
+  observed Arrangement beat or Simpler path/index used as the source.
+- Sets device parameters only by an exact observed name after case/whitespace
+  normalization; it does not guess substring matches.
+
+Session audio writes are disclosed as create-or-replace operations. If the
+source, requested Warp state, or loop settings differ, Live Smith deletes the
+existing slot Clip and recreates it with the requested settings.
 
 Example model action shape:
 
@@ -205,7 +239,13 @@ object; the label is only a recovery hint, not an identity claim.
 Each session stores user messages, assistant messages, tool calls, tool results,
 Apply requests, Apply results, and errors. Session events are the single source
 of conversation history. Only the most recent 24 user/assistant messages in the
-active session are sent as model history.
+active session are sent as model history. The most recent 12 persisted Apply
+results, rejected tool inputs, and errors are also included in a separate bounded
+recovery block so a later send can continue missing work without forgetting
+completed mutations or its last contract repair. This
+block is labelled untrusted data and is capped at 12,000 characters.
+Unfinished Apply events additionally carry the bounded digest-only replay ledger;
+raw action JSON, MIDI note payloads, and credentials are not copied into it.
 
 The directory contains:
 

@@ -25,10 +25,16 @@ export type SessionEventKind =
   | "apply_result"
   | "error";
 
+export interface SessionRecoveryLedger {
+  active: boolean;
+  completedActionDigests: string[];
+}
+
 export interface SessionEventInput {
   kind: SessionEventKind;
   content: string;
   name?: string;
+  recovery?: SessionRecoveryLedger;
 }
 
 export interface SessionEvent extends SessionEventInput {
@@ -59,6 +65,9 @@ export async function appendSessionEvent(
     createdAt: new Date().toISOString(),
     ...input,
   };
+  if (!isSessionEvent(event)) {
+    throw new TypeError("Session event input is invalid.");
+  }
 
   return withStorageTransaction(storageDirectory, async () => {
     if (!storageDirectory) {
@@ -140,12 +149,45 @@ function isSessionEvent(value: unknown): value is SessionEvent {
   }
   const record = value as Record<string, unknown>;
   return (
+    hasOnlyKeys(record, ["id", "createdAt", "kind", "content", "name", "recovery"]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
     isSessionEventKind(record.kind) &&
     typeof record.content === "string" &&
-    (record.name === undefined || typeof record.name === "string")
+    (record.name === undefined || typeof record.name === "string") &&
+    (record.recovery === undefined || (
+      record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)
+    ))
   );
+}
+
+function isSessionRecoveryLedger(value: unknown): value is SessionRecoveryLedger {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    !hasOnlyKeys(record, ["active", "completedActionDigests"]) ||
+    typeof record.active !== "boolean" ||
+    !Array.isArray(record.completedActionDigests) ||
+    record.completedActionDigests.length > 4096 ||
+    !record.completedActionDigests.every(
+      (digest) => typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
+    ) ||
+    new Set(record.completedActionDigests).size !==
+      record.completedActionDigests.length
+  ) {
+    return false;
+  }
+  return record.active || record.completedActionDigests.length === 0;
+}
+
+function hasOnlyKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(record).every((key) => allowedKeys.has(key));
 }
 
 function isSessionEventKind(value: unknown): value is SessionEventKind {

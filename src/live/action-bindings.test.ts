@@ -6,6 +6,7 @@ import { MidiTrack } from "@ableton-extensions/sdk";
 import {
   assertSameExistingPlanTargets,
   bindAgentPlanTargets,
+  liveActionIdentityKeys,
 } from "./action-bindings.js";
 
 test("existing plan targets bind by handle and reject replacement after confirmation", () => {
@@ -59,33 +60,106 @@ test("plain trackName actions are also rebound and compared by handle", () => {
   );
 });
 
-test("a creator action binds and rechecks the exact reusable track handle", () => {
-  const midiTrack = (id: string) => Object.defineProperties(
-    Object.create(MidiTrack.prototype),
-    {
-      handle: { enumerable: true, value: { id } },
-      name: { enumerable: true, value: "Lead" },
-    },
-  );
-  const original = midiTrack("track-1");
+test("a creator action never binds an existing same-name track", () => {
+  const original = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    name: { enumerable: true, value: "Lead" },
+    handle: { enumerable: true, value: { id: "track-1" } },
+  });
   const plan = {
-    message: "Reuse Lead",
+    message: "Create another Lead",
     actions: [{ type: "create_midi_track", ref: "lead", name: "Lead" }],
   } as const;
-  const before = bindAgentPlanTargets(
+  const bindings = bindAgentPlanTargets(
     { application: { song: { tracks: [original] } } } as never,
     plan as never,
   );
-  assert.equal(before.actionTracks.get(0), original);
-  assert.equal(before.tracks.get("lead"), original);
 
-  const replacement = midiTrack("track-2");
+  assert.equal(bindings.actionTracks.has(0), false);
+  assert.equal(bindings.tracks.has("lead"), false);
+});
+
+test("track creator identity is stable across aliases and post-create handles", () => {
+  const before = liveActionIdentityKeys({
+    type: "create_midi_track",
+    name: "Lead",
+    ref: "lead",
+  });
+  const created = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    name: { enumerable: true, value: "Lead" },
+    handle: { enumerable: true, value: { id: "created-track" } },
+  });
+  const after = liveActionIdentityKeys({
+    type: "create_midi_track",
+    name: "Lead",
+    ref: "replacement",
+  }, created);
+
+  assert.ok(before.some((key) => after.includes(key)));
+  assert.ok(before.some((key) => key.includes("song-or-creator")));
+});
+
+test("Scene bindings reject an indexed object replacement after confirmation", () => {
+  const original = { name: "Verse", handle: { id: "scene-1" } };
+  const plan = {
+    message: "Delete Verse",
+    actions: [{ type: "delete_scene", sceneIndex: 0, sceneName: "Verse" }],
+  } as const;
+  const before = bindAgentPlanTargets(
+    { application: { song: { tracks: [], scenes: [original] } } } as never,
+    plan as never,
+  );
+  assert.equal(before.actionObjects.get(0)?.scene, original);
+
+  const replacement = { name: "Verse", handle: { id: "scene-2" } };
   const after = bindAgentPlanTargets(
-    { application: { song: { tracks: [replacement] } } } as never,
+    { application: { song: { tracks: [], scenes: [replacement] } } } as never,
     plan as never,
   );
   assert.throws(
     () => assertSameExistingPlanTargets(before, after),
-    /ref "lead" changed/i,
+    /object bound to action 1 changed/i,
+  );
+});
+
+test("Device bindings reject an indexed object replacement after confirmation", () => {
+  const originalDevice = {
+    name: "Utility",
+    handle: { id: "device-1" },
+  };
+  const track = {
+    name: "Lead",
+    handle: { id: "track-1" },
+    devices: [originalDevice],
+  };
+  const plan = {
+    message: "Delete Utility",
+    actions: [{
+      type: "delete_device",
+      trackName: "Lead",
+      deviceName: "Utility",
+      deviceIndex: 0,
+    }],
+  } as const;
+  const before = bindAgentPlanTargets(
+    { application: { song: { tracks: [track] } } } as never,
+    plan as never,
+  );
+  assert.equal(before.actionObjects.get(0)?.deviceTarget?.device, originalDevice);
+
+  const replacementDevice = {
+    name: "Utility",
+    handle: { id: "device-2" },
+  };
+  const after = bindAgentPlanTargets(
+    {
+      application: {
+        song: { tracks: [{ ...track, devices: [replacementDevice] }] },
+      },
+    } as never,
+    plan as never,
+  );
+  assert.throws(
+    () => assertSameExistingPlanTargets(before, after),
+    /object bound to action 1 changed/i,
   );
 });

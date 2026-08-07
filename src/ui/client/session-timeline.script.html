@@ -526,9 +526,13 @@
         const eventContent = event.content || "";
         const contentLines = eventContent.split("\n");
         const collapsed = isCollapsedKind(event.kind);
+        const firstLine = contentLines[0] || "";
+        const summaryLimit = 96;
         const content = document.createElement("div");
         content.className = "timeline-content";
-        const visibleContent = collapsed && contentLines.length > 1
+        const visibleContent = collapsed &&
+            contentLines.length > 1 &&
+            firstLine.length <= summaryLimit
           ? contentLines.slice(1).join("\n")
           : eventContent;
         if (collapsed) content.textContent = visibleContent;
@@ -538,12 +542,16 @@
           const item = document.createElement("details");
           item.className = `timeline-item ${event.kind}`;
           item.dataset.eventId = event.id;
-          if (event.kind === "error") item.open = true;
+          if (
+            event.kind === "error" ||
+            isFailedApplyResult(event) ||
+            isPartialApplyResult(event) ||
+            isRejectedToolResult(event)
+          ) item.open = true;
 
           const summary = document.createElement("summary");
           summary.className = "timeline-label";
-          const firstLine = contentLines[0] || "";
-          summary.textContent = `${eventLabel(event)} — ${truncate(firstLine, 96)}`;
+          summary.textContent = `${eventLabel(event)} — ${truncate(firstLine, summaryLimit)}`;
 
           item.append(summary, content);
           return item;
@@ -569,15 +577,35 @@
         if (event.kind === "user") return "You";
         if (event.kind === "assistant") return "Live Smith";
         if (event.kind === "tool_call") return `Tool call${event.name ? ` / ${event.name}` : ""}`;
-        if (event.kind === "tool_result") return `Tool result${event.name ? ` / ${event.name}` : ""}`;
+        if (event.kind === "tool_result") {
+          const label = isRejectedToolResult(event) ? "Tool input rejected" : "Tool result";
+          return `${label}${event.name ? ` / ${event.name}` : ""}`;
+        }
         if (event.kind === "apply_requested") return "Apply request";
         if (event.kind === "apply_result") {
-          return /^Live action plan (?:partially completed|could not complete)/i.test(
-            event.content || "",
-          ) ? "Partial Apply" : "Apply Result";
+          if (isFailedApplyResult(event)) return "Apply Failed";
+          return isPartialApplyResult(event)
+            ? "Partial Apply"
+            : "Apply Result";
         }
         if (event.kind === "error") return "Error";
         return event.kind;
+      }
+
+      function isFailedApplyResult(event) {
+        return event.kind === "apply_result" &&
+          /Live action plan could not complete its first action|No actions from this plan were completed/i
+            .test(event.content || "");
+      }
+
+      function isPartialApplyResult(event) {
+        return event.kind === "apply_result" &&
+          /^Live action plan partially completed/i.test(event.content || "");
+      }
+
+      function isRejectedToolResult(event) {
+        return event.kind === "tool_result" &&
+          /^Tool call .* has invalid arguments:/i.test(event.content || "");
       }
 
       return {

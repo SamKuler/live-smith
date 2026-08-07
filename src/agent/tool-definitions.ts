@@ -5,7 +5,11 @@ export function liveSmithTools(): ModelTool[] {
   return [
     observationTool(
       "inspect_current_object",
-      "Inspect the exact Live object used to open this Session, including its current type-specific state. This does not change the Set.",
+      "Inspect the exact Live object used to open this Session, including its current type-specific state. Long collections and parameter lists are paged; follow nextOffset values until the needed item is visible. This does not change the Set.",
+      {
+        ...itemPageProperties(),
+        ...parameterPageProperties(),
+      },
     ),
     observationTool(
       "inspect_live_set",
@@ -20,11 +24,13 @@ export function liveSmithTools(): ModelTool[] {
           description:
             "Optional track name. Omit it to inspect the current target track from the Live selection.",
         },
+        ...itemPageProperties(),
+        ...parameterPageProperties(),
       },
     ),
     observationTool(
       "inspect_device",
-      "Inspect a Live device and return its exact exposed parameter names, ranges, current values, defaults, and value items. Always use this before setting a device parameter unless the exact parameter list is already in the current context.",
+      "Inspect a paged list of a Live device's exact exposed parameter names, ranges, current values, defaults, and indexed value items. Follow parameter and value-item nextOffset values until the needed target is visible.",
       {
         trackName: {
           type: "string",
@@ -41,12 +47,13 @@ export function liveSmithTools(): ModelTool[] {
           description:
             "Optional 0-based position in the track device chain. Use this when multiple devices have the same name.",
         },
+        ...parameterPageProperties(),
       },
       ["deviceName"],
     ),
     observationTool(
       "inspect_device_tree",
-      "Inspect a complete top-level or nested device tree, including Rack chains, Drum Rack receiving notes, Simpler sample names, exact device paths, and exposed parameters. Omit the locator to inspect the selected Device or all devices on the selected Track.",
+      "Inspect a paged top-level or nested device tree, including Rack chains, Drum Rack receiving notes, Simpler sample names, exact device paths, and exposed parameters. Follow nextOffset values for omitted devices, parameters, or value items.",
       {
         trackName: {
           type: "string",
@@ -57,6 +64,8 @@ export function liveSmithTools(): ModelTool[] {
           description: "Optional expected Device name for selecting one device subtree.",
         },
         devicePath: devicePathSchema(),
+        ...itemPageProperties(),
+        ...parameterPageProperties(),
       },
     ),
     observationTool(
@@ -121,7 +130,8 @@ export function liveSmithTools(): ModelTool[] {
     ),
     observationTool(
       "inspect_song_info",
-      "Inspect the song-level settings: tempo, scale, grid quantization, zero-based Scene indexes, and Cue Points. Use this before setting tempo or editing Scenes and Cue Points.",
+      "Inspect song-level settings plus a paged list of zero-based Session View Scene indexes and Arrangement Cue Points. Follow nextOffset until the target Scene or Cue Point is visible.",
+      itemPageProperties(),
     ),
     {
       type: "function",
@@ -157,6 +167,11 @@ export function liveSmithTools(): ModelTool[] {
                 additionalProperties: false,
               },
             },
+            resolvesPriorFailure: {
+              type: "boolean",
+              description:
+                "Set true only on the final successful repair Apply that resolves every missing step from the active unfinished Live operation. Omit during normal work and intermediate repair stages.",
+            },
             actions: {
               type: "array",
               minItems: 1,
@@ -170,6 +185,49 @@ export function liveSmithTools(): ModelTool[] {
       },
     },
   ];
+}
+
+function itemPageProperties(): Record<string, Record<string, unknown>> {
+  return {
+    itemOffset: {
+      type: "integer",
+      minimum: 0,
+      description: "0-based collection offset. Defaults to 0; continue with the reported nextOffset.",
+    },
+    itemLimit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "Collection items per page. The concise default depends on the inspection and is capped at 100.",
+    },
+  };
+}
+
+function parameterPageProperties(): Record<string, Record<string, unknown>> {
+  return {
+    parameterOffset: {
+      type: "integer",
+      minimum: 0,
+      description: "0-based parameter offset. Continue with the reported nextOffset.",
+    },
+    parameterLimit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "Parameters per page. Defaults depend on the inspection and are capped at 100.",
+    },
+    valueItemOffset: {
+      type: "integer",
+      minimum: 0,
+      description: "0-based value-item offset for every parameter in this page.",
+    },
+    valueItemLimit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "Indexed value items per parameter page. Defaults to 12 and is capped at 100.",
+    },
+  };
 }
 
 function devicePathSchema(): Record<string, unknown> {

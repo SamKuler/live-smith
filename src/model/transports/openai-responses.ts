@@ -204,11 +204,16 @@ function turnFromResponse(value: unknown, label: string): ModelTurn {
   const toolCalls = output.flatMap((item): ModelToolCall[] => {
     if (!isRecord(item) || item.type !== "function_call") return [];
     const id = requireUniqueToolCallId(item.call_id, toolCallIds, label);
-    if (typeof item.name !== "string") return [];
+    if (typeof item.name !== "string" || !item.name.trim()) {
+      throw new Error(`${label} returned a function_call with a missing or empty name.`);
+    }
+    if (typeof item.arguments !== "string" || !item.arguments.trim()) {
+      throw new Error(`${label} returned a function_call with invalid arguments.`);
+    }
     return [{
       id,
       name: item.name,
-      arguments: typeof item.arguments === "string" ? item.arguments : "{}",
+      arguments: item.arguments,
     }];
   });
   if (!content && !toolCalls.length) {

@@ -12,26 +12,20 @@ export function actionDiffGroups(
   actions: AgentAction[],
   targets: Record<string, AgentPlanTarget> = {},
 ): ActionDiffGroup[] {
-  const titles = [
-    "Create",
-    "Insert Devices",
-    "Set Parameters",
-    "Rack & Samples",
-    "Write MIDI",
-    "Write Audio",
-    "Clip Changes",
-    "Song",
-    "Track Changes",
-    "Delete",
-  ];
-  const rows = new Map(titles.map((title) => [title, [] as string[]]));
+  const groups: ActionDiffGroup[] = [];
   const refLabels = new Map(
     Object.entries(targets).map(([ref, target]) => [ref, target.trackName]),
   );
 
-  for (const action of actions) {
+  for (const [index, action] of actions.entries()) {
     const diff = actionDiffRow(action, refLabels);
-    rows.get(diff.title)?.push(diff.row);
+    const numberedRow = `${index + 1}. ${diff.row}`;
+    const currentGroup = groups.at(-1);
+    if (currentGroup?.title === diff.title) {
+      currentGroup.rows.push(numberedRow);
+    } else {
+      groups.push({ title: diff.title, rows: [numberedRow] });
+    }
     if (
       (action.type === "create_midi_track" || action.type === "create_audio_track") &&
       action.ref
@@ -46,10 +40,7 @@ export function actionDiffGroups(
     }
   }
 
-  return titles.flatMap((title) => {
-    const groupRows = rows.get(title) ?? [];
-    return groupRows.length ? [{ title, rows: groupRows }] : [];
-  });
+  return groups;
 }
 
 function actionDiffRow(
@@ -64,12 +55,12 @@ function actionDiffRow(
     case "create_scene":
       return {
         title: "Create",
-        row: `+ Scene "${action.name ?? "Scene"}"${action.index !== undefined ? ` at index ${action.index}` : ""}`,
+        row: `+ Session View Scene "${action.name ?? "Scene"}"${action.index !== undefined ? ` at index ${action.index}` : ""}`,
       };
     case "create_cue_point":
       return {
         title: "Create",
-        row: `+ Cue Point "${action.name ?? "Cue Point"}" at beat ${action.timeBeat}`,
+        row: `+ Arrangement Cue Point "${action.name ?? "Cue Point"}" at beat ${action.timeBeat}`,
       };
     case "create_take_lane":
       return {
@@ -104,7 +95,9 @@ function actionDiffRow(
     case "configure_drum_pad":
       return {
         title: "Rack & Samples",
-        row: `~ Drum Rack ${action.rackName} pad ${action.receivingNote} on ${trackLabel(action, refLabels)} from ${sourceLabel(action.source)}`,
+        row: action.mode === "fill_empty_pad"
+          ? `+ Fill empty Drum Rack ${action.rackName} pad ${action.receivingNote} on ${trackLabel(action, refLabels)} from ${sourceLabel(action.source)}`
+          : `~ Replace sample in Simpler ${pathLabel(action.simplerPath!)} on Drum Rack ${action.rackName} pad ${action.receivingNote} on ${trackLabel(action, refLabels)} from ${sourceLabel(action.source)}`,
       };
     case "create_midi_clip":
       return {
@@ -124,12 +117,12 @@ function actionDiffRow(
     case "create_arrangement_audio_clip":
       return {
         title: "Write Audio",
-        row: `+ Arrangement audio clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat}${action.durationBeats ? ` (${action.durationBeats} beats)` : " (natural duration)"} from ${sourceLabel(action.source)}`,
+        row: `+ Arrangement audio clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat}${action.durationBeats ? ` (${action.durationBeats} beats)` : " (natural duration)"} from ${sourceLabel(action.source)}${audioSettingsLabel(action)}`,
       };
     case "create_session_audio_clip":
       return {
         title: "Write Audio",
-        row: `± Create or replace Session audio clip "${action.name ?? "Untitled"}" in slot ${action.slotIndex} on ${trackLabel(action, refLabels)} from ${sourceLabel(action.source)}`,
+        row: `± Create or replace Session audio clip "${action.name ?? "Untitled"}" in slot ${action.slotIndex} on ${trackLabel(action, refLabels)} from ${sourceLabel(action.source)}${audioSettingsLabel(action)}; different source/Warp/loop deletes and recreates the slot Clip`,
       };
     case "set_clip_properties":
       return {
@@ -144,11 +137,11 @@ function actionDiffRow(
     case "set_tempo":
       return { title: "Song", row: `~ Tempo = ${action.tempo} BPM` };
     case "rename_scene":
-      return { title: "Song", row: `~ Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""} → "${action.newName}"` };
+      return { title: "Song", row: `~ Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""} → "${action.newName}"` };
     case "duplicate_scene":
-      return { title: "Song", row: `+ Duplicate Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}` };
+      return { title: "Song", row: `+ Duplicate Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}` };
     case "rename_cue_point":
-      return { title: "Song", row: `~ Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat} → "${action.newName}"` };
+      return { title: "Song", row: `~ Arrangement Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat} → "${action.newName}"` };
     case "rename_track":
       return { title: "Track Changes", row: `~ ${trackLabel(action, refLabels)} → "${action.newName}"` };
     case "duplicate_track":
@@ -191,12 +184,12 @@ function actionDiffRow(
     case "delete_scene":
       return {
         title: "Delete",
-        row: `- Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}`,
+        row: `- Session View Scene ${action.sceneIndex}${action.sceneName ? ` "${action.sceneName}"` : ""}`,
       };
     case "delete_cue_point":
       return {
         title: "Delete",
-        row: `- Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}`,
+        row: `- Arrangement Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}`,
       };
     default:
       return assertNever(action);
@@ -212,12 +205,24 @@ function sourceLabel(source: import("../agent/action-schema.js").SampleSource): 
     case "selected":
       return "selected Live object";
     case "arrangement_audio_clip":
-      return `arrangement clip ${source.clipName ?? `at beat ${source.startBeat}`} on ${source.trackName}`;
+      return `arrangement clip${source.clipName ? ` "${source.clipName}"` : ""} at beat ${source.startBeat} on ${source.trackName}`;
     case "session_audio_clip":
-      return `Session slot ${source.slotIndex} on ${source.trackName}`;
+      return `Session clip${source.clipName ? ` "${source.clipName}"` : ""} in slot ${source.slotIndex} on ${source.trackName}`;
     case "simpler":
-      return `Simpler ${source.deviceName} on ${source.trackName}`;
+      return `Simpler ${source.deviceName}${source.devicePath ? ` ${pathLabel(source.devicePath)}` : source.deviceIndex === undefined ? "" : ` at deviceIndex ${source.deviceIndex}`} on ${source.trackName}`;
   }
+}
+
+function audioSettingsLabel(action: {
+  isWarped?: boolean;
+  loopSettings?: import("../agent/action-schema.js").ClipLoopSettingsInput;
+}): string {
+  return [
+    action.isWarped === undefined ? "" : ` warped=${action.isWarped}`,
+    action.loopSettings
+      ? ` loop=${action.loopSettings.loopStart}-${action.loopSettings.loopEnd} markers=${action.loopSettings.startMarker}-${action.loopSettings.endMarker} looping=${action.loopSettings.looping}`
+      : "",
+  ].join("");
 }
 
 function clipLocation(action: {

@@ -269,6 +269,62 @@ test("nested device and Rack snapshots bind structural handles", async () => {
   assert.ok(rack instanceof RackDevice);
 });
 
+test("Drum Pad replacement snapshot detects an existing Simpler sample change", async () => {
+  const oldSample = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: 401n },
+    filePath: "/private/samples/old.wav",
+  });
+  const newSample = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: 402n },
+    filePath: "/private/samples/new.wav",
+  });
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: 403n },
+    filePath: "/private/samples/replacement.wav",
+  });
+  const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
+    handle: { id: 404n },
+    name: "Simpler",
+    parameters: [],
+    sample: oldSample,
+  });
+  const chain = sdkObject<DrumChain<"1.0.0">>(DrumChain.prototype, {
+    handle: { id: 405n },
+    receivingNote: 36,
+    devices: [simpler],
+  });
+  const rack = sdkObject<DrumRack<"1.0.0">>(DrumRack.prototype, {
+    handle: { id: 406n },
+    name: "Drum Rack",
+    parameters: [],
+    chains: [chain],
+  });
+  const track = midiTrack(11n, [], [rack]);
+  const action = {
+    type: "configure_drum_pad" as const,
+    trackName: "Bass",
+    rackName: "Drum Rack",
+    rackPath: { deviceIndex: 0 },
+    receivingNote: 36,
+    mode: "replace_existing_simpler" as const,
+    simplerPath: {
+      deviceIndex: 0,
+      nested: [{ chainIndex: 0, deviceIndex: 0 }],
+    },
+    source: { kind: "selected" as const },
+  };
+
+  const before = await captureLiveActionPreflightSnapshot(
+    liveContext(track), action, { object: source },
+  );
+  Reflect.set(simpler, "sample", newSample);
+  const after = await captureLiveActionPreflightSnapshot(
+    liveContext(track), action, { object: source },
+  );
+
+  assert.notEqual(after, before);
+});
+
 test("Simpler sample and mixer snapshots include source, target, range, and current value", async () => {
   const sourceClip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
     handle: { id: 501n },
@@ -334,6 +390,27 @@ test("Simpler sample and mixer snapshots include source, target, range, and curr
     },
     {},
   );
+  const newTargetSample = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: 403n },
+    filePath: "/private/samples/new-target.wav",
+  });
+  Reflect.set(simpler, "sample", newTargetSample);
+  const targetSampleAfter = await captureLiveActionPreflightSnapshot(
+    context,
+    {
+      type: "replace_simpler_sample",
+      trackName: "Bass",
+      simplerName: "Simpler",
+      simplerPath: { deviceIndex: 0 },
+      source: {
+        kind: "arrangement_audio_clip",
+        trackName: "Samples",
+        clipName: "Kick",
+        startBeat: 0,
+      },
+    },
+    {},
+  );
   sourceClip.handle.id = 502n;
   const sampleAfter = await captureLiveActionPreflightSnapshot(
     context,
@@ -373,7 +450,9 @@ test("Simpler sample and mixer snapshots include source, target, range, and curr
     {},
   );
 
+  assert.notEqual(targetSampleAfter, sampleBefore);
   assert.notEqual(sampleAfter, sampleBefore);
+  assert.notEqual(sampleAfter, targetSampleAfter);
   assert.notEqual(mixerAfter, mixerBefore);
 });
 
@@ -604,7 +683,7 @@ test("preflight snapshots fail closed when a target handle identity is unavailab
   );
 });
 
-test("a creator ref rejects ambiguous reusable track names before confirmation", async () => {
+test("a creator ref remains literal when same-name tracks already exist", async () => {
   const first = midiTrack(11n, []);
   const second = midiTrack(12n, []);
   const context = {
@@ -617,14 +696,12 @@ test("a creator ref rejects ambiguous reusable track names before confirmation",
     },
   } as never;
 
-  await assert.rejects(
-    captureLiveActionPreflightSnapshot(
-      context,
-      { type: "create_midi_track", ref: "bass", name: "Bass" },
-      {},
-    ),
-    /ref "bass" is ambiguous.*2 MIDI tracks/i,
+  const snapshot = await captureLiveActionPreflightSnapshot(
+    context,
+    { type: "create_midi_track", ref: "bass", name: "Bass" },
+    {},
   );
+  assert.match(snapshot, /create_midi_track/);
 });
 
 function liveContext(track: MidiTrack<"1.0.0">) {

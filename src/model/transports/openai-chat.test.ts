@@ -251,6 +251,172 @@ test("OpenAI Chat rejects missing, empty, and duplicate tool-call IDs in both re
   }
 });
 
+test("OpenAI Chat rejects malformed declared calls even when text is present", async () => {
+  const malformedFunctions = [
+    { arguments: "{}" },
+    { name: "   ", arguments: "{}" },
+    { name: "inspect", arguments: {} },
+  ];
+  for (const streaming of [false, true]) {
+    for (const [index, fn] of malformedFunctions.entries()) {
+      const toolCall = {
+        ...(streaming ? { index: 0 } : {}),
+        id: `malformed-call-${index}`,
+        type: "function",
+        function: fn,
+      };
+      const payload = streaming
+        ? `data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "tool_calls",
+              delta: {
+                role: "assistant",
+                content: "I finished the task.",
+                tool_calls: [toolCall],
+              },
+            }],
+          })}\n\ndata: [DONE]\n\n`
+        : JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "tool_calls",
+              message: {
+                role: "assistant",
+                content: "I finished the task.",
+                tool_calls: [toolCall],
+              },
+            }],
+          });
+      const transport = createOpenAIChatTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+      await assert.rejects(
+        transport.createToolTurn(req),
+        /tool call.*(?:name|arguments)/i,
+      );
+    }
+  }
+});
+
+test("OpenAI Chat rejects malformed tool_calls containers even when text is present", async () => {
+  for (const streaming of [false, true]) {
+    const payload = streaming
+      ? `data: ${JSON.stringify({
+          choices: [{
+            index: 0,
+            finish_reason: "tool_calls",
+            delta: {
+              role: "assistant",
+              content: "I finished the task.",
+              tool_calls: { invalid: true },
+            },
+          }],
+        })}\n\ndata: [DONE]\n\n`
+      : JSON.stringify({
+          choices: [{
+            index: 0,
+            finish_reason: "tool_calls",
+            message: {
+              role: "assistant",
+              content: "I finished the task.",
+              tool_calls: { invalid: true },
+            },
+          }],
+        });
+    const transport = createOpenAIChatTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: {
+          "Content-Type": streaming ? "text/event-stream" : "application/json",
+        },
+      }),
+    });
+    const req = request(profile());
+    if (streaming) req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /tool_calls.*invalid format/i,
+    );
+  }
+});
+
+test("OpenAI Chat requires tool calls to match their terminal reason and type", async () => {
+  const cases = [
+    {
+      finishReason: "tool_calls",
+      toolCalls: undefined,
+      error: /tool_calls without a tool call/i,
+    },
+    {
+      finishReason: "stop",
+      toolCalls: [{
+        id: "call-with-stop",
+        type: "function",
+        function: { name: "inspect", arguments: "{}" },
+      }],
+      error: /tool calls with finish_reason stop/i,
+    },
+    {
+      finishReason: "tool_calls",
+      toolCalls: [{
+        id: "call-custom-type",
+        type: "custom",
+        function: { name: "inspect", arguments: "{}" },
+      }],
+      error: /tool call with invalid type/i,
+    },
+  ];
+
+  for (const streaming of [false, true]) {
+    for (const item of cases) {
+      const toolCalls = item.toolCalls?.map((call, index) =>
+        streaming ? { index, ...call } : call
+      );
+      const message = {
+        role: "assistant",
+        content: "I finished the task.",
+        ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+      };
+      const payload = streaming
+        ? `data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: item.finishReason,
+              delta: message,
+            }],
+          })}\n\ndata: [DONE]\n\n`
+        : JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: item.finishReason,
+              message,
+            }],
+          });
+      const transport = createOpenAIChatTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+
+      await assert.rejects(transport.createToolTurn(req), item.error);
+    }
+  }
+});
+
 test("OpenAI Chat streaming emits text and assembles fragmented tool calls", async () => {
   const deltas: string[] = [];
   const chunks = [

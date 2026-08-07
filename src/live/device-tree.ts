@@ -44,6 +44,13 @@ export function resolveDeviceTarget(
     return resolved;
   }
 
+  if (legacyDeviceIndex !== undefined) {
+    const pathAtIndex = { deviceIndex: legacyDeviceIndex };
+    const resolved = resolveDevicePath(track, pathAtIndex);
+    assertExpectedDeviceName(resolved.device, expectedName, `deviceIndex ${legacyDeviceIndex}`);
+    return resolved;
+  }
+
   if (target.object instanceof Device) {
     const selectedPath = findDevicePath(track, target.object);
     if (!selectedPath) {
@@ -53,13 +60,6 @@ export function resolveDeviceTarget(
     }
     const resolved = resolveDevicePath(track, selectedPath);
     assertExpectedDeviceName(resolved.device, expectedName, "the selected device");
-    return resolved;
-  }
-
-  if (legacyDeviceIndex !== undefined) {
-    const pathAtIndex = { deviceIndex: legacyDeviceIndex };
-    const resolved = resolveDevicePath(track, pathAtIndex);
-    assertExpectedDeviceName(resolved.device, expectedName, `deviceIndex ${legacyDeviceIndex}`);
     return resolved;
   }
 

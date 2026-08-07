@@ -89,25 +89,45 @@ const actionDescriptors = {
   rename_scene: defineAction(
     "rename_scene",
     {
-      sceneIndex: requiredIntegerInRange(0, 4095),
-      sceneName: optionalString(),
-      newName: requiredString("New Scene name."),
+      sceneIndex: requiredIntegerInRange(
+        0,
+        4095,
+        "0-based Session View Scene index. This identifies the target Scene.",
+      ),
+      sceneName: optionalString(
+        "Optional exact current Session View Scene name used only as a stale-state guard. Omit it unless observed; never send an empty value or put the desired new name here.",
+      ),
+      newName: requiredString(
+        "Required desired new Session View Scene name.",
+      ),
     },
-    { type: "rename_scene", sceneIndex: 0, sceneName: "Intro", newName: "Verse" },
+    { type: "rename_scene", sceneIndex: 0, newName: "Verse" },
   ),
   duplicate_scene: defineAction(
     "duplicate_scene",
     {
-      sceneIndex: requiredIntegerInRange(0, 4095),
-      sceneName: optionalString(),
+      sceneIndex: requiredIntegerInRange(
+        0,
+        4095,
+        "0-based Session View Scene index. This identifies the target Scene.",
+      ),
+      sceneName: optionalString(
+        "Optional exact current Session View Scene name used only as a stale-state guard. Omit it unless observed.",
+      ),
     },
-    { type: "duplicate_scene", sceneIndex: 0, sceneName: "Verse" },
+    { type: "duplicate_scene", sceneIndex: 0 },
   ),
   delete_scene: defineAction(
     "delete_scene",
     {
-      sceneIndex: requiredIntegerInRange(0, 4095),
-      sceneName: optionalString(),
+      sceneIndex: requiredIntegerInRange(
+        0,
+        4095,
+        "0-based Session View Scene index. This identifies the target Scene.",
+      ),
+      sceneName: optionalString(
+        "Optional exact current Session View Scene name used only as a stale-state guard. Omit it unless observed.",
+      ),
     },
     { type: "delete_scene", sceneIndex: 0, sceneName: "Draft" },
   ),
@@ -203,7 +223,6 @@ const actionDescriptors = {
       type: "insert_device",
       trackName: "Lead",
       deviceName: "Auto Filter",
-      index: 0,
     },
   ),
   insert_chain_device: defineAction(
@@ -224,7 +243,6 @@ const actionDescriptors = {
       rackPath: { deviceIndex: 0 },
       chainIndex: 0,
       deviceName: "Simpler",
-      index: 0,
     },
   ),
   set_device_parameter: defineAction(
@@ -309,6 +327,11 @@ const actionDescriptors = {
       rackName: requiredString("Exact Drum Rack name from inspect_device_tree."),
       rackPath: optionalDevicePath(),
       receivingNote: requiredIntegerInRange(0, 127),
+      mode: requiredEnum([
+        "fill_empty_pad",
+        "replace_existing_simpler",
+      ] as const),
+      simplerPath: optionalDevicePath(),
       source: requiredSampleSource(),
     },
     {
@@ -317,6 +340,7 @@ const actionDescriptors = {
       rackName: "Drum Rack",
       rackPath: { deviceIndex: 0 },
       receivingNote: 36,
+      mode: "fill_empty_pad",
       source: { kind: "selected" },
     },
   ),
@@ -545,7 +569,15 @@ export function parseAgentAction(action: unknown): AgentAction {
   if (!descriptor) {
     throw new Error(`Unsupported action type: ${action.type}`);
   }
-  return descriptor.parse(action) as AgentAction;
+  try {
+    return descriptor.parse(action) as AgentAction;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message} Valid ${descriptor.type} example: ${JSON.stringify(descriptor.example)}.`,
+      { cause: error },
+    );
+  }
 }
 
 export function agentActionJsonSchemas(): JsonSchema[] {
@@ -556,6 +588,13 @@ export function agentActionPromptExamples(): string[] {
   return Object.values(actionDescriptors).map(
     (descriptor) => `- ${descriptor.type}: ${JSON.stringify(descriptor.example)}`,
   );
+}
+
+export function agentActionExample(actionType: string): string | undefined {
+  const descriptor = actionDescriptors[
+    actionType as keyof typeof actionDescriptors
+  ] as ActionDescriptor<string, ActionFields> | undefined;
+  return descriptor ? JSON.stringify(descriptor.example) : undefined;
 }
 
 function defineAction<Type extends string, Fields extends ActionFields>(
@@ -651,10 +690,16 @@ function optionalRef(): ActionField<string, false> {
   );
 }
 
-function optionalString(): ActionField<string, false> {
-  return optionalField({ type: "string", minLength: 1 }, (value, key) => {
+function optionalString(description?: string): ActionField<string, false> {
+  return optionalField({
+    type: "string",
+    minLength: 1,
+    ...(description ? { description } : {}),
+  }, (value, key) => {
     if (typeof value !== "string" || !value.trim()) {
-      throw new Error(`${key} must be a non-empty string when provided.`);
+      throw new Error(
+        `${key} must be a non-empty string when provided; omit the field instead of sending an empty string.`,
+      );
     }
     return value.trim();
   });
@@ -1003,7 +1048,7 @@ function requiredNotes(minimumItems: number): ActionField<NoteDescription[], tru
     pitch: requiredIntegerInRange(0, 127),
     startTime: requiredNumber(),
     duration: requiredPositiveNumber(),
-    velocity: optionalIntegerWithDefault(1, 127, 100),
+    velocity: requiredIntegerInRange(1, 127),
     muted: optionalBoolean(),
     probability: optionalNumber(),
     velocityDeviation: optionalNumber(),
@@ -1039,27 +1084,17 @@ function requiredNotes(minimumItems: number): ActionField<NoteDescription[], tru
 function requiredIntegerInRange(
   minimum: number,
   maximum: number,
+  description?: string,
 ): ActionField<number, true> {
   return requiredField(
-    { type: "integer", minimum, maximum },
+    {
+      type: "integer",
+      minimum,
+      maximum,
+      ...(description ? { description } : {}),
+    },
     (value, key) => integerInRange(value, key, minimum, maximum),
   );
-}
-
-function optionalIntegerWithDefault(
-  minimum: number,
-  maximum: number,
-  defaultValue: number,
-): ActionField<number, false> {
-  return {
-    required: false,
-    schema: { type: "integer", minimum, maximum },
-    parse(value, key) {
-      return value === undefined
-        ? defaultValue
-        : integerInRange(value, key, minimum, maximum);
-    },
-  };
 }
 
 function optionalBoolean(): ActionField<boolean, false> {

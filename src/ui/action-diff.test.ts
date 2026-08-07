@@ -3,6 +3,28 @@ import test from "node:test";
 
 import { actionDiffGroups } from "./action-diff.js";
 
+test("actionDiffGroups preserves authored order and original action numbers", () => {
+  const groups = actionDiffGroups([
+    { type: "delete_track", trackName: "Scratch" },
+    { type: "create_midi_track", name: "Replacement" },
+    { type: "set_tempo", tempo: 132 },
+    { type: "delete_scene", sceneIndex: 7, sceneName: "Draft" },
+  ]);
+
+  assert.deepEqual(
+    groups.map((group) => ({ title: group.title, rows: group.rows })),
+    [
+      { title: "Delete", rows: ['1. - track "Scratch"'] },
+      { title: "Create", rows: ['2. + MIDI track "Replacement"'] },
+      { title: "Song", rows: ["3. ~ Tempo = 132 BPM"] },
+      {
+        title: "Delete",
+        rows: ['4. - Session View Scene 7 "Draft"'],
+      },
+    ],
+  );
+});
+
 test("actionDiffGroups includes every supported mutating action", () => {
   const groups = actionDiffGroups([
     { type: "create_midi_track", name: "Future Bass" },
@@ -66,8 +88,8 @@ test("actionDiffGroups includes every supported mutating action", () => {
     /replace.*Full arrangement.*relative beats 16-32.*1 notes/i,
   );
   assert.deepEqual(groups.at(-1)?.rows, [
-    '- Arrangement clip "Draft" on track "Bass" at beat 16',
-    '- track "Scratch"',
+    '11. - Arrangement clip "Draft" on track "Bass" at beat 16',
+    '12. - track "Scratch"',
   ]);
 });
 
@@ -116,6 +138,7 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
       rackName: "Drum Rack",
       rackPath: { deviceIndex: 0 },
       receivingNote: 36,
+      mode: "fill_empty_pad",
       source: { kind: "selected" },
     },
     {
@@ -140,7 +163,7 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
   );
   assert.match(
     groups.find((group) => group.title === "Rack & Samples")?.rows[0] ?? "",
-    /pad 36.*selected Live object/i,
+    /fill empty.*pad 36.*selected Live object/i,
   );
   assert.match(
     groups.find((group) => group.title === "Set Parameters")?.rows[0] ?? "",
@@ -175,6 +198,21 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
       name: "Vocal",
     },
     {
+      type: "create_session_audio_clip",
+      trackName: "Audio",
+      source: { kind: "selected" },
+      slotIndex: 2,
+      name: "Warped Loop",
+      isWarped: true,
+      loopSettings: {
+        looping: true,
+        startMarker: 0,
+        endMarker: 8,
+        loopStart: 2,
+        loopEnd: 6,
+      },
+    },
+    {
       type: "set_audio_clip_warp",
       trackName: "Audio",
       startBeat: 16,
@@ -205,6 +243,10 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
     /Vocal.*beat 16.*8 beats.*selected/i,
   );
   assert.match(
+    groups.find((group) => group.title === "Write Audio")?.rows[1] ?? "",
+    /create or replace.*Warped Loop.*slot 2.*warped=true.*loop=2-6.*deletes and recreates/i,
+  );
+  assert.match(
     groups.find((group) => group.title === "Clip Changes")?.rows[0] ?? "",
     /warping=true.*complex_pro/i,
   );
@@ -218,7 +260,45 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
   );
 });
 
-test("actionDiffGroups discloses Scene, Cue Point, and Take Lane mutations", () => {
+test("actionDiffGroups shows exact arrangement and Simpler sample-source locators", () => {
+  const groups = actionDiffGroups([
+    {
+      type: "replace_simpler_sample",
+      trackName: "Drums",
+      simplerName: "Target Simpler",
+      simplerPath: { deviceIndex: 0 },
+      source: {
+        kind: "arrangement_audio_clip",
+        trackName: "Audio",
+        clipName: "Kick Source",
+        startBeat: 64,
+      },
+    },
+    {
+      type: "configure_drum_pad",
+      trackName: "Drums",
+      rackName: "Drum Rack",
+      rackPath: { deviceIndex: 1 },
+      receivingNote: 36,
+      mode: "fill_empty_pad",
+      source: {
+        kind: "simpler",
+        trackName: "Sources",
+        deviceName: "Source Simpler",
+        devicePath: {
+          deviceIndex: 2,
+          nested: [{ chainIndex: 0, deviceIndex: 1 }],
+        },
+      },
+    },
+  ]);
+
+  const rows = groups.find((group) => group.title === "Rack & Samples")?.rows ?? [];
+  assert.match(rows[0] ?? "", /Kick Source.*beat 64.*Audio/i);
+  assert.match(rows[1] ?? "", /Source Simpler.*deviceIndex.*2.*chainIndex.*0/i);
+});
+
+test("actionDiffGroups distinguishes Session View Scenes from Arrangement Cue Points", () => {
   const groups = actionDiffGroups([
     { type: "rename_scene", sceneIndex: 0, sceneName: "Intro", newName: "Verse" },
     { type: "duplicate_scene", sceneIndex: 0 },
@@ -236,17 +316,24 @@ test("actionDiffGroups discloses Scene, Cue Point, and Take Lane mutations", () 
     { type: "delete_cue_point", timeBeat: 32, cueName: "Old Drop" },
   ]);
 
-  assert.equal(groups.find((group) => group.title === "Create")?.rows.length, 2);
+  const rowsFor = (title: string) => groups
+    .filter((group) => group.title === title)
+    .flatMap((group) => group.rows);
+  assert.equal(rowsFor("Create").length, 2);
   assert.match(
-    groups.find((group) => group.title === "Song")?.rows.join("\n") ?? "",
-    /Scene 0.*Verse.*Duplicate Scene.*Cue Point.*Drop 1/is,
+    rowsFor("Create").join("\n"),
+    /Arrangement Cue Point.*Drop/i,
   );
   assert.match(
-    groups.find((group) => group.title === "Track Changes")?.rows[0] ?? "",
+    rowsFor("Song").join("\n"),
+    /Session View Scene 0.*Verse.*Duplicate Session View Scene.*Arrangement Cue Point.*Drop 1/is,
+  );
+  assert.match(
+    rowsFor("Track Changes")[0] ?? "",
     /Take Lane 0.*Vocals.*Main Take/i,
   );
   assert.match(
-    groups.find((group) => group.title === "Delete")?.rows.join("\n") ?? "",
-    /Scene 1.*Draft.*Cue Point.*Old Drop/is,
+    rowsFor("Delete").join("\n"),
+    /Session View Scene 1.*Draft.*Arrangement Cue Point.*Old Drop/is,
   );
 });

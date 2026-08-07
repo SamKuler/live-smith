@@ -363,6 +363,40 @@ test("OpenAI Responses rejects missing, empty, and duplicate call IDs in both re
   }
 });
 
+test("OpenAI Responses rejects malformed declared calls even when text is present", async () => {
+  const malformedCalls = [
+    { call_id: "call-missing-name", arguments: "{}" },
+    { call_id: "call-empty-name", name: "   ", arguments: "{}" },
+    { call_id: "call-bad-arguments", name: "inspect", arguments: {} },
+  ];
+  for (const streaming of [false, true]) {
+    for (const malformed of malformedCalls) {
+      const response = {
+        status: "completed",
+        output_text: "I finished the task.",
+        output: [{ type: "function_call", status: "completed", ...malformed }],
+      };
+      const payload = streaming
+        ? `data: ${JSON.stringify({ type: "response.completed", response })}\n\ndata: [DONE]\n\n`
+        : JSON.stringify(response);
+      const transport = createOpenAIResponsesTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+      await assert.rejects(
+        transport.createToolTurn(req),
+        /function_call.*(?:name|arguments)/i,
+      );
+    }
+  }
+});
+
 test("OpenAI Responses rejects streaming incomplete tool calls", async () => {
   const responses = [
     {

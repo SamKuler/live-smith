@@ -56,10 +56,12 @@ test("apply_live_actions exposes every validated action schema", () => {
     properties?: {
       actions?: { items?: { anyOf?: unknown[] } };
       targets?: { additionalProperties?: unknown };
+      resolvesPriorFailure?: { type?: unknown };
     };
   };
   assert.equal(parameters.properties?.actions?.items?.anyOf?.length, actionTypes.length);
   assert.ok(parameters.properties?.targets?.additionalProperties);
+  assert.equal(parameters.properties?.resolvesPriorFailure?.type, "boolean");
 });
 
 test("Live tools expose object-aware inspection without raw filesystem inputs", () => {
@@ -78,4 +80,22 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
 
   const serialized = JSON.stringify([...tools.values()]);
   assert.doesNotMatch(serialized, /filePath|absolute path/i);
+
+  const inspectDevice = tools.get("inspect_device")?.parameters as {
+    properties?: Record<string, unknown>;
+  };
+  assert.ok(inspectDevice.properties?.parameterOffset);
+  assert.ok(inspectDevice.properties?.valueItemOffset);
+
+  const inspectTree = tools.get("inspect_device_tree")?.parameters as {
+    properties?: Record<string, unknown>;
+  };
+  assert.ok(inspectTree.properties?.itemOffset);
+  assert.ok(inspectTree.properties?.parameterLimit);
+
+  const inspectSong = tools.get("inspect_song_info")?.parameters as {
+    properties?: Record<string, unknown>;
+  };
+  assert.ok(inspectSong.properties?.itemOffset);
+  assert.ok(inspectSong.properties?.itemLimit);
 });

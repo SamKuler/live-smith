@@ -38,6 +38,18 @@ test("validateAgentPlan rejects unsafe or malformed note data", () => {
         }),
     /pitch/,
   );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Velocity must be intentional",
+      actions: [{
+        type: "create_midi_clip",
+        startBeat: 0,
+        durationBeats: 4,
+        notes: [{ pitch: 60, startTime: 0, duration: 1 }],
+      }],
+    }),
+    /velocity/i,
+  );
 });
 
 test("summarizeActionPlan makes a confirmation-friendly summary", () => {
@@ -88,6 +100,22 @@ test("validateAgentPlan rejects malformed booleans instead of coercing them", ()
         ],
       }),
     /boolean mute/,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Finish the repair",
+      resolvesPriorFailure: "yes",
+      actions: [{ type: "set_tempo", tempo: 128 }],
+    }),
+    /resolvesPriorFailure must be a boolean/i,
+  );
+  assert.equal(
+    validateAgentPlan({
+      message: "Finish the repair",
+      resolvesPriorFailure: true,
+      actions: [{ type: "set_tempo", tempo: 128 }],
+    }).resolvesPriorFailure,
+    true,
   );
 });
 
@@ -259,8 +287,8 @@ test("MIDI actions reject oversized and out-of-bound note payloads", () => {
     /at most 4096 notes/i,
   );
   for (const note of [
-    { pitch: 36, startTime: -0.25, duration: 1 },
-    { pitch: 36, startTime: 3.5, duration: 1 },
+    { pitch: 36, startTime: -0.25, duration: 1, velocity: 100 },
+    { pitch: 36, startTime: 3.5, duration: 1, velocity: 100 },
   ]) {
     assert.throws(
       () => validateAgentPlan({
@@ -289,8 +317,8 @@ test("replace_midi_clip_segment validates relative timing and always confirms", 
       segmentStartTime: 64,
       segmentDurationBeats: 64,
       notes: [
-        { pitch: 36, startTime: 64, duration: 1 },
-        { pitch: 38, startTime: 127, duration: 1 },
+        { pitch: 36, startTime: 64, duration: 1, velocity: 100 },
+        { pitch: 38, startTime: 127, duration: 1, velocity: 100 },
       ],
     }],
   });
@@ -309,7 +337,7 @@ test("replace_midi_clip_segment validates relative timing and always confirms", 
         startBeat: 0,
         segmentStartTime: 64,
         segmentDurationBeats: 64,
-        notes: [{ pitch: 36, startTime: 63.5, duration: 1 }],
+        notes: [{ pitch: 36, startTime: 63.5, duration: 1, velocity: 100 }],
       }],
     }),
     /inside.*segment|segment.*bounds/i,
@@ -391,6 +419,39 @@ test("the model prompt teaches exact object, Rack, sample, Clip, and VST boundar
   assert.match(prompt, /Existing VST devices.*parameters edited.*duplicated or deleted/i);
   assert.match(prompt, /staged workflow and a single complete confirmed plan.*both supported/i);
   assert.match(prompt, /Never request, infer, or emit a filesystem path/i);
+  assert.match(prompt, /Scenes are Session View rows.*Cue Points.*Arrangement/i);
+  assert.match(prompt, /rename_scene.*sceneIndex.*newName.*sceneName.*omit/i);
+  assert.match(
+    prompt,
+    /rename_scene: \{"type":"rename_scene","sceneIndex":0,"newName":"Verse"\}/i,
+  );
+});
+
+test("invalid actions identify their position and type for model repair", () => {
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Name Session scenes",
+      actions: [
+        { type: "set_tempo", tempo: 150 },
+        { type: "rename_scene", sceneIndex: 0, sceneName: "Intro" },
+      ],
+    }),
+    /Action 2 \(rename_scene\).*newName.*Valid rename_scene example.*"newName":"Verse"/i,
+  );
+});
+
+test("post-schema action validation keeps the same repair context", () => {
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Edit a Session Clip",
+      actions: [{
+        type: "set_clip_properties",
+        trackName: "Lead",
+        slotIndex: 0,
+      }],
+    }),
+    /Action 1 \(set_clip_properties\).*at least one property change.*Valid set_clip_properties example/i,
+  );
 });
 
 test("create_midi_clip summaries disclose create-or-replace behavior", () => {
@@ -597,6 +658,7 @@ test("device actions accept nested paths and safe observed sample sources", () =
         rackName: "Drum Rack",
         rackPath: { deviceIndex: 0 },
         receivingNote: 36,
+        mode: "fill_empty_pad",
         source: {
           kind: "arrangement_audio_clip",
           trackName: "Samples",
@@ -620,6 +682,67 @@ test("device actions accept nested paths and safe observed sample sources", () =
 
   assert.equal(plan.actions[0]?.type, "configure_drum_pad");
   assert.match(summarizeActionPlan(plan), /MIDI note 36/i);
+});
+
+test("Drum Pad configuration makes replacement policy explicit", () => {
+  const fill = validateAgentPlan({
+    message: "Fill an empty kick pad",
+    actions: [{
+      type: "configure_drum_pad",
+      trackName: "Drums",
+      rackName: "Drum Rack",
+      rackPath: { deviceIndex: 0 },
+      receivingNote: 36,
+      mode: "fill_empty_pad",
+      source: { kind: "selected" },
+    }],
+  });
+  assert.equal(requiresExplicitConfirmation(fill), false);
+  assert.match(summarizeActionPlan(fill), /fill empty.*MIDI note 36/i);
+
+  const replace = validateAgentPlan({
+    message: "Replace the kick sample",
+    actions: [{
+      type: "configure_drum_pad",
+      trackName: "Drums",
+      rackName: "Drum Rack",
+      rackPath: { deviceIndex: 0 },
+      receivingNote: 36,
+      mode: "replace_existing_simpler",
+      simplerPath: {
+        deviceIndex: 0,
+        nested: [{ chainIndex: 0, deviceIndex: 0 }],
+      },
+      source: { kind: "selected" },
+    }],
+  });
+  assert.equal(requiresExplicitConfirmation(replace), true);
+  assert.match(summarizeActionPlan(replace), /replace.*Simpler.*devicePath/i);
+
+  assert.throws(() => validateAgentPlan({
+    message: "Ambiguous replacement",
+    actions: [{
+      type: "configure_drum_pad",
+      trackName: "Drums",
+      rackName: "Drum Rack",
+      receivingNote: 36,
+      mode: "replace_existing_simpler",
+      source: { kind: "selected" },
+    }],
+  }), /requires simplerPath/i);
+
+  assert.throws(() => validateAgentPlan({
+    message: "Do not mix policies",
+    actions: [{
+      type: "configure_drum_pad",
+      trackName: "Drums",
+      rackName: "Drum Rack",
+      receivingNote: 36,
+      mode: "fill_empty_pad",
+      simplerPath: { deviceIndex: 0 },
+      source: { kind: "selected" },
+    }],
+  }), /simplerPath.*only.*replace_existing_simpler/i);
 });
 
 test("device paths reject malformed segments and legacy index conflicts", () => {
@@ -742,6 +865,43 @@ test("Session, audio, and clip actions validate exact locations and safe sources
   assert.equal(requiresExplicitConfirmation(plan), true);
 });
 
+test("sample action summaries disclose exact observed source locators", () => {
+  const plan = validateAgentPlan({
+    message: "Reuse two observed sources",
+    actions: [
+      {
+        type: "replace_simpler_sample",
+        trackName: "Drums",
+        simplerName: "Target",
+        source: {
+          kind: "arrangement_audio_clip",
+          trackName: "Audio",
+          clipName: "Kick Source",
+          startBeat: 64,
+        },
+      },
+      {
+        type: "replace_simpler_sample",
+        trackName: "Drums",
+        simplerName: "Target 2",
+        source: {
+          kind: "simpler",
+          trackName: "Sources",
+          deviceName: "Source Simpler",
+          devicePath: {
+            deviceIndex: 2,
+            nested: [{ chainIndex: 0, deviceIndex: 1 }],
+          },
+        },
+      },
+    ],
+  });
+
+  const summary = summarizeActionPlan(plan);
+  assert.match(summary, /Kick Source.*Audio.*beat 64/i);
+  assert.match(summary, /Source Simpler.*devicePath.*deviceIndex.*2.*chainIndex.*0/i);
+});
+
 test("clip actions reject ambiguous locations, no-op edits, and invalid ranges", () => {
   for (const action of [
     {
@@ -823,6 +983,21 @@ test("audio creation validates the SDK loop contract", () => {
     }),
     /Unwarped audio/i,
   );
+
+  const replacement = validateAgentPlan({
+    message: "Replace the Session loop if needed",
+    actions: [{
+      type: "create_session_audio_clip",
+      trackName: "Audio",
+      slotIndex: 0,
+      source: { kind: "selected" },
+      isWarped: true,
+    }],
+  });
+  assert.match(
+    summarizeActionPlan(replacement),
+    /create or replace.*source, Warp state, or loop settings differ.*delete.*recreat/is,
+  );
 });
 
 test("new clip edits on a newly created track require staging only when observation is needed", () => {
@@ -881,6 +1056,88 @@ test("Scene, Cue Point, and Take Lane actions use stable indexes and expected na
   assert.match(summarizeActionPlan(plan), /Scene 0.*Intro.*Verse/i);
   assert.match(summarizeActionPlan(plan), /Cue Point.*beat 16/i);
   assert.match(summarizeActionPlan(plan), /Take Lane 0.*Main Take/i);
+});
+
+test("structural Scene edits require a staged call before later index-based work", () => {
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Insert a Scene, then write its clip",
+      actions: [
+        { type: "create_scene", index: 0, name: "Intro" },
+        {
+          type: "create_session_midi_clip",
+          trackName: "Lead",
+          slotIndex: 0,
+          durationBeats: 4,
+          notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 96 }],
+        },
+      ],
+    }),
+    /Actions 1 and 2.*Scene.*slot.*staged apply/i,
+  );
+
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Duplicate then rename the resulting row",
+      actions: [
+        { type: "duplicate_scene", sceneIndex: 1, sceneName: "Verse" },
+        { type: "rename_scene", sceneIndex: 2, newName: "Verse B" },
+      ],
+    }),
+    /Actions 1 and 2.*Scene.*index.*staged apply/i,
+  );
+
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Delete a row, then reuse a Session source",
+      actions: [
+        { type: "delete_scene", sceneIndex: 0, sceneName: "Scratch" },
+        {
+          type: "replace_simpler_sample",
+          trackName: "Drums",
+          simplerName: "Simpler",
+          source: {
+            kind: "session_audio_clip",
+            trackName: "Samples",
+            slotIndex: 0,
+          },
+        },
+      ],
+    }),
+    /Actions 1 and 2.*Session source.*staged apply/i,
+  );
+});
+
+test("structural Scene edits can follow already-resolved Session work", () => {
+  assert.doesNotThrow(() => validateAgentPlan({
+    message: "Write the existing slot, then append a Scene",
+    actions: [
+      {
+        type: "create_session_midi_clip",
+        trackName: "Lead",
+        slotIndex: 0,
+        durationBeats: 4,
+        notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 96 }],
+      },
+      { type: "create_scene", name: "Outro" },
+    ],
+  }));
+});
+
+test("a duplicated track selector explains which redundant field to remove", () => {
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Rename the chords track",
+      targets: { chords: { trackName: "1-MIDI" } },
+      actions: [{
+        type: "rename_track",
+        trackRef: "chords",
+        trackName: "1-MIDI",
+        newName: "Chords",
+      }],
+    }),
+    /Action 1 \(rename_track\).*trackRef "chords".*remove trackName.*Valid rename_track example/i,
+  );
 });
 
 test("destructive Scene and Cue Point actions always require explicit confirmation", () => {
