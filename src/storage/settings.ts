@@ -5,9 +5,10 @@ import {
   activeSavedProfile,
   cloneAgentSettings,
   freshEmptyAgentSettings,
-  validateAgentSettings,
   validateDraftProfileForSave,
+  isApprovalMode,
   type AgentSettings,
+  type ApprovalMode,
   type SavedProfile,
 } from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
@@ -16,6 +17,7 @@ import {
   withStorageTransaction,
   writeJsonAtomically,
 } from "./persistence.js";
+import { decodeAgentSettings } from "./settings-migrations.js";
 
 export type { AgentSettings, SavedProfile } from "../model/profile.js";
 export { activeSavedProfile } from "../model/profile.js";
@@ -48,7 +50,7 @@ async function loadAgentSettingsUnlocked(
   try {
     await ensurePrivateFile(target);
     const raw = await fs.readFile(target, "utf8");
-    return validateAgentSettings(JSON.parse(raw) as unknown);
+    return decodeAgentSettings(JSON.parse(raw) as unknown);
   } catch (error) {
     if (isMissingFileError(error)) return freshEmptyAgentSettings();
     if (error instanceof SyntaxError || isProfileValidationError(error)) {
@@ -118,16 +120,16 @@ export async function activateSavedProfile(
 
 export async function saveGlobalSettings(
   storageDirectory: string | undefined,
-  input: { autoApprove: boolean },
+  input: { approvalMode: ApprovalMode },
 ): Promise<AgentSettings> {
-  if (typeof input.autoApprove !== "boolean") {
-    throw new Error("Auto approve must be a boolean.");
+  if (!isApprovalMode(input.approvalMode)) {
+    throw new Error("Approval mode must be manual, low-risk, or everything.");
   }
   return withStorageTransaction(storageDirectory, async () => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
     return persistSettings(storageDirectory, {
       ...settings,
-      autoApprove: input.autoApprove,
+      approvalMode: input.approvalMode,
     });
   });
 }
@@ -146,7 +148,7 @@ async function persistSettings(
   storageDirectory: string | undefined,
   settings: AgentSettings,
 ): Promise<AgentSettings> {
-  const normalized = validateAgentSettings(settings);
+  const normalized = decodeAgentSettings(settings);
   if (!storageDirectory) {
     memorySettings = cloneAgentSettings(normalized);
     return cloneAgentSettings(normalized);

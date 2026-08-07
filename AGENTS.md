@@ -43,8 +43,11 @@ from model-name checks inside transports.
 - Observe the relevant Live state before mutating it.
 - Execute only actions accepted by the descriptors in
   `src/agent/action-schema.ts` and the plan validator in `src/agent/actions.ts`.
-- Show validated mutations for confirmation; destructive actions still require
-  explicit confirmation when Auto approve is enabled.
+- Apply approval is an explicit three-mode policy: Manual asks for every plan,
+  Low Risk asks for protected actions, and Accept Everything automatically
+  approves every validated plan, including deletes and replacement writes.
+  Every mode still requires observation, schema validation, preflight, the
+  process-wide mutation queue, cancellation, and state-drift revalidation.
 - Send requests contain only `prompt` and `sessionId`. Session commands contain
   only their command-specific fields. Neither path may carry Profile settings
   or credentials.

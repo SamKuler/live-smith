@@ -72,6 +72,9 @@ src/
   storage/
     settings.ts
       Explicit named-profile CRUD and global settings persistence.
+    settings-migrations.ts
+      Current-schema validation plus registered adjacent-version migrations
+      for historical settings files.
     persistence.ts
       Serialized local transactions plus private, atomic JSON replacement.
     model-cache.ts
@@ -110,7 +113,8 @@ src/
    identities plus every current value the action can overwrite, including
    tempo, mute, solo, and device parameter value. Host `bigint` values are
    encoded deterministically at this fingerprint boundary instead of being
-   passed to ordinary JSON serialization; Auto approve cannot bypass the guard.
+   passed to ordinary JSON serialization; no Approval mode can bypass the
+   guard.
 8. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
    other action-relevant state performs no mutation and returns a failed tool
@@ -277,12 +281,29 @@ bookkeeping data and never gain instruction authority. The bridge permits one
 active send per Session while different Sessions may observe and plan in
 parallel. Session select/create/restore/rename/delete commands remain available
 during background sends, but Profile and model-discovery writes are locked in
-both the dialog and bridge while any send is active. The global Auto approve
-toggle is the exception: it remains writable during a send and is read again
-immediately before each new Apply decision. Profile and RuntimeProfile state
-remain the request-start snapshot, and a confirmation already open is not
-changed. Confirmed Live mutations enter one process-wide queue; after acquiring
-the queue lock, each plan repeats its preflight immediately before execution.
+both the dialog and bridge while any send is active. The global Approval mode
+selector is the exception: it remains writable during a send and is read again
+immediately before each new Apply decision. Manual requests user approval for
+every plan. Low Risk automatically approves only plans outside the protected
+action set. Accept Everything automatically approves every validated plan,
+including deletes and replacement writes. An automatic decision persists a
+distinct `apply_auto_approved` Session event with the selected mode; this
+records the approval source without claiming that Live grouped the plan into a
+single Undo entry. Accept Everything changes approval only and cannot bypass
+observation, action-schema validation, preflight, the process-wide mutation
+queue, cancellation, or target/state-drift revalidation. Profile and
+RuntimeProfile state remain the request-start snapshot, and a confirmation
+already open is not changed. Confirmed Live mutations enter one process-wide
+queue; after acquiring the queue lock, each plan repeats its preflight
+immediately before execution.
+The settings schema stores the mode as `manual`, `low-risk`, or `everything`.
+Persisted settings pass through an adjacent-version migration registry before
+current-schema validation. Loading a valid schema-version-1 file maps
+`autoApprove: false` to Manual and `autoApprove: true` to Low Risk while
+preserving Profiles and credentials. Reads never rewrite the file; the next
+authorized settings mutation persists schema version 2. A future schema version
+or a historical version without a complete `vN` to `vN+1` migration chain fails
+closed as settings corruption.
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
 tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call
 limit. Distinct validation errors are treated as an evolving repair attempt and

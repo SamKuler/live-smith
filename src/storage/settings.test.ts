@@ -6,6 +6,10 @@ import test from "node:test";
 
 import type { SavedProfile } from "../model/profile.js";
 import {
+  CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
+  decodeAgentSettings,
+} from "./settings-migrations.js";
+import {
   AgentSettingsCorruptionError,
   activateSavedProfile,
   deleteSavedProfile,
@@ -38,10 +42,10 @@ function profile(
 test("loadAgentSettings starts empty and rejects every legacy or invalid settings shape", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   assert.deepEqual(await loadAgentSettings(directory), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     activeProfileId: null,
     profiles: [],
-    autoApprove: false,
+    approvalMode: "manual",
   });
 
   const legacyShapes = [
@@ -50,6 +54,7 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     { schemaVersion: 0, provider: "anthropic" },
     { schemaVersion: 1, activeProfileId: null, profiles: "not-an-array", autoApprove: false },
     { schemaVersion: 1, activeProfileId: null, profiles: [{ provider: "openai" }], autoApprove: false },
+    { schemaVersion: 2, activeProfileId: null, profiles: [], approvalMode: "unsafe" },
   ];
   for (const legacy of legacyShapes) {
     await fs.writeFile(
@@ -67,6 +72,77 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     loadAgentSettings(directory),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
   );
+});
+
+test("schema version 1 auto approval migrates to the equivalent approval mode", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-migration-"));
+  const settingsPath = path.join(directory, "live-smith-settings.json");
+  const completeProfile = profile({
+    parameters: {
+      maxOutputTokens: 32_768,
+      temperature: 0.7,
+      reasoning: { mode: "enabled", effort: "high", budgetTokens: 4_096 },
+    },
+    advanced: {
+      capabilityOverrides: {
+        tools: true,
+        streaming: false,
+        maxOutputTokens: 64_000,
+        reasoning: {
+          supported: true,
+          canDisable: true,
+          efforts: ["low", "high"],
+          budgetTokens: true,
+          strategy: "effort",
+        },
+      },
+      extraBody: { nested: { flag: true }, labels: ["a", "b"] },
+    },
+  });
+
+  for (const [autoApprove, approvalMode] of [
+    [false, "manual"],
+    [true, "low-risk"],
+  ] as const) {
+    const original = JSON.stringify({
+      schemaVersion: 1,
+      activeProfileId: "profile-1",
+      profiles: [completeProfile],
+      autoApprove,
+    }, null, 2);
+    await fs.writeFile(settingsPath, original);
+    const loaded = await loadAgentSettings(directory);
+    assert.equal(loaded.schemaVersion, 2);
+    assert.equal(loaded.approvalMode, approvalMode);
+    assert.deepEqual(loaded.profiles, [{
+      ...completeProfile,
+      baseUrl: "https://example.test/v1",
+    }]);
+    assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+  }
+});
+
+test("the migration decoder accepts current settings and rejects unsupported versions", () => {
+  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 2);
+  const current = {
+    schemaVersion: 2,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "everything",
+  } as const;
+  assert.deepEqual(decodeAgentSettings(current), current);
+
+  for (const schemaVersion of [0, 3]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        schemaVersion,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "manual",
+      }),
+      /Unsupported settings schema/,
+    );
+  }
 });
 
 test("settings mutations preserve the original bytes when one stored Profile is invalid", async () => {
@@ -87,7 +163,7 @@ test("settings mutations preserve the original bytes when one stored Profile is 
   await fs.writeFile(settingsPath, original);
 
   await assert.rejects(
-    saveGlobalSettings(directory, { autoApprove: true }),
+    saveGlobalSettings(directory, { approvalMode: "everything" }),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
   );
   assert.equal(await fs.readFile(settingsPath, "utf8"), original);
@@ -105,7 +181,7 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   ) as Record<string, unknown>;
   assert.deepEqual(Object.keys(persisted).sort(), [
     "activeProfileId",
-    "autoApprove",
+    "approvalMode",
     "profiles",
     "schemaVersion",
   ]);
@@ -184,8 +260,8 @@ test("activation, deletion, and global settings are independent operations", asy
   );
   assert.equal((await activateSavedProfile(directory, "profile-1")).activeProfileId, "profile-1");
 
-  const global = await saveGlobalSettings(directory, { autoApprove: true });
-  assert.equal(global.autoApprove, true);
+  const global = await saveGlobalSettings(directory, { approvalMode: "everything" });
+  assert.equal(global.approvalMode, "everything");
   assert.equal(global.profiles.length, 2);
 
   const deleted = await deleteSavedProfile(directory, "profile-1");

@@ -358,19 +358,24 @@
         }
       }
 
-      async function saveAutoApprove() {
+      function renderApprovalMode() {
+        const control = document.getElementById("approvalMode");
+        control.value = getState().settings.approvalMode;
+        control.classList.toggle("is-everything", control.value === "everything");
+      }
+
+      async function saveApprovalMode() {
+        const control = document.getElementById("approvalMode");
+        control.classList.toggle("is-everything", control.value === "everything");
         const saved = await runCommand("save_global_settings", {
-          autoApprove: document.getElementById("autoApprove").checked,
+          approvalMode: control.value,
         });
-        if (!saved) {
-          document.getElementById("autoApprove").checked =
-            Boolean(getState().settings.autoApprove);
-        }
+        if (!saved) renderApprovalMode();
       }
 
       function renderSettingsForm() {
         const state = getState();
-        document.getElementById("autoApprove").checked = Boolean(state.settings.autoApprove);
+        renderApprovalMode();
         const profiles = state.settings.profiles || [];
         const selector = document.getElementById("profileSelector");
         selector.replaceChildren();
@@ -491,8 +496,9 @@
         modelStateMatchesCurrentConnection,
         modelStateMatchesCurrentProfile,
         renderModelOptions,
+        renderApprovalMode,
         renderSettingsForm,
-        saveAutoApprove,
+        saveApprovalMode,
         saveProfile,
         showFieldError,
         syncModelStateSource,

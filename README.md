@@ -33,12 +33,14 @@
   code blocks. Raw HTML remains inert text, while tool traces and errors
   preserve their exact text.
 - Shows categorized Apply diffs in the exact execution order, with original
-  action numbers. Changes require `Apply` by default; Auto approve
-  may skip confirmation for undoable actions. Deletes and MIDI clip
-  writes that may replace existing notes always require explicit confirmation.
-  Auto approve can be changed while a Session is running; the current value is
-  read for the next proposed Apply decision and does not alter a confirmation
-  that is already open.
+  action numbers. The Approval selector has three modes: `Manual` asks before
+  every plan, `Low Risk` automatically approves only plans outside the
+  protected-action set, and `Accept Everything` automatically approves every
+  validated plan, including deletes and replacement writes. Accept Everything
+  stays visibly red and does not open an extra mode-change warning. Automatic
+  approvals receive a distinct `Auto-approved` timeline event. The mode can be
+  changed while a Session is running; the current value is read for the next
+  Apply decision and does not alter an approval prompt that is already open.
 
 ## Capabilities
 
@@ -75,10 +77,15 @@ pending plan instead of being overwritten. Every MIDI note includes an explicit
 velocity; Live Smith does not inject a hidden musical default.
 
 The extension does not execute arbitrary code from the model. It parses and
-validates a small JSON action schema. Changes require confirmation by default;
-Auto approve may skip confirmation for undoable actions, while deletes
-and MIDI create-or-replace actions always require explicit confirmation. The
-agent loop uses a rolling 12-step no-progress window: every successful or
+validates a small JSON action schema. `Manual` asks before every plan. `Low
+Risk` skips the prompt only when the plan contains no protected action; deletes,
+Clip writes, Arrangement clears, and sample replacements remain protected in
+this mode. `Accept Everything` skips the prompt for all validated plans,
+including those protected actions. These modes control approval only; they do
+not promise that Live will record a plan as one Undo step, and none bypasses
+observation, validation, preflight, serialization through the process-wide
+mutation queue, cancellation, or state-drift revalidation. The agent loop uses
+a rolling 12-step no-progress window: every successful or
 partially successful Live write and every new distinct observation renews that
 window, so a large project is not stopped merely because it has many stages.
 Repeating the same observation/result or completing only idempotent no-op Applies
@@ -250,7 +257,7 @@ raw action JSON, MIDI note payloads, and credentials are not copied into it.
 The directory contains:
 
 - `live-smith-settings.json` — saved Profiles, the active Profile, API keys,
-  generation settings, and the global Auto-approve setting.
+  generation settings, and the global Approval mode.
 - `live-smith-sessions.json` — Session titles, Live object scopes, and
   timestamps.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
@@ -277,8 +284,14 @@ npm start -- --storage-directory /absolute/path/to/live-smith-data
 ```
 
 These paths contain private persistent data, not SDK temporary files. Do not
-commit, share, or sync them. The current pre-release build does not migrate
-files written under earlier development names or schemas.
+commit, share, or sync them. The current build migrates schema-version-1
+`autoApprove` settings in memory: `false` becomes `Manual`, and `true` becomes
+`Low Risk`. Settings upgrades use registered adjacent-version steps, so future
+schemas add one `vN` to `vN+1` migration instead of branching inside the current
+validator. Reading never rewrites the file; the next settings write persists
+schema version 2 without dropping Profiles or credentials. Future versions and
+historical schemas without a complete migration chain are rejected. Files
+written under other earlier development names are not migrated.
 
 If you use `npm start` without passing `--live`, also create `.env` with
 `EXTENSION_HOST_PATH` as described in the SDK quick start.

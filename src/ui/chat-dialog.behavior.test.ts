@@ -173,9 +173,9 @@ function stateFixture(): ChatDialogState {
       capabilities: capabilities(),
     },
     settings: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       activeProfileId: "profile-1",
-      autoApprove: false,
+      approvalMode: "manual",
       profiles: [
         profileFixture(),
         profileFixture({
@@ -347,7 +347,7 @@ async function createDialogHarness(
               }
               const command = body as {
                 kind?: string;
-                autoApprove?: boolean;
+                approvalMode?: "manual" | "low-risk" | "everything";
                 profile?: SavedProfile;
                 profileId?: string;
                 sessionId?: string;
@@ -355,9 +355,9 @@ async function createDialogHarness(
               };
               if (
                 command.kind === "save_global_settings" &&
-                typeof command.autoApprove === "boolean"
+                typeof command.approvalMode === "string"
               ) {
-                serverState.settings.autoApprove = command.autoApprove;
+                serverState.settings.approvalMode = command.approvalMode;
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -821,13 +821,44 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       "#generationSettingsSection",
       "#advancedSettingsSection",
     ]) assert.ok(harness.document.querySelector(section));
-    const autoApproveLabel = harness.document.querySelector("#autoApprove")?.closest("label");
-    assert.match(autoApproveLabel?.textContent ?? "", /undoable changes/i);
-    assert.match(
-      autoApproveLabel?.getAttribute("title") ?? "",
-      /Deletes and MIDI clip writes still require confirmation/i,
+    const approvalMode = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
+    assert.equal(approvalMode?.getAttribute("aria-label"), "Apply approval mode");
+    assert.deepEqual(
+      [...(approvalMode?.options ?? [])].map((option) => [option.value, option.textContent]),
+      [
+        ["manual", "Manual"],
+        ["low-risk", "Low Risk"],
+        ["everything", "Accept Everything"],
+      ],
     );
-    assert.doesNotMatch(autoApproveLabel?.textContent ?? "", /non-destructive/i);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Accept Everything saves without confirmation and remains visibly dangerous", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.setConfirmResult(false);
+    harness.select("#approvalMode", "everything");
+    await harness.settle();
+
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "save_global_settings", approvalMode: "everything" },
+    });
+    const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
+    assert.equal(control?.value, "everything");
+    assert.equal(control?.classList.contains("is-everything"), true);
+    assert.match(
+      control?.closest("label")?.getAttribute("title") ?? "",
+      /including deletes and replacement writes/i,
+    );
+
+    harness.select("#approvalMode", "manual");
+    await harness.settle();
+    assert.equal(control?.classList.contains("is-everything"), false);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1115,7 +1146,7 @@ test("a running Session can be left in the background and shows an unread comple
       true,
     );
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.disabled,
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.disabled,
       false,
     );
     assert.equal(
@@ -1127,15 +1158,15 @@ test("a running Session can be left in the background and shows an unread comple
       false,
     );
     assert.match(
-      harness.document.querySelector("#autoApprove")?.closest("label")?.getAttribute("title") ?? "",
-      /next proposed action/i,
+      harness.document.querySelector("#approvalMode")?.closest("label")?.getAttribute("title") ?? "",
+      /next Apply request/i,
     );
     assert.equal(
-      harness.document.querySelector("#autoApprove")?.getAttribute("aria-describedby"),
-      "autoApproveLockHint",
+      harness.document.querySelector("#approvalMode")?.getAttribute("aria-describedby"),
+      "approvalModeLockHint",
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#autoApproveLockHint")?.hidden,
+      harness.document.querySelector<HTMLElement>("#approvalModeLockHint")?.hidden,
       false,
     );
     assert.equal(
@@ -1147,15 +1178,15 @@ test("a running Session can be left in the background and shows an unread comple
       /another Session is running/i,
     );
 
-    harness.click("#autoApprove");
+    harness.select("#approvalMode", "low-risk");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "save_global_settings", autoApprove: true },
+      body: { kind: "save_global_settings", approvalMode: "low-risk" },
     });
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.checked,
-      true,
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
     );
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.disabled,
@@ -1959,11 +1990,11 @@ test("failed global settings and Profile activation commands restore the saved U
   const harness = await createDialogHarness();
   try {
     harness.failNextCommand("Could not save global settings.");
-    harness.click("#autoApprove");
+    harness.select("#approvalMode", "low-risk");
     await harness.settle();
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.checked,
-      false,
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "manual",
     );
 
     harness.failNextCommand("Could not activate Profile.");
@@ -2022,19 +2053,20 @@ test("an unknown settings commit applies authoritative state instead of revertin
   const harness = await createDialogHarness();
   try {
     const authoritative = cloneState(stateFixture());
-    authoritative.settings.autoApprove = true;
+    authoritative.settings.approvalMode = "everything";
     harness.failNextCommand(
       "Storage replacement completed, but its durable commit could not be confirmed.",
       undefined,
       { commandOutcome: "unknown", state: authoritative },
     );
 
-    harness.click("#autoApprove");
+    harness.setConfirmResult(false);
+    harness.select("#approvalMode", "everything");
     await harness.settle();
 
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.checked,
-      true,
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "everything",
     );
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
@@ -2059,7 +2091,7 @@ test("an unreconciled command outcome keeps sends and settings blocked", async (
       { commandOutcome: "unknown", reconciliationRequired: true },
     );
 
-    harness.click("#autoApprove");
+    harness.select("#approvalMode", "everything");
     await harness.settle();
 
     assert.equal(
@@ -2088,7 +2120,7 @@ test("a command network error reconciles through state after the event stream di
   const harness = await createDialogHarness();
   try {
     harness.rejectNextCommand("Bridge response was lost.");
-    harness.click("#autoApprove");
+    harness.select("#approvalMode", "low-risk");
     await harness.settle();
 
     harness.emitServerEventError();
@@ -2099,8 +2131,8 @@ test("a command network error reconciles through state after the event stream di
       1,
     );
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#autoApprove")?.checked,
-      false,
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "manual",
     );
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
@@ -2198,7 +2230,7 @@ test("a command network error blocks mutations when stream and state reconciliat
   try {
     harness.rejectNextCommand("Bridge response was lost.");
     harness.rejectNextState("Bridge state is unavailable.");
-    harness.click("#autoApprove");
+    harness.select("#approvalMode", "everything");
     await harness.settle();
 
     harness.emitServerEventError();
@@ -3087,6 +3119,62 @@ test("an expanded timeline Error does not repeat its summary line in the body", 
       1,
     );
     assert.match(itemText, /Failed action 10: Insert Delay/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("the timeline distinguishes an Apply request from automatic approval", async () => {
+  const state = stateFixture();
+  state.events = [
+    {
+      id: "event-apply-proposal",
+      createdAt: "2026-08-07T00:00:00.000Z",
+      kind: "apply_requested",
+      content: "Set tempo to 128 BPM.\n\nActions:\n1. Set tempo to 128 BPM.",
+    },
+    {
+      id: "event-auto-approved",
+      createdAt: "2026-08-07T00:00:01.000Z",
+      kind: "apply_auto_approved",
+      content: [
+        "1 change · Low Risk",
+        "Automatic approval. Standard safety checks completed.",
+      ].join("\n"),
+    },
+    {
+      id: "event-auto-approved-legacy",
+      createdAt: "2026-08-07T00:00:02.000Z",
+      kind: "apply_auto_approved",
+      content: [
+        "Auto-approved 21 changes under Accept Everything mode without opening an approval prompt.",
+        "Live observation, validation, preflight, and state revalidation still ran before execution.",
+      ].join("\n"),
+    },
+  ];
+  const harness = await createDialogHarness(state);
+  try {
+    assert.match(
+      harness.document.querySelector(".timeline-item.apply_requested summary")?.textContent ?? "",
+      /^Apply request —/,
+    );
+    const autoApproved = harness.document.querySelector(
+      ".timeline-item.apply_auto_approved",
+    );
+    const summary = autoApproved?.querySelector("summary")?.textContent ?? "";
+    assert.equal(summary, "Auto-approved — 1 change · Low Risk");
+    assert.doesNotMatch(summary, /Auto-approved.*Auto-approved/i);
+    assert.equal(
+      autoApproved?.querySelector(".timeline-content")?.textContent,
+      "Automatic approval. Standard safety checks completed.",
+    );
+    assert.equal(
+      harness.document.querySelector(
+        '[data-event-id="event-auto-approved-legacy"] summary',
+      )?.textContent,
+      "Auto-approved — 21 changes · Accept Everything",
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

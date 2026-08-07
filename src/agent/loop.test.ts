@@ -286,6 +286,90 @@ test("runAgentLoop emits recoverable argument rejection and apply callbacks", as
   assert.match(events.find((event) => event.kind === "apply_result")?.content ?? "", /Created MIDI track/);
 });
 
+test("runAgentLoop records when a low-risk plan is automatically approved", async () => {
+  const eventKinds: string[] = [];
+  const approvalEvents: string[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async (input): Promise<ModelTurn> => input.messages.length === 0
+      ? {
+          content: "I will update the tempo.",
+          toolCalls: [{
+            id: "auto_apply",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Set tempo to 128 BPM.",
+              actions: [{ type: "set_tempo", tempo: 128 }],
+            }),
+          }],
+        }
+      : { content: "Tempo updated.", toolCalls: [] },
+    observe: async () => "",
+    preflightActions: async () => async () => {},
+    confirmActions: async () => ({
+      confirmed: true,
+      source: "automatic",
+      mode: "low-risk",
+    }),
+    executeActions: async () => mutationOutcome(["Set tempo to 128 BPM."]),
+    onEvent: (event) => {
+      eventKinds.push(event.kind);
+      if (event.kind === "apply_auto_approved") approvalEvents.push(event.content);
+    },
+  });
+
+  assert.deepEqual(eventKinds, [
+    "assistant",
+    "tool_call",
+    "apply_requested",
+    "apply_auto_approved",
+    "apply_result",
+    "assistant",
+  ]);
+  assert.deepEqual(approvalEvents, [
+    "1 change · Low Risk\nAutomatic approval. Standard safety checks completed.",
+  ]);
+});
+
+test("runAgentLoop identifies Accept Everything automatic approvals", async () => {
+  const approvalEvents: string[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async (input): Promise<ModelTurn> => input.messages.length === 0
+      ? {
+          content: "I will delete the track.",
+          toolCalls: [{
+            id: "accept_everything_apply",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Delete Bass.",
+              actions: [{ type: "delete_track", trackName: "Bass" }],
+            }),
+          }],
+        }
+      : { content: "Track deleted.", toolCalls: [] },
+    observe: async () => "",
+    preflightActions: async () => async () => {},
+    confirmActions: async () => ({
+      confirmed: true,
+      source: "automatic",
+      mode: "everything",
+    }),
+    executeActions: async () => mutationOutcome(['Deleted track "Bass".']),
+    onEvent: (event) => {
+      if (event.kind === "apply_auto_approved") approvalEvents.push(event.content);
+    },
+  });
+
+  assert.equal(approvalEvents.length, 1);
+  assert.equal(
+    approvalEvents[0],
+    "1 change · Accept Everything\nAutomatic approval. Standard safety checks completed.",
+  );
+});
+
 test("runAgentLoop emits apply result when user cancels actions", async () => {
   const events: string[] = [];
   let revalidationCalls = 0;

@@ -14,26 +14,61 @@ import { createSession, listSessions } from "../storage/sessions.js";
 import { saveGlobalSettings, saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
-import { autoApproveEnabledForPlan, runAgentFlow } from "./agent-flow.js";
+import {
+  decidePlanApproval,
+  runAgentFlow,
+} from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
 
-test("Auto approve is reread for each new plan and never bypasses explicit confirmation", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-auto-approve-"));
-  const undoablePlan = {
+test("approval decisions follow Manual, Low Risk, and Accept Everything modes", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-decision-"));
+  const lowRiskPlan = {
     message: "Set tempo",
     actions: [{ type: "set_tempo" as const, tempo: 128 }],
   };
-  const destructivePlan = {
+  const explicitPlan = {
     message: "Delete Bass",
     actions: [{ type: "delete_track" as const, trackName: "Bass" }],
   };
+  let promptCalls = 0;
+  const requestConfirmation = async () => {
+    promptCalls += 1;
+    return true;
+  };
 
-  await saveGlobalSettings(directory, { autoApprove: false });
-  assert.equal(await autoApproveEnabledForPlan(directory, undoablePlan), false);
+  await saveGlobalSettings(directory, { approvalMode: "manual" });
+  assert.deepEqual(
+    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    { confirmed: true, source: "user" },
+  );
+  assert.deepEqual(
+    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    { confirmed: true, source: "user" },
+  );
+  assert.equal(promptCalls, 2);
 
-  await saveGlobalSettings(directory, { autoApprove: true });
-  assert.equal(await autoApproveEnabledForPlan(directory, undoablePlan), true);
-  assert.equal(await autoApproveEnabledForPlan(directory, destructivePlan), false);
+  await saveGlobalSettings(directory, { approvalMode: "low-risk" });
+  assert.deepEqual(
+    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    { confirmed: true, source: "automatic", mode: "low-risk" },
+  );
+  assert.equal(promptCalls, 2);
+  assert.deepEqual(
+    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    { confirmed: true, source: "user" },
+  );
+  assert.equal(promptCalls, 3);
+
+  await saveGlobalSettings(directory, { approvalMode: "everything" });
+  assert.deepEqual(
+    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    { confirmed: true, source: "automatic", mode: "everything" },
+  );
+  assert.deepEqual(
+    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    { confirmed: true, source: "automatic", mode: "everything" },
+  );
+  assert.equal(promptCalls, 3);
 });
 
 test("concurrent state and discovery responses each keep models, capabilities, and source from one profile", async () => {

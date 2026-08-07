@@ -5,6 +5,7 @@ import {
   runAgentLoop,
   type AgentActionExecutionOutcome,
   type AgentActionPreflightGuard,
+  type AgentConfirmationDecision,
   type AgentLoopTraceEvent,
 } from "../agent/loop.js";
 import { throwIfAborted } from "../runtime/host.js";
@@ -311,7 +312,7 @@ export async function runAgentFlow(
     if (commandInput.kind === "save_global_settings") {
       throwIfAborted(signal);
       await saveGlobalSettings(context.environment.storageDirectory, {
-        autoApprove: commandInput.autoApprove,
+        approvalMode: commandInput.approvalMode,
       });
       status = "Global settings saved.";
       return buildStateAfterCommandMutation();
@@ -497,16 +498,14 @@ export async function runAgentFlow(
           onSessionEvent: (event) => stream.sessionEvent(event),
           withActionExecutionLock: (operation) =>
             liveMutationQueue.run(signal, operation),
-          confirmActions: async (plan) => {
-            if (await autoApproveEnabledForPlan(
-              context.environment.storageDirectory,
-              plan,
-            )) return true;
-            return stream.requestConfirmation({
+          confirmActions: (plan) => decidePlanApproval(
+            context.environment.storageDirectory,
+            plan,
+            () => stream.requestConfirmation({
               message: plan.message,
               groups: actionDiffGroups(plan.actions, plan.targets),
-            });
-          },
+            }),
+          ),
         },
       );
     } catch (error) {
@@ -531,12 +530,26 @@ export async function runAgentFlow(
   }
 }
 
-export async function autoApproveEnabledForPlan(
+export async function decidePlanApproval(
   storageDirectory: string | undefined,
   plan: AgentPlan,
-): Promise<boolean> {
-  if (requiresExplicitConfirmation(plan)) return false;
-  return (await loadAgentSettings(storageDirectory)).autoApprove;
+  requestConfirmation: () => Promise<boolean>,
+): Promise<AgentConfirmationDecision> {
+  const { approvalMode } = await loadAgentSettings(storageDirectory);
+  if (
+    approvalMode === "everything" ||
+    (approvalMode === "low-risk" && !requiresExplicitConfirmation(plan))
+  ) {
+    return {
+      confirmed: true,
+      source: "automatic",
+      mode: approvalMode,
+    };
+  }
+  return {
+    confirmed: await requestConfirmation(),
+    source: "user",
+  };
 }
 
 export async function handleAgentRequest(
@@ -852,7 +865,9 @@ interface AgentRequestCallbacks {
   onDelta(delta: string): Promise<void> | void;
   onProgress(message: string): Promise<void> | void;
   onSessionEvent(event: SessionEvent): Promise<void> | void;
-  confirmActions(plan: AgentPlan): Promise<boolean>;
+  confirmActions(
+    plan: AgentPlan,
+  ): Promise<boolean | AgentConfirmationDecision>;
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;

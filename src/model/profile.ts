@@ -82,11 +82,15 @@ export interface SavedProfile {
   };
 }
 
+export type ApprovalMode = "manual" | "low-risk" | "everything";
+
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 2 as const;
+
 export interface AgentSettings {
-  schemaVersion: 1;
+  schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
   activeProfileId: string | null;
   profiles: SavedProfile[];
-  autoApprove: boolean;
+  approvalMode: ApprovalMode;
 }
 
 export class ProfileValidationError extends Error {
@@ -119,11 +123,15 @@ const profileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export function freshEmptyAgentSettings(): AgentSettings {
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
     activeProfileId: null,
     profiles: [],
-    autoApprove: false,
+    approvalMode: "manual",
   };
+}
+
+export function isApprovalMode(value: unknown): value is ApprovalMode {
+  return value === "manual" || value === "low-risk" || value === "everything";
 }
 
 export function isValidApiModePair(
@@ -249,58 +257,6 @@ export function validateDraftProfileForSave(
 
   assertJsonCompatible(normalized.advanced.extraBody, "advanced.extraBody");
   return normalized;
-}
-
-export function validateAgentSettings(value: unknown): AgentSettings {
-  const record = requiredRecord(
-    value,
-    "settings",
-    "Settings must be an object.",
-  );
-  if (record.schemaVersion !== 1) {
-    throw new ProfileValidationError(
-      "schemaVersion",
-      "Unsupported settings schema.",
-    );
-  }
-  if (!Array.isArray(record.profiles)) {
-    throw new ProfileValidationError("profiles", "Profiles must be an array.");
-  }
-
-  const profiles: SavedProfile[] = [];
-  for (const entry of record.profiles) {
-    profiles.push(validateDraftProfileForSave(entry, profiles));
-  }
-
-  const activeProfileId = record.activeProfileId;
-  if (activeProfileId !== null && typeof activeProfileId !== "string") {
-    throw new ProfileValidationError(
-      "activeProfileId",
-      "Active profile ID must be a string or null.",
-    );
-  }
-  if (
-    typeof activeProfileId === "string" &&
-    !profiles.some((profile) => profile.id === activeProfileId)
-  ) {
-    throw new ProfileValidationError(
-      "activeProfileId",
-      "Active profile does not exist.",
-    );
-  }
-  if (typeof record.autoApprove !== "boolean") {
-    throw new ProfileValidationError(
-      "autoApprove",
-      "Auto approve must be a boolean.",
-    );
-  }
-
-  return {
-    schemaVersion: 1,
-    activeProfileId,
-    profiles,
-    autoApprove: record.autoApprove,
-  };
 }
 
 export function activeSavedProfile(

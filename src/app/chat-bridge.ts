@@ -11,7 +11,9 @@ import { URL } from "node:url";
 import type { SessionEvent } from "../storage/events.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import {
+  isApprovalMode,
   ProfileValidationError,
+  type ApprovalMode,
   type DraftProfile,
 } from "../model/profile.js";
 import { createHostAbortController } from "../runtime/host.js";
@@ -62,7 +64,7 @@ export type ChatBridgeCommandInput =
   | { kind: "save_profile"; profile: DraftProfile }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
-  | { kind: "save_global_settings"; autoApprove: boolean }
+  | { kind: "save_global_settings"; approvalMode: ApprovalMode }
   | { kind: "new_session" }
   | { kind: "select_session"; sessionId: string }
   | { kind: "restore_session"; sessionId: string }
@@ -783,11 +785,13 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { kind, profileId: inputString(input, "profileId") };
   }
   if (kind === "save_global_settings") {
-    assertOnlyInputKeys(input, ["kind", "autoApprove"], `${kind} command`);
-    if (typeof input.autoApprove !== "boolean") {
-      throw new ChatBridgeRequestValidationError("autoApprove must be a boolean.");
+    assertOnlyInputKeys(input, ["kind", "approvalMode"], `${kind} command`);
+    if (!isApprovalMode(input.approvalMode)) {
+      throw new ChatBridgeRequestValidationError(
+        "approvalMode must be manual, low-risk, or everything.",
+      );
     }
-    return { kind, autoApprove: input.autoApprove };
+    return { kind, approvalMode: input.approvalMode };
   }
   if (kind === "new_session") {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);

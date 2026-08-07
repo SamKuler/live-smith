@@ -517,6 +517,7 @@
           kind === "tool_call" ||
           kind === "tool_result" ||
           kind === "apply_requested" ||
+          kind === "apply_auto_approved" ||
           kind === "apply_result" ||
           kind === "error"
         );
@@ -551,7 +552,10 @@
 
           const summary = document.createElement("summary");
           summary.className = "timeline-label";
-          summary.textContent = `${eventLabel(event)} — ${truncate(firstLine, summaryLimit)}`;
+          summary.textContent = `${eventLabel(event)} — ${truncate(
+            summaryLineForEvent(event, firstLine),
+            summaryLimit,
+          )}`;
 
           item.append(summary, content);
           return item;
@@ -573,6 +577,15 @@
         return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
       }
 
+      function summaryLineForEvent(event, firstLine) {
+        if (event.kind !== "apply_auto_approved") return firstLine;
+        const legacy = /^Auto-approved (\d+) (change|changes) under (Low Risk|Accept Everything) mode without opening an approval prompt\.$/
+          .exec(firstLine);
+        return legacy
+          ? `${legacy[1]} ${legacy[2]} · ${legacy[3]}`
+          : firstLine;
+      }
+
       function eventLabel(event) {
         if (event.kind === "user") return "You";
         if (event.kind === "assistant") return "Live Smith";
@@ -582,6 +595,7 @@
           return `${label}${event.name ? ` / ${event.name}` : ""}`;
         }
         if (event.kind === "apply_requested") return "Apply request";
+        if (event.kind === "apply_auto_approved") return "Auto-approved";
         if (event.kind === "apply_result") {
           if (isFailedApplyResult(event)) return "Apply Failed";
           return isPartialApplyResult(event)

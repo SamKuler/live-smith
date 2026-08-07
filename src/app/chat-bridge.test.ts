@@ -69,7 +69,7 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     const settingsCommand = await fetch(endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "low-risk" }),
     });
     const profileCommand = await fetch(endpoint("/command"), {
       method: "POST",
@@ -791,7 +791,7 @@ test("chat bridge returns authoritative state when a command commit outcome is u
         "Content-Type": "application/json",
         "X-Live-Smith-Command-Id": "command-unknown-1",
       },
-      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "everything" }),
     });
 
     assert.equal(response.status, 500);
@@ -827,7 +827,7 @@ test("chat bridge marks an unknown command outcome as blocked when state reconci
         "Content-Type": "application/json",
         "X-Live-Smith-Command-Id": "command-unknown-2",
       },
-      body: JSON.stringify({ kind: "save_global_settings", autoApprove: true }),
+      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "manual" }),
     });
 
     assert.equal(response.status, 500);
@@ -1158,6 +1158,55 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     assert.equal(restore.status, 400);
     assert.match((await restore.json() as { error: string }).error, /does not support property projectKey/i);
     assert.equal(commandInput, undefined);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("global settings commands accept only the three approval modes", async () => {
+  const state = {} as ChatDialogState;
+  const received: unknown[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      received.push(input);
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = `${chatUrl.origin}/command?token=${token}`;
+
+  try {
+    for (const approvalMode of ["manual", "low-risk", "everything"] as const) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "save_global_settings", approvalMode }),
+      });
+      assert.equal(response.status, 200);
+    }
+    assert.deepEqual(received, [
+      { kind: "save_global_settings", approvalMode: "manual" },
+      { kind: "save_global_settings", approvalMode: "low-risk" },
+      { kind: "save_global_settings", approvalMode: "everything" },
+    ]);
+
+    for (const body of [
+      { kind: "save_global_settings", approvalMode: "unsafe" },
+      { kind: "save_global_settings", autoApprove: true },
+      { kind: "save_global_settings", approvalMode: "manual", extra: true },
+    ]) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(received.length, 3);
   } finally {
     await bridge.close();
   }

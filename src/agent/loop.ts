@@ -25,12 +25,21 @@ export type AgentLoopTraceEvent =
   | { kind: "tool_call"; name: string; content: string }
   | { kind: "tool_result"; name: string; content: string }
   | { kind: "apply_requested"; content: string }
+  | { kind: "apply_auto_approved"; content: string }
   | {
       kind: "apply_result";
       content: string;
       recovery?: AgentRecoveryLedgerUpdate;
     }
   | { kind: "error"; content: string };
+
+export type AgentConfirmationDecision =
+  | { confirmed: boolean; source: "user" }
+  | {
+      confirmed: true;
+      source: "automatic";
+      mode: "low-risk" | "everything";
+    };
 
 export interface AgentRecoveryLedgerUpdate {
   active: boolean;
@@ -83,7 +92,9 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   preflightActions?(
     plan: AgentPlan,
   ): Promise<AgentActionPreflightGuard<ExecutionBindings>>;
-  confirmActions(plan: AgentPlan): Promise<boolean>;
+  confirmActions(
+    plan: AgentPlan,
+  ): Promise<boolean | AgentConfirmationDecision>;
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;
@@ -538,10 +549,28 @@ async function executeToolCall(
         content: summary,
       });
       throwIfAborted(options.signal);
-      const confirmed = await options.confirmActions(plan);
+      const rawDecision = await options.confirmActions(plan);
+      const decision: AgentConfirmationDecision = typeof rawDecision === "boolean"
+        ? { confirmed: rawDecision, source: "user" }
+        : rawDecision;
       throwIfAborted(options.signal);
 
-      if (!confirmed) {
+      if (decision.confirmed && decision.source === "automatic") {
+        const actionCount = plan.actions.length;
+        const modeLabel = decision.mode === "everything"
+          ? "Accept Everything"
+          : "Low Risk";
+        await emitTraceEvent(options, {
+          kind: "apply_auto_approved",
+          content: [
+            `${actionCount} ${actionCount === 1 ? "change" : "changes"} · ${modeLabel}`,
+            "Automatic approval. Standard safety checks completed.",
+          ].join("\n"),
+        });
+        throwIfAborted(options.signal);
+      }
+
+      if (!decision.confirmed) {
         const content = "User cancelled the proposed Live actions. Do not claim they were applied.";
         await emitTraceEvent(options, {
           kind: "apply_result",

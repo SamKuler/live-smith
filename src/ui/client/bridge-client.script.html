@@ -258,8 +258,7 @@
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
           requireView().renderSettingsForm();
         } else if (kind === "save_global_settings") {
-          document.getElementById("autoApprove").checked =
-            Boolean(state.settings.autoApprove);
+          requireView().renderApprovalMode();
         } else if (kind === "discover_models") {
           requireView().renderModelOptions();
           requireView().updateCapabilityPreview();

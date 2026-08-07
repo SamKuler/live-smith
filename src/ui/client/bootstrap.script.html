@@ -139,8 +139,8 @@
             status: "Switching Profile…",
           },
           save_global_settings: {
-            busyAriaLabel: "Saving Auto Approve Setting…",
-            controlId: "autoApprove",
+            busyAriaLabel: "Saving Approval Mode…",
+            controlId: "approvalMode",
             status: "Saving Global Settings…",
           },
           new_session: {
@@ -221,12 +221,17 @@
           document.getElementById("settingsLockNotice").hidden = !(
             anySendInProgress && !sendInProgress
           );
-          document.getElementById("autoApproveLockHint").hidden = !anySendInProgress;
-          const autoApprove = document.getElementById("autoApprove");
-          const autoApproveLabel = autoApprove.closest("label");
-          autoApproveLabel.title = anySendInProgress
-            ? "Changes apply to the next proposed action. Deletes and MIDI clip writes still require confirmation."
-            : "Skip confirmation for undoable changes. Deletes and MIDI clip writes still require confirmation.";
+          document.getElementById("approvalModeLockHint").hidden = !anySendInProgress;
+          const approvalMode = document.getElementById("approvalMode");
+          const approvalModeLabel = approvalMode.closest("label");
+          approvalMode.classList.toggle("is-everything", approvalMode.value === "everything");
+          approvalModeLabel.title = approvalMode.value === "everything"
+            ? "Accept Everything auto-applies every validated change, including deletes and replacement writes."
+            : anySendInProgress
+              ? "The setting applies to the next Apply request."
+              : approvalMode.value === "low-risk"
+                ? "Low Risk auto-applies changes that are not deletes, Clip writes, Arrangement clears, or sample replacements."
+                : "Manual requests approval for every Apply request.";
           document.getElementById("prompt").disabled = operationBusy;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
             .forEach((control) => {
@@ -237,7 +242,7 @@
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
-          autoApprove.disabled = Boolean(commandKind);
+          approvalMode.disabled = Boolean(commandKind);
           document.getElementById("sendButton").disabled = Boolean(commandKind);
 
           if (!operationBusy) {
@@ -256,6 +261,7 @@
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
           renderSessions: sessionTimeline.renderSessions,
           renderModelOptions: profileEditor.renderModelOptions,
+          renderApprovalMode: profileEditor.renderApprovalMode,
           renderSettingsForm: profileEditor.renderSettingsForm,
           renderTimeline: sessionTimeline.renderTimeline,
           setOperationState,
@@ -287,7 +293,7 @@
           requestClose,
           renameActiveSession: sessionTimeline.renameActiveSession,
           runCommand: bridgeClient.runCommand,
-          saveAutoApprove: profileEditor.saveAutoApprove,
+          saveApprovalMode: profileEditor.saveApprovalMode,
           saveProfile: profileEditor.saveProfile,
           toggleInspector,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,

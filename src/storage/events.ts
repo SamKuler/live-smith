@@ -22,6 +22,7 @@ export type SessionEventKind =
   | "tool_call"
   | "tool_result"
   | "apply_requested"
+  | "apply_auto_approved"
   | "apply_result"
   | "error";
 
@@ -197,6 +198,7 @@ function isSessionEventKind(value: unknown): value is SessionEventKind {
     value === "tool_call" ||
     value === "tool_result" ||
     value === "apply_requested" ||
+    value === "apply_auto_approved" ||
     value === "apply_result" ||
     value === "error"
   );

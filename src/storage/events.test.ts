@@ -51,11 +51,15 @@ test("appendSessionEvent accepts non-tool event kinds", async () => {
     content: "Apply 1 action?",
     name: "confirm_apply",
   });
+  await appendSessionEvent(dir, sessionId, {
+    kind: "apply_auto_approved",
+    content: "1 change · Low Risk\nAutomatic approval. Standard safety checks completed.",
+  });
 
   const events = await loadSessionEvents(dir, sessionId);
   assert.deepEqual(
     events.map((event) => event.kind),
-    ["assistant", "apply_requested"],
+    ["assistant", "apply_requested", "apply_auto_approved"],
   );
   assert.equal(events[1]?.name, "confirm_apply");
 });
