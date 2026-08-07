@@ -70,6 +70,8 @@ export type ChatBridgeCommandInput =
   | { kind: "restore_session"; sessionId: string }
   | { kind: "delete_session"; sessionId: string }
   | { kind: "rename_session"; sessionId: string; title: string }
+  | { kind: "archive_session"; sessionId: string }
+  | { kind: "unarchive_session"; sessionId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
 export interface ChatBridgeConfirmationRequest {
@@ -368,11 +370,13 @@ export async function createChatBridge(
           return;
         }
         if (
-          input.kind === "delete_session" &&
+          (input.kind === "delete_session" || input.kind === "archive_session") &&
           activeSendsBySession.has(input.sessionId)
         ) {
           sendJson(response, {
-            error: "Stop this Session's active request before deleting it.",
+            error: `Stop this Session's active request before ${
+              input.kind === "delete_session" ? "deleting" : "archiving"
+            } it.`,
           }, 409);
           return;
         }
@@ -383,7 +387,10 @@ export async function createChatBridge(
           if (input.kind === "select_session") {
             const activity = sessionActivities.get(input.sessionId);
             if (activity) activity.unread = false;
-          } else if (input.kind === "delete_session") {
+          } else if (
+            input.kind === "delete_session" ||
+            input.kind === "archive_session"
+          ) {
             sessionActivities.delete(input.sessionId);
           }
           const state = stateWithActivities(commandState);
@@ -800,7 +807,9 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (
     kind === "select_session" ||
     kind === "restore_session" ||
-    kind === "delete_session"
+    kind === "delete_session" ||
+    kind === "archive_session" ||
+    kind === "unarchive_session"
   ) {
     assertOnlyInputKeys(input, ["kind", "sessionId"], `${kind} command`);
     return { kind, sessionId: inputString(input, "sessionId") };
@@ -840,7 +849,9 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "select_session" ||
     input.kind === "restore_session" ||
     input.kind === "delete_session" ||
-    input.kind === "rename_session";
+    input.kind === "rename_session" ||
+    input.kind === "archive_session" ||
+    input.kind === "unarchive_session";
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {

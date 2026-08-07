@@ -4,7 +4,6 @@
         getAssistantDraft,
         getPendingConfirmation,
         isCommandInProgress,
-        isOperationInProgress,
         resolveConfirm,
         runCommand,
       }) {
@@ -16,6 +15,102 @@
       });
       let focusedConfirmationId = null;
       let confirmationReturnFocus = null;
+      const selectedSessionIds = new Set();
+      let sessionSelectionAnchorId = null;
+
+      function sessionRecords() {
+        const state = getState();
+        return [
+          ...(state.sessions || []).map((session) => ({ session, archived: false })),
+          ...(state.previousSessions || []).map((session) => ({ session, archived: false })),
+          ...(state.archivedSessions || []).map((session) => ({ session, archived: true })),
+        ];
+      }
+
+      function updateSessionSelectionUi() {
+        for (const entry of document.querySelectorAll(".session-entry")) {
+          const selected = selectedSessionIds.has(entry.dataset.sessionId);
+          entry.toggleAttribute("data-selected", selected);
+        }
+        const count = document.getElementById("sessionSelectionCount");
+        if (!count) return;
+        const selectedCount = selectedSessionIds.size;
+        count.hidden = selectedCount === 0;
+        count.textContent = selectedCount ? `${selectedCount} selected` : "";
+      }
+
+      function pruneSessionSelection() {
+        const availableIds = new Set(sessionRecords().map(({ session }) => session.id));
+        for (const sessionId of selectedSessionIds) {
+          if (!availableIds.has(sessionId)) selectedSessionIds.delete(sessionId);
+        }
+        if (
+          sessionSelectionAnchorId &&
+          !availableIds.has(sessionSelectionAnchorId)
+        ) sessionSelectionAnchorId = null;
+      }
+
+      function clearSessionSelection() {
+        selectedSessionIds.clear();
+        sessionSelectionAnchorId = null;
+        updateSessionSelectionUi();
+      }
+
+      function selectOnlySession(sessionId) {
+        selectedSessionIds.clear();
+        selectedSessionIds.add(sessionId);
+        sessionSelectionAnchorId = sessionId;
+        updateSessionSelectionUi();
+      }
+
+      function handleModifiedSessionSelection(event, sessionId) {
+        const additive = event.metaKey || event.ctrlKey;
+        if (!additive && !event.shiftKey) return false;
+        event.preventDefault();
+        const orderedIds = sessionRecords().map(({ session }) => session.id);
+        if (event.shiftKey) {
+          const fallbackAnchor = orderedIds.includes(getState().activeSessionId)
+            ? getState().activeSessionId
+            : sessionId;
+          const anchorId = orderedIds.includes(sessionSelectionAnchorId)
+            ? sessionSelectionAnchorId
+            : fallbackAnchor;
+          if (!additive) selectedSessionIds.clear();
+          const anchorIndex = orderedIds.indexOf(anchorId);
+          const sessionIndex = orderedIds.indexOf(sessionId);
+          const start = Math.min(anchorIndex, sessionIndex);
+          const end = Math.max(anchorIndex, sessionIndex);
+          for (const id of orderedIds.slice(start, end + 1)) {
+            selectedSessionIds.add(id);
+          }
+          sessionSelectionAnchorId = anchorId;
+        } else {
+          if (selectedSessionIds.has(sessionId)) selectedSessionIds.delete(sessionId);
+          else selectedSessionIds.add(sessionId);
+          sessionSelectionAnchorId = sessionId;
+        }
+        updateSessionSelectionUi();
+        return true;
+      }
+
+      function selectedSessionRecords(fallbackSession, fallbackArchived) {
+        if (
+          selectedSessionIds.size > 1 &&
+          selectedSessionIds.has(fallbackSession.id)
+        ) {
+          return sessionRecords().filter(({ session }) =>
+            selectedSessionIds.has(session.id));
+        }
+        return [{ session: fallbackSession, archived: fallbackArchived }];
+      }
+
+      async function runSessionCommands(kind, records) {
+        for (const { session } of records) {
+          if (!(await runCommand(kind, { sessionId: session.id }))) return false;
+        }
+        clearSessionSelection();
+        return true;
+      }
 
       function handleConfirmationKeydown(event) {
         const confirmation = getPendingConfirmation();
@@ -97,10 +192,102 @@
         entry?.querySelector(".session-row")?.focus({ preventScroll: true });
       }
 
+      function closeSessionMenus(focusSessionId) {
+        for (const menu of document.querySelectorAll(".session-action-menu")) {
+          menu.hidden = true;
+        }
+        for (const button of document.querySelectorAll(".session-menu-button")) {
+          button.setAttribute("aria-expanded", "false");
+        }
+        if (focusSessionId) {
+          document.querySelector(`[data-session-menu-button="${focusSessionId}"]`)
+            ?.focus({ preventScroll: true });
+        }
+      }
+
+      function handleSessionMenuDocumentClick(event) {
+        const target = event.target;
+        if (
+          target instanceof Element &&
+          target.closest(".session-menu-button, .session-action-menu")
+        ) return;
+        closeSessionMenus();
+      }
+
+      function handleSessionMenuEscape(event) {
+        if (event.key !== "Escape" || getPendingConfirmation()) return;
+        const openMenu = document.querySelector(".session-action-menu:not([hidden])");
+        if (openMenu) {
+          event.preventDefault();
+          const sessionId = openMenu.closest(".session-entry")?.dataset.sessionId;
+          closeSessionMenus(sessionId);
+        } else if (selectedSessionIds.size) {
+          event.preventDefault();
+          clearSessionSelection();
+        }
+      }
+
+      document.addEventListener("click", handleSessionMenuDocumentClick);
+      document.addEventListener("keydown", handleSessionMenuEscape);
+      document.addEventListener("scroll", () => closeSessionMenus(), true);
+      window.addEventListener("resize", () => {
+        closeSessionMenus();
+        updateSessionMetaOverflow(document.getElementById("sessions"));
+      });
+
+      function updateSessionMetaOverflow(root) {
+        if (!root) return;
+        for (const meta of root.querySelectorAll(".session-meta")) {
+          const content = meta.querySelector(".session-meta-content");
+          if (!content) continue;
+          const shift = Math.max(0, content.scrollWidth - meta.clientWidth);
+          const overflowing = shift > 1;
+          meta.classList.toggle("is-overflowing", overflowing);
+          if (overflowing) {
+            const duration = Math.min(7.5, Math.max(2.8, shift / 34 + 1.8));
+            meta.style.setProperty("--session-meta-shift", `${Math.ceil(shift)}px`);
+            meta.style.setProperty("--session-meta-duration", `${duration.toFixed(2)}s`);
+          } else {
+            meta.style.removeProperty("--session-meta-shift");
+            meta.style.removeProperty("--session-meta-duration");
+          }
+        }
+      }
+
+      function positionSessionMenu(menu, menuButton) {
+        const gap = 4;
+        const viewportPadding = 6;
+        const buttonRect = menuButton.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const maxLeft = Math.max(
+          viewportPadding,
+          window.innerWidth - menuRect.width - viewportPadding,
+        );
+        const left = Math.min(
+          Math.max(viewportPadding, buttonRect.right - menuRect.width),
+          maxLeft,
+        );
+        const below = buttonRect.bottom + gap;
+        const above = buttonRect.top - menuRect.height - gap;
+        const maxTop = Math.max(
+          viewportPadding,
+          window.innerHeight - menuRect.height - viewportPadding,
+        );
+        const preferredTop = below + menuRect.height <= window.innerHeight - viewportPadding
+          ? below
+          : above;
+        const top = Math.min(Math.max(viewportPadding, preferredTop), maxTop);
+        menu.style.left = `${Math.round(left)}px`;
+        menu.style.top = `${Math.round(top)}px`;
+      }
+
       function startRenameSession(sessionId, entry, row, titleEl) {
-        if (isOperationInProgress()) return;
+        if (isCommandInProgress()) return;
         if (entry.querySelector(".session-rename-input")) return;
+        closeSessionMenus();
         const current = titleEl.textContent;
+        const menuButton = entry.querySelector(".session-menu-button");
+        const continueButton = entry.querySelector(".session-continue-button");
         const input = document.createElement("input");
         input.className = "session-rename-input";
         input.name = "sessionName";
@@ -110,6 +297,8 @@
         let settled = false;
         const restoreRow = () => {
           row.hidden = false;
+          if (menuButton) menuButton.hidden = false;
+          if (continueButton) continueButton.hidden = false;
           input.remove();
         };
         const commit = (restoreFocus) => {
@@ -138,45 +327,182 @@
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
         });
         row.hidden = true;
+        if (menuButton) menuButton.hidden = true;
+        if (continueButton) continueButton.hidden = true;
         entry.append(input);
         input.focus();
         input.select();
       }
 
-      function activeSession() {
-        const state = getState();
-        return state.sessions.find((session) => session.id === state.activeSessionId) || null;
+      function beginDeleteSessions(records, entry, menuButton, menu) {
+        if (isCommandInProgress()) return;
+        const sessions = records.map(({ session }) => session);
+        const multiple = sessions.length > 1;
+        const confirmation = document.createElement("div");
+        confirmation.className = "session-delete-confirm";
+        confirmation.dataset.deleteSessionId = sessions[0].id;
+        confirmation.dataset.deleteSessionCount = String(sessions.length);
+        confirmation.setAttribute("role", "alertdialog");
+        confirmation.setAttribute(
+          "aria-label",
+          multiple
+            ? `Delete ${sessions.length} sessions`
+            : `Delete session ${sessions[0].title || sessions[0].scope.label}`,
+        );
+        const question = document.createElement("span");
+        question.className = "session-delete-question";
+        question.textContent = multiple
+          ? `Delete ${sessions.length} sessions?`
+          : "Delete this session?";
+        const controls = document.createElement("span");
+        controls.className = "session-delete-controls";
+        const cancel = document.createElement("button");
+        cancel.className = "secondary";
+        cancel.type = "button";
+        cancel.dataset.deleteCancel = "";
+        cancel.textContent = "Cancel";
+        const remove = document.createElement("button");
+        remove.className = "danger";
+        remove.type = "button";
+        remove.dataset.deleteConfirm = "";
+        remove.textContent = "Delete";
+        const restoreUi = () => {
+          confirmation.remove();
+          menu.classList.remove("delete-confirm-mode");
+          menu.hidden = true;
+          menu.setAttribute("role", "menu");
+          menuButton.setAttribute("aria-expanded", "false");
+          menuButton.focus({ preventScroll: true });
+        };
+        cancel.onclick = restoreUi;
+        remove.onclick = async () => {
+          cancel.disabled = true;
+          remove.disabled = true;
+          if (!(await runSessionCommands("delete_session", records)) && entry.isConnected) {
+            restoreUi();
+          }
+        };
+        controls.append(cancel, remove);
+        confirmation.append(question, controls);
+        menu.classList.add("delete-confirm-mode");
+        menu.setAttribute("role", "presentation");
+        menu.replaceChildren(confirmation);
+        menu.hidden = false;
+        menuButton.setAttribute("aria-expanded", "true");
+        positionSessionMenu(menu, menuButton);
+        cancel.focus();
       }
 
-      function renameActiveSession() {
-        const session = activeSession();
-        if (!session) return;
-        const entry = [...document.querySelectorAll(".session-entry")]
-          .find((candidate) => candidate.dataset.sessionId === session.id);
-        const row = entry?.querySelector(".session-row");
-        const title = entry?.querySelector(".session-title");
-        if (entry && row && title) startRenameSession(session.id, entry, row, title);
+      function createSessionMenu(session, entry, row, title, archived) {
+        const menuButton = document.createElement("button");
+        menuButton.className = "session-menu-button";
+        menuButton.type = "button";
+        menuButton.dataset.sessionMenuButton = session.id;
+        menuButton.setAttribute("aria-haspopup", "menu");
+        menuButton.setAttribute("aria-expanded", "false");
+        menuButton.setAttribute(
+          "aria-label",
+          `Session actions for ${session.title || session.scope.label}`,
+        );
+        menuButton.textContent = "⋯";
+
+        const menu = document.createElement("div");
+        menu.className = "session-action-menu";
+        menu.setAttribute("role", "menu");
+        menu.hidden = true;
+        const addAction = (label, action, handler, danger, keepOpen) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.sessionAction = action;
+          button.setAttribute("role", "menuitem");
+          button.textContent = label;
+          if (danger) button.className = "danger-text";
+          button.onclick = (event) => {
+            event.stopPropagation();
+            if (!keepOpen) closeSessionMenus();
+            handler();
+          };
+          menu.append(button);
+        };
+        const populateMenu = (records) => {
+          menu.classList.remove("delete-confirm-mode");
+          menu.setAttribute("role", "menu");
+          menu.replaceChildren();
+          const multiple = records.length > 1;
+          if (!multiple) {
+            addAction(
+              "Rename",
+              "rename",
+              () => startRenameSession(session.id, entry, row, title),
+            );
+          }
+          const archiveRecords = records.filter((record) => !record.archived);
+          const unarchiveRecords = records.filter((record) => record.archived);
+          if (archiveRecords.length) {
+            const label = multiple
+              ? archiveRecords.length === records.length
+                ? `Archive ${archiveRecords.length} Sessions`
+                : `Archive ${archiveRecords.length} Selected`
+              : "Archive";
+            addAction(
+              label,
+              "archive",
+              () => runSessionCommands("archive_session", archiveRecords),
+            );
+          }
+          if (unarchiveRecords.length) {
+            const label = multiple
+              ? unarchiveRecords.length === records.length
+                ? `Unarchive ${unarchiveRecords.length} Sessions`
+                : `Unarchive ${unarchiveRecords.length} Selected`
+              : "Unarchive";
+            addAction(
+              label,
+              "unarchive",
+              () => runSessionCommands("unarchive_session", unarchiveRecords),
+            );
+          }
+          addAction(
+            multiple ? `Delete ${records.length} Sessions` : "Delete",
+            "delete",
+            () => beginDeleteSessions(records, entry, menuButton, menu),
+            true,
+            true,
+          );
+        };
+        menuButton.onclick = (event) => {
+          event.stopPropagation();
+          const opening = menu.hidden;
+          closeSessionMenus();
+          menu.hidden = !opening;
+          menuButton.setAttribute("aria-expanded", String(opening));
+          if (opening) {
+            if (
+              selectedSessionIds.size &&
+              !selectedSessionIds.has(session.id)
+            ) clearSessionSelection();
+            populateMenu(selectedSessionRecords(session, archived));
+            positionSessionMenu(menu, menuButton);
+            menu.querySelector("button")?.focus({ preventScroll: true });
+          }
+        };
+        return { menuButton, menu };
       }
 
-      function deleteActiveSession() {
-        const session = activeSession();
-        if (!session) return;
-        if (!confirm(`Delete session “${session.title}”?`)) return;
-        runCommand("delete_session", { sessionId: session.id });
+      function scopeKindLabel(kind) {
+        return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
       }
 
-      function restorePreviousSession(session) {
-        if (
-          !confirm(
-            `Restore session “${session.title}” to the current ${session.scope.kind} “${session.scope.label}”? Names are only a hint; restore only if this is the same Live object.`,
-          )
-        ) return;
-        runCommand("restore_session", { sessionId: session.id });
+      function appendSessionSection(list, title) {
+        const heading = document.createElement("div");
+        heading.className = "session-section-label";
+        heading.textContent = title;
+        list.append(heading);
       }
 
       function renderSessions() {
         const state = getState();
-        const operationInProgress = isOperationInProgress();
+        pruneSessionSelection();
         const navigationBlocked = isCommandInProgress();
         const activities = new Map(
           (state.sessionActivities || []).map((activity) => [activity.sessionId, activity]),
@@ -191,48 +517,71 @@
           list.append(empty);
         }
 
-        for (const session of state.sessions) {
+        const appendSession = (session, mode) => {
           const entry = document.createElement("div");
-          entry.className = "session-entry";
+          entry.className = `session-entry ${mode}-session-entry`;
           entry.dataset.sessionId = session.id;
+          const canContinue = mode === "history" &&
+            session.scope.kind === state.sessionContinueTarget.kind;
           const row = document.createElement("button");
-          row.className = "session-row";
+          row.className = `session-row ${mode}-session-row`;
           row.type = "button";
           row.disabled = navigationBlocked;
           const isActive = session.id === state.activeSessionId;
-          row.setAttribute("aria-pressed", isActive ? "true" : "false");
+          if (mode === "current") {
+            row.setAttribute("aria-pressed", isActive ? "true" : "false");
+          }
           let selectionPromise = null;
           row.onclick = (event) => {
-            if (isActive) return;
-            selectionPromise ||= runCommand("select_session", { sessionId: session.id });
-            if (event.detail === 0) {
-              selectionPromise.then(() => focusSessionRow(session.id));
+            if (handleModifiedSessionSelection(event, session.id)) return;
+            if (mode === "current") {
+              clearSessionSelection();
+              sessionSelectionAnchorId = session.id;
+              if (isActive) return;
+              selectionPromise ||= runCommand("select_session", { sessionId: session.id });
+              if (event.detail === 0) {
+                selectionPromise.then(() => focusSessionRow(session.id));
+              }
+              return selectionPromise;
             }
-            return selectionPromise;
+            selectOnlySession(session.id);
           };
 
           const title = document.createElement("span");
           title.className = "session-title";
           title.textContent = session.title || session.scope.label;
-          row.addEventListener("dblclick", async (e) => {
-            e.preventDefault();
-            if (isActive) {
+          if (mode === "current") {
+            row.addEventListener("dblclick", async (e) => {
+              e.preventDefault();
+              if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+              if (isActive) {
+                startRenameSession(session.id, entry, row, title);
+                return;
+              }
+              const selected = await (selectionPromise || runCommand(
+                "select_session",
+                { sessionId: session.id },
+              ));
+              if (!selected) return;
+              const selectedEntry = document.querySelector(
+                `.session-entry[data-session-id="${session.id}"]`,
+              );
+              const selectedRow = selectedEntry?.querySelector(".session-row");
+              const selectedTitle = selectedEntry?.querySelector(".session-title");
+              if (selectedEntry && selectedRow && selectedTitle) {
+                startRenameSession(session.id, selectedEntry, selectedRow, selectedTitle);
+              }
+            });
+            row.addEventListener("keydown", (e) => {
+              if (e.key !== "F2") return;
+              e.preventDefault();
               startRenameSession(session.id, entry, row, title);
-              return;
-            }
-            const selected = await (selectionPromise || runCommand(
-              "select_session",
-              { sessionId: session.id },
-            ));
-            if (selected) renameActiveSession();
-          });
-          row.addEventListener("keydown", (e) => {
-            if (e.key !== "F2") return;
-            e.preventDefault();
-            startRenameSession(session.id, entry, row, title);
-          });
+            });
+          }
           const meta = document.createElement("span");
           meta.className = "session-meta";
+          const metaContent = document.createElement("span");
+          metaContent.className = "session-meta-content";
           const date = formatSessionDate(session.updatedAt || session.createdAt);
           const activity = activities.get(session.id);
           const activityLabel = activity
@@ -244,8 +593,18 @@
                 stopped: "Stopped",
               }[activity.status]
             : "";
-          meta.textContent = activityLabel ||
-            (date ? `${session.scope.kind} · ${date}` : `${session.scope.kind} / ${session.scope.label}`);
+          const scopeLabel = `${scopeKindLabel(session.scope.kind)} · ${session.scope.label}`;
+          metaContent.textContent = mode === "current" && activityLabel
+            ? `${activityLabel} · ${scopeLabel}`
+            : scopeLabel;
+          meta.append(metaContent);
+          const archivedDate = mode === "archived"
+            ? formatSessionDate(session.archivedAt)
+            : "";
+          meta.title = [
+            archivedDate ? `Archived ${archivedDate}` : "",
+            date ? `Updated ${date}` : "",
+          ].filter(Boolean).join(" · ");
           const titleLine = document.createElement("span");
           titleLine.className = "session-title-line";
           titleLine.append(title);
@@ -257,50 +616,60 @@
             titleLine.append(dot);
           }
           row.append(titleLine, meta);
-          entry.append(row);
-          list.append(entry);
-        }
-
-        const recoverableSessions = state.recoverableSessions || [];
-        if (recoverableSessions.length) {
-          const heading = document.createElement("div");
-          heading.className = "session-section-label";
-          heading.textContent = "Previous sessions";
-          list.append(heading);
-
-          for (const session of recoverableSessions) {
-            const card = document.createElement("div");
-            card.className = "recoverable-session-card";
-            const copy = document.createElement("div");
-            copy.className = "recoverable-session-copy";
-            const title = document.createElement("span");
-            title.className = "session-title";
-            title.textContent = session.title || session.scope.label;
-            const meta = document.createElement("span");
-            meta.className = "session-meta";
-            const date = formatSessionDate(session.updatedAt || session.createdAt);
-            meta.textContent = date
-              ? `${session.scope.kind} · ${date}`
-              : `${session.scope.kind} · previous activation`;
-            copy.append(title, meta);
-            const restore = document.createElement("button");
-            restore.className = "secondary restore-session-button";
-            restore.type = "button";
-            restore.dataset.sessionId = session.id;
-            restore.disabled = navigationBlocked;
-            restore.textContent = "Restore";
-            restore.setAttribute(
+          const { menuButton, menu } = createSessionMenu(
+            session,
+            entry,
+            row,
+            title,
+            mode === "archived",
+          );
+          menuButton.disabled = navigationBlocked;
+          const continueButton = canContinue
+            ? document.createElement("button")
+            : null;
+          if (continueButton) {
+            entry.classList.add("can-continue-session-entry");
+            continueButton.className = "session-continue-button";
+            continueButton.type = "button";
+            continueButton.disabled = navigationBlocked;
+            continueButton.dataset.continueSessionId = session.id;
+            continueButton.textContent = "Continue";
+            continueButton.setAttribute(
               "aria-label",
-              `Restore previous session ${session.title || session.scope.label} to the current Live object`,
+              `Continue ${session.title || session.scope.label} using the current ${
+                state.sessionContinueTarget.kind
+              } ${state.sessionContinueTarget.label}. Last context label: ${
+                scopeKindLabel(session.scope.kind)
+              } ${session.scope.label}.`,
             );
-            restore.onclick = () => restorePreviousSession(session);
-            card.append(copy, restore);
-            list.append(card);
+            continueButton.onclick = (event) => {
+              event.stopPropagation();
+              clearSessionSelection();
+              sessionSelectionAnchorId = session.id;
+              return runCommand("restore_session", { sessionId: session.id });
+            };
           }
+          entry.append(row);
+          if (continueButton) entry.append(continueButton);
+          entry.append(menuButton, menu);
+          list.append(entry);
+        };
+
+        for (const session of state.sessions) appendSession(session, "current");
+
+        const previousSessions = state.previousSessions || [];
+        if (previousSessions.length) {
+          appendSessionSection(list, "History");
+          for (const session of previousSessions) appendSession(session, "history");
         }
 
-        document.getElementById("deleteSession").disabled = operationInProgress || !state.activeSessionId;
-        document.getElementById("renameSessionButton").disabled = operationInProgress || !state.activeSessionId;
+        const archivedSessions = state.archivedSessions || [];
+        if (archivedSessions.length) {
+          appendSessionSection(list, "Archived");
+          for (const session of archivedSessions) appendSession(session, "archived");
+        }
+        updateSessionSelectionUi();
+        updateSessionMetaOverflow(list);
       }
 
       function renderMarkdown(target, source) {
@@ -624,12 +993,10 @@
 
       return {
         announceAssistantMessage,
-        deleteActiveSession,
         handleInspectorTabKeydown,
         renderAssistantDraft,
         renderSessions,
         renderTimeline,
-        renameActiveSession,
         setConfirmationState,
         switchInspectorTab,
       };

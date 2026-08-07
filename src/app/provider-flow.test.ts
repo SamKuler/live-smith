@@ -24,7 +24,12 @@ import {
   type SessionEvent,
 } from "../storage/events.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
-import { createSession, listSessions, type AgentSession } from "../storage/sessions.js";
+import {
+  createSession,
+  listSessions,
+  setSessionArchived,
+  type AgentSession,
+} from "../storage/sessions.js";
 import {
   handleAgentRequest,
   preflightAgentPlan,
@@ -40,10 +45,9 @@ import {
   activeRecoveryLedgerFromEvents,
   conversationHistoryFromEvents,
   getOrCreateDefaultSession,
-  nextNewChatTitle,
   projectKeyForContext,
   recoveryContextFromEvents,
-  recoverableSessionsForScope,
+  continuableSessionsForScope,
 } from "./session-context.js";
 
 function session(title: string, projectKey = "p1"): AgentSession {
@@ -56,29 +60,6 @@ function session(title: string, projectKey = "p1"): AgentSession {
     updatedAt: "2026-06-16T00:00:00.000Z",
   };
 }
-
-test("nextNewChatTitle fills the lowest free slot and ignores other projects", () => {
-  assert.equal(nextNewChatTitle([], "p1"), "New chat");
-  assert.equal(nextNewChatTitle([session("New chat")], "p1"), "New chat (2)");
-  // Delete-then-create: "New chat (2)" is gone, so (2) should be reused, not (4).
-  assert.equal(
-    nextNewChatTitle(
-      [session("New chat"), session("New chat (3)"), session("New chat (4)")],
-      "p1",
-    ),
-    "New chat (2)",
-  );
-  // Sessions in other projects must not shift this project's numbering.
-  assert.equal(
-    nextNewChatTitle([session("New chat", "other")], "p1"),
-    "New chat",
-  );
-  // Named (non-"New chat") sessions don't consume a slot.
-  assert.equal(
-    nextNewChatTitle([session("Make a bassline")], "p1"),
-    "New chat",
-  );
-});
 
 test("buildModelRequest carries a complete profile, capabilities, and agent messages", () => {
   const profile: SavedProfile = {
@@ -750,13 +731,13 @@ test("getOrCreateDefaultSession rejects a preferred session from another project
       target: {},
       scope: { kind: "selection", identity: "local-selection", label: "Selection" },
     },
-    "Test",
     "project-a",
     foreign.id,
   );
 
   assert.notEqual(selected.id, foreign.id);
   assert.equal(selected.projectKey, "project-a");
+  assert.equal(selected.title, "");
 });
 
 test("session reuse follows object handle identity, not duplicate or renamed labels", async () => {
@@ -775,7 +756,6 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
       target: {},
       scope: { kind: "track", identity: "track-2", label: "Lead" },
     },
-    "Test",
     "project-a",
   );
   assert.notEqual(duplicateName.id, first.id);
@@ -788,14 +768,39 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Renamed Lead" },
     },
-    "Test",
     "project-a",
   );
   assert.equal(renamedSameTrack.id, first.id);
 });
 
-test("prior-activation recovery candidates require matching kind and label", () => {
-  const candidates = recoverableSessionsForScope(
+test("an archived current-object Session is not reused as the active Session", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-archived-session-"));
+  const interaction = {
+    defaultPrompt: "Test",
+    summary: "Lead",
+    target: {},
+    scope: { kind: "track" as const, identity: "track-1", label: "Lead" },
+  };
+  const archived = await getOrCreateDefaultSession(
+    dir,
+    interaction,
+    "project-a",
+  );
+  await setSessionArchived(dir, archived.id, true);
+
+  const current = await getOrCreateDefaultSession(
+    dir,
+    interaction,
+    "project-a",
+    archived.id,
+  );
+
+  assert.notEqual(current.id, archived.id);
+  assert.equal(current.archivedAt, undefined);
+});
+
+test("Continue-here candidates require an unarchived matching scope kind", () => {
+  const candidates = continuableSessionsForScope(
     [
       session("current", "project-current"),
       session("matching", "project-old"),
@@ -807,12 +812,101 @@ test("prior-activation recovery candidates require matching kind and label", () 
         ...session("different-kind", "project-old"),
         scope: { kind: "clip", identity: "old-clip", label: "Lead" },
       },
+      {
+        ...session("archived", "project-old"),
+        archivedAt: "2026-08-01T00:00:00.000Z",
+      },
     ],
     "project-current",
     { kind: "track", identity: "current-lead", label: " lead " },
   );
 
-  assert.deepEqual(candidates.map((candidate) => candidate.title), ["matching"]);
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.title),
+    ["matching", "different-label"],
+  );
+});
+
+test("the first real prompt names an untitled Session", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-session-title-"));
+  const profile: SavedProfile = {
+    id: "provider-session-title",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "secret-provider-key",
+    baseUrl: "https://example.test/v1",
+    model: "model-a",
+    parameters: {
+      maxOutputTokens: 1024,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  };
+  const interaction = {
+    defaultPrompt: "Suggest a practical production move for this Live object.",
+    summary: "Track: Bass",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  } as const;
+  const initial = await getOrCreateDefaultSession(
+    dir,
+    interaction,
+    "project-a",
+  );
+
+  assert.equal(initial.title, "");
+
+  await handleAgentRequest(
+    { environment: { storageDirectory: dir } } as never,
+    interaction,
+    "Design a warm bass patch",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    initial.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async () => ({ content: "Done.", toolCalls: [] }),
+  );
+
+  const [named] = await listSessions(dir, "project-a");
+  assert.equal(named?.title, "Design a warm bass patch");
+
+  const manuallyNamed = await createSession(dir, {
+    title: "Pinned bass study",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-2", label: "Sub Bass" },
+  });
+  await handleAgentRequest(
+    { environment: { storageDirectory: dir } } as never,
+    {
+      ...interaction,
+      summary: "Track: Sub Bass",
+      scope: { kind: "track", identity: "track-2", label: "Sub Bass" },
+    },
+    "Try a different envelope",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    manuallyNamed.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async () => ({ content: "Done.", toolCalls: [] }),
+  );
+
+  const preserved = (await listSessions(dir, "project-a")).find(
+    (candidate) => candidate.id === manuallyNamed.id,
+  );
+  assert.equal(preserved?.title, "Pinned bass study");
 });
 
 test("a failed model request persists and publishes a redacted session error", async () => {

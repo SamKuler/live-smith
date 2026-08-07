@@ -144,6 +144,7 @@ function stateFixture(): ChatDialogState {
   return {
     defaultPrompt: "Make a bassline",
     contextSummary: "Selected track: Bass",
+    sessionContinueTarget: { kind: "track", label: "Drums" },
     sessions: [
       {
         id: "session-1",
@@ -162,7 +163,8 @@ function stateFixture(): ChatDialogState {
         updatedAt: "2026-08-01T00:01:00.000Z",
       },
     ],
-    recoverableSessions: [],
+    previousSessions: [],
+    archivedSessions: [],
     activeSessionId: "session-1",
     events: [],
     capabilities: capabilities(),
@@ -411,14 +413,19 @@ async function createDialogHarness(
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
               } else if (command.kind === "restore_session" && command.sessionId) {
-                const restored = serverState.recoverableSessions.find(
+                const restored = serverState.previousSessions.find(
                   (entry) => entry.id === command.sessionId,
                 );
                 if (restored) {
-                  serverState.recoverableSessions = serverState.recoverableSessions.filter(
+                  serverState.previousSessions = serverState.previousSessions.filter(
                     (entry) => entry.id !== command.sessionId,
                   );
                   restored.projectKey = serverState.sessions[0]?.projectKey ?? "project-1";
+                  restored.scope = {
+                    kind: serverState.sessionContinueTarget.kind,
+                    identity: "current-live-object",
+                    label: serverState.sessionContinueTarget.label,
+                  };
                   serverState.sessions = [restored, ...serverState.sessions];
                   serverState.activeSessionId = restored.id;
                 }
@@ -427,12 +434,52 @@ async function createDialogHarness(
                 command.sessionId &&
                 command.title
               ) {
-                const session = serverState.sessions.find(
+                const session = [
+                  ...serverState.sessions,
+                  ...serverState.previousSessions,
+                  ...serverState.archivedSessions,
+                ].find((entry) => entry.id === command.sessionId);
+                if (session) session.title = command.title;
+              } else if (command.kind === "archive_session" && command.sessionId) {
+                const session = [...serverState.sessions, ...serverState.previousSessions]
+                  .find((entry) => entry.id === command.sessionId);
+                if (session) {
+                  session.archivedAt = "2026-08-02T00:00:00.000Z";
+                  serverState.sessions = serverState.sessions.filter(
+                    (entry) => entry.id !== command.sessionId,
+                  );
+                  serverState.previousSessions = serverState.previousSessions.filter(
+                    (entry) => entry.id !== command.sessionId,
+                  );
+                  serverState.archivedSessions = [session, ...serverState.archivedSessions];
+                  if (serverState.activeSessionId === command.sessionId) {
+                    serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
+                  }
+                }
+              } else if (command.kind === "unarchive_session" && command.sessionId) {
+                const session = serverState.archivedSessions.find(
                   (entry) => entry.id === command.sessionId,
                 );
-                if (session) session.title = command.title;
+                if (session) {
+                  delete session.archivedAt;
+                  serverState.archivedSessions = serverState.archivedSessions.filter(
+                    (entry) => entry.id !== command.sessionId,
+                  );
+                  const currentProjectKey = serverState.sessions[0]?.projectKey ?? "project-1";
+                  if (session.projectKey === currentProjectKey) {
+                    serverState.sessions = [session, ...serverState.sessions];
+                  } else {
+                    serverState.previousSessions = [session, ...serverState.previousSessions];
+                  }
+                }
               } else if (command.kind === "delete_session" && command.sessionId) {
                 serverState.sessions = serverState.sessions.filter(
+                  (entry) => entry.id !== command.sessionId,
+                );
+                serverState.previousSessions = serverState.previousSessions.filter(
+                  (entry) => entry.id !== command.sessionId,
+                );
+                serverState.archivedSessions = serverState.archivedSessions.filter(
                   (entry) => entry.id !== command.sessionId,
                 );
                 serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
@@ -798,10 +845,14 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
     for (const [selector, label] of [
       ["#closeButton", "Close Live Smith"],
       ["#newSessionButton", "New Session"],
-      ["#deleteSession", "Delete Session"],
     ] as const) {
       assert.equal(harness.document.querySelector(selector)?.getAttribute("aria-label"), label);
     }
+    assert.equal(
+      harness.document.querySelector('[data-session-menu-button="session-1"]')
+        ?.getAttribute("aria-label"),
+      "Session actions for Bass session",
+    );
     const status = harness.document.querySelector("#status");
     assert.equal(status?.getAttribute("role"), "status");
     assert.equal(status?.getAttribute("aria-live"), "polite");
@@ -851,6 +902,14 @@ test("Accept Everything saves without confirmation and remains visibly dangerous
     const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
     assert.equal(control?.value, "everything");
     assert.equal(control?.classList.contains("is-everything"), true);
+    const composerOptions = harness.document.querySelector<HTMLElement>(
+      ".composer-options",
+    );
+    assert.ok(composerOptions);
+    assert.ok(
+      Number.parseFloat(harness.window.getComputedStyle(composerOptions).paddingBottom) >= 4,
+      "approval controls must leave room for the 4px focus outline clearance",
+    );
     assert.match(
       control?.closest("label")?.getAttribute("title") ?? "",
       /including deletes and replacement writes/i,
@@ -958,20 +1017,13 @@ test("API key visibility exposes an accessible Show and Hide state", async () =>
   }
 });
 
-test("Session delete is guarded and rename is available from the toolbar and F2", async () => {
+test("current Session actions keep deletion confirmation in the action menu", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.setConfirmResult(false);
-    harness.click("#deleteSession");
-    await harness.settle();
-    assert.equal(
-      commandCalls(harness).some(
-        (call) => (call.body as { kind?: string }).kind === "delete_session",
-      ),
-      false,
-    );
-
-    harness.click("#renameSessionButton");
+    assert.equal(harness.document.querySelector("#renameSessionButton"), null);
+    assert.equal(harness.document.querySelector("#deleteSession"), null);
+    harness.click('[data-session-menu-button="session-1"]');
+    harness.click('[data-session-id="session-1"] [data-session-action="rename"]');
     const cancelledRename = harness.document.querySelector<HTMLInputElement>(
       ".session-rename-input",
     );
@@ -985,6 +1037,66 @@ test("Session delete is guarded and rename is available from the toolbar and F2"
     assert.equal(
       commandCalls(harness).some(
         (call) => (call.body as { kind?: string }).kind === "rename_session",
+      ),
+      false,
+    );
+
+    harness.click('[data-session-menu-button="session-1"]');
+    harness.click('[data-session-id="session-1"] [data-session-action="delete"]');
+    const deletingRow = harness.document.querySelector<HTMLElement>(
+      '[data-session-id="session-1"] .session-row',
+    );
+    assert.ok(deletingRow);
+    assert.equal(deletingRow.hidden, false);
+    assert.equal(deletingRow.style.visibility, "");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        '[data-session-menu-button="session-1"]',
+      )?.hidden,
+      false,
+    );
+    const singleDeleteConfirmation = harness.document.querySelector<HTMLElement>(
+      '.session-delete-confirm[data-delete-session-id="session-1"]',
+    );
+    assert.ok(singleDeleteConfirmation);
+    assert.equal(singleDeleteConfirmation.className, "session-delete-confirm");
+    assert.ok(singleDeleteConfirmation.closest(".session-action-menu"));
+    assert.equal(
+      singleDeleteConfirmation.querySelector(".session-delete-question")?.textContent,
+      "Delete this session?",
+    );
+    assert.equal(
+      harness.document.querySelector(
+        '[data-session-menu-button="session-1"]',
+      )?.getAttribute("aria-expanded"),
+      "true",
+    );
+    const dialogCssRules = [...harness.document.styleSheets]
+      .flatMap((sheet) => [...sheet.cssRules])
+      .map((rule) => rule.cssText);
+    const deleteModeRule = dialogCssRules.find((rule) =>
+      rule.includes("session-action-menu.delete-confirm-mode"));
+    assert.ok(deleteModeRule);
+    assert.match(deleteModeRule, /width:\s*176px/);
+    assert.match(deleteModeRule, /min-width:\s*0/);
+    assert.doesNotMatch(deleteModeRule, /255,\s*110,\s*87/);
+    const dangerRule = dialogCssRules.find((rule) =>
+      rule.includes("session-delete-controls .danger {") &&
+      !rule.includes(":hover"));
+    assert.ok(dangerRule);
+    assert.match(dangerRule, /color:\s*(#ff8d7a|rgb\(255, 141, 122\))/i);
+    assert.match(dangerRule, /background:\s*transparent/i);
+    const dangerHoverRule = dialogCssRules
+      .find((rule) => rule.includes("session-delete-controls .danger:hover"));
+    assert.ok(dangerHoverRule);
+    assert.match(
+      dangerHoverRule,
+      /background:\s*rgba\(255, 110, 87, 0\.12\)/i,
+    );
+    harness.click('[data-delete-session-id="session-1"] [data-delete-cancel]');
+    assert.equal(
+      commandCalls(harness).some(
+        (call) => (call.body as { kind?: string }).kind === "delete_session",
       ),
       false,
     );
@@ -1003,46 +1115,433 @@ test("Session delete is guarded and rename is available from the toolbar and F2"
   }
 });
 
-test("a prior-activation Session requires explicit restore to the current Live object", async () => {
+test("Cmd and Shift select Session ranges for bulk lifecycle actions", async () => {
   const state = stateFixture();
-  state.recoverableSessions = [{
+  state.previousSessions = [{
     id: "session-previous",
-    title: "Previous Bass arrangement",
+    title: "Previous drum arrangement",
     projectKey: "previous-activation",
-    scope: { kind: "track", identity: "old-bass-handle", label: "Bass" },
+    scope: { kind: "track", identity: "old-drum-handle", label: "Drums" },
     createdAt: "2026-07-31T00:00:00.000Z",
     updatedAt: "2026-07-31T00:15:00.000Z",
   }];
   const harness = await createDialogHarness(state);
   try {
+    const first = harness.document.querySelector<HTMLElement>(
+      '[data-session-id="session-1"] .session-row',
+    );
+    const previous = harness.document.querySelector<HTMLElement>(
+      '[data-session-id="session-previous"] .session-row',
+    );
+    assert.ok(first);
+    assert.ok(previous);
+
+    first.dispatchEvent(new harness.window.MouseEvent("click", {
+      bubbles: true,
+      metaKey: true,
+    }));
+    previous.dispatchEvent(new harness.window.MouseEvent("click", {
+      bubbles: true,
+      shiftKey: true,
+    }));
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLElement>(".session-entry[data-selected]")]
+        .map((entry) => entry.dataset.sessionId),
+      ["session-1", "session-2", "session-previous"],
+    );
+    assert.equal(
+      harness.document.querySelector("#sessionSelectionCount")?.textContent,
+      "3 selected",
+    );
+    assert.deepEqual(commandCalls(harness), []);
+
+    harness.click('[data-session-menu-button="session-previous"]');
+    assert.equal(
+      harness.document.querySelector(
+        '[data-session-id="session-previous"] [data-session-action="rename"]',
+      ),
+      null,
+    );
+    assert.match(
+      harness.document.querySelector(
+        '[data-session-id="session-previous"] [data-session-action="archive"]',
+      )?.textContent ?? "",
+      /Archive 3 Sessions/,
+    );
+    assert.match(
+      harness.document.querySelector(
+        '[data-session-id="session-previous"] [data-session-action="delete"]',
+      )?.textContent ?? "",
+      /Delete 3 Sessions/,
+    );
+
+    harness.click(
+      '[data-session-id="session-previous"] [data-session-action="delete"]',
+    );
+    const bulkDeleteConfirmation = harness.document.querySelector<HTMLElement>(
+      ".session-delete-confirm",
+    );
+    assert.ok(bulkDeleteConfirmation);
+    assert.equal(bulkDeleteConfirmation.className, "session-delete-confirm");
+    assert.equal(
+      bulkDeleteConfirmation.querySelector(".session-delete-question")?.textContent,
+      "Delete 3 sessions?",
+    );
+    const bulkDeleteMenu = bulkDeleteConfirmation.closest<HTMLElement>(
+      ".session-action-menu",
+    );
+    assert.ok(bulkDeleteMenu);
+    assert.equal(
+      bulkDeleteMenu.closest<HTMLElement>(".session-entry")?.dataset.sessionId,
+      "session-previous",
+    );
+    assert.equal(bulkDeleteMenu.hidden, false);
+    assert.equal(
+      harness.document.querySelector(
+        '[data-session-menu-button="session-previous"]',
+      )?.getAttribute("aria-expanded"),
+      "true",
+    );
+    for (const sessionId of ["session-1", "session-2", "session-previous"]) {
+      assert.equal(
+        harness.document.querySelector<HTMLElement>(
+          `[data-session-id="${sessionId}"] .session-row`,
+        )?.hidden,
+        false,
+      );
+    }
+    harness.click('.session-delete-confirm [data-delete-cancel]');
+    assert.equal(
+      harness.document.querySelector("#sessionSelectionCount")?.textContent,
+      "3 selected",
+    );
+
+    harness.click('[data-session-menu-button="session-previous"]');
+    harness.click(
+      '[data-session-id="session-previous"] [data-session-action="archive"]',
+    );
+    await waitForCondition(
+      () => commandCalls(harness).length === 3,
+      "Expected every selected Session to be archived",
+    );
+    assert.deepEqual(commandCalls(harness).map((call) => call.body), [
+      { kind: "archive_session", sessionId: "session-1" },
+      { kind: "archive_session", sessionId: "session-2" },
+      { kind: "archive_session", sessionId: "session-previous" },
+    ]);
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#sessionSelectionCount")?.hidden,
+      true,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("clicking History selects it without continuing until the explicit action", async () => {
+  const state = stateFixture();
+  state.previousSessions = [{
+    id: "session-previous",
+    title: "Previous drum arrangement",
+    projectKey: "previous-activation",
+    scope: { kind: "track", identity: "old-drum-handle", label: "Drums" },
+    createdAt: "2026-07-31T00:00:00.000Z",
+    updatedAt: "2026-07-31T00:15:00.000Z",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click('[data-session-id="session-previous"] .session-row');
+    assert.equal(
+      harness.document.querySelector(
+        '[data-session-id="session-previous"]',
+      )?.hasAttribute("data-selected"),
+      true,
+    );
+    assert.deepEqual(commandCalls(harness), []);
+
+    harness.click('[data-continue-session-id="session-previous"]');
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).map((call) => call.body), [
+      { kind: "restore_session", sessionId: "session-previous" },
+    ]);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("batch selection uses one blue highlight on the active Session", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const activeRow = harness.document.querySelector<HTMLElement>(
+      '[data-session-id="session-1"] .session-row',
+    );
+    assert.ok(activeRow);
+    activeRow.dispatchEvent(new harness.window.MouseEvent("click", {
+      bubbles: true,
+      metaKey: true,
+    }));
+
+    const boxShadow = harness.window.getComputedStyle(activeRow).boxShadow;
+    assert.match(boxShadow, /trace|124,\s*184,\s*232/i);
+    assert.doesNotMatch(boxShadow, /accent|255,\s*165,\s*0/i);
+    const sessionHoverRules = [...harness.document.styleSheets]
+      .flatMap((sheet) => [...sheet.cssRules])
+      .filter((rule) => rule.cssText.includes("button.session-row") && rule.cssText.includes(":hover"))
+      .map((rule) => rule.cssText);
+    const ordinaryHoverRule = sessionHoverRules.find((rule) =>
+      rule.includes("session-entry:not([data-selected])") &&
+      rule.includes('not([aria-pressed="true"])'));
+    assert.ok(ordinaryHoverRule);
+    const selectedHoverRule = sessionHoverRules.find((rule) =>
+      rule.includes("session-entry[data-selected]") && rule.includes(":hover"));
+    assert.ok(selectedHoverRule);
+    assert.match(selectedHoverRule, /border-color:\s*rgba\(124, 184, 232, 0\.9\)/);
+    assert.match(selectedHoverRule, /background:\s*rgba\(124, 184, 232, 0\.16\)/);
+    const activeHoverRule = sessionHoverRules.find((rule) =>
+      rule.includes('button.session-row[aria-pressed="true"]') &&
+      rule.includes("session-entry:not([data-selected])"));
+    assert.ok(activeHoverRule);
+    assert.match(activeHoverRule, /border-color:\s*rgba\(255, 165, 0, 0\.85\)/);
+    assert.match(activeHoverRule, /background:\s*rgba\(255, 165, 0, 0\.18\)/);
+    assert.deepEqual(commandCalls(harness), []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("creating a Session rebuilds the list only once", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const sessions = harness.document.querySelector<HTMLElement>("#sessions");
+    assert.ok(sessions);
+    const replaceChildren = sessions.replaceChildren.bind(sessions);
+    let rebuilds = 0;
+    sessions.replaceChildren = (...nodes) => {
+      rebuilds += 1;
+      replaceChildren(...nodes);
+    };
+
+    harness.click("#newSessionButton");
+    await harness.settle();
+
+    assert.equal(rebuilds, 1);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("history separates object labels from identity and exposes lifecycle actions", async () => {
+  const state = stateFixture();
+  state.previousSessions = [{
+    id: "session-previous",
+    title: "Previous drum arrangement",
+    projectKey: "previous-activation",
+    scope: { kind: "track", identity: "old-drum-handle", label: "Drums" },
+    createdAt: "2026-07-31T00:00:00.000Z",
+    updatedAt: "2026-07-31T00:15:00.000Z",
+  }, {
+    id: "session-previous-clip",
+    title: "Chorus clip details",
+    projectKey: "previous-activation",
+    scope: { kind: "clip", identity: "old-clip-handle", label: "Chorus" },
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:15:00.000Z",
+  }];
+  state.archivedSessions = [{
+    id: "session-archived",
+    title: "Archived mix notes",
+    projectKey: "older-activation",
+    scope: { kind: "track", identity: "old-mix-handle", label: "Mix Bus" },
+    archivedAt: "2026-07-29T00:00:00.000Z",
+    createdAt: "2026-07-20T00:00:00.000Z",
+    updatedAt: "2026-07-29T00:00:00.000Z",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const sidebar = harness.document.querySelector("#sessions")?.textContent ?? "";
+    assert.match(sidebar, /History/);
+    assert.doesNotMatch(sidebar, /Object names are labels only/);
+    assert.match(sidebar, /Previous drum arrangement.*Track · Drums.*Continue/s);
+    assert.match(sidebar, /Chorus clip details.*Clip · Chorus/s);
+    assert.match(sidebar, /Archived.*Archived mix notes.*Track · Mix Bus/s);
+    assert.doesNotMatch(sidebar, /→|same object/i);
+    assert.equal(
+      harness.document.querySelector(
+        '[data-continue-session-id="session-previous-clip"]',
+      ),
+      null,
+    );
+
+    harness.click('[data-session-menu-button="session-previous"]');
+    harness.click('[data-session-id="session-previous"] [data-session-action="rename"]');
+    const rename = harness.document.querySelector<HTMLInputElement>(".session-rename-input");
+    assert.ok(rename);
+    rename.value = "Renamed history";
+    rename.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+    }));
+    await harness.settle();
     assert.match(
       harness.document.querySelector("#sessions")?.textContent ?? "",
-      /Previous sessions.*Previous Bass arrangement/s,
+      /Renamed history/,
     );
-    const restore = harness.document.querySelector<HTMLButtonElement>(
-      '.restore-session-button[data-session-id="session-previous"]',
-    );
-    assert.ok(restore);
 
-    harness.setConfirmResult(false);
-    restore.click();
+    harness.click('[data-session-menu-button="session-previous"]');
+    harness.click('[data-session-id="session-previous"] [data-session-action="archive"]');
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 0);
-
-    harness.setConfirmResult(true);
-    restore.click();
-    await harness.settle();
-
-    assert.deepEqual(commandCalls(harness), [{
-      path: "/command",
-      body: { kind: "restore_session", sessionId: "session-previous" },
-    }]);
     assert.equal(
-      harness.document.querySelector('.session-row[aria-pressed="true"] .session-title')
-        ?.textContent,
-      "Previous Bass arrangement",
+      harness.document.querySelector('[data-continue-session-id="session-previous"]'),
+      null,
     );
-    assert.equal(harness.document.querySelector(".restore-session-button"), null);
+    assert.match(
+      harness.document.querySelector("#sessions")?.textContent ?? "",
+      /Archived.*Renamed history/s,
+    );
+
+    harness.click('[data-session-menu-button="session-previous"]');
+    harness.click('[data-session-id="session-previous"] [data-session-action="unarchive"]');
+    await harness.settle();
+    const continueHere = harness.document.querySelector<HTMLButtonElement>(
+      '[data-continue-session-id="session-previous"]',
+    );
+    assert.ok(continueHere);
+    assert.match(
+      continueHere.getAttribute("aria-label") ?? "",
+      /current track Drums/i,
+    );
+    continueHere.click();
+    await harness.settle();
+
+    assert.deepEqual(commandCalls(harness), [
+      {
+        path: "/command",
+        body: {
+          kind: "rename_session",
+          sessionId: "session-previous",
+          title: "Renamed history",
+        },
+      },
+      {
+        path: "/command",
+        body: { kind: "archive_session", sessionId: "session-previous" },
+      },
+      {
+        path: "/command",
+        body: { kind: "unarchive_session", sessionId: "session-previous" },
+      },
+      {
+        path: "/command",
+        body: { kind: "restore_session", sessionId: "session-previous" },
+      },
+    ]);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Session rows pan overflowing metadata and keep action menus inside the viewport", async () => {
+  const state = stateFixture();
+  state.previousSessions = [{
+    id: "session-previous",
+    title: "Previous drum arrangement",
+    projectKey: "previous-activation",
+    scope: { kind: "track", identity: "old-drum-handle", label: "Chords" },
+    createdAt: "2026-07-31T00:00:00.000Z",
+    updatedAt: "2026-07-31T00:15:00.000Z",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const entry = harness.document.querySelector<HTMLElement>(
+      '[data-session-id="session-previous"]',
+    );
+    const menuButton = entry?.querySelector<HTMLButtonElement>(
+      ".session-menu-button",
+    );
+    const menu = entry?.querySelector<HTMLElement>(".session-action-menu");
+    const metadata = entry?.querySelector<HTMLElement>(".session-meta");
+    const metadataContent = entry?.querySelector<HTMLElement>(
+      ".session-meta-content",
+    );
+    const sessions = harness.document.querySelector<HTMLElement>("#sessions");
+    assert.ok(entry);
+    assert.ok(menuButton);
+    assert.ok(menu);
+    assert.ok(metadata);
+    assert.ok(metadataContent);
+    assert.ok(sessions);
+
+    assert.equal(menuButton.textContent, "⋯");
+    assert.equal(harness.window.getComputedStyle(menuButton).width, "22px");
+    assert.equal(harness.window.getComputedStyle(metadata).whiteSpace, "nowrap");
+    assert.equal(harness.window.getComputedStyle(metadata).overflow, "hidden");
+    assert.equal(harness.window.getComputedStyle(sessions).overflow, "auto");
+    assert.equal(metadata.textContent, "Track · Chords");
+    assert.equal(
+      entry.querySelector('[data-continue-session-id="session-previous"]')?.textContent,
+      "Continue",
+    );
+
+    Object.defineProperty(metadata, "clientWidth", {
+      configurable: true,
+      value: 120,
+    });
+    Object.defineProperty(metadataContent, "scrollWidth", {
+      configurable: true,
+      value: 210,
+    });
+    harness.window.dispatchEvent(new harness.window.Event("resize"));
+    assert.equal(metadata.classList.contains("is-overflowing"), true);
+    assert.equal(metadata.style.getPropertyValue("--session-meta-shift"), "90px");
+    assert.equal(metadata.style.getPropertyValue("--session-meta-duration"), "4.45s");
+
+    Object.defineProperty(harness.window, "innerWidth", {
+      configurable: true,
+      value: 400,
+    });
+    Object.defineProperty(harness.window, "innerHeight", {
+      configurable: true,
+      value: 240,
+    });
+    menuButton.getBoundingClientRect = () => ({
+      bottom: 226,
+      height: 22,
+      left: 350,
+      right: 372,
+      top: 204,
+      width: 22,
+      x: 350,
+      y: 204,
+      toJSON: () => ({}),
+    });
+    menu.getBoundingClientRect = () => ({
+      bottom: 0,
+      height: 100,
+      left: 0,
+      right: 116,
+      top: 0,
+      width: 116,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    menuButton.click();
+    assert.equal(menu.hidden, false);
+    assert.equal(harness.window.getComputedStyle(menu).position, "fixed");
+    assert.ok(Number.parseFloat(menu.style.top) < 204);
+    assert.ok(Number.parseFloat(menu.style.left) >= 6);
+    assert.ok(Number.parseFloat(menu.style.left) + 116 <= 394);
+
+    sessions.dispatchEvent(new harness.window.Event("scroll"));
+    assert.equal(menu.hidden, true);
+    assert.equal(menuButton.getAttribute("aria-expanded"), "false");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1778,7 +2277,7 @@ test("a background Session confirmation response cannot clear the active Session
   }
 });
 
-test("Session metadata uses locale-aware date formatting and ignores invalid dates", async () => {
+test("Session metadata keeps object labels separate from locale-aware dates", async () => {
   const state = stateFixture();
   state.sessions[1]!.updatedAt = "not-a-date";
   const harness = await createDialogHarness(state);
@@ -1789,13 +2288,14 @@ test("Session metadata uses locale-aware date formatting and ignores invalid dat
       minute: "2-digit",
       month: "short",
     });
-    const metadata = [...harness.document.querySelectorAll<HTMLElement>(".session-meta")]
-      .map((element) => element.textContent);
+    const metadata = [...harness.document.querySelectorAll<HTMLElement>(".session-meta")];
+    assert.equal(metadata[0]?.textContent, "Track · Bass");
     assert.equal(
-      metadata[0],
-      `track · ${formatter.format(new harness.window.Date("2026-08-01T00:00:00.000Z"))}`,
+      metadata[0]?.title,
+      `Updated ${formatter.format(new harness.window.Date("2026-08-01T00:00:00.000Z"))}`,
     );
-    assert.equal(metadata[1], "track / Lead");
+    assert.equal(metadata[1]?.textContent, "Track · Lead");
+    assert.equal(metadata[1]?.title, "");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3728,7 +4228,9 @@ test("session actions send only their command-specific fields", async () => {
     rename.dispatchEvent(new harness.window.Event("blur"));
     await harness.settle();
 
-    harness.click("#deleteSession");
+    harness.click('[data-session-menu-button="session-2"]');
+    harness.click('[data-session-id="session-2"] [data-session-action="delete"]');
+    harness.click('[data-delete-session-id="session-2"] [data-delete-confirm]');
     await harness.settle();
 
     assert.deepEqual(commandCalls(harness), [

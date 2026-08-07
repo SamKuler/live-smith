@@ -19,6 +19,8 @@ export interface AgentSession {
   title: string;
   projectKey: string;
   scope: ConversationScope;
+  originScope?: ConversationScope | undefined;
+  archivedAt?: string | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -149,6 +151,7 @@ export async function restoreSession(
       ...existing,
       projectKey: target.projectKey,
       scope: target.scope,
+      originScope: existing.originScope ?? existing.scope,
       updatedAt: new Date().toISOString(),
     };
     const updated = sessions.map((session) =>
@@ -157,6 +160,39 @@ export async function restoreSession(
     if (storageDirectory) await saveSessions(storageDirectory, updated);
     else memorySessions = updated;
     return restored;
+  });
+}
+
+export async function setSessionArchived(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  archived: boolean,
+): Promise<AgentSession> {
+  return withStorageTransaction(storageDirectory, async () => {
+    const sessions = storageDirectory
+      ? await loadSessionsUnlocked(storageDirectory)
+      : memorySessions;
+    const existing = sessions.find((session) => session.id === sessionId);
+    if (!existing) throw new Error(`Session ${sessionId} does not exist.`);
+
+    const now = new Date().toISOString();
+    let updated: AgentSession;
+    if (archived) {
+      updated = {
+        ...existing,
+        archivedAt: existing.archivedAt ?? now,
+        updatedAt: now,
+      };
+    } else {
+      const { archivedAt: _archivedAt, ...unarchived } = existing;
+      updated = { ...unarchived, updatedAt: now };
+    }
+    const nextSessions = sessions.map((session) =>
+      session.id === sessionId ? updated : session
+    );
+    if (storageDirectory) await saveSessions(storageDirectory, nextSessions);
+    else memorySessions = nextSessions;
+    return updated;
   });
 }
 
@@ -203,6 +239,9 @@ function isAgentSession(value: unknown): value is AgentSession {
     typeof record.title === "string" &&
     typeof record.projectKey === "string" &&
     isConversationScope(record.scope) &&
+    (record.originScope === undefined ||
+      isConversationScope(record.originScope)) &&
+    (record.archivedAt === undefined || typeof record.archivedAt === "string") &&
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string"
   );

@@ -270,16 +270,22 @@ Sessions are isolated by an activation-scoped project key and the selected Live
 object's opaque SDK handle ID. Track, clip, device, and other object scopes stay
 distinct even when their action target also retains an owning track; display
 labels never determine session identity. Because the beta SDK exposes no stable
-Set identifier across activation, matching prior-activation kind/label pairs are
-shown only as recovery candidates. An explicit `restore_session` command ignores
-client-supplied scope/project data and atomically rebinds the chosen history to
-the current server-owned opening scope.
+Set identifier across activation, historical object names are presented only as
+reference labels and never as evidence that two objects are the same. All
+unarchived prior-activation Sessions remain manageable in History. A Session
+whose scope kind matches the current opening scope may use Continue here; this
+does not match names or infer identity. The command sends only the Session ID,
+and `restore_session` atomically binds the history to the current server-owned
+handle while preserving the first binding as `originScope`. Rename, archive,
+unarchive, and delete operate on current or historical Sessions. `archivedAt` is
+an optional additive field, so existing Session files require no migration.
 Model context uses the latest 24 user/assistant events plus a separate bounded
 projection of the latest 12 persisted Apply results, rejected tool inputs, and
 errors (at most 12,000 characters). Recovery records are labelled untrusted
 bookkeeping data and never gain instruction authority. The bridge permits one
 active send per Session while different Sessions may observe and plan in
-parallel. Session select/create/restore/rename/delete commands remain available
+parallel. Session select/create/restore/rename/archive/unarchive/delete commands
+remain available
 during background sends, but Profile and model-discovery writes are locked in
 both the dialog and bridge while any send is active. The global Approval mode
 selector is the exception: it remains writable during a send and is read again

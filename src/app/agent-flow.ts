@@ -65,6 +65,7 @@ import {
   deleteSession,
   listSessions,
   restoreSession,
+  setSessionArchived,
   updateSession,
 } from "../storage/sessions.js";
 import {
@@ -104,10 +105,11 @@ import {
   activeRecoveryLedgerFromEvents,
   conversationHistoryFromEvents,
   getOrCreateDefaultSession,
-  nextNewChatTitle,
+  previousSessionsForProject,
   projectKeyForContext,
   recoveryContextFromEvents,
-  recoverableSessionsForScope,
+  continuableSessionsForScope,
+  sessionTitleForPrompt,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 
@@ -157,6 +159,9 @@ export async function runAgentFlow(
       : undefined;
   };
 
+  const resolveContinueInteraction = (): LiveInteractionContext =>
+    resolveSessionInteraction({ scope: interaction.scope }) ?? interaction;
+
   const resolveActiveSession = async () => {
     for (;;) {
       const requestedSessionId = activeSessionId;
@@ -165,7 +170,6 @@ export async function runAgentFlow(
       )(
         context.environment.storageDirectory,
         interaction,
-        interaction.defaultPrompt,
         projectKey,
         requestedSessionId,
       );
@@ -207,12 +211,12 @@ export async function runAgentFlow(
     for (;;) {
       const activeSession = await resolveActiveSession();
       const allSessions = await listSessions(context.environment.storageDirectory);
-      const sessions = allSessions.filter((session) => session.projectKey === projectKey);
-      const recoverableSessions = recoverableSessionsForScope(
-        allSessions,
-        projectKey,
-        interaction.scope,
+      const sessions = allSessions.filter(
+        (session) => session.projectKey === projectKey && !session.archivedAt,
       );
+      const previousSessions = previousSessionsForProject(allSessions, projectKey);
+      const archivedSessions = allSessions.filter((session) => session.archivedAt);
+      const continueInteraction = resolveContinueInteraction();
       const events = await (
         dependencies.loadSessionEvents ?? loadSessionEvents
       )(
@@ -225,8 +229,13 @@ export async function runAgentFlow(
         defaultPrompt: activeInteraction?.defaultPrompt ?? "",
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
+        sessionContinueTarget: {
+          kind: continueInteraction.scope.kind,
+          label: continueInteraction.scope.label,
+        },
         sessions,
-        recoverableSessions,
+        previousSessions,
+        archivedSessions,
         activeSessionId: activeSession.id,
         events,
         capabilities,
@@ -329,7 +338,7 @@ export async function runAgentFlow(
         : interaction;
       throwIfAborted(signal);
       const session = await createSession(context.environment.storageDirectory, {
-        title: nextNewChatTitle(sessions, projectKey),
+        title: "",
         projectKey,
         scope: activeInteraction?.scope ?? interaction.scope,
       });
@@ -353,31 +362,37 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "restore_session") {
       const allSessions = await listSessions(context.environment.storageDirectory);
-      const candidate = recoverableSessionsForScope(
+      const continueInteraction = resolveContinueInteraction();
+      const candidate = continuableSessionsForScope(
         allSessions,
         projectKey,
-        interaction.scope,
+        continueInteraction.scope,
       ).find((session) => session.id === commandInput.sessionId);
       if (!candidate) {
-        status = "That previous session cannot be restored to this Live object.";
+        status = "That historical Session cannot continue on the current Live object.";
         return buildState();
       }
       throwIfAborted(signal);
       const restored = await restoreSession(
         context.environment.storageDirectory,
         candidate.id,
-        { projectKey, scope: interaction.scope },
+        { projectKey, scope: continueInteraction.scope },
       );
       activeSessionId = restored.id;
-      rememberedInteractions.set(interactionScopeKey(interaction), interaction);
-      status = `Session ${restored.title} restored to ${interaction.scope.label}.`;
+      rememberedInteractions.set(
+        interactionScopeKey(continueInteraction),
+        continueInteraction,
+      );
+      const restoredTitle = restored.title || restored.scope.label;
+      status =
+        `Session ${restoredTitle} is ready on the current ${continueInteraction.scope.kind} “${continueInteraction.scope.label}”.`;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
 
     if (commandInput.kind === "delete_session") {
-      if (!(await sessionBelongsToProject(commandInput.sessionId))) {
-        status = "That session is not available in this Live Set.";
+      if (!(await sessionExists(commandInput.sessionId))) {
+        status = "That Session no longer exists.";
         return buildState();
       }
       throwIfAborted(signal);
@@ -390,8 +405,8 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "rename_session") {
-      if (!(await sessionBelongsToProject(commandInput.sessionId))) {
-        status = "That session is not available in this Live Set.";
+      if (!(await sessionExists(commandInput.sessionId))) {
+        status = "That Session no longer exists.";
         return buildState();
       }
       throwIfAborted(signal);
@@ -401,6 +416,29 @@ export async function runAgentFlow(
         { title: commandInput.title },
       );
       status = undefined;
+      openSettingsOnLoad = false;
+      return buildStateAfterCommandMutation();
+    }
+
+    if (
+      commandInput.kind === "archive_session" ||
+      commandInput.kind === "unarchive_session"
+    ) {
+      if (!(await sessionExists(commandInput.sessionId))) {
+        status = "That Session no longer exists.";
+        return buildState();
+      }
+      throwIfAborted(signal);
+      const archived = commandInput.kind === "archive_session";
+      await setSessionArchived(
+        context.environment.storageDirectory,
+        commandInput.sessionId,
+        archived,
+      );
+      if (archived && activeSessionId === commandInput.sessionId) {
+        activeSessionId = undefined;
+      }
+      status = archived ? "Session archived." : "Session returned to the list.";
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -441,6 +479,11 @@ export async function runAgentFlow(
 
   const sessionBelongsToProject = async (sessionId: string): Promise<boolean> =>
     (await listSessions(context.environment.storageDirectory, projectKey)).some(
+      (session) => session.id === sessionId && !session.archivedAt,
+    );
+
+  const sessionExists = async (sessionId: string): Promise<boolean> =>
+    (await listSessions(context.environment.storageDirectory)).some(
       (session) => session.id === sessionId,
     );
 
@@ -567,7 +610,6 @@ export async function handleAgentRequest(
   const session = await getOrCreateDefaultSession(
     context.environment.storageDirectory,
     interaction,
-    prompt,
     projectKey,
     sessionId,
   );
@@ -578,6 +620,11 @@ export async function handleAgentRequest(
   const history = conversationHistoryFromEvents(priorEvents);
   const recoveryContext = recoveryContextFromEvents(priorEvents);
   const initialRecoveryState = activeRecoveryLedgerFromEvents(priorEvents);
+  if (!session.title.trim()) {
+    await updateSession(context.environment.storageDirectory, session.id, {
+      title: sessionTitleForPrompt(prompt, session.scope.label),
+    });
+  }
   const requestLiveContext = recoveryContext
     ? `${interaction.summary}\n\n${recoveryContext}`
     : interaction.summary;

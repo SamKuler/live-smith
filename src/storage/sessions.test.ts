@@ -9,6 +9,7 @@ import {
   deleteSession,
   listSessions,
   restoreSession,
+  setSessionArchived,
   SessionStorageCorruptionError,
   sessionScopeKey,
 } from "./sessions.js";
@@ -122,7 +123,26 @@ test("listSessions can isolate sessions by project key", async () => {
   assert.deepEqual(await listSessions(dir, "project-a"), [first]);
 });
 
-test("restoreSession explicitly rebinds one prior-activation Session", async () => {
+test("setSessionArchived adds and removes optional archival metadata", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Old mix review",
+    projectKey: "previous-activation",
+    scope: { kind: "track", identity: "track-old", label: "Mix Bus" },
+  });
+
+  const archived = await setSessionArchived(dir, session.id, true);
+  assert.equal(typeof archived.archivedAt, "string");
+  assert.equal(archived.id, session.id);
+  assert.deepEqual((await listSessions(dir))[0], archived);
+
+  const unarchived = await setSessionArchived(dir, session.id, false);
+  assert.equal("archivedAt" in unarchived, false);
+  assert.equal(unarchived.id, session.id);
+  assert.deepEqual((await listSessions(dir))[0], unarchived);
+});
+
+test("restoreSession rebinds a Session while preserving its original scope", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
   const previous = await createSession(dir, {
     title: "Bass arrangement",
@@ -142,9 +162,21 @@ test("restoreSession explicitly rebinds one prior-activation Session", async () 
     identity: "current-track-handle",
     label: "Bass",
   });
+  assert.deepEqual(restored.originScope, previous.scope);
   assert.notEqual(restored.updatedAt, previous.updatedAt);
   assert.deepEqual(await listSessions(dir, "current-activation"), [restored]);
   assert.deepEqual(await listSessions(dir, "previous-activation"), []);
+
+  const rebound = await restoreSession(dir, previous.id, {
+    projectKey: "later-activation",
+    scope: { kind: "track", identity: "later-track-handle", label: "Drums" },
+  });
+  assert.deepEqual(rebound.originScope, previous.scope);
+  assert.deepEqual(rebound.scope, {
+    kind: "track",
+    identity: "later-track-handle",
+    label: "Drums",
+  });
 });
 
 test("restoreSession rejects missing and already-current Sessions", async () => {
@@ -224,6 +256,48 @@ test("one invalid persisted session blocks mutation instead of dropping the item
 
   await assert.rejects(
     deleteSession(dir, "session-valid"),
+    (error: unknown) => error instanceof SessionStorageCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("a malformed persisted origin scope is rejected without rewriting storage", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const original = JSON.stringify([{
+    id: "session-invalid-origin",
+    title: "Invalid origin",
+    projectKey: "set-001",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+    originScope: { kind: "track", label: "Missing identity" },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    listSessions(dir),
+    (error: unknown) => error instanceof SessionStorageCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("a malformed persisted archive timestamp is rejected without rewriting storage", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const original = JSON.stringify([{
+    id: "session-invalid-archive",
+    title: "Invalid archive",
+    projectKey: "set-001",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+    archivedAt: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    listSessions(dir),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
   assert.equal(await fs.readFile(target, "utf8"), original);

@@ -24,11 +24,12 @@ const activationProjectKeys = new WeakMap<
 export async function getOrCreateDefaultSession(
   storageDirectory: string | undefined,
   interaction: LiveInteractionContext,
-  prompt: string,
   projectKey: string,
   preferredSessionId?: string | undefined,
 ): Promise<AgentSession> {
-  const sessions = await listSessions(storageDirectory, projectKey);
+  const sessions = (await listSessions(storageDirectory, projectKey)).filter(
+    (session) => !session.archivedAt,
+  );
   const preferred = sessions.find((session) => session.id === preferredSessionId);
   if (preferred) return preferred;
 
@@ -40,31 +41,10 @@ export async function getOrCreateDefaultSession(
   if (existing) return existing;
 
   return createSession(storageDirectory, {
-    title: titleForPrompt(prompt, scope.label),
+    title: "",
     projectKey,
     scope,
   });
-}
-
-export function nextNewChatTitle(
-  sessions: AgentSession[],
-  projectKey: string,
-): string {
-  const used = new Set<number>();
-  for (const session of sessions) {
-    if (session.projectKey !== projectKey) continue;
-    if (session.title === "New chat") {
-      used.add(1);
-      continue;
-    }
-    const match = /^New chat \((\d+)\)$/.exec(session.title);
-    if (match) used.add(Number(match[1]));
-  }
-
-  if (!used.has(1)) return "New chat";
-  let number = 2;
-  while (used.has(number)) number += 1;
-  return `New chat (${number})`;
 }
 
 export function conversationHistoryFromEvents(
@@ -132,17 +112,25 @@ function isRejectedToolInput(event: SessionEvent): boolean {
     /^Tool call .* has invalid arguments:/i.test(event.content);
 }
 
-export function recoverableSessionsForScope(
+export function continuableSessionsForScope(
   sessions: AgentSession[],
   projectKey: string,
   scope: LiveInteractionContext["scope"],
 ): AgentSession[] {
-  const label = normalizedScopeLabel(scope.label);
   return sessions.filter(
     (session) =>
       session.projectKey !== projectKey &&
-      session.scope.kind === scope.kind &&
-      normalizedScopeLabel(session.scope.label) === label,
+      !session.archivedAt &&
+      session.scope.kind === scope.kind,
+  );
+}
+
+export function previousSessionsForProject(
+  sessions: AgentSession[],
+  projectKey: string,
+): AgentSession[] {
+  return sessions.filter(
+    (session) => session.projectKey !== projectKey && !session.archivedAt,
   );
 }
 
@@ -156,11 +144,7 @@ export function projectKeyForContext(context: Api): string {
   return projectKey;
 }
 
-function titleForPrompt(prompt: string, fallback: string): string {
+export function sessionTitleForPrompt(prompt: string, fallback: string): string {
   const title = prompt.split("\n")[0]?.trim() || fallback;
   return title.length <= 80 ? title : `${title.slice(0, 79)}…`;
-}
-
-function normalizedScopeLabel(value: string): string {
-  return value.trim().toLocaleLowerCase();
 }

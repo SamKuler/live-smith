@@ -1,3 +1,4 @@
+import type { ConversationScope } from "../model/contracts.js";
 import type {
   ModelCapabilities,
   ModelInfo,
@@ -11,8 +12,13 @@ import type { AgentSettings } from "../storage/settings.js";
 export interface ChatDialogState {
   defaultPrompt: string;
   contextSummary: string;
+  sessionContinueTarget: {
+    kind: ConversationScope["kind"];
+    label: string;
+  };
   sessions: AgentSession[];
-  recoverableSessions: AgentSession[];
+  previousSessions: AgentSession[];
+  archivedSessions: AgentSession[];
   activeSessionId: string;
   events: SessionEvent[];
   capabilities: ModelCapabilities;

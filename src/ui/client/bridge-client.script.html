@@ -114,8 +114,11 @@
         const sessionCommand = [
           "new_session",
           "select_session",
+          "restore_session",
           "delete_session",
           "rename_session",
+          "archive_session",
+          "unarchive_session",
         ].includes(kind);
         const allowedDuringSend = sessionCommand || kind === "save_global_settings";
         if (sendAttemptsBySession.size && !allowedDuringSend) {
@@ -317,8 +320,6 @@
           if (activity?.status === "failed") showStatus(activity.message || "Agent request failed.", true);
           else showStatus(getState().status || "");
         }
-        requireView().renderSessions();
-        requireView().renderTimeline();
       }
 
       function setAttemptStatus(attempt, message, isError) {

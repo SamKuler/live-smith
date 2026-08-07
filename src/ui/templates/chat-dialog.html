@@ -183,10 +183,26 @@
         gap: 5px;
       }
 
+      .session-heading {
+        display: flex;
+        align-items: baseline;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .session-selection-count {
+        color: var(--trace);
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0;
+        text-transform: none;
+        white-space: nowrap;
+      }
+
       .sessions {
         display: grid;
         align-content: start;
-        gap: 6px;
+        gap: 4px;
         min-height: 0;
         overflow: auto;
         overscroll-behavior: contain;
@@ -207,7 +223,14 @@
       }
 
       .session-entry {
+        position: relative;
         min-width: 0;
+      }
+
+      .session-row[hidden],
+      .session-menu-button[hidden],
+      .session-continue-button[hidden] {
+        display: none;
       }
 
       .session-row[aria-pressed="true"] {
@@ -216,9 +239,50 @@
         box-shadow: inset 3px 0 0 var(--accent);
       }
 
-      .session-row:not(:disabled):hover {
+      .session-entry[data-selected] > .session-row {
+        border-color: rgba(124, 184, 232, 0.72);
+        background: rgba(124, 184, 232, 0.1);
+        box-shadow: inset 3px 0 0 var(--trace);
+      }
+
+      .sessions-pane.command-busy .session-row:disabled {
+        opacity: 1;
+      }
+
+      .sessions-pane.command-busy .session-menu-button:disabled {
+        opacity: 0.62;
+      }
+
+      .sessions-pane.command-busy .session-continue-button:disabled {
+        opacity: 0.72;
+      }
+
+      .session-entry:not([data-selected]) >
+      button.session-row:not([aria-pressed="true"]):not(:disabled):hover {
         border-color: #5e5e5e;
         background: #565656;
+      }
+
+      .session-entry[data-selected] >
+      button.session-row:not(:disabled):hover {
+        border-color: rgba(124, 184, 232, 0.9);
+        background: rgba(124, 184, 232, 0.16);
+      }
+
+      .session-entry:not([data-selected]) >
+      button.session-row[aria-pressed="true"]:not(:disabled):hover {
+        border-color: rgba(255, 165, 0, 0.85);
+        background: rgba(255, 165, 0, 0.18);
+      }
+
+      .history-session-row,
+      .archived-session-row {
+        background: #484848;
+      }
+
+      .archived-session-row {
+        color: var(--muted);
+        background: #444;
       }
 
       .session-title {
@@ -233,6 +297,7 @@
         align-items: center;
         gap: 7px;
         min-width: 0;
+        padding-right: 23px;
       }
 
       .session-unread-dot {
@@ -250,11 +315,59 @@
       }
 
       .session-meta {
+        display: block;
+        min-width: 0;
         overflow: hidden;
         color: var(--quiet);
-        text-overflow: ellipsis;
-        white-space: nowrap;
         font-size: 11px;
+        line-height: 1.35;
+        white-space: nowrap;
+      }
+
+      .session-meta-content {
+        display: inline-block;
+        min-width: max-content;
+      }
+
+      .session-entry:hover .session-meta.is-overflowing .session-meta-content,
+      .session-entry:focus-within .session-meta.is-overflowing .session-meta-content {
+        animation: session-meta-pan var(--session-meta-duration, 3.2s) ease-in-out 250ms infinite alternate;
+      }
+
+      @keyframes session-meta-pan {
+        0%,
+        15% {
+          transform: translateX(0);
+        }
+
+        85%,
+        100% {
+          transform: translateX(calc(-1 * var(--session-meta-shift)));
+        }
+      }
+
+      .can-continue-session-entry .session-meta {
+        padding-right: 54px;
+      }
+
+      .session-continue-button {
+        position: absolute;
+        z-index: 2;
+        right: 7px;
+        bottom: 7px;
+        height: 18px;
+        padding: 0 2px;
+        color: var(--accent);
+        background: transparent;
+        border: 0;
+        font-size: 10px;
+        font-weight: 600;
+      }
+
+      .session-continue-button:not(:disabled):hover,
+      .session-continue-button:focus-visible {
+        color: #ffc04d;
+        text-decoration: underline;
       }
 
       .session-empty {
@@ -276,29 +389,126 @@
         text-transform: uppercase;
       }
 
-      .recoverable-session-card {
+      .session-menu-button {
+        position: absolute;
+        z-index: 2;
+        top: 7px;
+        right: 7px;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 8px;
-        padding: 8px;
-        border: 1px dashed var(--line);
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        color: var(--quiet);
+        background: transparent;
+        border: 0;
+        font-size: 16px;
+        line-height: 1;
+        opacity: 0.62;
+      }
+
+      .session-menu-button:not(:disabled):hover,
+      .session-menu-button[aria-expanded="true"],
+      .session-menu-button:focus-visible {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.07);
+        opacity: 1;
+      }
+
+      .session-action-menu {
+        position: fixed;
+        z-index: 80;
+        top: 0;
+        left: 0;
+        display: grid;
+        min-width: 116px;
+        padding: 4px;
+        background: #292929;
+        border: 1px solid #666;
         border-radius: 4px;
-        background: var(--pane-2);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.38);
       }
 
-      .recoverable-session-copy {
+      .session-action-menu[hidden] {
+        display: none;
+      }
+
+      .session-action-menu button {
+        width: 100%;
+        min-height: 28px;
+        padding: 0 8px;
+        color: var(--text);
+        text-align: left;
+        background: transparent;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+
+      .session-action-menu button:hover,
+      .session-action-menu button:focus-visible {
+        background: #4b4b4b;
+      }
+
+      .session-action-menu .danger-text {
+        color: #ff8d7a;
+      }
+
+      .session-delete-confirm {
         display: grid;
-        gap: 3px;
-        min-width: 0;
+        gap: 2px;
+        padding: 0;
+        color: var(--text);
+        font-size: 11px;
       }
 
-      .restore-session-button {
-        min-height: 32px;
-        padding-inline: 9px;
+      .session-action-menu.delete-confirm-mode {
+        width: 176px;
+        min-width: 0;
+        max-width: calc(100vw - 12px);
+        padding: 4px;
+      }
+
+      .session-delete-question {
+        display: block;
+        padding: 6px 8px 4px;
+        color: var(--muted);
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+
+      .session-delete-controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px;
+      }
+
+      .session-delete-controls button {
+        height: 28px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+
+      .session-delete-controls .secondary {
+        color: var(--text);
+        background: transparent;
+        border: 0;
+      }
+
+      .session-delete-controls .danger {
+        color: #ff8d7a;
+        background: transparent;
+        font-weight: 600;
+      }
+
+      .session-delete-controls .danger:hover,
+      .session-delete-controls .danger:focus-visible {
+        color: #ff9e8f;
+        background: rgba(255, 110, 87, 0.12);
       }
 
       .session-rename-input {
+        width: 100%;
         height: 52px;
         padding: 0 9px;
         font-size: 13px;
@@ -315,7 +525,7 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 8px 12px 0;
+        padding: 8px 12px;
         background: var(--chrome);
       }
 
@@ -1095,11 +1305,12 @@
       <main>
         <aside class="sessions-pane">
           <div class="pane-header">
-            <span>Sessions</span>
+            <span class="session-heading">
+              <span>Sessions</span>
+              <span id="sessionSelectionCount" class="session-selection-count" aria-live="polite" hidden></span>
+            </span>
             <div class="session-actions">
               <button id="newSessionButton" class="icon-button" type="button" title="New Session" aria-label="New Session" data-idle-label="+" onclick="LiveSmithUI.runCommand('new_session')">+</button>
-              <button id="renameSessionButton" class="icon-button" type="button" title="Rename Session" aria-label="Rename Session" data-idle-label="&#9998;" onclick="LiveSmithUI.renameActiveSession()">&#9998;</button>
-              <button id="deleteSession" class="icon-button" type="button" title="Delete Session" aria-label="Delete Session" data-idle-label="-" onclick="LiveSmithUI.deleteActiveSession()">-</button>
             </div>
           </div>
           <div id="sessions" class="sessions"></div>

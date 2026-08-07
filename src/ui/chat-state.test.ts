@@ -52,8 +52,10 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
   const serialized = serializeChatStateForHtml({
     defaultPrompt: "<script>&\u2028\u2029",
     contextSummary: "",
+    sessionContinueTarget: { kind: "track", label: "Bass" },
     sessions: [],
-    recoverableSessions: [],
+    previousSessions: [],
+    archivedSessions: [],
     activeSessionId: "",
     events: [],
     capabilities: {

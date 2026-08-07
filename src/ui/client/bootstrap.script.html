@@ -40,7 +40,6 @@
           getAssistantDraft: bridgeClient.getAssistantDraft,
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
           isCommandInProgress: bridgeClient.isCommandInProgress,
-          isOperationInProgress: bridgeClient.isOperationInProgress,
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
         });
@@ -150,16 +149,10 @@
           },
           select_session: { busyLabel: "Switching…", status: "Switching Session…" },
           restore_session: { busyLabel: "Restoring…", status: "Restoring Session…" },
-          delete_session: {
-            busyLabel: "…",
-            controlId: "deleteSession",
-            status: "Deleting Session…",
-          },
-          rename_session: {
-            busyLabel: "…",
-            controlId: "renameSessionButton",
-            status: "Renaming Session…",
-          },
+          delete_session: { status: "Deleting Session…" },
+          rename_session: { status: "Renaming Session…" },
+          archive_session: { status: "Archiving Session…" },
+          unarchive_session: { status: "Returning Session…" },
         };
         let activeCommandControl = null;
         let activeCommandAriaLabel = null;
@@ -216,6 +209,9 @@
           const operationBusy = Boolean(commandKind) || sendInProgress;
           const settingsBusy = Boolean(commandKind) || anySendInProgress;
           updateCommandFeedback(commandKind);
+          const sessionsPane = document.querySelector(".sessions-pane");
+          sessionsPane?.classList.toggle("command-busy", Boolean(commandKind));
+          sessionsPane?.setAttribute("aria-busy", String(Boolean(commandKind)));
           document.getElementById("settingsPanel")
             .setAttribute("aria-busy", String(settingsBusy));
           document.getElementById("settingsLockNotice").hidden = !(
@@ -248,7 +244,6 @@
           if (!operationBusy) {
             capabilityPreview.updateReasoningVisibility();
             capabilityPreview.updateDraftActions();
-            sessionTimeline.renderSessions();
           }
         }
 
@@ -280,7 +275,6 @@
         window.LiveSmithUI = {
           addProfile: profileEditor.addProfile,
           deleteProfile: profileEditor.deleteProfile,
-          deleteActiveSession: sessionTimeline.deleteActiveSession,
           discardProfileChanges: profileEditor.discardProfileChanges,
           discoverModels: profileEditor.discoverModels,
           duplicateProfile: profileEditor.duplicateProfile,
@@ -291,7 +285,6 @@
           markDraftDirty: profileEditor.markDraftDirty,
           openInspector,
           requestClose,
-          renameActiveSession: sessionTimeline.renameActiveSession,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveProfile: profileEditor.saveProfile,

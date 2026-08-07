@@ -71,6 +71,11 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "save_global_settings", approvalMode: "low-risk" }),
     });
+    const archiveActiveSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "archive_session", sessionId: "s1" }),
+    });
     const profileCommand = await fetch(endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -85,6 +90,10 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     assert.equal(otherSessionSend.status, 200);
     assert.equal(command.status, 200);
     assert.equal(settingsCommand.status, 200);
+    assert.equal(archiveActiveSession.status, 409);
+    assert.deepEqual(await archiveActiveSession.json(), {
+      error: "Stop this Session's active request before archiving it.",
+    });
     assert.equal(profileCommand.status, 409);
     assert.deepEqual(await profileCommand.json(), {
       error: "Profile settings cannot change while an agent request is active.",
@@ -1157,6 +1166,22 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     });
     assert.equal(restore.status, 400);
     assert.match((await restore.json() as { error: string }).error, /does not support property projectKey/i);
+    assert.equal(commandInput, undefined);
+
+    const archive = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "archive_session",
+        sessionId: "session-previous",
+        projectKey: "must-not-pass",
+      }),
+    });
+    assert.equal(archive.status, 400);
+    assert.match(
+      (await archive.json() as { error: string }).error,
+      /does not support property projectKey/i,
+    );
     assert.equal(commandInput, undefined);
   } finally {
     await bridge.close();

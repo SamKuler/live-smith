@@ -300,6 +300,7 @@ test("a post-commit state failure is reconciled as an unknown command outcome", 
         assert.equal(body.reconciliationRequired, undefined);
         assert.equal(body.state?.sessions.length, 1);
         assert.equal(body.state?.activeSessionId, body.state?.sessions[0]?.id);
+        assert.equal(body.state?.sessions[0]?.title, "");
       },
     },
   };
@@ -513,9 +514,14 @@ test("a prior-activation Session is restored only to the server-owned current Li
   const previous = await createSession(directory, {
     title: "Previous Bass arrangement",
     projectKey: "previous-activation",
-    scope: { kind: "track", identity: "old-bass-handle", label: "Bass" },
+    scope: { kind: "track", identity: "old-drum-handle", label: "Drums" },
   });
-  const currentTrack = fakeMidiTrack(20n, "Bass");
+  const obsolete = await createSession(directory, {
+    title: "Obsolete clip notes",
+    projectKey: "previous-activation",
+    scope: { kind: "clip", identity: "old-clip-handle", label: "Chorus" },
+  });
+  const currentTrack = fakeMidiTrack(20n, "Drums");
   let currentProjectKey = "";
   const context = {
     application: {
@@ -530,10 +536,63 @@ test("a prior-activation Session is restored only to the server-owned current Li
           `${chatUrl.origin}${pathname}?token=${token}`;
         const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
         currentProjectKey = initial.sessions[0]!.projectKey;
+        assert.deepEqual(initial.sessionContinueTarget, {
+          kind: "track",
+          label: "Drums",
+        });
         assert.deepEqual(
-          initial.recoverableSessions.map((session) => session.id),
+          initial.previousSessions.map((session) => session.id),
+          [obsolete.id, previous.id],
+        );
+        assert.deepEqual(initial.archivedSessions, []);
+
+        const deleted = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId: obsolete.id }),
+        });
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(
+          (await deleted.json() as ChatDialogState).previousSessions.map(
+            (session) => session.id,
+          ),
           [previous.id],
         );
+
+        const renamed = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "rename_session",
+            sessionId: previous.id,
+            title: "Renamed previous Session",
+          }),
+        });
+        assert.equal(renamed.status, 200);
+        assert.equal(
+          ((await renamed.json() as ChatDialogState).previousSessions[0]?.title),
+          "Renamed previous Session",
+        );
+
+        const archived = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "archive_session", sessionId: previous.id }),
+        });
+        assert.equal(archived.status, 200);
+        const archivedState = await archived.json() as ChatDialogState;
+        assert.deepEqual(archivedState.previousSessions, []);
+        assert.equal(archivedState.archivedSessions[0]?.id, previous.id);
+
+        const unarchived = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "unarchive_session", sessionId: previous.id }),
+        });
+        assert.equal(unarchived.status, 200);
+        const unarchivedState = await unarchived.json() as ChatDialogState;
+        assert.equal(unarchivedState.previousSessions[0]?.id, previous.id);
+        assert.deepEqual(unarchivedState.archivedSessions, []);
 
         const rejected = await fetch(endpoint("/command"), {
           method: "POST",
@@ -558,7 +617,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
         assert.equal(response.status, 200);
         const restored = await response.json() as ChatDialogState;
         assert.equal(restored.activeSessionId, previous.id);
-        assert.deepEqual(restored.recoverableSessions, []);
+        assert.deepEqual(restored.previousSessions, []);
         const restoredSession = restored.sessions.find(
           (session) => session.id === previous.id,
         );
@@ -566,8 +625,10 @@ test("a prior-activation Session is restored only to the server-owned current Li
         assert.deepEqual(restoredSession?.scope, {
           kind: "track",
           identity: "20",
-          label: "Bass",
+          label: "Drums",
         });
+        assert.deepEqual(restoredSession?.originScope, previous.scope);
+        assert.match(restored.status ?? "", /ready on the current track.*Drums/i);
       },
     },
   };
@@ -576,9 +637,9 @@ test("a prior-activation Session is restored only to the server-owned current Li
     context as never,
     {
       defaultPrompt: "Test prompt",
-      summary: "MIDI track Bass",
+      summary: "MIDI track Drums",
       target: { track: currentTrack },
-      scope: { kind: "track", identity: "20", label: "Bass" },
+      scope: { kind: "track", identity: "20", label: "Drums" },
     },
     { renderHtml: () => "<html></html>" },
   );
@@ -586,12 +647,17 @@ test("a prior-activation Session is restored only to the server-owned current Li
   const persisted = (await listSessions(directory)).find(
     (session) => session.id === previous.id,
   );
+  assert.equal(
+    (await listSessions(directory)).some((session) => session.id === obsolete.id),
+    false,
+  );
   assert.equal(persisted?.projectKey, currentProjectKey);
   assert.deepEqual(persisted?.scope, {
     kind: "track",
     identity: "20",
-    label: "Bass",
+    label: "Drums",
   });
+  assert.deepEqual(persisted?.originScope, previous.scope);
 });
 
 function fakeMidiTrack(id: bigint, name: string): MidiTrack<"1.0.0"> {
