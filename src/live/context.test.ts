@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ClipSlot,
   MidiClip,
   MidiTrack,
   RackDevice,
@@ -10,6 +11,7 @@ import {
 
 import {
   audioFileLabel,
+  clipSlotSelectionInteractionContext,
   interactionContextForScope,
   objectInteractionContext,
 } from "./context.js";
@@ -18,6 +20,30 @@ test("audioFileLabel removes Unix and Windows directory paths", () => {
   assert.equal(audioFileLabel("/Users/alice/Samples/Kick.wav"), "Kick.wav");
   assert.equal(audioFileLabel("C:\\Users\\alice\\Samples\\Snare.wav"), "Snare.wav");
   assert.equal(audioFileLabel(undefined), "unknown");
+});
+
+test("Clip Slot selections report each owning track and exact zero-based slotIndex", () => {
+  const bass = fakeMidiTrackWithSlots(10n, "Bass", 6);
+  const lead = fakeMidiTrackWithSlots(20n, "Lead", 4);
+  const slotsById = new Map(
+    [...bass.slots, ...lead.slots].map((slot) => [slot.handle.id, slot]),
+  );
+  const context = {
+    getObjectFromHandle: (handle: { id: bigint }) => slotsById.get(handle.id),
+  } as never;
+
+  const interaction = clipSlotSelectionInteractionContext(context, {
+    selected_clip_slots: [bass.slots[5]!.handle, lead.slots[2]!.handle],
+  });
+
+  assert.match(
+    interaction.summary,
+    /Selected slot 1: MIDI track "Bass", slotIndex=5: empty/,
+  );
+  assert.match(
+    interaction.summary,
+    /Selected slot 2: MIDI track "Lead", slotIndex=2: empty/,
+  );
 });
 
 test("interactionContextForScope refreshes a saved Track session from current Live state", () => {
@@ -161,3 +187,23 @@ test("interactionContextForScope resolves devices nested in any RackDevice", () 
   });
   assert.match(resolved?.summary ?? "", /Nested Simpler/);
 });
+
+function fakeMidiTrackWithSlots(
+  id: bigint,
+  name: string,
+  slotCount: number,
+): { track: MidiTrack<"1.0.0">; slots: ClipSlot<"1.0.0">[] } {
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id } },
+    name: { enumerable: true, value: name },
+  }) as MidiTrack<"1.0.0">;
+  const slots = Array.from({ length: slotCount }, (_, index) =>
+    Object.defineProperties(Object.create(ClipSlot.prototype), {
+      handle: { enumerable: true, value: { id: id * 100n + BigInt(index) } },
+      clip: { enumerable: true, value: null },
+      parent: { enumerable: true, value: track },
+    }) as ClipSlot<"1.0.0">
+  );
+  Object.defineProperty(track, "clipSlots", { enumerable: true, value: slots });
+  return { track, slots };
+}

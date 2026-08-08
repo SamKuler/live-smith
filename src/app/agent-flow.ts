@@ -119,6 +119,7 @@ const maxConsecutiveInvalidToolCalls = 3;
 export interface AgentFlowDependencies {
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
+  requestModelTurn?: typeof requestModelTurn;
   listModels?(
     profile: DraftProfile,
     signal: AbortSignal,
@@ -142,25 +143,41 @@ export async function runAgentFlow(
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
-  const rememberedInteractions = new Map<string, LiveInteractionContext>([
-    [interactionScopeKey(interaction), interaction],
-  ]);
+  const selectionInteractionsBySessionId = new Map<
+    string,
+    LiveInteractionContext
+  >();
+  let bindInvocationSelectionToNextSession = Boolean(
+    interaction.selectionContext,
+  );
 
   const resolveSessionInteraction = (
-    session: { scope: LiveInteractionContext["scope"] },
+    session: { id: string; scope: LiveInteractionContext["scope"] },
   ): LiveInteractionContext | undefined => {
-    const resolved = interactionContextForScope(context, session.scope);
-    if (resolved) {
-      rememberedInteractions.set(interactionScopeKey(resolved), resolved);
-      return resolved;
+    const remembered = selectionInteractionsBySessionId.get(session.id);
+    if (remembered?.selectionContext) {
+      const refreshed = remembered.selectionContext.refresh(context);
+      if (
+        !refreshed ||
+        scopeKey(refreshed.scope) !== scopeKey(session.scope)
+      ) return undefined;
+      const rebound = { ...refreshed, scope: session.scope };
+      selectionInteractionsBySessionId.set(session.id, rebound);
+      return rebound;
     }
-    return session.scope.kind === "selection"
-      ? rememberedInteractions.get(scopeKey(session.scope))
-      : undefined;
+    return interactionContextForScope(context, session.scope);
   };
 
-  const resolveContinueInteraction = (): LiveInteractionContext =>
-    resolveSessionInteraction({ scope: interaction.scope }) ?? interaction;
+  const resolveContinueInteraction = (): LiveInteractionContext | undefined => {
+    if (interaction.selectionContext) {
+      const refreshed = interaction.selectionContext.refresh(context);
+      return refreshed &&
+          scopeKey(refreshed.scope) === scopeKey(interaction.scope)
+        ? { ...refreshed, scope: interaction.scope }
+        : undefined;
+    }
+    return interactionContextForScope(context, interaction.scope);
+  };
 
   const resolveActiveSession = async () => {
     for (;;) {
@@ -173,6 +190,14 @@ export async function runAgentFlow(
         projectKey,
         requestedSessionId,
       );
+      if (
+        requestedSessionId === undefined &&
+        bindInvocationSelectionToNextSession &&
+        interaction.selectionContext
+      ) {
+        selectionInteractionsBySessionId.set(activeSession.id, interaction);
+        bindInvocationSelectionToNextSession = false;
+      }
       if (activeSessionId !== requestedSessionId) continue;
       activeSessionId = activeSession.id;
       return activeSession;
@@ -230,8 +255,8 @@ export async function runAgentFlow(
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
         sessionContinueTarget: {
-          kind: continueInteraction.scope.kind,
-          label: continueInteraction.scope.label,
+          kind: continueInteraction?.scope.kind ?? interaction.scope.kind,
+          label: continueInteraction?.scope.label ?? interaction.scope.label,
         },
         sessions,
         previousSessions,
@@ -342,6 +367,10 @@ export async function runAgentFlow(
         projectKey,
         scope: activeInteraction?.scope ?? interaction.scope,
       });
+      if (activeInteraction?.selectionContext) {
+        selectionInteractionsBySessionId.set(session.id, activeInteraction);
+        bindInvocationSelectionToNextSession = false;
+      }
       activeSessionId = session.id;
       status = "New session created.";
       openSettingsOnLoad = false;
@@ -363,6 +392,10 @@ export async function runAgentFlow(
     if (commandInput.kind === "restore_session") {
       const allSessions = await listSessions(context.environment.storageDirectory);
       const continueInteraction = resolveContinueInteraction();
+      if (!continueInteraction) {
+        status = "The current Live object or selection is no longer available.";
+        return buildState();
+      }
       const candidate = continuableSessionsForScope(
         allSessions,
         projectKey,
@@ -379,10 +412,10 @@ export async function runAgentFlow(
         { projectKey, scope: continueInteraction.scope },
       );
       activeSessionId = restored.id;
-      rememberedInteractions.set(
-        interactionScopeKey(continueInteraction),
-        continueInteraction,
-      );
+      if (continueInteraction.selectionContext) {
+        selectionInteractionsBySessionId.set(restored.id, continueInteraction);
+        bindInvocationSelectionToNextSession = false;
+      }
       const restoredTitle = restored.title || restored.scope.label;
       status =
         `Session ${restoredTitle} is ready on the current ${continueInteraction.scope.kind} “${continueInteraction.scope.label}”.`;
@@ -398,6 +431,7 @@ export async function runAgentFlow(
       throwIfAborted(signal);
       await deleteSessionEvents(context.environment.storageDirectory, commandInput.sessionId);
       await deleteSession(context.environment.storageDirectory, commandInput.sessionId);
+      selectionInteractionsBySessionId.delete(commandInput.sessionId);
       if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
       status = "Session deleted.";
       openSettingsOnLoad = false;
@@ -550,6 +584,7 @@ export async function runAgentFlow(
             }),
           ),
         },
+        dependencies.requestModelTurn ?? requestModelTurn,
       );
     } catch (error) {
       if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
@@ -922,10 +957,6 @@ interface AgentRequestCallbacks {
 
 function scopeKey(scope: LiveInteractionContext["scope"]): string {
   return `${scope.kind}:${scope.identity}`;
-}
-
-function interactionScopeKey(interaction: LiveInteractionContext): string {
-  return scopeKey(interaction.scope);
 }
 
 function assertNeverCommand(commandInput: never): never {

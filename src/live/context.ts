@@ -34,6 +34,10 @@ export interface LiveInteractionContext {
   summary: string;
   target: LiveTarget;
   scope: ConversationScope;
+  /** Selection handles are invocation-scoped and are never persisted with a Session. */
+  selectionContext?: {
+    refresh(context: Api): LiveInteractionContext | undefined;
+  };
 }
 
 export function objectInteractionContext(
@@ -127,17 +131,28 @@ export function arrangementSelectionInteractionContext(
   context: Api,
   selection: ArrangementSelection,
 ): LiveInteractionContext {
-  const track = firstSelectedTrack(context, selection);
+  const snapshot: ArrangementSelection = {
+    selected_lanes: [...selection.selected_lanes],
+    time_selection_start: selection.time_selection_start,
+    time_selection_end: selection.time_selection_end,
+  };
+  const track = firstSelectedTrack(context, snapshot);
   return {
     defaultPrompt:
       "Analyze this arrangement selection and suggest the next useful production move.",
-    summary: summarizeArrangementSelection(context, selection),
+    summary: summarizeArrangementSelection(context, snapshot),
     target: makeTarget(track),
+    selectionContext: {
+      refresh: (currentContext) =>
+        arrangementLanesAreCurrent(currentContext, snapshot.selected_lanes)
+          ? arrangementSelectionInteractionContext(currentContext, snapshot)
+          : undefined,
+    },
     scope: track
       ? scopeForTrack(track)
       : {
           kind: "selection",
-          identity: selection.selected_lanes.map((handle) => handle.id.toString()).join(","),
+          identity: snapshot.selected_lanes.map((handle) => handle.id.toString()).join(","),
           label: "Arrangement selection",
         },
   };
@@ -147,34 +162,82 @@ export function clipSlotSelectionInteractionContext(
   context: Api,
   selection: ClipSlotSelection,
 ): LiveInteractionContext {
-  const slots = selection.selected_clip_slots.map((handle, index) => {
+  const snapshot: ClipSlotSelection = {
+    selected_clip_slots: [...selection.selected_clip_slots],
+  };
+  const slots = snapshot.selected_clip_slots.map((handle, index) => {
     const slot = context.getObjectFromHandle(handle, ClipSlot);
+    const slotTrack = findTrackAncestor(slot);
+    if (!slotTrack) {
+      throw new Error("A selected Clip Slot has no owning Track.");
+    }
+    const slotIndex = slotTrack.clipSlots.findIndex(
+      (candidate) => candidate.handle.id === slot.handle.id,
+    );
+    if (slotIndex < 0) {
+      throw new Error(
+        `A selected Clip Slot is no longer present on track "${slotTrack.name}".`,
+      );
+    }
     const clip = slot.clip;
-    return `Slot ${index + 1}: ${clip ? summarizeClip(clip) : "empty"}`;
+    return `Selected slot ${index + 1}: ${trackTypeLabel(slotTrack)} track "${slotTrack.name}", slotIndex=${slotIndex}: ${clip ? summarizeClip(clip) : "empty"}`;
   });
   const targetClip =
-    selection.selected_clip_slots.length === 1
-      ? context.getObjectFromHandle(selection.selected_clip_slots[0]!, ClipSlot).clip
+    snapshot.selected_clip_slots.length === 1
+      ? context.getObjectFromHandle(snapshot.selected_clip_slots[0]!, ClipSlot).clip
       : undefined;
-  const track = firstSelectedSlotTrack(context, selection);
+  const track = firstSelectedSlotTrack(context, snapshot);
 
   return {
     defaultPrompt:
       "Suggest a session-view arrangement or clip-launching idea for these slots.",
     summary: ["Session clip-slot selection:", ...slots].join("\n"),
     target: makeTarget(track, targetClip ?? undefined),
+    selectionContext: {
+      refresh: (currentContext) =>
+        clipSlotsAreCurrent(currentContext, snapshot.selected_clip_slots)
+          ? clipSlotSelectionInteractionContext(currentContext, snapshot)
+          : undefined,
+    },
     scope: targetClip
       ? scopeForClip(targetClip)
       : track
         ? scopeForTrack(track)
         : {
             kind: "selection",
-            identity: selection.selected_clip_slots
+            identity: snapshot.selected_clip_slots
               .map((handle) => handle.id.toString())
               .join(","),
             label: "Clip slot selection",
           },
   };
+}
+
+function arrangementLanesAreCurrent(
+  context: Api,
+  handles: readonly Handle[],
+): boolean {
+  const current = new Set<string>();
+  for (const track of context.application.song.tracks ?? []) {
+    current.add(track.handle.id.toString());
+    for (const takeLane of track.takeLanes) {
+      current.add(takeLane.handle.id.toString());
+    }
+  }
+  return handles.every((handle) => current.has(handle.id.toString()));
+}
+
+function clipSlotsAreCurrent(
+  context: Api,
+  handles: readonly Handle[],
+): boolean {
+  const current = new Set<string>();
+  for (const track of context.application.song.tracks ?? []) {
+    for (const slot of track.clipSlots) {
+      current.add(slot.handle.id.toString());
+    }
+  }
+  return handles.every((handle) => current.has(handle.id.toString()));
 }
 
 function scopeForObject(

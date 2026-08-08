@@ -3,9 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { MidiTrack } from "@ableton-extensions/sdk";
+import { ClipSlot, MidiTrack } from "@ableton-extensions/sdk";
 
-import type { LiveInteractionContext } from "../live/context.js";
+import {
+  arrangementSelectionInteractionContext,
+  clipSlotSelectionInteractionContext,
+  type LiveInteractionContext,
+} from "../live/context.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
 import { loadSessionEvents } from "../storage/events.js";
@@ -389,6 +393,340 @@ test("selecting a Track Session refreshes context from that Session's Live objec
   );
 });
 
+test("opening an Arrangement selection keeps its bounded selection context", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-arrangement-context-"),
+  );
+  await saveSavedProfile(directory, profile({
+    baseUrl: "https://selection-context.test/v1",
+    apiKey: "selection-context-key",
+    model: "selection-context-model",
+  }));
+  let modelLiveContext = "";
+  const track = fakeMidiTrack(101n, "Bass");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [track], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    getObjectFromHandle: () => track,
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const state = await (
+          await fetch(`${chatUrl.origin}/state?token=${token}`)
+        ).json() as ChatDialogState;
+
+        assert.match(state.contextSummary, /Arrangement selection: beats 8 to 16/);
+        assert.match(state.contextSummary, /Lane 1: MIDI track "Bass"/);
+        assert.equal(
+          state.defaultPrompt,
+          "Analyze this arrangement selection and suggest the next useful production move.",
+        );
+        const send = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "send-selection-context",
+          },
+          body: JSON.stringify({
+            prompt: "Work with this selection",
+            sessionId: state.activeSessionId,
+          }),
+        });
+        assert.equal(send.status, 200);
+        assert.match(modelLiveContext, /Arrangement selection: beats 8 to 16/);
+
+        const newSelectionResponse = await fetch(
+          `${chatUrl.origin}/command?token=${token}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: "new_session" }),
+          },
+        );
+        const newSelectionState = await newSelectionResponse.json() as ChatDialogState;
+        assert.notEqual(newSelectionState.activeSessionId, state.activeSessionId);
+        assert.match(
+          newSelectionState.contextSummary,
+          /Arrangement selection: beats 8 to 16/,
+        );
+
+        const ordinarySession = await createSession(directory, {
+          title: "Ordinary Bass Session",
+          projectKey: state.sessions[0]!.projectKey,
+          scope: { kind: "track", identity: "101", label: "Bass" },
+        });
+        const ordinaryResponse = await fetch(
+          `${chatUrl.origin}/command?token=${token}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "select_session",
+              sessionId: ordinarySession.id,
+            }),
+          },
+        );
+        const ordinaryState = await ordinaryResponse.json() as ChatDialogState;
+        assert.match(ordinaryState.contextSummary, /MIDI track "Bass"/);
+        assert.doesNotMatch(ordinaryState.contextSummary, /Arrangement selection/);
+
+        track.name = "Bass renamed";
+        const refreshedOrdinary = await (
+          await fetch(`${chatUrl.origin}/state?token=${token}`)
+        ).json() as ChatDialogState;
+        assert.match(refreshedOrdinary.contextSummary, /MIDI track "Bass renamed"/);
+
+        const selectionResponse = await fetch(
+          `${chatUrl.origin}/command?token=${token}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "select_session",
+              sessionId: state.activeSessionId,
+            }),
+          },
+        );
+        const selectionState = await selectionResponse.json() as ChatDialogState;
+        assert.match(selectionState.contextSummary, /Arrangement selection/);
+
+        context.application.song.tracks.splice(0, 1);
+        const unavailable = await (
+          await fetch(`${chatUrl.origin}/state?token=${token}`)
+        ).json() as ChatDialogState;
+        assert.match(unavailable.contextSummary, /Live object.*unavailable/i);
+      },
+    },
+  };
+  const interaction = arrangementSelectionInteractionContext(
+    context as never,
+    {
+      selected_lanes: [track.handle],
+      time_selection_start: 8,
+      time_selection_end: 16,
+    } as never,
+  );
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    requestModelTurn: async (request) => {
+      modelLiveContext = request.liveContext;
+      return { content: "Selection received.", toolCalls: [] };
+    },
+  });
+});
+
+test("a concurrent Session switch cannot capture an unresolved invocation selection", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-selection-bind-race-"),
+  );
+  const initialLookupStarted = deferred<string>();
+  const releaseInitialLookup = deferred<void>();
+  let lookupCount = 0;
+  const bass = fakeMidiTrack(101n, "Bass");
+  const lead = fakeMidiTrack(202n, "Lead");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [bass, lead], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    getObjectFromHandle: () => bass,
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const lateInitialState = fetch(endpoint("/state"));
+        const projectKey = await initialLookupStarted.promise;
+        const leadSession = await createSession(directory, {
+          title: "Ordinary Lead Session",
+          projectKey,
+          scope: { kind: "track", identity: "202", label: "Lead" },
+        });
+
+        let selectedState: ChatDialogState;
+        try {
+          const selected = await fetch(endpoint("/command"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "select_session",
+              sessionId: leadSession.id,
+            }),
+          });
+          selectedState = await selected.json() as ChatDialogState;
+        } finally {
+          releaseInitialLookup.resolve();
+        }
+
+        const reconciled = await (await lateInitialState).json() as ChatDialogState;
+        assert.equal(selectedState.activeSessionId, leadSession.id);
+        assert.match(selectedState.contextSummary, /MIDI track "Lead"/);
+        assert.doesNotMatch(selectedState.contextSummary, /Arrangement selection/);
+        assert.equal(reconciled.activeSessionId, leadSession.id);
+        assert.match(reconciled.contextSummary, /MIDI track "Lead"/);
+      },
+    },
+  };
+  const interaction = arrangementSelectionInteractionContext(
+    context as never,
+    {
+      selected_lanes: [bass.handle],
+      time_selection_start: 8,
+      time_selection_end: 16,
+    } as never,
+  );
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    getOrCreateDefaultSession: async (...args) => {
+      lookupCount += 1;
+      if (lookupCount === 1) {
+        initialLookupStarted.resolve(args[2]);
+        await releaseInitialLookup.promise;
+      }
+      return getOrCreateDefaultSession(...args);
+    },
+  });
+});
+
+test("restoring a historical Session binds only that Session to the current selection", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-selection-restore-"),
+  );
+  const historical = await createSession(directory, {
+    title: "Historical arrangement work",
+    projectKey: "previous-activation",
+    scope: { kind: "track", identity: "old-track", label: "Old track" },
+  });
+  const bass = fakeMidiTrack(101n, "Bass");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [bass], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    getObjectFromHandle: () => bass,
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        assert.match(initial.contextSummary, /Arrangement selection: beats 4 to 12/);
+
+        const restoredResponse = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "restore_session",
+            sessionId: historical.id,
+          }),
+        });
+        const restored = await restoredResponse.json() as ChatDialogState;
+        assert.equal(restored.activeSessionId, historical.id);
+        assert.match(restored.contextSummary, /Arrangement selection: beats 4 to 12/);
+        assert.deepEqual(
+          restored.sessions.find((session) => session.id === historical.id)?.scope,
+          { kind: "track", identity: "101", label: "Bass" },
+        );
+
+        const ordinarySession = await createSession(directory, {
+          title: "Ordinary Bass Session",
+          projectKey: restored.sessions[0]!.projectKey,
+          scope: { kind: "track", identity: "101", label: "Bass" },
+        });
+        const ordinaryResponse = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "select_session",
+            sessionId: ordinarySession.id,
+          }),
+        });
+        const ordinary = await ordinaryResponse.json() as ChatDialogState;
+        assert.match(ordinary.contextSummary, /MIDI track "Bass"/);
+        assert.doesNotMatch(ordinary.contextSummary, /Arrangement selection/);
+      },
+    },
+  };
+  const interaction = arrangementSelectionInteractionContext(
+    context as never,
+    {
+      selected_lanes: [bass.handle],
+      time_selection_start: 4,
+      time_selection_end: 12,
+    } as never,
+  );
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+  });
+});
+
+test("a cross-track Clip Slot selection becomes unavailable when any selected Track disappears", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-clip-slot-context-"),
+  );
+  const bass = fakeMidiTrackWithSlots(301n, "Bass", 2);
+  const lead = fakeMidiTrackWithSlots(302n, "Lead", 2);
+  const selectedBassSlot = bass.slots[1]!;
+  const selectedLeadSlot = lead.slots[0]!;
+  const slotsById = new Map(
+    [...bass.slots, ...lead.slots].map((slot) => [slot.handle.id, slot]),
+  );
+  const context = {
+    application: {
+      song: {
+        handle: { id: 1n },
+        tracks: [bass.track, lead.track],
+        scenes: [],
+      },
+    },
+    environment: { storageDirectory: directory },
+    getObjectFromHandle: (handle: { id: bigint }) => slotsById.get(handle.id),
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (
+          await fetch(endpoint("/state"))
+        ).json() as ChatDialogState;
+        assert.match(initial.contextSummary, /track "Bass", slotIndex=1/);
+        assert.match(initial.contextSummary, /track "Lead", slotIndex=0/);
+
+        bass.slots.reverse();
+        const reordered = await (
+          await fetch(endpoint("/state"))
+        ).json() as ChatDialogState;
+        assert.match(reordered.contextSummary, /track "Bass", slotIndex=0/);
+
+        context.application.song.tracks.splice(1, 1);
+        const unavailable = await (
+          await fetch(endpoint("/state"))
+        ).json() as ChatDialogState;
+        assert.match(unavailable.contextSummary, /Live object.*unavailable/i);
+      },
+    },
+  };
+  const interaction = clipSlotSelectionInteractionContext(
+    context as never,
+    {
+      selected_clip_slots: [selectedBassSlot.handle, selectedLeadSlot.handle],
+    },
+  );
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+  });
+});
+
 test("a late state snapshot cannot roll active Session back after a switch", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-session-cas-"));
   const lookupStarted = deferred<void>();
@@ -672,6 +1010,32 @@ function fakeMidiTrack(id: bigint, name: string): MidiTrack<"1.0.0"> {
     clipSlots: { enumerable: true, value: [] },
     devices: { enumerable: true, value: [] },
   }) as MidiTrack<"1.0.0">;
+}
+
+function fakeMidiTrackWithSlots(
+  id: bigint,
+  name: string,
+  slotCount: number,
+): { track: MidiTrack<"1.0.0">; slots: ClipSlot<"1.0.0">[] } {
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id } },
+    name: { enumerable: true, value: name },
+    mute: { enumerable: true, value: false },
+    solo: { enumerable: true, value: false },
+    arm: { enumerable: true, value: false },
+    arrangementClips: { enumerable: true, value: [] },
+    takeLanes: { enumerable: true, value: [] },
+    devices: { enumerable: true, value: [] },
+  }) as MidiTrack<"1.0.0">;
+  const slots = Array.from({ length: slotCount }, (_, index) =>
+    Object.defineProperties(Object.create(ClipSlot.prototype), {
+      handle: { enumerable: true, value: { id: id * 100n + BigInt(index) } },
+      clip: { enumerable: true, value: null },
+      parent: { enumerable: true, value: track },
+    }) as ClipSlot<"1.0.0">
+  );
+  Object.defineProperty(track, "clipSlots", { enumerable: true, value: slots });
+  return { track, slots };
 }
 
 function profile(
