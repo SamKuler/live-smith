@@ -992,6 +992,7 @@ test("repeated successful no-op Applies do not renew the planning window", async
 
 test("an automatic recovery observation renews progress on the deadline step", async () => {
   let modelCalls = 0;
+  const assistantContents: string[] = [];
   const result = await runAgentLoop({
     maxConsecutiveFailures: 2,
     maxIterations: 2,
@@ -1040,15 +1041,19 @@ test("an automatic recovery observation renews progress on the deadline step", a
         0,
       );
     },
+    onEvent: (event) => {
+      if (event.kind === "assistant") assistantContents.push(event.content);
+    },
   });
 
   assert.equal(modelCalls, 3);
   assert.match(result.message, /unfinished Live work/i);
-  assert.match(result.message, /I can use the refreshed track state/i);
+  assert.equal(assistantContents.at(-1), "I can use the refreshed track state.");
 });
 
 test("automatic recovery progress is scoped to the failure even when the state text was already observed", async () => {
   let modelCalls = 0;
+  const assistantContents: string[] = [];
   const result = await runAgentLoop({
     maxConsecutiveFailures: 2,
     maxIterations: 1,
@@ -1097,11 +1102,14 @@ test("automatic recovery progress is scoped to the failure even when the state t
         0,
       );
     },
+    onEvent: (event) => {
+      if (event.kind === "assistant") assistantContents.push(event.content);
+    },
   });
 
   assert.equal(modelCalls, 3);
   assert.match(result.message, /unfinished Live work/i);
-  assert.match(result.message, /I received the post-failure refresh/i);
+  assert.equal(assistantContents.at(-1), "I received the post-failure refresh.");
 });
 
 test("runAgentLoop aborts before executing tools after a stopped model request", async () => {
@@ -1889,6 +1897,8 @@ test("an unresolved Live rejection cannot silently end on stale assistant text",
 test("an unresolved Live rejection cannot be hidden by tool-free completion text", async () => {
   let modelCalls = 0;
   const eventKinds: string[] = [];
+  const assistantContents: string[] = [];
+  const errorContents: string[] = [];
   const result = await runAgentLoop({
     maxConsecutiveFailures: 3,
     askModel: async (): Promise<ModelTurn> => {
@@ -1926,13 +1936,21 @@ test("an unresolved Live rejection cannot be hidden by tool-free completion text
     },
     onEvent: (event) => {
       eventKinds.push(event.kind);
+      if (event.kind === "assistant") assistantContents.push(event.content);
+      if (event.kind === "error") errorContents.push(event.content);
     },
   });
 
   assert.match(result.message, /stopped with unfinished Live work/i);
   assert.match(result.message, /Failed to insert device/i);
-  assert.match(result.message, /Done — the rack is ready/i);
-  assert.equal(eventKinds.at(-1), "error");
+  assert.match(
+    result.message,
+    /model returned a completion response without resolving that Live failure/i,
+  );
+  assert.doesNotMatch(result.message, /Done — the rack is ready/i);
+  assert.equal(assistantContents.at(-1), "Done — the rack is ready.");
+  assert.deepEqual(eventKinds.slice(-2), ["assistant", "error"]);
+  assert.equal(errorContents.at(-1), result.message);
 });
 
 test("varied host failures stop after a bounded no-mutation budget", async () => {
@@ -2072,6 +2090,7 @@ test("persisted completed-action digests block replay in a later loop", async ()
   } as const;
   let modelCalls = 0;
   let executions = 0;
+  const assistantContents: string[] = [];
   const result = await runAgentLoop({
     maxConsecutiveFailures: 3,
     initialRecoveryState: {
@@ -2103,11 +2122,14 @@ test("persisted completed-action digests block replay in a later loop", async ()
       executions += 1;
       return mutationOutcome(["Unexpected duplicate"]);
     },
+    onEvent: (event) => {
+      if (event.kind === "assistant") assistantContents.push(event.content);
+    },
   });
 
   assert.equal(executions, 0);
   assert.match(result.message, /unfinished Live work/i);
-  assert.match(result.message, /different repair/i);
+  assert.equal(assistantContents.at(-1), "I need a different repair.");
 });
 
 test("successful intermediate Applies keep and extend active replay protection", async () => {

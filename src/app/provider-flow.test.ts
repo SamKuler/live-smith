@@ -1101,7 +1101,7 @@ test("a partial composite creation failure remains explicitly unfinished", async
   );
 
   assert.match(result, /unfinished Live work/i);
-  assert.match(result, /will not create it again/);
+  assert.doesNotMatch(result, /will not create it again/);
   assert.equal(modelCalls, 2);
   assert.equal(createCalls, 1);
   const [session] = await listSessions(dir, "project-a");
@@ -1115,7 +1115,19 @@ test("a partial composite creation failure remains explicitly unfinished", async
   assert.ok(partialResult);
   assert.match(partialResult.content, /Created MIDI track "MIDI 1"/);
   assert.match(partialResult.content, /Track naming failed/);
-  assert.equal(events.some((event) => event.kind === "error"), true);
+  const assistantResult = events.findLast(
+    (event) => event.kind === "assistant",
+  );
+  assert.ok(assistantResult);
+  assert.match(assistantResult.content, /will not create it again/);
+  const errorResult = events.findLast((event) => event.kind === "error");
+  assert.ok(errorResult);
+  assert.match(errorResult.content, /unfinished Live work/i);
+  assert.doesNotMatch(errorResult.content, /will not create it again/);
+  assert.deepEqual(
+    events.slice(-2).map((event) => event.kind),
+    ["assistant", "error"],
+  );
 });
 
 test("a tenth device rejection preserves nine completed actions and repairs in the same agent request", async () => {

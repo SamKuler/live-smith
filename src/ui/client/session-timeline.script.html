@@ -900,10 +900,14 @@
         const summaryLimit = 96;
         const content = document.createElement("div");
         content.className = "timeline-content";
+        const detailLines = contentLines.slice(1);
+        if (event.kind === "apply_requested" && detailLines[0] === "") {
+          detailLines.shift();
+        }
         const visibleContent = collapsed &&
             contentLines.length > 1 &&
             firstLine.length <= summaryLimit
-          ? contentLines.slice(1).join("\n")
+          ? detailLines.join("\n")
           : eventContent;
         if (collapsed) content.textContent = visibleContent;
         else renderMarkdown(content, visibleContent);

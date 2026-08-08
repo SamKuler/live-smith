@@ -3659,6 +3659,12 @@ test("the timeline distinguishes an Apply request from automatic approval", asyn
       harness.document.querySelector(".timeline-item.apply_requested summary")?.textContent ?? "",
       /^Apply request —/,
     );
+    assert.equal(
+      harness.document.querySelector(
+        ".timeline-item.apply_requested .timeline-content",
+      )?.textContent,
+      "Actions:\n1. Set tempo to 128 BPM.",
+    );
     const autoApproved = harness.document.querySelector(
       ".timeline-item.apply_auto_approved",
     );

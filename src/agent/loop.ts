@@ -257,9 +257,15 @@ export async function runAgentLoop(
     if (!turn.toolCalls.length) {
       const finalText = turn.content?.trim();
       if (recoveryState.unresolvedFailure) {
+        if (finalText) {
+          await emitTraceEvent(options, {
+            kind: "assistant",
+            content: finalText,
+          });
+        }
         const message = unfinishedWorkMessage(
           recoveryState.unresolvedFailure,
-          finalText,
+          Boolean(finalText),
         );
         await emitTraceEvent(options, { kind: "error", content: message });
         return { message };
@@ -385,13 +391,13 @@ export async function runAgentLoop(
 
 function unfinishedWorkMessage(
   failure: string,
-  modelFinalText?: string,
+  modelReturnedCompletion = false,
 ): string {
   return [
     "Live Smith stopped with unfinished Live work.",
     failure,
-    modelFinalText
-      ? `The model returned final text without resolving that Live failure: ${modelFinalText}`
+    modelReturnedCompletion
+      ? "The model returned a completion response without resolving that Live failure."
       : "",
     "Continue in this Session to choose an available alternative or finish the remaining stage.",
   ].filter(Boolean).join("\n");
