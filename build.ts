@@ -12,6 +12,7 @@ const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
   entry: string;
 };
 const production = argv.includes("--production");
+const thirdPartyNotices = fs.readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
 
 verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);
@@ -30,6 +31,9 @@ const buildResult = await esbuild.build({
   loader: { ".html": "text" },
   define: {
     __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
+  },
+  banner: {
+    js: `/*!\n${thirdPartyNotices.replaceAll("*/", "* /")}\n*/`,
   },
 });
 

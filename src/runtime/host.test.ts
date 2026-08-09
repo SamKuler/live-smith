@@ -5,6 +5,7 @@ import {
   createHostAbortController,
   resolveFetchImplementation,
   throwIfAborted,
+  yieldToHost,
 } from "./host.js";
 
 test("fetch resolution accepts injection and reports a missing host capability", () => {
@@ -60,4 +61,12 @@ test("abort controller creation reports a missing host capability", () => {
       Reflect.deleteProperty(globalThis, "AbortController");
     }
   }
+});
+
+test("host yielding rechecks cancellation after the cooperative boundary", async () => {
+  const controller = new AbortController();
+  const reason = new Error("stopped while yielding");
+  const pending = yieldToHost(controller.signal);
+  controller.abort(reason);
+  await assert.rejects(pending, (error: unknown) => error === reason);
 });

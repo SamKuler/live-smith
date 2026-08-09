@@ -4,7 +4,10 @@ import * as path from "node:path";
 import { argv } from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { assertPackagedBundleMatches } from "../src/release/package-verification.js";
+import {
+  assertPackagedBundleContainsThirdPartyNotices,
+  assertPackagedBundleMatches,
+} from "../src/release/package-verification.js";
 
 interface ExtensionManifest {
   name: string;
@@ -37,6 +40,7 @@ if (extraction.status !== 0 || !extraction.stdout?.length) {
 }
 
 assertPackagedBundleMatches(currentBundle, extraction.stdout);
+assertPackagedBundleContainsThirdPartyNotices(extraction.stdout);
 console.log(
   `Verified ${path.basename(archivePath)} contains the current ${manifest.entry}.`,
 );

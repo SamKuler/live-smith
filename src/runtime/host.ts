@@ -1,3 +1,5 @@
+import { setImmediate as yieldImmediate } from "node:timers/promises";
+
 export function resolveFetchImplementation(
   injected?: typeof fetch,
 ): typeof fetch {
@@ -21,4 +23,10 @@ export function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   if ("reason" in signal) throw signal.reason;
   throw new Error("Operation aborted.");
+}
+
+export async function yieldToHost(signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await yieldImmediate();
+  throwIfAborted(signal);
 }
