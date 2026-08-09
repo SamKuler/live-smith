@@ -1415,8 +1415,9 @@
           </div>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending image attachments" aria-busy="false" hidden></div>
-            <input id="attachmentInput" class="visually-hidden" name="attachmentInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
-            <button id="attachImageButton" class="secondary attach-image-button" type="button">Attach image</button>
+            <input id="attachmentInput" class="visually-hidden" name="attachmentInput" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" multiple />
+            <button id="attachImageButton" class="secondary attach-image-button" type="button" aria-describedby="attachmentCapabilityHint">Attach image</button>
+            <span id="attachmentCapabilityHint" class="visually-hidden" role="status" aria-live="polite" hidden></span>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
             <textarea id="prompt" name="prompt" aria-label="Message Live Smith" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
             <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>

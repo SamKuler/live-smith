@@ -47,6 +47,7 @@ interface DialogHarness {
   failNextSend(error: string, promptPersistence?: string): void;
   failNextState(error: string): void;
   failNextAttachmentUnknown(error: string): void;
+  failAttachmentNamed(fileName: string, error: string): void;
   rejectNextAttachmentAfterCommit(error: string): void;
   flushAnimationFrames(): number;
   rejectNextSend(error: string): void;
@@ -211,6 +212,12 @@ function stateFixture(): ChatDialogState {
   };
 }
 
+function imageCapableState(): ChatDialogState {
+  const state = stateFixture();
+  state.runtimeProfile!.capabilities.inputs.image = true;
+  return state;
+}
+
 function cloneState(state: ChatDialogState): ChatDialogState {
   return JSON.parse(JSON.stringify(state)) as ChatDialogState;
 }
@@ -261,6 +268,7 @@ async function createDialogHarness(
   let nextStateRejection: Error | null = null;
   let nextAttachmentRejection: Error | null = null;
   let nextAttachmentUnknown: { error: string } | null = null;
+  const attachmentFailuresByName = new Map<string, string>();
   let heldCommand: Promise<void> | null = null;
   let heldConfirmation: Promise<void> | null = null;
   const heldSends: Promise<void>[] = [];
@@ -370,6 +378,15 @@ async function createDialogHarness(
               const file = init.body as File;
               const sessionId = url.searchParams.get("sessionId") ?? "";
               const fileName = url.searchParams.get("fileName") ?? "image";
+              const namedFailure = attachmentFailuresByName.get(fileName);
+              if (namedFailure !== undefined) {
+                attachmentFailuresByName.delete(fileName);
+                return failedResponse(
+                  { error: namedFailure },
+                  500,
+                  "Internal Server Error",
+                );
+              }
               const attachments = pendingAttachmentsBySession.get(sessionId) ?? [];
               const mediaType: "image/png" | "image/jpeg" | "image/webp" =
                 file.type === "image/jpeg" || file.type === "image/webp"
@@ -704,6 +721,9 @@ async function createDialogHarness(
     },
     failNextAttachmentUnknown(error) {
       nextAttachmentUnknown = { error };
+    },
+    failAttachmentNamed(fileName, error) {
+      attachmentFailuresByName.set(fileName, error);
     },
     rejectNextAttachmentAfterCommit(error) {
       nextAttachmentRejection = new Error(error);
@@ -4464,10 +4484,35 @@ test("pasted plain text remains native and does not start an attachment upload",
   }
 });
 
+test("paste and drop ignore non-images without discarding supported images in a mixed batch", async () => {
+  const harness = await createDialogHarness(imageCapableState());
+  try {
+    const png = imageFile(harness.window, "reference.png", "image/png");
+    const pdf = new harness.window.File([new Uint8Array(24)], "notes.pdf", {
+      type: "application/pdf",
+    });
+
+    assert.equal(harness.dispatchPaste([pdf]), false);
+    assert.equal(harness.dispatchPaste([pdf, png]), true);
+    await harness.settle();
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["reference.png"],
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /notes\.pdf.*PNG, JPEG, and WebP/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("a pasted image uploads once and renders a removable attachment chip", async () => {
-  const state = stateFixture();
-  state.runtimeProfile!.capabilities.inputs.image = true;
-  const harness = await createDialogHarness(state);
+  const harness = await createDialogHarness(imageCapableState());
   try {
     const file = imageFile(harness.window, "reference.png", "image/png");
     assert.equal(harness.dispatchPaste([file]), true);
@@ -4499,11 +4544,15 @@ test("a pasted image uploads once and renders a removable attachment chip", asyn
   }
 });
 
-test("dropped JPEG and WebP images upload serially while a dropped PDF is rejected", async () => {
-  const harness = await createDialogHarness();
+test("dropped JPEG and WebP images upload serially without intercepting a PDF-only drop", async () => {
+  const harness = await createDialogHarness(imageCapableState());
   try {
+    const pdf = new harness.window.File([new Uint8Array(24)], "notes.pdf", {
+      type: "application/pdf",
+    });
     const files = [
       imageFile(harness.window, "photo.jpg", "image/jpeg"),
+      pdf,
       imageFile(harness.window, "spectrum.webp", "image/webp"),
     ];
     assert.equal(harness.dispatchDragOver(files), true);
@@ -4520,19 +4569,16 @@ test("dropped JPEG and WebP images upload serially while a dropped PDF is reject
       harness.document.querySelectorAll("#pendingAttachments [data-attachment-id]").length,
       2,
     );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /notes\.pdf.*PNG, JPEG, and WebP/i,
+    );
 
-    const pdf = new harness.window.File([new Uint8Array(24)], "notes.pdf", {
-      type: "application/pdf",
-    });
-    assert.equal(harness.dispatchDrop([pdf]), true);
+    assert.equal(harness.dispatchDrop([pdf]), false);
     await harness.settle();
     assert.equal(
       harness.calls.filter((call) => call.path === "/attachments").length,
       2,
-    );
-    assert.match(
-      harness.document.querySelector("#status")?.textContent ?? "",
-      /PNG, JPEG, and WebP/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -4541,7 +4587,7 @@ test("dropped JPEG and WebP images upload serially while a dropped PDF is reject
 });
 
 test("the attachment file picker uses the same upload path", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createDialogHarness(imageCapableState());
   try {
     const file = imageFile(harness.window, "picked.png", "image/png");
     harness.selectAttachmentFiles([file]);
@@ -4558,8 +4604,38 @@ test("the attachment file picker uses the same upload path", async () => {
   }
 });
 
+test("one failed image upload does not skip later files and names the retry target", async () => {
+  const harness = await createDialogHarness(imageCapableState());
+  try {
+    harness.failAttachmentNamed("broken.png", "Image validation failed.");
+    harness.selectAttachmentFiles([
+      imageFile(harness.window, "broken.png", "image/png"),
+      imageFile(harness.window, "kept.png", "image/png"),
+    ]);
+    await harness.settle();
+
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["broken.png", "kept.png"],
+    );
+    assert.match(
+      harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
+      /kept\.png/,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /broken\.png.*re-select.*retry/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("attachment count and total limits reject locally before network traffic", async () => {
-  const state = stateFixture();
+  const state = imageCapableState();
   state.pendingAttachments = [
     pendingImage("attachment-1", "one.png", "image/png", 5 * 1024 * 1024),
     pendingImage("attachment-2", "two.png", "image/png", 5 * 1024 * 1024),
@@ -4604,8 +4680,125 @@ test("attachment count and total limits reject locally before network traffic", 
   }
 });
 
+test("attachment limits accept exact 5 MiB, 4-image, and 16 MiB boundaries", async () => {
+  const perFileHarness = await createDialogHarness(imageCapableState());
+  try {
+    perFileHarness.dispatchDrop([
+      imageFile(
+        perFileHarness.window,
+        "exact-five.png",
+        "image/png",
+        5 * 1024 * 1024,
+      ),
+      imageFile(
+        perFileHarness.window,
+        "over-five.png",
+        "image/png",
+        5 * 1024 * 1024 + 1,
+      ),
+    ]);
+    await perFileHarness.settle();
+    assert.deepEqual(
+      perFileHarness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["exact-five.png"],
+    );
+    assert.match(
+      perFileHarness.document.querySelector("#status")?.textContent ?? "",
+      /over-five\.png.*larger than 5 MiB/i,
+    );
+  } finally {
+    perFileHarness.close();
+  }
+
+  const countState = imageCapableState();
+  countState.pendingAttachments = [
+    pendingImage("attachment-1", "one.png", "image/png", 1),
+    pendingImage("attachment-2", "two.png", "image/png", 1),
+    pendingImage("attachment-3", "three.png", "image/png", 1),
+  ];
+  const countHarness = await createDialogHarness(countState);
+  try {
+    countHarness.dispatchDrop([
+      imageFile(countHarness.window, "four.png", "image/png", 1),
+      imageFile(countHarness.window, "five.png", "image/png", 1),
+    ]);
+    await countHarness.settle();
+    assert.deepEqual(
+      countHarness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["four.png"],
+    );
+    assert.equal(
+      countHarness.document.querySelectorAll(
+        "#pendingAttachments [data-attachment-id]",
+      ).length,
+      4,
+    );
+  } finally {
+    countHarness.close();
+  }
+
+  const totalState = imageCapableState();
+  totalState.pendingAttachments = [
+    pendingImage("attachment-1", "existing.png", "image/png", 5 * 1024 * 1024),
+  ];
+  const totalHarness = await createDialogHarness(totalState);
+  try {
+    totalHarness.dispatchDrop([
+      imageFile(totalHarness.window, "five-a.png", "image/png", 5 * 1024 * 1024),
+      imageFile(totalHarness.window, "five-b.png", "image/png", 5 * 1024 * 1024),
+      imageFile(totalHarness.window, "exact-sixteen.png", "image/png", 1024 * 1024),
+    ]);
+    await totalHarness.settle();
+    assert.equal(
+      totalHarness.calls.filter((call) => call.path === "/attachments").length,
+      3,
+    );
+    assert.equal(
+      totalHarness.document.querySelectorAll(
+        "#pendingAttachments [data-attachment-id]",
+      ).length,
+      4,
+    );
+  } finally {
+    totalHarness.close();
+  }
+
+  const overTotalState = imageCapableState();
+  overTotalState.pendingAttachments = [
+    pendingImage("attachment-1", "existing.png", "image/png", 5 * 1024 * 1024),
+  ];
+  const overTotalHarness = await createDialogHarness(overTotalState);
+  try {
+    overTotalHarness.dispatchDrop([
+      imageFile(overTotalHarness.window, "five-a.png", "image/png", 5 * 1024 * 1024),
+      imageFile(overTotalHarness.window, "five-b.png", "image/png", 5 * 1024 * 1024),
+      imageFile(
+        overTotalHarness.window,
+        "over-sixteen.png",
+        "image/png",
+        1024 * 1024 + 1,
+      ),
+    ]);
+    await overTotalHarness.settle();
+    assert.equal(
+      overTotalHarness.calls.filter((call) => call.path === "/attachments").length,
+      2,
+    );
+    assert.match(
+      overTotalHarness.document.querySelector("#status")?.textContent ?? "",
+      /over-sixteen\.png.*exceed 16 MiB/i,
+    );
+  } finally {
+    overTotalHarness.close();
+  }
+});
+
 test("Send and Session controls stay disabled while an attachment upload is in flight", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createDialogHarness(imageCapableState());
   try {
     harness.holdNextAttachment();
     harness.dispatchPaste([
@@ -4633,7 +4826,7 @@ test("Send and Session controls stay disabled while an attachment upload is in f
 });
 
 test("attachment chips reconcile after an unknown upload response before controls unlock", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createDialogHarness(imageCapableState());
   try {
     harness.rejectNextAttachmentAfterCommit("connection lost");
     harness.dispatchPaste([
@@ -4663,7 +4856,7 @@ test("attachment chips reconcile after an unknown upload response before control
 });
 
 test("a typed unknown attachment outcome applies its authoritative state", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createDialogHarness(imageCapableState());
   try {
     harness.failNextAttachmentUnknown("upload commit could not be confirmed");
     harness.dispatchPaste([
@@ -4693,7 +4886,7 @@ test("a typed unknown attachment outcome applies its authoritative state", async
 });
 
 test("Session switching renders only the active Session attachment chips", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createDialogHarness(imageCapableState());
   try {
     harness.dispatchPaste([
       imageFile(harness.window, "bass.png", "image/png"),
@@ -4746,6 +4939,70 @@ test("a user timeline attachment chip renders inert filename, type, and size met
   }
 });
 
+test("Attach distinguishes supported, unsupported, and unverified runtime capabilities", async () => {
+  const supportedHarness = await createDialogHarness(imageCapableState());
+  try {
+    assert.equal(
+      supportedHarness.document.querySelector<HTMLButtonElement>(
+        "#attachImageButton",
+      )?.disabled,
+      false,
+    );
+    const input = supportedHarness.document.querySelector<HTMLInputElement>(
+      "#attachmentInput",
+    );
+    assert.equal(input?.tabIndex, -1);
+    assert.equal(input?.getAttribute("aria-hidden"), "true");
+  } finally {
+    supportedHarness.close();
+  }
+
+  const unsupportedHarness = await createDialogHarness(stateFixture());
+  try {
+    const attach = unsupportedHarness.document.querySelector<HTMLButtonElement>(
+      "#attachImageButton",
+    );
+    assert.equal(attach?.disabled, true);
+    assert.match(attach?.title ?? "", /does not support image input/i);
+    assert.equal(
+      unsupportedHarness.document.querySelector<HTMLButtonElement>("#sendButton")
+        ?.disabled,
+      false,
+    );
+  } finally {
+    unsupportedHarness.close();
+  }
+
+  const unverifiedState = stateFixture();
+  delete (unverifiedState.runtimeProfile!.capabilities.inputs as { image?: boolean })
+    .image;
+  unverifiedState.pendingAttachments = [
+    pendingImage("attachment-unverified", "remove-me.png"),
+  ];
+  const unverifiedHarness = await createDialogHarness(unverifiedState);
+  try {
+    const attach = unverifiedHarness.document.querySelector<HTMLButtonElement>(
+      "#attachImageButton",
+    );
+    assert.equal(attach?.disabled, true);
+    assert.match(attach?.title ?? "", /unverified/i);
+    const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
+      '[data-attachment-id="attachment-unverified"] button',
+    );
+    assert.equal(remove?.disabled, false);
+    remove?.click();
+    await unverifiedHarness.settle();
+    assert.equal(
+      unverifiedHarness.document.querySelector(
+        '[data-attachment-id="attachment-unverified"]',
+      ),
+      null,
+    );
+  } finally {
+    unverifiedHarness.close();
+  }
+});
+
 test("a text-only runtime keeps attachment chips visible but blocks Send precisely", async () => {
   const state = stateFixture();
   state.pendingAttachments = [pendingImage("attachment-text-only", "score.png")];
@@ -4764,6 +5021,26 @@ test("a text-only runtime keeps attachment chips visible but blocks Send precise
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
       /active model does not support image input/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an unverified runtime blocks only image-bearing Send with distinct guidance", async () => {
+  const state = stateFixture();
+  delete (state.runtimeProfile!.capabilities.inputs as { image?: boolean }).image;
+  state.pendingAttachments = [pendingImage("attachment-unverified", "score.png")];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#prompt", "Review this score");
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.calls.some((call) => call.path === "/send"), false);
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /image input support.*unverified/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {

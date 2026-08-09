@@ -10,9 +10,9 @@
         "image/jpeg",
         "image/webp",
       ]);
-      const maxAttachmentBytes = 5 * 1024 * 1024;
-      const maxPendingAttachmentCount = 4;
-      const maxPendingAttachmentBytes = 16 * 1024 * 1024;
+      const maxAttachmentBytes = __MAX_IMAGE_ATTACHMENT_BYTES__;
+      const maxPendingAttachmentCount = __MAX_PENDING_ATTACHMENT_COUNT__;
+      const maxPendingAttachmentBytes = __MAX_PENDING_ATTACHMENT_BYTES__;
       let busy = false;
       let initialized = false;
 
@@ -36,6 +36,7 @@
       }
 
       function renderPending() {
+        syncAttachAvailability();
         const strip = document.getElementById("pendingAttachments");
         if (!strip) return;
         strip.replaceChildren();
@@ -69,54 +70,104 @@
 
       function setBusy(value) {
         busy = Boolean(value);
-        const attachButton = document.getElementById("attachImageButton");
-        const input = document.getElementById("attachmentInput");
-        if (attachButton) attachButton.disabled = busy;
-        if (input) input.disabled = busy;
+        syncAttachAvailability();
         document.querySelector(".composer")
           ?.setAttribute("aria-busy", String(busy));
         renderPending();
       }
 
-      function validateFiles(files) {
-        if (!files.length) return false;
-        if (files.some((file) => !supportedImageTypes.has(file.type))) {
-          showStatus("Only PNG, JPEG, and WebP images can be attached.", true);
-          return false;
+      function imageInputCapability() {
+        return getState().runtimeProfile?.capabilities?.inputs?.image;
+      }
+
+      function capabilityMessage() {
+        return imageInputCapability() === false
+          ? "The active model does not support image input. Activate an image-capable Profile to attach more images."
+          : "Image input support for the active model is unverified. Discover model capabilities or set an explicit image-input override before attaching images.";
+      }
+
+      function syncAttachAvailability() {
+        const attachButton = document.getElementById("attachImageButton");
+        const input = document.getElementById("attachmentInput");
+        const hint = document.getElementById("attachmentCapabilityHint");
+        const supported = imageInputCapability() === true;
+        const message = supported ? "" : capabilityMessage();
+        if (attachButton) {
+          attachButton.disabled = busy || !supported;
+          attachButton.title = message;
+          attachButton.setAttribute(
+            "aria-label",
+            message ? `Attach image. ${message}` : "Attach image",
+          );
         }
-        if (files.some((file) => file.size === 0)) {
-          showStatus("An attached image cannot be empty.", true);
-          return false;
+        if (input) input.disabled = busy || !supported;
+        if (hint) {
+          hint.textContent = message;
+          hint.hidden = !message;
         }
-        if (files.some((file) => file.size > maxAttachmentBytes)) {
-          showStatus("Each attached image must be 5 MiB or smaller.", true);
-          return false;
-        }
+      }
+
+      function selectUploadableFiles(files) {
         const pending = pendingAttachments();
-        if (pending.length + files.length > maxPendingAttachmentCount) {
-          showStatus("A Session can have at most 4 pending images.", true);
-          return false;
-        }
-        const currentBytes = pending.reduce(
+        let count = pending.length;
+        let byteLength = pending.reduce(
           (total, attachment) => total + attachment.byteLength,
           0,
         );
-        const selectedBytes = files.reduce((total, file) => total + file.size, 0);
-        if (currentBytes + selectedBytes > maxPendingAttachmentBytes) {
-          showStatus("Pending images in a Session must total 16 MiB or less.", true);
-          return false;
+        const accepted = [];
+        const failures = [];
+        for (const file of files) {
+          let reason = "";
+          if (!supportedImageTypes.has(file.type)) {
+            reason = "only PNG, JPEG, and WebP are supported";
+          } else if (file.size === 0) {
+            reason = "the image is empty";
+          } else if (file.size > maxAttachmentBytes) {
+            reason = "the image is larger than 5 MiB";
+          } else if (count >= maxPendingAttachmentCount) {
+            reason = "a Session can have at most 4 pending images";
+          } else if (byteLength + file.size > maxPendingAttachmentBytes) {
+            reason = "pending images would exceed 16 MiB";
+          }
+          if (reason) {
+            failures.push(`${file.name || "Unnamed image"}: ${reason}`);
+            continue;
+          }
+          accepted.push(file);
+          count += 1;
+          byteLength += file.size;
         }
-        return true;
+        return { accepted, failures };
+      }
+
+      function failureMessage(failures) {
+        if (!failures.length) return "";
+        return `Some images were not attached: ${failures.join("; ")}. Re-select the named files to retry.`;
       }
 
       async function uploadFiles(fileList) {
         if (busy) return;
         const files = [...(fileList || [])];
-        if (!validateFiles(files)) return;
+        if (!files.length) return;
+        if (imageInputCapability() !== true) {
+          showStatus(capabilityMessage(), true);
+          return;
+        }
+        const selection = selectUploadableFiles(files);
+        const localFailure = failureMessage(selection.failures);
+        if (!selection.accepted.length) {
+          if (localFailure) showStatus(localFailure, true);
+          return;
+        }
         try {
-          await uploadAttachments(getState().activeSessionId, files);
+          await uploadAttachments(getState().activeSessionId, selection.accepted);
+          if (localFailure) showStatus(localFailure, true);
         } catch (error) {
-          showStatus(error.message || String(error), true);
+          const remoteFailure = error.message || String(error);
+          showStatus(
+            [localFailure, remoteFailure].filter(Boolean).join(" "),
+            true,
+          );
         }
       }
 
@@ -135,7 +186,9 @@
           return true;
         }
         showStatus(
-          "The active model does not support image input. Remove the attached images or activate an image-capable Profile.",
+          imageInputCapability() === false
+            ? "The active model does not support image input. Remove the attached images or activate an image-capable Profile."
+            : "Image input support for the active model is unverified. Remove the attached images, discover model capabilities, or set an explicit image-input override.",
           true,
         );
         return false;
@@ -143,6 +196,10 @@
 
       function filesFromTransfer(transfer) {
         return transfer?.files ? [...transfer.files] : [];
+      }
+
+      function containsSupportedImage(files) {
+        return files.some((file) => supportedImageTypes.has(file.type));
       }
 
       function initialize() {
@@ -161,12 +218,13 @@
         });
         prompt?.addEventListener("paste", (event) => {
           const files = filesFromTransfer(event.clipboardData);
-          if (!files.length) return;
+          if (!containsSupportedImage(files)) return;
           event.preventDefault();
           void uploadFiles(files);
         });
         composer?.addEventListener("dragover", (event) => {
-          if (!event.dataTransfer?.types?.includes("Files")) return;
+          const files = filesFromTransfer(event.dataTransfer);
+          if (!containsSupportedImage(files)) return;
           event.preventDefault();
           composer.classList.add("drop-target");
         });
@@ -177,11 +235,12 @@
         });
         composer?.addEventListener("drop", (event) => {
           const files = filesFromTransfer(event.dataTransfer);
-          if (!files.length) return;
+          if (!containsSupportedImage(files)) return;
           event.preventDefault();
           composer.classList.remove("drop-target");
           void uploadFiles(files);
         });
+        syncAttachAvailability();
         renderPending();
       }
 

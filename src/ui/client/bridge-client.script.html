@@ -676,21 +676,47 @@
       function uploadAttachments(sessionId, files) {
         return runAttachmentOperation(async () => {
           let state = null;
-          for (const file of files) {
+          const failures = [];
+          for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
             const path = "/attachments" +
               `?sessionId=${encodeURIComponent(sessionId)}` +
               `&fileName=${encodeURIComponent(file.name)}`;
-            state = await requestAttachment(path, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/octet-stream",
-                "X-Live-Smith-File-Type": file.type || "application/octet-stream",
-              },
-              body: file,
-            });
+            try {
+              state = await requestAttachment(path, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/octet-stream",
+                  "X-Live-Smith-File-Type": file.type || "application/octet-stream",
+                },
+                body: file,
+              });
+            } catch (error) {
+              failures.push(
+                `${attachmentFileLabel(file)}: ${error.message || String(error)}`,
+              );
+              if (commandReconciliationBlocked) {
+                for (const remaining of files.slice(index + 1)) {
+                  failures.push(
+                    `${attachmentFileLabel(remaining)}: not attempted because attachment state could not be reconciled`,
+                  );
+                }
+                break;
+              }
+            }
+          }
+          if (failures.length) {
+            throw new Error(
+              `Some selected images could not be attached. ${failures.join("; ")} Re-select the named files to retry.`,
+            );
           }
           return state;
         });
+      }
+
+      function attachmentFileLabel(file) {
+        const name = file?.name || "Unnamed image";
+        return name.length <= 80 ? name : `${name.slice(0, 79)}…`;
       }
 
       function deleteAttachment(sessionId, attachmentId) {
