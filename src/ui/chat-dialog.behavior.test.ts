@@ -253,7 +253,10 @@ async function waitForCondition(
 async function createDialogHarness(
   initialState: ChatDialogState = stateFixture(),
   bridge = { baseUrl: "http://bridge.test", token: "test-token" },
-  options: { webCryptoAvailable?: boolean } = {},
+  options: {
+    webCryptoAvailable?: boolean;
+    webCryptoDigestFails?: boolean;
+  } = {},
 ): Promise<DialogHarness> {
   const calls: BridgeCall[] = [];
   const clipboardWrites: string[] = [];
@@ -327,7 +330,16 @@ async function createDialogHarness(
           configurable: true,
           value: options.webCryptoAvailable === false
             ? { randomUUID: () => "test-random-id" }
-            : webcrypto,
+            : options.webCryptoDigestFails
+              ? {
+                  randomUUID: () => webcrypto.randomUUID(),
+                  subtle: {
+                    digest: async () => {
+                      throw new Error("Web Crypto digest failed.");
+                    },
+                  },
+                }
+              : webcrypto,
         });
         window.addEventListener("error", (event) => errors.push(event.error));
         Object.defineProperty(window, "requestAnimationFrame", {
@@ -4950,6 +4962,40 @@ test("attachment chips reconcile after an unknown upload response before control
     harness.close();
   }
 });
+
+for (const [condition, options] of [
+  ["Web Crypto is unavailable", { webCryptoAvailable: false }],
+  ["Web Crypto digest fails", { webCryptoDigestFails: true }],
+] as const) {
+  test(`a network-interrupted committed upload stays uncertain when ${condition}`, async () => {
+    const harness = await createDialogHarness(
+      imageCapableState(),
+      { baseUrl: "http://bridge.test", token: "test-token" },
+      options,
+    );
+    try {
+      harness.rejectNextAttachmentAfterCommit("connection lost");
+      harness.dispatchPaste([
+        imageFile(harness.window, "network-unknown.png", "image/png"),
+      ]);
+      await harness.settleAttachmentOperation();
+
+      assert.match(
+        harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
+        /network-unknown\.png/,
+      );
+      const status = harness.document.querySelector("#status")?.textContent ?? "";
+      assert.match(status, /unconfirmed.*verify/i);
+      assert.doesNotMatch(
+        status,
+        /confirmed attached|re-select|retry/i,
+      );
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      harness.close();
+    }
+  });
+}
 
 test("a typed unknown attachment outcome applies its authoritative state", async () => {
   const harness = await createDialogHarness(imageCapableState());
