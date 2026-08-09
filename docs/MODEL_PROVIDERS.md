@@ -101,6 +101,22 @@ recoverable Profiles or credentials.
   must agree bidirectionally with the terminal stop reason. Ordinary text blocks
   cannot hide a malformed or missing declared `tool_use` block.
 
+### Image input mapping
+
+Live Smith assembles image context once as provider-neutral user input parts.
+Assistant history remains text-only, while current and historical user images
+are mapped to each protocol's native blocks:
+
+- OpenAI Responses uses `input_text` and `input_image` with a base64 data URL.
+- OpenAI Chat Completions uses `text` and `image_url` with a base64 data URL.
+- Anthropic Messages uses `text` and a base64 `image` source block.
+
+The active Runtime Profile must resolve `inputs.image` to `true`; every
+transport checks that capability again before making a network request. File
+names, attachment IDs, and local storage paths are not sent in image blocks.
+Document and audio parts remain unsupported in this milestone and are rejected
+with a fixed local error if they reach a transport.
+
 ## Capability resolution
 
 Capabilities resolve in this order:
