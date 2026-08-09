@@ -721,7 +721,14 @@ test("Anthropic profiles discover models and merge discovered token metadata", a
       url = String(input);
       requestSignal = init?.signal;
       return new Response(JSON.stringify({
-        data: [{ type: "model", id: "claude-custom", display_name: "Claude Custom", created_at: "2026-01-01T00:00:00Z", max_tokens: 24000 }],
+        data: [{
+          type: "model",
+          id: "claude-custom",
+          display_name: "Claude Custom",
+          created_at: "2026-01-01T00:00:00Z",
+          max_tokens: 24000,
+          inputModalities: ["text", "image"],
+        }],
         has_more: false,
         first_id: "claude-custom",
         last_id: "claude-custom",
@@ -732,7 +739,34 @@ test("Anthropic profiles discover models and merge discovered token metadata", a
   assert.match(url, /\/v1\/models/);
   assert.equal(models[0]?.displayName, "Claude Custom");
   assert.equal(models[0]?.capabilities.maxOutputTokens, 24000);
+  assert.deepEqual(models[0]?.capabilities.inputs, {
+    image: true,
+    audio: false,
+    pdf: false,
+  });
   assert.equal(requestSignal, controller.signal);
+});
+
+test("Anthropic malformed input modality arrays provide no capability hint", async () => {
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        type: "model",
+        id: "claude-opus-4-5",
+        display_name: "Claude Opus 4.5",
+        input_modalities: ["text", null],
+      }],
+      has_more: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const [model] = await transport.listModels(profile());
+
+  assert.equal(model?.capabilities.inputs, undefined);
+  assert.equal(resolveModelCapabilities(
+    profile({ model: "claude-opus-4-5" }),
+    model?.capabilities,
+  ).inputs.image, true);
 });
 
 test("Anthropic model discovery follows every results page", async () => {

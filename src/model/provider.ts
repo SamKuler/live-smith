@@ -20,19 +20,27 @@ export interface ReasoningCapabilities {
   strategy: ReasoningStrategy;
 }
 
+export interface InputCapabilities {
+  image: boolean;
+  audio: boolean;
+  pdf: boolean;
+}
+
 export interface ModelCapabilities {
   tools: boolean;
   streaming: boolean;
   temperature: "supported" | "unsupported";
   maxOutputTokens?: number;
   reasoning: ReasoningCapabilities;
+  inputs: InputCapabilities;
 }
 
 export type ModelCapabilityHints = Omit<
   Partial<ModelCapabilities>,
-  "reasoning"
+  "reasoning" | "inputs"
 > & {
   reasoning?: Partial<ReasoningCapabilities>;
+  inputs?: Partial<InputCapabilities>;
 };
 
 export interface ModelInfo {

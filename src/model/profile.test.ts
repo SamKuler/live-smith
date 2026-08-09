@@ -141,3 +141,31 @@ test("Draft save validation still requires Profile name and model", () => {
       /Model is required/.test(error.message),
   );
 });
+
+test("image capability override is strictly validated and preserved", () => {
+  const validated = validateDraftProfileForSave({
+    ...profile("https://example.test/v1"),
+    advanced: {
+      capabilityOverrides: {
+        inputs: { image: true, audio: false },
+      },
+    },
+  });
+  assert.deepEqual(validated.advanced.capabilityOverrides?.inputs, {
+    image: true,
+    audio: false,
+  });
+
+  for (const inputs of [
+    { image: "yes" },
+    { image: true, video: true },
+  ]) {
+    assert.throws(
+      () => validateDraftProfileForSave({
+        ...profile("https://example.test/v1"),
+        advanced: { capabilityOverrides: { inputs } },
+      }),
+      /capabilityOverrides\.inputs/,
+    );
+  }
+});

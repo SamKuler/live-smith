@@ -105,6 +105,7 @@ function capabilities(): ChatDialogState["capabilities"] {
       budgetTokens: false,
       strategy: "none",
     },
+    inputs: { image: false, audio: false, pdf: false },
   };
 }
 
@@ -3044,6 +3045,35 @@ test("unsupported discovered parameters become an explicit repair draft before S
       (save?.body as { profile: SavedProfile }).profile.parameters,
       { maxOutputTokens: 8192, reasoning: { mode: "default" } },
     );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("input capability overrides round-trip through the Profile form", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.select("#overrideInputImage", "true");
+    harness.select("#overrideInputAudio", "false");
+    harness.select("#overrideInputPdf", "true");
+
+    assert.equal(
+      harness.document.querySelector("#inputCapabilitiesPreview")?.textContent,
+      "Images: supported · Audio: unsupported · PDF: supported",
+    );
+
+    harness.click("#saveProfileButton");
+    await harness.settle();
+
+    const profile = (commandCalls(harness).at(-1)?.body as {
+      profile?: SavedProfile;
+    }).profile;
+    assert.deepEqual(profile?.advanced.capabilityOverrides?.inputs, {
+      image: true,
+      audio: false,
+      pdf: true,
+    });
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

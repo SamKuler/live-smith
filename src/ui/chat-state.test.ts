@@ -18,6 +18,7 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
       budgetTokens: false,
       strategy: "none" as const,
     },
+    inputs: { image: false, audio: false, pdf: false },
   };
   const summary = chatRuntimeSummary({
     profile: {
@@ -69,6 +70,7 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
         budgetTokens: false,
         strategy: "none",
       },
+      inputs: { image: false, audio: false, pdf: false },
     },
     availableModels: [],
     modelStateSource: null,

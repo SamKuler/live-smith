@@ -708,7 +708,14 @@ test("OpenAI profiles discover models through the shared model-list endpoint", a
       requestSignal = init?.signal;
       return new Response(JSON.stringify({
         object: "list",
-        data: [{ id: "custom-large", object: "model", created: 1, owned_by: "custom", max_output_tokens: 32000 }],
+        data: [{
+          id: "custom-large",
+          object: "model",
+          created: 1,
+          owned_by: "custom",
+          max_output_tokens: 32000,
+          input_modalities: ["text", "image", "pdf"],
+        }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     },
   });
@@ -722,7 +729,28 @@ test("OpenAI profiles discover models through the shared model-list endpoint", a
   assert.equal(models[0]?.id, "custom-large");
   assert.equal(models[0]?.capabilities.maxOutputTokens, 32000);
   assert.equal(models[0]?.capabilities.reasoning, undefined);
+  assert.deepEqual(models[0]?.capabilities.inputs, {
+    image: true,
+    audio: false,
+    pdf: true,
+  });
   assert.equal(requestSignal, controller.signal);
+});
+
+test("OpenAI malformed input modality arrays do not erase known policy", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ id: "gpt-5.6", input_modalities: ["text", 42] }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const [model] = await transport.listModels(profile());
+
+  assert.equal(model?.capabilities.inputs, undefined);
+  assert.equal(resolveModelCapabilities(
+    profile({ model: "gpt-5.6" }),
+    model?.capabilities,
+  ).inputs.image, true);
 });
 
 test("OpenAI model discovery does not depend on ambient Web constructors", async () => {

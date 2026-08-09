@@ -37,6 +37,9 @@
         "advanced.capabilityOverrides.streaming": "overrideStreaming",
         "advanced.capabilityOverrides.temperature": "overrideTemperature",
         "advanced.capabilityOverrides.maxOutputTokens": "overrideMaxOutputTokens",
+        "advanced.capabilityOverrides.inputs.image": "overrideInputImage",
+        "advanced.capabilityOverrides.inputs.audio": "overrideInputAudio",
+        "advanced.capabilityOverrides.inputs.pdf": "overrideInputPdf",
         "advanced.capabilityOverrides.reasoning.supported": "overrideReasoningSupported",
         "advanced.capabilityOverrides.reasoning.canDisable": "overrideReasoningCanDisable",
         "advanced.capabilityOverrides.reasoning.strategy": "overrideReasoningStrategy",
@@ -234,6 +237,12 @@
         if (temperature !== "inherit") overrides.temperature = temperature;
         const max = document.getElementById("overrideMaxOutputTokens").value.trim();
         if (max) overrides.maxOutputTokens = Number(max);
+
+        const inputs = {};
+        copyBooleanOverride(inputs, "image", "overrideInputImage");
+        copyBooleanOverride(inputs, "audio", "overrideInputAudio");
+        copyBooleanOverride(inputs, "pdf", "overrideInputPdf");
+        if (Object.keys(inputs).length) overrides.inputs = inputs;
 
         const reasoning = {};
         copyBooleanOverride(reasoning, "supported", "overrideReasoningSupported");
@@ -445,6 +454,10 @@
         setBooleanOverride("overrideStreaming", overrides.streaming);
         document.getElementById("overrideTemperature").value = overrides.temperature || "inherit";
         document.getElementById("overrideMaxOutputTokens").value = overrides.maxOutputTokens || "";
+        const inputs = overrides.inputs || {};
+        setBooleanOverride("overrideInputImage", inputs.image);
+        setBooleanOverride("overrideInputAudio", inputs.audio);
+        setBooleanOverride("overrideInputPdf", inputs.pdf);
         const reasoning = overrides.reasoning || {};
         setBooleanOverride("overrideReasoningSupported", reasoning.supported);
         setBooleanOverride("overrideReasoningCanDisable", reasoning.canDisable);

@@ -23,7 +23,9 @@ const capabilityKeys = new Set([
   "temperature",
   "maxOutputTokens",
   "reasoning",
+  "inputs",
 ]);
+const inputKeys = new Set(["image", "audio", "pdf"]);
 const reasoningKeys = new Set([
   "supported",
   "canDisable",
@@ -146,7 +148,17 @@ function isModelCapabilityHints(value: unknown): boolean {
   ) {
     return false;
   }
-  return value.reasoning === undefined || isReasoningCapabilityHints(value.reasoning);
+  if (value.reasoning !== undefined && !isReasoningCapabilityHints(value.reasoning)) {
+    return false;
+  }
+  return value.inputs === undefined || isInputCapabilityHints(value.inputs);
+}
+
+function isInputCapabilityHints(value: unknown): boolean {
+  if (!isRecordWithOnlyKeys(value, inputKeys)) return false;
+  return ["image", "audio", "pdf"].every((key) =>
+    value[key] === undefined || typeof value[key] === "boolean"
+  );
 }
 
 function isReasoningCapabilityHints(value: unknown): boolean {

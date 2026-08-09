@@ -17,6 +17,7 @@ const capabilities: DiscoveredModelInfo["capabilities"] = {
   streaming: false,
   temperature: "unsupported",
   maxOutputTokens: 32000,
+  inputs: { image: true, audio: false, pdf: true },
   reasoning: {
     supported: true,
     canDisable: true,
@@ -134,6 +135,16 @@ test("model cache rejects every structurally invalid derived cache shape", async
       schemaVersion: 1,
       fingerprint,
       models: [{ ...validModel, capabilities: null }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
+      models: [{ ...validModel, capabilities: { inputs: { image: "yes" } } }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
+      models: [{ ...validModel, capabilities: { inputs: { video: true } } }],
     },
     {
       schemaVersion: 1,

@@ -1450,6 +1450,25 @@
                   </div>
                   <div class="field"><label for="overrideMaxOutputTokens">Model output limit</label><input id="overrideMaxOutputTokens" name="overrideMaxOutputTokens" type="number" min="1" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
                   <div class="field">
+                    <label for="overrideInputImage">Image input</label>
+                    <select id="overrideInputImage" name="overrideInputImage" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideInputAudio">Audio input</label>
+                    <select id="overrideInputAudio" name="overrideInputAudio" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="overrideInputPdf">PDF input</label>
+                    <select id="overrideInputPdf" name="overrideInputPdf" onchange="LiveSmithUI.markDraftDirty(this)">
+                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                    </select>
+                  </div>
+                  <span id="inputCapabilitiesPreview" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                  <div class="field">
                     <label for="overrideReasoningSupported">Reasoning capability</label>
                     <select id="overrideReasoningSupported" name="overrideReasoningSupported" onchange="LiveSmithUI.markDraftDirty(this)">
                       <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>

@@ -217,6 +217,7 @@ function anthropicCapabilitiesFromMetadata(
 ): ModelCapabilityHints {
   const maxOutputTokens = firstNumber(record, ["max_tokens", "max_output_tokens"]);
   const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
+  const inputs = anthropicInputCapabilities(record, capabilities);
   const thinking = capabilities && isRecord(capabilities.thinking)
     ? capabilities.thinking
     : undefined;
@@ -270,6 +271,32 @@ function anthropicCapabilitiesFromMetadata(
   return {
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(hasReasoningHints ? { reasoning } : {}),
+    ...(inputs === undefined ? {} : { inputs }),
+  };
+}
+
+function anthropicInputCapabilities(
+  record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+): ModelCapabilityHints["inputs"] | undefined {
+  const value = [
+    record.input_modalities,
+    record.inputModalities,
+    capabilities?.input_modalities,
+    capabilities?.inputModalities,
+  ].find(Array.isArray);
+  if (!value || !value.every((item) => typeof item === "string")) {
+    return undefined;
+  }
+  const modalities = new Set(
+    value.map((item) => item.trim().toLocaleLowerCase()),
+  );
+  return {
+    image: modalities.has("image") ||
+      modalities.has("images") ||
+      modalities.has("vision"),
+    audio: modalities.has("audio"),
+    pdf: modalities.has("pdf"),
   };
 }
 

@@ -33,6 +33,33 @@ test("unknown models use conservative mode capabilities", () => {
   assert.equal(capabilities.reasoning.supported, false);
   assert.equal(capabilities.temperature, "supported");
   assert.equal(capabilities.maxOutputTokens, undefined);
+  assert.deepEqual(capabilities.inputs, {
+    image: false,
+    audio: false,
+    pdf: false,
+  });
+});
+
+test("input capabilities merge known policy, discovery, and partial overrides", () => {
+  const known = resolveModelCapabilities(profile({ model: "gpt-5.6" }));
+  assert.deepEqual(known.inputs, { image: true, audio: false, pdf: false });
+
+  const discovered = resolveModelCapabilities(profile(), {
+    inputs: { image: true, pdf: true },
+  });
+  assert.deepEqual(discovered.inputs, { image: true, audio: false, pdf: true });
+
+  const overridden = resolveModelCapabilities(profile({
+    model: "gpt-5.6",
+    advanced: {
+      capabilityOverrides: {
+        inputs: { image: false, audio: true },
+      },
+    },
+  }), {
+    inputs: { pdf: true },
+  });
+  assert.deepEqual(overridden.inputs, { image: false, audio: true, pdf: true });
 });
 
 test("unknown output limits do not cap requests while explicit limits still do", () => {

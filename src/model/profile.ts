@@ -32,6 +32,11 @@ export interface ModelCapabilityOverrides {
     budgetTokens?: boolean;
     strategy?: ReasoningStrategy;
   };
+  inputs?: {
+    image?: boolean;
+    audio?: boolean;
+    pdf?: boolean;
+  };
 }
 
 /** Editable form state. Name and model may intentionally be blank. */
@@ -349,6 +354,14 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
     "advanced.capabilityOverrides",
     "Capability overrides must be an object.",
   );
+  assertOnlyKeys(record, [
+    "tools",
+    "streaming",
+    "temperature",
+    "maxOutputTokens",
+    "reasoning",
+    "inputs",
+  ], "advanced.capabilityOverrides");
   const result: ModelCapabilityOverrides = {};
   if (record.tools !== undefined) {
     result.tools = booleanValue(record.tools, "advanced.capabilityOverrides.tools");
@@ -382,6 +395,13 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
       "Reasoning override must be an object.",
     );
     const normalized: NonNullable<ModelCapabilityOverrides["reasoning"]> = {};
+    assertOnlyKeys(reasoning, [
+      "supported",
+      "canDisable",
+      "efforts",
+      "budgetTokens",
+      "strategy",
+    ], "advanced.capabilityOverrides.reasoning");
     if (reasoning.supported !== undefined) {
       normalized.supported = booleanValue(
         reasoning.supported,
@@ -423,7 +443,44 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
     }
     result.reasoning = normalized;
   }
+  if (record.inputs !== undefined) {
+    const inputs = requiredRecord(
+      record.inputs,
+      "advanced.capabilityOverrides.inputs",
+      "Input capability override must be an object.",
+    );
+    assertOnlyKeys(
+      inputs,
+      ["image", "audio", "pdf"],
+      "advanced.capabilityOverrides.inputs",
+    );
+    const normalized: NonNullable<ModelCapabilityOverrides["inputs"]> = {};
+    for (const name of ["image", "audio", "pdf"] as const) {
+      if (inputs[name] !== undefined) {
+        normalized[name] = booleanValue(
+          inputs[name],
+          `advanced.capabilityOverrides.inputs.${name}`,
+        );
+      }
+    }
+    result.inputs = normalized;
+  }
   return result;
+}
+
+function assertOnlyKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  field: string,
+): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(record).find((key) => !allowedKeys.has(key));
+  if (unknown) {
+    throw new ProfileValidationError(
+      `${field}.${unknown}`,
+      `${field} does not support property ${unknown}.`,
+    );
+  }
 }
 
 function reasoningSettings(

@@ -24,6 +24,7 @@ export function defaultModelCapabilities(): ModelCapabilities {
     streaming: true,
     temperature: "supported",
     reasoning: { ...noReasoning },
+    inputs: { image: false, audio: false, pdf: false },
   };
 }
 
@@ -160,11 +161,41 @@ export function resolveModelCapabilities(
   const fallback = defaultModelCapabilities();
   const known = knownCapabilitiesForModel(profile);
   const withKnown = mergeCapabilities(fallback, known);
-  const withDiscovered = mergeCapabilities(withKnown, discovered);
+  const withKnownInputs = mergeCapabilities(
+    withKnown,
+    knownInputCapabilitiesForModel(profile),
+  );
+  const withDiscovered = mergeCapabilities(withKnownInputs, discovered);
   return mergeCapabilityOverrides(
     withDiscovered,
     profile.advanced.capabilityOverrides,
   );
+}
+
+function knownInputCapabilitiesForModel(
+  profile: Pick<SavedProfile, "apiFamily" | "apiMode" | "model">,
+): ModelCapabilityHints | undefined {
+  const model = profile.model.toLocaleLowerCase();
+  if (profile.apiFamily === "openai") {
+    const documentedImageModel = /^gpt-5\.6(?:-|$)/.test(model) ||
+      isBaseModelOrSnapshot(model, "gpt-5.5-pro") ||
+      isBaseModelOrSnapshot(model, "gpt-5.5") ||
+      isBaseModelOrSnapshot(model, "gpt-5.4-pro") ||
+      isBaseModelOrSnapshot(model, "gpt-5.4-mini") ||
+      isBaseModelOrSnapshot(model, "gpt-5.4-nano") ||
+      isBaseModelOrSnapshot(model, "gpt-5.4") ||
+      isBaseModelOrSnapshot(model, "gpt-5.3-codex") ||
+      /^gpt-5\.2-(?:pro|codex)(?:-|$)/.test(model) ||
+      isBaseModelOrSnapshot(model, "gpt-5.2") ||
+      isBaseModelOrSnapshot(model, "gpt-5.1") ||
+      isBaseModelOrSnapshot(model, "gpt-5");
+    return documentedImageModel ? { inputs: { image: true } } : undefined;
+  }
+
+  const documentedImageModel = /^claude-(?:fable|mythos)-5(?:-|$)/.test(model) ||
+    /^claude-(?:opus|sonnet)-(?:4-[05678]|5)(?:-|$)/.test(model) ||
+    /^claude-haiku-4-5(?:-|$)/.test(model);
+  return documentedImageModel ? { inputs: { image: true } } : undefined;
 }
 
 function mergeCapabilities(
@@ -176,6 +207,7 @@ function mergeCapabilities(
     ...base,
     ...override,
     reasoning: mergeReasoning(base.reasoning, override.reasoning),
+    inputs: mergeInputs(base.inputs, override.inputs),
   };
 }
 
@@ -326,7 +358,15 @@ function mergeCapabilityOverrides(
       ? {}
       : { maxOutputTokens: override.maxOutputTokens }),
     reasoning: mergeReasoning(base.reasoning, override.reasoning),
+    inputs: mergeInputs(base.inputs, override.inputs),
   };
+}
+
+function mergeInputs(
+  base: ModelCapabilities["inputs"],
+  override: Partial<ModelCapabilities["inputs"]> | undefined,
+): ModelCapabilities["inputs"] {
+  return override ? { ...base, ...override } : { ...base };
 }
 
 function mergeReasoning(
@@ -345,5 +385,6 @@ function cloneCapabilities(value: ModelCapabilities): ModelCapabilities {
   return {
     ...value,
     reasoning: { ...value.reasoning, efforts: [...value.reasoning.efforts] },
+    inputs: { ...value.inputs },
   };
 }

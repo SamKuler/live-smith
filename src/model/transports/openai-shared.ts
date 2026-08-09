@@ -100,6 +100,7 @@ function capabilitiesFromMetadata(
   record: Record<string, unknown>,
 ): ModelCapabilityHints | undefined {
   const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
+  const inputs = inputCapabilitiesFromMetadata(record, capabilities);
   const maxOutputTokens = numberMetadata(record, [
     "max_output_tokens",
     "maxOutputTokens",
@@ -114,7 +115,8 @@ function capabilitiesFromMetadata(
   if (
     maxOutputTokens === undefined &&
     tools === undefined &&
-    streaming === undefined
+    streaming === undefined &&
+    inputs === undefined
   ) {
     return undefined;
   }
@@ -122,6 +124,33 @@ function capabilitiesFromMetadata(
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(tools === undefined ? {} : { tools }),
     ...(streaming === undefined ? {} : { streaming }),
+    ...(inputs === undefined ? {} : { inputs }),
+  };
+}
+
+function inputCapabilitiesFromMetadata(
+  record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+): ModelCapabilityHints["inputs"] | undefined {
+  const value = [
+    record.input_modalities,
+    record.inputModalities,
+    capabilities?.input_modalities,
+    capabilities?.inputModalities,
+  ].find(Array.isArray);
+  if (!value || !value.every((item) => typeof item === "string")) {
+    return undefined;
+  }
+  const modalities = new Set(
+    value.map((item) => item.trim().toLocaleLowerCase()),
+  );
+  return {
+    image: modalities.has("image") ||
+      modalities.has("images") ||
+      modalities.has("vision") ||
+      modalities.has("image_url"),
+    audio: modalities.has("audio"),
+    pdf: modalities.has("pdf"),
   };
 }
 

@@ -156,6 +156,8 @@
         for (const key of ["tools", "streaming", "temperature", "maxOutputTokens"]) {
           if (overrides[key] !== undefined) capability[key] = overrides[key];
         }
+        capability.inputs = capability.inputs || { image: false, audio: false, pdf: false };
+        Object.assign(capability.inputs, overrides.inputs || {});
         capability.reasoning = capability.reasoning || {};
         Object.assign(capability.reasoning, overrides.reasoning || {});
         return {
@@ -173,6 +175,15 @@
         const selection = selectedModelCapabilities();
         const capability = selection.capability;
         const modelLimit = capability.maxOutputTokens;
+        const inputPreview = document.getElementById("inputCapabilitiesPreview");
+        if (inputPreview) {
+          const inputs = capability.inputs || {};
+          inputPreview.textContent = [
+            `Images: ${inputs.image ? "supported" : "unsupported"}`,
+            `Audio: ${inputs.audio ? "supported" : "unsupported"}`,
+            `PDF: ${inputs.pdf ? "supported" : "unsupported"}`,
+          ].join(" · ");
+        }
         const outputTokensInput = document.getElementById("maxOutputTokens");
         const trustedModelLimit = selection.authoritative.maxOutputTokens
           ? modelLimit
