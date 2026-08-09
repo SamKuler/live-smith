@@ -62,6 +62,28 @@ export async function writeJsonAtomically(
     throw new TypeError("Storage value is not JSON serializable.");
   }
 
+  return writeAtomically(
+    target,
+    (handle) => handle.writeFile(serialized, "utf8"),
+    options,
+  );
+}
+
+export async function writeBytesAtomically(
+  target: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  return writeAtomically(target, (handle) => handle.writeFile(bytes));
+}
+
+async function writeAtomically(
+  target: string,
+  write: (handle: fs.FileHandle) => Promise<void>,
+  options: {
+    syncDirectory?: (directory: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+
   const directory = path.dirname(target);
   await ensurePrivateDirectory(directory);
   const temporary = path.join(
@@ -75,7 +97,7 @@ export async function writeJsonAtomically(
     const handle = await fs.open(temporary, "wx", 0o600);
     temporaryCreated = true;
     try {
-      await handle.writeFile(serialized, "utf8");
+      await write(handle);
       await handle.sync();
     } finally {
       await handle.close();

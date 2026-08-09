@@ -7,8 +7,21 @@ import test from "node:test";
 import {
   isStorageCommitOutcomeUnknownError,
   removeFileDurably,
+  writeBytesAtomically,
   writeJsonAtomically,
 } from "./persistence.js";
+
+test("writeBytesAtomically durably replaces a private binary file", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-bytes-"));
+  const target = path.join(directory, "image.bin");
+
+  await writeBytesAtomically(target, new Uint8Array([1, 2, 3]));
+
+  assert.deepEqual(await fs.readFile(target), Buffer.from([1, 2, 3]));
+  if (process.platform !== "win32") {
+    assert.equal((await fs.stat(target)).mode & 0o777, 0o600);
+  }
+});
 
 test("writeJsonAtomically classifies a directory sync failure after replacement", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-atomic-"));
