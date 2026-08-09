@@ -300,6 +300,19 @@ export function isImageAttachmentMediaType(
     mediaType === "image/webp";
 }
 
+export function sessionAttachmentRefFromStored(
+  attachment: StoredSessionAttachment,
+): SessionAttachmentRef {
+  return {
+    id: attachment.id,
+    kind: attachment.kind,
+    fileName: attachment.fileName,
+    mediaType: attachment.mediaType,
+    byteLength: attachment.byteLength,
+    sha256: attachment.sha256,
+  };
+}
+
 function attachmentSessionDirectory(
   storageDirectory: string,
   sessionId: string,

@@ -1,5 +1,6 @@
 import type {
   ConversationMessage,
+  ModelInputPart,
   ModelConversationMessage,
   ModelTurn,
 } from "./contracts.js";
@@ -73,8 +74,7 @@ export interface ModelTool {
 
 export interface TransportRequest {
   runtimeProfile: RuntimeProfile;
-  prompt: string;
-  liveContext: string;
+  currentUserContent: ModelInputPart[];
   systemInstructions: string;
   history: ConversationMessage[];
   agentMessages: ModelConversationMessage[];

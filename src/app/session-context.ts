@@ -52,7 +52,12 @@ export function conversationHistoryFromEvents(
 ): ConversationMessage[] {
   return events.flatMap((event): ConversationMessage[] => {
     if (event.kind === "user" || event.kind === "assistant") {
-      return [{ role: event.kind, content: event.content }];
+      return event.kind === "assistant"
+        ? [{ role: "assistant", content: event.content }]
+        : [{
+            role: "user",
+            content: [{ type: "text", text: event.content }],
+          }];
     }
 
     return [];

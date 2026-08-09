@@ -1,7 +1,27 @@
-export interface ConversationMessage {
-  role: "user" | "assistant";
-  content: string;
-}
+export type ModelInputPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      fileName: string;
+      mediaType: "image/png" | "image/jpeg" | "image/webp";
+      base64: string;
+    }
+  | {
+      type: "document";
+      fileName: string;
+      mediaType: "application/pdf";
+      base64: string;
+    }
+  | {
+      type: "audio";
+      fileName: string;
+      mediaType: "audio/wav" | "audio/mpeg";
+      base64: string;
+    };
+
+export type ConversationMessage =
+  | { role: "user"; content: ModelInputPart[] }
+  | { role: "assistant"; content: string };
 
 export type ConversationScope =
   | { kind: "track"; identity: string; label: string }
