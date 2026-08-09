@@ -1,12 +1,15 @@
 import { Buffer } from "node:buffer";
 
-import { throwIfAborted } from "../runtime/host.js";
+import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import {
   assertDocumentAttachmentBytesWithinLimit,
   AttachmentProcessingError,
   type DocumentAttachmentMediaType,
 } from "./contracts.js";
+import { extractDocxText } from "./docx.js";
 import { type OoxmlPackage, openOoxmlPackage } from "./ooxml.js";
+import { extractPptxText } from "./pptx.js";
+import { extractXlsxText } from "./xlsx.js";
 
 export {
   AttachmentProcessingError,
@@ -56,26 +59,34 @@ export async function processAttachment(input: {
   signal?: AbortSignal;
 }): Promise<ProcessedAttachment> {
   throwIfAborted(input.signal);
-  const inspected = await inspectDocumentAttachment(input);
+  const ownedInput = ownedInspectionInput(input);
+  const inspected = await inspectDocumentAttachment(ownedInput);
   if (inspected.mediaType === "application/pdf") {
-    if (!input.nativePdfAllowed) {
+    if (!ownedInput.nativePdfAllowed) {
       throw new AttachmentProcessingError(
         "profile_incompatible",
         "This Profile/API mode cannot read PDF attachments.",
       );
     }
-    throwIfAborted(input.signal);
+    throwIfAborted(ownedInput.signal);
     return {
       type: "native_pdf",
-      fileName: input.fileName,
+      fileName: ownedInput.fileName,
       mediaType: "application/pdf",
-      bytes: new Uint8Array(input.bytes),
+      bytes: ownedInput.bytes,
     };
   }
-  throw new AttachmentProcessingError(
-    "unsupported_type",
-    "The attachment is not a supported Office document.",
-  );
+  const officePackage = inspected.package;
+  if (officePackage === undefined) throw invalidDocument();
+  const extracted = await extractOfficeText(officePackage, ownedInput.signal);
+  throwIfAborted(ownedInput.signal);
+  return {
+    type: "text",
+    fileName: ownedInput.fileName,
+    mediaType: inspected.mediaType,
+    text: extracted.text,
+    truncated: extracted.truncated,
+  };
 }
 
 export async function classifyDocumentAttachment(input: {
@@ -84,7 +95,17 @@ export async function classifyDocumentAttachment(input: {
   claimedMediaType?: string;
   signal?: AbortSignal;
 }): Promise<DocumentAttachmentMediaType> {
-  return (await inspectDocumentAttachment(input)).mediaType;
+  return (await inspectDocumentAttachment(ownedInspectionInput(input))).mediaType;
+}
+
+function ownedInspectionInput<T extends {
+  bytes: Uint8Array;
+  fileName: string;
+  claimedMediaType?: string;
+  signal?: AbortSignal;
+}>(input: T): T {
+  assertBinaryBytes(input.bytes);
+  return { ...input, bytes: new Uint8Array(input.bytes) };
 }
 
 async function inspectDocumentAttachment(input: {
@@ -99,7 +120,7 @@ async function inspectDocumentAttachment(input: {
   throwIfAborted(input.signal);
   const container = sniffAttachmentContainer(input.bytes, input.fileName);
   if (container === "pdf") {
-    if (containsPdfEncryptToken(input.bytes)) {
+    if (await containsPdfEncryptToken(input.bytes, input.signal)) {
       throw new AttachmentProcessingError(
         "encrypted_document",
         "Encrypted PDF documents are not supported.",
@@ -121,6 +142,23 @@ function ooxmlMediaType(kind: OoxmlPackage["kind"]): DocumentAttachmentMediaType
       return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     case "pptx":
       return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+}
+
+async function extractOfficeText(
+  officePackage: OoxmlPackage,
+  signal?: AbortSignal,
+): Promise<{ text: string; truncated: boolean }> {
+  const input = signal === undefined
+    ? { officePackage }
+    : { officePackage, signal };
+  switch (officePackage.kind) {
+    case "docx":
+      return extractDocxText(input);
+    case "xlsx":
+      return extractXlsxText(input);
+    case "pptx":
+      return extractPptxText(input);
   }
 }
 
@@ -158,36 +196,81 @@ function assertValidPdf(bytes: Uint8Array): void {
   }
 }
 
-function containsPdfEncryptToken(bytes: Uint8Array): boolean {
-  const source = latin1(bytes);
-  for (let offset = 0; offset < source.length; offset += 1) {
-    if (source[offset] !== "/") continue;
-    let decoded = "";
-    for (let cursor = offset + 1; cursor < source.length; cursor += 1) {
-      const character = source[cursor]!;
-      if (isPdfNameDelimiter(character)) break;
-      if (
-        character === "#" &&
-        cursor + 2 < source.length &&
-        /^[0-9a-f]{2}$/i.test(source.slice(cursor + 1, cursor + 3))
-      ) {
-        decoded += String.fromCharCode(Number.parseInt(
-          source.slice(cursor + 1, cursor + 3),
-          16,
-        ));
-        cursor += 2;
-      } else {
-        decoded += character;
-      }
-      if (decoded.length > "Encrypt".length) break;
+const pdfEncryptName = new Uint8Array([0x45, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74]);
+const pdfScanYieldInterval = 256 * 1024;
+
+async function containsPdfEncryptToken(
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let nextYieldOffset = 0;
+  for (let offset = 0; offset < bytes.byteLength; offset += 1) {
+    if (offset >= nextYieldOffset) {
+      await yieldToHost(signal);
+      nextYieldOffset = offset + pdfScanYieldInterval;
     }
-    if (decoded === "Encrypt") return true;
+    if (bytes[offset] !== 0x2f) continue;
+    let cursor = offset + 1;
+    let targetIndex = 0;
+    while (cursor < bytes.byteLength && !isPdfNameDelimiterByte(bytes[cursor]!)) {
+      let decoded = bytes[cursor]!;
+      let consumed = 1;
+      if (
+        decoded === 0x23 &&
+        cursor + 2 < bytes.byteLength &&
+        isAsciiHexByte(bytes[cursor + 1]!) &&
+        isAsciiHexByte(bytes[cursor + 2]!)
+      ) {
+        decoded = (asciiHexValue(bytes[cursor + 1]!) << 4) |
+          asciiHexValue(bytes[cursor + 2]!);
+        consumed = 3;
+      }
+      if (
+        targetIndex >= pdfEncryptName.byteLength ||
+        decoded !== pdfEncryptName[targetIndex]
+      ) break;
+      targetIndex += 1;
+      cursor += consumed;
+      if (targetIndex === pdfEncryptName.byteLength) {
+        if (
+          cursor === bytes.byteLength ||
+          isPdfNameDelimiterByte(bytes[cursor]!)
+        ) return true;
+        break;
+      }
+    }
   }
   return false;
 }
 
-function isPdfNameDelimiter(value: string): boolean {
-  return /[\x00\x09\x0a\x0c\x0d\x20()<>\[\]{}/%]/.test(value);
+function isPdfNameDelimiterByte(value: number): boolean {
+  return value === 0x00 ||
+    value === 0x09 ||
+    value === 0x0a ||
+    value === 0x0c ||
+    value === 0x0d ||
+    value === 0x20 ||
+    value === 0x28 ||
+    value === 0x29 ||
+    value === 0x3c ||
+    value === 0x3e ||
+    value === 0x5b ||
+    value === 0x5d ||
+    value === 0x7b ||
+    value === 0x7d ||
+    value === 0x2f ||
+    value === 0x25;
+}
+
+function isAsciiHexByte(value: number): boolean {
+  return (value >= 0x30 && value <= 0x39) ||
+    (value >= 0x41 && value <= 0x46) ||
+    (value >= 0x61 && value <= 0x66);
+}
+
+function asciiHexValue(value: number): number {
+  if (value <= 0x39) return value - 0x30;
+  return (value & 0xdf) - 0x41 + 10;
 }
 
 function invalidDocument(): AttachmentProcessingError {
