@@ -310,22 +310,31 @@ function anthropicInputCapabilities(
   record: Record<string, unknown>,
   capabilities: Record<string, unknown> | undefined,
 ): ModelCapabilityHints["inputs"] | undefined {
+  const image = supportStatus(capabilities?.image_input);
+  const pdf = supportStatus(capabilities?.pdf_input);
   const value = [
     record.input_modalities,
     record.inputModalities,
     capabilities?.input_modalities,
     capabilities?.inputModalities,
   ].find(Array.isArray);
-  if (!value || !value.every((item) => typeof item === "string")) {
-    return undefined;
-  }
-  const modalities = new Set(
-    value.map((item) => item.trim().toLocaleLowerCase()),
-  );
+  const compatible = value && value.every((item) => typeof item === "string")
+    ? inputCapabilitiesFromModalities(value)
+    : undefined;
+  if (image === undefined && pdf === undefined) return compatible;
   return {
-    image: modalities.has("image") ||
-      modalities.has("images") ||
-      modalities.has("vision"),
+    ...compatible,
+    ...(image === undefined ? {} : { image }),
+    ...(pdf === undefined ? {} : { pdf }),
+  };
+}
+
+function inputCapabilitiesFromModalities(
+  value: string[],
+): ModelCapabilityHints["inputs"] {
+  const modalities = new Set(value.map((item) => item.trim().toLocaleLowerCase()));
+  return {
+    image: modalities.has("image") || modalities.has("images") || modalities.has("vision"),
     audio: modalities.has("audio"),
     pdf: modalities.has("pdf"),
   };

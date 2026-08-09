@@ -3080,6 +3080,43 @@ test("input capability overrides round-trip through the Profile form", async () 
   }
 });
 
+test("input capability preview distinguishes unverified fields from unsupported fields", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const preview = () =>
+      harness.document.querySelector("#inputCapabilitiesPreview")?.textContent;
+    assert.equal(
+      preview(),
+      "Images: unsupported · Audio: unsupported · PDF: unsupported",
+    );
+
+    const originalBaseUrl = harness.document.querySelector<HTMLInputElement>(
+      "#baseUrl",
+    )?.value;
+    assert.ok(originalBaseUrl);
+    harness.input("#baseUrl", "https://unverified.example/v1");
+    assert.equal(
+      preview(),
+      "Images: unknown/unverified · Audio: unknown/unverified · PDF: unknown/unverified",
+    );
+
+    harness.select("#overrideInputImage", "true");
+    assert.equal(
+      preview(),
+      "Images: supported · Audio: unknown/unverified · PDF: unknown/unverified",
+    );
+
+    harness.input("#baseUrl", originalBaseUrl);
+    assert.equal(
+      preview(),
+      "Images: supported · Audio: unsupported · PDF: unsupported",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("Profile command errors identify and focus the invalid field", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;

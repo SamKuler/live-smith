@@ -156,7 +156,7 @@
         for (const key of ["tools", "streaming", "temperature", "maxOutputTokens"]) {
           if (overrides[key] !== undefined) capability[key] = overrides[key];
         }
-        capability.inputs = capability.inputs || { image: false, audio: false, pdf: false };
+        capability.inputs = capability.inputs || {};
         Object.assign(capability.inputs, overrides.inputs || {});
         capability.reasoning = capability.reasoning || {};
         Object.assign(capability.reasoning, overrides.reasoning || {});
@@ -166,6 +166,11 @@
             maxOutputTokens: Boolean(baseCapability) || overrides.maxOutputTokens !== undefined,
             reasoning: Boolean(baseCapability) || overrides.reasoning?.supported !== undefined,
             temperature: Boolean(baseCapability) || overrides.temperature !== undefined,
+            inputs: Object.fromEntries(["image", "audio", "pdf"].map((key) => [
+              key,
+              typeof baseCapability?.inputs?.[key] === "boolean" ||
+                overrides.inputs?.[key] !== undefined,
+            ])),
           },
         };
       }
@@ -179,9 +184,9 @@
         if (inputPreview) {
           const inputs = capability.inputs || {};
           inputPreview.textContent = [
-            `Images: ${inputs.image ? "supported" : "unsupported"}`,
-            `Audio: ${inputs.audio ? "supported" : "unsupported"}`,
-            `PDF: ${inputs.pdf ? "supported" : "unsupported"}`,
+            inputCapabilityLabel("Images", "image", inputs, selection.authoritative.inputs),
+            inputCapabilityLabel("Audio", "audio", inputs, selection.authoritative.inputs),
+            inputCapabilityLabel("PDF", "pdf", inputs, selection.authoritative.inputs),
           ].join(" · ");
         }
         const outputTokensInput = document.getElementById("maxOutputTokens");
@@ -202,6 +207,11 @@
         document.getElementById("maxOutputTokensHint").textContent = trustedModelLimit === undefined
           ? "Model output limit is unknown; the provider validates this request."
           : `Model output limit: ${trustedModelLimit}.`;
+      }
+
+      function inputCapabilityLabel(label, key, inputs, authoritative) {
+        if (!authoritative[key]) return `${label}: unknown/unverified`;
+        return `${label}: ${inputs[key] ? "supported" : "unsupported"}`;
       }
 
       function updateDraftActions() {

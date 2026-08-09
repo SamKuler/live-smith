@@ -886,6 +886,41 @@ test("Anthropic malformed input modality arrays provide no capability hint", asy
   ).inputs.image, true);
 });
 
+test("Anthropic discovery prefers official image and PDF capability fields", async () => {
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "claude-official-inputs",
+        input_modalities: ["text", "image", "audio"],
+        capabilities: {
+          image_input: { supported: false },
+          pdf_input: { supported: true },
+        },
+      }, {
+        id: "claude-partial-inputs",
+        capabilities: { image_input: { supported: true } },
+      }, {
+        id: "claude-malformed-inputs",
+        capabilities: {
+          image_input: { supported: "yes" },
+          pdf_input: null,
+        },
+      }],
+      has_more: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const models = await transport.listModels(profile());
+
+  assert.deepEqual(models[0]?.capabilities.inputs, {
+    image: false,
+    audio: true,
+    pdf: true,
+  });
+  assert.deepEqual(models[1]?.capabilities.inputs, { image: true });
+  assert.equal(models[2]?.capabilities.inputs, undefined);
+});
+
 test("Anthropic model discovery follows every results page", async () => {
   const urls: string[] = [];
   const transport = createAnthropicMessagesTransport({

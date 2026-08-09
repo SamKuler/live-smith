@@ -62,6 +62,45 @@ test("input capabilities merge known policy, discovery, and partial overrides", 
   assert.deepEqual(overridden.inputs, { image: false, audio: true, pdf: true });
 });
 
+test("known input policy accepts only explicit aliases and legal snapshots", () => {
+  for (const model of [
+    "gpt-5.6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.4-mini-2026-03-17",
+    "gpt-5.2-codex-2025-12-11",
+  ]) {
+    assert.equal(resolveModelCapabilities(profile({ model })).inputs.image, true, model);
+  }
+
+  for (const model of [
+    "gpt-5.6-text-only",
+    "gpt-5.6-sol-custom",
+    "gpt-5.4-mini-fake",
+    "gpt-5.2-codex-custom",
+  ]) {
+    assert.equal(resolveModelCapabilities(profile({ model })).inputs.image, false, model);
+  }
+
+  for (const model of [
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-6-20260301",
+    "claude-haiku-4-5-20251001",
+  ]) {
+    assert.equal(resolveModelCapabilities(profile({
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      model,
+    })).inputs.image, true, model);
+  }
+
+  assert.equal(resolveModelCapabilities(profile({
+    apiFamily: "anthropic",
+    apiMode: "messages",
+    model: "claude-sonnet-4-6-text-only",
+  })).inputs.image, false);
+});
+
 test("unknown output limits do not cap requests while explicit limits still do", () => {
   const unknown = profile({
     parameters: {
