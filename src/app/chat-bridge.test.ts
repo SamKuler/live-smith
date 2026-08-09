@@ -15,6 +15,7 @@ import {
   ChatBridgePayloadTooLargeError,
   ChatBridgePromptPersistenceUnknownError,
   ChatBridgeResourceNotFoundError,
+  ChatBridgeSendFailureError,
   createChatBridge,
   readRawAttachmentBody,
   readJsonBody,
@@ -198,6 +199,57 @@ test("chat bridge treats an early handler failure as not persisted", async () =>
       error: "Unexpected send failure.",
       promptPersistence: "not_persisted",
     });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge publishes only the send failure state captured inside its Session lease", async () => {
+  const authoritative = {
+    activeSessionId: "s1",
+    sessions: [{ id: "s1" }],
+  } as ChatDialogState;
+  let builds = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      builds += 1;
+      throw new Error("Post-lease state build must not run.");
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => authoritative,
+    handleSend: async (_input, stream) => {
+      await stream.sessionEvent({
+        id: "user-event",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        kind: "user",
+        content: "test",
+      });
+      throw new ChatBridgeSendFailureError(
+        new Error("Model request failed."),
+        authoritative,
+      );
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "captured-send-state",
+      },
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+    const errorEvent = await readSsePayload(events, "error");
+
+    assert.equal(response.status, 500);
+    assert.equal(errorEvent.message, "Model request failed.");
+    assert.equal(errorEvent.promptPersistence, "persisted");
+    assert.equal((errorEvent.state as ChatDialogState).activeSessionId, "s1");
+    assert.equal(builds, 0);
   } finally {
     await bridge.close();
   }

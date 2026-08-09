@@ -107,6 +107,7 @@ import {
   ChatBridgePayloadTooLargeError,
   ChatBridgePromptPersistenceUnknownError,
   ChatBridgeResourceNotFoundError,
+  ChatBridgeSendFailureError,
   createChatBridge,
   type ChatBridgeCommandInput,
   type ChatBridgeAttachmentDeleteInput,
@@ -772,8 +773,9 @@ export async function runAgentFlow(
       throw new Error("Prompt is empty.");
     }
 
-    try {
-      return await withSessionMutation(sendInput.sessionId, async () => {
+    return withSessionMutation(sendInput.sessionId, async () => {
+      try {
+        throwIfAborted(signal);
         const session = (await listSessions(
           context.environment.storageDirectory,
           projectKey,
@@ -830,11 +832,17 @@ export async function runAgentFlow(
           dependencies.requestModelTurn ?? requestModelTurn,
         );
         return buildState();
-      });
-    } catch (error) {
-      if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
-      throw error;
-    }
+      } catch (error) {
+        if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
+        let authoritativeState: ChatDialogState | undefined;
+        try {
+          authoritativeState = await buildState();
+        } catch {
+          // Preserve the original failure. The client will reconcile explicitly.
+        }
+        throw new ChatBridgeSendFailureError(error, authoritativeState);
+      }
+    });
   };
 
   const renderHtml = dependencies.renderHtml ??

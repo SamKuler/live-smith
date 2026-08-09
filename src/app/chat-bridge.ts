@@ -62,6 +62,21 @@ export class ChatBridgePromptPersistenceUnknownError extends Error {
   }
 }
 
+export class ChatBridgeSendFailureError extends Error {
+  readonly originalError: unknown;
+  readonly authoritativeState: ChatDialogState | undefined;
+
+  constructor(originalError: unknown, authoritativeState?: ChatDialogState) {
+    super(
+      originalError instanceof Error ? originalError.message : String(originalError),
+      { cause: originalError },
+    );
+    this.name = "ChatBridgeSendFailureError";
+    this.originalError = originalError;
+    this.authoritativeState = authoritativeState;
+  }
+}
+
 export class ChatBridgeCommandOutcomeUnknownError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -697,14 +712,19 @@ export async function createChatBridge(
 
       response.writeHead(404).end("Not found");
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const field = error instanceof ProfileValidationError
-        ? error.field
+      const reportedError = error instanceof ChatBridgeSendFailureError
+        ? error.originalError
+        : error;
+      const message = reportedError instanceof Error
+        ? reportedError.message
+        : String(reportedError);
+      const field = reportedError instanceof ProfileValidationError
+        ? reportedError.field
         : undefined;
       const promptPersistence = requestPath === "/send"
         ? sendPromptPersistence === "persisted"
           ? "persisted"
-          : error instanceof ChatBridgePromptPersistenceUnknownError
+          : reportedError instanceof ChatBridgePromptPersistenceUnknownError
             ? "unknown"
             : sendPromptPersistence ?? "not_persisted"
         : undefined;
@@ -712,8 +732,8 @@ export async function createChatBridge(
         requestPath.startsWith("/attachments/");
       const commandOutcome = (requestPath === "/command" || attachmentMutation) &&
           (
-            isStorageCommitOutcomeUnknownError(error) ||
-            error instanceof ChatBridgeCommandOutcomeUnknownError
+            isStorageCommitOutcomeUnknownError(reportedError) ||
+            reportedError instanceof ChatBridgeCommandOutcomeUnknownError
           )
         ? "unknown" as const
         : undefined;
@@ -732,15 +752,15 @@ export async function createChatBridge(
         if (activity?.status !== "stopped") {
           updateActivity(sendSessionId, sendId, "failed", { message });
         }
-        try {
-          const baseState = await options.buildState();
+        const baseState = error instanceof ChatBridgeSendFailureError
+          ? error.authoritativeState
+          : undefined;
+        if (baseState !== undefined) {
           const failedActivity = sessionActivities.get(sendSessionId);
           if (failedActivity) {
             failedActivity.unread = baseState.activeSessionId !== sendSessionId;
           }
           sendErrorState = stateWithActivities(baseState);
-        } catch {
-          // Preserve the original send error if state cannot also be refreshed.
         }
       }
       if (!attachmentMutation && (requestPath !== "/send" || sendId !== undefined)) {
@@ -776,13 +796,13 @@ export async function createChatBridge(
             ? {}
             : { reconciliationRequired }),
         },
-        field !== undefined || error instanceof ChatBridgeRequestValidationError
+        field !== undefined || reportedError instanceof ChatBridgeRequestValidationError
           ? 400
-          : error instanceof ChatBridgeAttachmentValidationError ||
-              error instanceof ChatBridgeResourceNotFoundError ||
-              error instanceof ChatBridgeConflictError ||
-              error instanceof ChatBridgePayloadTooLargeError
-            ? error.status
+          : reportedError instanceof ChatBridgeAttachmentValidationError ||
+              reportedError instanceof ChatBridgeResourceNotFoundError ||
+              reportedError instanceof ChatBridgeConflictError ||
+              reportedError instanceof ChatBridgePayloadTooLargeError
+            ? reportedError.status
             : 500,
       );
     } finally {

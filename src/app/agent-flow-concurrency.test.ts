@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer as NodeBuffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -174,72 +175,30 @@ test("concurrent state and discovery responses each keep models, capabilities, a
 });
 
 test("two bridges serialize a same-Session send and delete without recreating events", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-bridge-delete-"));
-  await saveSavedProfile(directory, profile({
-    baseUrl: "https://provider.test/v1",
-    apiKey: "key",
-    model: "model-a",
-  }));
-  const firstDialog = deferred<string>();
-  const secondDialog = deferred<string>();
-  const closeDialogs = deferred<void>();
-  let dialogCount = 0;
-  const leadTrack = fakeMidiTrack(1n, "Lead");
-  const context = {
-    application: {
-      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
-    },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const index = dialogCount;
-        dialogCount += 1;
-        (index === 0 ? firstDialog : secondDialog).resolve(url);
-        await closeDialogs.promise;
-      },
-    },
-  };
-  const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
-    summary: "Track: Lead",
-    target: { track: leadTrack },
-    scope: { kind: "track", identity: "1", label: "Lead" },
-  };
   const modelStarted = deferred<void>();
   const releaseModel = deferred<void>();
-  const firstFlow = runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
-    requestModelTurn: async () => {
-      modelStarted.resolve();
-      await releaseModel.promise;
-      return { content: "Done", toolCalls: [] };
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-delete-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        modelStarted.resolve();
+        await releaseModel.promise;
+        return { content: "Done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
     },
   });
-  let secondFlow: Promise<void> | undefined;
 
   try {
-    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
-    const firstToken = firstUrl.searchParams.get("token")!;
-    const firstState = await (await fetch(
-      `${firstUrl.origin}/state?token=${firstToken}`,
-    )).json() as ChatDialogState;
-    const sessionId = firstState.activeSessionId;
-
-    secondFlow = runAgentFlow(context as never, interaction, {
-      renderHtml: () => "<html></html>",
-      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
-    });
-    const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
-    const secondToken = secondUrl.searchParams.get("token")!;
-    const secondState = await (await fetch(
-      `${secondUrl.origin}/state?token=${secondToken}`,
-    )).json() as ChatDialogState;
-    assert.equal(secondState.activeSessionId, sessionId);
-
-    const send = fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+    const send = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "Finish safely", sessionId }),
+      body: JSON.stringify({
+        prompt: "Finish safely",
+        sessionId: fixture.sessionId,
+      }),
     });
     const sendBoundary = await resolvesWithin(Promise.race([
       modelStarted.promise.then(() => ({ type: "model" as const })),
@@ -252,10 +211,13 @@ test("two bridges serialize a same-Session send and delete without recreating ev
     assert.deepEqual(sendBoundary, { type: "model" });
 
     let deleteSettled = false;
-    const deletion = fetch(`${secondUrl.origin}/command?token=${secondToken}`, {
+    const deletion = fetch(fixture.second.endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "delete_session", sessionId }),
+      body: JSON.stringify({
+        kind: "delete_session",
+        sessionId: fixture.sessionId,
+      }),
     }).then((response) => {
       deleteSettled = true;
       return response;
@@ -272,101 +234,239 @@ test("two bridges serialize a same-Session send and delete without recreating ev
     assert.equal((await send).status, 200);
     assert.equal((await deletion).status, 200);
     assert.equal(
-      (await listSessions(directory)).some((session) => session.id === sessionId),
+      (await listSessions(fixture.directory)).some(
+        (session) => session.id === fixture.sessionId,
+      ),
       false,
     );
-    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+    assert.deepEqual(
+      await loadSessionEvents(fixture.directory, fixture.sessionId),
+      [],
+    );
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
-    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+    assert.deepEqual(
+      await loadSessionEvents(fixture.directory, fixture.sessionId),
+      [],
+    );
 
-    const deletedSend = await fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+    const deletedSend = await fetch(fixture.first.endpoint("/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "Must not fall back", sessionId }),
+      body: JSON.stringify({
+        prompt: "Must not fall back",
+        sessionId: fixture.sessionId,
+      }),
     });
     assert.equal(deletedSend.status, 500);
     assert.equal(
       (await deletedSend.json() as { promptPersistence?: string }).promptPersistence,
       "not_persisted",
     );
-    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
-
-    closeDialogs.resolve();
-    await Promise.all([firstFlow, secondFlow]);
+    assert.deepEqual(
+      await loadSessionEvents(fixture.directory, fixture.sessionId),
+      [],
+    );
   } finally {
-    closeDialogs.resolve();
-    await Promise.allSettled([
-      firstFlow,
-      ...(secondFlow ? [secondFlow] : []),
-    ]);
+    releaseModel.resolve();
+    await fixture.close();
+  }
+});
+
+test("stopping a same-Session send while it waits for another bridge never persists its prompt", async () => {
+  const firstModelStarted = deferred<void>();
+  const releaseFirstModel = deferred<void>();
+  let secondModelCalls = 0;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-stop-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        firstModelStarted.resolve();
+        await releaseFirstModel.promise;
+        return { content: "First done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => {
+        secondModelCalls += 1;
+        return { content: "Second must not run", toolCalls: [] };
+      },
+    },
+  });
+
+  try {
+    const firstSend = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "first-lease-owner",
+      },
+      body: JSON.stringify({
+        prompt: "First owns lease",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(firstModelStarted.promise, "first model request");
+
+    const secondSend = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "second-queued-send",
+      },
+      body: JSON.stringify({
+        prompt: "Queued prompt must stay draft",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    const stopResult = await resolvesWithin(
+      stopSendWhenActive(fixture.second, "second-queued-send"),
+      "queued send registration",
+    );
+    assert.deepEqual(stopResult, {
+      ok: true,
+      terminal: false,
+      sendId: "second-queued-send",
+    });
+
+    releaseFirstModel.resolve();
+    assert.equal((await firstSend).status, 200);
+    const secondResponse = await secondSend;
+    assert.equal(secondResponse.status, 500);
+    assert.equal(
+      (await secondResponse.json() as { promptPersistence?: string }).promptPersistence,
+      "not_persisted",
+    );
+    assert.equal(secondModelCalls, 0);
+    assert.deepEqual(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).map(
+        (event) => event.content,
+      ),
+      ["First owns lease", "First done"],
+    );
+    assert.equal(
+      (await listSessions(fixture.directory)).find(
+        (session) => session.id === fixture.sessionId,
+      )?.title,
+      "First owns lease",
+    );
+  } finally {
+    releaseFirstModel.resolve();
+    await fixture.close();
+  }
+});
+
+test("a failed send builds its authoritative state before releasing the cross-bridge Session lease", async () => {
+  const modelStarted = deferred<void>();
+  const failModel = deferred<void>();
+  const finalStateBuildStarted = deferred<void>();
+  const releaseFinalStateBuild = deferred<void>();
+  let blockNextStateBuild = false;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-send-error-state-",
+    firstDependencies: {
+      loadSessionEvents: async (...args) => {
+        if (blockNextStateBuild) {
+          blockNextStateBuild = false;
+          finalStateBuildStarted.resolve();
+          await releaseFinalStateBuild.promise;
+        }
+        return loadSessionEvents(...args);
+      },
+      requestModelTurn: async () => {
+        modelStarted.resolve();
+        await failModel.promise;
+        throw new Error("Model request failed safely.");
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const events = await fetch(fixture.first.endpoint("/events"));
+    const send = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "send-error-snapshot",
+      },
+      body: JSON.stringify({
+        prompt: "Persist before model failure",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(modelStarted.promise, "failing model request");
+    blockNextStateBuild = true;
+    failModel.resolve();
+    await resolvesWithin(finalStateBuildStarted.promise, "send failure state build");
+
+    let deleteSettled = false;
+    const deletion = fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "delete_session",
+        sessionId: fixture.sessionId,
+      }),
+    }).then((response) => {
+      deleteSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      deletion.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
+    ]), "pending");
+    assert.equal(deleteSettled, false);
+
+    releaseFinalStateBuild.resolve();
+    const errorEvent = await resolvesWithin(
+      readSsePayload(events, "error"),
+      "send error event",
+    );
+    assert.equal(errorEvent.sendId, "send-error-snapshot");
+    assert.equal(errorEvent.promptPersistence, "persisted");
+    assert.equal(
+      ((errorEvent.state as ChatDialogState).sessions ?? []).some(
+        (session) => session.id === fixture.sessionId,
+      ),
+      true,
+    );
+    assert.equal((await send).status, 500);
+    assert.equal((await deletion).status, 200);
+
+  } finally {
+    failModel.resolve();
+    releaseFinalStateBuild.resolve();
+    await fixture.close();
   }
 });
 
 test("two bridges can run different Sessions concurrently", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-bridge-overlap-"));
-  await saveSavedProfile(directory, profile({
-    baseUrl: "https://provider.test/v1",
-    apiKey: "key",
-    model: "model-a",
-  }));
-  const firstDialog = deferred<string>();
-  const secondDialog = deferred<string>();
-  const closeDialogs = deferred<void>();
-  let dialogCount = 0;
-  const leadTrack = fakeMidiTrack(1n, "Lead");
-  const context = {
-    application: {
-      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
-    },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const index = dialogCount;
-        dialogCount += 1;
-        (index === 0 ? firstDialog : secondDialog).resolve(url);
-        await closeDialogs.promise;
-      },
-    },
-  };
-  const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
-    summary: "Track: Lead",
-    target: { track: leadTrack },
-    scope: { kind: "track", identity: "1", label: "Lead" },
-  };
   const firstModelStarted = deferred<void>();
   const secondModelStarted = deferred<void>();
   const releaseModels = deferred<void>();
-  const firstFlow = runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
-    requestModelTurn: async () => {
-      firstModelStarted.resolve();
-      await releaseModels.promise;
-      return { content: "First done", toolCalls: [] };
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-overlap-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        firstModelStarted.resolve();
+        await releaseModels.promise;
+        return { content: "First done", toolCalls: [] };
+      },
     },
-  });
-  let secondFlow: Promise<void> | undefined;
-
-  try {
-    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
-    const firstToken = firstUrl.searchParams.get("token")!;
-    const firstState = await (await fetch(
-      `${firstUrl.origin}/state?token=${firstToken}`,
-    )).json() as ChatDialogState;
-    const firstSessionId = firstState.activeSessionId;
-
-    secondFlow = runAgentFlow(context as never, interaction, {
-      renderHtml: () => "<html></html>",
+    secondDependencies: {
       requestModelTurn: async () => {
         secondModelStarted.resolve();
         await releaseModels.promise;
         return { content: "Second done", toolCalls: [] };
       },
-    });
-    const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
-    const secondToken = secondUrl.searchParams.get("token")!;
+    },
+  });
+
+  try {
     const newSessionResponse = await fetch(
-      `${secondUrl.origin}/command?token=${secondToken}`,
+      fixture.second.endpoint("/command"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -376,12 +476,12 @@ test("two bridges can run different Sessions concurrently", async () => {
     assert.equal(newSessionResponse.status, 200);
     const secondSessionId = (await newSessionResponse.json() as ChatDialogState)
       .activeSessionId;
-    assert.notEqual(secondSessionId, firstSessionId);
+    assert.notEqual(secondSessionId, fixture.sessionId);
 
-    const firstSend = fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+    const firstSend = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "First", sessionId: firstSessionId }),
+      body: JSON.stringify({ prompt: "First", sessionId: fixture.sessionId }),
     });
     const sendBoundary = await resolvesWithin(Promise.race([
       firstModelStarted.promise.then(() => ({ type: "model" as const })),
@@ -392,7 +492,7 @@ test("two bridges can run different Sessions concurrently", async () => {
       })),
     ]), "first model request or early send response");
     assert.deepEqual(sendBoundary, { type: "model" });
-    const secondSend = fetch(`${secondUrl.origin}/send?token=${secondToken}`, {
+    const secondSend = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: "Second", sessionId: secondSessionId }),
@@ -411,17 +511,17 @@ test("two bridges can run different Sessions concurrently", async () => {
       ),
       [200, 200],
     );
-    assert.equal((await loadSessionEvents(directory, firstSessionId))[0]?.content, "First");
-    assert.equal((await loadSessionEvents(directory, secondSessionId))[0]?.content, "Second");
-
-    closeDialogs.resolve();
-    await Promise.all([firstFlow, secondFlow]);
+    assert.equal(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId))[0]?.content,
+      "First",
+    );
+    assert.equal(
+      (await loadSessionEvents(fixture.directory, secondSessionId))[0]?.content,
+      "Second",
+    );
   } finally {
-    closeDialogs.resolve();
-    await Promise.allSettled([
-      firstFlow,
-      ...(secondFlow ? [secondFlow] : []),
-    ]);
+    releaseModels.resolve();
+    await fixture.close();
   }
 });
 
@@ -1786,6 +1886,148 @@ function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
+}
+
+async function readSsePayload(
+  response: Response,
+  type: string,
+): Promise<Record<string, unknown>> {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  let received = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error(`Event stream ended before ${type}.`);
+      received += NodeBuffer.from(chunk.value).toString("utf8");
+      for (const block of received.split("\n\n")) {
+        const data = block.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice("data: ".length);
+        if (!data) continue;
+        const payload = JSON.parse(data) as Record<string, unknown>;
+        if (payload.type === type) return payload;
+      }
+    }
+  } finally {
+    await reader.cancel();
+  }
+}
+
+interface CrossBridgeEndpoint {
+  endpoint(pathname: string): string;
+}
+
+interface CrossBridgeFixture {
+  directory: string;
+  sessionId: string;
+  first: CrossBridgeEndpoint;
+  second: CrossBridgeEndpoint;
+  close(): Promise<void>;
+}
+
+async function openCrossBridgeFixture(options: {
+  directoryPrefix: string;
+  firstDependencies: Parameters<typeof runAgentFlow>[2];
+  secondDependencies: Parameters<typeof runAgentFlow>[2];
+}): Promise<CrossBridgeFixture> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), options.directoryPrefix));
+  await saveSavedProfile(directory, profile({
+    baseUrl: "https://provider.test/v1",
+    apiKey: "key",
+    model: "model-a",
+  }));
+  const firstDialog = deferred<string>();
+  const secondDialog = deferred<string>();
+  const closeDialogs = deferred<void>();
+  let dialogCount = 0;
+  const leadTrack = fakeMidiTrack(1n, "Lead");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const index = dialogCount;
+        dialogCount += 1;
+        (index === 0 ? firstDialog : secondDialog).resolve(url);
+        await closeDialogs.promise;
+      },
+    },
+  };
+  const interaction: LiveInteractionContext = {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: { track: leadTrack },
+    scope: { kind: "track", identity: "1", label: "Lead" },
+  };
+  const firstFlow = runAgentFlow(context as never, interaction, {
+    ...options.firstDependencies,
+    renderHtml: () => "<html></html>",
+  });
+  let secondFlow: Promise<void> | undefined;
+  let closePromise: Promise<void> | undefined;
+  try {
+    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
+    const firstToken = firstUrl.searchParams.get("token")!;
+    const firstState = await (await fetch(
+      `${firstUrl.origin}/state?token=${firstToken}`,
+    )).json() as ChatDialogState;
+
+    secondFlow = runAgentFlow(context as never, interaction, {
+      ...options.secondDependencies,
+      renderHtml: () => "<html></html>",
+    });
+    const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
+    const secondToken = secondUrl.searchParams.get("token")!;
+    const secondState = await (await fetch(
+      `${secondUrl.origin}/state?token=${secondToken}`,
+    )).json() as ChatDialogState;
+    assert.equal(secondState.activeSessionId, firstState.activeSessionId);
+
+    const endpoint = (url: URL, token: string): CrossBridgeEndpoint => ({
+      endpoint: (pathname) => `${url.origin}${pathname}?token=${token}`,
+    });
+    return {
+      directory,
+      sessionId: firstState.activeSessionId,
+      first: endpoint(firstUrl, firstToken),
+      second: endpoint(secondUrl, secondToken),
+      close: () => {
+        if (closePromise) return closePromise;
+        closeDialogs.resolve();
+        closePromise = Promise.allSettled([firstFlow, secondFlow!]).then(() => undefined);
+        return closePromise;
+      },
+    };
+  } catch (error) {
+    closeDialogs.resolve();
+    await Promise.allSettled([
+      firstFlow,
+      ...(secondFlow ? [secondFlow] : []),
+    ]);
+    throw error;
+  }
+}
+
+async function stopSendWhenActive(
+  bridge: CrossBridgeEndpoint,
+  sendId: string,
+): Promise<Record<string, unknown>> {
+  for (;;) {
+    const response = await fetch(bridge.endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": sendId,
+      },
+      body: "{}",
+    });
+    const result = await response.json() as Record<string, unknown>;
+    if (result.terminal === false) return result;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 function deferred<T>(): {
