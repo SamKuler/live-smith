@@ -25,7 +25,9 @@ import {
 import { mergeExtraBody } from "./request-body.js";
 import { withTransportContext } from "./errors.js";
 import {
+  assertBinaryInputWithinLimits,
   assertImageInputEnabled,
+  assertPdfInputEnabled,
   assertNeverInputPart,
   unsupportedInputPart,
 } from "./input-parts.js";
@@ -66,6 +68,7 @@ export function createAnthropicMessagesTransport(
     ),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertBinaryInputWithinLimits(request);
       const body = buildAnthropicBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
         return streamAnthropicTurn(request, body, fetchImpl);
@@ -190,6 +193,16 @@ function mapAnthropicInputParts(
           },
         };
       case "document":
+        assertPdfInputEnabled(request);
+        return {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: part.mediaType,
+            data: part.base64,
+          },
+          title: part.fileName,
+        };
       case "audio":
         return unsupportedInputPart(part);
       default:

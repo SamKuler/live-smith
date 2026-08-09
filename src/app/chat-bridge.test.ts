@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
+import { IncomingMessage } from "node:http";
 import { connect } from "node:net";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -7,7 +8,7 @@ import test from "node:test";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { ProfileValidationError } from "../model/profile.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
-import { MAX_IMAGE_ATTACHMENT_BYTES } from "../storage/attachments.js";
+import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
 import {
   ChatBridgeAttachmentValidationError,
   ChatBridgeCommandOutcomeUnknownError,
@@ -1388,6 +1389,7 @@ test("attachment upload and delete routes use bounded raw bodies and narrow inpu
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async (input) => {
       uploadInput = input;
       return state;
@@ -1417,7 +1419,7 @@ test("attachment upload and delete routes use bounded raw bodies and narrow inpu
     assert.equal(uploadInput?.sessionId, "session-1");
     assert.equal(uploadInput?.fileName, "idea 中文.png");
     assert.equal(uploadInput?.claimedMediaType, "image/png");
-    assert.deepEqual(uploadInput?.bytes, attachmentPng);
+    assert.deepEqual([...(uploadInput?.bytes ?? [])], [...attachmentPng]);
 
     const deletion = await fetch(
       `${chatUrl.origin}/attachments/attachment-1?token=${token}&sessionId=session-1`,
@@ -1443,6 +1445,224 @@ test("attachment upload and delete routes use bounded raw bodies and narrow inpu
   }
 });
 
+test("attachment upload preflight rejects before reading or allocating its body", async () => {
+  const state = {} as ChatDialogState;
+  let preflightInput: { sessionId: string } | undefined;
+  let handlerCalls = 0;
+  const allocations: number[] = [];
+  let resumedRequests = 0;
+  let resumeObservedBeforeErrorSerialization = false;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    preflightAttachmentUpload: async (input) => {
+      preflightInput = input;
+      const error = new ChatBridgeResourceNotFoundError(
+        "That Session is unavailable.",
+      );
+      Object.defineProperty(error, "message", {
+        configurable: true,
+        get: () => {
+          resumeObservedBeforeErrorSerialization = resumedRequests > 0;
+          return "That Session is unavailable.";
+        },
+      });
+      throw error;
+    },
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    attachmentBodyReadOptions: {
+      allocateBuffer: (byteLength) => {
+        allocations.push(byteLength);
+        return NodeBuffer.allocUnsafe(byteLength);
+      },
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const originalResume = IncomingMessage.prototype.resume;
+  IncomingMessage.prototype.resume = function trackedResume() {
+    resumedRequests += 1;
+    return originalResume.call(this);
+  };
+
+  try {
+    const response = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}` +
+        "&sessionId=missing-session&fileName=idea.png",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(response.status, 404);
+    assert.deepEqual(preflightInput, { sessionId: "missing-session" });
+    assert.equal(handlerCalls, 0);
+    assert.deepEqual(allocations, []);
+    assert.equal(resumedRequests, 1);
+    assert.equal(resumeObservedBeforeErrorSerialization, true);
+  } finally {
+    IncomingMessage.prototype.resume = originalResume;
+    await bridge.close();
+  }
+});
+
+test("attachment body concurrency is shared across bridge instances", async () => {
+  const state = {} as ChatDialogState;
+  const bodyReadStarted: Array<Promise<void>> = [];
+  const markBodyReadStarted: Array<() => void> = [];
+  for (let index = 0; index < 2; index += 1) {
+    bodyReadStarted.push(new Promise<void>((resolve) => {
+      markBodyReadStarted.push(resolve);
+    }));
+  }
+  let thirdAllocations = 0;
+  let handlerCalls = 0;
+  const bridgeForIndex = (index: number) => createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    attachmentBodyReadOptions: {
+      timeoutMs: 1_000,
+      allocateBuffer: (byteLength) => {
+        if (index < 2) markBodyReadStarted[index]?.();
+        else thirdAllocations += 1;
+        return NodeBuffer.allocUnsafe(byteLength);
+      },
+    },
+  });
+  const bridges = await Promise.all([0, 1, 2].map(bridgeForIndex));
+  const sockets: ReturnType<typeof connect>[] = [];
+
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const chatUrl = new URL(bridges[index]!.url);
+      const token = chatUrl.searchParams.get("token")!;
+      const socket = connect(Number(chatUrl.port), chatUrl.hostname);
+      sockets.push(socket);
+      socket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      socket.write([
+        `POST /attachments?token=${token}&sessionId=session-${index}&fileName=held.png HTTP/1.1`,
+        `Host: ${chatUrl.host}`,
+        "Content-Type: application/octet-stream",
+        "Content-Length: 100",
+        "Connection: keep-alive",
+        "",
+        "",
+      ].join("\r\n"));
+      await bodyReadStarted[index];
+    }
+
+    const thirdUrl = new URL(bridges[2]!.url);
+    const thirdToken = thirdUrl.searchParams.get("token")!;
+    const thirdEndpoint =
+      `${thirdUrl.origin}/attachments?token=${thirdToken}` +
+      "&sessionId=session-third&fileName=third.png";
+    const rejected = await fetch(thirdEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: attachmentRequestBody(attachmentPng),
+    });
+    assert.equal(rejected.status, 409);
+    assert.match(
+      (await rejected.json() as { error: string }).error,
+      /too many attachment uploads/i,
+    );
+    assert.equal(thirdAllocations, 0);
+    assert.equal(handlerCalls, 0);
+
+    await Promise.all([bridges[0]!.close(), bridges[1]!.close()]);
+    const accepted = await fetch(thirdEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: attachmentRequestBody(attachmentPng),
+    });
+    assert.equal(accepted.status, 201);
+    assert.equal(thirdAllocations, 1);
+    assert.equal(handlerCalls, 1);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await Promise.all(bridges.map((bridge) => bridge.close()));
+  }
+});
+
+test("attachment body timeout returns a safe HTTP response and releases the bridge", async () => {
+  const state = {} as ChatDialogState;
+  let handlerCalls = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    attachmentBodyReadOptions: { timeoutMs: 5 },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const socket = connect(Number(chatUrl.port), chatUrl.hostname);
+  const chunks: NodeBuffer[] = [];
+  socket.on("data", (chunk: NodeBuffer) => chunks.push(chunk));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write([
+      `POST /attachments?token=${token}&sessionId=session-timeout&fileName=slow.png HTTP/1.1`,
+      `Host: ${chatUrl.host}`,
+      "Content-Type: application/octet-stream",
+      "Content-Length: 100",
+      "Connection: close",
+      "",
+      "x",
+    ].join("\r\n"));
+    await new Promise<void>((resolve, reject) => {
+      socket.once("end", resolve);
+      socket.once("error", reject);
+    });
+    const response = NodeBuffer.concat(chunks).toString("utf8");
+    assert.match(response, /^HTTP\/1\.1 408 /);
+    assert.match(response, /timed out before the complete body was received/i);
+    assert.doesNotMatch(response, /Users|Bearer|secret/i);
+    assert.equal(handlerCalls, 0);
+
+    const accepted = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}` +
+        "&sessionId=session-timeout&fileName=after-timeout.png",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(accepted.status, 201);
+    assert.equal(handlerCalls, 1);
+  } finally {
+    socket.destroy();
+    await bridge.close();
+  }
+});
+
 test("attachment routes reject malformed, duplicate, oversized, and empty inputs", async () => {
   let handlerCalls = 0;
   const state = {} as ChatDialogState;
@@ -1451,6 +1671,7 @@ test("attachment routes reject malformed, duplicate, oversized, and empty inputs
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async () => {
       handlerCalls += 1;
       return state;
@@ -1492,7 +1713,7 @@ test("attachment routes reject malformed, duplicate, oversized, and empty inputs
 
     const tooLarge = await upload(
       "sessionId=session-1&fileName=large.png",
-      new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1),
+      new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES + 1),
     );
     assert.equal(tooLarge.status, 413);
     assert.equal(handlerCalls, 0);
@@ -1508,6 +1729,7 @@ test("attachment routes preserve typed safe 400, 404, 409, and 413 errors", asyn
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async (input) => {
       if (input.fileName === "invalid.png") {
         throw new ChatBridgeAttachmentValidationError("Only valid images are supported.");
@@ -1564,6 +1786,7 @@ test("attachment routes never expose unclassified filesystem or credential-beari
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async () => {
       throw new Error(sensitiveCause);
     },
@@ -1620,6 +1843,7 @@ test("attachment operations conflict only with the same Session's active mutatio
         await sendGate;
       }
     },
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async () => state,
     handleAttachmentDelete: async () => state,
   });
@@ -1676,6 +1900,7 @@ test("different-Session attachment failures stay on their initiating HTTP respon
       await stream.progress("correlated probe");
       return state;
     },
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async (input) => {
       if (input.sessionId === "session-failure") {
         markFailureStarted();
@@ -1738,6 +1963,7 @@ test("attachment post-commit state failures reconcile as unknown outcomes", asyn
     renderHtml: () => "<html></html>",
     handleCommand: async () => authoritative,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async () => {
       throw new ChatBridgeCommandOutcomeUnknownError(
         "Attachment changed, but state could not be confirmed.",
@@ -1769,7 +1995,27 @@ test("attachment post-commit state failures reconcile as unknown outcomes", asyn
   }
 });
 
-test("raw attachment reader rejects declared-length mismatch and actual overflow", async () => {
+test("raw attachment reader allocates declared lengths exactly and validates them", async () => {
+  const allocations: number[] = [];
+  const exact = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": "4",
+    },
+  });
+  const exactRead = readRawAttachmentBody(exact as never, {
+    allocateBuffer: (byteLength) => {
+      allocations.push(byteLength);
+      return NodeBuffer.allocUnsafe(byteLength);
+    },
+  });
+  exact.write(new Uint8Array([1, 2]));
+  exact.end(new Uint8Array([3, 4]));
+  const exactBytes = await exactRead;
+  assert.equal(NodeBuffer.isBuffer(exactBytes), true);
+  assert.deepEqual([...exactBytes], [1, 2, 3, 4]);
+  assert.deepEqual(allocations, [4]);
+
   const mismatch = Object.assign(new PassThrough(), {
     headers: {
       "content-type": "application/octet-stream",
@@ -1784,11 +2030,206 @@ test("raw attachment reader rejects declared-length mismatch and actual overflow
     headers: { "content-type": "application/octet-stream" },
   });
   const overflowRead = readRawAttachmentBody(overflow as never);
-  overflow.end(new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1));
+  overflow.end(new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES + 1));
   await assert.rejects(
     overflowRead,
-    (error: unknown) => error instanceof ChatBridgePayloadTooLargeError,
+    (error: unknown) => {
+      assert.ok(error instanceof ChatBridgePayloadTooLargeError);
+      assert.equal(
+        error.message,
+        `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+      );
+      assert.equal("cause" in error, false);
+      return true;
+    },
   );
+});
+
+test("raw attachment reader drains header failures before acquiring a permit", () => {
+  for (const headers of [
+    { "content-type": "image/png", "content-length": "4" },
+    { "content-type": "application/octet-stream", "content-length": "invalid" },
+  ]) {
+    const request = Object.assign(new PassThrough(), { headers });
+    const requestResume = request.resume.bind(request);
+    let bodyDrained = false;
+    request.resume = () => {
+      bodyDrained = true;
+      return requestResume();
+    };
+
+    assert.throws(() => readRawAttachmentBody(request as never));
+    assert.equal(bodyDrained, true);
+  }
+});
+
+test("unknown-length attachment bodies grow from a small bounded buffer", async () => {
+  const allocations: number[] = [];
+  const request = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const read = readRawAttachmentBody(request as never, {
+    allocateBuffer: (byteLength) => {
+      allocations.push(byteLength);
+      return NodeBuffer.allocUnsafe(byteLength);
+    },
+  });
+  request.write(new Uint8Array([1]));
+  request.end(new Uint8Array(70 * 1024));
+
+  const bytes = await read;
+  assert.equal(bytes.byteLength, 70 * 1024 + 1);
+  assert.deepEqual(allocations, [64 * 1024, 128 * 1024]);
+  assert.equal(allocations.includes(MAX_DOCUMENT_ATTACHMENT_BYTES), false);
+});
+
+test("raw attachment reads enforce a process-wide cap and release permits", async () => {
+  const heldRequests = [0, 1].map(() => Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  }));
+  const heldReads = heldRequests.map((request) =>
+    readRawAttachmentBody(request as never, { timeoutMs: 1_000 })
+  );
+  const rejected = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const rejectedResume = rejected.resume.bind(rejected);
+  let rejectedBodyDrained = false;
+  rejected.resume = () => {
+    rejectedBodyDrained = true;
+    return rejectedResume();
+  };
+
+  assert.throws(
+    () => readRawAttachmentBody(rejected as never),
+    (error: unknown) => {
+      assert.ok(error instanceof ChatBridgeConflictError);
+      assert.match(error.message, /too many attachment uploads/i);
+      return true;
+    },
+  );
+  assert.equal(rejectedBodyDrained, true);
+
+  for (const request of heldRequests) request.destroy();
+  await Promise.all(heldReads.map((read) => assert.rejects(read, /complete body/i)));
+
+  const afterRelease = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const afterReleaseRead = readRawAttachmentBody(afterRelease as never);
+  afterRelease.end(new Uint8Array([1]));
+  assert.deepEqual([...(await afterReleaseRead)], [1]);
+});
+
+test("raw attachment allocation failure drains the request and releases its permit", async () => {
+  const request = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": "4",
+    },
+  });
+  const requestResume = request.resume.bind(request);
+  let bodyDrained = false;
+  request.resume = () => {
+    bodyDrained = true;
+    return requestResume();
+  };
+
+  assert.throws(
+    () => readRawAttachmentBody(request as never, {
+      allocateBuffer: () => {
+        throw new Error("private allocator failure");
+      },
+    }),
+    /could not be buffered/i,
+  );
+  assert.equal(bodyDrained, true);
+
+  const afterFailure = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const read = readRawAttachmentBody(afterFailure as never);
+  afterFailure.end(new Uint8Array([1]));
+  assert.deepEqual([...(await read)], [1]);
+});
+
+test("raw attachment read timeout is fixed, safe, and releases its permit", async () => {
+  const stalled = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  await assert.rejects(
+    readRawAttachmentBody(stalled as never, { timeoutMs: 5 }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        "Attachment upload timed out before the complete body was received.",
+      );
+      assert.doesNotMatch(error.message, /Users|Bearer|secret/i);
+      return true;
+    },
+  );
+  stalled.destroy();
+
+  const afterTimeout = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const read = readRawAttachmentBody(afterTimeout as never);
+  afterTimeout.end(new Uint8Array([1]));
+  assert.deepEqual([...(await read)], [1]);
+});
+
+test("raw attachment reader accepts exactly 20 MiB and rejects one byte over", async () => {
+  const exact = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const exactRead = readRawAttachmentBody(exact as never);
+  exact.end(new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES));
+  const exactBytes = await exactRead;
+  assert.equal(exactBytes.byteLength, MAX_DOCUMENT_ATTACHMENT_BYTES);
+  assert.equal(NodeBuffer.isBuffer(exactBytes), true);
+
+  const over = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": String(MAX_DOCUMENT_ATTACHMENT_BYTES + 1),
+    },
+  });
+  assert.throws(
+    () => readRawAttachmentBody(over as never),
+    (error: unknown) => {
+      assert.ok(error instanceof ChatBridgePayloadTooLargeError);
+      assert.equal("cause" in error, false);
+      return true;
+    },
+  );
+});
+
+test("attachment protocol tokens use locale-independent ASCII case folding", async () => {
+  const request = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "APPLICATION/OCTET-STREAM",
+      "content-length": "4",
+    },
+    rawHeaders: [
+      "CoNtEnT-TyPe",
+      "APPLICATION/OCTET-STREAM",
+      "CoNtEnT-LeNgTh",
+      "4",
+    ],
+  });
+  const originalToLocaleLowerCase = String.prototype.toLocaleLowerCase;
+  let read: Promise<Uint8Array>;
+  String.prototype.toLocaleLowerCase = function localeSensitiveCaseFoldMustNotRun() {
+    throw new Error("Protocol parsing must not use locale-sensitive case folding.");
+  };
+  try {
+    read = readRawAttachmentBody(request as never);
+  } finally {
+    String.prototype.toLocaleLowerCase = originalToLocaleLowerCase;
+  }
+  request.end(new Uint8Array([1, 2, 3, 4]));
+  assert.deepEqual([...(await read)], [1, 2, 3, 4]);
 });
 
 test("raw HTTP accepts one case-insensitive MIME token and rejects ambiguous attachment headers", async () => {
@@ -1800,6 +2241,7 @@ test("raw HTTP accepts one case-insensitive MIME token and rejects ambiguous att
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async (input) => {
       handlerCalls += 1;
       claimedMediaType = input.claimedMediaType;
@@ -1908,6 +2350,7 @@ test("an attachment upload closed early never reaches the mutation handler", asy
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
+    preflightAttachmentUpload: async () => {},
     handleAttachmentUpload: async () => {
       handlerCalls += 1;
       return state;

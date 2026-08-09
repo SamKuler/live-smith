@@ -101,38 +101,55 @@ recoverable Profiles or credentials.
   must agree bidirectionally with the terminal stop reason. Ordinary text blocks
   cannot hide a malformed or missing declared `tool_use` block.
 
-### Image input mapping
+### Image and document input mapping
 
-Live Smith assembles image context once as provider-neutral user input parts.
-Assistant history remains text-only, while current and historical user images
-are mapped to each protocol's native blocks:
+Live Smith assembles attachment context once as provider-neutral user input
+parts. Assistant history remains text-only, while current and historical user
+images are mapped to each protocol's native blocks:
 
 - OpenAI Responses uses `input_text` and `input_image` with a base64 data URL.
 - OpenAI Chat Completions uses `text` and `image_url` with a base64 data URL.
 - Anthropic Messages uses `text` and a base64 `image` source block.
 
-The active Runtime Profile must resolve `inputs.image` to `true`; every
-transport checks that capability again before making a network request. File
-names, attachment IDs, and local storage paths are not sent in image blocks.
-Document and audio parts remain unsupported in this milestone and are rejected
-with a fixed local error if they reach a transport.
+The active saved Runtime Profile must resolve `inputs.image` to `true`; every
+transport checks that capability again before making a network request. Image
+file names, attachment IDs, and local storage paths are not sent in image
+blocks.
 
-The shared cross-provider policy accepts PNG, JPEG, and WebP up to 5 MiB per
-file, 4 pending/current images per Session, and 16 MiB in pending state or one
-model request. The limits are intentionally below many provider maxima to bound
-base64 expansion and Extension Host memory consistently across transports. The
-server validates detected type, dimensions, ownership, integrity, and quota;
-the WebView checks the same shared constants only for early feedback.
+PDF is the only native document part. When the active saved Runtime Profile
+resolves `inputs.pdf` to `true`, OpenAI Responses maps it to `input_file` and
+Anthropic Messages maps it to a base64 `document` source. Live Smith
+intentionally does not implement PDF input for OpenAI Chat Completions in this
+milestone; this is a Live Smith boundary, not a claim about every compatible
+endpoint. Audio parts remain unsupported.
 
-Images remain pending until the associated user event is durably appended. A
+DOCX, XLSX, and PPTX never reach a provider as binary document parts. Live
+Smith validates and extracts them locally, then sends their bounded text in a
+JSON-escaped block labelled as untrusted data. This is semantic text extraction,
+not Office visual rendering. Packages with detected macro, VBA, ActiveX, or
+macrosheet signals are rejected; this is not general OOXML sanitization, and
+unrecognized embedded binary parts are discarded. File names and extracted
+content remain untrusted and cannot authorize tools, filesystem access, or a
+Live sample source.
+
+The shared policy accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX. It permits
+at most 4 attachments and 20 MiB of raw attachment bytes in pending state or one
+model request. Each image is limited to 5 MiB and the image subtotal to 16 MiB;
+each document and the document subtotal are limited to 20 MiB, with the 20-MiB
+combined total still applying. Office text is limited to 100,000 Unicode code
+points per file and 200,000 per request. The server validates detected type,
+structure, ownership, integrity, and quota; the WebView checks shared limits
+only for early feedback. PDF checks do not promise sanitization, page-count
+validation, or visual rendering.
+
+Files remain pending until the associated user event is durably appended. A
 confirmed append consumes those immutable IDs before provider I/O, including
-when the provider later fails. Current images take the request budget first;
-historical user images are selected newest-first within the remaining 4-image/
-16-MiB budget, then emitted in chronological conversation order. Assistant
-history remains text-only. Duplicate attachment IDs across events are storage
+when the provider later fails. Current files take the request budget first;
+historical user files are selected newest-first within the remaining budgets,
+then emitted in chronological conversation order. Only selected/current blobs
+are opened. Missing, corrupt, incompatible, or omitted historical files degrade
+to fixed untrusted markers. Duplicate attachment IDs across events are storage
 corruption, and consumed IDs cannot be removed or attached to another prompt.
-Attachment metadata is labelled untrusted; image content informs the model but
-does not create an action-schema source, local path, or filesystem capability.
 
 ## Capability resolution
 
@@ -147,8 +164,8 @@ Input capabilities also retain the evidence behind the resolved Boolean. A
 manual override wins over a valid discovery hint, which wins over documented
 known-model policy. An explicit `false` is unsupported; the conservative
 fallback value remains unknown/unverified in the UI rather than being presented
-as provider evidence. This distinction disables only image attachment, not
-ordinary text sends.
+as provider evidence. This distinction gates the corresponding image or native
+PDF input, not ordinary text sends or local Office text extraction.
 
 Anthropic discovery reads the official
 `capabilities.image_input.supported` and `capabilities.pdf_input.supported`

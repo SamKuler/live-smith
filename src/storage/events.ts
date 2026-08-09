@@ -1,20 +1,24 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import {
+  attachmentQuotaIsWithinLimits,
+  isSafeAttachmentFileName,
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../attachments/contracts.js";
 import type {
   AttachmentMediaType,
   SessionAttachmentRef,
 } from "./attachments.js";
-import {
-  MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
-} from "./attachments.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
-  MAX_PENDING_SESSION_ATTACHMENT_COUNT;
+  MAX_PENDING_ATTACHMENT_COUNT;
 export const MAX_USER_EVENT_ATTACHMENT_BYTES =
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES;
+  MAX_PENDING_ATTACHMENT_BYTES;
 
 import {
   createStorageId,
@@ -85,7 +89,7 @@ export async function appendSessionEvent(
     createdAt: new Date().toISOString(),
     ...input,
   });
-  if (!isSessionEvent(event)) {
+  if (!isSessionEvent(event, "current")) {
     throw new TypeError("Session event input is invalid.");
   }
 
@@ -130,7 +134,7 @@ async function loadSessionEventsUnlocked(
     const parsed = JSON.parse(raw) as unknown;
     if (
       !Array.isArray(parsed) ||
-      !parsed.every(isSessionEvent) ||
+      !parsed.every((event) => isSessionEvent(event, "persisted")) ||
       !hasUniqueStorageIds(parsed) ||
       !hasUniqueConsumedAttachmentIds(parsed)
     ) {
@@ -169,7 +173,10 @@ function eventsPath(storageDirectory: string, sessionId: string): string {
   );
 }
 
-function isSessionEvent(value: unknown): value is SessionEvent {
+function isSessionEvent(
+  value: unknown,
+  attachmentPolicy: "current" | "persisted",
+): value is SessionEvent {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -193,27 +200,32 @@ function isSessionEvent(value: unknown): value is SessionEvent {
       record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)
     )) &&
     (record.attachments === undefined || (
-      record.kind === "user" && isSessionAttachmentRefs(record.attachments)
+      record.kind === "user" &&
+      isSessionAttachmentRefs(record.attachments, attachmentPolicy)
     ))
   );
 }
 
-function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[] {
+function isSessionAttachmentRefs(
+  value: unknown,
+  attachmentPolicy: "current" | "persisted",
+): value is SessionAttachmentRef[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
     value.length > MAX_USER_EVENT_ATTACHMENT_COUNT ||
-    !value.every(isSessionAttachmentRef)
+    !value.every(isCurrentSessionAttachmentRef)
   ) {
-    return false;
+    return attachmentPolicy === "persisted" &&
+      isLegacySessionAttachmentRefs(value);
   }
   const ids = new Set(value.map((attachment) => attachment.id));
-  return ids.size === value.length &&
-    value.reduce((total, attachment) => total + attachment.byteLength, 0) <=
-      MAX_USER_EVENT_ATTACHMENT_BYTES;
+  return ids.size === value.length && attachmentQuotaIsWithinLimits(value);
 }
 
-function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
+function isCurrentSessionAttachmentRef(
+  value: unknown,
+): value is SessionAttachmentRef {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -228,7 +240,56 @@ function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
   ]) &&
     Object.keys(record).length === 6 &&
     isSafeStorageId(record.id) &&
-    (record.kind === "image" || record.kind === "document" || record.kind === "audio") &&
+    (record.kind === "image" || record.kind === "document") &&
+    isSafeAttachmentFileName(record.fileName) &&
+    isAttachmentMediaType(record.mediaType) &&
+    attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
+    Number.isInteger(record.byteLength) &&
+    (record.byteLength as number) > 0 &&
+    (record.byteLength as number) <= (
+      record.kind === "image"
+        ? MAX_IMAGE_ATTACHMENT_BYTES
+        : MAX_DOCUMENT_ATTACHMENT_BYTES
+    ) &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.sha256);
+}
+
+function isLegacySessionAttachmentRefs(
+  value: unknown,
+): value is SessionAttachmentRef[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_PENDING_ATTACHMENT_COUNT ||
+    !value.every(isLegacySessionAttachmentRef)
+  ) return false;
+  const ids = new Set(value.map((attachment) => attachment.id));
+  return ids.size === value.length &&
+    value.reduce((total, attachment) => total + attachment.byteLength, 0) <=
+      MAX_PENDING_IMAGE_ATTACHMENT_BYTES;
+}
+
+function isLegacySessionAttachmentRef(
+  value: unknown,
+): value is SessionAttachmentRef {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return hasOnlyKeys(record, [
+    "id",
+    "kind",
+    "fileName",
+    "mediaType",
+    "byteLength",
+    "sha256",
+  ]) &&
+    Object.keys(record).length === 6 &&
+    isSafeStorageId(record.id) &&
+    (record.kind === "image" ||
+      record.kind === "document" ||
+      record.kind === "audio") &&
     typeof record.fileName === "string" &&
     record.fileName.length > 0 &&
     record.fileName.length <= 160 &&

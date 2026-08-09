@@ -18,7 +18,7 @@ src/
     model-request.ts
       Builds provider-neutral transport requests and capability previews.
     attachment-context.ts
-      Resolves current and bounded historical image parts without exposing
+      Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
@@ -88,7 +88,7 @@ src/
     events.ts, sessions.ts
       Chat session metadata and the canonical event history.
     attachments.ts
-      Private create-only image blobs, integrity metadata, ownership checks,
+      Private create-only attachment blobs, integrity metadata, ownership checks,
       quota policy, and durable Session-scoped cleanup.
 
   ui/
@@ -101,7 +101,7 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus isolated Profile editor, bridge lifecycle,
-      image attachment, capability preview, and session/timeline factories with
+      file attachment, capability preview, and session/timeline factories with
       an explicit dependency-injection bootstrap.
 ```
 
@@ -116,8 +116,9 @@ src/
    saved generation parameters from manual overrides, raw discovery metadata,
    known policy, and conservative fallback.
 4. Before appending the user event, `attachment-context.ts` verifies pending
-   image metadata/blobs and resolves current plus bounded historical user image
-   parts. The append atomically consumes the current immutable references.
+   attachment metadata/blobs, resolves current plus bounded historical user
+   parts, and extracts supported Office text. The append atomically consumes the
+   current immutable references only after current-file validation succeeds.
 5. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
    Messages.
 6. The transport maps normalized tools/messages/parameters to the wire protocol.
@@ -166,41 +167,74 @@ Non-2xx provider response bodies are treated as untrusted and are not read,
 logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and status text.
 
-## Image attachment boundary
+## Attachment boundary
 
-Phase 1 accepts only structurally valid PNG, JPEG, and WebP images. Shared
-policy constants enforce 5 MiB per file, at most 4 pending/current images, and
-16 MiB for both pending Session state and one model request. This is an
-intentional cross-provider limit: base64 wire encoding and multi-round replay
-must remain bounded in the Extension Host even when a provider accepts more.
-The server is authoritative and enforces quota changes inside the same
-process-wide Session mutation fence as event append and attachment deletion.
+The accepted formats are PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX. Shared
+policy constants allow at most 4 pending attachments and 20 MiB of raw bytes in
+pending Session state or one model request. Each image is limited to 5 MiB and
+the image subtotal to 16 MiB. Each document and the document subtotal are
+limited to 20 MiB, while the combined 20-MiB total still applies. These are
+intentional cross-provider limits: parsing, base64 wire encoding, and multi-round
+replay must remain bounded in the Extension Host even when a provider accepts
+more. The server detects the actual file type and is authoritative over WebView
+extension/MIME hints.
 
 Attachment blobs and JSON integrity metadata live under a private
 Session-specific directory. Creation is create-only with collision retry;
 reads reject symlinks, verify regular-file metadata, byte length, SHA-256,
-detected media type, and bounded image dimensions. Directory creation, deletion,
-and orphan cleanup use durable parent synchronization and explicit unknown
-commit outcomes. Startup orphan sweeping occurs before bridge commands are
-accepted, never from an ordinary state snapshot that could race Session
-creation. POSIX directories are tightened to `0700` and files to `0600`.
+detected media type, and bounded image dimensions or document structure.
+Directory creation, deletion, and orphan cleanup use durable parent
+synchronization and explicit unknown commit outcomes. Startup orphan sweeping
+occurs before bridge commands are accepted, never from an ordinary state
+snapshot that could race Session creation. POSIX directories are tightened to
+`0700` and files to `0600`.
 
-Pending references are resolved before the user event is appended. A confirmed
-append consumes those exact immutable IDs even if the provider later fails;
-unknown append outcomes remain `PromptPersistence=unknown` until authoritative
-state is refreshed. An ID can occur in only one user event, consumed IDs cannot
-be deleted, and corrupt duplicate occurrences fail closed. Current images use
-the request budget first. Historical candidates are budgeted newest-first but
-the final conversation remains chronological; only selected/current blobs are
-opened and verified. Assistant history is always text-only.
+PDFs receive bounded envelope checks and an encryption-token check before use;
+this is not PDF sanitization, page-count validation, or visual rendering. A PDF
+is carried as a native binary model part only when the active saved
+`RuntimeProfile` resolves `inputs.pdf === true` and its mode is OpenAI Responses
+or Anthropic Messages. OpenAI Chat PDF input is intentionally outside this Live
+Smith milestone, regardless of what a compatible endpoint may offer.
 
-The provider-neutral model contract carries binary content only as typed user
-image parts. Transports recheck `inputs.image === true`, map those parts to
-native protocol blocks, and keep the text-only OpenAI Chat wire shape unchanged.
-Filenames, IDs, and paths are excluded from image blocks. Attachment content and
-display metadata remain untrusted data, and the action schema has no attachment
-or arbitrary-path sample source, so an image can inform the model but cannot
-directly become a Live sample or filesystem capability.
+DOCX, XLSX, and PPTX are opened by a bounded local OOXML ZIP/XML parser. It
+rejects malformed packages and packages with detected macro, VBA, ActiveX, or
+macrosheet signals, and it never exposes embedded binary parts to the model.
+This is not general OOXML sanitization; unrecognized embedded binary parts are
+discarded rather than interpreted or sent.
+The extractors preserve validated document, sheet, and presentation slide order
+and produce semantic text, not a visual rendering of Word pages, spreadsheet
+layout, or slides. Extraction is capped at 100,000 Unicode code points per file
+and 200,000 code points across the request; per-file truncation is labelled in
+the untrusted document wrapper, while a current request that exceeds the
+aggregate limit fails before event append.
+
+Upload, pending-quota validation, deletion, request preparation, event append,
+and existing-Session lifecycle mutations use the same process-wide Session mutation
+fence. Operations check cancellation at their defined boundaries; upload
+hashing, PDF/OOXML inspection, Office extraction, history reads, and waiting for
+the fence yield or recheck cooperatively. Pending references are completely
+resolved before the user event is appended. A confirmed append consumes those
+exact immutable IDs even if the provider later fails; unknown append outcomes
+remain `PromptPersistence=unknown` until authoritative state is refreshed. An
+ID can occur in only one user event, consumed IDs cannot be deleted, and corrupt
+duplicate occurrences fail closed. A current validation, capability, binary
+budget, or extracted-text-budget failure leaves the files pending.
+
+Current files reserve request capacity first. Historical candidates are
+selected newest-first within the remaining count, raw-byte, image, document,
+and extracted-text budgets, but the final conversation remains chronological;
+only selected/current blobs are opened and verified. Missing, corrupt,
+profile-incompatible, and over-budget historical files become fixed untrusted
+markers instead of failing the new send. Assistant history is text-only.
+
+The provider-neutral model contract carries typed user text, image, and native
+PDF parts. Transports recheck `inputs.image === true` or `inputs.pdf === true`
+before network I/O. Office content is locally extracted and encoded with its
+filename and media type in a JSON-escaped block explicitly labelled untrusted.
+File names, document text, and binary content have no instruction authority;
+attachment IDs and local paths are not exposed, and the action schema has no
+attachment or arbitrary-path sample source. A file may inform the model but
+cannot directly become a Live sample or filesystem capability.
 
 ## Configuration boundaries
 

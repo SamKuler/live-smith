@@ -3,7 +3,12 @@ import { setTimeout as scheduleTimeout, clearTimeout } from "node:timers";
 import { TextEncoder } from "node:util";
 import test from "node:test";
 
-import type { ModelConversationMessage } from "../contracts.js";
+import {
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../../attachments/contracts.js";
+import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
 import type { SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
@@ -53,6 +58,34 @@ function request(
       function: { name: "inspect", description: "Inspect Live", parameters: { type: "object" } },
     }],
   };
+}
+
+function canonicalBase64ForByteLength(byteLength: number): string {
+  const completeTriples = Math.floor(byteLength / 3);
+  const remainder = byteLength % 3;
+  return "AAAA".repeat(completeTriples) +
+    (remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : "");
+}
+
+function imagePart(
+  byteLength: number,
+  fileName = "attachment.png",
+): Extract<ModelInputPart, { type: "image" }> {
+  return {
+    type: "image",
+    fileName,
+    mediaType: "image/png",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function completedChatResponse(): Response {
+  return new Response(JSON.stringify({
+    choices: [{
+      finish_reason: "stop",
+      message: { role: "assistant", content: "Done" },
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
 test("OpenAI Chat maps standard parameters and preserves raw assistant state", async () => {
@@ -208,6 +241,163 @@ test("OpenAI Chat rejects image input when the resolved capability is disabled",
   await assert.rejects(
     transport.createToolTurn(req),
     /Image input is disabled by the active model Profile capability/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Chat rejects PDF input with the Live Smith mode boundary before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile({ advanced: { extraBody: { messages: [] } } }));
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.runtimeProfile.capabilities.inputs.image = true;
+  req.currentUserContent = [
+    {
+      type: "document",
+      fileName: "score.pdf",
+      mediaType: "application/pdf",
+      base64: "AR==",
+    },
+    ...Array.from(
+      { length: MAX_PENDING_ATTACHMENT_COUNT + 1 },
+      (_, index) => imagePart(3, `over-count-${index}.png`),
+    ),
+  ];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /OpenAI Chat Completions does not support PDF attachments in Live Smith\.$/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Chat applies shared image limits across current and history before body construction", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return completedChatResponse();
+    },
+  });
+  const exact = request(profile());
+  exact.runtimeProfile.capabilities.inputs.image = true;
+  const bytesPerImage = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
+    MAX_PENDING_ATTACHMENT_COUNT;
+  exact.history = [{
+    role: "user",
+    content: [
+      imagePart(bytesPerImage, "history-1.png"),
+      imagePart(bytesPerImage, "history-2.png"),
+    ],
+  }];
+  exact.currentUserContent = [
+    imagePart(bytesPerImage, "current-1.png"),
+    imagePart(bytesPerImage, "current-2.png"),
+  ];
+  await transport.createToolTurn(exact);
+  assert.equal(fetchCalls, 1);
+
+  const invalidRequests: Array<{ request: TransportRequest; message: RegExp }> = [];
+  const preBodyProfile = profile({ advanced: { extraBody: { messages: [] } } });
+  {
+    const req = request(preBodyProfile);
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.currentUserContent = [imagePart(MAX_IMAGE_ATTACHMENT_BYTES + 1)];
+    invalidRequests.push({
+      request: req,
+      message: /Image input may not exceed 5 MiB/,
+    });
+  }
+  {
+    const req = request(preBodyProfile);
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.history = [{
+      role: "user",
+      content: [imagePart(3, "history-1.png"), imagePart(3, "history-2.png")],
+    }];
+    req.currentUserContent = [
+      imagePart(3, "current-1.png"),
+      imagePart(3, "current-2.png"),
+      imagePart(3, "current-3.png"),
+    ];
+    invalidRequests.push({
+      request: req,
+      message: /at most 4 binary attachments/,
+    });
+  }
+  {
+    const req = request(preBodyProfile);
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.currentUserContent = [{
+      type: "image",
+      fileName: "invalid.png",
+      mediaType: "image/png",
+      base64: "AQJ=",
+    }];
+    invalidRequests.push({ request: req, message: /canonical base64/ });
+  }
+
+  for (const entry of invalidRequests) {
+    await assert.rejects(
+      transport.createToolTurn(entry.request),
+      entry.message,
+    );
+  }
+  assert.equal(fetchCalls, 1);
+});
+
+test("OpenAI Chat applies the PDF boundary to conversation history before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.history = [{
+    role: "user",
+    content: [{
+      type: "document",
+      fileName: "historical.pdf",
+      mediaType: "application/pdf",
+      base64: "JVBERg==",
+    }],
+  }];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /OpenAI Chat Completions does not support PDF attachments in Live Smith\.$/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Chat rejects a forged image media type before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.image = true;
+  req.currentUserContent = [{
+    type: "image",
+    fileName: "forged.png",
+    mediaType: "application/pdf",
+    base64: "AQID",
+  } as unknown as ModelInputPart];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /Binary input has an invalid media type\.$/,
   );
   assert.equal(fetchCalls, 0);
 });

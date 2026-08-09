@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { clearTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import test from "node:test";
 
+import {
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../../attachments/contracts.js";
+import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
 import type { SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
@@ -44,6 +52,50 @@ function request(p: SavedProfile): TransportRequest {
     agentMessages: [],
     tools: [{ type: "function", function: { name: "inspect", description: "Inspect" } }],
   };
+}
+
+function canonicalBase64ForByteLength(byteLength: number): string {
+  const completeTriples = Math.floor(byteLength / 3);
+  const remainder = byteLength % 3;
+  return "AAAA".repeat(completeTriples) +
+    (remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : "");
+}
+
+function imagePart(
+  byteLength: number,
+  fileName = "attachment.png",
+): Extract<ModelInputPart, { type: "image" }> {
+  return {
+    type: "image",
+    fileName,
+    mediaType: "image/png",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function pdfPart(
+  byteLength: number,
+  fileName = "attachment.pdf",
+): Extract<ModelInputPart, { type: "document" }> {
+  return {
+    type: "document",
+    fileName,
+    mediaType: "application/pdf",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function completedResponse(): Response {
+  return new Response(JSON.stringify({
+    status: "completed",
+    output_text: "Done",
+    output: [{
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Done", annotations: [] }],
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
 test("OpenAI Responses sends local-state parameters and preserves output items", async () => {
@@ -188,6 +240,306 @@ test("OpenAI Responses rejects image input when the resolved capability is disab
   await assert.rejects(
     transport.createToolTurn(req),
     /Image input is disabled by the active model Profile capability/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Responses maps enabled PDF input as a named input_file data URL", async () => {
+  let input: Array<Record<string, unknown>> = [];
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async (_request, init) => {
+      input = (JSON.parse(String(init?.body)) as {
+        input: Array<Record<string, unknown>>;
+      }).input;
+      return new Response(JSON.stringify({
+        status: "completed",
+        output_text: "Done",
+        output: [{
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Done", annotations: [] }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.currentUserContent = [{
+    type: "document",
+    fileName: "score.pdf",
+    mediaType: "application/pdf",
+    base64: "JVBERg==",
+  }];
+
+  await transport.createToolTurn(req);
+
+  assert.deepEqual(input[0]?.content, [{
+    type: "input_file",
+    filename: "score.pdf",
+    file_data: "data:application/pdf;base64,JVBERg==",
+  }]);
+});
+
+test("OpenAI Responses rejects PDF input before HTTP when PDF capability is disabled", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.currentUserContent = [{
+    type: "document",
+    fileName: "disabled.pdf",
+    mediaType: "application/pdf",
+    base64: "JVBERg==",
+  }];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /PDF input is disabled by the active model Profile capability/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Responses accepts exact binary attachment boundaries across current and history", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return completedResponse();
+    },
+  });
+  const makeRequest = () => {
+    const req = request(profile());
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.runtimeProfile.capabilities.inputs.pdf = true;
+    return req;
+  };
+
+  {
+    const req = makeRequest();
+    req.currentUserContent = [imagePart(MAX_IMAGE_ATTACHMENT_BYTES)];
+    await transport.createToolTurn(req);
+  }
+  {
+    const req = makeRequest();
+    const bytesPerImage = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
+      MAX_PENDING_ATTACHMENT_COUNT;
+    req.history = [{
+      role: "user",
+      content: [imagePart(bytesPerImage, "history-1.png"), imagePart(
+        bytesPerImage,
+        "history-2.png",
+      )],
+    }];
+    req.currentUserContent = [
+      imagePart(bytesPerImage, "current-1.png"),
+      imagePart(bytesPerImage, "current-2.png"),
+    ];
+    await transport.createToolTurn(req);
+  }
+  {
+    const req = makeRequest();
+    req.currentUserContent = [pdfPart(MAX_DOCUMENT_ATTACHMENT_BYTES)];
+    await transport.createToolTurn(req);
+  }
+  {
+    const req = makeRequest();
+    req.history = [{
+      role: "user",
+      content: [
+        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+      ],
+    }];
+    req.currentUserContent = [
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+      pdfPart(
+        MAX_PENDING_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+        "current.pdf",
+      ),
+    ];
+    await transport.createToolTurn(req);
+  }
+
+  assert.equal(fetchCalls, 4);
+});
+
+test("OpenAI Responses rejects every binary quota overflow before body construction or HTTP", async () => {
+  let fetchCalls = 0;
+  const p = profile({
+    advanced: { extraBody: { input: [] } },
+  });
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const makeRequest = () => {
+    const req = request(p);
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.runtimeProfile.capabilities.inputs.pdf = true;
+    return req;
+  };
+  const cases: Array<{
+    label: string;
+    configure(request: TransportRequest): void;
+    message: RegExp;
+  }> = [
+    {
+      label: "single image",
+      configure: (req) => {
+        req.currentUserContent = [imagePart(MAX_IMAGE_ATTACHMENT_BYTES + 1)];
+      },
+      message: /Image input may not exceed 5 MiB/,
+    },
+    {
+      label: "image subtotal",
+      configure: (req) => {
+        const bytes = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
+            MAX_PENDING_ATTACHMENT_COUNT + 1;
+        req.currentUserContent = Array.from(
+          { length: MAX_PENDING_ATTACHMENT_COUNT },
+          (_, index) => imagePart(bytes, `subtotal-${index}.png`),
+        );
+      },
+      message: /Image input subtotal may not exceed 16 MiB/,
+    },
+    {
+      label: "single PDF",
+      configure: (req) => {
+        req.currentUserContent = [pdfPart(MAX_DOCUMENT_ATTACHMENT_BYTES + 1)];
+      },
+      message: /PDF input may not exceed 20 MiB/,
+    },
+    {
+      label: "combined mixed subtotal",
+      configure: (req) => {
+        req.history = [{
+          role: "user",
+          content: [imagePart(MAX_IMAGE_ATTACHMENT_BYTES)],
+        }];
+        req.currentUserContent = [pdfPart(
+          MAX_PENDING_ATTACHMENT_BYTES - MAX_IMAGE_ATTACHMENT_BYTES + 1,
+        )];
+      },
+      message: /Binary input subtotal may not exceed 20 MiB/,
+    },
+    {
+      label: "count across current and history",
+      configure: (req) => {
+        req.history = [{
+          role: "user",
+          content: [imagePart(3, "history-1.png"), imagePart(3, "history-2.png")],
+        }];
+        req.currentUserContent = [
+          imagePart(3, "current-1.png"),
+          imagePart(3, "current-2.png"),
+          imagePart(3, "current-3.png"),
+        ];
+      },
+      message: /at most 4 binary attachments/,
+    },
+  ];
+
+  for (const entry of cases) {
+    const req = makeRequest();
+    entry.configure(req);
+    await assert.rejects(
+      transport.createToolTurn(req),
+      entry.message,
+      entry.label,
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Responses strictly rejects non-canonical base64 before body construction or HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  for (const base64 of ["", "AQI", "AQ=I", "AQI\n", "AR==", "AQJ="]) {
+    const req = request(profile({ advanced: { extraBody: { input: [] } } }));
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.currentUserContent = [{
+      type: "image",
+      fileName: "invalid.png",
+      mediaType: "image/png",
+      base64,
+    }];
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /canonical base64/,
+      JSON.stringify(base64),
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Responses rejects forged binary media types before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  for (const part of [
+    {
+      type: "image",
+      fileName: "forged.png",
+      mediaType: "application/pdf",
+      base64: "AQID",
+    },
+    {
+      type: "document",
+      fileName: "forged.pdf",
+      mediaType: "image/png",
+      base64: "JVBERg==",
+    },
+  ]) {
+    const req = request(profile());
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.runtimeProfile.capabilities.inputs.pdf = true;
+    req.currentUserContent = [part as unknown as ModelInputPart];
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /Binary input has an invalid media type\.$/,
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Responses rejects an oversized encoded input before scanning base64", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.image = true;
+  req.currentUserContent = [{
+    type: "image",
+    fileName: "oversized.png",
+    mediaType: "image/png",
+    base64: "!".repeat(
+      Math.ceil(MAX_PENDING_ATTACHMENT_BYTES / 3) * 4 + 4,
+    ),
+  }];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /Binary input subtotal may not exceed 20 MiB\.$/,
   );
   assert.equal(fetchCalls, 0);
 });

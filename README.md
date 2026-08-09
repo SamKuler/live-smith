@@ -28,8 +28,10 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Shows model/tool/apply/error events in the active chat session.
-- Accepts PNG, JPEG, and WebP references by picker, paste, or drag-and-drop when
-  the active Runtime Profile explicitly supports image input.
+- Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX files by picker, paste, or
+  drag-and-drop. Images and native PDFs require compatible capabilities on the
+  active saved Runtime Profile; Office documents are extracted locally as
+  bounded text.
 - Renders user and assistant messages with locally bundled, sanitized Markdown,
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
@@ -214,30 +216,39 @@ fall back to built-in capability hints or manual Settings values.
 OpenAI Responses always sends `store: false`; Live Smith stores and replays the
 returned response items locally instead of using remote conversation state.
 
-### Image input
+### File attachments
 
-The **Attach image** control is enabled only when the active Runtime Profile
-resolves `inputs.image` to `true`. An explicit `false` is shown as unsupported;
-missing or malformed discovery evidence remains unverified until Load Models or
-a manual capability override provides an answer. This gate affects images only:
-plain-text sends remain available, and pending image chips can always be removed
-when no attachment operation is running.
+The **Attach file** control accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX.
+Image sends require the active saved Runtime Profile to resolve `inputs.image`
+to `true`. Native PDF sends require that saved Runtime Profile to resolve
+`inputs.pdf` to `true` and use either OpenAI Responses or Anthropic Messages.
+Live Smith intentionally does not send PDFs through OpenAI Chat Completions in
+this milestone. DOCX, XLSX, and PPTX do not require a model document capability:
+Live Smith validates their OOXML packages and extracts bounded text locally.
 
-Live Smith accepts PNG, JPEG, and WebP images. The reviewed cross-provider
-limits are 5 MiB per file, 4 pending/current images per Session, and 16 MiB for
-the pending or per-request image budget. These deliberately conservative limits
-bound base64 expansion, provider request size, and Extension Host memory across
-all three protocols. The backend rechecks type, image header/dimensions, Session
-ownership, and quotas; client-side checks are only early feedback.
+The shared attachment policy permits at most 4 pending attachments and 20 MiB
+of raw attachment bytes in pending Session state or one model request. An image
+may be at most 5 MiB and all images together at most 16 MiB; a document and the
+document subtotal may each be at most 20 MiB, while the 20-MiB combined total
+still applies. Office extraction is capped at 100,000 Unicode code points per
+file and 200,000 across one request. The backend rechecks detected type,
+integrity, Session ownership, and quotas; client-side checks are only early
+feedback.
 
-Images stay pending until a user event is durably appended. That event consumes
-the same immutable attachment references before the provider call, so a later
-provider failure does not resend the images as a new prompt. Consumed images
-remain visible in history and cannot be deleted independently. Historical image
-context is selected newest-first within the remaining 4-image/16-MiB request
-budget, then restored to chronological message order. Images are untrusted model
-context only: their IDs, filenames, and local paths never become sample-source
-arguments or authorize filesystem access.
+Uploads, deletion, send preparation, event append, and existing-Session
+lifecycle changes share the same per-Session mutation fence and observe cancellation.
+Files stay pending until a user event is durably appended. That append consumes
+the same immutable references before the provider call, so a later provider
+failure does not resend them as a new prompt. A current incompatible or
+over-budget file fails before append and remains pending. Consumed files remain
+visible in history and cannot be deleted independently.
+
+Historical attachments are selected newest-first after reserving the current
+request budget, then restored to chronological message order; only selected
+blobs are opened. Missing, corrupt, incompatible, or omitted historical files
+degrade to fixed untrusted markers rather than failing the new send. File names,
+document text, and image/PDF content are untrusted model context only: they
+cannot become sample-source arguments or authorize filesystem access.
 
 See [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) for provider details and
 capability resolution.
@@ -257,9 +268,9 @@ not a model-configuration fallback. Unit and DOM behavior tests do not call a
 model provider and do not require an API key.
 
 Attachment bytes are private local Session data and are never embedded in
-settings or event JSON. When a user event consumes an image, its immutable
+settings or event JSON. When a user event consumes a file, its immutable
 reference metadata (ID, display filename, media type, byte length, and SHA-256)
-is persisted on that event; the image bytes remain only in attachment storage.
+is persisted on that event; the file bytes remain only in attachment storage.
 Provider errors never include their base64 request representation. On POSIX
 hosts the attachment directories are restricted to `0700` and files to `0600`,
 like the other private Live Smith storage. Do not share or cloud-sync this data
@@ -298,7 +309,7 @@ The directory contains:
   timestamps.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
   tool results, confirmations, and errors for each Session.
-- `live-smith-attachments/<session-id>/` — private image blobs and integrity
+- `live-smith-attachments/<session-id>/` — private attachment blobs and integrity
   metadata owned by that Session.
 - `live-smith-models-<profile-id>-<hash>.json` — provider model-discovery cache.
 

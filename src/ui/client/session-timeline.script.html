@@ -205,7 +205,17 @@
         if (mediaType === "image/png") return "PNG";
         if (mediaType === "image/jpeg") return "JPEG";
         if (mediaType === "image/webp") return "WebP";
-        return "Image";
+        if (mediaType === "application/pdf") return "PDF · Native PDF";
+        if (mediaType.includes("wordprocessingml")) {
+          return "DOCX · Extracted document";
+        }
+        if (mediaType.includes("spreadsheetml")) {
+          return "XLSX · Extracted document";
+        }
+        if (mediaType.includes("presentationml")) {
+          return "PPTX · Extracted document";
+        }
+        return "File";
       }
 
       function appendTimelineAttachments(content, attachments) {
@@ -213,7 +223,7 @@
         const list = document.createElement("div");
         list.className = "timeline-attachments";
         list.setAttribute("role", "list");
-        list.setAttribute("aria-label", "Image attachments");
+        list.setAttribute("aria-label", "File attachments");
         for (const attachment of attachments) {
           const chip = document.createElement("span");
           chip.className = "timeline-attachment-chip";

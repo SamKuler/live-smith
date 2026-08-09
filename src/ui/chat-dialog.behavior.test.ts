@@ -51,7 +51,7 @@ interface DialogHarness {
     error: string,
     committedMetadata?: {
       fileName?: string;
-      mediaType?: "image/png" | "image/jpeg" | "image/webp";
+      mediaType?: ChatDialogState["pendingAttachments"][number]["mediaType"];
       sha256?: string;
     },
   ): void;
@@ -137,8 +137,9 @@ function capabilities(): ChatDialogState["capabilities"] {
 
 function inputCapabilityEvidence(
   image: "supported" | "unsupported" | "unverified" = "unverified",
+  pdf: "supported" | "unsupported" | "unverified" = "unverified",
 ): NonNullable<ChatDialogState["runtimeProfile"]>["inputCapabilityEvidence"] {
-  return { image, audio: "unverified", pdf: "unverified" };
+  return { image, audio: "unverified", pdf };
 }
 
 function profileFixture(
@@ -292,7 +293,7 @@ async function createDialogHarness(
     error: string;
     committedMetadata?: {
       fileName?: string;
-      mediaType?: "image/png" | "image/jpeg" | "image/webp";
+      mediaType?: ChatDialogState["pendingAttachments"][number]["mediaType"];
       sha256?: string;
     };
   } | null = null;
@@ -436,17 +437,16 @@ async function createDialogHarness(
                 );
               }
               const attachments = pendingAttachmentsBySession.get(sessionId) ?? [];
-              const mediaType: "image/png" | "image/jpeg" | "image/webp" =
-                file.type === "image/jpeg" || file.type === "image/webp"
-                ? file.type
-                : "image/png";
+              const mediaType = nextAttachmentUnknown?.committedMetadata?.mediaType ??
+                attachmentMediaTypeForFile(file);
               const attachment = {
                 id: `attachment-${attachments.length + 1}`,
-                kind: "image" as const,
+                kind: mediaType.startsWith("image/")
+                  ? "image" as const
+                  : "document" as const,
                 fileName: nextAttachmentUnknown?.committedMetadata?.fileName ??
                   fileName,
-                mediaType: nextAttachmentUnknown?.committedMetadata?.mediaType ??
-                  mediaType,
+                mediaType,
                 byteLength: file.size,
                 sha256: nextAttachmentUnknown?.committedMetadata?.sha256 ??
                   createHash("sha256")
@@ -551,11 +551,7 @@ async function createDialogHarness(
                   ? modelStateSourceFixture(profile)
                   : null;
                 serverState.runtimeProfile = profile
-                  ? {
-                      profile,
-                      capabilities: capabilities(),
-                      inputCapabilityEvidence: inputCapabilityEvidence(),
-                    }
+                  ? runtimeSummaryForHarnessProfile(profile)
                   : null;
               } else if (command.kind === "delete_profile" && command.profileId) {
                 serverState.settings.profiles = serverState.settings.profiles.filter(
@@ -984,6 +980,69 @@ function imageFile(
   });
 }
 
+function documentFile(
+  window: JSDOM["window"],
+  fileName: string,
+  mediaType: string,
+  byteLength = 24,
+): File {
+  return new window.File([new Uint8Array(byteLength)], fileName, {
+    type: mediaType,
+  });
+}
+
+function attachmentMediaTypeForFile(
+  file: File,
+): ChatDialogState["pendingAttachments"][number]["mediaType"] {
+  const knownMediaTypes = new Set<
+    ChatDialogState["pendingAttachments"][number]["mediaType"]
+  >([
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ]);
+  if (knownMediaTypes.has(
+    file.type as ChatDialogState["pendingAttachments"][number]["mediaType"],
+  )) {
+    return file.type as ChatDialogState["pendingAttachments"][number]["mediaType"];
+  }
+  const extension = /\.([^.]+)$/.exec(file.name.toLowerCase())?.[1];
+  if (extension === "png") return "image/png";
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "webp") return "image/webp";
+  if (extension === "pdf") return "application/pdf";
+  if (extension === "docx") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (extension === "xlsx") {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (extension === "pptx") {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+  throw new Error(`Unsupported test attachment ${file.name}`);
+}
+
+function runtimeSummaryForHarnessProfile(
+  profile: SavedProfile,
+): NonNullable<ChatDialogState["runtimeProfile"]> {
+  const runtimeCapabilities = capabilities();
+  const evidence = inputCapabilityEvidence();
+  if (profile.model === "pdf-capable-model") {
+    runtimeCapabilities.inputs.pdf = true;
+    evidence.pdf = "supported";
+  }
+  return {
+    profile,
+    capabilities: runtimeCapabilities,
+    inputCapabilityEvidence: evidence,
+  };
+}
+
 function pendingImage(
   id: string,
   fileName: string,
@@ -997,6 +1056,26 @@ function pendingImage(
     mediaType,
     byteLength,
     sha256: "a".repeat(64),
+  };
+}
+
+function pendingDocument(
+  id: string,
+  fileName: string,
+  mediaType:
+    | "application/pdf"
+    | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    | "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  byteLength = 24,
+): ChatDialogState["pendingAttachments"][number] {
+  return {
+    id,
+    kind: "document",
+    fileName,
+    mediaType,
+    byteLength,
+    sha256: "b".repeat(64),
   };
 }
 
@@ -4558,7 +4637,314 @@ test("pasted plain text remains native and does not start an attachment upload",
   }
 });
 
-test("paste and drop ignore non-images without discarding supported images in a mixed batch", async () => {
+test("Attach file exposes image and document hints while remaining available without image capability", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    const attach = harness.document.querySelector<HTMLButtonElement>(
+      "#attachFileButton",
+    );
+    const input = harness.document.querySelector<HTMLInputElement>(
+      "#attachmentInput",
+    );
+    assert.equal(attach?.textContent, "Attach file");
+    assert.equal(attach?.disabled, false);
+    assert.match(input?.accept ?? "", /image\/png/);
+    assert.match(input?.accept ?? "", /application\/pdf/);
+    assert.match(input?.accept ?? "", /\.docx/);
+    assert.match(input?.accept ?? "", /\.xlsx/);
+    assert.match(input?.accept ?? "", /\.pptx/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("document drop and picker accept MIME hints or extensions without image capability", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    const docxWithoutMime = documentFile(
+      harness.window,
+      "arrangement.docx",
+      "",
+    );
+    const pdf = documentFile(
+      harness.window,
+      "score.pdf",
+      "application/pdf",
+    );
+    const image = imageFile(harness.window, "blocked.png", "image/png");
+    assert.equal(harness.dispatchDrop([image, docxWithoutMime, pdf]), true);
+    await harness.settleAttachmentOperation();
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["arrangement.docx", "score.pdf"],
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /blocked\.png.*does not support image input/i,
+    );
+
+    harness.selectAttachmentFiles([
+      documentFile(
+        harness.window,
+        "data.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ),
+      documentFile(harness.window, "deck.pptx", ""),
+    ]);
+    await harness.settleAttachmentOperation();
+    assert.equal(
+      harness.document.querySelectorAll(
+        "#pendingAttachments [data-attachment-id]",
+      ).length,
+      4,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("known supported extensions determine local kind before conflicting MIME hints", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(harness.dispatchDrop([
+      documentFile(harness.window, "score.docx", "image/png"),
+      documentFile(harness.window, "cover.png", "application/pdf"),
+    ]), true);
+    await harness.settleAttachmentOperation();
+
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["score.docx"],
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /cover\.png.*does not support image input/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("PDF Send uses the active saved runtime mode and verified PDF evidence", async () => {
+  const state = stateFixture();
+  state.pendingAttachments = [pendingDocument(
+    "attachment-pdf",
+    "score.pdf",
+    "application/pdf",
+  )];
+  state.runtimeProfile!.capabilities.inputs.pdf = true;
+  state.runtimeProfile!.inputCapabilityEvidence.pdf = "supported";
+  state.settings.profiles[1] = profileFixture({
+    id: "profile-2",
+    name: "PDF review",
+    apiFamily: "anthropic",
+    apiMode: "messages",
+    model: "pdf-capable-model",
+  });
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#prompt", "Review the PDF");
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(
+      harness.calls.some((call) => call.path === "/send"),
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "PDF attachments require verified PDF input support with OpenAI Responses or Anthropic Messages. Remove the attached PDFs or activate a compatible saved Profile.",
+    );
+
+    harness.select("#profileSelector", "profile-2");
+    await harness.settle();
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/send").length,
+      1,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("OOXML Send is independent of model image and PDF capabilities", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  state.runtimeProfile!.inputCapabilityEvidence.pdf = "unsupported";
+  state.pendingAttachments = [pendingDocument(
+    "attachment-docx",
+    "notes.docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  )];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#prompt", "Summarize the document");
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/send").length,
+      1,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("document local preflight accepts exactly 20 MiB and rejects one byte over", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    harness.selectAttachmentFiles([
+      documentFile(harness.window, "exact.pdf", "application/pdf", 20 * 1024 * 1024),
+      documentFile(
+        harness.window,
+        "over.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        20 * 1024 * 1024 + 1,
+      ),
+    ]);
+    await harness.settleAttachmentOperation();
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["exact.pdf"],
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /over\.docx.*larger than 20 MiB/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("document rejection messages are fixed while valid files in the batch remain", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    harness.failAttachmentNamed(
+      "encrypted.docx",
+      "Encrypted Office documents are not supported.",
+      400,
+    );
+    harness.selectAttachmentFiles([
+      documentFile(harness.window, "macro.docm", "", 24),
+      documentFile(harness.window, "legacy.doc", "", 24),
+      documentFile(harness.window, "unknown.zip", "application/zip", 24),
+      documentFile(harness.window, "encrypted.docx", "", 24),
+      documentFile(harness.window, "kept.pdf", "application/pdf", 24),
+    ]);
+    await harness.settleAttachmentOperation();
+
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["encrypted.docx", "kept.pdf"],
+    );
+    const status = harness.document.querySelector("#status")?.textContent ?? "";
+    assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
+    assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
+    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX/i);
+    assert.match(status, /encrypted\.docx: Encrypted Office documents are not supported\./);
+    assert.match(
+      harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
+      /kept\.pdf/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a rejected-only document drop is intercepted and reports every fixed classification", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    assert.equal(harness.dispatchDrop([
+      documentFile(harness.window, "macro.docm", ""),
+      documentFile(harness.window, "legacy.doc", ""),
+      documentFile(harness.window, "unknown.zip", "application/zip"),
+    ]), true);
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.some((call) => call.path === "/attachments"),
+      false,
+    );
+    const status = harness.document.querySelector("#status")?.textContent ?? "";
+    assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
+    assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
+    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX/i);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an unsupported image drop is intercepted and reports its fixed capability reason", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    const image = imageFile(harness.window, "unsupported.png", "image/png");
+    assert.equal(harness.dispatchDragOver([image]), true);
+    assert.equal(harness.dispatchDrop([image]), true);
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.some((call) => call.path === "/attachments"),
+      false,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /unsupported\.png.*active model does not support image input/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a rejected image paste reports its reason without intercepting accompanying text", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    const image = imageFile(harness.window, "pasted.png", "image/png");
+    assert.equal(harness.dispatchPaste([image]), false);
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.some((call) => call.path === "/attachments"),
+      false,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /pasted\.png.*active model does not support image input/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("paste attaches supported documents alongside images in a mixed batch", async () => {
   const harness = await createDialogHarness(imageCapableState());
   try {
     const png = imageFile(harness.window, "reference.png", "image/png");
@@ -4566,22 +4952,13 @@ test("paste and drop ignore non-images without discarding supported images in a 
       type: "application/pdf",
     });
 
-    assert.equal(harness.dispatchPaste([pdf]), false);
     assert.equal(harness.dispatchPaste([pdf, png]), true);
     await harness.settleAttachmentOperation();
     assert.deepEqual(
       harness.calls
         .filter((call) => call.path === "/attachments")
         .map((call) => new URL(call.url).searchParams.get("fileName")),
-      ["reference.png"],
-    );
-    assert.match(
-      harness.document.querySelector("#status")?.textContent ?? "",
-      /notes\.pdf.*PNG, JPEG, and WebP/i,
-    );
-    assert.doesNotMatch(
-      harness.document.querySelector("#status")?.textContent ?? "",
-      /re-select|retry/i,
+      ["notes.pdf", "reference.png"],
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -4622,7 +4999,7 @@ test("a pasted image uploads once and renders a removable attachment chip", asyn
   }
 });
 
-test("dropped JPEG and WebP images upload serially without intercepting a PDF-only drop", async () => {
+test("dropped JPEG, PDF, and WebP files upload serially", async () => {
   const harness = await createDialogHarness(imageCapableState());
   try {
     const pdf = new harness.window.File([new Uint8Array(24)], "notes.pdf", {
@@ -4641,22 +5018,18 @@ test("dropped JPEG and WebP images upload serially without intercepting a PDF-on
     await harness.settleAttachmentOperation();
     assert.equal(
       harness.calls.filter((call) => call.path === "/attachments").length,
-      2,
+      3,
     );
     assert.equal(
       harness.document.querySelectorAll("#pendingAttachments [data-attachment-id]").length,
-      2,
-    );
-    assert.match(
-      harness.document.querySelector("#status")?.textContent ?? "",
-      /notes\.pdf.*PNG, JPEG, and WebP/i,
+      3,
     );
 
-    assert.equal(harness.dispatchDrop([pdf]), false);
-    await harness.settle();
+    assert.equal(harness.dispatchDrop([pdf]), true);
+    await harness.settleAttachmentOperation();
     assert.equal(
       harness.calls.filter((call) => call.path === "/attachments").length,
-      2,
+      4,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -4768,7 +5141,7 @@ test("attachment count and total limits reject locally before network traffic", 
       );
       assert.match(
         countHarness.document.querySelector("#status")?.textContent ?? "",
-        /at most 4 pending images/i,
+        /at most 4 pending files/i,
       );
       assert.deepEqual(countHarness.errors, []);
     } finally {
@@ -5155,12 +5528,64 @@ test("a user timeline attachment chip renders inert filename, type, and size met
   }
 });
 
-test("Attach distinguishes supported, unsupported, and unverified runtime capabilities", async () => {
+test("timeline labels native PDFs and extracted Office documents without claiming visual rendering", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-documents",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    kind: "user",
+    content: "Review these",
+    attachments: [
+      pendingDocument("attachment-pdf", "score.pdf", "application/pdf", 1_024),
+      pendingDocument(
+        "attachment-docx",
+        "notes.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        2_048,
+      ),
+      pendingDocument(
+        "attachment-xlsx",
+        "data.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        3_072,
+      ),
+      pendingDocument(
+        "attachment-pptx",
+        "deck.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        4_096,
+      ),
+    ],
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const labels = [...harness.document.querySelectorAll(
+      ".timeline-attachment-chip",
+    )].map((chip) => chip.textContent);
+    assert.deepEqual(labels, [
+      "score.pdf · PDF · Native PDF · 1 KiB",
+      "notes.docx · DOCX · Extracted document · 2 KiB",
+      "data.xlsx · XLSX · Extracted document · 3 KiB",
+      "deck.pptx · PPTX · Extracted document · 4 KiB",
+    ]);
+    assert.doesNotMatch(labels.join(" "), /rendered|preview|vision/i);
+    assert.equal(
+      harness.document.querySelector(".timeline-attachments")
+        ?.getAttribute("aria-label"),
+      "File attachments",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Attach file stays available while image capability controls only image selection", async () => {
   const supportedHarness = await createDialogHarness(imageCapableState());
   try {
     assert.equal(
       supportedHarness.document.querySelector<HTMLButtonElement>(
-        "#attachImageButton",
+        "#attachFileButton",
       )?.disabled,
       false,
     );
@@ -5178,9 +5603,9 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
   const unsupportedHarness = await createDialogHarness(unsupportedState);
   try {
     const attach = unsupportedHarness.document.querySelector<HTMLButtonElement>(
-      "#attachImageButton",
+      "#attachFileButton",
     );
-    assert.equal(attach?.disabled, true);
+    assert.equal(attach?.disabled, false);
     assert.match(attach?.title ?? "", /does not support image input/i);
     assert.equal(
       unsupportedHarness.document.querySelector<HTMLButtonElement>("#sendButton")
@@ -5193,8 +5618,8 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
       "image/png",
     );
     assert.equal(unsupportedHarness.dispatchPaste([unsupportedImage]), false);
-    assert.equal(unsupportedHarness.dispatchDragOver([unsupportedImage]), false);
-    assert.equal(unsupportedHarness.dispatchDrop([unsupportedImage]), false);
+    assert.equal(unsupportedHarness.dispatchDragOver([unsupportedImage]), true);
+    assert.equal(unsupportedHarness.dispatchDrop([unsupportedImage]), true);
     await unsupportedHarness.settle();
     assert.equal(
       unsupportedHarness.calls.some((call) => call.path === "/attachments"),
@@ -5211,9 +5636,9 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
   const unverifiedHarness = await createDialogHarness(unverifiedState);
   try {
     const attach = unverifiedHarness.document.querySelector<HTMLButtonElement>(
-      "#attachImageButton",
+      "#attachFileButton",
     );
-    assert.equal(attach?.disabled, true);
+    assert.equal(attach?.disabled, false);
     assert.match(attach?.title ?? "", /unverified/i);
     const unverifiedImage = imageFile(
       unverifiedHarness.window,
@@ -5221,7 +5646,7 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
       "image/png",
     );
     assert.equal(unverifiedHarness.dispatchPaste([unverifiedImage]), false);
-    assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), false);
+    assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), true);
     const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
       '[data-attachment-id="attachment-unverified"] button',
     );

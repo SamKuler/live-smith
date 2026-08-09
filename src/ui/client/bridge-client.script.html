@@ -650,7 +650,7 @@
             throw blockedError;
           }
           const unknownError = new Error(
-            `${message} Authoritative attachment state was refreshed; verify the pending images before continuing.`,
+            `${message} Authoritative attachment state was refreshed; verify the pending files before continuing.`,
           );
           unknownError.attachmentFailureKind = "unknown";
           throw unknownError;
@@ -785,7 +785,7 @@
       }
 
       function attachmentFileLabel(file) {
-        const name = file?.name || "Unnamed image";
+        const name = file?.name || "Unnamed file";
         return name.length <= 80 ? name : `${name.slice(0, 79)}…`;
       }
 

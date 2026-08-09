@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { clearTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import test from "node:test";
 
+import {
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_BYTES,
+} from "../../attachments/contracts.js";
+import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
 import type { SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
@@ -45,6 +51,44 @@ function request(p: SavedProfile): TransportRequest {
     agentMessages: [],
     tools: [{ type: "function", function: { name: "inspect", description: "Inspect" } }],
   };
+}
+
+function canonicalBase64ForByteLength(byteLength: number): string {
+  const completeTriples = Math.floor(byteLength / 3);
+  const remainder = byteLength % 3;
+  return "AAAA".repeat(completeTriples) +
+    (remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : "");
+}
+
+function imagePart(
+  byteLength: number,
+  fileName = "attachment.png",
+): Extract<ModelInputPart, { type: "image" }> {
+  return {
+    type: "image",
+    fileName,
+    mediaType: "image/png",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function pdfPart(
+  byteLength: number,
+  fileName = "attachment.pdf",
+): Extract<ModelInputPart, { type: "document" }> {
+  return {
+    type: "document",
+    fileName,
+    mediaType: "application/pdf",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function completedAnthropicResponse(): Response {
+  return new Response(JSON.stringify({
+    stop_reason: "end_turn",
+    content: [{ type: "text", text: "Done" }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
 test("Anthropic Messages maps adaptive thinking and preserves content blocks", async () => {
@@ -185,6 +229,172 @@ test("Anthropic Messages rejects image input when the resolved capability is dis
   await assert.rejects(
     transport.createToolTurn(req),
     /Image input is disabled by the active model Profile capability/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("Anthropic Messages maps enabled PDF input as a named base64 document", async () => {
+  let messages: Array<Record<string, unknown>> = [];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      messages = (JSON.parse(String(init?.body)) as {
+        messages: Array<Record<string, unknown>>;
+      }).messages;
+      return new Response(JSON.stringify({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Done" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.currentUserContent = [{
+    type: "document",
+    fileName: "score.pdf",
+    mediaType: "application/pdf",
+    base64: "JVBERg==",
+  }];
+
+  await transport.createToolTurn(req);
+
+  assert.deepEqual(messages[0]?.content, [{
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: "JVBERg==",
+    },
+    title: "score.pdf",
+  }]);
+});
+
+test("Anthropic Messages rejects PDF input before HTTP when PDF capability is disabled", async () => {
+  let fetchCalls = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.currentUserContent = [{
+    type: "document",
+    fileName: "disabled.pdf",
+    mediaType: "application/pdf",
+    base64: "JVBERg==",
+  }];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /PDF input is disabled by the active model Profile capability/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("Anthropic Messages accepts the exact mixed binary quota across current and history", async () => {
+  let fetchCalls = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return completedAnthropicResponse();
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.image = true;
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.history = [{
+    role: "user",
+    content: [
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+    ],
+  }];
+  req.currentUserContent = [
+    imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+    pdfPart(
+      MAX_PENDING_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+      "current.pdf",
+    ),
+  ];
+
+  await transport.createToolTurn(req);
+  assert.equal(fetchCalls, 1);
+});
+
+test("Anthropic Messages rejects mixed, PDF, and base64 violations before body construction or HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const makeRequest = () => {
+    const req = request(profile({ advanced: { extraBody: { messages: [] } } }));
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.runtimeProfile.capabilities.inputs.pdf = true;
+    return req;
+  };
+  const cases: Array<{ request: TransportRequest; message: RegExp }> = [];
+  {
+    const req = makeRequest();
+    req.history = [{
+      role: "user",
+      content: [imagePart(MAX_IMAGE_ATTACHMENT_BYTES)],
+    }];
+    req.currentUserContent = [pdfPart(
+      MAX_PENDING_ATTACHMENT_BYTES - MAX_IMAGE_ATTACHMENT_BYTES + 1,
+    )];
+    cases.push({
+      request: req,
+      message: /Binary input subtotal may not exceed 20 MiB/,
+    });
+  }
+  {
+    const req = makeRequest();
+    req.currentUserContent = [pdfPart(MAX_DOCUMENT_ATTACHMENT_BYTES + 1)];
+    cases.push({ request: req, message: /PDF input may not exceed 20 MiB/ });
+  }
+  {
+    const req = makeRequest();
+    req.currentUserContent = [{
+      type: "document",
+      fileName: "invalid.pdf",
+      mediaType: "application/pdf",
+      base64: "AQJ=",
+    }];
+    cases.push({ request: req, message: /canonical base64/ });
+  }
+
+  for (const entry of cases) {
+    await assert.rejects(
+      transport.createToolTurn(entry.request),
+      entry.message,
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("Anthropic Messages rejects a forged PDF media type before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.pdf = true;
+  req.currentUserContent = [{
+    type: "document",
+    fileName: "forged.pdf",
+    mediaType: "image/png",
+    base64: "JVBERg==",
+  } as unknown as ModelInputPart];
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /Binary input has an invalid media type\.$/,
   );
   assert.equal(fetchCalls, 0);
 });

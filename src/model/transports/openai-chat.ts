@@ -19,6 +19,10 @@ import {
   buildOpenAIChatMessages,
   listOpenAIModels,
 } from "./openai-shared.js";
+import {
+  assertBinaryInputWithinLimits,
+  unsupportedOpenAIChatPdfInput,
+} from "./input-parts.js";
 
 const protectedFields = ["model", "messages", "tools", "stream"] as const;
 
@@ -32,6 +36,8 @@ export function createOpenAIChatTransport(
     listModels: (profile, signal) => listOpenAIModels(profile, fetchImpl, signal),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertNoPdfInput(request);
+      assertBinaryInputWithinLimits(request);
       const body = buildChatBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
         return streamChatTurn(request, body, fetchImpl);
@@ -60,6 +66,16 @@ export function createOpenAIChatTransport(
       });
     },
   };
+}
+
+function assertNoPdfInput(request: TransportRequest): void {
+  const containsPdf = request.currentUserContent.some((part) =>
+    part.type === "document"
+  ) || request.history.some((message) =>
+    message.role === "user" &&
+    message.content.some((part) => part.type === "document")
+  );
+  if (containsPdf) unsupportedOpenAIChatPdfInput();
 }
 
 function buildChatBody(

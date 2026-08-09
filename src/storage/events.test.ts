@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   type SessionAttachmentRef,
 } from "./attachments.js";
 
@@ -25,6 +27,15 @@ const imageRef: SessionAttachmentRef = {
   mediaType: "image/png",
   byteLength: 1024,
   sha256: "a".repeat(64),
+};
+
+const documentRef: SessionAttachmentRef = {
+  id: "attachment-document",
+  kind: "document",
+  fileName: "reference.pdf",
+  mediaType: "application/pdf",
+  byteLength: 5 * 1024 * 1024,
+  sha256: "b".repeat(64),
 };
 
 test("event attachments persist strict immutable references only on user events", async () => {
@@ -100,14 +111,95 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
     }),
     /invalid/i,
   );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "audio is not implemented",
+      attachments: [{
+        ...imageRef,
+        kind: "audio",
+        mediaType: "audio/wav",
+      } as SessionAttachmentRef],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "unsafe filename",
+      attachments: [{ ...imageRef, fileName: `../${"界".repeat(80)}.png` }],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "legacy normalization is not accepted for new events",
+      attachments: [{ ...imageRef, fileName: "e\u0301.png" }],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "legacy path and controls are not accepted for new events",
+      attachments: [{
+        ...imageRef,
+        fileName: "../e\u0301\u202E\u0001.png",
+      }],
+    }),
+    /invalid/i,
+  );
 });
 
-test("event attachment limits accept the exact count and byte boundaries", async () => {
+test("event loading precisely preserves legacy attachment refs under the old schema", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-legacy-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const legacyRefs: SessionAttachmentRef[] = Array.from(
+    { length: 4 },
+    (_, index) => ({
+      ...imageRef,
+      id: `attachment-legacy-${index}`,
+      fileName: index === 0
+        ? `../e\u0301-${"界".repeat(40)}\u202E\u0001.png`
+        : `legacy-${index}.png`,
+      byteLength: 4 * 1024 * 1024,
+      ...(index === 2
+        ? {
+            kind: "document" as const,
+            mediaType: "application/pdf" as const,
+          }
+        : index === 3
+          ? { kind: "audio" as const, mediaType: "audio/wav" as const }
+          : {}),
+    }),
+  );
+  const target = path.join(eventsDirectory, "legacy-event.json");
+  const persisted = [{
+    id: "event-legacy",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    kind: "user",
+    content: "Legacy attachments",
+    attachments: legacyRefs,
+  }];
+  await fs.writeFile(target, JSON.stringify(persisted));
+
+  assert.deepEqual(await loadSessionEvents(dir, "legacy-event"), persisted);
+  await appendSessionEvent(dir, "legacy-event", {
+    kind: "assistant",
+    content: "Legacy history remains appendable.",
+  });
+  assert.equal((await loadSessionEvents(dir, "legacy-event")).length, 2);
+});
+
+test("event attachment limits accept the exact count and image subtotal boundaries", async () => {
   const sessionId = `memory-event-boundary-${Date.now()}`;
   const refs = Array.from({ length: MAX_USER_EVENT_ATTACHMENT_COUNT }, (_, index) => ({
     ...imageRef,
     id: `attachment-boundary-${index}`,
-    byteLength: MAX_USER_EVENT_ATTACHMENT_BYTES / MAX_USER_EVENT_ATTACHMENT_COUNT,
+    byteLength: MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES /
+      MAX_USER_EVENT_ATTACHMENT_COUNT,
   }));
   assert.ok(refs.every((ref) => ref.byteLength <= MAX_IMAGE_ATTACHMENT_BYTES));
 
@@ -120,9 +212,110 @@ test("event attachment limits accept the exact count and byte boundaries", async
   assert.equal(event.attachments?.length, MAX_USER_EVENT_ATTACHMENT_COUNT);
   assert.equal(
     event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
-    MAX_USER_EVENT_ATTACHMENT_BYTES,
+    MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   );
   await deleteSessionEvents(undefined, sessionId);
+});
+
+test("mixed image and document event refs enforce shared and per-kind quotas", async () => {
+  const sessionId = `memory-event-mixed-${Date.now()}`;
+  const exactMixed = [0, 1, 2].map((index) => ({
+    ...imageRef,
+    id: `attachment-mixed-image-${index}`,
+    byteLength: MAX_IMAGE_ATTACHMENT_BYTES,
+  }));
+  const event = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: "exact mixed boundary",
+    attachments: [...exactMixed, documentRef],
+  });
+  assert.equal(
+    event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
+    MAX_USER_EVENT_ATTACHMENT_BYTES,
+  );
+
+  await assert.rejects(
+    appendSessionEvent(undefined, `${sessionId}-over`, {
+      kind: "user",
+      content: "one over shared boundary",
+      attachments: [
+        ...exactMixed,
+        { ...documentRef, id: "attachment-document-over", byteLength: documentRef.byteLength + 1 },
+      ],
+    }),
+    /invalid/i,
+  );
+
+  const exactImages = [0, 1, 2].map((index) => ({
+    ...imageRef,
+    id: `attachment-image-exact-${index}`,
+    byteLength: MAX_IMAGE_ATTACHMENT_BYTES,
+  }));
+  await appendSessionEvent(undefined, `${sessionId}-image-exact`, {
+    kind: "user",
+    content: "exact image subtotal",
+    attachments: [
+      ...exactImages,
+      { ...imageRef, id: "attachment-image-remainder", byteLength: 1024 * 1024 },
+    ],
+  });
+  assert.equal(MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES, 16 * 1024 * 1024);
+  await assert.rejects(
+    appendSessionEvent(undefined, `${sessionId}-image-over`, {
+      kind: "user",
+      content: "one over image subtotal",
+      attachments: [
+        ...exactImages,
+        { ...imageRef, id: "attachment-image-over", byteLength: 1024 * 1024 + 1 },
+      ],
+    }),
+    /invalid/i,
+  );
+
+  await appendSessionEvent(undefined, `${sessionId}-document-exact`, {
+    kind: "user",
+    content: "exact document subtotal",
+    attachments: [{
+      ...documentRef,
+      id: "attachment-document-exact",
+      byteLength: MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES,
+    }],
+  });
+  await assert.rejects(
+    appendSessionEvent(undefined, `${sessionId}-document-over`, {
+      kind: "user",
+      content: "one over document subtotal",
+      attachments: [{
+        ...documentRef,
+        id: "attachment-document-too-large",
+        byteLength: MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES + 1,
+      }],
+    }),
+    /invalid/i,
+  );
+});
+
+test("document event refs survive reload and malformed kind-media pairs are corruption", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-document-events-"));
+  await appendSessionEvent(dir, "session-document-event", {
+    kind: "user",
+    content: "Read this",
+    attachments: [documentRef],
+  });
+  assert.deepEqual(
+    (await loadSessionEvents(dir, "session-document-event"))[0]?.attachments,
+    [documentRef],
+  );
+
+  const target = path.join(dir, "live-smith-events", "session-document-event.json");
+  const parsed = JSON.parse(await fs.readFile(target, "utf8")) as Array<Record<string, unknown>>;
+  const attachments = parsed[0]?.attachments as Array<Record<string, unknown>>;
+  attachments[0]!.kind = "image";
+  await fs.writeFile(target, JSON.stringify(parsed));
+  await assert.rejects(
+    loadSessionEvents(dir, "session-document-event"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
 });
 
 test("memory event storage deep-clones nested input, append, and load values", async () => {

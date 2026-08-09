@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +12,7 @@ import {
   type AgentAction,
 } from "../agent/actions.js";
 import { agentSystemInstructions } from "../agent/system-instructions.js";
+import { AttachmentProcessingError } from "../attachments/contracts.js";
 import { resolveModelCapabilities } from "../model/capabilities.js";
 import type {
   ConversationMessage,
@@ -20,6 +22,7 @@ import type {
 import type { ModelTool } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
 import {
+  AttachmentStorageCorruptionError,
   listSessionAttachments,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
@@ -78,6 +81,10 @@ function attachmentPng(seed: number): Uint8Array {
     0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
     0, 0, 0, 1, 0, 0, 0, 1, seed,
   ]);
+}
+
+function attachmentPdf(): Uint8Array {
+  return Buffer.from("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n", "latin1");
 }
 
 test("buildModelRequest carries a complete profile, capabilities, and agent messages", () => {
@@ -785,7 +792,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
   const historical = await saveSessionAttachment(dir, existing.id, {
     fileName: "historical.png",
     bytes: attachmentPng(1),
-  });
+  }, { preSavePendingAttachmentRefs: [] });
   await appendSessionEvent(dir, existing.id, {
     kind: "user",
     content: "Earlier image",
@@ -798,7 +805,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
   const current = await saveSessionAttachment(dir, existing.id, {
     fileName: "current.png",
     bytes: attachmentPng(2),
-  });
+  }, { preSavePendingAttachmentRefs: [] });
   const profile: SavedProfile = {
     id: "provider-images",
     name: "Provider",
@@ -863,6 +870,239 @@ test("handleAgentRequest sends current and historical images then consumes curre
   );
 });
 
+test("handleAgentRequest skips consumed corrupt metadata while validating current refs exactly", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-consumed-corrupt-send-"));
+  const existing = await createSession(dir, {
+    title: "Corrupt history",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  });
+  const historical = await saveSessionAttachment(dir, existing.id, {
+    fileName: "historical-corrupt.png",
+    bytes: attachmentPng(1),
+  }, { preSavePendingAttachmentRefs: [] });
+  await appendSessionEvent(dir, existing.id, {
+    kind: "user",
+    content: "Earlier image",
+    attachments: [sessionAttachmentRefFromStored(historical)],
+  });
+  const current = await saveSessionAttachment(dir, existing.id, {
+    fileName: "current-valid.png",
+    bytes: attachmentPng(2),
+  }, { preSavePendingAttachmentRefs: [] });
+  await fs.writeFile(
+    path.join(
+      dir,
+      "live-smith-attachments",
+      existing.id,
+      `${historical.id}.json`,
+    ),
+    "{corrupt consumed metadata",
+  );
+  const profile: SavedProfile = {
+    id: "provider-consumed-corrupt",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-image-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: { capabilityOverrides: { inputs: { image: true } } },
+  };
+  let captured: {
+    history: ConversationMessage[];
+    attachmentParts?: ModelInputPart[];
+  } | undefined;
+
+  const result = await handleAgentRequest(
+    { environment: { storageDirectory: dir } } as never,
+    {
+      defaultPrompt: "Review",
+      summary: "Track: Bass",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    },
+    "Continue with the current image",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    existing.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async (request) => {
+      captured = request;
+      return { content: "Continued.", toolCalls: [] };
+    },
+  );
+
+  assert.equal(result, "Continued.");
+  assert.deepEqual(captured?.attachmentParts?.map((part) => part.type), ["image"]);
+  assert.match(
+    captured?.history[0]?.role === "user" &&
+        captured.history[0].content[1]?.type === "text"
+      ? captured.history[0].content[1].text
+      : "",
+    /"state":"unavailable"/,
+  );
+  const latestUser = [...await loadSessionEvents(dir, existing.id)]
+    .reverse()
+    .find((event) => event.kind === "user");
+  assert.equal(latestUser?.kind, "user");
+  assert.deepEqual(latestUser?.attachments, [sessionAttachmentRefFromStored(current)]);
+});
+
+test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-pending-corrupt-send-"));
+  const existing = await createSession(dir, {
+    title: "Corrupt pending",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  });
+  const pending = await saveSessionAttachment(dir, existing.id, {
+    fileName: "pending-corrupt.png",
+    bytes: attachmentPng(1),
+  }, { preSavePendingAttachmentRefs: [] });
+  await fs.writeFile(
+    path.join(
+      dir,
+      "live-smith-attachments",
+      existing.id,
+      `${pending.id}.json`,
+    ),
+    "{corrupt pending metadata",
+  );
+  const profile: SavedProfile = {
+    id: "provider-pending-corrupt",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-image-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: { capabilityOverrides: { inputs: { image: true } } },
+  };
+  let modelCalls = 0;
+
+  await assert.rejects(
+    handleAgentRequest(
+      { environment: { storageDirectory: dir } } as never,
+      {
+        defaultPrompt: "Review",
+        summary: "Track: Bass",
+        target: {},
+        scope: { kind: "track", identity: "track-1", label: "Bass" },
+      },
+      "Continue",
+      { profile, capabilities: resolveModelCapabilities(profile) },
+      "project-a",
+      existing.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => true,
+      },
+      async () => {
+        modelCalls += 1;
+        return { content: "must not run", toolCalls: [] };
+      },
+    ),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(await loadSessionEvents(dir, existing.id), []);
+});
+
+test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pending", async () => {
+  for (const compatible of [true, false]) {
+    const dir = await fs.mkdtemp(path.join(
+      os.tmpdir(),
+      `live-smith-pdf-flow-${compatible ? "compatible" : "blocked"}-`,
+    ));
+    const existing = await createSession(dir, {
+      title: "PDF review",
+      projectKey: "project-a",
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    });
+    const stored = await saveSessionAttachment(dir, existing.id, {
+      fileName: "score.pdf",
+      bytes: attachmentPdf(),
+    }, { preSavePendingAttachmentRefs: [] });
+    const profile: SavedProfile = {
+      id: `provider-pdf-${compatible}`,
+      name: "Provider",
+      apiFamily: "openai",
+      apiMode: compatible ? "responses" : "chat-completions",
+      apiKey: "key",
+      baseUrl: "https://example.test/v1",
+      model: "custom-pdf-model",
+      parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+      advanced: { capabilityOverrides: { inputs: { pdf: true } } },
+    };
+    let modelCalls = 0;
+    const request = handleAgentRequest(
+      { environment: { storageDirectory: dir } } as never,
+      {
+        defaultPrompt: "Review",
+        summary: "Track: Bass",
+        target: {},
+        scope: { kind: "track", identity: "track-1", label: "Bass" },
+      },
+      "Review the score",
+      { profile, capabilities: resolveModelCapabilities(profile) },
+      "project-a",
+      existing.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => true,
+      },
+      async (modelRequest) => {
+        modelCalls += 1;
+        assert.deepEqual(
+          modelRequest.attachmentParts?.map((part) => part.type),
+          ["document"],
+        );
+        return { content: "PDF received.", toolCalls: [] };
+      },
+    );
+
+    if (compatible) {
+      assert.equal(await request, "PDF received.");
+      assert.equal(modelCalls, 1);
+    } else {
+      await assert.rejects(request, (error: unknown) => {
+        assert.ok(error instanceof AttachmentProcessingError);
+        assert.equal(error.code, "profile_incompatible");
+        return true;
+      });
+      assert.equal(modelCalls, 0);
+    }
+
+    const events = await loadSessionEvents(dir, existing.id);
+    assert.equal(
+      events.some((event) => event.kind === "user"),
+      compatible,
+    );
+    assert.deepEqual(
+      pendingSessionAttachments(
+        await listSessionAttachments(dir, existing.id),
+        events,
+      ).map((attachment) => attachment.id),
+      compatible ? [] : [stored.id],
+    );
+  }
+});
+
 test("attachment capability and prompt persistence failures leave images pending", async () => {
   for (const failure of ["capability", "persistence"] as const) {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), `live-smith-pending-${failure}-`));
@@ -874,7 +1114,7 @@ test("attachment capability and prompt persistence failures leave images pending
     await saveSessionAttachment(dir, existing.id, {
       fileName: "pending.png",
       bytes: attachmentPng(1),
-    });
+    }, { preSavePendingAttachmentRefs: [] });
     const profile: SavedProfile = {
       id: `provider-${failure}`,
       name: "Provider",
@@ -943,7 +1183,7 @@ test("provider failure keeps already persisted image refs consumed", async () =>
   const current = await saveSessionAttachment(dir, existing.id, {
     fileName: "consumed.png",
     bytes: attachmentPng(1),
-  });
+  }, { preSavePendingAttachmentRefs: [] });
   const profile: SavedProfile = {
     id: "provider-image-failure",
     name: "Provider",

@@ -5,6 +5,22 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { platform } from "node:process";
 
+import {
+  attachmentQuotaIsWithinLimits,
+  AttachmentProcessingError,
+  type DocumentAttachmentMediaType,
+  isLegacyAttachmentFileName,
+  isSafeAttachmentFileName,
+  MAX_ATTACHMENT_FILE_NAME_BYTES,
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../attachments/contracts.js";
+import { classifyDocumentAttachment } from "../attachments/processor.js";
+import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
 import {
@@ -45,6 +61,8 @@ export interface SessionAttachmentRef {
 export interface StoredSessionAttachment extends SessionAttachmentRef {
   sessionId: string;
   createdAt: string;
+  /** Missing only on metadata written by Live Smith versions before ordinals. */
+  ordinal?: number;
 }
 
 interface MemoryAttachment {
@@ -52,14 +70,36 @@ interface MemoryAttachment {
   bytes: Uint8Array;
 }
 
-interface AttachmentSaveOptions {
+export interface AttachmentSaveOptions {
   /** Test seam for proving collision handling; production always uses createStorageId. */
   createId?: () => string;
+  /** Test seam for proving stable ordering when wall-clock timestamps collide. */
+  now?: () => Date;
+  /**
+   * Immutable pre-save snapshot captured while holding the same-Session fence.
+   * Calling without that fence can race another pending-attachment mutation.
+   */
+  preSavePendingAttachmentRefs: readonly SessionAttachmentRef[];
 }
 
-export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
-export const MAX_PENDING_SESSION_ATTACHMENT_COUNT = 4;
-export const MAX_PENDING_SESSION_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+interface AttachmentReadOptions {
+  signal?: AbortSignal;
+  /** Exact immutable event/current reference expected for this stored attachment. */
+  expectedRef?: SessionAttachmentRef;
+  /** Test seam for proving stat rejection happens before blob content is read. */
+  readFile?: (handle: fs.FileHandle) => Promise<Uint8Array>;
+}
+
+export {
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+};
+export const MAX_PENDING_SESSION_ATTACHMENT_COUNT = MAX_PENDING_ATTACHMENT_COUNT;
+export const MAX_PENDING_SESSION_ATTACHMENT_BYTES = MAX_PENDING_ATTACHMENT_BYTES;
+export const MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES =
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES;
+export const MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES =
+  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES;
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
@@ -73,9 +113,20 @@ export class AttachmentTooLargeError extends Error {
   }
 }
 
+export class AttachmentPendingQuotaError extends Error {
+  constructor() {
+    super(
+      "Pending attachments exceed the Session count, total, image, or document limit.",
+    );
+    this.name = "AttachmentPendingQuotaError";
+  }
+}
+
 export class UnsupportedAttachmentError extends Error {
   constructor() {
-    super("Only PNG, JPEG, and WebP image attachments are supported.");
+    super(
+      "The attachment is not a valid PNG, JPEG, WebP, PDF, DOCX, XLSX, or PPTX file.",
+    );
     this.name = "UnsupportedAttachmentError";
   }
 }
@@ -107,30 +158,57 @@ export class AttachmentStorageAccessError extends Error {
 export async function saveSessionAttachment(
   storageDirectory: string | undefined,
   sessionId: string,
-  input: { fileName: string; bytes: Uint8Array },
-  options: AttachmentSaveOptions = {},
+  input: {
+    fileName: string;
+    bytes: Uint8Array;
+    claimedMediaType?: string;
+    signal?: AbortSignal;
+  },
+  options: AttachmentSaveOptions,
 ): Promise<StoredSessionAttachment> {
   requireSafeStorageId(sessionId, "Session ID");
   if (!(input.bytes instanceof Uint8Array)) {
     throw new TypeError("Attachment bytes must be binary data.");
   }
-  if (input.bytes.byteLength > MAX_IMAGE_ATTACHMENT_BYTES) {
-    throw new AttachmentTooLargeError();
+  if (input.bytes.byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
+    throw new AttachmentProcessingError(
+      "archive_limit",
+      "Attachment uploads may not exceed 20 MiB.",
+    );
   }
-  const mediaType = detectImageMediaType(input.bytes);
-  if (!mediaType) throw new UnsupportedAttachmentError();
-  if (!validImageDimensions(input.bytes, mediaType)) {
-    throw new UnsupportedAttachmentError();
-  }
-
+  const signal = input.signal;
   const bytes = new Uint8Array(input.bytes);
-  const fileName = sanitizedFileName(input.fileName, mediaType);
-  const sha256 = hashBytes(bytes);
+  const fileNameClaim = String(input.fileName);
+  const claimedMediaType = input.claimedMediaType;
+  const pendingSnapshot = options.preSavePendingAttachmentRefs.map(
+    (attachment) => ({ ...attachment }),
+  );
+  let storageCommitStarted = false;
+  return withAttachmentStorageBoundary(async () => {
+    throwIfAborted(signal);
+    const classification = await classifyStoredAttachment({
+      bytes,
+      fileName: fileNameClaim,
+      ...(claimedMediaType === undefined ? {} : { claimedMediaType }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const sha256 = await hashBytes(bytes, signal);
+    throwIfAborted(signal);
+    const fileName = sanitizedFileName(fileNameClaim, classification.mediaType);
 
-  return withAttachmentStorageBoundary(() =>
-    withStorageTransaction(storageDirectory, async () => {
+    return withStorageTransaction(storageDirectory, async () => {
+      throwIfAborted(signal);
+      storageCommitStarted = true;
+      assertPendingAttachmentQuota(pendingSnapshot, {
+        kind: classification.kind,
+        byteLength: bytes.byteLength,
+      });
+
       if (!storageDirectory) {
         const sessionAttachments = memoryAttachments.get(sessionId) ?? new Map();
+        const ordinal = nextAttachmentOrdinal(
+          [...sessionAttachments.values()].map((item) => item.metadata),
+        );
         for (let attempt = 0; attempt < 32; attempt += 1) {
           const id = nextAttachmentId(options);
           if (sessionAttachments.has(id)) continue;
@@ -138,11 +216,14 @@ export async function saveSessionAttachment(
             id,
             sessionId,
             fileName,
-            mediaType,
+            kind: classification.kind,
+            mediaType: classification.mediaType,
             bytes,
             sha256,
+            ordinal,
+            createdAt: (options.now?.() ?? new Date()).toISOString(),
           });
-          sessionAttachments.set(id, { metadata, bytes });
+          sessionAttachments.set(id, { metadata, bytes: new Uint8Array(bytes) });
           memoryAttachments.set(sessionId, sessionAttachments);
           return cloneMetadata(metadata);
         }
@@ -151,15 +232,21 @@ export async function saveSessionAttachment(
 
       const directory = attachmentSessionDirectory(storageDirectory, sessionId);
       await prepareAttachmentSessionDirectory(storageDirectory, sessionId, true);
+      const ordinal = nextAttachmentOrdinal(
+        await readAllStoredMetadata(directory, sessionId),
+      );
       for (let attempt = 0; attempt < 32; attempt += 1) {
         const id = nextAttachmentId(options);
         const metadata = attachmentMetadata({
           id,
           sessionId,
           fileName,
-          mediaType,
+          kind: classification.kind,
+          mediaType: classification.mediaType,
           bytes,
           sha256,
+          ordinal,
+          createdAt: (options.now?.() ?? new Date()).toISOString(),
         });
         const blobTarget = attachmentBlobPath(directory, id);
         const metadataTarget = attachmentMetadataPath(directory, id);
@@ -181,8 +268,8 @@ export async function saveSessionAttachment(
         return cloneMetadata(metadata);
       }
       throw new Error("Could not allocate a unique attachment ID.");
-    })
-  );
+    });
+  }, signal, () => !storageCommitStarted);
 }
 
 export async function listSessionAttachments(
@@ -200,24 +287,38 @@ export async function listSessionAttachments(
     if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
       return [];
     }
-    const names = await fs.readdir(directory);
-    const metadata: StoredSessionAttachment[] = [];
-    const seenIds = new Set<string>();
-    for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
-      const fileId = name.slice(0, -".json".length);
-      if (!isSafeStorageId(fileId)) throw new AttachmentStorageCorruptionError();
-      const item = await readMetadataFile(path.join(directory, name));
-      if (
-        item.id !== fileId ||
-        item.sessionId !== sessionId ||
-        seenIds.has(item.id)
-      ) {
-        throw new AttachmentStorageCorruptionError();
-      }
-      seenIds.add(item.id);
-      metadata.push(item);
+    return sortMetadata(await readAllStoredMetadata(directory, sessionId));
+  });
+}
+
+/**
+ * Lists only pending attachments. A consumed ID may be skipped from its safe
+ * metadata filename without opening the metadata, so damaged history cannot
+ * block new work. Every unconsumed metadata file is still validated strictly.
+ */
+export async function listPendingSessionAttachments(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  consumedAttachmentIds: readonly string[],
+): Promise<StoredSessionAttachment[]> {
+  requireSafeStorageId(sessionId, "Session ID");
+  const consumedIds = new Set(
+    consumedAttachmentIds.map((id) => requireSafeStorageId(id, "Attachment ID")),
+  );
+  if (!storageDirectory) {
+    const items = [...(memoryAttachments.get(sessionId)?.values() ?? [])]
+      .filter((item) => !consumedIds.has(item.metadata.id));
+    return sortMetadata(items.map((item) => cloneMetadata(item.metadata)));
+  }
+
+  return withAttachmentStorageBoundary(async () => {
+    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+    if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
+      return [];
     }
-    return sortMetadata(metadata);
+    return sortMetadata(
+      await readAllStoredMetadata(directory, sessionId, consumedIds),
+    );
   });
 }
 
@@ -225,13 +326,15 @@ export async function readSessionAttachmentBytes(
   storageDirectory: string | undefined,
   sessionId: string,
   attachmentId: string,
+  options: AttachmentReadOptions = {},
 ): Promise<Uint8Array> {
   requireSafeStorageId(sessionId, "Session ID");
   requireSafeStorageId(attachmentId, "Attachment ID");
   if (!storageDirectory) {
     const item = memoryAttachments.get(sessionId)?.get(attachmentId);
     if (!item) throw new AttachmentNotFoundError();
-    verifyBytes(item.metadata, item.bytes);
+    assertExpectedAttachmentRef(item.metadata, options.expectedRef);
+    await verifyBytes(item.metadata, item.bytes, options.signal);
     return new Uint8Array(item.bytes);
   }
 
@@ -241,8 +344,9 @@ export async function readSessionAttachmentBytes(
       throw new AttachmentNotFoundError();
     }
     const metadata = await readStoredMetadata(directory, sessionId, attachmentId);
-    return readAndVerifyBlob(directory, metadata);
-  });
+    assertExpectedAttachmentRef(metadata, options.expectedRef);
+    return readAndVerifyBlob(directory, metadata, options);
+  }, options.signal);
 }
 
 export async function deleteSessionAttachment(
@@ -343,6 +447,109 @@ export function sessionAttachmentRefFromStored(
   };
 }
 
+async function classifyStoredAttachment(input: {
+  bytes: Uint8Array;
+  fileName: string;
+  claimedMediaType?: string;
+  signal?: AbortSignal;
+}): Promise<{
+  kind: "image" | "document";
+  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType;
+}> {
+  const imageMediaType = detectImageMediaType(input.bytes);
+  if (imageMediaType !== null) {
+    if (input.bytes.byteLength > MAX_IMAGE_ATTACHMENT_BYTES) {
+      throw new AttachmentTooLargeError();
+    }
+    if (!validImageDimensions(input.bytes, imageMediaType)) {
+      throw new UnsupportedAttachmentError();
+    }
+    return { kind: "image", mediaType: imageMediaType };
+  }
+
+  const mediaType = await classifyDocumentAttachment(input);
+  return { kind: "document", mediaType };
+}
+
+function assertPendingAttachmentQuota(
+  preSavePendingAttachmentRefs: readonly SessionAttachmentRef[],
+  candidate: { kind: "image" | "document"; byteLength: number },
+): void {
+  if (preSavePendingAttachmentRefs.some((attachment) =>
+    attachment.kind !== "image" && attachment.kind !== "document"
+  )) {
+    throw new AttachmentPendingQuotaError();
+  }
+  if (!attachmentQuotaIsWithinLimits([
+    ...preSavePendingAttachmentRefs.map((attachment) => ({
+      kind: attachment.kind,
+      byteLength: attachment.byteLength,
+    })),
+    candidate,
+  ])) {
+    throw new AttachmentPendingQuotaError();
+  }
+}
+
+async function readAllStoredMetadata(
+  directory: string,
+  sessionId: string,
+  skippedIds: ReadonlySet<string> = new Set(),
+): Promise<StoredSessionAttachment[]> {
+  const names = await fs.readdir(directory);
+  const metadata: StoredSessionAttachment[] = [];
+  const seenIds = new Set<string>();
+  const seenOrdinals = new Set<number>();
+  for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
+    const fileId = name.slice(0, -".json".length);
+    if (!isSafeStorageId(fileId)) throw new AttachmentStorageCorruptionError();
+    if (skippedIds.has(fileId)) continue;
+    const item = await readMetadataFile(path.join(directory, name));
+    if (
+      item.id !== fileId ||
+      item.sessionId !== sessionId ||
+      seenIds.has(item.id) ||
+      (item.ordinal !== undefined && seenOrdinals.has(item.ordinal))
+    ) {
+      throw new AttachmentStorageCorruptionError();
+    }
+    seenIds.add(item.id);
+    if (item.ordinal !== undefined) seenOrdinals.add(item.ordinal);
+    metadata.push(item);
+  }
+  return metadata;
+}
+
+function assertExpectedAttachmentRef(
+  metadata: StoredSessionAttachment,
+  expectedRef: SessionAttachmentRef | undefined,
+): void {
+  if (expectedRef === undefined) return;
+  if (
+    metadata.id !== expectedRef.id ||
+    metadata.kind !== expectedRef.kind ||
+    metadata.fileName !== expectedRef.fileName ||
+    metadata.mediaType !== expectedRef.mediaType ||
+    metadata.byteLength !== expectedRef.byteLength ||
+    metadata.sha256 !== expectedRef.sha256
+  ) {
+    throw new AttachmentStorageCorruptionError();
+  }
+}
+
+function nextAttachmentOrdinal(
+  metadata: readonly StoredSessionAttachment[],
+): number {
+  const highest = metadata.reduce(
+    (maximum, attachment) => Math.max(maximum, attachment.ordinal ?? 0),
+    metadata.length,
+  );
+  if (!Number.isSafeInteger(highest) || highest >= Number.MAX_SAFE_INTEGER) {
+    throw new AttachmentStorageCorruptionError();
+  }
+  return highest + 1;
+}
+
 function attachmentSessionDirectory(
   storageDirectory: string,
   sessionId: string,
@@ -410,13 +617,17 @@ async function readMetadataFile(target: string): Promise<StoredSessionAttachment
 async function readAndVerifyBlob(
   directory: string,
   metadata: StoredSessionAttachment,
+  options: AttachmentReadOptions,
 ): Promise<Uint8Array> {
   let handle: fs.FileHandle | undefined;
   try {
     const target = attachmentBlobPath(directory, metadata.id);
     handle = await openRegularPrivateFile(target);
-    const bytes = new Uint8Array(await handle.readFile());
-    verifyBytes(metadata, bytes);
+    await assertBlobHandleMatchesMetadata(handle, metadata);
+    const bytes = options.readFile === undefined
+      ? new Uint8Array(await handle.readFile())
+      : new Uint8Array(await options.readFile(handle));
+    await verifyBytes(metadata, bytes, options.signal);
     return bytes;
   } catch (error) {
     if (
@@ -433,17 +644,58 @@ async function readAndVerifyBlob(
   }
 }
 
-function verifyBytes(
+async function assertBlobHandleMatchesMetadata(
+  handle: fs.FileHandle,
   metadata: StoredSessionAttachment,
-  bytes: Uint8Array,
-): void {
+): Promise<void> {
+  const info = await handle.stat();
+  const maximumBytes = metadata.kind === "image"
+    ? MAX_IMAGE_ATTACHMENT_BYTES
+    : MAX_DOCUMENT_ATTACHMENT_BYTES;
   if (
-    bytes.byteLength !== metadata.byteLength ||
-    hashBytes(bytes) !== metadata.sha256 ||
-    detectImageMediaType(bytes) !== metadata.mediaType ||
-    !validImageDimensions(bytes, metadata.mediaType)
+    !info.isFile() ||
+    !Number.isSafeInteger(info.size) ||
+    info.size !== metadata.byteLength ||
+    info.size > maximumBytes
   ) {
     throw new AttachmentStorageCorruptionError();
+  }
+}
+
+async function verifyBytes(
+  metadata: StoredSessionAttachment,
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (
+    bytes.byteLength !== metadata.byteLength ||
+    await hashBytes(bytes, signal) !== metadata.sha256
+  ) {
+    throw new AttachmentStorageCorruptionError();
+  }
+  if (metadata.kind === "image") {
+    if (
+      !isImageMediaType(metadata.mediaType) ||
+      detectImageMediaType(bytes) !== metadata.mediaType ||
+      !validImageDimensions(bytes, metadata.mediaType)
+    ) throw new AttachmentStorageCorruptionError();
+    return;
+  }
+
+  try {
+    const mediaType = await classifyDocumentAttachment({
+      bytes,
+      fileName: metadata.fileName,
+      claimedMediaType: metadata.mediaType,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (mediaType !== metadata.mediaType) {
+      throw new AttachmentStorageCorruptionError();
+    }
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof AttachmentStorageCorruptionError) throw error;
+    throw new AttachmentStorageCorruptionError(error);
   }
 }
 
@@ -461,22 +713,40 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
     "byteLength",
     "sha256",
     "createdAt",
+    "ordinal",
   ]);
-  return Object.keys(record).every((key) => allowed.has(key)) &&
-    Object.keys(record).length === allowed.size &&
-    isSafeStorageId(record.id) &&
-    isSafeStorageId(record.sessionId) &&
-    record.kind === "image" &&
-    typeof record.fileName === "string" &&
-    record.fileName.length > 0 &&
-    record.fileName.length <= 160 &&
-    isImageMediaType(record.mediaType) &&
-    Number.isInteger(record.byteLength) &&
-    (record.byteLength as number) > 0 &&
-    (record.byteLength as number) <= MAX_IMAGE_ATTACHMENT_BYTES &&
-    typeof record.sha256 === "string" &&
-    /^[a-f0-9]{64}$/.test(record.sha256) &&
-    typeof record.createdAt === "string";
+  const keys = Object.keys(record);
+  const hasOrdinal = record.ordinal !== undefined;
+  if (
+    !keys.every((key) => allowed.has(key)) ||
+    keys.length !== (hasOrdinal ? allowed.size : allowed.size - 1) ||
+    !isSafeStorageId(record.id) ||
+    !isSafeStorageId(record.sessionId) ||
+    !Number.isInteger(record.byteLength) ||
+    (record.byteLength as number) <= 0 ||
+    typeof record.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.sha256) ||
+    typeof record.createdAt !== "string"
+  ) return false;
+
+  if (!hasOrdinal) {
+    return record.kind === "image" &&
+      isImageMediaType(record.mediaType) &&
+      isLegacyAttachmentFileName(record.fileName) &&
+      (record.byteLength as number) <= MAX_IMAGE_ATTACHMENT_BYTES;
+  }
+
+  return Number.isSafeInteger(record.ordinal) &&
+    (record.ordinal as number) > 0 &&
+    (record.kind === "image" || record.kind === "document") &&
+    isSafeAttachmentFileName(record.fileName) &&
+    isAttachmentMediaType(record.mediaType) &&
+    attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
+    (record.byteLength as number) <= (
+      record.kind === "image"
+        ? MAX_IMAGE_ATTACHMENT_BYTES
+        : MAX_DOCUMENT_ATTACHMENT_BYTES
+    );
 }
 
 function detectImageMediaType(bytes: Uint8Array): ImageAttachmentMediaType | null {
@@ -627,26 +897,90 @@ function isImageMediaType(value: unknown): value is ImageAttachmentMediaType {
   return value === "image/png" || value === "image/jpeg" || value === "image/webp";
 }
 
+function isDocumentMediaType(
+  value: unknown,
+): value is DocumentAttachmentMediaType {
+  return value === "application/pdf" ||
+    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    value === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    value === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+}
+
+function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
+  return isImageMediaType(value) || isDocumentMediaType(value);
+}
+
+function attachmentKindMatchesMediaType(
+  kind: "image" | "document",
+  mediaType: AttachmentMediaType,
+): boolean {
+  return kind === "image"
+    ? isImageMediaType(mediaType)
+    : isDocumentMediaType(mediaType);
+}
+
 function ascii(bytes: Uint8Array, start: number, end: number): string {
   return String.fromCharCode(...bytes.subarray(start, end));
 }
 
 function sanitizedFileName(
   value: string,
-  mediaType: ImageAttachmentMediaType,
+  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType,
 ): string {
-  const leaf = String(value).replaceAll("\\", "/").split("/").at(-1) ?? "";
-  const sanitized = leaf.replace(/[\u0000-\u001f\u007f]/g, "").trim();
-  if (sanitized) return sanitized.slice(0, 160);
-  return mediaType === "image/png"
-    ? "image.png"
-    : mediaType === "image/jpeg"
-      ? "image.jpg"
-      : "image.webp";
+  const leaf = String(value).normalize("NFC").replaceAll("\\", "/")
+    .split("/").at(-1) ?? "";
+  const sanitized = leaf.replace(
+    /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+    "",
+  ).trim();
+  const bounded = truncateUtf8(sanitized, MAX_ATTACHMENT_FILE_NAME_BYTES);
+  if (bounded) return bounded;
+  return defaultFileName(mediaType);
 }
 
-function hashBytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = "";
+  let byteLength = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (byteLength + characterBytes > maxBytes) break;
+    result += character;
+    byteLength += characterBytes;
+  }
+  return result;
+}
+
+function defaultFileName(
+  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType,
+): string {
+  switch (mediaType) {
+    case "image/png": return "image.png";
+    case "image/jpeg": return "image.jpg";
+    case "image/webp": return "image.webp";
+    case "application/pdf": return "document.pdf";
+    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      return "document.docx";
+    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+      return "spreadsheet.xlsx";
+    case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+      return "presentation.pptx";
+  }
+}
+
+async function hashBytes(
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<string> {
+  const hash = createHash("sha256");
+  const chunkBytes = 256 * 1024;
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkBytes) {
+    throwIfAborted(signal);
+    const end = Math.min(offset + chunkBytes, bytes.byteLength);
+    hash.update(Buffer.from(bytes.buffer, bytes.byteOffset + offset, end - offset));
+    if (end < bytes.byteLength) await yieldToHost(signal);
+  }
+  throwIfAborted(signal);
+  return hash.digest("hex");
 }
 
 function nextAttachmentId(options: AttachmentSaveOptions): string {
@@ -660,19 +994,23 @@ function attachmentMetadata(input: {
   id: string;
   sessionId: string;
   fileName: string;
-  mediaType: ImageAttachmentMediaType;
+  kind: "image" | "document";
+  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType;
   bytes: Uint8Array;
   sha256: string;
+  ordinal: number;
+  createdAt: string;
 }): StoredSessionAttachment {
   return {
     id: input.id,
     sessionId: input.sessionId,
-    kind: "image",
+    kind: input.kind,
     fileName: input.fileName,
     mediaType: input.mediaType,
     byteLength: input.bytes.byteLength,
     sha256: input.sha256,
-    createdAt: new Date().toISOString(),
+    createdAt: input.createdAt,
+    ordinal: input.ordinal,
   };
 }
 
@@ -685,13 +1023,17 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 async function withAttachmentStorageBoundary<T>(
   operation: () => Promise<T>,
+  signal?: AbortSignal,
+  abortMaySupersedeFailure: () => boolean = () => true,
 ): Promise<T> {
   try {
     return await operation();
   } catch (error) {
     if (
       error instanceof AttachmentTooLargeError ||
+      error instanceof AttachmentPendingQuotaError ||
       error instanceof UnsupportedAttachmentError ||
+      error instanceof AttachmentProcessingError ||
       error instanceof AttachmentNotFoundError ||
       error instanceof AttachmentStorageCorruptionError ||
       error instanceof AttachmentStorageAccessError ||
@@ -699,6 +1041,7 @@ async function withAttachmentStorageBoundary<T>(
     ) {
       throw error;
     }
+    if (abortMaySupersedeFailure()) throwIfAborted(signal);
     throw new AttachmentStorageAccessError(error);
   }
 }
@@ -779,7 +1122,12 @@ function cloneMetadata(metadata: StoredSessionAttachment): StoredSessionAttachme
 function sortMetadata(
   metadata: StoredSessionAttachment[],
 ): StoredSessionAttachment[] {
-  return metadata.sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
-  );
+  return metadata.sort((left, right) => {
+    if (left.ordinal !== undefined && right.ordinal !== undefined) {
+      return left.ordinal - right.ordinal;
+    }
+    if (left.ordinal === undefined && right.ordinal !== undefined) return -1;
+    if (left.ordinal !== undefined && right.ordinal === undefined) return 1;
+    return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+  });
 }

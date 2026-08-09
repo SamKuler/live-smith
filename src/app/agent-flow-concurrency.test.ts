@@ -3,6 +3,7 @@ import { Buffer as NodeBuffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { connect } from "node:net";
 import test from "node:test";
 import { ClipSlot, MidiTrack } from "@ableton-extensions/sdk";
 
@@ -17,6 +18,7 @@ import {
   listSessionAttachments,
   MAX_PENDING_SESSION_ATTACHMENT_BYTES,
   MAX_PENDING_SESSION_ATTACHMENT_COUNT,
+  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   saveSessionAttachment,
 } from "../storage/attachments.js";
 import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
@@ -328,15 +330,25 @@ test("stopping a same-Session send while it waits for another bridge never persi
       sendId: "second-queued-send",
     });
 
-    releaseFirstModel.resolve();
-    assert.equal((await firstSend).status, 200);
-    const secondResponse = await secondSend;
+    const secondResponse = await resolvesWithin(
+      secondSend,
+      "aborted queued send response",
+    );
     assert.equal(secondResponse.status, 500);
     assert.equal(
       (await secondResponse.json() as { promptPersistence?: string }).promptPersistence,
       "not_persisted",
     );
     assert.equal(secondModelCalls, 0);
+    assert.deepEqual(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).map(
+        (event) => event.content,
+      ),
+      ["First owns lease"],
+    );
+
+    releaseFirstModel.resolve();
+    assert.equal((await firstSend).status, 200);
     assert.deepEqual(
       (await loadSessionEvents(fixture.directory, fixture.sessionId)).map(
         (event) => event.content,
@@ -349,6 +361,82 @@ test("stopping a same-Session send while it waits for another bridge never persi
       )?.title,
       "First owns lease",
     );
+  } finally {
+    releaseFirstModel.resolve();
+    await fixture.close();
+  }
+});
+
+test("closing a bridge cancels its queued same-Session send without affecting the lease owner", async () => {
+  const firstModelStarted = deferred<void>();
+  const releaseFirstModel = deferred<void>();
+  let secondModelCalls = 0;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-close-queued-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        firstModelStarted.resolve();
+        await releaseFirstModel.promise;
+        return { content: "First done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => {
+        secondModelCalls += 1;
+        return { content: "Second must not run", toolCalls: [] };
+      },
+    },
+  });
+
+  try {
+    let firstSettled = false;
+    const firstSend = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "first-close-lease-owner",
+      },
+      body: JSON.stringify({
+        prompt: "First owns lease during close",
+        sessionId: fixture.sessionId,
+      }),
+    }).then((response) => {
+      firstSettled = true;
+      return response;
+    });
+    await resolvesWithin(firstModelStarted.promise, "first model request");
+
+    const secondSend = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "second-close-queued",
+      },
+      body: JSON.stringify({
+        prompt: "Queued close prompt must stay draft",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await waitForSessionActivity(fixture.second, "second-close-queued");
+
+    await resolvesWithin(fixture.closeSecond(), "queued bridge close");
+    const secondResponse = await resolvesWithin(secondSend, "closed queued send response");
+    assert.equal(secondResponse.status, 500);
+    assert.equal(
+      (await secondResponse.json() as { promptPersistence?: string }).promptPersistence,
+      "not_persisted",
+    );
+    assert.equal(firstSettled, false);
+    assert.equal(secondModelCalls, 0);
+    assert.deepEqual(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).map(
+        (event) => event.content,
+      ),
+      ["First owns lease during close"],
+    );
+
+    releaseFirstModel.resolve();
+    assert.equal((await firstSend).status, 200);
   } finally {
     releaseFirstModel.resolve();
     await fixture.close();
@@ -525,6 +613,122 @@ test("two bridges can run different Sessions concurrently", async () => {
   }
 });
 
+test("a second bridge rejects a deleted Session before allocating an upload body", async () => {
+  const allocations: number[] = [];
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-upload-preflight-",
+    firstDependencies: {},
+    secondDependencies: {
+      attachmentBodyReadOptions: {
+        allocateBuffer: (byteLength) => {
+          allocations.push(byteLength);
+          return NodeBuffer.allocUnsafe(byteLength);
+        },
+      },
+    },
+  });
+
+  try {
+    const deletion = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "delete_session",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(deletion.status, 200);
+
+    const upload = await fetch(
+      fixture.second.endpoint("/attachments") +
+        `&sessionId=${encodeURIComponent(fixture.sessionId)}` +
+        "&fileName=must-not-buffer.png",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(sizedAttachmentPng(24)),
+      },
+    );
+    assert.equal(upload.status, 404);
+    assert.deepEqual(allocations, []);
+    assert.deepEqual(
+      await listSessionAttachments(fixture.directory, fixture.sessionId),
+      [],
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("attachment upload revalidates its Session after the body-read race window", async () => {
+  const bodyReadStarted = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-upload-race-",
+    firstDependencies: {},
+    secondDependencies: {
+      attachmentBodyReadOptions: {
+        allocateBuffer: (byteLength) => {
+          bodyReadStarted.resolve();
+          return NodeBuffer.allocUnsafe(byteLength);
+        },
+      },
+    },
+  });
+  const uploadBytes = sizedAttachmentPng(24);
+  const uploadUrl = new URL(
+    fixture.second.endpoint("/attachments") +
+      `&sessionId=${encodeURIComponent(fixture.sessionId)}` +
+      "&fileName=race.png",
+  );
+  const socket = connect(Number(uploadUrl.port), uploadUrl.hostname);
+  const responseChunks: NodeBuffer[] = [];
+  socket.on("data", (chunk: NodeBuffer) => responseChunks.push(chunk));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write([
+      `POST ${uploadUrl.pathname}${uploadUrl.search} HTTP/1.1`,
+      `Host: ${uploadUrl.host}`,
+      "Content-Type: application/octet-stream",
+      `Content-Length: ${uploadBytes.byteLength}`,
+      "Connection: close",
+      "",
+      "",
+    ].join("\r\n"));
+    await resolvesWithin(bodyReadStarted.promise, "attachment body reader");
+
+    const deletion = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "delete_session",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(deletion.status, 200);
+
+    socket.write(NodeBuffer.from(uploadBytes));
+    await new Promise<void>((resolve, reject) => {
+      socket.once("end", resolve);
+      socket.once("error", reject);
+    });
+    const statusLine = NodeBuffer.concat(responseChunks)
+      .toString("utf8")
+      .split("\r\n", 1)[0];
+    assert.match(statusLine ?? "", /^HTTP\/1\.1 404 /);
+    assert.deepEqual(
+      await listSessionAttachments(fixture.directory, fixture.sessionId),
+      [],
+    );
+  } finally {
+    socket.destroy();
+    await fixture.close();
+  }
+});
+
 test("model discovery accepts a Draft with blank name and model without changing Runtime", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-blank-draft-"));
   const active = profile({
@@ -663,7 +867,7 @@ test("session deletion removes attachments only after events and metadata", asyn
             0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
             0, 0, 0, 1, 0, 0, 0, 1,
           ]),
-        });
+        }, { preSavePendingAttachmentRefs: [] });
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
@@ -713,7 +917,7 @@ test("session deletion attachment cleanup failure is unknown and retried from st
             0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
             0, 0, 0, 1, 0, 0, 0, 1,
           ]),
-        });
+        }, { preSavePendingAttachmentRefs: [] });
         attachmentRoot = path.join(directory, "live-smith-attachments");
         await fs.chmod(attachmentRoot, 0o500);
 
@@ -782,7 +986,7 @@ test("an unknown Session metadata delete commit reconciles attachment cleanup", 
         await saveSessionAttachment(directory, deletedSessionId, {
           fileName: "unknown-delete.png",
           bytes: sizedAttachmentPng(24),
-        });
+        }, { preSavePendingAttachmentRefs: [] });
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
@@ -965,9 +1169,9 @@ test("attachment routes enforce Session ownership, pending state, and immutable 
   }, { renderHtml: () => "<html></html>" });
 });
 
-test("attachment upload accepts the exact pending byte and count limit then rejects one more", async () => {
+test("attachment upload accepts the exact pending image subtotal and count limit then rejects one more", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-quota-"));
-  const perAttachmentBytes = MAX_PENDING_SESSION_ATTACHMENT_BYTES /
+  const perAttachmentBytes = MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES /
     MAX_PENDING_SESSION_ATTACHMENT_COUNT;
   assert.equal(Number.isInteger(perAttachmentBytes), true);
   const context = {
@@ -1003,7 +1207,14 @@ test("attachment upload accepts the exact pending byte and count limit then reje
             (total, attachment) => total + attachment.byteLength,
             0,
           ),
-          MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+          MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
+        );
+        assert.equal(
+          atBoundary.pendingAttachments.reduce(
+            (total, attachment) => total + attachment.byteLength,
+            0,
+          ) < MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+          true,
         );
 
         const over = await fetch(endpoint("one-too-many.png"), {
@@ -1038,12 +1249,12 @@ test("startup orphan reconciliation preserves attachment directories for live Se
   const liveAttachment = await saveSessionAttachment(directory, liveSession.id, {
     fileName: "live.png",
     bytes: sizedAttachmentPng(24),
-  });
+  }, { preSavePendingAttachmentRefs: [] });
   const orphanSessionId = "orphan-session";
   await saveSessionAttachment(directory, orphanSessionId, {
     fileName: "orphan.png",
     bytes: sizedAttachmentPng(24),
-  });
+  }, { preSavePendingAttachmentRefs: [] });
 
   const context = {
     application: { song: { handle: { id: 1n } } },
@@ -1923,6 +2134,7 @@ interface CrossBridgeFixture {
   sessionId: string;
   first: CrossBridgeEndpoint;
   second: CrossBridgeEndpoint;
+  closeSecond(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -1939,7 +2151,8 @@ async function openCrossBridgeFixture(options: {
   }));
   const firstDialog = deferred<string>();
   const secondDialog = deferred<string>();
-  const closeDialogs = deferred<void>();
+  const closeFirstDialog = deferred<void>();
+  const closeSecondDialog = deferred<void>();
   let dialogCount = 0;
   const leadTrack = fakeMidiTrack(1n, "Lead");
   const context = {
@@ -1952,7 +2165,7 @@ async function openCrossBridgeFixture(options: {
         const index = dialogCount;
         dialogCount += 1;
         (index === 0 ? firstDialog : secondDialog).resolve(url);
-        await closeDialogs.promise;
+        await (index === 0 ? closeFirstDialog.promise : closeSecondDialog.promise);
       },
     },
   };
@@ -1994,20 +2207,38 @@ async function openCrossBridgeFixture(options: {
       sessionId: firstState.activeSessionId,
       first: endpoint(firstUrl, firstToken),
       second: endpoint(secondUrl, secondToken),
+      closeSecond: () => {
+        closeSecondDialog.resolve();
+        return secondFlow!;
+      },
       close: () => {
         if (closePromise) return closePromise;
-        closeDialogs.resolve();
+        closeFirstDialog.resolve();
+        closeSecondDialog.resolve();
         closePromise = Promise.allSettled([firstFlow, secondFlow!]).then(() => undefined);
         return closePromise;
       },
     };
   } catch (error) {
-    closeDialogs.resolve();
+    closeFirstDialog.resolve();
+    closeSecondDialog.resolve();
     await Promise.allSettled([
       firstFlow,
       ...(secondFlow ? [secondFlow] : []),
     ]);
     throw error;
+  }
+}
+
+async function waitForSessionActivity(
+  bridge: CrossBridgeEndpoint,
+  sendId: string,
+): Promise<void> {
+  for (;;) {
+    const response = await fetch(bridge.endpoint("/state"));
+    const state = await response.json() as ChatDialogState;
+    if (state.sessionActivities?.some((activity) => activity.sendId === sendId)) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 

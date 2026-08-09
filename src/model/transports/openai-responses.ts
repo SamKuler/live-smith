@@ -19,9 +19,12 @@ import {
   listOpenAIModels,
 } from "./openai-shared.js";
 import {
+  assertBinaryInputWithinLimits,
   assertImageInputEnabled,
+  assertPdfInputEnabled,
   assertNeverInputPart,
   imageDataUrl,
+  pdfDataUrl,
   unsupportedInputPart,
 } from "./input-parts.js";
 
@@ -47,6 +50,7 @@ export function createOpenAIResponsesTransport(
     listModels: (profile, signal) => listOpenAIModels(profile, fetchImpl, signal),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertBinaryInputWithinLimits(request);
       const body = buildResponsesBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
         return streamResponsesTurn(request, body, fetchImpl);
@@ -181,6 +185,12 @@ function mapResponsesParts(
           detail: "auto",
         };
       case "document":
+        assertPdfInputEnabled(request);
+        return {
+          type: "input_file",
+          filename: part.fileName,
+          file_data: pdfDataUrl(part),
+        };
       case "audio":
         return unsupportedInputPart(part);
       default:
