@@ -12,6 +12,10 @@ import {
 } from "../live/context.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
+import {
+  listSessionAttachments,
+  saveSessionAttachment,
+} from "../storage/attachments.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
 import { createSession, listSessions } from "../storage/sessions.js";
@@ -275,6 +279,104 @@ test("a failed event-log deletion keeps session metadata available for retry", a
     },
     { renderHtml: () => "<html></html>" },
   );
+  assert.ok(deletedSessionId);
+});
+
+test("session deletion removes attachments only after events and metadata", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-attachments-"));
+  let deletedSessionId = "";
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        deletedSessionId = initial.activeSessionId;
+        await saveSessionAttachment(directory, deletedSessionId, {
+          fileName: "reference.png",
+          bytes: new Uint8Array([
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1,
+          ]),
+        });
+
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
+        });
+
+        assert.equal(response.status, 200);
+        assert.ok(!(await listSessions(directory)).some(
+          (session) => session.id === deletedSessionId,
+        ));
+        assert.deepEqual(await listSessionAttachments(directory, deletedSessionId), []);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, { renderHtml: () => "<html></html>" });
+  assert.ok(deletedSessionId);
+});
+
+test("session deletion attachment cleanup failure leaves the Session deleted", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-orphan-"));
+  let deletedSessionId = "";
+  let attachmentRoot = "";
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        deletedSessionId = initial.activeSessionId;
+        await saveSessionAttachment(directory, deletedSessionId, {
+          fileName: "reference.png",
+          bytes: new Uint8Array([
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1,
+          ]),
+        });
+        attachmentRoot = path.join(directory, "live-smith-attachments");
+        await fs.chmod(attachmentRoot, 0o500);
+
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
+        });
+
+        assert.equal(response.status, 500);
+        assert.ok(!(await listSessions(directory)).some(
+          (session) => session.id === deletedSessionId,
+        ));
+      },
+    },
+  };
+
+  try {
+    await runAgentFlow(context as never, {
+      defaultPrompt: "Test prompt",
+      summary: "Track: Lead",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Lead" },
+    }, { renderHtml: () => "<html></html>" });
+  } finally {
+    if (attachmentRoot) await fs.chmod(attachmentRoot, 0o700).catch(() => undefined);
+  }
   assert.ok(deletedSessionId);
 });
 

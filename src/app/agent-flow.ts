@@ -53,6 +53,7 @@ import {
   loadModelCache,
   saveModelCache,
 } from "../storage/model-cache.js";
+import { deleteSessionAttachments } from "../storage/attachments.js";
 import {
   appendSessionEvent,
   deleteSessionEvents,
@@ -433,6 +434,10 @@ export async function runAgentFlow(
       await deleteSession(context.environment.storageDirectory, commandInput.sessionId);
       selectionInteractionsBySessionId.delete(commandInput.sessionId);
       if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
+      await deleteSessionAttachments(
+        context.environment.storageDirectory,
+        commandInput.sessionId,
+      );
       status = "Session deleted.";
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();

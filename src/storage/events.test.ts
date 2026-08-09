@@ -4,12 +4,95 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
+import type { SessionAttachmentRef } from "./attachments.js";
+
 import {
   appendSessionEvent,
   deleteSessionEvents,
   loadSessionEvents,
   SessionEventsCorruptionError,
 } from "./events.js";
+
+const imageRef: SessionAttachmentRef = {
+  id: "attachment-image",
+  kind: "image",
+  fileName: "reference.png",
+  mediaType: "image/png",
+  byteLength: 1024,
+  sha256: "a".repeat(64),
+};
+
+test("event attachments persist strict immutable references only on user events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const event = await appendSessionEvent(dir, "session-attachments", {
+    kind: "user",
+    content: "Review this image",
+    attachments: [imageRef],
+  });
+
+  assert.deepEqual(event.attachments, [imageRef]);
+  assert.notEqual(event.attachments?.[0], imageRef);
+  assert.deepEqual((await loadSessionEvents(dir, "session-attachments"))[0], event);
+
+  await assert.rejects(
+    appendSessionEvent(dir, "session-attachments", {
+      kind: "assistant",
+      content: "not allowed",
+      attachments: [imageRef],
+    }),
+    /only user events/i,
+  );
+});
+
+test("event attachment limits reject duplicate, oversized, and malformed refs", async () => {
+  const sessionId = `memory-event-attachments-${Date.now()}`;
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "duplicates",
+      attachments: [imageRef, imageRef],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "too many",
+      attachments: Array.from({ length: 9 }, (_, index) => ({
+        ...imageRef,
+        id: `attachment-${index}`,
+      })),
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "too large",
+      attachments: [
+        { ...imageRef, id: "attachment-a", byteLength: 11 * 1024 * 1024 },
+        { ...imageRef, id: "attachment-b", byteLength: 10 * 1024 * 1024 },
+      ],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "unknown field",
+      attachments: [{ ...imageRef, path: "/secret/image.png" } as never],
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, sessionId, {
+      kind: "user",
+      content: "invalid digest",
+      attachments: [{ ...imageRef, sha256: "A".repeat(64) }],
+    }),
+    /invalid/i,
+  );
+});
 
 test("appendSessionEvent stores ordered user/tool_call/tool_result events", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));

@@ -1,6 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import type {
+  AttachmentMediaType,
+  SessionAttachmentRef,
+} from "./attachments.js";
+
 import {
   createStorageId,
   hasUniqueStorageIds,
@@ -36,6 +41,7 @@ export interface SessionEventInput {
   content: string;
   name?: string;
   recovery?: SessionRecoveryLedger;
+  attachments?: SessionAttachmentRef[];
 }
 
 export interface SessionEvent extends SessionEventInput {
@@ -61,10 +67,16 @@ export async function appendSessionEvent(
   sessionId: string,
   input: SessionEventInput,
 ): Promise<SessionEvent> {
+  if (input.attachments !== undefined && input.kind !== "user") {
+    throw new TypeError("Only user events may contain Session attachments.");
+  }
   const event: SessionEvent = {
     id: createStorageId("event"),
     createdAt: new Date().toISOString(),
     ...input,
+    ...(input.attachments === undefined
+      ? {}
+      : { attachments: input.attachments.map((attachment) => ({ ...attachment })) }),
   };
   if (!isSessionEvent(event)) {
     throw new TypeError("Session event input is invalid.");
@@ -150,7 +162,15 @@ function isSessionEvent(value: unknown): value is SessionEvent {
   }
   const record = value as Record<string, unknown>;
   return (
-    hasOnlyKeys(record, ["id", "createdAt", "kind", "content", "name", "recovery"]) &&
+    hasOnlyKeys(record, [
+      "id",
+      "createdAt",
+      "kind",
+      "content",
+      "name",
+      "recovery",
+      "attachments",
+    ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
     isSessionEventKind(record.kind) &&
@@ -158,8 +178,76 @@ function isSessionEvent(value: unknown): value is SessionEvent {
     (record.name === undefined || typeof record.name === "string") &&
     (record.recovery === undefined || (
       record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)
+    )) &&
+    (record.attachments === undefined || (
+      record.kind === "user" && isSessionAttachmentRefs(record.attachments)
     ))
   );
+}
+
+function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > 8 ||
+    !value.every(isSessionAttachmentRef)
+  ) {
+    return false;
+  }
+  const ids = new Set(value.map((attachment) => attachment.id));
+  return ids.size === value.length &&
+    value.reduce((total, attachment) => total + attachment.byteLength, 0) <=
+      20 * 1024 * 1024;
+}
+
+function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return hasOnlyKeys(record, [
+    "id",
+    "kind",
+    "fileName",
+    "mediaType",
+    "byteLength",
+    "sha256",
+  ]) &&
+    Object.keys(record).length === 6 &&
+    isSafeStorageId(record.id) &&
+    (record.kind === "image" || record.kind === "document" || record.kind === "audio") &&
+    typeof record.fileName === "string" &&
+    record.fileName.length > 0 &&
+    record.fileName.length <= 160 &&
+    isAttachmentMediaType(record.mediaType) &&
+    attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
+    Number.isInteger(record.byteLength) &&
+    (record.byteLength as number) > 0 &&
+    (record.byteLength as number) <= 20 * 1024 * 1024 &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.sha256);
+}
+
+function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
+  return value === "image/png" ||
+    value === "image/jpeg" ||
+    value === "image/webp" ||
+    value === "application/pdf" ||
+    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    value === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    value === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    value === "audio/wav" ||
+    value === "audio/mpeg";
+}
+
+function attachmentKindMatchesMediaType(
+  kind: "image" | "document" | "audio",
+  mediaType: AttachmentMediaType,
+): boolean {
+  if (kind === "image") return mediaType.startsWith("image/");
+  if (kind === "audio") return mediaType.startsWith("audio/");
+  return mediaType === "application/pdf" ||
+    mediaType.startsWith("application/vnd.openxmlformats-officedocument.");
 }
 
 function isSessionRecoveryLedger(value: unknown): value is SessionRecoveryLedger {
