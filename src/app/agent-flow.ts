@@ -53,7 +53,19 @@ import {
   loadModelCache,
   saveModelCache,
 } from "../storage/model-cache.js";
-import { deleteSessionAttachments } from "../storage/attachments.js";
+import {
+  AttachmentNotFoundError,
+  AttachmentTooLargeError,
+  deleteSessionAttachment,
+  deleteSessionAttachments,
+  listSessionAttachmentDirectoryIds,
+  listSessionAttachments,
+  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
+  saveSessionAttachment,
+  sessionAttachmentRefFromStored,
+  UnsupportedAttachmentError,
+} from "../storage/attachments.js";
 import {
   appendSessionEvent,
   deleteSessionEvents,
@@ -90,12 +102,23 @@ import {
 } from "./error-routing.js";
 import {
   ChatBridgeCommandOutcomeUnknownError,
+  ChatBridgeAttachmentValidationError,
+  ChatBridgeConflictError,
+  ChatBridgePayloadTooLargeError,
   ChatBridgePromptPersistenceUnknownError,
+  ChatBridgeResourceNotFoundError,
   createChatBridge,
   type ChatBridgeCommandInput,
+  type ChatBridgeAttachmentDeleteInput,
+  type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
   type ChatBridgeStream,
 } from "./chat-bridge.js";
+import {
+  pendingSessionAttachments,
+  resolveConversationHistory,
+  resolveCurrentAttachmentParts,
+} from "./attachment-context.js";
 import {
   capabilitiesForProfilePreview,
   requestModelTurn,
@@ -104,7 +127,6 @@ import {
 } from "./model-request.js";
 import {
   activeRecoveryLedgerFromEvents,
-  conversationHistoryFromEvents,
   getOrCreateDefaultSession,
   previousSessionsForProject,
   projectKeyForContext,
@@ -113,9 +135,11 @@ import {
   sessionTitleForPrompt,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
+import { SessionMutationFence } from "./session-mutation-fence.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
+const sessionMutationFence = new SessionMutationFence();
 
 export interface AgentFlowDependencies {
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
@@ -150,6 +174,14 @@ export async function runAgentFlow(
   >();
   let bindInvocationSelectionToNextSession = Boolean(
     interaction.selectionContext,
+  );
+  const pendingAttachmentCleanup = new Set<string>();
+  const withSessionMutation = <T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ) => sessionMutationFence.run(
+    JSON.stringify([context.environment.storageDirectory ?? null, sessionId]),
+    operation,
   );
 
   const resolveSessionInteraction = (
@@ -218,6 +250,7 @@ export async function runAgentFlow(
   };
 
   const buildState = async (previewProfile?: DraftProfile) => {
+    await retryPendingAttachmentCleanup();
     const settings = await loadAgentSettings(context.environment.storageDirectory);
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
@@ -249,6 +282,13 @@ export async function runAgentFlow(
         context.environment.storageDirectory,
         activeSession.id,
       );
+      const pendingAttachments = pendingSessionAttachments(
+        await listSessionAttachments(
+          context.environment.storageDirectory,
+          activeSession.id,
+        ),
+        events,
+      ).map(sessionAttachmentRefFromStored);
       if (activeSessionId !== activeSession.id) continue;
       const activeInteraction = resolveSessionInteraction(activeSession);
       return {
@@ -264,6 +304,7 @@ export async function runAgentFlow(
         archivedSessions,
         activeSessionId: activeSession.id,
         events,
+        pendingAttachments,
         capabilities,
         availableModels: modelProfile
           ? resolveDiscoveredModels(modelProfile, models)
@@ -425,25 +466,39 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "delete_session") {
-      if (!(await sessionExists(commandInput.sessionId))) {
+      let existed = false;
+      await withSessionMutation(commandInput.sessionId, async () => {
+        existed = await sessionExists(commandInput.sessionId);
+        throwIfAborted(signal);
+        if (existed) {
+          await deleteSessionEvents(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+          );
+          await deleteSession(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+          );
+          selectionInteractionsBySessionId.delete(commandInput.sessionId);
+          if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
+        }
+        try {
+          await deleteSessionAttachments(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+          );
+          pendingAttachmentCleanup.delete(commandInput.sessionId);
+        } catch (cause) {
+          pendingAttachmentCleanup.add(commandInput.sessionId);
+          throw new ChatBridgeCommandOutcomeUnknownError(
+            "The Session was deleted, but attachment cleanup could not be confirmed.",
+            { cause },
+          );
+        }
+      });
+      if (!existed) {
         status = "That Session no longer exists.";
         return buildState();
-      }
-      throwIfAborted(signal);
-      await deleteSessionEvents(context.environment.storageDirectory, commandInput.sessionId);
-      await deleteSession(context.environment.storageDirectory, commandInput.sessionId);
-      selectionInteractionsBySessionId.delete(commandInput.sessionId);
-      if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
-      try {
-        await deleteSessionAttachments(
-          context.environment.storageDirectory,
-          commandInput.sessionId,
-        );
-      } catch (cause) {
-        throw new ChatBridgeCommandOutcomeUnknownError(
-          "The Session was deleted, but attachment cleanup could not be confirmed.",
-          { cause },
-        );
       }
       status = "Session deleted.";
       openSettingsOnLoad = false;
@@ -533,6 +588,155 @@ export async function runAgentFlow(
       (session) => session.id === sessionId,
     );
 
+  async function retryPendingAttachmentCleanup(): Promise<void> {
+    for (const sessionId of [...pendingAttachmentCleanup]) {
+      await withSessionMutation(sessionId, async () => {
+        if (await sessionExists(sessionId)) {
+          pendingAttachmentCleanup.delete(sessionId);
+          return;
+        }
+        await deleteSessionAttachments(
+          context.environment.storageDirectory,
+          sessionId,
+        );
+        pendingAttachmentCleanup.delete(sessionId);
+      });
+    }
+  }
+
+  async function reconcileStartupAttachmentOrphans(): Promise<void> {
+    const directoryIds = await listSessionAttachmentDirectoryIds(
+      context.environment.storageDirectory,
+    );
+    for (const sessionId of directoryIds) {
+      await withSessionMutation(sessionId, async () => {
+        if (await sessionExists(sessionId)) return;
+        await deleteSessionAttachments(
+          context.environment.storageDirectory,
+          sessionId,
+        );
+      });
+    }
+  }
+
+  const attachmentSession = async (sessionId: string) => {
+    const session = (await listSessions(
+      context.environment.storageDirectory,
+      projectKey,
+    )).find((entry) => entry.id === sessionId && !entry.archivedAt);
+    if (!session) {
+      throw new ChatBridgeResourceNotFoundError(
+        "That Session is not available for attachments in this Live Set.",
+      );
+    }
+    return session;
+  };
+
+  const buildStateAfterAttachmentMutation = async () => {
+    try {
+      return await buildState();
+    } catch (cause) {
+      throw new ChatBridgeCommandOutcomeUnknownError(
+        "Attachment storage changed, but the resulting Live Smith state could not be confirmed.",
+        { cause },
+      );
+    }
+  };
+
+  const handleAttachmentUpload = async (
+    input: ChatBridgeAttachmentInput,
+    signal: AbortSignal,
+  ) => {
+    await withSessionMutation(input.sessionId, async () => {
+      throwIfAborted(signal);
+      await attachmentSession(input.sessionId);
+      const events = await loadSessionEvents(
+        context.environment.storageDirectory,
+        input.sessionId,
+      );
+      const pending = pendingSessionAttachments(
+        await listSessionAttachments(
+          context.environment.storageDirectory,
+          input.sessionId,
+        ),
+        events,
+      );
+      const pendingBytes = pending.reduce(
+        (total, attachment) => total + attachment.byteLength,
+        0,
+      );
+      if (
+        pending.length >= MAX_PENDING_SESSION_ATTACHMENT_COUNT ||
+        pendingBytes + input.bytes.byteLength > MAX_PENDING_SESSION_ATTACHMENT_BYTES
+      ) {
+        throw new ChatBridgePayloadTooLargeError(
+          "Pending images exceed the per-Session attachment limit.",
+        );
+      }
+      throwIfAborted(signal);
+      try {
+        await saveSessionAttachment(
+          context.environment.storageDirectory,
+          input.sessionId,
+          { fileName: input.fileName, bytes: input.bytes },
+        );
+      } catch (error) {
+        if (error instanceof AttachmentTooLargeError) {
+          throw new ChatBridgePayloadTooLargeError(error.message);
+        }
+        if (error instanceof UnsupportedAttachmentError) {
+          throw new ChatBridgeAttachmentValidationError(error.message);
+        }
+        throw error;
+      }
+    });
+    return buildStateAfterAttachmentMutation();
+  };
+
+  const handleAttachmentDelete = async (
+    input: ChatBridgeAttachmentDeleteInput,
+    signal: AbortSignal,
+  ) => {
+    await withSessionMutation(input.sessionId, async () => {
+      throwIfAborted(signal);
+      await attachmentSession(input.sessionId);
+      const events = await loadSessionEvents(
+        context.environment.storageDirectory,
+        input.sessionId,
+      );
+      if (events.some((event) =>
+        event.attachments?.some((attachment) => attachment.id === input.attachmentId)
+      )) {
+        throw new ChatBridgeConflictError(
+          "An attachment already referenced by a user event cannot be removed.",
+        );
+      }
+      const exists = (await listSessionAttachments(
+        context.environment.storageDirectory,
+        input.sessionId,
+      )).some((attachment) => attachment.id === input.attachmentId);
+      if (!exists) {
+        throw new ChatBridgeResourceNotFoundError(
+          "The requested attachment does not exist in this Session.",
+        );
+      }
+      throwIfAborted(signal);
+      try {
+        await deleteSessionAttachment(
+          context.environment.storageDirectory,
+          input.sessionId,
+          input.attachmentId,
+        );
+      } catch (error) {
+        if (error instanceof AttachmentNotFoundError) {
+          throw new ChatBridgeResourceNotFoundError(error.message);
+        }
+        throw error;
+      }
+    });
+    return buildStateAfterAttachmentMutation();
+  };
+
   const handleSend = async (
     sendInput: ChatBridgeSendInput,
     stream: ChatBridgeStream,
@@ -587,6 +791,8 @@ export async function runAgentFlow(
           onSessionEvent: (event) => stream.sessionEvent(event),
           withActionExecutionLock: (operation) =>
             liveMutationQueue.run(signal, operation),
+          withSessionMutationLock: (sessionId, operation) =>
+            withSessionMutation(sessionId, operation),
           confirmActions: (plan) => decidePlanApproval(
             context.environment.storageDirectory,
             plan,
@@ -606,11 +812,14 @@ export async function runAgentFlow(
 
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
+  await reconcileStartupAttachmentOrphans();
   const bridge = await createChatBridge({
     buildState,
     renderHtml,
     handleCommand,
     handleSend,
+    handleAttachmentUpload,
+    handleAttachmentDelete,
   });
 
   try {
@@ -660,41 +869,76 @@ export async function handleAgentRequest(
     projectKey,
     sessionId,
   );
-  const priorEvents = await loadSessionEvents(
-    context.environment.storageDirectory,
-    session.id,
-  );
-  const history = conversationHistoryFromEvents(priorEvents);
-  const recoveryContext = recoveryContextFromEvents(priorEvents);
-  const initialRecoveryState = activeRecoveryLedgerFromEvents(priorEvents);
+  const prepareRequest = async () => {
+    const priorEvents = await loadSessionEvents(
+      context.environment.storageDirectory,
+      session.id,
+    );
+    const currentAttachments = pendingSessionAttachments(
+      await listSessionAttachments(
+        context.environment.storageDirectory,
+        session.id,
+      ),
+      priorEvents,
+    );
+    const attachmentRefs = currentAttachments.map(sessionAttachmentRefFromStored);
+    const attachmentParts = await resolveCurrentAttachmentParts({
+      storageDirectory: context.environment.storageDirectory,
+      sessionId: session.id,
+      refs: attachmentRefs,
+      capabilities: runtimeProfile.capabilities,
+    });
+    const history = await resolveConversationHistory({
+      storageDirectory: context.environment.storageDirectory,
+      sessionId: session.id,
+      events: priorEvents,
+      currentAttachmentBytes: attachmentRefs.reduce(
+        (total, attachment) => total + attachment.byteLength,
+        0,
+      ),
+      currentAttachmentCount: attachmentRefs.length,
+      capabilities: runtimeProfile.capabilities,
+    });
+    let userEvent: SessionEvent;
+    try {
+      userEvent = await appendUserEvent(
+        context.environment.storageDirectory,
+        session.id,
+        {
+          kind: "user",
+          content: prompt,
+          ...(attachmentRefs.length ? { attachments: attachmentRefs } : {}),
+        },
+      );
+    } catch (error) {
+      if (isStorageCommitOutcomeUnknownError(error)) {
+        throw new ChatBridgePromptPersistenceUnknownError(
+          "Prompt storage commit could not be confirmed.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    return {
+      attachmentParts,
+      history,
+      initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
+      recoveryContext: recoveryContextFromEvents(priorEvents),
+      userEvent,
+    };
+  };
+  const prepared = callbacks.withSessionMutationLock
+    ? await callbacks.withSessionMutationLock(session.id, prepareRequest)
+    : await prepareRequest();
+  await callbacks.onSessionEvent(prepared.userEvent);
   if (!session.title.trim()) {
     await updateSession(context.environment.storageDirectory, session.id, {
       title: sessionTitleForPrompt(prompt, session.scope.label),
     });
   }
-  const requestLiveContext = recoveryContext
-    ? `${interaction.summary}\n\n${recoveryContext}`
+  const requestLiveContext = prepared.recoveryContext
+    ? `${interaction.summary}\n\n${prepared.recoveryContext}`
     : interaction.summary;
-  let userEvent: SessionEvent;
-  try {
-    userEvent = await appendUserEvent(
-      context.environment.storageDirectory,
-      session.id,
-      {
-        kind: "user",
-        content: prompt,
-      },
-    );
-  } catch (error) {
-    if (isStorageCommitOutcomeUnknownError(error)) {
-      throw new ChatBridgePromptPersistenceUnknownError(
-        "Prompt storage commit could not be confirmed.",
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-  await callbacks.onSessionEvent(userEvent);
   try {
     await callbacks.onProgress("Starting agent loop");
     const loopResult = await runAgentLoop({
@@ -702,7 +946,9 @@ export async function handleAgentRequest(
       maxIterations: 12,
       maxToolCallsPerTurn: 32,
       maxHostFailuresWithoutMutation: 6,
-      ...(initialRecoveryState ? { initialRecoveryState } : {}),
+      ...(prepared.initialRecoveryState
+        ? { initialRecoveryState: prepared.initialRecoveryState }
+        : {}),
       signal: callbacks.signal,
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
@@ -710,7 +956,8 @@ export async function handleAgentRequest(
           prompt,
           liveContext: requestLiveContext,
           runtimeProfile,
-          history,
+          history: prepared.history,
+          attachmentParts: prepared.attachmentParts,
           agentMessages: input.messages,
           tools: liveSmithTools(),
           signal: callbacks.signal,
@@ -965,6 +1212,10 @@ interface AgentRequestCallbacks {
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;
+  withSessionMutationLock?: <T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ) => Promise<T>;
 }
 
 function scopeKey(scope: LiveInteractionContext["scope"]): string {

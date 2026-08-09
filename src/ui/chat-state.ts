@@ -6,6 +6,7 @@ import type {
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
 import type { SessionEvent } from "../storage/events.js";
+import type { SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 
@@ -21,6 +22,7 @@ export interface ChatDialogState {
   archivedSessions: AgentSession[];
   activeSessionId: string;
   events: SessionEvent[];
+  pendingAttachments: SessionAttachmentRef[];
   capabilities: ModelCapabilities;
   availableModels: ModelInfo[];
   modelStateSource: ChatModelStateSource | null;

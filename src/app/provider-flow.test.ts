@@ -14,10 +14,16 @@ import { agentSystemInstructions } from "../agent/system-instructions.js";
 import { resolveModelCapabilities } from "../model/capabilities.js";
 import type {
   ConversationMessage,
+  ModelInputPart,
   ModelConversationMessage,
 } from "../model/contracts.js";
 import type { ModelTool } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
+import {
+  listSessionAttachments,
+  saveSessionAttachment,
+  sessionAttachmentRefFromStored,
+} from "../storage/attachments.js";
 import {
   appendSessionEvent,
   loadSessionEvents,
@@ -34,6 +40,10 @@ import {
   handleAgentRequest,
   preflightAgentPlan,
 } from "./agent-flow.js";
+import {
+  AttachmentInputCapabilityError,
+  pendingSessionAttachments,
+} from "./attachment-context.js";
 import { ChatBridgePromptPersistenceUnknownError } from "./chat-bridge.js";
 import {
   buildModelRequest,
@@ -59,6 +69,14 @@ function session(title: string, projectKey = "p1"): AgentSession {
     createdAt: "2026-06-16T00:00:00.000Z",
     updatedAt: "2026-06-16T00:00:00.000Z",
   };
+}
+
+function attachmentPng(seed: number): Uint8Array {
+  return new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+    0, 0, 0, 1, 0, 0, 0, 1, seed,
+  ]);
 }
 
 test("buildModelRequest carries a complete profile, capabilities, and agent messages", () => {
@@ -726,6 +744,225 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
   assert.match(liveContext, /Completed: Inserted Auto Filter/);
 });
 
+test("handleAgentRequest sends current and historical images then consumes current refs", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-multimodal-flow-"));
+  const existing = await createSession(dir, {
+    title: "Image review",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  });
+  const historical = await saveSessionAttachment(dir, existing.id, {
+    fileName: "historical.png",
+    bytes: attachmentPng(1),
+  });
+  await appendSessionEvent(dir, existing.id, {
+    kind: "user",
+    content: "Earlier image",
+    attachments: [sessionAttachmentRefFromStored(historical)],
+  });
+  await appendSessionEvent(dir, existing.id, {
+    kind: "assistant",
+    content: "Earlier response",
+  });
+  const current = await saveSessionAttachment(dir, existing.id, {
+    fileName: "current.png",
+    bytes: attachmentPng(2),
+  });
+  const profile: SavedProfile = {
+    id: "provider-images",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "secret-provider-key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-image-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: { capabilityOverrides: { inputs: { image: true } } },
+  };
+  let captured: {
+    history: ConversationMessage[];
+    attachmentParts?: ModelInputPart[];
+  } | undefined;
+
+  await handleAgentRequest(
+    { environment: { storageDirectory: dir } } as never,
+    {
+      defaultPrompt: "Review",
+      summary: "Track: Bass",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    },
+    "Review the current image",
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    existing.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async (request) => {
+      captured = request;
+      return { content: "Done.", toolCalls: [] };
+    },
+  );
+
+  assert.equal(captured?.attachmentParts?.length, 1);
+  assert.deepEqual(
+    captured?.attachmentParts?.map((part) => part.type),
+    ["image"],
+  );
+  assert.deepEqual(captured?.history.map((message) => message.role), ["user", "assistant"]);
+  assert.equal(
+    captured?.history[0]?.role === "user" &&
+      captured.history[0].content.some((part) => part.type === "image"),
+    true,
+  );
+  const events = await loadSessionEvents(dir, existing.id);
+  const latestUser = [...events].reverse().find((event) => event.kind === "user");
+  assert.deepEqual(latestUser?.attachments, [sessionAttachmentRefFromStored(current)]);
+  assert.deepEqual(
+    pendingSessionAttachments(
+      await listSessionAttachments(dir, existing.id),
+      events,
+    ),
+    [],
+  );
+});
+
+test("attachment capability and prompt persistence failures leave images pending", async () => {
+  for (const failure of ["capability", "persistence"] as const) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), `live-smith-pending-${failure}-`));
+    const existing = await createSession(dir, {
+      title: "Pending image",
+      projectKey: "project-a",
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    });
+    await saveSessionAttachment(dir, existing.id, {
+      fileName: "pending.png",
+      bytes: attachmentPng(1),
+    });
+    const profile: SavedProfile = {
+      id: `provider-${failure}`,
+      name: "Provider",
+      apiFamily: "openai",
+      apiMode: "responses",
+      apiKey: "key",
+      baseUrl: "https://example.test/v1",
+      model: "custom-model",
+      parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+      advanced: failure === "capability"
+        ? {}
+        : { capabilityOverrides: { inputs: { image: true } } },
+    };
+
+    await assert.rejects(
+      handleAgentRequest(
+        { environment: { storageDirectory: dir } } as never,
+        {
+          defaultPrompt: "Review",
+          summary: "Track: Bass",
+          target: {},
+          scope: { kind: "track", identity: "track-1", label: "Bass" },
+        },
+        "Review",
+        { profile, capabilities: resolveModelCapabilities(profile) },
+        "project-a",
+        existing.id,
+        {
+          signal: new AbortController().signal,
+          onDelta: () => {},
+          onProgress: () => {},
+          onSessionEvent: () => {},
+          confirmActions: async () => true,
+        },
+        async () => assert.fail("model request must not start"),
+        failure === "persistence"
+          ? async () => {
+              throw new Error("event write failed");
+            }
+          : appendSessionEvent,
+      ),
+      failure === "capability"
+        ? (error: unknown) => error instanceof AttachmentInputCapabilityError
+        : /event write failed/,
+    );
+
+    const events = await loadSessionEvents(dir, existing.id);
+    assert.equal(events.some((event) => event.kind === "user"), false);
+    assert.equal(
+      pendingSessionAttachments(
+        await listSessionAttachments(dir, existing.id),
+        events,
+      ).length,
+      1,
+    );
+  }
+});
+
+test("provider failure keeps already persisted image refs consumed", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-consumed-failure-"));
+  const existing = await createSession(dir, {
+    title: "Image failure",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+  });
+  const current = await saveSessionAttachment(dir, existing.id, {
+    fileName: "consumed.png",
+    bytes: attachmentPng(1),
+  });
+  const profile: SavedProfile = {
+    id: "provider-image-failure",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-image-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: { capabilityOverrides: { inputs: { image: true } } },
+  };
+
+  await assert.rejects(
+    handleAgentRequest(
+      { environment: { storageDirectory: dir } } as never,
+      {
+        defaultPrompt: "Review",
+        summary: "Track: Bass",
+        target: {},
+        scope: { kind: "track", identity: "track-1", label: "Bass" },
+      },
+      "Review",
+      { profile, capabilities: resolveModelCapabilities(profile) },
+      "project-a",
+      existing.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => true,
+      },
+      async () => {
+        throw new Error("provider failed");
+      },
+    ),
+    /provider failed/,
+  );
+
+  const events = await loadSessionEvents(dir, existing.id);
+  assert.deepEqual(
+    events.find((event) => event.kind === "user")?.attachments,
+    [sessionAttachmentRefFromStored(current)],
+  );
+  assert.deepEqual(
+    pendingSessionAttachments(await listSessionAttachments(dir, existing.id), events),
+    [],
+  );
+});
+
 test("getOrCreateDefaultSession rejects a preferred session from another project", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-flow-"));
   const foreign = await createSession(dir, {
@@ -1030,6 +1267,8 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
       error instanceof ChatBridgePromptPersistenceUnknownError &&
       error.cause === commitError,
   );
+  const [untitled] = await listSessions(dir, "project-a");
+  assert.equal(untitled?.title, "");
 });
 
 test("a partial composite creation failure remains explicitly unfinished", async () => {

@@ -59,6 +59,7 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     archivedSessions: [],
     activeSessionId: "",
     events: [],
+    pendingAttachments: [],
     capabilities: {
       tools: true,
       streaming: false,

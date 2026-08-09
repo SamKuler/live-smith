@@ -223,6 +223,48 @@ test("historical image corruption degrades to an unavailable marker", async () =
   );
 });
 
+test("historical duplicate IDs can emit only the newest attachment occurrence", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-history-duplicate-"));
+  const stored = await saveSessionAttachment(directory, "session-history-duplicate", {
+    fileName: "duplicate.png",
+    bytes: pngBytes(1),
+  });
+  const attachment = sessionAttachmentRefFromStored(stored);
+  const events: SessionEvent[] = [{
+    id: "event-older-duplicate",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    kind: "user",
+    content: "older",
+    attachments: [attachment],
+  }, {
+    id: "event-newer-duplicate",
+    createdAt: "2026-01-01T00:01:00.000Z",
+    kind: "user",
+    content: "newer",
+    attachments: [attachment],
+  }];
+
+  const history = await resolveConversationHistory({
+    storageDirectory: directory,
+    sessionId: "session-history-duplicate",
+    events,
+    currentAttachmentBytes: 0,
+    currentAttachmentCount: 0,
+    capabilities: imageCapabilities(),
+  });
+
+  assert.equal(
+    history[0]?.role === "user" &&
+      history[0].content.some((part) => part.type === "image"),
+    false,
+  );
+  assert.equal(
+    history[1]?.role === "user" &&
+      history[1].content.some((part) => part.type === "image"),
+    true,
+  );
+});
+
 test("pending attachment selection excludes every consumed event reference", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-pending-"));
   const first = await saveSessionAttachment(directory, "session-pending", {

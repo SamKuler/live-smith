@@ -168,6 +168,7 @@ function stateFixture(): ChatDialogState {
     archivedSessions: [],
     activeSessionId: "session-1",
     events: [],
+    pendingAttachments: [],
     capabilities: capabilities(),
     availableModels: [],
     modelStateSource: modelStateSourceFixture(profileFixture()),

@@ -8,6 +8,8 @@ import {
 import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 
+import { MAX_IMAGE_ATTACHMENT_BYTES } from "../storage/attachments.js";
+import { requireSafeStorageId } from "../storage/id.js";
 import type { SessionEvent } from "../storage/events.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import {
@@ -31,10 +33,24 @@ const sensitiveResponseHeaders = {
   "X-Content-Type-Options": "nosniff",
 } as const;
 const maxRequestBodyBytes = 1024 * 1024;
+const maxAttachmentFileNameUtf8Bytes = 160;
+const maxAttachmentQueryUtf8Bytes = 2048;
 
 export interface ChatBridgeSendInput {
   prompt: string;
   sessionId: string;
+}
+
+export interface ChatBridgeAttachmentInput {
+  sessionId: string;
+  fileName: string;
+  claimedMediaType?: string;
+  bytes: Uint8Array;
+}
+
+export interface ChatBridgeAttachmentDeleteInput {
+  sessionId: string;
+  attachmentId: string;
 }
 
 export type PromptPersistence = "persisted" | "not_persisted" | "unknown";
@@ -50,6 +66,42 @@ export class ChatBridgeCommandOutcomeUnknownError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ChatBridgeCommandOutcomeUnknownError";
+  }
+}
+
+export class ChatBridgeResourceNotFoundError extends Error {
+  readonly status = 404;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgeResourceNotFoundError";
+  }
+}
+
+export class ChatBridgeAttachmentValidationError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgeAttachmentValidationError";
+  }
+}
+
+export class ChatBridgeConflictError extends Error {
+  readonly status = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgeConflictError";
+  }
+}
+
+export class ChatBridgePayloadTooLargeError extends Error {
+  readonly status = 413;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgePayloadTooLargeError";
   }
 }
 
@@ -103,6 +155,14 @@ interface ChatBridgeOptions {
     stream: ChatBridgeStream,
     signal: AbortSignal,
   ): Promise<void>;
+  handleAttachmentUpload?(
+    input: ChatBridgeAttachmentInput,
+    signal: AbortSignal,
+  ): Promise<ChatDialogState>;
+  handleAttachmentDelete?(
+    input: ChatBridgeAttachmentDeleteInput,
+    signal: AbortSignal,
+  ): Promise<ChatDialogState>;
 }
 
 interface PendingConfirmation {
@@ -150,6 +210,8 @@ export async function createChatBridge(
   const readOnlyResponses = new Set<ServerResponse>();
   const activeSendsById = new Map<string, ActiveSend>();
   const activeSendsBySession = new Map<string, ActiveSend>();
+  const activeAttachmentTerminals = new Map<string, Promise<void>>();
+  const activeAttachmentControllers = new Map<string, AbortController>();
   const sessionActivities = new Map<string, ChatSessionActivity>();
   let activeCommandAbort: AbortController | null = null;
   let activeCommandTerminal: Promise<void> | null = null;
@@ -200,6 +262,29 @@ export async function createChatBridge(
       return await readJsonBody<T>(request);
     } finally {
       pendingRequestBodies.delete(request);
+    }
+  };
+
+  const readAttachmentRequestBody = async (
+    request: IncomingMessage,
+  ): Promise<Uint8Array> => {
+    pendingRequestBodies.add(request);
+    try {
+      return await readRawAttachmentBody(request);
+    } finally {
+      pendingRequestBodies.delete(request);
+    }
+  };
+
+  const waitForStateMutations = async () => {
+    for (;;) {
+      const command = activeCommandTerminal;
+      const attachments = [...activeAttachmentTerminals.values()];
+      if (!command && attachments.length === 0) return;
+      await Promise.all([
+        ...(command ? [command] : []),
+        ...attachments,
+      ]);
     }
   };
 
@@ -277,6 +362,7 @@ export async function createChatBridge(
     let sendId: string | undefined;
     let sendSessionId: string | undefined;
     let commandId: string | undefined;
+    let attachmentSessionId: string | undefined;
     let sendPromptPersistence: PromptPersistence | undefined;
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -317,7 +403,7 @@ export async function createChatBridge(
 
       if (request.method === "GET" && url.pathname === "/state") {
         readOnlyResponses.add(response);
-        while (activeCommandTerminal) await activeCommandTerminal;
+        await waitForStateMutations();
         if (closing || response.destroyed) return;
         sendJson(response, await buildBridgeState());
         return;
@@ -345,10 +431,73 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/attachments") {
+        if (!options.handleAttachmentUpload) {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        const query = parseAttachmentUploadQuery(request, url);
+        attachmentSessionId = query.sessionId;
+        if (
+          activeCommandTerminal ||
+          activeSendsBySession.has(query.sessionId) ||
+          activeAttachmentTerminals.has(query.sessionId)
+        ) {
+          sendJson(response, {
+            error: activeSendsBySession.has(query.sessionId)
+              ? "Stop this Session's active request before changing attachments."
+              : "Another Live Smith operation is already in progress for this Session.",
+          }, 409);
+          return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeAttachmentTerminals.set(query.sessionId, handlerTerminal);
+        const controller = createHostAbortController();
+        activeAttachmentControllers.set(query.sessionId, controller);
+        const bytes = await readAttachmentRequestBody(request);
+        throwIfBridgeAborted(controller.signal);
+        const state = stateWithActivities(await options.handleAttachmentUpload({
+          ...query,
+          bytes,
+        }, controller.signal));
+        sendJson(response, state, 201);
+        return;
+      }
+
+      if (request.method === "DELETE" && url.pathname.startsWith("/attachments/")) {
+        if (!options.handleAttachmentDelete) {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        const input = parseAttachmentDeleteQuery(request, url);
+        attachmentSessionId = input.sessionId;
+        if (
+          activeCommandTerminal ||
+          activeSendsBySession.has(input.sessionId) ||
+          activeAttachmentTerminals.has(input.sessionId)
+        ) {
+          sendJson(response, {
+            error: activeSendsBySession.has(input.sessionId)
+              ? "Stop this Session's active request before changing attachments."
+              : "Another Live Smith operation is already in progress for this Session.",
+          }, 409);
+          return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeAttachmentTerminals.set(input.sessionId, handlerTerminal);
+        const controller = createHostAbortController();
+        activeAttachmentControllers.set(input.sessionId, controller);
+        const state = stateWithActivities(
+          await options.handleAttachmentDelete(input, controller.signal),
+        );
+        sendJson(response, state);
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/command") {
         commandId = commandIdForRequest(request);
         response.setHeader("X-Live-Smith-Command-Id", commandId);
-        if (activeCommandTerminal) {
+        if (activeCommandTerminal || activeAttachmentTerminals.size > 0) {
           sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
           return;
         }
@@ -360,6 +509,10 @@ export async function createChatBridge(
           return;
         }
         if (activeCommandTerminal !== handlerTerminal) {
+          sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
+          return;
+        }
+        if (activeAttachmentTerminals.size > 0) {
           sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
           return;
         }
@@ -423,6 +576,13 @@ export async function createChatBridge(
         if (activeCommandTerminal) {
           sendJson(response, {
             error: "Another Live Smith operation is already in progress.",
+            promptPersistence: "not_persisted",
+          }, 409);
+          return;
+        }
+        if (activeAttachmentTerminals.has(input.sessionId)) {
+          sendJson(response, {
+            error: "This Session already has an attachment operation in progress.",
             promptPersistence: "not_persisted",
           }, 409);
           return;
@@ -544,7 +704,9 @@ export async function createChatBridge(
             ? "unknown"
             : sendPromptPersistence ?? "not_persisted"
         : undefined;
-      const commandOutcome = requestPath === "/command" &&
+      const attachmentMutation = requestPath === "/attachments" ||
+        requestPath.startsWith("/attachments/");
+      const commandOutcome = (requestPath === "/command" || attachmentMutation) &&
           (
             isStorageCommitOutcomeUnknownError(error) ||
             error instanceof ChatBridgeCommandOutcomeUnknownError
@@ -612,10 +774,22 @@ export async function createChatBridge(
         },
         field !== undefined || error instanceof ChatBridgeRequestValidationError
           ? 400
-          : 500,
+          : error instanceof ChatBridgeAttachmentValidationError ||
+              error instanceof ChatBridgeResourceNotFoundError ||
+              error instanceof ChatBridgeConflictError ||
+              error instanceof ChatBridgePayloadTooLargeError
+            ? error.status
+            : 500,
       );
     } finally {
       if (activeCommandTerminal === handlerTerminal) activeCommandTerminal = null;
+      if (
+        attachmentSessionId !== undefined &&
+        activeAttachmentTerminals.get(attachmentSessionId) === handlerTerminal
+      ) {
+        activeAttachmentTerminals.delete(attachmentSessionId);
+        activeAttachmentControllers.delete(attachmentSessionId);
+      }
       inFlightMutationHandlers.delete(handlerTerminal);
       readOnlyResponses.delete(response);
       resolveHandlerTerminal();
@@ -645,6 +819,9 @@ export async function createChatBridge(
       resolveAllConfirmations(false);
       for (const activeSend of activeSendsById.values()) {
         activeSend.controller.abort(new Error("Live Smith window closed."));
+      }
+      for (const controller of activeAttachmentControllers.values()) {
+        controller.abort(new Error("Live Smith window closed."));
       }
       activeCommandAbort?.abort(new Error("Live Smith window closed."));
       for (const response of pendingReads) response.destroy();
@@ -766,6 +943,229 @@ export async function readJsonBody<T>(
       { cause },
     );
   }
+}
+
+export function readRawAttachmentBody(
+  request: IncomingMessage,
+): Promise<Uint8Array> {
+  assertAttachmentContentType(request);
+  const declaredLength = attachmentContentLength(request);
+  if (declaredLength === 0) {
+    request.resume();
+    throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
+  }
+  if (declaredLength !== undefined && declaredLength > MAX_IMAGE_ATTACHMENT_BYTES) {
+    request.resume();
+    throw new ChatBridgePayloadTooLargeError(
+      `Image attachments may not exceed ${MAX_IMAGE_ATTACHMENT_BYTES} bytes.`,
+    );
+  }
+
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let actualLength = 0;
+    let ended = false;
+    let settled = false;
+
+    const cleanup = () => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("aborted", onAborted);
+      request.off("close", onClose);
+      request.off("error", onError);
+    };
+    const fail = (error: Error, drain = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (drain) request.resume();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      actualLength += buffer.byteLength;
+      if (actualLength > MAX_IMAGE_ATTACHMENT_BYTES) {
+        fail(new ChatBridgePayloadTooLargeError(
+          `Image attachments may not exceed ${MAX_IMAGE_ATTACHMENT_BYTES} bytes.`,
+        ), true);
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      ended = true;
+      if (settled) return;
+      if (actualLength === 0) {
+        fail(new ChatBridgeRequestValidationError("Attachment body must not be empty."));
+        return;
+      }
+      if (declaredLength !== undefined && declaredLength !== actualLength) {
+        fail(new ChatBridgeRequestValidationError(
+          "Attachment Content-Length does not match the received body.",
+        ));
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(new Uint8Array(Buffer.concat(chunks, actualLength)));
+    };
+    const onAborted = () => fail(new ChatBridgeRequestValidationError(
+      "Attachment upload ended before the complete body was received.",
+    ));
+    const onClose = () => {
+      if (!ended) onAborted();
+    };
+    const onError = () => fail(new ChatBridgeRequestValidationError(
+      "Attachment upload could not be read.",
+    ));
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("aborted", onAborted);
+    request.once("close", onClose);
+    request.once("error", onError);
+  });
+}
+
+function parseAttachmentUploadQuery(
+  request: IncomingMessage,
+  url: URL,
+): Omit<ChatBridgeAttachmentInput, "bytes"> {
+  assertAttachmentQuery(request, url, ["token", "sessionId", "fileName"]);
+  const sessionId = attachmentSessionId(url);
+  const fileName = singleAttachmentQueryValue(url, "fileName");
+  if (
+    !fileName.trim() ||
+    Buffer.byteLength(fileName, "utf8") > maxAttachmentFileNameUtf8Bytes
+  ) {
+    throw new ChatBridgeRequestValidationError(
+      `fileName must contain 1-${maxAttachmentFileNameUtf8Bytes} UTF-8 bytes.`,
+    );
+  }
+  const claimedMediaType = singleHeaderValue(
+    request,
+    "x-live-smith-file-type",
+    false,
+  );
+  if (claimedMediaType !== undefined && Buffer.byteLength(claimedMediaType, "utf8") > 128) {
+    throw new ChatBridgeRequestValidationError(
+      "X-Live-Smith-File-Type is too long.",
+    );
+  }
+  return {
+    sessionId,
+    fileName,
+    ...(claimedMediaType === undefined ? {} : { claimedMediaType }),
+  };
+}
+
+function parseAttachmentDeleteQuery(
+  request: IncomingMessage,
+  url: URL,
+): ChatBridgeAttachmentDeleteInput {
+  assertAttachmentQuery(request, url, ["token", "sessionId"]);
+  const encodedId = url.pathname.slice("/attachments/".length);
+  if (!encodedId || encodedId.includes("/")) {
+    throw new ChatBridgeRequestValidationError("Attachment ID is invalid.");
+  }
+  let attachmentId: string;
+  try {
+    attachmentId = decodeURIComponent(encodedId);
+    requireSafeStorageId(attachmentId, "Attachment ID");
+  } catch {
+    throw new ChatBridgeRequestValidationError("Attachment ID is invalid.");
+  }
+  return { sessionId: attachmentSessionId(url), attachmentId };
+}
+
+function assertAttachmentQuery(
+  request: IncomingMessage,
+  url: URL,
+  allowedKeys: readonly string[],
+): void {
+  if (Buffer.byteLength(request.url ?? "", "utf8") > maxAttachmentQueryUtf8Bytes) {
+    throw new ChatBridgeRequestValidationError("Attachment request query is too long.");
+  }
+  const allowed = new Set(allowedKeys);
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key)) {
+      throw new ChatBridgeRequestValidationError(
+        `Attachment request does not support query parameter ${key}.`,
+      );
+    }
+  }
+  for (const key of allowedKeys) {
+    if (url.searchParams.getAll(key).length !== 1) {
+      throw new ChatBridgeRequestValidationError(
+        `${key} must appear exactly once in the attachment request.`,
+      );
+    }
+  }
+}
+
+function attachmentSessionId(url: URL): string {
+  const sessionId = singleAttachmentQueryValue(url, "sessionId");
+  try {
+    return requireSafeStorageId(sessionId, "Session ID");
+  } catch {
+    throw new ChatBridgeRequestValidationError("Session ID is invalid.");
+  }
+}
+
+function singleAttachmentQueryValue(url: URL, key: string): string {
+  const values = url.searchParams.getAll(key);
+  if (values.length !== 1) {
+    throw new ChatBridgeRequestValidationError(
+      `${key} must appear exactly once in the attachment request.`,
+    );
+  }
+  return values[0]!;
+}
+
+function assertAttachmentContentType(request: IncomingMessage): void {
+  const contentType = singleHeaderValue(request, "content-type", true);
+  if (contentType?.split(";", 1)[0]?.trim().toLocaleLowerCase() !== "application/octet-stream") {
+    throw new ChatBridgeRequestValidationError(
+      "Attachment uploads require Content-Type application/octet-stream.",
+    );
+  }
+}
+
+function attachmentContentLength(request: IncomingMessage): number | undefined {
+  const raw = singleHeaderValue(request, "content-length", false);
+  if (raw === undefined) return undefined;
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) {
+    throw new ChatBridgeRequestValidationError(
+      "Attachment Content-Length must be a non-negative integer.",
+    );
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new ChatBridgePayloadTooLargeError(
+      `Image attachments may not exceed ${MAX_IMAGE_ATTACHMENT_BYTES} bytes.`,
+    );
+  }
+  return value;
+}
+
+function singleHeaderValue(
+  request: IncomingMessage,
+  name: string,
+  required: boolean,
+): string | undefined {
+  const raw = request.headers[name];
+  if (Array.isArray(raw)) {
+    throw new ChatBridgeRequestValidationError(`${name} must appear at most once.`);
+  }
+  if (raw === undefined && required) {
+    throw new ChatBridgeRequestValidationError(`${name} is required.`);
+  }
+  return raw;
+}
+
+function throwIfBridgeAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  throw "reason" in signal ? signal.reason : new Error("Operation was aborted.");
 }
 
 function parseSendInput(value: unknown): ChatBridgeSendInput {

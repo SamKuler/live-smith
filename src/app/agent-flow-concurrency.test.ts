@@ -14,11 +14,17 @@ import type { DiscoveredModelInfo } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
 import {
   listSessionAttachments,
+  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
   saveSessionAttachment,
 } from "../storage/attachments.js";
-import { loadSessionEvents } from "../storage/events.js";
+import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
-import { createSession, listSessions } from "../storage/sessions.js";
+import {
+  createSession,
+  listSessions,
+  setSessionArchived,
+} from "../storage/sessions.js";
 import { saveGlobalSettings, saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
@@ -329,7 +335,7 @@ test("session deletion removes attachments only after events and metadata", asyn
   assert.ok(deletedSessionId);
 });
 
-test("session deletion attachment cleanup failure leaves the Session deleted", {
+test("session deletion attachment cleanup failure is unknown and retried from state", {
   skip: process.platform === "win32",
 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-orphan-"));
@@ -366,15 +372,27 @@ test("session deletion attachment cleanup failure leaves the Session deleted", {
         assert.equal(response.status, 500);
         const body = await response.json() as {
           commandOutcome?: string;
+          reconciliationRequired?: boolean;
           state?: ChatDialogState;
         };
         assert.equal(body.commandOutcome, "unknown");
-        assert.ok(!body.state?.sessions.some(
-          (session) => session.id === deletedSessionId,
-        ));
+        assert.equal(body.reconciliationRequired, true);
+        assert.equal(body.state, undefined);
         assert.ok(!(await listSessions(directory)).some(
           (session) => session.id === deletedSessionId,
         ));
+
+        await fs.chmod(attachmentRoot, 0o700);
+        const reconciledResponse = await fetch(endpoint("/state"));
+        assert.equal(reconciledResponse.status, 200);
+        const reconciled = await reconciledResponse.json() as ChatDialogState;
+        assert.ok(!reconciled.sessions.some(
+          (session) => session.id === deletedSessionId,
+        ));
+        assert.deepEqual(
+          await listSessionAttachments(directory, deletedSessionId),
+          [],
+        );
       },
     },
   };
@@ -390,6 +408,243 @@ test("session deletion attachment cleanup failure leaves the Session deleted", {
     if (attachmentRoot) await fs.chmod(attachmentRoot, 0o700).catch(() => undefined);
   }
   assert.ok(deletedSessionId);
+});
+
+test("attachment routes enforce Session ownership, pending state, and immutable references", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-routes-"));
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token")!;
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${encodeURIComponent(token)}`;
+        const attachmentEndpoint = (sessionId: string, fileName: string) =>
+          `${chatUrl.origin}/attachments?token=${encodeURIComponent(token)}` +
+          `&sessionId=${encodeURIComponent(sessionId)}` +
+          `&fileName=${encodeURIComponent(fileName)}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        const sessionId = initial.activeSessionId;
+        const projectKey = initial.sessions[0]!.projectKey;
+
+        const invalid = await fetch(attachmentEndpoint(sessionId, "not-an-image.txt"), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: attachmentRequestBody(new Uint8Array([1, 2, 3])),
+        });
+        assert.equal(invalid.status, 400);
+
+        const firstUpload = await fetch(attachmentEndpoint(sessionId, "first.png"), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: attachmentRequestBody(sizedAttachmentPng(24)),
+        });
+        assert.equal(firstUpload.status, 201);
+        const firstState = await firstUpload.json() as ChatDialogState;
+        assert.equal(firstState.pendingAttachments.length, 1);
+        const first = firstState.pendingAttachments[0]!;
+
+        const secondUpload = await fetch(attachmentEndpoint(sessionId, "second.png"), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: attachmentRequestBody(sizedAttachmentPng(25)),
+        });
+        assert.equal(secondUpload.status, 201);
+        const secondState = await secondUpload.json() as ChatDialogState;
+        const second = secondState.pendingAttachments.find(
+          (attachment) => attachment.id !== first.id,
+        );
+        assert.ok(second);
+
+        const deleted = await fetch(
+          `${chatUrl.origin}/attachments/${encodeURIComponent(second.id)}` +
+            `?token=${encodeURIComponent(token)}` +
+            `&sessionId=${encodeURIComponent(sessionId)}`,
+          { method: "DELETE" },
+        );
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(
+          (await deleted.json() as ChatDialogState).pendingAttachments.map(
+            (attachment) => attachment.id,
+          ),
+          [first.id],
+        );
+
+        const foreign = await createSession(directory, {
+          title: "Foreign",
+          projectKey: "another-live-set",
+          scope: { kind: "track", identity: "foreign", label: "Foreign" },
+        });
+        const foreignUpload = await fetch(
+          attachmentEndpoint(foreign.id, "foreign.png"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: attachmentRequestBody(sizedAttachmentPng(24)),
+          },
+        );
+        assert.equal(foreignUpload.status, 404);
+
+        const archived = await createSession(directory, {
+          title: "Archived",
+          projectKey,
+          scope: { kind: "track", identity: "archived", label: "Archived" },
+        });
+        await setSessionArchived(directory, archived.id, true);
+        const archivedUpload = await fetch(
+          attachmentEndpoint(archived.id, "archived.png"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: attachmentRequestBody(sizedAttachmentPng(24)),
+          },
+        );
+        assert.equal(archivedUpload.status, 404);
+
+        await appendSessionEvent(directory, sessionId, {
+          kind: "user",
+          content: "Use the first image",
+          attachments: [first],
+        });
+        const referencedDelete = await fetch(
+          `${chatUrl.origin}/attachments/${encodeURIComponent(first.id)}` +
+            `?token=${encodeURIComponent(token)}` +
+            `&sessionId=${encodeURIComponent(sessionId)}`,
+          { method: "DELETE" },
+        );
+        assert.equal(referencedDelete.status, 409);
+
+        const removed = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId }),
+        });
+        assert.equal(removed.status, 200);
+        const removedUpload = await fetch(
+          attachmentEndpoint(sessionId, "removed.png"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: attachmentRequestBody(sizedAttachmentPng(24)),
+          },
+        );
+        assert.equal(removedUpload.status, 404);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, { renderHtml: () => "<html></html>" });
+});
+
+test("attachment upload accepts the exact pending byte and count limit then rejects one more", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-quota-"));
+  const perAttachmentBytes = MAX_PENDING_SESSION_ATTACHMENT_BYTES /
+    MAX_PENDING_SESSION_ATTACHMENT_COUNT;
+  assert.equal(Number.isInteger(perAttachmentBytes), true);
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token")!;
+        const initial = await (await fetch(
+          `${chatUrl.origin}/state?token=${encodeURIComponent(token)}`,
+        )).json() as ChatDialogState;
+        const endpoint = (fileName: string) =>
+          `${chatUrl.origin}/attachments?token=${encodeURIComponent(token)}` +
+          `&sessionId=${encodeURIComponent(initial.activeSessionId)}` +
+          `&fileName=${encodeURIComponent(fileName)}`;
+
+        for (let index = 0; index < MAX_PENDING_SESSION_ATTACHMENT_COUNT; index += 1) {
+          const response = await fetch(endpoint(`boundary-${index}.png`), {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: attachmentRequestBody(sizedAttachmentPng(perAttachmentBytes)),
+          });
+          assert.equal(response.status, 201);
+        }
+
+        const atBoundary = await (await fetch(
+          `${chatUrl.origin}/state?token=${encodeURIComponent(token)}`,
+        )).json() as ChatDialogState;
+        assert.equal(atBoundary.pendingAttachments.length, MAX_PENDING_SESSION_ATTACHMENT_COUNT);
+        assert.equal(
+          atBoundary.pendingAttachments.reduce(
+            (total, attachment) => total + attachment.byteLength,
+            0,
+          ),
+          MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+        );
+
+        const over = await fetch(endpoint("one-too-many.png"), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: attachmentRequestBody(sizedAttachmentPng(24)),
+        });
+        assert.equal(over.status, 413);
+        assert.equal(
+          (await listSessionAttachments(directory, initial.activeSessionId)).length,
+          MAX_PENDING_SESSION_ATTACHMENT_COUNT,
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, { renderHtml: () => "<html></html>" });
+});
+
+test("startup orphan reconciliation preserves attachment directories for live Sessions", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-orphans-"));
+  const liveSession = await createSession(directory, {
+    title: "Live",
+    projectKey: "existing-project",
+    scope: { kind: "track", identity: "live", label: "Live" },
+  });
+  const liveAttachment = await saveSessionAttachment(directory, liveSession.id, {
+    fileName: "live.png",
+    bytes: sizedAttachmentPng(24),
+  });
+  const orphanSessionId = "orphan-session";
+  await saveSessionAttachment(directory, orphanSessionId, {
+    fileName: "orphan.png",
+    bytes: sizedAttachmentPng(24),
+  });
+
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async () => {
+        assert.deepEqual(
+          (await listSessionAttachments(directory, liveSession.id)).map(
+            (attachment) => attachment.id,
+          ),
+          [liveAttachment.id],
+        );
+        assert.deepEqual(await listSessionAttachments(directory, orphanSessionId), []);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, { renderHtml: () => "<html></html>" });
 });
 
 test("a post-commit state failure is reconciled as an unknown command outcome", async () => {
@@ -1191,6 +1446,24 @@ function assertStateMatches(
     state.capabilities.maxOutputTokens,
     expectedModels[0]?.capabilities.maxOutputTokens,
   );
+}
+
+function sizedAttachmentPng(byteLength: number): Uint8Array {
+  assert.ok(byteLength >= 24);
+  const bytes = new Uint8Array(byteLength);
+  bytes.set([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+    0, 0, 0, 1, 0, 0, 0, 1,
+  ]);
+  return bytes;
+}
+
+function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 }
 
 function deferred<T>(): {

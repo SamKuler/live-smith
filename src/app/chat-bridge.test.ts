@@ -1,17 +1,37 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { connect } from "node:net";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { ProfileValidationError } from "../model/profile.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import { MAX_IMAGE_ATTACHMENT_BYTES } from "../storage/attachments.js";
 import {
+  ChatBridgeAttachmentValidationError,
   ChatBridgeCommandOutcomeUnknownError,
+  ChatBridgeConflictError,
+  ChatBridgePayloadTooLargeError,
   ChatBridgePromptPersistenceUnknownError,
+  ChatBridgeResourceNotFoundError,
   createChatBridge,
+  readRawAttachmentBody,
   readJsonBody,
 } from "./chat-bridge.js";
+
+const attachmentPng = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+  0, 0, 0, 1, 0, 0, 0, 1,
+]);
+
+function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+}
 
 test("chat bridge isolates active sends by Session and keeps Session commands available", async () => {
   let releaseSend!: () => void;
@@ -1300,6 +1320,346 @@ test("chat bridge rejects request bodies larger than one MiB", async () => {
     readJsonBody(oversizedBody()),
     /request body exceeds 1048576 bytes/i,
   );
+});
+
+test("attachment upload and delete routes use bounded raw bodies and narrow inputs", async () => {
+  const state = { status: "attachments-updated" } as ChatDialogState;
+  let uploadInput: {
+    sessionId: string;
+    fileName: string;
+    claimedMediaType?: string;
+    bytes: Uint8Array;
+  } | undefined;
+  let deleteInput: { sessionId: string; attachmentId: string } | undefined;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async (input) => {
+      uploadInput = input;
+      return state;
+    },
+    handleAttachmentDelete: async (input) => {
+      deleteInput = input;
+      return state;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+
+  try {
+    const upload = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=${encodeURIComponent("idea 中文.png")}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Live-Smith-File-Type": "image/png",
+        },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(upload.status, 201);
+    assert.deepEqual(await upload.json(), state);
+    assert.equal(uploadInput?.sessionId, "session-1");
+    assert.equal(uploadInput?.fileName, "idea 中文.png");
+    assert.equal(uploadInput?.claimedMediaType, "image/png");
+    assert.deepEqual(uploadInput?.bytes, attachmentPng);
+
+    const deletion = await fetch(
+      `${chatUrl.origin}/attachments/attachment-1?token=${token}&sessionId=session-1`,
+      { method: "DELETE" },
+    );
+    assert.equal(deletion.status, 200);
+    assert.deepEqual(deleteInput, {
+      sessionId: "session-1",
+      attachmentId: "attachment-1",
+    });
+
+    const unauthorized = await fetch(
+      `${chatUrl.origin}/attachments?sessionId=session-1&fileName=idea.png`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(unauthorized.status, 403);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("attachment routes reject malformed, duplicate, oversized, and empty inputs", async () => {
+  let handlerCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    handleAttachmentDelete: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const upload = async (query: string, body: Uint8Array, contentType = "application/octet-stream") =>
+    fetch(`${chatUrl.origin}/attachments?token=${token}&${query}`, {
+      method: "POST",
+      headers: { "Content-Type": contentType },
+      body: attachmentRequestBody(body),
+    });
+
+  try {
+    const responses = [
+      await upload("fileName=missing-session.png", attachmentPng),
+      await upload("sessionId=session-1&fileName=a.png&fileName=b.png", attachmentPng),
+      await upload(
+        `sessionId=session-1&fileName=${"a".repeat(161)}`,
+        attachmentPng,
+      ),
+      await upload("sessionId=session-1&fileName=empty.png", new Uint8Array()),
+      await upload("sessionId=session-1&fileName=wrong.png", attachmentPng, "image/png"),
+      await fetch(
+        `${chatUrl.origin}/attachments/attachment-1?token=${token}`,
+        { method: "DELETE" },
+      ),
+      await fetch(
+        `${chatUrl.origin}/attachments/attachment-1?token=${token}&sessionId=session-1&extra=x`,
+        { method: "DELETE" },
+      ),
+    ];
+    assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400, 400]);
+
+    const tooLarge = await upload(
+      "sessionId=session-1&fileName=large.png",
+      new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1),
+    );
+    assert.equal(tooLarge.status, 413);
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("attachment routes preserve typed safe 400, 404, 409, and 413 errors", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async (input) => {
+      if (input.fileName === "invalid.png") {
+        throw new ChatBridgeAttachmentValidationError("Only valid images are supported.");
+      }
+      if (input.fileName === "missing.png") {
+        throw new ChatBridgeResourceNotFoundError("That Session is unavailable.");
+      }
+      if (input.fileName === "quota.png") {
+        throw new ChatBridgePayloadTooLargeError("Pending image quota exceeded.");
+      }
+      return state;
+    },
+    handleAttachmentDelete: async () => {
+      throw new ChatBridgeConflictError("Referenced images cannot be removed.");
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const post = (fileName: string) => fetch(
+    `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=${fileName}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: attachmentRequestBody(attachmentPng),
+    },
+  );
+
+  try {
+    for (const [fileName, status] of [
+      ["invalid.png", 400],
+      ["missing.png", 404],
+      ["quota.png", 413],
+    ] as const) {
+      const response = await post(fileName);
+      assert.equal(response.status, status);
+      assert.doesNotMatch(await response.text(), /secret|\/Users\//);
+    }
+    const conflict = await fetch(
+      `${chatUrl.origin}/attachments/attachment-1?token=${token}&sessionId=session-1`,
+      { method: "DELETE" },
+    );
+    assert.equal(conflict.status, 409);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("attachment operations conflict only with the same Session's active mutation", async () => {
+  let releaseSend!: () => void;
+  let markStarted!: () => void;
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (input) => {
+      if (input.sessionId === "session-1") {
+        markStarted();
+        await sendGate;
+      }
+    },
+    handleAttachmentUpload: async () => state,
+    handleAttachmentDelete: async () => state,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "test", sessionId: "session-1" }),
+  });
+
+  try {
+    await started;
+    const sameSession = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=same.png`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    const otherSession = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}&sessionId=session-2&fileName=other.png`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(sameSession.status, 409);
+    assert.equal(otherSession.status, 201);
+  } finally {
+    releaseSend();
+    await send;
+    await bridge.close();
+  }
+});
+
+test("attachment post-commit state failures reconcile as unknown outcomes", async () => {
+  const authoritative = { status: "attachment-present" } as ChatDialogState;
+  let builds = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      builds += 1;
+      return authoritative;
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => authoritative,
+    handleSend: async () => {},
+    handleAttachmentUpload: async () => {
+      throw new ChatBridgeCommandOutcomeUnknownError(
+        "Attachment changed, but state could not be confirmed.",
+      );
+    },
+    handleAttachmentDelete: async () => authoritative,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+
+  try {
+    const response = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=idea.png`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: "Attachment changed, but state could not be confirmed.",
+      commandOutcome: "unknown",
+      state: authoritative,
+    });
+    assert.equal(builds, 1);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("raw attachment reader rejects declared-length mismatch and actual overflow", async () => {
+  const mismatch = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": "4",
+    },
+  });
+  const mismatchRead = readRawAttachmentBody(mismatch as never);
+  mismatch.end(new Uint8Array([1, 2, 3]));
+  await assert.rejects(mismatchRead, /Content-Length does not match/);
+
+  const overflow = Object.assign(new PassThrough(), {
+    headers: { "content-type": "application/octet-stream" },
+  });
+  const overflowRead = readRawAttachmentBody(overflow as never);
+  overflow.end(new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1));
+  await assert.rejects(
+    overflowRead,
+    (error: unknown) => error instanceof ChatBridgePayloadTooLargeError,
+  );
+});
+
+test("an attachment upload closed early never reaches the mutation handler", async () => {
+  let handlerCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    handleAttachmentDelete: async () => state,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const socket = connect(Number(chatUrl.port), "127.0.0.1");
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write([
+    `POST /attachments?token=${token}&sessionId=session-1&fileName=partial.png HTTP/1.1`,
+    `Host: 127.0.0.1:${chatUrl.port}`,
+    "Content-Type: application/octet-stream",
+    "Content-Length: 100",
+    "Connection: close",
+    "",
+    "partial",
+  ].join("\r\n"));
+  socket.destroy();
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 30));
+  assert.equal(handlerCalls, 0);
+  await bridge.close();
 });
 
 test("chat bridge preserves Profile validation fields in safe command errors", async () => {

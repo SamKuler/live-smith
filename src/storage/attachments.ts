@@ -294,6 +294,34 @@ export async function deleteSessionAttachments(
   );
 }
 
+export async function listSessionAttachmentDirectoryIds(
+  storageDirectory: string | undefined,
+): Promise<string[]> {
+  if (!storageDirectory) return [...memoryAttachments.keys()].sort();
+  return withAttachmentStorageBoundary(async () => {
+    const root = path.join(storageDirectory, attachmentsDirectoryName);
+    if (!await assertExistingDirectoryIsSafe(root)) return [];
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    const ids: string[] = [];
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new AttachmentStorageCorruptionError();
+      }
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(entry.name);
+      } catch (cause) {
+        throw new AttachmentStorageCorruptionError(cause);
+      }
+      if (!isSafeStorageId(decoded) || encodeURIComponent(decoded) !== entry.name) {
+        throw new AttachmentStorageCorruptionError();
+      }
+      ids.push(decoded);
+    }
+    return ids.sort();
+  });
+}
+
 export function isImageAttachmentMediaType(
   mediaType: AttachmentMediaType,
 ): mediaType is ImageAttachmentMediaType {

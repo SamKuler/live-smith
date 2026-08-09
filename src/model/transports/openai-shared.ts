@@ -71,7 +71,10 @@ export function buildOpenAIChatMessages(
 function mapOpenAIChatParts(
   request: TransportRequest,
   parts: readonly ModelInputPart[],
-): Array<Record<string, unknown>> {
+): string | Array<Record<string, unknown>> {
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text).join("\n");
+  }
   return parts.map((part): Record<string, unknown> => {
     switch (part.type) {
       case "text":

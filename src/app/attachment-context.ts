@@ -85,17 +85,21 @@ export async function resolveConversationHistory(input: {
     0,
     MAX_PENDING_SESSION_ATTACHMENT_COUNT - input.currentAttachmentCount,
   );
+  const selectedOccurrences = new Set<string>();
   const selectedIds = new Set<string>();
   if (input.capabilities.inputs.image) {
     for (const event of [...events].reverse()) {
       if (event.kind !== "user") continue;
-      for (const attachment of event.attachments ?? []) {
+      const attachments = event.attachments ?? [];
+      for (let index = attachments.length - 1; index >= 0; index -= 1) {
+        const attachment = attachments[index]!;
         if (
           selectedIds.has(attachment.id) ||
           attachment.kind !== "image" ||
           attachment.byteLength > remainingBytes ||
           remainingCount === 0
         ) continue;
+        selectedOccurrences.add(attachmentOccurrenceKey(event.id, index));
         selectedIds.add(attachment.id);
         remainingBytes -= attachment.byteLength;
         remainingCount -= 1;
@@ -114,6 +118,7 @@ export async function resolveConversationHistory(input: {
   }
 
   const messages: ConversationMessage[] = [];
+  const emittedIds = new Set<string>();
   for (const event of events) {
     if (event.kind === "assistant") {
       messages.push({ role: "assistant", content: event.content });
@@ -121,11 +126,17 @@ export async function resolveConversationHistory(input: {
     }
     if (event.kind !== "user") continue;
     const content: ModelInputPart[] = [{ type: "text", text: event.content }];
-    for (const ref of event.attachments ?? []) {
-      if (!selectedIds.has(ref.id)) {
+    const attachments = event.attachments ?? [];
+    for (let index = 0; index < attachments.length; index += 1) {
+      const ref = attachments[index]!;
+      if (
+        !selectedOccurrences.has(attachmentOccurrenceKey(event.id, index)) ||
+        emittedIds.has(ref.id)
+      ) {
         content.push(historicalMarker("omitted from this request", ref.fileName));
         continue;
       }
+      emittedIds.add(ref.id);
       const metadata = stored.get(ref.id);
       if (
         !metadata ||
@@ -155,6 +166,10 @@ export async function resolveConversationHistory(input: {
     messages.push({ role: "user", content });
   }
   return messages;
+}
+
+function attachmentOccurrenceKey(eventId: string, index: number): string {
+  return `${eventId}:${index}`;
 }
 
 export function pendingSessionAttachments(
