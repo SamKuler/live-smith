@@ -35,6 +35,8 @@ const sensitiveResponseHeaders = {
 const maxRequestBodyBytes = 1024 * 1024;
 const maxAttachmentFileNameUtf8Bytes = 160;
 const maxAttachmentQueryUtf8Bytes = 2048;
+const mimeTypePattern =
+  /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 export interface ChatBridgeSendInput {
   prompt: string;
@@ -715,9 +717,20 @@ export async function createChatBridge(
       const reportedError = error instanceof ChatBridgeSendFailureError
         ? error.originalError
         : error;
-      const message = reportedError instanceof Error
-        ? reportedError.message
-        : String(reportedError);
+      const attachmentMutation = requestPath === "/attachments" ||
+        requestPath.startsWith("/attachments/");
+      const commandOutcome = (requestPath === "/command" || attachmentMutation) &&
+          (
+            isStorageCommitOutcomeUnknownError(reportedError) ||
+            reportedError instanceof ChatBridgeCommandOutcomeUnknownError
+          )
+        ? "unknown" as const
+        : undefined;
+      const message = attachmentMutation
+        ? safeAttachmentErrorMessage(reportedError, commandOutcome)
+        : reportedError instanceof Error
+          ? reportedError.message
+          : String(reportedError);
       const field = reportedError instanceof ProfileValidationError
         ? reportedError.field
         : undefined;
@@ -727,15 +740,6 @@ export async function createChatBridge(
           : reportedError instanceof ChatBridgePromptPersistenceUnknownError
             ? "unknown"
             : sendPromptPersistence ?? "not_persisted"
-        : undefined;
-      const attachmentMutation = requestPath === "/attachments" ||
-        requestPath.startsWith("/attachments/");
-      const commandOutcome = (requestPath === "/command" || attachmentMutation) &&
-          (
-            isStorageCommitOutcomeUnknownError(reportedError) ||
-            reportedError instanceof ChatBridgeCommandOutcomeUnknownError
-          )
-        ? "unknown" as const
         : undefined;
       let commandState: ChatDialogState | undefined;
       let sendErrorState: ChatDialogState | undefined;
@@ -1071,16 +1075,29 @@ function parseAttachmentUploadQuery(
     "x-live-smith-file-type",
     false,
   );
-  if (claimedMediaType !== undefined && Buffer.byteLength(claimedMediaType, "utf8") > 128) {
-    throw new ChatBridgeRequestValidationError(
-      "X-Live-Smith-File-Type is too long.",
-    );
+  let normalizedClaimedMediaType: string | undefined;
+  if (claimedMediaType !== undefined) {
+    if (
+      Buffer.byteLength(claimedMediaType, "utf8") > 128 ||
+      !isSingleMimeType(claimedMediaType)
+    ) {
+      throw new ChatBridgeRequestValidationError(
+        "X-Live-Smith-File-Type must be one valid MIME type.",
+      );
+    }
+    normalizedClaimedMediaType = claimedMediaType.toLowerCase();
   }
   return {
     sessionId,
     fileName,
-    ...(claimedMediaType === undefined ? {} : { claimedMediaType }),
+    ...(normalizedClaimedMediaType === undefined
+      ? {}
+      : { claimedMediaType: normalizedClaimedMediaType }),
   };
+}
+
+function isSingleMimeType(value: string): boolean {
+  return mimeTypePattern.test(value);
 }
 
 function parseAttachmentDeleteQuery(
@@ -1195,6 +1212,27 @@ function singleHeaderValue(
     throw new ChatBridgeRequestValidationError(`${name} is required.`);
   }
   return raw;
+}
+
+function safeAttachmentErrorMessage(
+  error: unknown,
+  commandOutcome: "unknown" | undefined,
+): string {
+  if (commandOutcome === "unknown") {
+    return error instanceof ChatBridgeCommandOutcomeUnknownError
+      ? error.message
+      : "The attachment changed, but its final state could not be confirmed.";
+  }
+  if (
+    error instanceof ChatBridgeRequestValidationError ||
+    error instanceof ChatBridgeAttachmentValidationError ||
+    error instanceof ChatBridgeResourceNotFoundError ||
+    error instanceof ChatBridgeConflictError ||
+    error instanceof ChatBridgePayloadTooLargeError
+  ) {
+    return error.message;
+  }
+  return "The attachment operation could not be completed.";
 }
 
 function throwIfBridgeAborted(signal: AbortSignal): void {

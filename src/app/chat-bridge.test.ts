@@ -1555,6 +1555,51 @@ test("attachment routes preserve typed safe 400, 404, 409, and 413 errors", asyn
   }
 });
 
+test("attachment routes never expose unclassified filesystem or credential-bearing errors", async () => {
+  const state = {} as ChatDialogState;
+  const sensitiveCause =
+    "EACCES /Users/private/.live-smith Authorization: Bearer provider-secret";
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async () => {
+      throw new Error(sensitiveCause);
+    },
+    handleAttachmentDelete: async () => {
+      throw new Error(sensitiveCause);
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+
+  try {
+    const upload = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}` +
+        "&sessionId=session-1&fileName=private.png",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    const deletion = await fetch(
+      `${chatUrl.origin}/attachments/attachment-1?token=${token}&sessionId=session-1`,
+      { method: "DELETE" },
+    );
+
+    for (const response of [upload, deletion]) {
+      assert.equal(response.status, 500);
+      const body = await response.text();
+      assert.match(body, /attachment operation could not be completed/i);
+      assert.doesNotMatch(body, /Users|Authorization|Bearer|provider-secret|EACCES/);
+    }
+  } finally {
+    await bridge.close();
+  }
+});
+
 test("attachment operations conflict only with the same Session's active mutation", async () => {
   let releaseSend!: () => void;
   let markStarted!: () => void;
@@ -1746,16 +1791,18 @@ test("raw attachment reader rejects declared-length mismatch and actual overflow
   );
 });
 
-test("raw HTTP rejects duplicate attachment headers before the upload handler", async () => {
+test("raw HTTP accepts one case-insensitive MIME token and rejects ambiguous attachment headers", async () => {
   let handlerCalls = 0;
+  let claimedMediaType: string | undefined;
   const state = {} as ChatDialogState;
   const bridge = await createChatBridge({
     buildState: async () => state,
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async () => {},
-    handleAttachmentUpload: async () => {
+    handleAttachmentUpload: async (input) => {
       handlerCalls += 1;
+      claimedMediaType = input.claimedMediaType;
       return state;
     },
     handleAttachmentDelete: async () => state,
@@ -1804,12 +1851,50 @@ test("raw HTTP rejects duplicate attachment headers before the upload handler", 
       ],
       attachmentPng,
     );
+    const mergedClaimedType = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        ...baseHeaders,
+        "Content-Type: application/octet-stream",
+        "X-Live-Smith-File-Type: image/png, image/jpeg",
+      ],
+      attachmentPng,
+    );
+    const controlledClaimedType = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        ...baseHeaders,
+        "Content-Type: application/octet-stream",
+        "X-Live-Smith-File-Type: image/png\u0001",
+      ],
+      attachmentPng,
+    );
+    const mixedCaseClaimedType = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        ...baseHeaders,
+        "Content-Type: application/octet-stream",
+        "x-LiVe-SmItH-FiLe-TyPe: ImAgE/PnG",
+      ],
+      attachmentPng,
+    );
 
     assert.deepEqual(
-      [duplicateContentType, duplicateClaimedType, duplicateContentLength],
-      [400, 400, 400],
+      [
+        duplicateContentType,
+        duplicateClaimedType,
+        duplicateContentLength,
+        mergedClaimedType,
+        controlledClaimedType,
+        mixedCaseClaimedType,
+      ],
+      [400, 400, 400, 400, 400, 201],
     );
-    assert.equal(handlerCalls, 0);
+    assert.equal(handlerCalls, 1);
+    assert.equal(claimedMediaType, "image/png");
   } finally {
     await bridge.close();
   }
