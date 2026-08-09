@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 export class SessionMutationFence {
   private readonly tails = new Map<string, Promise<void>>();
 
@@ -17,4 +19,14 @@ export class SessionMutationFence {
       if (this.tails.get(key) === current) this.tails.delete(key);
     }
   }
+}
+
+export function sessionMutationFenceKey(
+  storageDirectory: string | undefined,
+  sessionId: string,
+): string {
+  return JSON.stringify([
+    storageDirectory === undefined ? null : path.resolve(storageDirectory),
+    sessionId,
+  ]);
 }

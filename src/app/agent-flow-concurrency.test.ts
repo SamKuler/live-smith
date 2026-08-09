@@ -20,8 +20,10 @@ import {
 } from "../storage/attachments.js";
 import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
+import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import {
   createSession,
+  deleteSession,
   listSessions,
   setSessionArchived,
 } from "../storage/sessions.js";
@@ -169,6 +171,258 @@ test("concurrent state and discovery responses each keep models, capabilities, a
       return modelsB;
     },
   });
+});
+
+test("two bridges serialize a same-Session send and delete without recreating events", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-bridge-delete-"));
+  await saveSavedProfile(directory, profile({
+    baseUrl: "https://provider.test/v1",
+    apiKey: "key",
+    model: "model-a",
+  }));
+  const firstDialog = deferred<string>();
+  const secondDialog = deferred<string>();
+  const closeDialogs = deferred<void>();
+  let dialogCount = 0;
+  const leadTrack = fakeMidiTrack(1n, "Lead");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const index = dialogCount;
+        dialogCount += 1;
+        (index === 0 ? firstDialog : secondDialog).resolve(url);
+        await closeDialogs.promise;
+      },
+    },
+  };
+  const interaction: LiveInteractionContext = {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: { track: leadTrack },
+    scope: { kind: "track", identity: "1", label: "Lead" },
+  };
+  const modelStarted = deferred<void>();
+  const releaseModel = deferred<void>();
+  const firstFlow = runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    requestModelTurn: async () => {
+      modelStarted.resolve();
+      await releaseModel.promise;
+      return { content: "Done", toolCalls: [] };
+    },
+  });
+  let secondFlow: Promise<void> | undefined;
+
+  try {
+    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
+    const firstToken = firstUrl.searchParams.get("token")!;
+    const firstState = await (await fetch(
+      `${firstUrl.origin}/state?token=${firstToken}`,
+    )).json() as ChatDialogState;
+    const sessionId = firstState.activeSessionId;
+
+    secondFlow = runAgentFlow(context as never, interaction, {
+      renderHtml: () => "<html></html>",
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    });
+    const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
+    const secondToken = secondUrl.searchParams.get("token")!;
+    const secondState = await (await fetch(
+      `${secondUrl.origin}/state?token=${secondToken}`,
+    )).json() as ChatDialogState;
+    assert.equal(secondState.activeSessionId, sessionId);
+
+    const send = fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Finish safely", sessionId }),
+    });
+    const sendBoundary = await resolvesWithin(Promise.race([
+      modelStarted.promise.then(() => ({ type: "model" as const })),
+      send.then(async (response) => ({
+        type: "response" as const,
+        status: response.status,
+        body: await response.text(),
+      })),
+    ]), "first model request or early send response");
+    assert.deepEqual(sendBoundary, { type: "model" });
+
+    let deleteSettled = false;
+    const deletion = fetch(`${secondUrl.origin}/command?token=${secondToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "delete_session", sessionId }),
+    }).then((response) => {
+      deleteSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      deletion.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]), "pending");
+    assert.equal(deleteSettled, false);
+
+    releaseModel.resolve();
+    assert.equal((await send).status, 200);
+    assert.equal((await deletion).status, 200);
+    assert.equal(
+      (await listSessions(directory)).some((session) => session.id === sessionId),
+      false,
+    );
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+
+    const deletedSend = await fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Must not fall back", sessionId }),
+    });
+    assert.equal(deletedSend.status, 500);
+    assert.equal(
+      (await deletedSend.json() as { promptPersistence?: string }).promptPersistence,
+      "not_persisted",
+    );
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+
+    closeDialogs.resolve();
+    await Promise.all([firstFlow, secondFlow]);
+  } finally {
+    closeDialogs.resolve();
+    await Promise.allSettled([
+      firstFlow,
+      ...(secondFlow ? [secondFlow] : []),
+    ]);
+  }
+});
+
+test("two bridges can run different Sessions concurrently", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-bridge-overlap-"));
+  await saveSavedProfile(directory, profile({
+    baseUrl: "https://provider.test/v1",
+    apiKey: "key",
+    model: "model-a",
+  }));
+  const firstDialog = deferred<string>();
+  const secondDialog = deferred<string>();
+  const closeDialogs = deferred<void>();
+  let dialogCount = 0;
+  const leadTrack = fakeMidiTrack(1n, "Lead");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const index = dialogCount;
+        dialogCount += 1;
+        (index === 0 ? firstDialog : secondDialog).resolve(url);
+        await closeDialogs.promise;
+      },
+    },
+  };
+  const interaction: LiveInteractionContext = {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: { track: leadTrack },
+    scope: { kind: "track", identity: "1", label: "Lead" },
+  };
+  const firstModelStarted = deferred<void>();
+  const secondModelStarted = deferred<void>();
+  const releaseModels = deferred<void>();
+  const firstFlow = runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    requestModelTurn: async () => {
+      firstModelStarted.resolve();
+      await releaseModels.promise;
+      return { content: "First done", toolCalls: [] };
+    },
+  });
+  let secondFlow: Promise<void> | undefined;
+
+  try {
+    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
+    const firstToken = firstUrl.searchParams.get("token")!;
+    const firstState = await (await fetch(
+      `${firstUrl.origin}/state?token=${firstToken}`,
+    )).json() as ChatDialogState;
+    const firstSessionId = firstState.activeSessionId;
+
+    secondFlow = runAgentFlow(context as never, interaction, {
+      renderHtml: () => "<html></html>",
+      requestModelTurn: async () => {
+        secondModelStarted.resolve();
+        await releaseModels.promise;
+        return { content: "Second done", toolCalls: [] };
+      },
+    });
+    const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
+    const secondToken = secondUrl.searchParams.get("token")!;
+    const newSessionResponse = await fetch(
+      `${secondUrl.origin}/command?token=${secondToken}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "new_session" }),
+      },
+    );
+    assert.equal(newSessionResponse.status, 200);
+    const secondSessionId = (await newSessionResponse.json() as ChatDialogState)
+      .activeSessionId;
+    assert.notEqual(secondSessionId, firstSessionId);
+
+    const firstSend = fetch(`${firstUrl.origin}/send?token=${firstToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "First", sessionId: firstSessionId }),
+    });
+    const sendBoundary = await resolvesWithin(Promise.race([
+      firstModelStarted.promise.then(() => ({ type: "model" as const })),
+      firstSend.then(async (response) => ({
+        type: "response" as const,
+        status: response.status,
+        body: await response.text(),
+      })),
+    ]), "first model request or early send response");
+    assert.deepEqual(sendBoundary, { type: "model" });
+    const secondSend = fetch(`${secondUrl.origin}/send?token=${secondToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Second", sessionId: secondSessionId }),
+    });
+    await Promise.race([
+      secondModelStarted.promise,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("different Session send did not overlap")), 250);
+      }),
+    ]);
+
+    releaseModels.resolve();
+    assert.deepEqual(
+      await Promise.all([firstSend, secondSend]).then((responses) =>
+        responses.map((response) => response.status)
+      ),
+      [200, 200],
+    );
+    assert.equal((await loadSessionEvents(directory, firstSessionId))[0]?.content, "First");
+    assert.equal((await loadSessionEvents(directory, secondSessionId))[0]?.content, "Second");
+
+    closeDialogs.resolve();
+    await Promise.all([firstFlow, secondFlow]);
+  } finally {
+    closeDialogs.resolve();
+    await Promise.allSettled([
+      firstFlow,
+      ...(secondFlow ? [secondFlow] : []),
+    ]);
+  }
 });
 
 test("model discovery accepts a Draft with blank name and model without changing Runtime", async () => {
@@ -408,6 +662,74 @@ test("session deletion attachment cleanup failure is unknown and retried from st
     if (attachmentRoot) await fs.chmod(attachmentRoot, 0o700).catch(() => undefined);
   }
   assert.ok(deletedSessionId);
+});
+
+test("an unknown Session metadata delete commit reconciles attachment cleanup", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-unknown-"));
+  let deletedSessionId = "";
+  let injected = false;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        deletedSessionId = initial.activeSessionId;
+        await saveSessionAttachment(directory, deletedSessionId, {
+          fileName: "unknown-delete.png",
+          bytes: sizedAttachmentPng(24),
+        });
+
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
+        });
+        assert.equal(response.status, 500);
+        const body = await response.json() as {
+          commandOutcome?: string;
+          state?: ChatDialogState;
+        };
+        assert.equal(body.commandOutcome, "unknown");
+        assert.ok(!body.state?.sessions.some(
+          (session) => session.id === deletedSessionId,
+        ));
+        assert.equal(
+          (await listSessions(directory)).some(
+            (session) => session.id === deletedSessionId,
+          ),
+          false,
+        );
+        assert.deepEqual(
+          await listSessionAttachments(directory, deletedSessionId),
+          [],
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, {
+    renderHtml: () => "<html></html>",
+    deleteSession: async (...args) => {
+      await deleteSession(...args);
+      if (!injected) {
+        injected = true;
+        throw new StorageCommitOutcomeUnknownError(
+          Object.assign(new Error("directory sync failed"), { code: "EIO" }),
+        );
+      }
+    },
+  });
+  assert.equal(injected, true);
 });
 
 test("attachment routes enforce Session ownership, pending state, and immutable references", async () => {
@@ -1475,4 +1797,25 @@ function deferred<T>(): {
     resolve = nextResolve;
   });
   return { promise, resolve };
+}
+
+async function resolvesWithin<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = 2_000,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`Timed out waiting for ${label}.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

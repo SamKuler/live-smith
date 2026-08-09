@@ -135,13 +135,17 @@ import {
   sessionTitleForPrompt,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
-import { SessionMutationFence } from "./session-mutation-fence.js";
+import {
+  SessionMutationFence,
+  sessionMutationFenceKey,
+} from "./session-mutation-fence.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
 const sessionMutationFence = new SessionMutationFence();
 
 export interface AgentFlowDependencies {
+  deleteSession?: typeof deleteSession;
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
   requestModelTurn?: typeof requestModelTurn;
@@ -180,7 +184,7 @@ export async function runAgentFlow(
     sessionId: string,
     operation: () => Promise<T>,
   ) => sessionMutationFence.run(
-    JSON.stringify([context.environment.storageDirectory ?? null, sessionId]),
+    sessionMutationFenceKey(context.environment.storageDirectory, sessionId),
     operation,
   );
 
@@ -432,27 +436,29 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "restore_session") {
-      const allSessions = await listSessions(context.environment.storageDirectory);
       const continueInteraction = resolveContinueInteraction();
       if (!continueInteraction) {
         status = "The current Live object or selection is no longer available.";
         return buildState();
       }
-      const candidate = continuableSessionsForScope(
-        allSessions,
-        projectKey,
-        continueInteraction.scope,
-      ).find((session) => session.id === commandInput.sessionId);
-      if (!candidate) {
+      const restored = await withSessionMutation(commandInput.sessionId, async () => {
+        const candidate = continuableSessionsForScope(
+          await listSessions(context.environment.storageDirectory),
+          projectKey,
+          continueInteraction.scope,
+        ).find((session) => session.id === commandInput.sessionId);
+        if (!candidate) return null;
+        throwIfAborted(signal);
+        return restoreSession(
+          context.environment.storageDirectory,
+          candidate.id,
+          { projectKey, scope: continueInteraction.scope },
+        );
+      });
+      if (!restored) {
         status = "That historical Session cannot continue on the current Live object.";
         return buildState();
       }
-      throwIfAborted(signal);
-      const restored = await restoreSession(
-        context.environment.storageDirectory,
-        candidate.id,
-        { projectKey, scope: continueInteraction.scope },
-      );
       activeSessionId = restored.id;
       if (continueInteraction.selectionContext) {
         selectionInteractionsBySessionId.set(restored.id, continueInteraction);
@@ -475,10 +481,21 @@ export async function runAgentFlow(
             context.environment.storageDirectory,
             commandInput.sessionId,
           );
-          await deleteSession(
-            context.environment.storageDirectory,
-            commandInput.sessionId,
-          );
+          try {
+            await (dependencies.deleteSession ?? deleteSession)(
+              context.environment.storageDirectory,
+              commandInput.sessionId,
+            );
+          } catch (cause) {
+            if (isStorageCommitOutcomeUnknownError(cause)) {
+              pendingAttachmentCleanup.add(commandInput.sessionId);
+              throw new ChatBridgeCommandOutcomeUnknownError(
+                "Session deletion storage could not be confirmed.",
+                { cause },
+              );
+            }
+            throw cause;
+          }
           selectionInteractionsBySessionId.delete(commandInput.sessionId);
           if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
         }
@@ -506,16 +523,20 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "rename_session") {
-      if (!(await sessionExists(commandInput.sessionId))) {
+      const renamed = await withSessionMutation(commandInput.sessionId, async () => {
+        if (!(await sessionExists(commandInput.sessionId))) return false;
+        throwIfAborted(signal);
+        await updateSession(
+          context.environment.storageDirectory,
+          commandInput.sessionId,
+          { title: commandInput.title },
+        );
+        return true;
+      });
+      if (!renamed) {
         status = "That Session no longer exists.";
         return buildState();
       }
-      throwIfAborted(signal);
-      await updateSession(
-        context.environment.storageDirectory,
-        commandInput.sessionId,
-        { title: commandInput.title },
-      );
       status = undefined;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
@@ -525,17 +546,21 @@ export async function runAgentFlow(
       commandInput.kind === "archive_session" ||
       commandInput.kind === "unarchive_session"
     ) {
-      if (!(await sessionExists(commandInput.sessionId))) {
+      const archived = commandInput.kind === "archive_session";
+      const changed = await withSessionMutation(commandInput.sessionId, async () => {
+        if (!(await sessionExists(commandInput.sessionId))) return false;
+        throwIfAborted(signal);
+        await setSessionArchived(
+          context.environment.storageDirectory,
+          commandInput.sessionId,
+          archived,
+        );
+        return true;
+      });
+      if (!changed) {
         status = "That Session no longer exists.";
         return buildState();
       }
-      throwIfAborted(signal);
-      const archived = commandInput.kind === "archive_session";
-      await setSessionArchived(
-        context.environment.storageDirectory,
-        commandInput.sessionId,
-        archived,
-      );
       if (archived && activeSessionId === commandInput.sessionId) {
         activeSessionId = undefined;
       }
@@ -748,62 +773,64 @@ export async function runAgentFlow(
     }
 
     try {
-      const sessions = await listSessions(
-        context.environment.storageDirectory,
-        projectKey,
-      );
-      const session = sessions.find((entry) => entry.id === sendInput.sessionId);
-      if (!session) {
-        throw new Error("That session is not available in this Live Set.");
-      }
-      const sessionInteraction = resolveSessionInteraction(session);
-      if (!sessionInteraction) {
-        throw new Error(
-          `The Live object for this session is no longer available: ${session.scope.label}.`,
+      return await withSessionMutation(sendInput.sessionId, async () => {
+        const session = (await listSessions(
+          context.environment.storageDirectory,
+          projectKey,
+        )).find((entry) =>
+          entry.id === sendInput.sessionId && !entry.archivedAt
         );
-      }
-      const settingsForRequest = await loadAgentSettings(
-        context.environment.storageDirectory,
-      );
-      const profile = requireActiveSavedProfile(settingsForRequest);
-      const fingerprint = connectionFingerprint(profile);
-      let models = modelsByConnection.get(fingerprint);
-      if (models === undefined) {
-        models = await loadModelCache(context.environment.storageDirectory, profile);
-        modelsByConnection.set(fingerprint, models);
-      }
-      const runtimeProfile = runtimeProfileForSavedProfile(profile, models);
-      validateGenerationParameters(
-        runtimeProfile.profile,
-        runtimeProfile.capabilities,
-      );
-      await handleAgentRequest(
-        context,
-        sessionInteraction,
-        prompt,
-        runtimeProfile,
-        projectKey,
-        sendInput.sessionId,
-        {
-          signal,
-          onDelta: (delta) => stream.assistantDelta(delta),
-          onProgress: (message) => stream.progress(message),
-          onSessionEvent: (event) => stream.sessionEvent(event),
-          withActionExecutionLock: (operation) =>
-            liveMutationQueue.run(signal, operation),
-          withSessionMutationLock: (sessionId, operation) =>
-            withSessionMutation(sessionId, operation),
-          confirmActions: (plan) => decidePlanApproval(
-            context.environment.storageDirectory,
-            plan,
-            () => stream.requestConfirmation({
-              message: plan.message,
-              groups: actionDiffGroups(plan.actions, plan.targets),
-            }),
-          ),
-        },
-        dependencies.requestModelTurn ?? requestModelTurn,
-      );
+        if (!session) {
+          throw new Error("That Session is not available in this Live Set.");
+        }
+        const sessionInteraction = resolveSessionInteraction(session);
+        if (!sessionInteraction) {
+          throw new Error(
+            `The Live object for this Session is no longer available: ${session.scope.label}.`,
+          );
+        }
+        const settingsForRequest = await loadAgentSettings(
+          context.environment.storageDirectory,
+        );
+        const profile = requireActiveSavedProfile(settingsForRequest);
+        const fingerprint = connectionFingerprint(profile);
+        let models = modelsByConnection.get(fingerprint);
+        if (models === undefined) {
+          models = await loadModelCache(context.environment.storageDirectory, profile);
+          modelsByConnection.set(fingerprint, models);
+        }
+        const runtimeProfile = runtimeProfileForSavedProfile(profile, models);
+        validateGenerationParameters(
+          runtimeProfile.profile,
+          runtimeProfile.capabilities,
+        );
+        await handleAgentRequest(
+          context,
+          sessionInteraction,
+          prompt,
+          runtimeProfile,
+          projectKey,
+          session.id,
+          {
+            signal,
+            onDelta: (delta) => stream.assistantDelta(delta),
+            onProgress: (message) => stream.progress(message),
+            onSessionEvent: (event) => stream.sessionEvent(event),
+            withActionExecutionLock: (operation) =>
+              liveMutationQueue.run(signal, operation),
+            confirmActions: (plan) => decidePlanApproval(
+              context.environment.storageDirectory,
+              plan,
+              () => stream.requestConfirmation({
+                message: plan.message,
+                groups: actionDiffGroups(plan.actions, plan.targets),
+              }),
+            ),
+          },
+          dependencies.requestModelTurn ?? requestModelTurn,
+        );
+        return buildState();
+      });
     } catch (error) {
       if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
       throw error;
@@ -863,12 +890,18 @@ export async function handleAgentRequest(
   appendUserEvent: typeof appendSessionEvent = appendSessionEvent,
 ): Promise<string> {
   const { profile } = runtimeProfile;
-  const session = await getOrCreateDefaultSession(
-    context.environment.storageDirectory,
-    interaction,
-    projectKey,
-    sessionId,
-  );
+  const session = sessionId === undefined
+    ? await getOrCreateDefaultSession(
+        context.environment.storageDirectory,
+        interaction,
+        projectKey,
+      )
+    : (await listSessions(context.environment.storageDirectory, projectKey)).find(
+        (entry) => entry.id === sessionId && !entry.archivedAt,
+      );
+  if (!session) {
+    throw new Error("That Session is not available in this Live Set.");
+  }
   const prepareRequest = async () => {
     const priorEvents = await loadSessionEvents(
       context.environment.storageDirectory,
@@ -927,9 +960,7 @@ export async function handleAgentRequest(
       userEvent,
     };
   };
-  const prepared = callbacks.withSessionMutationLock
-    ? await callbacks.withSessionMutationLock(session.id, prepareRequest)
-    : await prepareRequest();
+  const prepared = await prepareRequest();
   await callbacks.onSessionEvent(prepared.userEvent);
   if (!session.title.trim()) {
     await updateSession(context.environment.storageDirectory, session.id, {
@@ -1212,10 +1243,6 @@ interface AgentRequestCallbacks {
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;
-  withSessionMutationLock?: <T>(
-    sessionId: string,
-    operation: () => Promise<T>,
-  ) => Promise<T>;
 }
 
 function scopeKey(scope: LiveInteractionContext["scope"]): string {

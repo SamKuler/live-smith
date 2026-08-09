@@ -154,7 +154,7 @@ interface ChatBridgeOptions {
     input: ChatBridgeSendInput,
     stream: ChatBridgeStream,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<ChatDialogState | void>;
   handleAttachmentUpload?(
     input: ChatBridgeAttachmentInput,
     signal: AbortSignal,
@@ -616,8 +616,12 @@ export async function createChatBridge(
           const stream = createStream(sendId, input.sessionId, (event) => {
             if (event.kind === "user") sendPromptPersistence = "persisted";
           });
-          await options.handleSend(input, stream, controller.signal);
-          const baseState = await options.buildState();
+          const handledState = await options.handleSend(
+            input,
+            stream,
+            controller.signal,
+          );
+          const baseState = handledState ?? await options.buildState();
           updateActivity(input.sessionId, sendId, "completed", {
             message: "Completed",
             unread: baseState.activeSessionId !== input.sessionId,
