@@ -49,6 +49,7 @@
       const sendAttemptsBySession = new Map();
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
+      let attachmentOperationInProgress = false;
       let activeCommandAttempt = null;
       const commandSseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
@@ -90,7 +91,8 @@
       }
 
       function isOperationInProgress() {
-        return Boolean(activeSendAttempt()) || Boolean(commandInProgress) || commandReconciliationBlocked;
+        return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
+          commandReconciliationBlocked || attachmentOperationInProgress;
       }
 
       function syncOperationState() {
@@ -98,6 +100,7 @@
           commandKind: commandInProgress ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
           anySendInProgress: sendAttemptsBySession.size > 0,
+          attachmentInProgress: attachmentOperationInProgress,
           sendInProgress: Boolean(activeSendAttempt()),
         });
       }
@@ -111,6 +114,10 @@
       }
 
       async function runCommand(kind, extra) {
+        if (attachmentOperationInProgress) {
+          showStatus("Wait for the current attachment operation to finish.", true);
+          return false;
+        }
         const sessionCommand = [
           "new_session",
           "select_session",
@@ -349,6 +356,7 @@
           requireView().isDraftDirty() ||
           !getState().settings.activeProfileId
         ) return;
+        if (!requireView().validateAttachmentsForSend()) return;
         assistantDraftsBySession.set(sessionId, "");
         composerDraftsBySession.set(sessionId, "");
         const attempt = {
@@ -605,6 +613,92 @@
           throw error;
         }
         return result;
+      }
+
+      async function runAttachmentOperation(operation) {
+        if (isOperationInProgress()) {
+          throw new Error("Another Live Smith operation is already in progress.");
+        }
+        attachmentOperationInProgress = true;
+        syncOperationState();
+        try {
+          return await operation();
+        } finally {
+          attachmentOperationInProgress = false;
+          syncOperationState();
+        }
+      }
+
+      async function requestAttachment(path, init) {
+        let response;
+        try {
+          response = await fetch(bridgeUrl(path), init);
+        } catch (error) {
+          let reconciled = false;
+          try {
+            reconciled = await refreshState(undefined, "attachment_reconcile") === true;
+          } catch {
+            reconciled = false;
+          }
+          const message = error.message || String(error);
+          if (!reconciled) {
+            commandReconciliationBlocked = true;
+            throw new Error(
+              `${message} Current attachment state could not be reconciled. Close and reopen Live Smith before continuing.`,
+            );
+          }
+          throw new Error(
+            `${message} Authoritative attachment state was refreshed; verify the pending images before continuing.`,
+          );
+        }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(
+            result.error || `${response.status} ${response.statusText}`,
+          );
+          error.httpStatus = response.status;
+          if (result.commandOutcome === "unknown") {
+            if (result.state && typeof result.state === "object") {
+              applyCommandState("attachment_reconcile", result.state);
+            } else {
+              commandReconciliationBlocked = true;
+            }
+            if (result.reconciliationRequired === true) {
+              commandReconciliationBlocked = true;
+            }
+          }
+          throw error;
+        }
+        applyCommandState("attachment", result);
+        return result;
+      }
+
+      function uploadAttachments(sessionId, files) {
+        return runAttachmentOperation(async () => {
+          let state = null;
+          for (const file of files) {
+            const path = "/attachments" +
+              `?sessionId=${encodeURIComponent(sessionId)}` +
+              `&fileName=${encodeURIComponent(file.name)}`;
+            state = await requestAttachment(path, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "X-Live-Smith-File-Type": file.type || "application/octet-stream",
+              },
+              body: file,
+            });
+          }
+          return state;
+        });
+      }
+
+      function deleteAttachment(sessionId, attachmentId) {
+        return runAttachmentOperation(() => requestAttachment(
+          `/attachments/${encodeURIComponent(attachmentId)}` +
+            `?sessionId=${encodeURIComponent(sessionId)}`,
+          { method: "DELETE" },
+        ));
       }
 
       async function refreshState(expectedSendAttempt, commandKind) {
@@ -901,6 +995,7 @@
       return {
         closeWithResult: hostAdapter.closeWithResult,
         connectView,
+        deleteAttachment,
         getAssistantDraft: activeAssistantDraft,
         getPendingConfirmation: activePendingConfirmation,
         handleSendButton,
@@ -912,5 +1007,6 @@
         runCommand,
         showStatus,
         startEventStream,
+        uploadAttachments,
       };
       };

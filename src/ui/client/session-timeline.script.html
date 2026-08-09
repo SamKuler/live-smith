@@ -186,6 +186,46 @@
         return sessionDateFormatter.format(date);
       }
 
+      function formatAttachmentBytes(byteLength) {
+        if (byteLength < 1024) return `${byteLength} B`;
+        const kibibytes = byteLength / 1024;
+        if (kibibytes < 1024) {
+          return `${formatAttachmentUnit(kibibytes)} KiB`;
+        }
+        return `${formatAttachmentUnit(kibibytes / 1024)} MiB`;
+      }
+
+      function formatAttachmentUnit(value) {
+        return value >= 10 || Number.isInteger(value)
+          ? String(Math.round(value))
+          : value.toFixed(1);
+      }
+
+      function attachmentTypeLabel(mediaType) {
+        if (mediaType === "image/png") return "PNG";
+        if (mediaType === "image/jpeg") return "JPEG";
+        if (mediaType === "image/webp") return "WebP";
+        return "Image";
+      }
+
+      function appendTimelineAttachments(content, attachments) {
+        if (!Array.isArray(attachments) || !attachments.length) return;
+        const list = document.createElement("div");
+        list.className = "timeline-attachments";
+        list.setAttribute("role", "list");
+        list.setAttribute("aria-label", "Image attachments");
+        for (const attachment of attachments) {
+          const chip = document.createElement("span");
+          chip.className = "timeline-attachment-chip";
+          chip.setAttribute("role", "listitem");
+          chip.textContent = `${attachment.fileName} · ${
+            attachmentTypeLabel(attachment.mediaType)
+          } · ${formatAttachmentBytes(attachment.byteLength)}`;
+          list.append(chip);
+        }
+        content.append(list);
+      }
+
       function focusSessionRow(sessionId) {
         const entry = [...document.querySelectorAll(".session-entry")]
           .find((candidate) => candidate.dataset.sessionId === sessionId);
@@ -911,6 +951,7 @@
           : eventContent;
         if (collapsed) content.textContent = visibleContent;
         else renderMarkdown(content, visibleContent);
+        appendTimelineAttachments(content, event.attachments);
 
         if (collapsed) {
           const item = document.createElement("details");

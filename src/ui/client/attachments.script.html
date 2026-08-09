@@ -1,0 +1,196 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createAttachments = function createAttachments({
+        deleteAttachment,
+        getState,
+        showStatus,
+        uploadAttachments,
+      }) {
+      const supportedImageTypes = new Set([
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+      ]);
+      const maxAttachmentBytes = 5 * 1024 * 1024;
+      const maxPendingAttachmentCount = 4;
+      const maxPendingAttachmentBytes = 16 * 1024 * 1024;
+      let busy = false;
+      let initialized = false;
+
+      function pendingAttachments() {
+        return Array.isArray(getState().pendingAttachments)
+          ? getState().pendingAttachments
+          : [];
+      }
+
+      function formatBytes(byteLength) {
+        if (byteLength < 1024) return `${byteLength} B`;
+        const kibibytes = byteLength / 1024;
+        if (kibibytes < 1024) return `${formatUnit(kibibytes)} KiB`;
+        return `${formatUnit(kibibytes / 1024)} MiB`;
+      }
+
+      function formatUnit(value) {
+        return value >= 10 || Number.isInteger(value)
+          ? String(Math.round(value))
+          : value.toFixed(1);
+      }
+
+      function renderPending() {
+        const strip = document.getElementById("pendingAttachments");
+        if (!strip) return;
+        strip.replaceChildren();
+        const attachments = pendingAttachments();
+        strip.hidden = attachments.length === 0;
+        strip.setAttribute("aria-busy", String(busy));
+        for (const attachment of attachments) {
+          const chip = document.createElement("span");
+          chip.className = "attachment-chip";
+          chip.dataset.attachmentId = attachment.id;
+          chip.setAttribute("role", "listitem");
+
+          const label = document.createElement("span");
+          label.className = "attachment-chip-label";
+          label.textContent = `${attachment.fileName} · ${formatBytes(attachment.byteLength)}`;
+          label.title = attachment.fileName;
+
+          const remove = document.createElement("button");
+          remove.className = "attachment-remove";
+          remove.type = "button";
+          remove.disabled = busy;
+          remove.setAttribute("aria-label", `Remove attached image ${attachment.fileName}`);
+          remove.textContent = "×";
+          remove.addEventListener("click", () => {
+            void removePending(attachment.id);
+          });
+          chip.append(label, remove);
+          strip.append(chip);
+        }
+      }
+
+      function setBusy(value) {
+        busy = Boolean(value);
+        const attachButton = document.getElementById("attachImageButton");
+        const input = document.getElementById("attachmentInput");
+        if (attachButton) attachButton.disabled = busy;
+        if (input) input.disabled = busy;
+        document.querySelector(".composer")
+          ?.setAttribute("aria-busy", String(busy));
+        renderPending();
+      }
+
+      function validateFiles(files) {
+        if (!files.length) return false;
+        if (files.some((file) => !supportedImageTypes.has(file.type))) {
+          showStatus("Only PNG, JPEG, and WebP images can be attached.", true);
+          return false;
+        }
+        if (files.some((file) => file.size === 0)) {
+          showStatus("An attached image cannot be empty.", true);
+          return false;
+        }
+        if (files.some((file) => file.size > maxAttachmentBytes)) {
+          showStatus("Each attached image must be 5 MiB or smaller.", true);
+          return false;
+        }
+        const pending = pendingAttachments();
+        if (pending.length + files.length > maxPendingAttachmentCount) {
+          showStatus("A Session can have at most 4 pending images.", true);
+          return false;
+        }
+        const currentBytes = pending.reduce(
+          (total, attachment) => total + attachment.byteLength,
+          0,
+        );
+        const selectedBytes = files.reduce((total, file) => total + file.size, 0);
+        if (currentBytes + selectedBytes > maxPendingAttachmentBytes) {
+          showStatus("Pending images in a Session must total 16 MiB or less.", true);
+          return false;
+        }
+        return true;
+      }
+
+      async function uploadFiles(fileList) {
+        if (busy) return;
+        const files = [...(fileList || [])];
+        if (!validateFiles(files)) return;
+        try {
+          await uploadAttachments(getState().activeSessionId, files);
+        } catch (error) {
+          showStatus(error.message || String(error), true);
+        }
+      }
+
+      async function removePending(attachmentId) {
+        if (busy) return;
+        try {
+          await deleteAttachment(getState().activeSessionId, attachmentId);
+        } catch (error) {
+          showStatus(error.message || String(error), true);
+        }
+      }
+
+      function validateSend() {
+        if (!pendingAttachments().length) return true;
+        if (getState().runtimeProfile?.capabilities?.inputs?.image === true) {
+          return true;
+        }
+        showStatus(
+          "The active model does not support image input. Remove the attached images or activate an image-capable Profile.",
+          true,
+        );
+        return false;
+      }
+
+      function filesFromTransfer(transfer) {
+        return transfer?.files ? [...transfer.files] : [];
+      }
+
+      function initialize() {
+        if (initialized) return;
+        initialized = true;
+        const composer = document.querySelector(".composer");
+        const prompt = document.getElementById("prompt");
+        const attachButton = document.getElementById("attachImageButton");
+        const input = document.getElementById("attachmentInput");
+
+        attachButton?.addEventListener("click", () => input?.click());
+        input?.addEventListener("change", () => {
+          const selected = filesFromTransfer(input);
+          input.value = "";
+          void uploadFiles(selected);
+        });
+        prompt?.addEventListener("paste", (event) => {
+          const files = filesFromTransfer(event.clipboardData);
+          if (!files.length) return;
+          event.preventDefault();
+          void uploadFiles(files);
+        });
+        composer?.addEventListener("dragover", (event) => {
+          if (!event.dataTransfer?.types?.includes("Files")) return;
+          event.preventDefault();
+          composer.classList.add("drop-target");
+        });
+        composer?.addEventListener("dragleave", (event) => {
+          if (!composer.contains(event.relatedTarget)) {
+            composer.classList.remove("drop-target");
+          }
+        });
+        composer?.addEventListener("drop", (event) => {
+          const files = filesFromTransfer(event.dataTransfer);
+          if (!files.length) return;
+          event.preventDefault();
+          composer.classList.remove("drop-target");
+          void uploadFiles(files);
+        });
+        renderPending();
+      }
+
+      return {
+        initialize,
+        removePending,
+        renderPending,
+        setBusy,
+        uploadFiles,
+        validateSend,
+      };
+      };

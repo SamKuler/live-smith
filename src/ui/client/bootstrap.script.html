@@ -21,6 +21,13 @@
           setState,
         });
 
+        const attachments = factories.createAttachments({
+          deleteAttachment: bridgeClient.deleteAttachment,
+          getState,
+          showStatus: bridgeClient.showStatus,
+          uploadAttachments: bridgeClient.uploadAttachments,
+        });
+
         const profileEditor = factories.createProfileEditor({
           getState,
           runCommand: bridgeClient.runCommand,
@@ -92,9 +99,8 @@
         }
 
         function requestClose() {
-          const commandActive = bridgeClient.isCommandInProgress();
-          const sendActive = bridgeClient.hasAnySendInProgress();
-          const operationActive = commandActive || sendActive;
+          const operationActive = bridgeClient.isOperationInProgress() ||
+            bridgeClient.hasAnySendInProgress();
           const draftDirty = profileEditor.getDraftState().dirty;
           const warning = operationActive && draftDirty
             ? "Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved."
@@ -112,6 +118,7 @@
           renderHeaderSummary();
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
+          attachments.renderPending();
           capabilityPreview.updateReasoningVisibility();
           capabilityPreview.updateDraftActions();
         }
@@ -205,13 +212,21 @@
           if (feedback.status) bridgeClient.showStatus(feedback.status);
         }
 
-        function setOperationState({ anySendInProgress, commandKind, sendInProgress }) {
-          const operationBusy = Boolean(commandKind) || sendInProgress;
-          const settingsBusy = Boolean(commandKind) || anySendInProgress;
+        function setOperationState({
+          anySendInProgress,
+          attachmentInProgress,
+          commandKind,
+          sendInProgress,
+        }) {
+          const operationBusy = Boolean(commandKind) || sendInProgress ||
+            attachmentInProgress;
+          const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress;
+          const settingsBusy = Boolean(commandKind) || anySendInProgress ||
+            attachmentInProgress;
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
-          sessionsPane?.classList.toggle("command-busy", Boolean(commandKind));
-          sessionsPane?.setAttribute("aria-busy", String(Boolean(commandKind)));
+          sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
+          sessionsPane?.setAttribute("aria-busy", String(sessionControlsBusy));
           document.getElementById("settingsPanel")
             .setAttribute("aria-busy", String(settingsBusy));
           document.getElementById("settingsLockNotice").hidden = !(
@@ -231,15 +246,17 @@
           document.getElementById("prompt").disabled = operationBusy;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
             .forEach((control) => {
-              control.disabled = Boolean(commandKind);
+              control.disabled = sessionControlsBusy;
             });
           document.querySelectorAll(
             "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
-          approvalMode.disabled = Boolean(commandKind);
-          document.getElementById("sendButton").disabled = Boolean(commandKind);
+          approvalMode.disabled = Boolean(commandKind) || attachmentInProgress;
+          document.getElementById("sendButton").disabled =
+            Boolean(commandKind) || attachmentInProgress;
+          attachments.setBusy(operationBusy);
 
           if (!operationBusy) {
             capabilityPreview.updateReasoningVisibility();
@@ -269,6 +286,7 @@
           updateCapabilityPreview: capabilityPreview.updateCapabilityPreview,
           updateDraftActions: capabilityPreview.updateDraftActions,
           updateReasoningVisibility: capabilityPreview.updateReasoningVisibility,
+          validateAttachmentsForSend: attachments.validateSend,
         });
         delete window.LiveSmithFactories;
 
@@ -293,6 +311,7 @@
         };
 
         window.addEventListener("DOMContentLoaded", () => {
+          attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();
           setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));

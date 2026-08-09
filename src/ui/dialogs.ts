@@ -2,6 +2,7 @@ import resultDialog from "./templates/result-dialog.html";
 import chatDialog from "./templates/chat-dialog.html";
 import hostAdapterScript from "./client/host-adapter.script.html";
 import profileEditorScript from "./client/profile-editor.script.html";
+import attachmentsScript from "./client/attachments.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import capabilityPreviewScript from "./client/capability-preview.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
@@ -25,6 +26,7 @@ export function chatHtml(
   bridge: { baseUrl: string; token: string },
 ): string {
   return composeChatDocument(chatDialog, state, bridge, {
+    attachments: attachmentsScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,
     capabilityPreview: capabilityPreviewScript,
