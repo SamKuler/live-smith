@@ -1,13 +1,15 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { platform } from "node:process";
 
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
 import {
   ensurePrivateDirectory,
-  ensurePrivateFile,
+  ensurePrivateDirectoryDurably,
   isStorageCommitOutcomeUnknownError,
   removeDirectoryDurably,
   removeFileDurably,
@@ -56,8 +58,8 @@ interface AttachmentSaveOptions {
 }
 
 export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
-export const MAX_PENDING_ATTACHMENT_COUNT = 4;
-export const MAX_PENDING_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+export const MAX_PENDING_SESSION_ATTACHMENT_COUNT = 4;
+export const MAX_PENDING_SESSION_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
@@ -359,10 +361,10 @@ async function readStoredMetadata(
 }
 
 async function readMetadataFile(target: string): Promise<StoredSessionAttachment> {
+  let handle: fs.FileHandle | undefined;
   try {
-    await assertRegularFile(target);
-    await ensurePrivateFile(target);
-    const parsed = JSON.parse(await fs.readFile(target, "utf8")) as unknown;
+    handle = await openRegularPrivateFile(target);
+    const parsed = JSON.parse(await handle.readFile("utf8")) as unknown;
     if (!isStoredSessionAttachment(parsed)) {
       throw new AttachmentStorageCorruptionError();
     }
@@ -372,6 +374,8 @@ async function readMetadataFile(target: string): Promise<StoredSessionAttachment
       throw new AttachmentStorageCorruptionError(error);
     }
     throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -379,11 +383,11 @@ async function readAndVerifyBlob(
   directory: string,
   metadata: StoredSessionAttachment,
 ): Promise<Uint8Array> {
+  let handle: fs.FileHandle | undefined;
   try {
     const target = attachmentBlobPath(directory, metadata.id);
-    await assertRegularFile(target);
-    await ensurePrivateFile(target);
-    const bytes = new Uint8Array(await fs.readFile(target));
+    handle = await openRegularPrivateFile(target);
+    const bytes = new Uint8Array(await handle.readFile());
     verifyBytes(metadata, bytes);
     return bytes;
   } catch (error) {
@@ -396,6 +400,8 @@ async function readAndVerifyBlob(
         : new AttachmentStorageCorruptionError(error);
     }
     throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -680,7 +686,7 @@ async function prepareAttachmentSessionDirectory(
     const exists = await assertExistingDirectoryIsSafe(target);
     if (!exists) {
       if (!create) return false;
-      await ensurePrivateDirectory(target);
+      await ensurePrivateDirectoryDurably(target);
     } else {
       await ensurePrivateDirectory(target);
     }
@@ -709,11 +715,33 @@ async function assertExistingDirectoryIsSafe(target: string): Promise<boolean> {
   }
 }
 
-async function assertRegularFile(target: string): Promise<void> {
-  const info = await fs.lstat(target);
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new AttachmentStorageCorruptionError();
+async function openRegularPrivateFile(target: string): Promise<fs.FileHandle> {
+  let handle: fs.FileHandle;
+  try {
+    const flags = platform === "win32"
+      ? fsConstants.O_RDONLY
+      : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+    handle = await fs.open(target, flags);
+  } catch (error) {
+    if (isSymbolicLinkOpenError(error)) {
+      throw new AttachmentStorageCorruptionError(error);
+    }
+    throw error;
   }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new AttachmentStorageCorruptionError();
+    if (platform !== "win32") await handle.chmod(0o600);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+function isSymbolicLinkOpenError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    ["ELOOP", "EMLINK"].includes(String((error as { code?: unknown }).code));
 }
 
 function cloneMetadata(metadata: StoredSessionAttachment): StoredSessionAttachment {

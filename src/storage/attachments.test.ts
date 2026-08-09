@@ -32,6 +32,12 @@ const webpBytes = new Uint8Array([
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
 
+function pngBytesAtSize(byteLength: number): Uint8Array {
+  const bytes = new Uint8Array(byteLength);
+  bytes.set(pngBytes);
+  return bytes;
+}
+
 test("session attachment stores private image bytes and immutable metadata", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-"));
 
@@ -100,6 +106,23 @@ test("session attachment rejects unsupported bytes and per-image overflow", asyn
     }),
     (error: unknown) => error instanceof AttachmentTooLargeError,
   );
+});
+
+test("session attachment accepts exactly five MiB and rejects one byte more", async () => {
+  const sessionId = `memory-image-boundary-${Date.now()}`;
+  const exact = await saveSessionAttachment(undefined, sessionId, {
+    fileName: "exact.png",
+    bytes: pngBytesAtSize(MAX_IMAGE_ATTACHMENT_BYTES),
+  });
+  assert.equal(exact.byteLength, MAX_IMAGE_ATTACHMENT_BYTES);
+  await assert.rejects(
+    saveSessionAttachment(undefined, sessionId, {
+      fileName: "over.png",
+      bytes: pngBytesAtSize(MAX_IMAGE_ATTACHMENT_BYTES + 1),
+    }),
+    (error: unknown) => error instanceof AttachmentTooLargeError,
+  );
+  await deleteSessionAttachments(undefined, sessionId);
 });
 
 test("session attachment APIs reject traversal-shaped storage IDs", async () => {

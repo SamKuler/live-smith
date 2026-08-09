@@ -8,8 +8,8 @@ import type { ModelCapabilities } from "../model/provider.js";
 import {
   isImageAttachmentMediaType,
   listSessionAttachments,
-  MAX_PENDING_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
   readSessionAttachmentBytes,
   type SessionAttachmentRef,
   type StoredSessionAttachment,
@@ -79,11 +79,11 @@ export async function resolveConversationHistory(input: {
   ).slice(-maxConversationMessages);
   let remainingBytes = Math.max(
     0,
-    MAX_PENDING_ATTACHMENT_BYTES - input.currentAttachmentBytes,
+    MAX_PENDING_SESSION_ATTACHMENT_BYTES - input.currentAttachmentBytes,
   );
   let remainingCount = Math.max(
     0,
-    MAX_PENDING_ATTACHMENT_COUNT - input.currentAttachmentCount,
+    MAX_PENDING_SESSION_ATTACHMENT_COUNT - input.currentAttachmentCount,
   );
   const selectedIds = new Set<string>();
   if (input.capabilities.inputs.image) {
@@ -179,9 +179,9 @@ function historicalMarker(
 
 function assertRequestBudget(refs: readonly SessionAttachmentRef[]): void {
   if (
-    refs.length > MAX_PENDING_ATTACHMENT_COUNT ||
+    refs.length > MAX_PENDING_SESSION_ATTACHMENT_COUNT ||
     refs.reduce((total, ref) => total + ref.byteLength, 0) >
-      MAX_PENDING_ATTACHMENT_BYTES
+      MAX_PENDING_SESSION_ATTACHMENT_BYTES
   ) {
     throw new Error("Image attachments exceed the model request limit.");
   }

@@ -138,7 +138,11 @@ async function writeAtomically(
     }
     if (mode === "create") {
       await fs.link(temporary, target);
-      await fs.unlink(temporary).catch(() => undefined);
+      try {
+        await fs.unlink(temporary);
+      } catch (cause) {
+        throw new StorageCommitOutcomeUnknownError(cause);
+      }
       temporaryCreated = false;
     } else {
       await fs.rename(temporary, target);
@@ -151,7 +155,11 @@ async function writeAtomically(
     }
   } finally {
     if (temporaryCreated) {
-      await fs.unlink(temporary).catch(() => undefined);
+      try {
+        await fs.unlink(temporary);
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error;
+      }
     }
   }
 }
@@ -160,6 +168,28 @@ export async function ensurePrivateDirectory(directory: string): Promise<void> {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   if (supportsPosixPermissions) {
     await fs.chmod(directory, 0o700);
+  }
+}
+
+export async function ensurePrivateDirectoryDurably(
+  directory: string,
+  options: {
+    syncDirectory?: (directory: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+  let created = false;
+  try {
+    await fs.mkdir(directory, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+  if (supportsPosixPermissions) await fs.chmod(directory, 0o700);
+  if (!created) return;
+  try {
+    await (options.syncDirectory ?? syncDirectory)(path.dirname(directory));
+  } catch (cause) {
+    throw new StorageCommitOutcomeUnknownError(cause);
   }
 }
 
@@ -238,4 +268,9 @@ function isUnsupportedDirectorySyncError(error: unknown): boolean {
   }
   const code = (error as { code?: unknown }).code;
   return code === "EBADF" || code === "EINVAL" || code === "EISDIR" || code === "ENOTSUP";
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST";
 }

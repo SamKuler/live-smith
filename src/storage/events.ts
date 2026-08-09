@@ -6,9 +6,15 @@ import type {
   SessionAttachmentRef,
 } from "./attachments.js";
 import {
-  MAX_PENDING_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
 } from "./attachments.js";
+
+export const MAX_USER_EVENT_ATTACHMENT_COUNT =
+  MAX_PENDING_SESSION_ATTACHMENT_COUNT;
+export const MAX_USER_EVENT_ATTACHMENT_BYTES =
+  MAX_PENDING_SESSION_ATTACHMENT_BYTES;
 
 import {
   createStorageId,
@@ -74,14 +80,11 @@ export async function appendSessionEvent(
   if (input.attachments !== undefined && input.kind !== "user") {
     throw new TypeError("Only user events may contain Session attachments.");
   }
-  const event: SessionEvent = {
+  const event: SessionEvent = cloneSessionEvent({
     id: createStorageId("event"),
     createdAt: new Date().toISOString(),
     ...input,
-    ...(input.attachments === undefined
-      ? {}
-      : { attachments: input.attachments.map((attachment) => ({ ...attachment })) }),
-  };
+  });
   if (!isSessionEvent(event)) {
     throw new TypeError("Session event input is invalid.");
   }
@@ -90,8 +93,8 @@ export async function appendSessionEvent(
     if (!storageDirectory) {
       const events = memoryEvents.get(sessionId) ?? [];
       assertAttachmentIdsUnconsumed(events, event);
-      memoryEvents.set(sessionId, [...events, event]);
-      return event;
+      memoryEvents.set(sessionId, [...events, cloneSessionEvent(event)]);
+      return cloneSessionEvent(event);
     }
 
     const events = await loadSessionEventsUnlocked(storageDirectory, sessionId);
@@ -109,7 +112,9 @@ export async function loadSessionEvents(
   storageDirectory: string | undefined,
   sessionId: string,
 ): Promise<SessionEvent[]> {
-  if (!storageDirectory) return [...(memoryEvents.get(sessionId) ?? [])];
+  if (!storageDirectory) {
+    return (memoryEvents.get(sessionId) ?? []).map(cloneSessionEvent);
+  }
 
   return loadSessionEventsUnlocked(storageDirectory, sessionId);
 }
@@ -126,7 +131,8 @@ async function loadSessionEventsUnlocked(
     if (
       !Array.isArray(parsed) ||
       !parsed.every(isSessionEvent) ||
-      !hasUniqueStorageIds(parsed)
+      !hasUniqueStorageIds(parsed) ||
+      !hasUniqueConsumedAttachmentIds(parsed)
     ) {
       throw new SessionEventsCorruptionError();
     }
@@ -196,7 +202,7 @@ function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    value.length > MAX_PENDING_ATTACHMENT_COUNT ||
+    value.length > MAX_USER_EVENT_ATTACHMENT_COUNT ||
     !value.every(isSessionAttachmentRef)
   ) {
     return false;
@@ -204,7 +210,7 @@ function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[
   const ids = new Set(value.map((attachment) => attachment.id));
   return ids.size === value.length &&
     value.reduce((total, attachment) => total + attachment.byteLength, 0) <=
-      MAX_PENDING_ATTACHMENT_BYTES;
+      MAX_USER_EVENT_ATTACHMENT_BYTES;
 }
 
 function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
@@ -230,7 +236,7 @@ function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
     attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
     Number.isInteger(record.byteLength) &&
     (record.byteLength as number) > 0 &&
-    (record.byteLength as number) <= MAX_PENDING_ATTACHMENT_BYTES &&
+    (record.byteLength as number) <= MAX_IMAGE_ATTACHMENT_BYTES &&
     typeof record.sha256 === "string" &&
     /^[a-f0-9]{64}$/.test(record.sha256);
 }
@@ -251,6 +257,30 @@ function assertAttachmentIdsUnconsumed(
       `Attachment ${duplicate.id} has already been consumed by this Session.`,
     );
   }
+}
+
+function hasUniqueConsumedAttachmentIds(events: readonly SessionEvent[]): boolean {
+  const ids = events.flatMap(
+    (event) => event.attachments?.map((attachment) => attachment.id) ?? [],
+  );
+  return new Set(ids).size === ids.length;
+}
+
+function cloneSessionEvent(event: SessionEvent): SessionEvent {
+  return {
+    ...event,
+    ...(event.attachments === undefined
+      ? {}
+      : { attachments: event.attachments.map((attachment) => ({ ...attachment })) }),
+    ...(event.recovery === undefined
+      ? {}
+      : {
+          recovery: {
+            ...event.recovery,
+            completedActionDigests: [...event.recovery.completedActionDigests],
+          },
+        }),
+  };
 }
 
 function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {

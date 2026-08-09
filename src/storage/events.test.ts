@@ -4,12 +4,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { SessionAttachmentRef } from "./attachments.js";
+import {
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  type SessionAttachmentRef,
+} from "./attachments.js";
 
 import {
   appendSessionEvent,
   deleteSessionEvents,
   loadSessionEvents,
+  MAX_USER_EVENT_ATTACHMENT_BYTES,
+  MAX_USER_EVENT_ATTACHMENT_COUNT,
   SessionEventsCorruptionError,
 } from "./events.js";
 
@@ -58,7 +63,7 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
     appendSessionEvent(undefined, sessionId, {
       kind: "user",
       content: "too many",
-      attachments: Array.from({ length: 9 }, (_, index) => ({
+      attachments: Array.from({ length: MAX_USER_EVENT_ATTACHMENT_COUNT + 1 }, (_, index) => ({
         ...imageRef,
         id: `attachment-${index}`,
       })),
@@ -69,10 +74,13 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
     appendSessionEvent(undefined, sessionId, {
       kind: "user",
       content: "too large",
-      attachments: [
-        { ...imageRef, id: "attachment-a", byteLength: 11 * 1024 * 1024 },
-        { ...imageRef, id: "attachment-b", byteLength: 10 * 1024 * 1024 },
-      ],
+      attachments: Array.from({ length: MAX_USER_EVENT_ATTACHMENT_COUNT }, (_, index) => ({
+        ...imageRef,
+        id: `attachment-large-${index}`,
+        byteLength: index === 0
+          ? MAX_USER_EVENT_ATTACHMENT_BYTES / MAX_USER_EVENT_ATTACHMENT_COUNT + 1
+          : MAX_USER_EVENT_ATTACHMENT_BYTES / MAX_USER_EVENT_ATTACHMENT_COUNT,
+      })),
     }),
     /invalid/i,
   );
@@ -92,6 +100,62 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
     }),
     /invalid/i,
   );
+});
+
+test("event attachment limits accept the exact count and byte boundaries", async () => {
+  const sessionId = `memory-event-boundary-${Date.now()}`;
+  const refs = Array.from({ length: MAX_USER_EVENT_ATTACHMENT_COUNT }, (_, index) => ({
+    ...imageRef,
+    id: `attachment-boundary-${index}`,
+    byteLength: MAX_USER_EVENT_ATTACHMENT_BYTES / MAX_USER_EVENT_ATTACHMENT_COUNT,
+  }));
+  assert.ok(refs.every((ref) => ref.byteLength <= MAX_IMAGE_ATTACHMENT_BYTES));
+
+  const event = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: "exact boundary",
+    attachments: refs,
+  });
+
+  assert.equal(event.attachments?.length, MAX_USER_EVENT_ATTACHMENT_COUNT);
+  assert.equal(
+    event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
+    MAX_USER_EVENT_ATTACHMENT_BYTES,
+  );
+  await deleteSessionEvents(undefined, sessionId);
+});
+
+test("memory event storage deep-clones nested input, append, and load values", async () => {
+  const sessionId = `memory-event-clone-${Date.now()}`;
+  const inputRef = { ...imageRef, id: "attachment-memory-clone" };
+  const appendedUser = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: "clone attachment",
+    attachments: [inputRef],
+  });
+  inputRef.fileName = "mutated-input.png";
+  appendedUser.attachments![0]!.fileName = "mutated-return.png";
+
+  const digest = "b".repeat(64);
+  const recovery = { active: true, completedActionDigests: [digest] };
+  const appendedRecovery = await appendSessionEvent(undefined, sessionId, {
+    kind: "apply_result",
+    content: "clone recovery",
+    recovery,
+  });
+  recovery.completedActionDigests[0] = "c".repeat(64);
+  appendedRecovery.recovery!.completedActionDigests[0] = "d".repeat(64);
+
+  const firstLoad = await loadSessionEvents(undefined, sessionId);
+  assert.equal(firstLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
+  assert.deepEqual(firstLoad[1]?.recovery?.completedActionDigests, [digest]);
+  firstLoad[0]!.attachments![0]!.fileName = "mutated-load.png";
+  firstLoad[1]!.recovery!.completedActionDigests[0] = "e".repeat(64);
+
+  const secondLoad = await loadSessionEvents(undefined, sessionId);
+  assert.equal(secondLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
+  assert.deepEqual(secondLoad[1]?.recovery?.completedActionDigests, [digest]);
+  await deleteSessionEvents(undefined, sessionId);
 });
 
 test("event attachment IDs cannot be consumed by multiple user events", async () => {
@@ -335,6 +399,43 @@ test("duplicate persisted event IDs block reads and appends without changing byt
   await assert.rejects(
     appendSessionEvent(dir, "duplicate-session", {
       kind: "user",
+      content: "Must not overwrite",
+    }),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("duplicate persisted attachment IDs across events are corruption", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "duplicate-attachments.json");
+  const original = JSON.stringify([
+    {
+      id: "event-first-attachment",
+      createdAt: new Date().toISOString(),
+      kind: "user",
+      content: "First",
+      attachments: [imageRef],
+    },
+    {
+      id: "event-second-attachment",
+      createdAt: new Date().toISOString(),
+      kind: "user",
+      content: "Second",
+      attachments: [imageRef],
+    },
+  ]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    loadSessionEvents(dir, "duplicate-attachments"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  await assert.rejects(
+    appendSessionEvent(dir, "duplicate-attachments", {
+      kind: "assistant",
       content: "Must not overwrite",
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  ensurePrivateDirectoryDurably,
   isStorageCommitOutcomeUnknownError,
   removeDirectoryDurably,
   removeFileDurably,
@@ -12,6 +13,44 @@ import {
   writeBytesAtomicallyCreateOnly,
   writeJsonAtomically,
 } from "./persistence.js";
+
+test("ensurePrivateDirectoryDurably syncs a newly created directory's parent", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-durable-dir-"));
+  const target = path.join(parent, "attachments");
+  const synced: string[] = [];
+
+  await ensurePrivateDirectoryDurably(target, {
+    syncDirectory: async (directory) => {
+      synced.push(directory);
+    },
+  });
+
+  assert.deepEqual(synced, [parent]);
+  if (process.platform !== "win32") {
+    assert.equal((await fs.stat(target)).mode & 0o777, 0o700);
+  }
+
+  await ensurePrivateDirectoryDurably(target, {
+    syncDirectory: async () => {
+      throw new Error("existing directories must not be re-committed");
+    },
+  });
+});
+
+test("ensurePrivateDirectoryDurably classifies a post-create sync failure", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-durable-dir-"));
+  const target = path.join(parent, "attachments");
+
+  await assert.rejects(
+    ensurePrivateDirectoryDurably(target, {
+      syncDirectory: async () => {
+        throw Object.assign(new Error("sync failed"), { code: "EIO" });
+      },
+    }),
+    (error: unknown) => isStorageCommitOutcomeUnknownError(error),
+  );
+  assert.equal((await fs.stat(target)).isDirectory(), true);
+});
 
 test("writeBytesAtomically durably replaces a private binary file", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-bytes-"));
