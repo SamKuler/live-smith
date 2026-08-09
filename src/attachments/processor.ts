@@ -1,12 +1,25 @@
 import { Buffer } from "node:buffer";
 
-import type { AttachmentMediaType } from "../storage/attachments.js";
+import { throwIfAborted } from "../runtime/host.js";
+import {
+  assertDocumentAttachmentBytesWithinLimit,
+  AttachmentProcessingError,
+  type DocumentAttachmentMediaType,
+} from "./contracts.js";
+import { type OoxmlPackage, openOoxmlPackage } from "./ooxml.js";
+
+export {
+  AttachmentProcessingError,
+  type AttachmentProcessingErrorCode,
+  type DocumentAttachmentMediaType,
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
+} from "./contracts.js";
 
 export type ProcessedAttachment =
   | {
       type: "text";
       fileName: string;
-      mediaType: AttachmentMediaType;
+      mediaType: DocumentAttachmentMediaType;
       text: string;
       truncated: boolean;
     }
@@ -17,35 +30,18 @@ export type ProcessedAttachment =
       bytes: Uint8Array;
     };
 
-export type AttachmentProcessingErrorCode =
-  | "unsupported_type"
-  | "encrypted_document"
-  | "macro_enabled"
-  | "archive_limit"
-  | "invalid_document";
+export type PreliminaryAttachmentContainer = "pdf" | "zip_candidate";
 
-export class AttachmentProcessingError extends Error {
-  constructor(
-    public readonly code: AttachmentProcessingErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "AttachmentProcessingError";
-  }
-}
-
-export type SniffedAttachmentType = "application/pdf" | "application/zip";
-
-export function sniffAttachmentType(
+export function sniffAttachmentContainer(
   bytes: Uint8Array,
   _fileName: string,
-): SniffedAttachmentType {
+): PreliminaryAttachmentContainer {
   assertBinaryBytes(bytes);
   if (isPdfHeader(bytes)) {
     assertValidPdf(bytes);
-    return "application/pdf";
+    return "pdf";
   }
-  if (isZipHeader(bytes)) return "application/zip";
+  if (isZipHeader(bytes)) return "zip_candidate";
   throw new AttachmentProcessingError(
     "invalid_document",
     "The attachment is not a supported document.",
@@ -55,26 +51,20 @@ export function sniffAttachmentType(
 export async function processAttachment(input: {
   bytes: Uint8Array;
   fileName: string;
-  mediaType?: AttachmentMediaType;
+  claimedMediaType?: string;
   nativePdfAllowed: boolean;
+  signal?: AbortSignal;
 }): Promise<ProcessedAttachment> {
-  const sniffed = sniffAttachmentType(input.bytes, input.fileName);
-  if (sniffed === "application/pdf") {
-    if (input.mediaType !== undefined && input.mediaType !== "application/pdf") {
-      throw invalidDocument();
-    }
-    if (containsPdfEncryptToken(input.bytes)) {
-      throw new AttachmentProcessingError(
-        "encrypted_document",
-        "Encrypted PDF documents are not supported.",
-      );
-    }
+  throwIfAborted(input.signal);
+  const inspected = await inspectDocumentAttachment(input);
+  if (inspected.mediaType === "application/pdf") {
     if (!input.nativePdfAllowed) {
       throw new AttachmentProcessingError(
-        "unsupported_type",
+        "profile_incompatible",
         "This Profile/API mode cannot read PDF attachments.",
       );
     }
+    throwIfAborted(input.signal);
     return {
       type: "native_pdf",
       fileName: input.fileName,
@@ -88,15 +78,59 @@ export async function processAttachment(input: {
   );
 }
 
+export async function classifyDocumentAttachment(input: {
+  bytes: Uint8Array;
+  fileName: string;
+  claimedMediaType?: string;
+  signal?: AbortSignal;
+}): Promise<DocumentAttachmentMediaType> {
+  return (await inspectDocumentAttachment(input)).mediaType;
+}
+
+async function inspectDocumentAttachment(input: {
+  bytes: Uint8Array;
+  fileName: string;
+  claimedMediaType?: string;
+  signal?: AbortSignal;
+}): Promise<{
+  mediaType: DocumentAttachmentMediaType;
+  package?: OoxmlPackage;
+}> {
+  throwIfAborted(input.signal);
+  const container = sniffAttachmentContainer(input.bytes, input.fileName);
+  if (container === "pdf") {
+    if (containsPdfEncryptToken(input.bytes)) {
+      throw new AttachmentProcessingError(
+        "encrypted_document",
+        "Encrypted PDF documents are not supported.",
+      );
+    }
+    return { mediaType: "application/pdf" };
+  }
+
+  const officePackage = await openOoxmlPackage(input.bytes, input.signal);
+  const mediaType = ooxmlMediaType(officePackage.kind);
+  return { mediaType, package: officePackage };
+}
+
+function ooxmlMediaType(kind: OoxmlPackage["kind"]): DocumentAttachmentMediaType {
+  switch (kind) {
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+}
+
 const pdfWhitespace = "\\x00\\x09\\x0a\\x0c\\x0d\\x20";
 const validPdfTrailer = new RegExp(
   `^%%EOF(?:[${pdfWhitespace}]|%[^\\r\\n]*(?:\\r\\n?|\\n|$))*$`,
 );
 
 function assertBinaryBytes(bytes: Uint8Array): void {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
-    throw invalidDocument();
-  }
+  assertDocumentAttachmentBytesWithinLimit(bytes);
 }
 
 function isPdfHeader(bytes: Uint8Array): boolean {

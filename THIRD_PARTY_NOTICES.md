@@ -6,6 +6,7 @@ used by the bounded document parser:
 - `fflate` 0.8.3 — Copyright (c) 2026 Arjun Barrett
 - `fast-xml-parser` 5.10.1 — Copyright (c) 2017 Amit Kumar Gupta
 - `@nodable/entities` 3.0.0 — authored by Amit Gupta
+- `anynum` 1.0.1 — Copyright (c) 2026 Natural Intelligence
 - `fast-xml-builder` 1.3.0 — Copyright (c) 2026 Natural Intelligence
 - `is-unsafe` 2.0.0 — Copyright (c) 2026 Natural Intelligence
 - `path-expression-matcher` 1.6.2 — Copyright (c) 2024

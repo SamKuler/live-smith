@@ -7,6 +7,7 @@ import * as vm from "node:vm";
 import ts from "typescript";
 
 import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
+import { assertPackagedBundleContainsThirdPartyNotices } from "./src/release/package-verification.js";
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
   entry: string;
@@ -44,9 +45,79 @@ const entryOutput = outputFiles.find((output) =>
 if (!entryOutput) throw new Error(`Build did not produce ${manifest.entry}.`);
 const bundle = entryOutput.text;
 
+assertPackagedBundleContainsThirdPartyNotices(entryOutput.contents);
 verifyBundleDoesNotUseUnsupportedGlobals(bundle, manifest.entry);
 verifyBundleEntrypointLoads(bundle, manifest.entry);
+if (production) await verifyDocumentParserBundleIsHostSafe();
 writeVerifiedBuildOutputs(outputFiles, production ? `${manifest.entry}.map` : undefined);
+
+async function verifyDocumentParserBundleIsHostSafe(): Promise<void> {
+  const probeResult = await esbuild.build({
+    entryPoints: ["src/attachments/ooxml.ts"],
+    bundle: true,
+    format: "cjs",
+    platform: "node",
+    write: false,
+    sourcesContent: false,
+    logLevel: "silent",
+    minify: true,
+    metafile: true,
+    legalComments: "none",
+    treeShaking: true,
+  });
+  const fflateInputs = Object.keys(probeResult.metafile.inputs)
+    .filter((input) => input.includes("node_modules/fflate/"));
+  if (
+    fflateInputs.length !== 1 ||
+    !fflateInputs[0]?.endsWith("node_modules/fflate/esm/browser.js")
+  ) {
+    throw new Error(
+      `Document parser must bundle only fflate/browser; resolved ${fflateInputs.join(", ") || "no fflate entry"}.`,
+    );
+  }
+
+  const probeSource = probeResult.outputFiles[0]?.text;
+  if (probeSource === undefined) {
+    throw new Error("Document parser security probe did not produce a bundle.");
+  }
+  if (probeSource.includes("worker_threads")) {
+    throw new Error("Document parser bundle contains forbidden worker_threads runtime code.");
+  }
+  const probeAst = ts.createSourceFile(
+    "document-parser-security-probe.js",
+    probeSource,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  let forbidden: string | undefined;
+  const forbiddenIdentifiers = new Map([
+    ["createRequire", "createRequire"],
+    ["Worker", "Worker"],
+    ["Blob", "Blob"],
+    ["URL", "ambient URL"],
+  ]);
+  const visit = (node: ts.Node): void => {
+    if (forbidden !== undefined) return;
+    if (ts.isIdentifier(node)) {
+      forbidden = forbiddenIdentifiers.get(node.text);
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "eval"
+    ) {
+      forbidden = "eval";
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(probeAst);
+  if (forbidden !== undefined) {
+    throw new Error(
+      `Document parser bundle contains forbidden ${forbidden} runtime code.`,
+    );
+  }
+}
 
 function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
   const violations: string[] = [];
