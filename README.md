@@ -28,6 +28,8 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Shows model/tool/apply/error events in the active chat session.
+- Accepts PNG, JPEG, and WebP references by picker, paste, or drag-and-drop when
+  the active Runtime Profile explicitly supports image input.
 - Renders user and assistant messages with locally bundled, sanitized Markdown,
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
@@ -212,6 +214,31 @@ fall back to built-in capability hints or manual Settings values.
 OpenAI Responses always sends `store: false`; Live Smith stores and replays the
 returned response items locally instead of using remote conversation state.
 
+### Image input
+
+The **Attach image** control is enabled only when the active Runtime Profile
+resolves `inputs.image` to `true`. An explicit `false` is shown as unsupported;
+missing or malformed discovery evidence remains unverified until Load Models or
+a manual capability override provides an answer. This gate affects images only:
+plain-text sends remain available, and pending image chips can always be removed
+when no attachment operation is running.
+
+Live Smith accepts PNG, JPEG, and WebP images. The reviewed cross-provider
+limits are 5 MiB per file, 4 pending/current images per Session, and 16 MiB for
+the pending or per-request image budget. These deliberately conservative limits
+bound base64 expansion, provider request size, and Extension Host memory across
+all three protocols. The backend rechecks type, image header/dimensions, Session
+ownership, and quotas; client-side checks are only early feedback.
+
+Images stay pending until a user event is durably appended. That event consumes
+the same immutable attachment references before the provider call, so a later
+provider failure does not resend the images as a new prompt. Consumed images
+remain visible in history and cannot be deleted independently. Historical image
+context is selected newest-first within the remaining 4-image/16-MiB request
+budget, then restored to chronological message order. Images are untrusted model
+context only: their IDs, filenames, and local paths never become sample-source
+arguments or authorize filesystem access.
+
 See [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) for provider details and
 capability resolution.
 
@@ -228,6 +255,12 @@ provider credentials.
 Model configuration is read only from saved profiles; environment variables are
 not a model-configuration fallback. Unit and DOM behavior tests do not call a
 model provider and do not require an API key.
+
+Attachment bytes and metadata are private local Session data. They are never
+embedded in settings or event JSON, and provider errors never include their
+base64 request representation. On POSIX hosts the attachment directories are
+restricted to `0700` and files to `0600`, like the other private Live Smith
+storage. Do not share or cloud-sync this data directory.
 
 ## Sessions and history
 
@@ -262,11 +295,13 @@ The directory contains:
   timestamps.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
   tool results, confirmations, and errors for each Session.
+- `live-smith-attachments/<session-id>/` — private image blobs and integrity
+  metadata owned by that Session.
 - `live-smith-models-<profile-id>-<hash>.json` — provider model-discovery cache.
 
-On POSIX systems, Live Smith restricts the directory and JSON files to the
-current user. If the SDK does not provide a storage directory, data falls back
-to process memory and will not survive an Extension Host restart.
+On POSIX systems, Live Smith restricts the directory, JSON files, and attachment
+blobs to the current user. If the SDK does not provide a storage directory, data
+falls back to process memory and will not survive an Extension Host restart.
 
 During development, `npm start` uses the Git-ignored `.live-smith-data/`
 directory in this repository. Profiles saved while running the extension are

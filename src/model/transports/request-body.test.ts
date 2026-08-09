@@ -28,8 +28,18 @@ test("mergeExtraBody recursively overrides generation fields and replaces arrays
 });
 
 test("mergeExtraBody rejects protected structural fields before mutation", () => {
-  assert.throws(
-    () => mergeExtraBody({ input: ["safe"] }, { input: ["unsafe"] }),
-    /protected field input/,
-  );
+  for (const field of ["input", "messages"] as const) {
+    const generated = {
+      [field]: [{ role: "user", content: "provider-neutral content" }],
+      metadata: { owner: "Live Smith" },
+    };
+    const before = JSON.parse(JSON.stringify(generated)) as typeof generated;
+    assert.throws(
+      () => mergeExtraBody(generated, {
+        [field]: [{ role: "user", content: "injected replacement" }],
+      }),
+      new RegExp(`protected field ${field}`),
+    );
+    assert.deepEqual(generated, before);
+  }
 });

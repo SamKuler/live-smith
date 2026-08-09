@@ -19,6 +19,7 @@ import {
   WarpMode,
 } from "@ableton-extensions/sdk";
 
+import { validateAgentPlan } from "../agent/actions.js";
 import {
   AgentPlanExecutionError,
   executeAgentPlan,
@@ -485,6 +486,27 @@ test("Simpler, mixer, and arm actions use observed Live objects without exposing
   assert.equal(track.arm, true);
   assert.doesNotMatch(results.join("\n"), /Users|Secret Samples/);
   assert.match(results[0] ?? "", /kick\.wav/);
+});
+
+test("model action JSON cannot promote attachment IDs or filesystem paths into sample sources", () => {
+  for (const source of [
+    { kind: "path", path: "/Users/alice/Secret Samples/kick.wav" },
+    { kind: "attachment", attachmentId: "attachment-private-source" },
+  ]) {
+    assert.throws(
+      () => validateAgentPlan({
+        message: "Load an untrusted source",
+        actions: [{
+          type: "replace_simpler_sample",
+          trackName: "Drums",
+          simplerName: "Simpler",
+          simplerPath: { deviceIndex: 0 },
+          source,
+        }],
+      }),
+      /invalid action|source/i,
+    );
+  }
 });
 
 test("sample-loading host errors cannot expose observed filesystem paths", async () => {

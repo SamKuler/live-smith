@@ -117,6 +117,23 @@ names, attachment IDs, and local storage paths are not sent in image blocks.
 Document and audio parts remain unsupported in this milestone and are rejected
 with a fixed local error if they reach a transport.
 
+The shared cross-provider policy accepts PNG, JPEG, and WebP up to 5 MiB per
+file, 4 pending/current images per Session, and 16 MiB in pending state or one
+model request. The limits are intentionally below many provider maxima to bound
+base64 expansion and Extension Host memory consistently across transports. The
+server validates detected type, dimensions, ownership, integrity, and quota;
+the WebView checks the same shared constants only for early feedback.
+
+Images remain pending until the associated user event is durably appended. A
+confirmed append consumes those immutable IDs before provider I/O, including
+when the provider later fails. Current images take the request budget first;
+historical user images are selected newest-first within the remaining 4-image/
+16-MiB budget, then emitted in chronological conversation order. Assistant
+history remains text-only. Duplicate attachment IDs across events are storage
+corruption, and consumed IDs cannot be removed or attached to another prompt.
+Attachment metadata is labelled untrusted; image content informs the model but
+does not create an action-schema source, local path, or filesystem capability.
+
 ## Capability resolution
 
 Capabilities resolve in this order:
@@ -125,6 +142,21 @@ Capabilities resolve in this order:
 2. Explicit discovery metadata.
 3. Known model policy.
 4. Conservative API-mode fallback.
+
+Input capabilities also retain the evidence behind the resolved Boolean. A
+manual override wins over a valid discovery hint, which wins over documented
+known-model policy. An explicit `false` is unsupported; the conservative
+fallback value remains unknown/unverified in the UI rather than being presented
+as provider evidence. This distinction disables only image attachment, not
+ordinary text sends.
+
+Anthropic discovery reads the official
+`capabilities.image_input.supported` and `capabilities.pdf_input.supported`
+fields when they are explicit Booleans. Modality arrays are accepted only as a
+secondary compatibility hint, and only when every entry is a string; malformed
+or partial values are ignored instead of erasing stronger known-model policy.
+Custom OpenAI-compatible model names receive no image capability from name
+guessing and require discovery metadata or a manual override.
 
 Unknown models remain usable with standard protocol fields, while explicit
 reasoning stays at Provider default until discovery or a manual override says it
@@ -184,7 +216,8 @@ API keys are stored as plain text in Ableton's local extension storage directory
 Use a dedicated key with provider-side spending and rate limits. Do not commit,
 share, or cloud-sync the storage directory. Environment variables and `.env`
 files are not read as model configuration. On POSIX hosts, Live Smith creates or
-tightens its storage directories to mode `0700` and JSON files to `0600`.
+tightens its storage directories to mode `0700` and private JSON and attachment
+blob files to `0600`.
 
 ## Running
 

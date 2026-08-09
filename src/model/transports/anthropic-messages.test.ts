@@ -752,6 +752,7 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
     "anthropic-history-sentinel",
     "anthropic-tool-state-sentinel",
     "anthropic-extra-body-sentinel",
+    "QU5USFJPUElDX0lNQUdFX1NFQ1JFVA==",
   ];
   const p = profile({
     advanced: {
@@ -759,10 +760,19 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
     },
   });
   const req = request(p);
-  req.currentUserContent = [{
-    type: "text",
-    text: `${sentinels[0]} ${sentinels[1]}`,
-  }];
+  req.runtimeProfile.capabilities.inputs.image = true;
+  req.currentUserContent = [
+    {
+      type: "text",
+      text: `${sentinels[0]} ${sentinels[1]}`,
+    },
+    {
+      type: "image",
+      fileName: "secret-image.png",
+      mediaType: "image/png",
+      base64: sentinels[6]!,
+    },
+  ];
   req.systemInstructions = sentinels[2]!;
   req.history = [{ role: "assistant", content: sentinels[3]! }];
   req.agentMessages = [
@@ -803,6 +813,7 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
         /anthropic\/messages request failed: Anthropic HTTP 400: Bad Request/,
       );
       for (const sentinel of sentinels) assert.doesNotMatch(message, new RegExp(sentinel));
+      assert.doesNotMatch(message, /data:image/i);
       return true;
     },
   );

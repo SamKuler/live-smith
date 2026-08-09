@@ -17,9 +17,15 @@ src/
       Local authenticated HTTP/SSE bridge for the modal WebView.
     model-request.ts
       Builds provider-neutral transport requests and capability previews.
+    attachment-context.ts
+      Resolves current and bounded historical image parts without exposing
+      attachment storage details to providers or the agent loop.
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
       context from events.
+    session-mutation-fence.ts
+      Serializes the full same-Session send and lifecycle boundary across
+      dialogs that share one storage directory.
 
   agent/
     action-schema.ts
@@ -81,6 +87,9 @@ src/
       Profile/fingerprint-isolated raw model-metadata cache.
     events.ts, sessions.ts
       Chat session metadata and the canonical event history.
+    attachments.ts
+      Private create-only image blobs, integrity metadata, ownership checks,
+      quota policy, and durable Session-scoped cleanup.
 
   ui/
     chat-state.ts
@@ -92,34 +101,39 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus isolated Profile editor, bridge lifecycle,
-      capability preview, and session/timeline factories with an explicit
-      dependency-injection bootstrap.
+      image attachment, capability preview, and session/timeline factories with
+      an explicit dependency-injection bootstrap.
 ```
 
 ## Model request flow
 
-1. The bridge accepts a prompt and session ID only.
+1. The bridge accepts a prompt and session ID only. Attachment upload/delete are
+   separate authenticated, size-bounded routes with strict Session ownership;
+   bytes never enter the send JSON body.
 2. `agent-flow.ts` loads the saved active profile; an unsaved UI draft can never
    enter a model request.
 3. `capabilities.ts` resolves effective model capabilities and validates the
    saved generation parameters from manual overrides, raw discovery metadata,
    known policy, and conservative fallback.
-4. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
+4. Before appending the user event, `attachment-context.ts` verifies pending
+   image metadata/blobs and resolves current plus bounded historical user image
+   parts. The append atomically consumes the current immutable references.
+5. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
    Messages.
-5. The transport maps normalized tools/messages/parameters to the wire protocol.
-6. The transport returns normalized text/tool calls and opaque replay state.
-7. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
+6. The transport maps normalized tools/messages/parameters to the wire protocol.
+7. The transport returns normalized text/tool calls and opaque replay state.
+8. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
    tempo, mute, solo, and device parameter value. Host `bigint` values are
    encoded deterministically at this fingerprint boundary instead of being
    passed to ordinary JSON serialization; no Approval mode can bypass the
    guard.
-8. After confirmation and immediately before execution, `agent/loop.ts` invokes
+9. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
    other action-relevant state performs no mutation and returns a failed tool
    result so the model can inspect again before proposing a new confirmation.
-9. `agent/loop.ts` executes the bounded apply loop without inspecting provider
+10. `agent/loop.ts` executes the bounded apply loop without inspecting provider
    or protocol data. Successful or partially successful Live writes and new,
    distinct observations renew a rolling no-progress budget. Repeating the same
    observation and result does not. Execution returns an explicit mutation count,
@@ -152,6 +166,42 @@ Non-2xx provider response bodies are treated as untrusted and are not read,
 logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and status text.
 
+## Image attachment boundary
+
+Phase 1 accepts only structurally valid PNG, JPEG, and WebP images. Shared
+policy constants enforce 5 MiB per file, at most 4 pending/current images, and
+16 MiB for both pending Session state and one model request. This is an
+intentional cross-provider limit: base64 wire encoding and multi-round replay
+must remain bounded in the Extension Host even when a provider accepts more.
+The server is authoritative and enforces quota changes inside the same
+process-wide Session mutation fence as event append and attachment deletion.
+
+Attachment blobs and JSON integrity metadata live under a private
+Session-specific directory. Creation is create-only with collision retry;
+reads reject symlinks, verify regular-file metadata, byte length, SHA-256,
+detected media type, and bounded image dimensions. Directory creation, deletion,
+and orphan cleanup use durable parent synchronization and explicit unknown
+commit outcomes. Startup orphan sweeping occurs before bridge commands are
+accepted, never from an ordinary state snapshot that could race Session
+creation. POSIX directories are tightened to `0700` and files to `0600`.
+
+Pending references are resolved before the user event is appended. A confirmed
+append consumes those exact immutable IDs even if the provider later fails;
+unknown append outcomes remain `PromptPersistence=unknown` until authoritative
+state is refreshed. An ID can occur in only one user event, consumed IDs cannot
+be deleted, and corrupt duplicate occurrences fail closed. Current images use
+the request budget first. Historical candidates are budgeted newest-first but
+the final conversation remains chronological; only selected/current blobs are
+opened and verified. Assistant history is always text-only.
+
+The provider-neutral model contract carries binary content only as typed user
+image parts. Transports recheck `inputs.image === true`, map those parts to
+native protocol blocks, and keep the text-only OpenAI Chat wire shape unchanged.
+Filenames, IDs, and paths are excluded from image blocks. Attachment content and
+display metadata remain untrusted data, and the action schema has no attachment
+or arbitrary-path sample source, so an image can inform the model but cannot
+directly become a Live sample or filesystem capability.
+
 ## Configuration boundaries
 
 Only profile CRUD/activation and the dedicated global-settings command write the
@@ -169,10 +219,12 @@ unknown commit outcome instead of claiming that the replacement did not happen.
 Invalid settings, sessions, or event logs are reported as corruption and block
 mutations rather than being treated as empty, so a later write cannot overwrite
 recoverable Profiles, credentials, or history. Persisted storage IDs are
-validated before use as filename components, and duplicate session or event IDs
-are rejected as corruption rather than sharing or collapsing history. On POSIX
-hosts, read paths as well as writes tighten storage directories to `0700` and
-JSON files to `0600`.
+validated before use as filename components, and duplicate session, event, or
+cross-event attachment IDs are rejected as corruption rather than sharing or
+collapsing history. On POSIX hosts, read paths as well as writes tighten storage
+directories to `0700` and private JSON/blob files to `0600`. Storage failures
+cross the attachment HTTP boundary only as fixed typed diagnostics; absolute
+paths and credential-bearing causes are never returned to the WebView.
 Session deletion durably removes its event log before metadata; if event
 removal fails or has an unknown commit outcome, the session remains visible and
 retryable instead of leaving an unreachable conversation log.
@@ -284,13 +336,18 @@ projection of the latest 12 persisted Apply results, rejected tool inputs, and
 errors (at most 12,000 characters). Recovery records are labelled untrusted
 bookkeeping data and never gain instruction authority. The bridge permits one
 active send per Session while different Sessions may observe and plan in
-parallel. Session select/create/restore/rename/archive/unarchive/delete commands
-remain available
-during background sends, but Profile and model-discovery writes are locked in
-both the dialog and bridge while any send is active. The global Approval mode
-selector is the exception: it remains writable during a send and is read again
-immediately before each new Apply decision. Manual requests user approval for
-every plan. Low Risk automatically approves only plans outside the protected
+parallel. A process-wide lease keyed by normalized storage directory and
+Session ID spans exact Session lookup, attachment consumption, the provider/tool
+loop, all trace/error persistence, and the final authoritative state snapshot.
+Upload/delete and Session rename/archive/unarchive/delete use the same lease, so
+another dialog cannot delete a Session and then have a running send recreate its
+event log. A send never falls back to another Session when its requested ID is
+missing. Waiting operations recheck cancellation immediately after acquiring
+the lease. Different Sessions still overlap. Profile and model-discovery writes
+are locked in both the dialog and bridge while any send is active. The global
+Approval mode selector is the exception: it remains writable during a send and
+is read again immediately before each new Apply decision. Manual requests user
+approval for every plan. Low Risk automatically approves only plans outside the protected
 action set. Accept Everything automatically approves every validated plan,
 including deletes and replacement writes. An automatic decision persists a
 distinct `apply_auto_approved` Session event with the selected mode; this

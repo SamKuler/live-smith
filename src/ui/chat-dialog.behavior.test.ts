@@ -4950,7 +4950,7 @@ test("a user timeline attachment chip renders inert filename, type, and size met
     content: "Review this",
     attachments: [pendingImage(
       "attachment-event",
-      '<img src=x onerror="alert(1)"> / private/path.png',
+      '<img src=x onerror="alert(1)">\r\nAuthorization: Bearer display-only\\private/path.png',
       "image/png",
       1_536,
     )],
@@ -4962,7 +4962,7 @@ test("a user timeline attachment chip renders inert filename, type, and size met
     );
     assert.equal(
       chip?.textContent,
-      '<img src=x onerror="alert(1)"> / private/path.png · PNG · 1.5 KiB',
+      '<img src=x onerror="alert(1)">\r\nAuthorization: Bearer display-only\\private/path.png · PNG · 1.5 KiB',
     );
     assert.equal(chip?.querySelector("img"), null);
     assert.doesNotMatch(chip?.innerHTML ?? "", /base64|data:image/i);
