@@ -743,7 +743,7 @@ export async function createChatBridge(
           // Preserve the original send error if state cannot also be refreshed.
         }
       }
-      if (requestPath !== "/send" || sendId !== undefined) {
+      if (!attachmentMutation && (requestPath !== "/send" || sendId !== undefined)) {
         broadcast({
           type: "error",
           ...(sendId === undefined ? {} : { sendId }),
@@ -1157,6 +1157,16 @@ function singleHeaderValue(
   name: string,
   required: boolean,
 ): string | undefined {
+  const rawHeaders = request.rawHeaders ?? [];
+  let occurrences = 0;
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]?.toLocaleLowerCase() === name) {
+      occurrences += 1;
+    }
+  }
+  if (occurrences > 1) {
+    throw new ChatBridgeRequestValidationError(`${name} must appear at most once.`);
+  }
   const raw = request.headers[name];
   if (Array.isArray(raw)) {
     throw new ChatBridgeRequestValidationError(`${name} must appear at most once.`);

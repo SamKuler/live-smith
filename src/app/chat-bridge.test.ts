@@ -1561,6 +1561,75 @@ test("attachment operations conflict only with the same Session's active mutatio
   }
 });
 
+test("different-Session attachment failures stay on their initiating HTTP response", async () => {
+  let releaseFailure!: () => void;
+  let markFailureStarted!: () => void;
+  const failureGate = new Promise<void>((resolve) => {
+    releaseFailure = resolve;
+  });
+  const failureStarted = new Promise<void>((resolve) => {
+    markFailureStarted = resolve;
+  });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.progress("correlated probe");
+      return state;
+    },
+    handleAttachmentUpload: async (input) => {
+      if (input.sessionId === "session-failure") {
+        markFailureStarted();
+        await failureGate;
+        throw new Error("attachment failure");
+      }
+      return state;
+    },
+    handleAttachmentDelete: async () => state,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const upload = (sessionId: string, fileName: string) => fetch(
+    `${chatUrl.origin}/attachments?token=${token}` +
+      `&sessionId=${sessionId}&fileName=${fileName}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: attachmentRequestBody(attachmentPng),
+    },
+  );
+
+  try {
+    const failedUpload = upload("session-failure", "failure.png");
+    await failureStarted;
+    const successfulUpload = upload("session-success", "success.png");
+    releaseFailure();
+    assert.deepEqual(
+      await Promise.all([failedUpload, successfulUpload]).then((responses) =>
+        responses.map((response) => response.status)
+      ),
+      [500, 201],
+    );
+
+    const send = await fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "probe", sessionId: "session-success" }),
+    });
+    assert.equal(send.status, 200);
+    const firstPayload = await readNextSsePayload(events);
+    assert.equal(firstPayload.type, "progress");
+    assert.equal(firstPayload.sessionId, "session-success");
+    assert.equal(firstPayload.message, "correlated probe");
+  } finally {
+    releaseFailure();
+    await bridge.close();
+  }
+});
+
 test("attachment post-commit state failures reconcile as unknown outcomes", async () => {
   const authoritative = { status: "attachment-present" } as ChatDialogState;
   let builds = 0;
@@ -1623,6 +1692,75 @@ test("raw attachment reader rejects declared-length mismatch and actual overflow
     overflowRead,
     (error: unknown) => error instanceof ChatBridgePayloadTooLargeError,
   );
+});
+
+test("raw HTTP rejects duplicate attachment headers before the upload handler", async () => {
+  let handlerCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+    handleAttachmentUpload: async () => {
+      handlerCalls += 1;
+      return state;
+    },
+    handleAttachmentDelete: async () => state,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const baseHeaders = [
+    `Host: 127.0.0.1:${chatUrl.port}`,
+    `Content-Length: ${attachmentPng.byteLength}`,
+    "Connection: close",
+  ];
+  const requestPath =
+    `/attachments?token=${token}&sessionId=session-1&fileName=duplicate.png`;
+
+  try {
+    const duplicateContentType = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        ...baseHeaders,
+        "Content-Type: application/octet-stream",
+        "Content-Type: application/octet-stream",
+      ],
+      attachmentPng,
+    );
+    const duplicateClaimedType = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        ...baseHeaders,
+        "Content-Type: application/octet-stream",
+        "X-Live-Smith-File-Type: image/png",
+        "X-Live-Smith-File-Type: image/png",
+      ],
+      attachmentPng,
+    );
+    const duplicateContentLength = await rawHttpStatus(
+      Number(chatUrl.port),
+      requestPath,
+      [
+        `Host: 127.0.0.1:${chatUrl.port}`,
+        `Content-Length: ${attachmentPng.byteLength}`,
+        `Content-Length: ${attachmentPng.byteLength}`,
+        "Content-Type: application/octet-stream",
+        "Connection: close",
+      ],
+      attachmentPng,
+    );
+
+    assert.deepEqual(
+      [duplicateContentType, duplicateClaimedType, duplicateContentLength],
+      [400, 400, 400],
+    );
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await bridge.close();
+  }
 });
 
 test("an attachment upload closed early never reaches the mutation handler", async () => {
@@ -1716,4 +1854,57 @@ async function readSsePayload(
   } finally {
     await reader.cancel();
   }
+}
+
+async function readNextSsePayload(
+  response: Response,
+): Promise<Record<string, unknown>> {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  let received = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("Event stream ended before a payload arrived.");
+      received += NodeBuffer.from(chunk.value).toString("utf8");
+      for (const block of received.split("\n\n")) {
+        const data = block.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice("data: ".length);
+        if (data) return JSON.parse(data) as Record<string, unknown>;
+      }
+    }
+  } finally {
+    await reader.cancel();
+  }
+}
+
+async function rawHttpStatus(
+  port: number,
+  requestPath: string,
+  headers: string[],
+  body: Uint8Array,
+): Promise<number> {
+  const socket = connect(port, "127.0.0.1");
+  const chunks: NodeBuffer[] = [];
+  socket.on("data", (chunk: NodeBuffer) => chunks.push(chunk));
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write([
+    `POST ${requestPath} HTTP/1.1`,
+    ...headers,
+    "",
+    "",
+  ].join("\r\n"));
+  socket.end(NodeBuffer.from(body));
+  await new Promise<void>((resolve, reject) => {
+    socket.once("end", resolve);
+    socket.once("error", reject);
+  });
+  const statusLine = NodeBuffer.concat(chunks).toString("utf8").split("\r\n", 1)[0];
+  const match = /^HTTP\/1\.1 (\d{3}) /.exec(statusLine ?? "");
+  assert.ok(match, `Expected an HTTP response, received ${JSON.stringify(statusLine)}.`);
+  return Number(match[1]);
 }
