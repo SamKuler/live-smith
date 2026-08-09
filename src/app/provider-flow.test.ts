@@ -50,6 +50,7 @@ import {
   capabilitiesForProfile,
   capabilitiesForProfilePreview,
   resolveDiscoveredModels,
+  runtimeProfileForSavedProfile,
 } from "./model-request.js";
 import {
   activeRecoveryLedgerFromEvents,
@@ -187,6 +188,36 @@ test("removing a manual override re-resolves from raw discovery metadata", () =>
   );
   assert.equal(
     capabilitiesForProfilePreview(overridden, []).temperature,
+    "unsupported",
+  );
+});
+
+test("Runtime Profile carries input capability evidence without raw discovery metadata", () => {
+  const unknownProfile: SavedProfile = {
+    id: "p-input-evidence",
+    name: "Custom model",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-model",
+    parameters: {
+      maxOutputTokens: 4096,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  };
+
+  assert.equal(
+    runtimeProfileForSavedProfile(unknownProfile).inputCapabilityEvidence?.image,
+    "unverified",
+  );
+  assert.equal(
+    runtimeProfileForSavedProfile(unknownProfile, [{
+      id: "custom-model",
+      displayName: "Custom model",
+      capabilities: { inputs: { image: false } },
+    }]).inputCapabilityEvidence?.image,
     "unsupported",
   );
 });

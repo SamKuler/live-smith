@@ -5,6 +5,7 @@ import type { SavedProfile } from "./profile.js";
 import {
   defaultModelCapabilities,
   resolveModelCapabilities,
+  resolveModelCapabilitiesWithEvidence,
   validateGenerationParameters,
 } from "./capabilities.js";
 
@@ -60,6 +61,49 @@ test("input capabilities merge known policy, discovery, and partial overrides", 
     inputs: { pdf: true },
   });
   assert.deepEqual(overridden.inputs, { image: false, audio: true, pdf: true });
+});
+
+test("input capability evidence follows override, discovery, known policy, then unverified fallback", () => {
+  const fallback = resolveModelCapabilitiesWithEvidence(profile());
+  assert.equal(fallback.capabilities.inputs.image, false);
+  assert.equal(fallback.inputCapabilityEvidence.image, "unverified");
+
+  const known = resolveModelCapabilitiesWithEvidence(
+    profile({ model: "gpt-5.6" }),
+  );
+  assert.equal(known.capabilities.inputs.image, true);
+  assert.equal(known.inputCapabilityEvidence.image, "supported");
+
+  const discovered = resolveModelCapabilitiesWithEvidence(
+    profile({ model: "gpt-5.6" }),
+    { inputs: { image: false, pdf: true } },
+  );
+  assert.equal(discovered.capabilities.inputs.image, false);
+  assert.deepEqual(discovered.inputCapabilityEvidence, {
+    image: "unsupported",
+    audio: "unverified",
+    pdf: "supported",
+  });
+
+  const overridden = resolveModelCapabilitiesWithEvidence(
+    profile({
+      model: "gpt-5.6",
+      advanced: {
+        capabilityOverrides: { inputs: { image: true, pdf: false } },
+      },
+    }),
+    { inputs: { image: false, pdf: true } },
+  );
+  assert.deepEqual(overridden.capabilities.inputs, {
+    image: true,
+    audio: false,
+    pdf: false,
+  });
+  assert.deepEqual(overridden.inputCapabilityEvidence, {
+    image: "supported",
+    audio: "unverified",
+    pdf: "unsupported",
+  });
 });
 
 test("known input policy accepts only explicit aliases and legal snapshots", () => {

@@ -1,5 +1,6 @@
 import type { ConversationScope } from "../model/contracts.js";
 import type {
+  InputCapabilityEvidence,
   ModelCapabilities,
   ModelInfo,
   RuntimeProfile,
@@ -40,6 +41,7 @@ export interface ChatRuntimeSummary {
     "id" | "name" | "apiFamily" | "apiMode" | "model"
   >;
   capabilities: ModelCapabilities;
+  inputCapabilityEvidence: InputCapabilityEvidence;
 }
 
 export type ChatSessionActivityStatus =
@@ -92,6 +94,11 @@ export function chatRuntimeSummary(
       model: profile.model,
     },
     capabilities,
+    inputCapabilityEvidence: runtimeProfile.inputCapabilityEvidence ?? {
+      image: "unverified",
+      audio: "unverified",
+      pdf: "unverified",
+    },
   };
 }
 

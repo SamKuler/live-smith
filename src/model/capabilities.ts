@@ -1,4 +1,6 @@
 import type {
+  InputCapabilities,
+  InputCapabilityEvidence,
   ModelCapabilities,
   ModelCapabilityHints,
   ReasoningCapabilities,
@@ -158,18 +160,53 @@ export function resolveModelCapabilities(
   profile: DraftProfile | SavedProfile,
   discovered?: ModelCapabilityHints,
 ): ModelCapabilities {
+  return resolveModelCapabilitiesWithEvidence(profile, discovered).capabilities;
+}
+
+export function resolveModelCapabilitiesWithEvidence(
+  profile: DraftProfile | SavedProfile,
+  discovered?: ModelCapabilityHints,
+): {
+  capabilities: ModelCapabilities;
+  inputCapabilityEvidence: InputCapabilityEvidence;
+} {
   const fallback = defaultModelCapabilities();
   const known = knownCapabilitiesForModel(profile);
   const withKnown = mergeCapabilities(fallback, known);
+  const inputCapabilityEvidence = unverifiedInputCapabilityEvidence();
+  const knownInputs = knownInputCapabilitiesForModel(profile);
   const withKnownInputs = mergeCapabilities(
     withKnown,
-    knownInputCapabilitiesForModel(profile),
+    knownInputs,
   );
+  applyInputCapabilityEvidence(inputCapabilityEvidence, knownInputs?.inputs);
   const withDiscovered = mergeCapabilities(withKnownInputs, discovered);
-  return mergeCapabilityOverrides(
-    withDiscovered,
-    profile.advanced.capabilityOverrides,
-  );
+  applyInputCapabilityEvidence(inputCapabilityEvidence, discovered?.inputs);
+  const overrides = profile.advanced.capabilityOverrides;
+  const capabilities = mergeCapabilityOverrides(withDiscovered, overrides);
+  applyInputCapabilityEvidence(inputCapabilityEvidence, overrides?.inputs);
+  return { capabilities, inputCapabilityEvidence };
+}
+
+function unverifiedInputCapabilityEvidence(): InputCapabilityEvidence {
+  return {
+    image: "unverified",
+    audio: "unverified",
+    pdf: "unverified",
+  };
+}
+
+function applyInputCapabilityEvidence(
+  evidence: InputCapabilityEvidence,
+  values: Partial<InputCapabilities> | undefined,
+): void {
+  if (!values) return;
+  for (const kind of ["image", "audio", "pdf"] as const) {
+    const value = values[kind];
+    if (typeof value === "boolean") {
+      evidence[kind] = value ? "supported" : "unsupported";
+    }
+  }
 }
 
 function knownInputCapabilitiesForModel(

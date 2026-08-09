@@ -76,12 +76,20 @@
         renderPending();
       }
 
-      function imageInputCapability() {
-        return getState().runtimeProfile?.capabilities?.inputs?.image;
+      function imageInputStatus() {
+        const runtime = getState().runtimeProfile;
+        const evidence = runtime?.inputCapabilityEvidence?.image;
+        if (
+          evidence === "supported" &&
+          runtime?.capabilities?.inputs?.image === true
+        ) {
+          return "supported";
+        }
+        return evidence === "unsupported" ? "unsupported" : "unverified";
       }
 
       function capabilityMessage() {
-        return imageInputCapability() === false
+        return imageInputStatus() === "unsupported"
           ? "The active model does not support image input. Activate an image-capable Profile to attach more images."
           : "Image input support for the active model is unverified. Discover model capabilities or set an explicit image-input override before attaching images.";
       }
@@ -90,7 +98,7 @@
         const attachButton = document.getElementById("attachImageButton");
         const input = document.getElementById("attachmentInput");
         const hint = document.getElementById("attachmentCapabilityHint");
-        const supported = imageInputCapability() === true;
+        const supported = imageInputStatus() === "supported";
         const message = supported ? "" : capabilityMessage();
         if (attachButton) {
           attachButton.disabled = busy || !supported;
@@ -123,11 +131,11 @@
           } else if (file.size === 0) {
             reason = "the image is empty";
           } else if (file.size > maxAttachmentBytes) {
-            reason = "the image is larger than 5 MiB";
+            reason = `the image is larger than ${formatBytes(maxAttachmentBytes)}`;
           } else if (count >= maxPendingAttachmentCount) {
-            reason = "a Session can have at most 4 pending images";
+            reason = `a Session can have at most ${maxPendingAttachmentCount} pending images`;
           } else if (byteLength + file.size > maxPendingAttachmentBytes) {
-            reason = "pending images would exceed 16 MiB";
+            reason = `pending images would exceed ${formatBytes(maxPendingAttachmentBytes)}`;
           }
           if (reason) {
             failures.push(`${file.name || "Unnamed image"}: ${reason}`);
@@ -142,14 +150,14 @@
 
       function failureMessage(failures) {
         if (!failures.length) return "";
-        return `Some images were not attached: ${failures.join("; ")}. Re-select the named files to retry.`;
+        return `Some images were not attached: ${failures.join("; ")}. Resolve the stated requirement before selecting another file.`;
       }
 
       async function uploadFiles(fileList) {
         if (busy) return;
         const files = [...(fileList || [])];
         if (!files.length) return;
-        if (imageInputCapability() !== true) {
+        if (imageInputStatus() !== "supported") {
           showStatus(capabilityMessage(), true);
           return;
         }
@@ -182,11 +190,11 @@
 
       function validateSend() {
         if (!pendingAttachments().length) return true;
-        if (getState().runtimeProfile?.capabilities?.inputs?.image === true) {
+        if (imageInputStatus() === "supported") {
           return true;
         }
         showStatus(
-          imageInputCapability() === false
+          imageInputStatus() === "unsupported"
             ? "The active model does not support image input. Remove the attached images or activate an image-capable Profile."
             : "Image input support for the active model is unverified. Remove the attached images, discover model capabilities, or set an explicit image-input override.",
           true,
@@ -218,12 +226,14 @@
         });
         prompt?.addEventListener("paste", (event) => {
           const files = filesFromTransfer(event.clipboardData);
+          if (imageInputStatus() !== "supported") return;
           if (!containsSupportedImage(files)) return;
           event.preventDefault();
           void uploadFiles(files);
         });
         composer?.addEventListener("dragover", (event) => {
           const files = filesFromTransfer(event.dataTransfer);
+          if (imageInputStatus() !== "supported") return;
           if (!containsSupportedImage(files)) return;
           event.preventDefault();
           composer.classList.add("drop-target");
@@ -235,6 +245,7 @@
         });
         composer?.addEventListener("drop", (event) => {
           const files = filesFromTransfer(event.dataTransfer);
+          if (imageInputStatus() !== "supported") return;
           if (!containsSupportedImage(files)) return;
           event.preventDefault();
           composer.classList.remove("drop-target");

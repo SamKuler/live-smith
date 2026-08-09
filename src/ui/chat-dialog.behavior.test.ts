@@ -126,6 +126,12 @@ function capabilities(): ChatDialogState["capabilities"] {
   };
 }
 
+function inputCapabilityEvidence(
+  image: "supported" | "unsupported" | "unverified" = "unverified",
+): NonNullable<ChatDialogState["runtimeProfile"]>["inputCapabilityEvidence"] {
+  return { image, audio: "unverified", pdf: "unverified" };
+}
+
 function profileFixture(
   overrides: Partial<SavedProfile> = {},
 ): SavedProfile {
@@ -192,6 +198,7 @@ function stateFixture(): ChatDialogState {
     runtimeProfile: {
       profile: profileFixture(),
       capabilities: capabilities(),
+      inputCapabilityEvidence: inputCapabilityEvidence(),
     },
     settings: {
       schemaVersion: 2,
@@ -215,6 +222,7 @@ function stateFixture(): ChatDialogState {
 function imageCapableState(): ChatDialogState {
   const state = stateFixture();
   state.runtimeProfile!.capabilities.inputs.image = true;
+  state.runtimeProfile!.inputCapabilityEvidence.image = "supported";
   return state;
 }
 
@@ -477,6 +485,7 @@ async function createDialogHarness(
                 serverState.runtimeProfile = {
                   profile: command.profile,
                   capabilities: capabilities(),
+                  inputCapabilityEvidence: inputCapabilityEvidence(),
                 };
               } else if (command.kind === "discover_models") {
                 serverState.availableModels = [{
@@ -497,7 +506,11 @@ async function createDialogHarness(
                   ? modelStateSourceFixture(profile)
                   : null;
                 serverState.runtimeProfile = profile
-                  ? { profile, capabilities: capabilities() }
+                  ? {
+                      profile,
+                      capabilities: capabilities(),
+                      inputCapabilityEvidence: inputCapabilityEvidence(),
+                    }
                   : null;
               } else if (command.kind === "delete_profile" && command.profileId) {
                 serverState.settings.profiles = serverState.settings.profiles.filter(
@@ -514,7 +527,11 @@ async function createDialogHarness(
                   ? modelStateSourceFixture(profile)
                   : null;
                 serverState.runtimeProfile = profile
-                  ? { profile, capabilities: capabilities() }
+                  ? {
+                      profile,
+                      capabilities: capabilities(),
+                      inputCapabilityEvidence: inputCapabilityEvidence(),
+                    }
                   : null;
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
@@ -4505,6 +4522,10 @@ test("paste and drop ignore non-images without discarding supported images in a 
       harness.document.querySelector("#status")?.textContent ?? "",
       /notes\.pdf.*PNG, JPEG, and WebP/i,
     );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /re-select|retry/i,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -4708,6 +4729,10 @@ test("attachment limits accept exact 5 MiB, 4-image, and 16 MiB boundaries", asy
       perFileHarness.document.querySelector("#status")?.textContent ?? "",
       /over-five\.png.*larger than 5 MiB/i,
     );
+    assert.doesNotMatch(
+      perFileHarness.document.querySelector("#status")?.textContent ?? "",
+      /re-select|retry/i,
+    );
   } finally {
     perFileHarness.close();
   }
@@ -4847,7 +4872,11 @@ test("attachment chips reconcile after an unknown upload response before control
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /refreshed|verify/i,
+      /confirmed attached.*do not upload/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /re-select|retry/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -4877,7 +4906,11 @@ test("a typed unknown attachment outcome applies its authoritative state", async
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /could not be confirmed/i,
+      /confirmed attached.*do not upload/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /re-select|retry/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -4957,7 +4990,9 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
     supportedHarness.close();
   }
 
-  const unsupportedHarness = await createDialogHarness(stateFixture());
+  const unsupportedState = stateFixture();
+  unsupportedState.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const unsupportedHarness = await createDialogHarness(unsupportedState);
   try {
     const attach = unsupportedHarness.document.querySelector<HTMLButtonElement>(
       "#attachImageButton",
@@ -4969,13 +5004,24 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
         ?.disabled,
       false,
     );
+    const unsupportedImage = imageFile(
+      unsupportedHarness.window,
+      "unsupported.png",
+      "image/png",
+    );
+    assert.equal(unsupportedHarness.dispatchPaste([unsupportedImage]), false);
+    assert.equal(unsupportedHarness.dispatchDragOver([unsupportedImage]), false);
+    assert.equal(unsupportedHarness.dispatchDrop([unsupportedImage]), false);
+    await unsupportedHarness.settle();
+    assert.equal(
+      unsupportedHarness.calls.some((call) => call.path === "/attachments"),
+      false,
+    );
   } finally {
     unsupportedHarness.close();
   }
 
   const unverifiedState = stateFixture();
-  delete (unverifiedState.runtimeProfile!.capabilities.inputs as { image?: boolean })
-    .image;
   unverifiedState.pendingAttachments = [
     pendingImage("attachment-unverified", "remove-me.png"),
   ];
@@ -4986,6 +5032,13 @@ test("Attach distinguishes supported, unsupported, and unverified runtime capabi
     );
     assert.equal(attach?.disabled, true);
     assert.match(attach?.title ?? "", /unverified/i);
+    const unverifiedImage = imageFile(
+      unverifiedHarness.window,
+      "unverified.png",
+      "image/png",
+    );
+    assert.equal(unverifiedHarness.dispatchPaste([unverifiedImage]), false);
+    assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), false);
     const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
       '[data-attachment-id="attachment-unverified"] button',
     );
@@ -5008,6 +5061,7 @@ test("a text-only runtime keeps attachment chips visible but blocks Send precise
   state.pendingAttachments = [pendingImage("attachment-text-only", "score.png")];
   state.capabilities.inputs.image = true;
   state.runtimeProfile!.capabilities.inputs.image = false;
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
   const harness = await createDialogHarness(state);
   try {
     assert.match(
@@ -5030,7 +5084,6 @@ test("a text-only runtime keeps attachment chips visible but blocks Send precise
 
 test("an unverified runtime blocks only image-bearing Send with distinct guidance", async () => {
   const state = stateFixture();
-  delete (state.runtimeProfile!.capabilities.inputs as { image?: boolean }).image;
   state.pendingAttachments = [pendingImage("attachment-unverified", "score.png")];
   const harness = await createDialogHarness(state);
   try {

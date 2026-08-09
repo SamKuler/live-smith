@@ -27,6 +27,15 @@ export interface InputCapabilities {
   pdf: boolean;
 }
 
+export type InputCapabilityEvidenceValue =
+  | "supported"
+  | "unsupported"
+  | "unverified";
+
+export type InputCapabilityEvidence = {
+  [Kind in keyof InputCapabilities]: InputCapabilityEvidenceValue;
+};
+
 export interface ModelCapabilities {
   tools: boolean;
   streaming: boolean;
@@ -54,6 +63,8 @@ export interface ModelInfo {
 export interface RuntimeProfile {
   profile: SavedProfile;
   capabilities: ModelCapabilities;
+  /** Present on production Runtime Profiles; optional for narrow transport fixtures. */
+  inputCapabilityEvidence?: InputCapabilityEvidence;
 }
 
 /** Raw provider metadata. Resolve it with policy and manual overrides at use time. */

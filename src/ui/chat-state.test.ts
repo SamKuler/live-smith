@@ -33,6 +33,11 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
       advanced: { extraBody: { secret: true } },
     },
     capabilities,
+    inputCapabilityEvidence: {
+      image: "supported",
+      audio: "unverified",
+      pdf: "unsupported",
+    },
   });
 
   assert.deepEqual(summary, {
@@ -44,6 +49,11 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
       model: "runtime-model",
     },
     capabilities,
+    inputCapabilityEvidence: {
+      image: "supported",
+      audio: "unverified",
+      pdf: "unsupported",
+    },
   });
   assert.equal("apiKey" in summary.profile, false);
   assert.equal("advanced" in summary.profile, false);

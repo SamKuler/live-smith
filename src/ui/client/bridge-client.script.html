@@ -643,13 +643,17 @@
           const message = error.message || String(error);
           if (!reconciled) {
             commandReconciliationBlocked = true;
-            throw new Error(
+            const blockedError = new Error(
               `${message} Current attachment state could not be reconciled. Close and reopen Live Smith before continuing.`,
             );
+            blockedError.attachmentFailureKind = "blocked";
+            throw blockedError;
           }
-          throw new Error(
+          const retryableError = new Error(
             `${message} Authoritative attachment state was refreshed; verify the pending images before continuing.`,
           );
+          retryableError.attachmentFailureKind = "retryable";
+          throw retryableError;
         }
         const result = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -658,6 +662,7 @@
           );
           error.httpStatus = response.status;
           if (result.commandOutcome === "unknown") {
+            error.attachmentFailureKind = "unknown";
             if (result.state && typeof result.state === "object") {
               applyCommandState("attachment_reconcile", result.state);
             } else {
@@ -666,6 +671,12 @@
             if (result.reconciliationRequired === true) {
               commandReconciliationBlocked = true;
             }
+          } else {
+            error.attachmentFailureKind = [400, 404, 409, 413].includes(
+                response.status,
+              )
+              ? "policy"
+              : "retryable";
           }
           throw error;
         }
@@ -676,9 +687,15 @@
       function uploadAttachments(sessionId, files) {
         return runAttachmentOperation(async () => {
           let state = null;
-          const failures = [];
+          const committedWarnings = [];
+          const policyFailures = [];
+          const retryableFailures = [];
+          const uncertainFailures = [];
           for (let index = 0; index < files.length; index += 1) {
             const file = files[index];
+            const previousIds = new Set(
+              (getState().pendingAttachments || []).map((attachment) => attachment.id),
+            );
             const path = "/attachments" +
               `?sessionId=${encodeURIComponent(sessionId)}` +
               `&fileName=${encodeURIComponent(file.name)}`;
@@ -692,12 +709,23 @@
                 body: file,
               });
             } catch (error) {
-              failures.push(
-                `${attachmentFileLabel(file)}: ${error.message || String(error)}`,
-              );
+              const detail = `${attachmentFileLabel(file)}: ${
+                error.message || String(error)
+              }`;
+              if (newPendingAttachmentMatches(file, previousIds)) {
+                committedWarnings.push(
+                  `${attachmentFileLabel(file)} was confirmed attached after its response was interrupted`,
+                );
+              } else if (error.attachmentFailureKind === "policy") {
+                policyFailures.push(detail);
+              } else if (error.attachmentFailureKind === "retryable") {
+                retryableFailures.push(detail);
+              } else {
+                uncertainFailures.push(detail);
+              }
               if (commandReconciliationBlocked) {
                 for (const remaining of files.slice(index + 1)) {
-                  failures.push(
+                  uncertainFailures.push(
                     `${attachmentFileLabel(remaining)}: not attempted because attachment state could not be reconciled`,
                   );
                 }
@@ -705,13 +733,33 @@
               }
             }
           }
-          if (failures.length) {
-            throw new Error(
-              `Some selected images could not be attached. ${failures.join("; ")} Re-select the named files to retry.`,
-            );
+          const messages = [];
+          if (committedWarnings.length) {
+            messages.push(`${committedWarnings.join("; ")}. Do not upload those files again.`);
+          }
+          if (policyFailures.length) {
+            messages.push(`Not attached: ${policyFailures.join("; ")}. Resolve the stated requirement before selecting another file.`);
+          }
+          if (retryableFailures.length) {
+            messages.push(`Retryable uploads: ${retryableFailures.join("; ")}. Re-select only those named files to retry.`);
+          }
+          if (uncertainFailures.length) {
+            messages.push(`Unconfirmed uploads: ${uncertainFailures.join("; ")}. Verify current attachment state before uploading anything again.`);
+          }
+          if (messages.length) {
+            throw new Error(messages.join(" "));
           }
           return state;
         });
+      }
+
+      function newPendingAttachmentMatches(file, previousIds) {
+        return (getState().pendingAttachments || []).some((attachment) =>
+          !previousIds.has(attachment.id) &&
+          attachment.fileName === file.name &&
+          attachment.byteLength === file.size &&
+          attachment.mediaType === file.type
+        );
       }
 
       function attachmentFileLabel(file) {

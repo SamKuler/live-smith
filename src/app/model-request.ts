@@ -5,6 +5,7 @@ import type {
 } from "../model/contracts.js";
 import {
   resolveModelCapabilities,
+  resolveModelCapabilitiesWithEvidence,
 } from "../model/capabilities.js";
 import type {
   DiscoveredModelInfo,
@@ -74,9 +75,15 @@ export function runtimeProfileForSavedProfile(
   profile: SavedProfile,
   models: DiscoveredModelInfo[] = [],
 ): RuntimeProfile {
+  const discovered = models.find((model) => model.id === profile.model);
+  const resolved = resolveModelCapabilitiesWithEvidence(
+    profile,
+    discovered?.capabilities,
+  );
   return {
     profile,
-    capabilities: capabilitiesForProfile(profile, models),
+    capabilities: resolved.capabilities,
+    inputCapabilityEvidence: resolved.inputCapabilityEvidence,
   };
 }
 
