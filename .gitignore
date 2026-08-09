@@ -13,6 +13,7 @@ coverage/
 .codex/
 .idea/
 .vscode/
+.worktrees/
 
 extensions-sdk-1/*
 !extensions-sdk-1/README.md
