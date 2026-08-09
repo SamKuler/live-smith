@@ -9,10 +9,11 @@ import {
   ensurePrivateDirectory,
   ensurePrivateFile,
   isStorageCommitOutcomeUnknownError,
+  removeDirectoryDurably,
   removeFileDurably,
   withStorageTransaction,
-  writeBytesAtomically,
-  writeJsonAtomically,
+  writeBytesAtomicallyCreateOnly,
+  writeJsonAtomicallyCreateOnly,
 } from "./persistence.js";
 
 export type AttachmentKind = "image" | "document" | "audio";
@@ -49,12 +50,19 @@ interface MemoryAttachment {
   bytes: Uint8Array;
 }
 
-export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_PENDING_ATTACHMENT_COUNT = 8;
-export const MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+interface AttachmentSaveOptions {
+  /** Test seam for proving collision handling; production always uses createStorageId. */
+  createId?: () => string;
+}
+
+export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_PENDING_ATTACHMENT_COUNT = 4;
+export const MAX_PENDING_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
+const maxImageDimension = 16_384;
+const maxImagePixels = 100_000_000;
 
 export class AttachmentTooLargeError extends Error {
   constructor() {
@@ -87,10 +95,18 @@ export class AttachmentStorageCorruptionError extends Error {
   }
 }
 
+export class AttachmentStorageAccessError extends Error {
+  constructor(cause?: unknown) {
+    super("Live Smith could not access private attachment storage.", { cause });
+    this.name = "AttachmentStorageAccessError";
+  }
+}
+
 export async function saveSessionAttachment(
   storageDirectory: string | undefined,
   sessionId: string,
   input: { fileName: string; bytes: Uint8Array },
+  options: AttachmentSaveOptions = {},
 ): Promise<StoredSessionAttachment> {
   requireSafeStorageId(sessionId, "Session ID");
   if (!(input.bytes instanceof Uint8Array)) {
@@ -101,45 +117,70 @@ export async function saveSessionAttachment(
   }
   const mediaType = detectImageMediaType(input.bytes);
   if (!mediaType) throw new UnsupportedAttachmentError();
+  if (!validImageDimensions(input.bytes, mediaType)) {
+    throw new UnsupportedAttachmentError();
+  }
 
   const bytes = new Uint8Array(input.bytes);
-  const metadata: StoredSessionAttachment = {
-    id: createStorageId("attachment"),
-    sessionId,
-    kind: "image",
-    fileName: sanitizedFileName(input.fileName, mediaType),
-    mediaType,
-    byteLength: bytes.byteLength,
-    sha256: hashBytes(bytes),
-    createdAt: new Date().toISOString(),
-  };
+  const fileName = sanitizedFileName(input.fileName, mediaType);
+  const sha256 = hashBytes(bytes);
 
-  return withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      const sessionAttachments = memoryAttachments.get(sessionId) ?? new Map();
-      if (sessionAttachments.has(metadata.id)) {
-        throw new AttachmentStorageCorruptionError();
+  return withAttachmentStorageBoundary(() =>
+    withStorageTransaction(storageDirectory, async () => {
+      if (!storageDirectory) {
+        const sessionAttachments = memoryAttachments.get(sessionId) ?? new Map();
+        for (let attempt = 0; attempt < 32; attempt += 1) {
+          const id = nextAttachmentId(options);
+          if (sessionAttachments.has(id)) continue;
+          const metadata = attachmentMetadata({
+            id,
+            sessionId,
+            fileName,
+            mediaType,
+            bytes,
+            sha256,
+          });
+          sessionAttachments.set(id, { metadata, bytes });
+          memoryAttachments.set(sessionId, sessionAttachments);
+          return cloneMetadata(metadata);
+        }
+        throw new Error("Could not allocate a unique attachment ID.");
       }
-      sessionAttachments.set(metadata.id, { metadata, bytes });
-      memoryAttachments.set(sessionId, sessionAttachments);
-      return cloneMetadata(metadata);
-    }
 
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-    const blobTarget = attachmentBlobPath(directory, metadata.id);
-    const metadataTarget = attachmentMetadataPath(directory, metadata.id);
-    await ensurePrivateDirectory(directory);
-    await writeBytesAtomically(blobTarget, bytes);
-    try {
-      await writeJsonAtomically(metadataTarget, metadata);
-    } catch (error) {
-      if (!isStorageCommitOutcomeUnknownError(error)) {
-        await removeFileDurably(blobTarget).catch(() => undefined);
+      const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+      await prepareAttachmentSessionDirectory(storageDirectory, sessionId, true);
+      for (let attempt = 0; attempt < 32; attempt += 1) {
+        const id = nextAttachmentId(options);
+        const metadata = attachmentMetadata({
+          id,
+          sessionId,
+          fileName,
+          mediaType,
+          bytes,
+          sha256,
+        });
+        const blobTarget = attachmentBlobPath(directory, id);
+        const metadataTarget = attachmentMetadataPath(directory, id);
+        try {
+          await writeBytesAtomicallyCreateOnly(blobTarget, bytes);
+        } catch (error) {
+          if (isAlreadyExistsError(error)) continue;
+          throw error;
+        }
+        try {
+          await writeJsonAtomicallyCreateOnly(metadataTarget, metadata);
+        } catch (error) {
+          if (!isStorageCommitOutcomeUnknownError(error)) {
+            await removeFileDurably(blobTarget);
+          }
+          if (isAlreadyExistsError(error)) continue;
+          throw error;
+        }
+        return cloneMetadata(metadata);
       }
-      throw error;
-    }
-    return cloneMetadata(metadata);
-  });
+      throw new Error("Could not allocate a unique attachment ID.");
+    })
+  );
 }
 
 export async function listSessionAttachments(
@@ -152,34 +193,30 @@ export async function listSessionAttachments(
     return sortMetadata(items.map((item) => cloneMetadata(item.metadata)));
   }
 
-  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-  let names: string[];
-  try {
-    await ensurePrivateDirectory(directory);
-    names = await fs.readdir(directory);
-  } catch (error) {
-    if (isMissingFileError(error)) return [];
-    throw error;
-  }
-
-  const metadata: StoredSessionAttachment[] = [];
-  const seenIds = new Set<string>();
-  for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
-    const fileId = name.slice(0, -".json".length);
-    if (!isSafeStorageId(fileId)) throw new AttachmentStorageCorruptionError();
-    const item = await readMetadataFile(path.join(directory, name));
-    if (
-      item.id !== fileId ||
-      item.sessionId !== sessionId ||
-      seenIds.has(item.id)
-    ) {
-      throw new AttachmentStorageCorruptionError();
+  return withAttachmentStorageBoundary(async () => {
+    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+    if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
+      return [];
     }
-    seenIds.add(item.id);
-    await readAndVerifyBlob(directory, item);
-    metadata.push(item);
-  }
-  return sortMetadata(metadata);
+    const names = await fs.readdir(directory);
+    const metadata: StoredSessionAttachment[] = [];
+    const seenIds = new Set<string>();
+    for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
+      const fileId = name.slice(0, -".json".length);
+      if (!isSafeStorageId(fileId)) throw new AttachmentStorageCorruptionError();
+      const item = await readMetadataFile(path.join(directory, name));
+      if (
+        item.id !== fileId ||
+        item.sessionId !== sessionId ||
+        seenIds.has(item.id)
+      ) {
+        throw new AttachmentStorageCorruptionError();
+      }
+      seenIds.add(item.id);
+      metadata.push(item);
+    }
+    return sortMetadata(metadata);
+  });
 }
 
 export async function readSessionAttachmentBytes(
@@ -196,9 +233,14 @@ export async function readSessionAttachmentBytes(
     return new Uint8Array(item.bytes);
   }
 
-  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-  const metadata = await readStoredMetadata(directory, sessionId, attachmentId);
-  return readAndVerifyBlob(directory, metadata);
+  return withAttachmentStorageBoundary(async () => {
+    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+    if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
+      throw new AttachmentNotFoundError();
+    }
+    const metadata = await readStoredMetadata(directory, sessionId, attachmentId);
+    return readAndVerifyBlob(directory, metadata);
+  });
 }
 
 export async function deleteSessionAttachment(
@@ -208,22 +250,26 @@ export async function deleteSessionAttachment(
 ): Promise<void> {
   requireSafeStorageId(sessionId, "Session ID");
   requireSafeStorageId(attachmentId, "Attachment ID");
-  await withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      const sessionAttachments = memoryAttachments.get(sessionId);
-      if (!sessionAttachments?.delete(attachmentId)) {
+  await withAttachmentStorageBoundary(() =>
+    withStorageTransaction(storageDirectory, async () => {
+      if (!storageDirectory) {
+        const sessionAttachments = memoryAttachments.get(sessionId);
+        if (!sessionAttachments?.delete(attachmentId)) {
+          throw new AttachmentNotFoundError();
+        }
+        if (sessionAttachments.size === 0) memoryAttachments.delete(sessionId);
+        return;
+      }
+
+      const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+      if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
         throw new AttachmentNotFoundError();
       }
-      if (sessionAttachments.size === 0) memoryAttachments.delete(sessionId);
-      return;
-    }
-
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-    const metadata = await readStoredMetadata(directory, sessionId, attachmentId);
-    await readAndVerifyBlob(directory, metadata);
-    await removeFileDurably(attachmentMetadataPath(directory, attachmentId));
-    await removeFileDurably(attachmentBlobPath(directory, attachmentId));
-  });
+      await readStoredMetadata(directory, sessionId, attachmentId);
+      await removeFileDurably(attachmentBlobPath(directory, attachmentId));
+      await removeFileDurably(attachmentMetadataPath(directory, attachmentId));
+    })
+  );
 }
 
 export async function deleteSessionAttachments(
@@ -231,19 +277,19 @@ export async function deleteSessionAttachments(
   sessionId: string,
 ): Promise<void> {
   requireSafeStorageId(sessionId, "Session ID");
-  await withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      memoryAttachments.delete(sessionId);
-      return;
-    }
+  await withAttachmentStorageBoundary(() =>
+    withStorageTransaction(storageDirectory, async () => {
+      if (!storageDirectory) {
+        memoryAttachments.delete(sessionId);
+        return;
+      }
 
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-    try {
-      await fs.rm(directory, { recursive: true, force: true });
-    } catch (error) {
-      if (!isMissingFileError(error)) throw error;
-    }
-  });
+      const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+      await assertAttachmentRootIsSafe(storageDirectory);
+      await assertExistingDirectoryIsSafe(directory);
+      await removeDirectoryDurably(directory);
+    })
+  );
 }
 
 export function isImageAttachmentMediaType(
@@ -301,6 +347,7 @@ async function readStoredMetadata(
 
 async function readMetadataFile(target: string): Promise<StoredSessionAttachment> {
   try {
+    await assertRegularFile(target);
     await ensurePrivateFile(target);
     const parsed = JSON.parse(await fs.readFile(target, "utf8")) as unknown;
     if (!isStoredSessionAttachment(parsed)) {
@@ -321,6 +368,7 @@ async function readAndVerifyBlob(
 ): Promise<Uint8Array> {
   try {
     const target = attachmentBlobPath(directory, metadata.id);
+    await assertRegularFile(target);
     await ensurePrivateFile(target);
     const bytes = new Uint8Array(await fs.readFile(target));
     verifyBytes(metadata, bytes);
@@ -345,7 +393,8 @@ function verifyBytes(
   if (
     bytes.byteLength !== metadata.byteLength ||
     hashBytes(bytes) !== metadata.sha256 ||
-    detectImageMediaType(bytes) !== metadata.mediaType
+    detectImageMediaType(bytes) !== metadata.mediaType ||
+    !validImageDimensions(bytes, metadata.mediaType)
   ) {
     throw new AttachmentStorageCorruptionError();
   }
@@ -409,6 +458,124 @@ function detectImageMediaType(bytes: Uint8Array): ImageAttachmentMediaType | nul
   return null;
 }
 
+function validImageDimensions(
+  bytes: Uint8Array,
+  mediaType: ImageAttachmentMediaType,
+): boolean {
+  const dimensions = mediaType === "image/png"
+    ? pngDimensions(bytes)
+    : mediaType === "image/jpeg"
+      ? jpegDimensions(bytes)
+      : webpDimensions(bytes);
+  if (!dimensions) return false;
+  return dimensions.width > 0 &&
+    dimensions.height > 0 &&
+    dimensions.width <= maxImageDimension &&
+    dimensions.height <= maxImageDimension &&
+    dimensions.width * dimensions.height <= maxImagePixels;
+}
+
+function pngDimensions(
+  bytes: Uint8Array,
+): { width: number; height: number } | null {
+  if (bytes.byteLength < 24 || ascii(bytes, 12, 16) !== "IHDR") return null;
+  return {
+    width: unsigned32BigEndian(bytes, 16),
+    height: unsigned32BigEndian(bytes, 20),
+  };
+}
+
+function jpegDimensions(
+  bytes: Uint8Array,
+): { width: number; height: number } | null {
+  let offset = 2;
+  while (offset + 3 < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return null;
+    while (bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === undefined || marker === 0xd9 || marker === 0xda) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= bytes.byteLength) return null;
+    const segmentLength = (bytes[offset]! << 8) | bytes[offset + 1]!;
+    if (segmentLength < 2 || offset + segmentLength > bytes.byteLength) return null;
+    if (isJpegStartOfFrame(marker)) {
+      if (segmentLength < 7) return null;
+      return {
+        height: (bytes[offset + 3]! << 8) | bytes[offset + 4]!,
+        width: (bytes[offset + 5]! << 8) | bytes[offset + 6]!,
+      };
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+  return marker >= 0xc0 &&
+    marker <= 0xcf &&
+    marker !== 0xc4 &&
+    marker !== 0xc8 &&
+    marker !== 0xcc;
+}
+
+function webpDimensions(
+  bytes: Uint8Array,
+): { width: number; height: number } | null {
+  if (bytes.byteLength < 21) return null;
+  const chunk = ascii(bytes, 12, 16);
+  if (chunk === "VP8X") {
+    if (bytes.byteLength < 30 || unsigned32LittleEndian(bytes, 16) < 10) return null;
+    return {
+      width: unsigned24LittleEndian(bytes, 24) + 1,
+      height: unsigned24LittleEndian(bytes, 27) + 1,
+    };
+  }
+  if (chunk === "VP8 ") {
+    if (
+      bytes.byteLength < 30 ||
+      bytes[23] !== 0x9d ||
+      bytes[24] !== 0x01 ||
+      bytes[25] !== 0x2a
+    ) return null;
+    return {
+      width: ((bytes[27]! << 8) | bytes[26]!) & 0x3fff,
+      height: ((bytes[29]! << 8) | bytes[28]!) & 0x3fff,
+    };
+  }
+  if (chunk === "VP8L") {
+    if (bytes.byteLength < 25 || bytes[20] !== 0x2f) return null;
+    const bits = unsigned32LittleEndian(bytes, 21);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >>> 14) & 0x3fff) + 1,
+    };
+  }
+  return null;
+}
+
+function unsigned24LittleEndian(bytes: Uint8Array, offset: number): number {
+  return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+}
+
+function unsigned32LittleEndian(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset]! |
+    (bytes[offset + 1]! << 8) |
+    (bytes[offset + 2]! << 16) |
+    (bytes[offset + 3]! << 24)
+  ) >>> 0;
+}
+
+function unsigned32BigEndian(bytes: Uint8Array, offset: number): number {
+  return (
+    (bytes[offset]! << 24) |
+    (bytes[offset + 1]! << 16) |
+    (bytes[offset + 2]! << 8) |
+    bytes[offset + 3]!
+  ) >>> 0;
+}
+
 function isImageMediaType(value: unknown): value is ImageAttachmentMediaType {
   return value === "image/png" || value === "image/jpeg" || value === "image/webp";
 }
@@ -433,6 +600,107 @@ function sanitizedFileName(
 
 function hashBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+}
+
+function nextAttachmentId(options: AttachmentSaveOptions): string {
+  return requireSafeStorageId(
+    options.createId?.() ?? createStorageId("attachment"),
+    "Attachment ID",
+  );
+}
+
+function attachmentMetadata(input: {
+  id: string;
+  sessionId: string;
+  fileName: string;
+  mediaType: ImageAttachmentMediaType;
+  bytes: Uint8Array;
+  sha256: string;
+}): StoredSessionAttachment {
+  return {
+    id: input.id,
+    sessionId: input.sessionId,
+    kind: "image",
+    fileName: input.fileName,
+    mediaType: input.mediaType,
+    byteLength: input.bytes.byteLength,
+    sha256: input.sha256,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST";
+}
+
+async function withAttachmentStorageBoundary<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      error instanceof AttachmentTooLargeError ||
+      error instanceof UnsupportedAttachmentError ||
+      error instanceof AttachmentNotFoundError ||
+      error instanceof AttachmentStorageCorruptionError ||
+      error instanceof AttachmentStorageAccessError ||
+      isStorageCommitOutcomeUnknownError(error)
+    ) {
+      throw error;
+    }
+    throw new AttachmentStorageAccessError(error);
+  }
+}
+
+async function prepareAttachmentSessionDirectory(
+  storageDirectory: string,
+  sessionId: string,
+  create: boolean,
+): Promise<boolean> {
+  const root = path.join(storageDirectory, attachmentsDirectoryName);
+  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+  for (const target of [root, directory]) {
+    const exists = await assertExistingDirectoryIsSafe(target);
+    if (!exists) {
+      if (!create) return false;
+      await ensurePrivateDirectory(target);
+    } else {
+      await ensurePrivateDirectory(target);
+    }
+  }
+  return true;
+}
+
+async function assertAttachmentRootIsSafe(
+  storageDirectory: string,
+): Promise<void> {
+  await assertExistingDirectoryIsSafe(
+    path.join(storageDirectory, attachmentsDirectoryName),
+  );
+}
+
+async function assertExistingDirectoryIsSafe(target: string): Promise<boolean> {
+  try {
+    const info = await fs.lstat(target);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new AttachmentStorageCorruptionError();
+    }
+    return true;
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
+    throw error;
+  }
+}
+
+async function assertRegularFile(target: string): Promise<void> {
+  const info = await fs.lstat(target);
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new AttachmentStorageCorruptionError();
+  }
 }
 
 function cloneMetadata(metadata: StoredSessionAttachment): StoredSessionAttachment {

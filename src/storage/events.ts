@@ -5,6 +5,10 @@ import type {
   AttachmentMediaType,
   SessionAttachmentRef,
 } from "./attachments.js";
+import {
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+} from "./attachments.js";
 
 import {
   createStorageId,
@@ -84,11 +88,14 @@ export async function appendSessionEvent(
 
   return withStorageTransaction(storageDirectory, async () => {
     if (!storageDirectory) {
-      memoryEvents.set(sessionId, [...(memoryEvents.get(sessionId) ?? []), event]);
+      const events = memoryEvents.get(sessionId) ?? [];
+      assertAttachmentIdsUnconsumed(events, event);
+      memoryEvents.set(sessionId, [...events, event]);
       return event;
     }
 
     const events = await loadSessionEventsUnlocked(storageDirectory, sessionId);
+    assertAttachmentIdsUnconsumed(events, event);
     await ensurePrivateDirectory(storageDirectory);
     await writeJsonAtomically(
       eventsPath(storageDirectory, sessionId),
@@ -189,7 +196,7 @@ function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    value.length > 8 ||
+    value.length > MAX_PENDING_ATTACHMENT_COUNT ||
     !value.every(isSessionAttachmentRef)
   ) {
     return false;
@@ -197,7 +204,7 @@ function isSessionAttachmentRefs(value: unknown): value is SessionAttachmentRef[
   const ids = new Set(value.map((attachment) => attachment.id));
   return ids.size === value.length &&
     value.reduce((total, attachment) => total + attachment.byteLength, 0) <=
-      20 * 1024 * 1024;
+      MAX_PENDING_ATTACHMENT_BYTES;
 }
 
 function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
@@ -223,9 +230,27 @@ function isSessionAttachmentRef(value: unknown): value is SessionAttachmentRef {
     attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
     Number.isInteger(record.byteLength) &&
     (record.byteLength as number) > 0 &&
-    (record.byteLength as number) <= 20 * 1024 * 1024 &&
+    (record.byteLength as number) <= MAX_PENDING_ATTACHMENT_BYTES &&
     typeof record.sha256 === "string" &&
     /^[a-f0-9]{64}$/.test(record.sha256);
+}
+
+function assertAttachmentIdsUnconsumed(
+  events: readonly SessionEvent[],
+  candidate: SessionEvent,
+): void {
+  if (!candidate.attachments?.length) return;
+  const consumedIds = new Set(
+    events.flatMap((event) => event.attachments?.map((attachment) => attachment.id) ?? []),
+  );
+  const duplicate = candidate.attachments.find((attachment) =>
+    consumedIds.has(attachment.id)
+  );
+  if (duplicate) {
+    throw new TypeError(
+      `Attachment ${duplicate.id} has already been consumed by this Session.`,
+    );
+  }
 }
 
 function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {

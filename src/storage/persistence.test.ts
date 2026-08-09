@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   isStorageCommitOutcomeUnknownError,
+  removeDirectoryDurably,
   removeFileDurably,
   writeBytesAtomically,
+  writeBytesAtomicallyCreateOnly,
   writeJsonAtomically,
 } from "./persistence.js";
 
@@ -21,6 +23,22 @@ test("writeBytesAtomically durably replaces a private binary file", async () => 
   if (process.platform !== "win32") {
     assert.equal((await fs.stat(target)).mode & 0o777, 0o600);
   }
+});
+
+test("create-only atomic bytes never replace an existing target", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-create-only-"));
+  const target = path.join(directory, "attachment.bin");
+  await fs.writeFile(target, new Uint8Array([9, 9, 9]));
+
+  await assert.rejects(
+    writeBytesAtomicallyCreateOnly(target, new Uint8Array([1, 2, 3])),
+    { code: "EEXIST" },
+  );
+  assert.deepEqual(await fs.readFile(target), Buffer.from([9, 9, 9]));
+  assert.deepEqual(
+    (await fs.readdir(directory)).sort(),
+    ["attachment.bin"],
+  );
 });
 
 test("writeJsonAtomically classifies a directory sync failure after replacement", async () => {
@@ -79,4 +97,25 @@ test("removeFileDurably keeps an uncertain deletion retryable", async () => {
   );
   await removeFileDurably(target, { syncDirectory: async () => {} });
   await assert.rejects(fs.stat(target), { code: "ENOENT" });
+});
+
+test("removeDirectoryDurably classifies parent sync failure after deletion", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-dir-"));
+  const target = path.join(parent, "session-attachments");
+  await fs.mkdir(target);
+  await fs.writeFile(path.join(target, "attachment.bin"), "bytes");
+  const syncFailure = Object.assign(new Error("directory sync failed"), {
+    code: "EIO",
+  });
+
+  await assert.rejects(
+    removeDirectoryDurably(target, {
+      syncDirectory: async () => {
+        throw syncFailure;
+      },
+    }),
+    (error: unknown) => isStorageCommitOutcomeUnknownError(error),
+  );
+  await assert.rejects(fs.stat(target), { code: "ENOENT" });
+  await removeDirectoryDurably(target, { syncDirectory: async () => {} });
 });

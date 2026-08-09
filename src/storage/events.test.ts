@@ -94,6 +94,25 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
   );
 });
 
+test("event attachment IDs cannot be consumed by multiple user events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  await appendSessionEvent(dir, "session-consumption", {
+    kind: "user",
+    content: "first use",
+    attachments: [imageRef],
+  });
+
+  await assert.rejects(
+    appendSessionEvent(dir, "session-consumption", {
+      kind: "user",
+      content: "second use",
+      attachments: [imageRef],
+    }),
+    /already been consumed/i,
+  );
+  assert.equal((await loadSessionEvents(dir, "session-consumption")).length, 1);
+});
+
 test("appendSessionEvent stores ordered user/tool_call/tool_result events", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
   const sessionId = "session-001";

@@ -299,7 +299,9 @@ test("session deletion removes attachments only after events and metadata", asyn
         await saveSessionAttachment(directory, deletedSessionId, {
           fileName: "reference.png",
           bytes: new Uint8Array([
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1,
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+            0, 0, 0, 1, 0, 0, 0, 1,
           ]),
         });
 
@@ -347,7 +349,9 @@ test("session deletion attachment cleanup failure leaves the Session deleted", {
         await saveSessionAttachment(directory, deletedSessionId, {
           fileName: "reference.png",
           bytes: new Uint8Array([
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1,
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+            0, 0, 0, 1, 0, 0, 0, 1,
           ]),
         });
         attachmentRoot = path.join(directory, "live-smith-attachments");
@@ -360,6 +364,14 @@ test("session deletion attachment cleanup failure leaves the Session deleted", {
         });
 
         assert.equal(response.status, 500);
+        const body = await response.json() as {
+          commandOutcome?: string;
+          state?: ChatDialogState;
+        };
+        assert.equal(body.commandOutcome, "unknown");
+        assert.ok(!body.state?.sessions.some(
+          (session) => session.id === deletedSessionId,
+        ));
         assert.ok(!(await listSessions(directory)).some(
           (session) => session.id === deletedSessionId,
         ));

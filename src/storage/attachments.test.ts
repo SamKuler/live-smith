@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -17,11 +18,18 @@ import {
 } from "./attachments.js";
 
 const pngBytes = new Uint8Array([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3,
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+  0, 0, 0, 1, 0, 0, 0, 1,
 ]);
-const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+const jpegBytes = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 0xff, 0xd9,
+]);
 const webpBytes = new Uint8Array([
-  0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 1,
+  0x52, 0x49, 0x46, 0x46, 22, 0, 0, 0,
+  0x57, 0x45, 0x42, 0x50,
+  0x56, 0x50, 0x38, 0x58, 10, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
 
 test("session attachment stores private image bytes and immutable metadata", async () => {
@@ -131,10 +139,48 @@ test("session attachment missing blobs and tampering are corruption", async () =
     readSessionAttachmentBytes(directory, "session-corrupt", stored.id),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
   );
+  assert.deepEqual(
+    await listSessionAttachments(directory, "session-corrupt"),
+    [stored],
+  );
+});
+
+test("attachment image headers require bounded non-zero dimensions", async () => {
+  const invalidPng = new Uint8Array(pngBytes);
+  invalidPng.fill(0, 16, 24);
   await assert.rejects(
-    listSessionAttachments(directory, "session-corrupt"),
+    saveSessionAttachment(undefined, `memory-dimensions-${Date.now()}`, {
+      fileName: "invalid.png",
+      bytes: invalidPng,
+    }),
+    (error: unknown) => error instanceof UnsupportedAttachmentError,
+  );
+});
+
+test("attachment reads reject symbolic-link blobs without following them", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-symlink-"));
+  const stored = await saveSessionAttachment(directory, "session-symlink", {
+    fileName: "image.png",
+    bytes: pngBytes,
+  });
+  const external = path.join(directory, "external.bin");
+  await fs.writeFile(external, pngBytes);
+  const blob = path.join(
+    directory,
+    "live-smith-attachments",
+    "session-symlink",
+    `${stored.id}.bin`,
+  );
+  await fs.unlink(blob);
+  await fs.symlink(external, blob);
+
+  await assert.rejects(
+    readSessionAttachmentBytes(directory, "session-symlink", stored.id),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
   );
+  assert.deepEqual(await fs.readFile(external), Buffer.from(pngBytes));
 });
 
 test("corrupt and duplicate attachment metadata block reads", async () => {
@@ -177,4 +223,56 @@ test("session attachment memory fallback returns copies and supports deletion", 
   });
   await deleteSessionAttachments(undefined, sessionId);
   assert.deepEqual(await listSessionAttachments(undefined, sessionId), []);
+});
+
+test("attachment ID collisions and orphan blobs are never overwritten", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-collision-"));
+  const first = await saveSessionAttachment(directory, "session-collision", {
+    fileName: "first.png",
+    bytes: pngBytes,
+  }, { createId: () => "attachment-collision" });
+  const sessionDirectory = path.join(
+    directory,
+    "live-smith-attachments",
+    "session-collision",
+  );
+  const orphanPath = path.join(sessionDirectory, "attachment-orphan.bin");
+  const orphanBytes = new Uint8Array([7, 7, 7]);
+  await fs.writeFile(orphanPath, orphanBytes);
+  const candidates = [
+    "attachment-collision",
+    "attachment-orphan",
+    "attachment-unique",
+  ];
+
+  const second = await saveSessionAttachment(directory, "session-collision", {
+    fileName: "second.jpg",
+    bytes: jpegBytes,
+  }, { createId: () => candidates.shift() ?? "attachment-fallback" });
+
+  assert.equal(first.id, "attachment-collision");
+  assert.equal(second.id, "attachment-unique");
+  assert.deepEqual(
+    await readSessionAttachmentBytes(directory, "session-collision", first.id),
+    pngBytes,
+  );
+  assert.deepEqual(await fs.readFile(orphanPath), Buffer.from(orphanBytes));
+});
+
+test("attachment deletion is retryable after blob-first partial cleanup", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-delete-"));
+  const stored = await saveSessionAttachment(directory, "session-delete-retry", {
+    fileName: "image.png",
+    bytes: pngBytes,
+  });
+  const sessionDirectory = path.join(
+    directory,
+    "live-smith-attachments",
+    "session-delete-retry",
+  );
+  await fs.unlink(path.join(sessionDirectory, `${stored.id}.bin`));
+
+  await deleteSessionAttachment(directory, "session-delete-retry", stored.id);
+
+  assert.deepEqual(await fs.readdir(sessionDirectory), []);
 });

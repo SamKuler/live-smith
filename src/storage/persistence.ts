@@ -66,6 +66,7 @@ export async function writeJsonAtomically(
     target,
     (handle) => handle.writeFile(serialized, "utf8"),
     options,
+    "replace",
   );
 }
 
@@ -73,7 +74,40 @@ export async function writeBytesAtomically(
   target: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  return writeAtomically(target, (handle) => handle.writeFile(bytes));
+  return writeAtomically(
+    target,
+    (handle) => handle.writeFile(bytes),
+    {},
+    "replace",
+  );
+}
+
+export async function writeJsonAtomicallyCreateOnly(
+  target: string,
+  value: unknown,
+): Promise<void> {
+  const serialized = JSON.stringify(value, null, 2);
+  if (serialized === undefined) {
+    throw new TypeError("Storage value is not JSON serializable.");
+  }
+  return writeAtomically(
+    target,
+    (handle) => handle.writeFile(serialized, "utf8"),
+    {},
+    "create",
+  );
+}
+
+export async function writeBytesAtomicallyCreateOnly(
+  target: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  return writeAtomically(
+    target,
+    (handle) => handle.writeFile(bytes),
+    {},
+    "create",
+  );
 }
 
 async function writeAtomically(
@@ -82,6 +116,7 @@ async function writeAtomically(
   options: {
     syncDirectory?: (directory: string) => Promise<void>;
   } = {},
+  mode: "replace" | "create",
 ): Promise<void> {
 
   const directory = path.dirname(target);
@@ -91,7 +126,6 @@ async function writeAtomically(
     `.${path.basename(target)}.${createStorageId("tmp")}`,
   );
   let temporaryCreated = false;
-  let renamed = false;
 
   try {
     const handle = await fs.open(temporary, "wx", 0o600);
@@ -102,15 +136,21 @@ async function writeAtomically(
     } finally {
       await handle.close();
     }
-    await fs.rename(temporary, target);
-    renamed = true;
+    if (mode === "create") {
+      await fs.link(temporary, target);
+      await fs.unlink(temporary).catch(() => undefined);
+      temporaryCreated = false;
+    } else {
+      await fs.rename(temporary, target);
+      temporaryCreated = false;
+    }
     try {
       await (options.syncDirectory ?? syncDirectory)(directory);
     } catch (cause) {
       throw new StorageCommitOutcomeUnknownError(cause);
     }
   } finally {
-    if (temporaryCreated && !renamed) {
+    if (temporaryCreated) {
       await fs.unlink(temporary).catch(() => undefined);
     }
   }
@@ -147,6 +187,29 @@ export async function removeFileDurably(
 
   try {
     await (options.syncDirectory ?? syncDirectory)(directory);
+  } catch (cause) {
+    if (targetWasMissing && isMissingFileError(cause)) return;
+    throw new StorageCommitOutcomeUnknownError(cause);
+  }
+}
+
+export async function removeDirectoryDurably(
+  target: string,
+  options: {
+    syncDirectory?: (directory: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const parent = path.dirname(target);
+  let targetWasMissing = false;
+  try {
+    await fs.rm(target, { recursive: true, force: false });
+  } catch (error) {
+    if (!isMissingFileError(error)) throw error;
+    targetWasMissing = true;
+  }
+
+  try {
+    await (options.syncDirectory ?? syncDirectory)(parent);
   } catch (cause) {
     if (targetWasMissing && isMissingFileError(cause)) return;
     throw new StorageCommitOutcomeUnknownError(cause);
