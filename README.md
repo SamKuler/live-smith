@@ -256,11 +256,14 @@ Model configuration is read only from saved profiles; environment variables are
 not a model-configuration fallback. Unit and DOM behavior tests do not call a
 model provider and do not require an API key.
 
-Attachment bytes and metadata are private local Session data. They are never
-embedded in settings or event JSON, and provider errors never include their
-base64 request representation. On POSIX hosts the attachment directories are
-restricted to `0700` and files to `0600`, like the other private Live Smith
-storage. Do not share or cloud-sync this data directory.
+Attachment bytes are private local Session data and are never embedded in
+settings or event JSON. When a user event consumes an image, its immutable
+reference metadata (ID, display filename, media type, byte length, and SHA-256)
+is persisted on that event; the image bytes remain only in attachment storage.
+Provider errors never include their base64 request representation. On POSIX
+hosts the attachment directories are restricted to `0700` and files to `0600`,
+like the other private Live Smith storage. Do not share or cloud-sync this data
+directory.
 
 ## Sessions and history
 

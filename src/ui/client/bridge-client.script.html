@@ -672,7 +672,7 @@
               commandReconciliationBlocked = true;
             }
           } else {
-            error.attachmentFailureKind = [400, 404, 409, 413].includes(
+            error.attachmentFailureKind = [400, 404, 413].includes(
                 response.status,
               )
               ? "policy"
@@ -693,6 +693,7 @@
           const uncertainFailures = [];
           for (let index = 0; index < files.length; index += 1) {
             const file = files[index];
+            const contentSha256 = await attachmentContentSha256(file);
             const previousIds = new Set(
               (getState().pendingAttachments || []).map((attachment) => attachment.id),
             );
@@ -712,7 +713,11 @@
               const detail = `${attachmentFileLabel(file)}: ${
                 error.message || String(error)
               }`;
-              if (newPendingAttachmentMatches(file, previousIds)) {
+              if (newPendingAttachmentMatches(
+                file.size,
+                contentSha256,
+                previousIds,
+              )) {
                 committedWarnings.push(
                   `${attachmentFileLabel(file)} was confirmed attached after its response was interrupted`,
                 );
@@ -753,12 +758,29 @@
         });
       }
 
-      function newPendingAttachmentMatches(file, previousIds) {
+      async function attachmentContentSha256(file) {
+        const subtle = globalThis.crypto?.subtle;
+        if (
+          !subtle ||
+          typeof subtle.digest !== "function" ||
+          typeof file?.arrayBuffer !== "function"
+        ) return null;
+        try {
+          const digest = await subtle.digest("SHA-256", await file.arrayBuffer());
+          return [...new Uint8Array(digest)]
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("");
+        } catch {
+          return null;
+        }
+      }
+
+      function newPendingAttachmentMatches(byteLength, contentSha256, previousIds) {
+        if (!contentSha256) return false;
         return (getState().pendingAttachments || []).some((attachment) =>
           !previousIds.has(attachment.id) &&
-          attachment.fileName === file.name &&
-          attachment.byteLength === file.size &&
-          attachment.mediaType === file.type
+          attachment.byteLength === byteLength &&
+          attachment.sha256 === contentSha256
         );
       }
 
