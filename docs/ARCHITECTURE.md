@@ -146,8 +146,11 @@ src/
    current immutable references only after current-file validation succeeds.
 6. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
    Messages.
-7. The transport maps normalized tools/messages/parameters to the wire protocol.
-8. The transport returns normalized text/tool calls and opaque replay state.
+7. The transport maps normalized client function tools and provider-hosted
+   tools, messages, and parameters to the wire protocol.
+8. The transport returns normalized text, client tool calls, bounded citations,
+   and opaque replay state. Hosted provider tools never enter the client tool
+   executor.
 9. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
@@ -184,6 +187,15 @@ Live context and tool results are explicitly untrusted data. Transports encode
 Live context as a JSON string inside a labelled data block, and system
 instructions forbid following instructions embedded in Live object names, MIDI
 data, parameter labels, or tool output.
+
+Provider-hosted Web Search uses a separate discriminated member of the
+provider-neutral tool union from client-executed Live function tools. A Saved
+Profile must explicitly opt in. OpenAI Responses and Anthropic Messages map the
+hosted member to their native server tool; Chat Completions rejects it before
+HTTP. Search result blocks remain opaque replay state, while only normalized,
+bounded HTTP(S) citation titles and URLs may be copied into assistant Session
+events. Search data cannot authorize client tools, approvals, filesystem access,
+or Live mutations.
 
 OpenAI Responses always uses `store: false`. Responses output items, Chat raw
 assistant messages, and Anthropic content blocks are stored only inside the

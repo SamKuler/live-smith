@@ -742,6 +742,54 @@ test("session event storage keeps an in-memory fallback when storage directory i
   assert.deepEqual(await loadSessionEvents(undefined, sessionId), []);
 });
 
+test("assistant events persist strict bounded citations and isolate returned arrays", async () => {
+  const sessionId = `citation-memory-${Date.now()}`;
+  const citations = [{
+    url: "https://example.test/source",
+    title: "Official source",
+  }];
+  const event = await appendSessionEvent(undefined, sessionId, {
+    kind: "assistant",
+    content: "A cited answer.",
+    citations,
+  });
+  citations[0]!.title = "mutated";
+  assert.deepEqual(event.citations, [{
+    url: "https://example.test/source",
+    title: "Official source",
+  }]);
+  assert.deepEqual((await loadSessionEvents(undefined, sessionId))[0]?.citations, [{
+    url: "https://example.test/source",
+    title: "Official source",
+  }]);
+
+  for (const input of [
+    {
+      kind: "user" as const,
+      content: "Wrong kind",
+      citations: [{ url: "https://example.test/", title: "Source" }],
+    },
+    {
+      kind: "assistant" as const,
+      content: "Unsafe URL",
+      citations: [{ url: "javascript:alert(1)", title: "Source" }],
+    },
+    {
+      kind: "assistant" as const,
+      content: "Duplicate URL",
+      citations: [
+        { url: "https://example.test/", title: "First" },
+        { url: "https://example.test/", title: "Second" },
+      ],
+    },
+  ]) {
+    await assert.rejects(
+      appendSessionEvent(undefined, `${sessionId}-invalid`, input),
+      /Session event input is invalid/,
+    );
+  }
+});
+
 test("deleteSessionEvents removes a session event log", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
   await appendSessionEvent(dir, "session-001", {

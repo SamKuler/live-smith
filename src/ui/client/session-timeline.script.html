@@ -1024,6 +1024,7 @@
         if (collapsed) content.textContent = visibleContent;
         else renderMarkdown(content, visibleContent);
         appendTimelineAttachments(content, event.attachments);
+        appendTimelineCitations(content, event.citations);
 
         if (collapsed) {
           const item = document.createElement("details");
@@ -1057,6 +1058,66 @@
 
         item.append(label, content);
         return item;
+      }
+
+      function appendTimelineCitations(target, citations) {
+        if (!Array.isArray(citations) || citations.length === 0) return;
+        const sources = [];
+        const seen = new Set();
+        for (const citation of citations.slice(0, 20)) {
+          const url = safeCitationUrl(citation?.url);
+          const title = typeof citation?.title === "string"
+            ? citation.title.trim()
+            : "";
+          if (
+            !url ||
+            !title ||
+            /[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(title) ||
+            seen.has(url)
+          ) continue;
+          seen.add(url);
+          sources.push({
+            url,
+            title: [...title].slice(0, 256).join(""),
+          });
+        }
+        if (!sources.length) return;
+
+        const container = document.createElement("section");
+        container.className = "citation-sources";
+        container.setAttribute("aria-label", "Sources");
+        const heading = document.createElement("div");
+        heading.className = "citation-sources-label";
+        heading.textContent = "Sources";
+        const list = document.createElement("ol");
+        list.className = "citation-source-list";
+        for (const source of sources) {
+          const item = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = source.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = source.title;
+          item.append(link);
+          list.append(item);
+        }
+        container.append(heading, list);
+        target.append(container);
+      }
+
+      function safeCitationUrl(value) {
+        if (typeof value !== "string" || value.length > 2048) return null;
+        try {
+          const parsed = new URL(value);
+          if (
+            !["http:", "https:"].includes(parsed.protocol) ||
+            parsed.username ||
+            parsed.password
+          ) return null;
+          return parsed.href;
+        } catch {
+          return null;
+        }
       }
 
       function truncate(value, max) {

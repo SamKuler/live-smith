@@ -26,6 +26,7 @@ Each Profile stores a complete connection:
 - name, API family, and API mode;
 - base URL, API key, and model;
 - output limit, optional temperature, and reasoning controls;
+- optional provider-hosted Web Search;
 - optional capability overrides and Extra Body JSON.
 
 Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
@@ -57,6 +58,9 @@ recoverable Profiles or credentials.
 - Always sends `store: false`.
 - Requests encrypted reasoning output when available.
 - Replays local typed output items and links tool results with `call_id`.
+- Maps an opted-in provider-neutral hosted search tool to `web_search`, keeps
+  `web_search_call` items in local replay state, and exposes bounded
+  `url_citation` sources to the Session timeline.
 - Does not use `previous_response_id`.
 - Treats `response.completed` and `response.incomplete` as terminal lifecycle
   events and cancels the reader without waiting for EOF or `[DONE]`.
@@ -91,11 +95,15 @@ recoverable Profiles or credentials.
   advertises it.
 - Supports token-budget thinking for models whose policy advertises it.
 - Replays complete assistant content blocks, including thinking signatures.
+- Maps an opted-in provider-neutral hosted search tool to
+  `web_search_20250305`, including a fixed local `max_uses` budget. Server tool
+  calls, encrypted result content, and citation metadata are replayed unchanged.
 - Completes and cancels the stream reader at the protocol-terminal
   `message_stop` event rather than requiring EOF or a nonstandard `[DONE]`.
-- Requires a complete `end_turn`, `tool_use`, or `stop_sequence` stop reason;
-  truncation, refusal, pause, context exhaustion, unknown reasons, and missing
-  terminal metadata fail before any tool call can run.
+- Requires a complete `end_turn`, `tool_use`, or `stop_sequence` stop reason.
+  A server `pause_turn` is continued internally with the exact assistant
+  content, up to three times; truncation, refusal, context exhaustion, unknown
+  reasons, and missing terminal metadata fail before any client tool can run.
 - Rejects missing, empty, or duplicate tool-use IDs, empty tool names, and
   non-object tool input before any Live action can run. Parsed `tool_use` blocks
   must agree bidirectionally with the terminal stop reason. Ordinary text blocks
@@ -165,6 +173,24 @@ file backing a selected Live Audio Clip, Sample, or Simpler. Neither path is
 gated by the current Profile, which allows the user to attach first and select a
 compatible Profile before sending. The selected-source command accepts only a
 Session ID; no UI or model request can supply an arbitrary path.
+
+### Provider-hosted Web Search
+
+Hosted Web Search is an explicit Saved Profile setting, not a model-name guess
+or a client-tool capability override. It is disabled by default. OpenAI
+Responses maps it to `{ "type": "web_search" }`; Anthropic Messages maps it to
+the versioned `web_search_20250305` server tool with a fixed maximum of five
+uses. OpenAI Chat Completions rejects the hosted tool before body construction
+or HTTP rather than switching to a special search model.
+
+The provider executes this tool; it never appears as a client `tool_use` for the
+Live agent loop to run. Complete provider search blocks remain in opaque local
+replay state. Only normalized, bounded HTTP(S) source titles and URLs enter
+assistant Session events. Search results and citations are untrusted data and
+cannot authorize a Live tool, approval, filesystem operation, or mutation.
+
+Protocol references: [OpenAI Web Search](https://developers.openai.com/api/docs/guides/tools-web-search)
+and [Anthropic Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool).
 
 Files remain pending until the associated user event is durably appended. A
 confirmed append consumes those immutable IDs before provider I/O, including

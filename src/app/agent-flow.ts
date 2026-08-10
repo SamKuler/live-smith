@@ -16,6 +16,7 @@ import {
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
+import { modelToolsForProfile } from "../model/tools.js";
 import {
   AgentPlanExecutionError,
   executeAgentPlanWithProgress,
@@ -1536,7 +1537,7 @@ export async function handleAgentRequest(
           attachmentParts: prepared.attachmentParts,
           skillContext: prepared.skillContext,
           agentMessages: input.messages,
-          tools: liveSmithTools(),
+          tools: modelToolsForProfile(profile, liveSmithTools()),
           signal: callbacks.signal,
           onDelta: callbacks.onDelta,
         });
@@ -1857,6 +1858,9 @@ async function appendAgentLoopTraceEvent(
   return appendSessionEvent(storageDirectory, sessionId, {
     kind: event.kind,
     content: event.content,
+    ...(event.kind === "assistant" && event.citations?.length
+      ? { citations: event.citations }
+      : {}),
     ...(event.kind === "apply_result" && event.recovery
       ? { recovery: event.recovery }
       : {}),

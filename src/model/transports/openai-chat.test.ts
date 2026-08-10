@@ -468,6 +468,24 @@ test("OpenAI Chat rejects PDF input with the Live Smith mode boundary before HTT
   assert.equal(fetchCalls, 0);
 });
 
+test("OpenAI Chat rejects hosted Web Search before HTTP", async () => {
+  let fetchCalls = 0;
+  const req = request(profile());
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return completedChatResponse();
+    },
+  });
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /does not support Live Smith hosted Web Search/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test("OpenAI Chat applies shared image limits across current and history before body construction", async () => {
   let fetchCalls = 0;
   const transport = createOpenAIChatTransport({
@@ -637,7 +655,13 @@ test("Extra Body may override generation fields but not structural or audio-outp
       throw new Error("network must not be reached");
     },
   });
-  for (const field of ["messages", "modalities", "audio"] as const) {
+  for (const field of [
+    "messages",
+    "tools",
+    "tool_choice",
+    "modalities",
+    "audio",
+  ] as const) {
     const p = profile({
       advanced: { extraBody: { temperature: 0.9, [field]: [] } },
     });

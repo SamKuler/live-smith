@@ -35,9 +35,15 @@ export interface ModelToolCall {
   arguments: string;
 }
 
+export interface ModelCitation {
+  url: string;
+  title: string;
+}
+
 export interface ModelTurn {
   content: string | null;
   toolCalls: ModelToolCall[];
+  citations?: ModelCitation[];
   providerState?: unknown;
 }
 

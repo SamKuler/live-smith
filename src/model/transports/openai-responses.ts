@@ -1,4 +1,6 @@
 import type { ModelInputPart, ModelToolCall, ModelTurn } from "../contracts.js";
+import { normalizeModelCitations } from "../citations.js";
+import { HOSTED_WEB_SEARCH_MAX_USES } from "../tools.js";
 import { cloneJsonValue } from "../json-clone.js";
 import type {
   ModelTransport,
@@ -33,6 +35,7 @@ const protectedFields = [
   "model",
   "input",
   "tools",
+  "tool_choice",
   "stream",
   "store",
   "instructions",
@@ -78,6 +81,7 @@ function buildResponsesBody(
 ): Record<string, unknown> {
   const { profile, capabilities } = request.runtimeProfile;
   const reasoning = profile.parameters.reasoning;
+  const tools = mappedResponsesTools(request);
   const generated: Record<string, unknown> = {
     model: profile.model,
     instructions: request.systemInstructions,
@@ -89,15 +93,9 @@ function buildResponsesBody(
     capabilities.temperature === "supported"
       ? { temperature: profile.parameters.temperature }
       : {}),
-    ...(request.tools.length && capabilities.tools
+    ...(tools.length
       ? {
-          tools: request.tools.map((tool) => ({
-            type: "function",
-            name: tool.function.name,
-            description: tool.function.description,
-            parameters: tool.function.parameters ?? { type: "object", properties: {} },
-            strict: false,
-          })),
+          tools,
           tool_choice: "auto",
         }
       : {}),
@@ -123,6 +121,33 @@ function buildResponsesBody(
     ...new Set([encryptedReasoningInclude, ...(include as string[])]),
   ];
   return body;
+}
+
+function mappedResponsesTools(
+  request: TransportRequest,
+): Array<Record<string, unknown>> {
+  const tools: Array<Record<string, unknown>> = [];
+  for (const tool of request.tools) {
+    if (tool.type === "function") {
+      if (!request.runtimeProfile.capabilities.tools) continue;
+      tools.push({
+        type: "function",
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters: tool.function.parameters ?? { type: "object", properties: {} },
+        strict: false,
+      });
+      continue;
+    }
+    if (!request.runtimeProfile.profile.advanced.hostedTools?.webSearch) {
+      throw new Error("OpenAI Responses Web Search is not enabled in this Profile.");
+    }
+    if (tool.maxUses !== HOSTED_WEB_SEARCH_MAX_USES) {
+      throw new Error("OpenAI Responses Web Search has an invalid local usage limit.");
+    }
+    tools.push({ type: "web_search" });
+  }
+  return tools;
 }
 
 function buildResponsesInput(
@@ -253,6 +278,7 @@ function turnFromResponse(value: unknown, label: string): ModelTurn {
       arguments: item.arguments,
     }];
   });
+  const citations = citationsFromResponsesOutput(output);
   if (!content && !toolCalls.length) {
     if (value.status === "incomplete") {
       const details = isRecord(value.incomplete_details)
@@ -270,11 +296,35 @@ function turnFromResponse(value: unknown, label: string): ModelTurn {
   return {
     content: content || null,
     toolCalls,
+    ...(citations.length ? { citations } : {}),
     providerState: {
       kind: "openai-responses",
       output: cloneJsonValue(output),
     },
   };
+}
+
+function citationsFromResponsesOutput(
+  output: Array<Record<string, unknown>>,
+) {
+  const candidates: Array<Record<string, unknown>> = [];
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) {
+      continue;
+    }
+    for (const part of item.content) {
+      if (!isRecord(part) || part.type !== "output_text" || !Array.isArray(part.annotations)) {
+        continue;
+      }
+      for (const annotation of part.annotations) {
+        if (
+          isRecord(annotation) &&
+          annotation.type === "url_citation"
+        ) candidates.push(annotation);
+      }
+    }
+  }
+  return normalizeModelCitations(candidates);
 }
 
 function assertCompleteResponseToolCalls(

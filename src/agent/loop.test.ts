@@ -103,6 +103,35 @@ test("runAgentLoop observes Live state before applying parameter actions", async
   assert.equal(result.message, "Done.");
 });
 
+test("runAgentLoop preserves normalized citations on assistant trace events", async () => {
+  const events: Array<{ kind: string; citations?: unknown }> = [];
+  const citations = [{
+    url: "https://example.test/source",
+    title: "Official source",
+  }];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "A cited answer.",
+      toolCalls: [],
+      citations,
+    }),
+    observe: async () => "",
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.deepEqual(events, [{
+    kind: "assistant",
+    content: "A cited answer.",
+    citations,
+  }]);
+});
+
 test("runAgentLoop supports inspect_midi_clip tool calls", async () => {
   const observedRequests: string[] = [];
 

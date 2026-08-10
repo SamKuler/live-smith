@@ -17,6 +17,8 @@ import type {
   PersistedSessionAttachmentRef,
   SessionAttachmentRef,
 } from "./attachments.js";
+import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js";
+import type { ModelCitation } from "../model/contracts.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -59,6 +61,7 @@ export interface SessionEventInput {
   name?: string;
   recovery?: SessionRecoveryLedger;
   attachments?: SessionAttachmentRef[];
+  citations?: ModelCitation[];
 }
 
 export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
@@ -248,6 +251,7 @@ function isSessionEvent(
       "name",
       "recovery",
       "attachments",
+      "citations",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
@@ -260,8 +264,20 @@ function isSessionEvent(
     (record.attachments === undefined || (
       record.kind === "user" &&
       isSessionAttachmentRefs(record.attachments, attachmentPolicy)
+    )) &&
+    (record.citations === undefined || (
+      record.kind === "assistant" &&
+      isSessionEventCitations(record.citations)
     ))
   );
+}
+
+function isSessionEventCitations(value: unknown): value is ModelCitation[] {
+  return Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= MAX_MODEL_CITATION_COUNT &&
+    value.every(isModelCitation) &&
+    new Set(value.map((citation) => citation.url)).size === value.length;
 }
 
 function isSessionAttachmentRefs(
@@ -407,6 +423,9 @@ function cloneSessionEvent(event: SessionEvent): SessionEvent {
     ...(event.attachments === undefined
       ? {}
       : { attachments: event.attachments.map((attachment) => ({ ...attachment })) }),
+    ...(event.citations === undefined
+      ? {}
+      : { citations: event.citations.map((citation) => ({ ...citation })) }),
     ...(event.recovery === undefined
       ? {}
       : {

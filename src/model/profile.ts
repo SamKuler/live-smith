@@ -39,6 +39,11 @@ export interface ModelCapabilityOverrides {
   };
 }
 
+export interface HostedToolSettings {
+  /** Provider-executed public web search. Absence means disabled. */
+  webSearch?: true;
+}
+
 /** Editable form state. Name and model may intentionally be blank. */
 export interface DraftProfile {
   id: string;
@@ -59,6 +64,7 @@ export interface DraftProfile {
   };
   advanced: {
     capabilityOverrides?: ModelCapabilityOverrides;
+    hostedTools?: HostedToolSettings;
     extraBody?: Record<string, unknown>;
   };
 }
@@ -83,6 +89,7 @@ export interface SavedProfile {
   };
   advanced: {
     capabilityOverrides?: ModelCapabilityOverrides;
+    hostedTools?: HostedToolSettings;
     extraBody?: Record<string, unknown>;
   };
 }
@@ -260,6 +267,16 @@ export function validateDraftProfileForSave(
     advanced: advancedSettings(advanced),
   };
 
+  if (
+    normalized.advanced.hostedTools?.webSearch &&
+    normalized.apiMode === "chat-completions"
+  ) {
+    throw new ProfileValidationError(
+      "advanced.hostedTools.webSearch",
+      "Web search requires OpenAI Responses or Anthropic Messages.",
+    );
+  }
+
   assertJsonCompatible(normalized.advanced.extraBody, "advanced.extraBody");
   return normalized;
 }
@@ -280,6 +297,11 @@ export function cloneAgentSettings(settings: AgentSettings): AgentSettings {
 }
 
 function advancedSettings(record: Record<string, unknown>): SavedProfile["advanced"] {
+  assertOnlyKeys(
+    record,
+    ["capabilityOverrides", "hostedTools", "extraBody"],
+    "advanced",
+  );
   const result: SavedProfile["advanced"] = {};
   if (record.capabilityOverrides !== undefined) {
     result.capabilityOverrides = capabilityOverrides(record.capabilityOverrides);
@@ -290,6 +312,21 @@ function advancedSettings(record: Record<string, unknown>): SavedProfile["advanc
       "advanced.extraBody",
       "Extra Body must be a JSON object.",
     );
+  }
+  if (record.hostedTools !== undefined) {
+    const hostedTools = requiredRecord(
+      record.hostedTools,
+      "advanced.hostedTools",
+      "Hosted tools must be an object.",
+    );
+    assertOnlyKeys(hostedTools, ["webSearch"], "advanced.hostedTools");
+    if (hostedTools.webSearch !== undefined) {
+      const enabled = booleanValue(
+        hostedTools.webSearch,
+        "advanced.hostedTools.webSearch",
+      );
+      if (enabled) result.hostedTools = { webSearch: true };
+    }
   }
   return result;
 }
@@ -344,6 +381,9 @@ function draftAdvanced(value: unknown): SavedProfile["advanced"] {
   }
   if (isRecord(value.extraBody)) {
     advanced.extraBody = cloneJsonValue(value.extraBody);
+  }
+  if (isRecord(value.hostedTools) && value.hostedTools.webSearch === true) {
+    advanced.hostedTools = { webSearch: true };
   }
   return advanced;
 }

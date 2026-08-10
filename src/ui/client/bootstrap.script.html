@@ -440,6 +440,7 @@
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
+          profileEditor.updateHostedToolControls(settingsBusy);
           approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
           document.getElementById("sendButton").disabled =
@@ -486,8 +487,10 @@
           discoverModels: profileEditor.discoverModels,
           duplicateProfile: profileEditor.duplicateProfile,
           handleApiFamilyChange: profileEditor.handleApiFamilyChange,
+          handleApiModeChange: profileEditor.handleApiModeChange,
           handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
           handleProfileSelection: profileEditor.handleProfileSelection,
+          handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
           markDraftDirty: profileEditor.markDraftDirty,
           openInspector,

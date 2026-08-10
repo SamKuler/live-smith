@@ -169,3 +169,53 @@ test("image capability override is strictly validated and preserved", () => {
     );
   }
 });
+
+test("hosted Web Search is opt-in, normalized, and limited to supported protocols", () => {
+  const responses = validateDraftProfileForSave({
+    ...profile("https://example.test/v1"),
+    apiFamily: "openai",
+    apiMode: "responses",
+    advanced: { hostedTools: { webSearch: true } },
+  });
+  assert.deepEqual(responses.advanced.hostedTools, { webSearch: true });
+
+  const disabled = validateDraftProfileForSave({
+    ...profile("https://example.test/v1"),
+    advanced: { hostedTools: { webSearch: false } },
+  });
+  assert.equal(disabled.advanced.hostedTools, undefined);
+
+  assert.throws(
+    () => validateDraftProfileForSave({
+      ...profile("https://example.test/v1"),
+      apiFamily: "openai",
+      apiMode: "chat-completions",
+      advanced: { hostedTools: { webSearch: true } },
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.name === "ProfileValidationError" &&
+      /Web search requires OpenAI Responses or Anthropic Messages/.test(error.message),
+  );
+
+  for (const hostedTools of [
+    { webSearch: "yes" },
+    { webSearch: true, shell: true },
+  ]) {
+    assert.throws(
+      () => validateDraftProfileForSave({
+        ...profile("https://example.test/v1"),
+        advanced: { hostedTools },
+      }),
+      /hostedTools/,
+    );
+  }
+});
+
+test("draft discovery preserves the hosted Web Search opt-in", () => {
+  const draft = validateDraftProfileForDiscovery({
+    ...profile("https://example.test/v1"),
+    advanced: { hostedTools: { webSearch: true } },
+  });
+  assert.deepEqual(draft.advanced.hostedTools, { webSearch: true });
+});

@@ -14,6 +14,7 @@ import {
   progressLabelForToolCall,
 } from "./progress.js";
 import type {
+  ModelCitation,
   ModelConversationMessage,
   ModelToolCall,
   ModelTurn,
@@ -21,7 +22,7 @@ import type {
 import { throwIfAborted } from "../runtime/host.js";
 
 export type AgentLoopTraceEvent =
-  | { kind: "assistant"; content: string }
+  | { kind: "assistant"; content: string; citations?: ModelCitation[] }
   | { kind: "tool_call"; name: string; content: string }
   | { kind: "tool_result"; name: string; content: string }
   | { kind: "apply_requested"; content: string }
@@ -261,6 +262,7 @@ export async function runAgentLoop(
           await emitTraceEvent(options, {
             kind: "assistant",
             content: finalText,
+            ...(turn.citations?.length ? { citations: turn.citations } : {}),
           });
         }
         const message = unfinishedWorkMessage(
@@ -272,7 +274,11 @@ export async function runAgentLoop(
       }
       if (finalText) {
         lastMessage = finalText;
-        await emitTraceEvent(options, { kind: "assistant", content: lastMessage });
+        await emitTraceEvent(options, {
+          kind: "assistant",
+          content: lastMessage,
+          ...(turn.citations?.length ? { citations: turn.citations } : {}),
+        });
       }
       return {
         message: lastMessage || "Done.",
@@ -281,7 +287,11 @@ export async function runAgentLoop(
 
     if (turn.content?.trim()) {
       lastMessage = turn.content.trim();
-      await emitTraceEvent(options, { kind: "assistant", content: lastMessage });
+      await emitTraceEvent(options, {
+        kind: "assistant",
+        content: lastMessage,
+        ...(turn.citations?.length ? { citations: turn.citations } : {}),
+      });
     }
 
     if (turn.toolCalls.length > maxToolCallsPerTurn) {

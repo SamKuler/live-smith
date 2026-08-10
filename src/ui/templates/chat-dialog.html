@@ -1496,6 +1496,94 @@
         border-color: rgba(217, 154, 145, 0.35);
       }
 
+      .hosted-tool-control {
+        display: grid;
+        gap: 5px;
+        padding: 9px 10px;
+        background: rgba(255, 255, 255, 0.025);
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+      }
+
+      .hosted-tool-toggle {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: start;
+        gap: 8px;
+        color: var(--text);
+        font-size: 11px;
+        line-height: 1.35;
+        text-transform: none;
+        cursor: pointer;
+      }
+
+      .hosted-tool-toggle input {
+        width: 14px;
+        height: 14px;
+        margin: 1px 0 0;
+        accent-color: var(--accent);
+      }
+
+      .hosted-tool-toggle strong {
+        display: block;
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .hosted-tool-control .field-hint {
+        padding-left: 22px;
+      }
+
+      .citation-sources {
+        display: grid;
+        gap: 5px;
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .citation-sources-label {
+        color: var(--quiet);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .citation-source-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: citation-source;
+      }
+
+      .citation-source-list li {
+        counter-increment: citation-source;
+      }
+
+      .citation-source-list a {
+        display: inline-block;
+        max-width: 100%;
+        padding: 3px 7px;
+        overflow: hidden;
+        color: var(--trace);
+        background: rgba(120, 185, 232, 0.08);
+        border: 1px solid rgba(120, 185, 232, 0.28);
+        border-radius: 999px;
+        font-size: 9px;
+        line-height: 1.3;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .citation-source-list a::before {
+        content: counter(citation-source) ". ";
+        color: var(--quiet);
+      }
+
       .profile-actions {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -2129,7 +2217,7 @@
                 </div>
                 <div class="field">
                   <label for="apiMode">Request format</label>
-                  <select id="apiMode" name="apiMode" autocomplete="off" aria-describedby="apiModeHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                  <select id="apiMode" name="apiMode" autocomplete="off" aria-describedby="apiModeHint" onchange="LiveSmithUI.handleApiModeChange()"></select>
                   <span id="apiModeHint" class="field-hint">Use Responses when available. Compatible services may require Chat Completions; Anthropic uses Messages.</span>
                 </div>
                 <div class="field">
@@ -2154,6 +2242,13 @@
                   <datalist id="modelOptions"></datalist>
                   <span id="modelHint" class="field-hint">Choose a loaded model or enter its exact ID.</span>
                   <div id="inputCapabilitiesPreview" class="capability-preview" role="status" aria-live="polite" aria-atomic="true"></div>
+                </div>
+                <div class="hosted-tool-control">
+                  <label class="hosted-tool-toggle" for="webSearchEnabled">
+                    <input id="webSearchEnabled" name="webSearchEnabled" type="checkbox" aria-describedby="webSearchHint" onchange="LiveSmithUI.handleWebSearchChange(this)" />
+                    <span><strong>Web search</strong>Use current public sources when the request needs them.</span>
+                  </label>
+                  <span id="webSearchHint" class="field-hint">Lets this model search public web sources when a request needs current information.</span>
                 </div>
               </section>
 

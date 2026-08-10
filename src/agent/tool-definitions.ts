@@ -1,7 +1,7 @@
-import type { ModelTool } from "../model/provider.js";
+import type { ModelFunctionTool } from "../model/provider.js";
 import { agentActionJsonSchemas } from "./action-schema.js";
 
-export function liveSmithTools(): ModelTool[] {
+export function liveSmithTools(): ModelFunctionTool[] {
   return [
     observationTool(
       "inspect_current_object",
@@ -259,7 +259,7 @@ function observationTool(
   description: string,
   properties: Record<string, Record<string, unknown>> = {},
   required: string[] = [],
-): ModelTool {
+): ModelFunctionTool {
   return {
     type: "function",
     function: {

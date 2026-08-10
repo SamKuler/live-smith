@@ -27,6 +27,9 @@
   base URLs are regular OpenAI profiles.
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
+- Can opt a saved OpenAI Responses or Anthropic Messages Profile into
+  provider-hosted Web Search. Search is off by default, and cited answers show
+  visible source links in the timeline.
 - Shows model/tool/apply/error events in the active chat session.
 - Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 files by paste
   or drag-and-drop. A selected Live Audio Clip, Sample, or Simpler source
@@ -189,6 +192,7 @@ profile saves the complete connection and generation configuration:
 - API key, base URL, and model
 - Temperature and maximum output tokens
 - Capability-aware reasoning effort or thinking budget
+- Optional provider-hosted Web Search for Responses or Messages
 - Optional manual capability overrides and Extra Body JSON
 
 Click **Save & Use** to persist and activate it. Add, Duplicate, Delete, and
@@ -219,6 +223,21 @@ fall back to built-in capability hints or manual Settings values.
 
 OpenAI Responses always sends `store: false`; Live Smith stores and replays the
 returned response items locally instead of using remote conversation state.
+
+### Hosted Web Search
+
+The compact **Web search** control below the Model field is a per-Profile,
+explicit opt-in. It uses the active provider connection and does not require a
+second API key. Live Smith maps it to OpenAI Responses `web_search` or the
+Anthropic Messages `web_search_20250305` server tool. OpenAI Chat Completions is
+rejected locally before network I/O; Live Smith never silently changes a
+Profile's model or protocol.
+
+Search result content, titles, URLs, excerpts, and citations are untrusted model
+data. They cannot authorize Live tools, approvals, filesystem access, or Set
+mutations. Provider-specific search/replay blocks remain opaque transport state;
+Session history persists only a bounded normalized source title and HTTP(S)
+URL. The timeline renders those citations as visible, clickable source links.
 
 ### File attachments
 

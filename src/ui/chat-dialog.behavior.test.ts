@@ -4272,6 +4272,70 @@ test("Save and Use sends the complete current draft for its selected API mode", 
   }
 });
 
+test("Web Search is a compact Profile opt-in and Chat Completions turns it off", async () => {
+  const state = stateFixture();
+  state.settings.profiles[0] = profileFixture({ apiMode: "responses" });
+  const harness = await createDialogHarness(state);
+  try {
+    const control = harness.document.querySelector<HTMLInputElement>(
+      "#webSearchEnabled",
+    );
+    const hint = harness.document.querySelector("#webSearchHint");
+    assert.ok(control);
+    assert.equal(control.checked, false);
+    assert.equal(control.disabled, false);
+    assert.match(hint?.textContent ?? "", /public web sources/i);
+
+    control.click();
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    const saved = (commandCalls(harness).at(-1)?.body as {
+      profile?: SavedProfile;
+    }).profile;
+    assert.deepEqual(saved?.advanced.hostedTools, { webSearch: true });
+    assert.equal(control.checked, true);
+
+    harness.select("#apiMode", "chat-completions");
+    assert.equal(control.checked, false);
+    assert.equal(control.disabled, true);
+    assert.match(hint?.textContent ?? "", /requires Responses or Anthropic Messages/i);
+
+    harness.select("#apiMode", "responses");
+    assert.equal(control.disabled, false);
+    assert.equal(control.checked, false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("saved Web Search settings round-trip and remain locked with Profile settings", async () => {
+  const state = stateFixture();
+  state.settings.profiles[0] = profileFixture({
+    apiMode: "responses",
+    advanced: { hostedTools: { webSearch: true } },
+  });
+  const harness = await createDialogHarness(state);
+  try {
+    const control = harness.document.querySelector<HTMLInputElement>(
+      "#webSearchEnabled",
+    );
+    assert.equal(control?.checked, true);
+    harness.holdNextSend();
+    harness.input("#prompt", "Keep settings locked");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    assert.equal(control?.disabled, true);
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(control?.disabled, false);
+    assert.equal(control?.checked, true);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("unsupported discovered parameters become an explicit repair draft before Save", async () => {
   const state = stateFixture();
   state.settings.profiles[0] = profileFixture({
@@ -5183,6 +5247,40 @@ test("conversation Markdown uses the bundled safe renderer", async () => {
     assert.equal(content.querySelector('a[href^="javascript:"]'), null);
     assert.equal(content.querySelector("img"), null);
     assert.match(content.textContent ?? "", /<img src=x onerror=alert\(1\)>/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("assistant Web Search citations render as bounded safe source links", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-cited-assistant",
+    createdAt: "2026-08-06T00:00:01.000Z",
+    kind: "assistant",
+    content: "A current answer.",
+    citations: [
+      { url: "https://example.test/source", title: "Official source" },
+      { url: "https://example.test/source", title: "Duplicate" },
+      { url: "javascript:alert(1)", title: "Unsafe" },
+      { url: "https://user:secret@example.test/private", title: "Credentials" },
+    ],
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const sources = harness.document.querySelector(".citation-sources");
+    assert.equal(sources?.getAttribute("aria-label"), "Sources");
+    const links = [...harness.document.querySelectorAll<HTMLAnchorElement>(
+      ".citation-source-list a",
+    )];
+    assert.equal(links.length, 1);
+    assert.equal(links[0]?.href, "https://example.test/source");
+    assert.equal(links[0]?.textContent, "Official source");
+    assert.equal(links[0]?.target, "_blank");
+    assert.equal(links[0]?.rel, "noopener noreferrer");
+    assert.equal(sources?.textContent?.includes("Unsafe"), false);
+    assert.equal(sources?.textContent?.includes("secret"), false);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

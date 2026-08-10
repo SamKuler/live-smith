@@ -34,6 +34,7 @@
         "parameters.reasoning.effort": "reasoningEffort",
         "parameters.reasoning.budgetTokens": "reasoningBudgetTokens",
         "advanced.extraBody": "extraBody",
+        "advanced.hostedTools.webSearch": "webSearchEnabled",
         "advanced.capabilityOverrides.tools": "overrideTools",
         "advanced.capabilityOverrides.streaming": "overrideStreaming",
         "advanced.capabilityOverrides.temperature": "overrideTemperature",
@@ -211,6 +212,9 @@
         const overrides = capabilityOverridesFromForm();
         const advanced = {};
         if (Object.keys(overrides).length) advanced.capabilityOverrides = overrides;
+        if (document.getElementById("webSearchEnabled").checked) {
+          advanced.hostedTools = { webSearch: true };
+        }
         if (extraBody) advanced.extraBody = extraBody;
         const temperature = Number(temperatureRaw);
         return {
@@ -298,6 +302,32 @@
         const family = familyControl.value;
         renderApiModes(family);
         markDraftDirty(familyControl);
+        updateHostedToolControls();
+      }
+
+      function handleApiModeChange() {
+        const modeControl = document.getElementById("apiMode");
+        const webSearch = document.getElementById("webSearchEnabled");
+        if (modeControl.value === "chat-completions") webSearch.checked = false;
+        markDraftDirty(modeControl);
+        updateHostedToolControls();
+      }
+
+      function handleWebSearchChange(control) {
+        markDraftDirty(control);
+        updateHostedToolControls();
+      }
+
+      function updateHostedToolControls(settingsLocked = false) {
+        const control = document.getElementById("webSearchEnabled");
+        const hint = document.getElementById("webSearchHint");
+        const mode = document.getElementById("apiMode").value;
+        const supported = mode === "responses" || mode === "messages";
+        control.disabled = settingsLocked || !supported;
+        control.dataset.protocolSupported = String(supported);
+        hint.textContent = supported
+          ? "Lets this model search public web sources when a request needs current information."
+          : "Live Smith Web Search requires Responses or Anthropic Messages.";
       }
 
       async function addProfile() {
@@ -449,10 +479,13 @@
         document.getElementById("reasoningEffort").dataset.requestedValue =
           profile.parameters?.reasoning?.effort || "";
         populateCapabilityOverrides(profile.advanced?.capabilityOverrides || {});
+        document.getElementById("webSearchEnabled").checked =
+          profile.advanced?.hostedTools?.webSearch === true;
         document.getElementById("extraBody").value = profile.advanced?.extraBody
           ? JSON.stringify(profile.advanced.extraBody, null, 2)
           : "";
         renderModelOptions();
+        updateHostedToolControls();
         requireCapabilityView().updateCapabilityPreview();
         requireCapabilityView().updateDraftActions();
       }
@@ -523,11 +556,14 @@
           dirty: draftDirty,
         }),
         handleApiFamilyChange,
+        handleApiModeChange,
         handleProfileSelection,
+        handleWebSearchChange,
         markDraftDirty,
         markDraftDirtyForCapabilityAdjustment,
         modelStateMatchesCurrentConnection,
         modelStateMatchesCurrentProfile,
+        updateHostedToolControls,
         renderModelOptions,
         renderApprovalMode,
         renderSettingsForm,

@@ -28,6 +28,7 @@ const protectedFields = [
   "model",
   "messages",
   "tools",
+  "tool_choice",
   "stream",
   "modalities",
   "audio",
@@ -43,6 +44,7 @@ export function createOpenAIChatTransport(
     listModels: (profile, signal) => listOpenAIModels(profile, fetchImpl, signal),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertNoHostedWebSearch(request);
       assertNoPdfInput(request);
       assertBinaryInputWithinLimits(request);
       const body = buildChatBody(request);
@@ -75,6 +77,14 @@ export function createOpenAIChatTransport(
   };
 }
 
+function assertNoHostedWebSearch(request: TransportRequest): void {
+  if (request.tools.some((tool) => tool.type === "hosted_web_search")) {
+    throw new Error(
+      "OpenAI Chat Completions does not support Live Smith hosted Web Search. Use OpenAI Responses or Anthropic Messages.",
+    );
+  }
+}
+
 function assertNoPdfInput(request: TransportRequest): void {
   const containsPdf = request.currentUserContent.some((part) =>
     part.type === "document"
@@ -99,7 +109,10 @@ function buildChatBody(
       ? { temperature: profile.parameters.temperature }
       : {}),
     ...(request.tools.length && capabilities.tools
-      ? { tools: request.tools, tool_choice: "auto" }
+      ? {
+          tools: request.tools.filter((tool) => tool.type === "function"),
+          tool_choice: "auto",
+        }
       : {}),
     ...(reasoning.mode === "disabled"
       ? { reasoning_effort: "none" }

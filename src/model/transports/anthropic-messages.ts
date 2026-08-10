@@ -4,6 +4,8 @@ import type {
   ModelToolCall,
   ModelTurn,
 } from "../contracts.js";
+import { normalizeModelCitations } from "../citations.js";
+import { HOSTED_WEB_SEARCH_MAX_USES } from "../tools.js";
 import { cloneJsonValue } from "../json-clone.js";
 import type {
   DiscoveredModelInfo,
@@ -33,7 +35,15 @@ import {
   unsupportedInputPart,
 } from "./input-parts.js";
 
-const protectedFields = ["model", "system", "messages", "tools", "stream"] as const;
+const protectedFields = [
+  "model",
+  "system",
+  "messages",
+  "tools",
+  "tool_choice",
+  "stream",
+] as const;
+const maxPauseTurnContinuations = 3;
 
 type AnthropicContentBlock = Record<string, unknown>;
 
@@ -49,11 +59,17 @@ interface AnthropicToolResultBlock {
   content: string;
 }
 
-interface AnthropicTool {
-  name: string;
-  description: string;
-  input_schema: Record<string, unknown>;
-}
+type AnthropicTool =
+  | {
+      name: string;
+      description: string;
+      input_schema: Record<string, unknown>;
+    }
+  | {
+      type: "web_search_20250305";
+      name: "web_search";
+      max_uses: number;
+    };
 
 export function createAnthropicMessagesTransport(
   options: TransportFactoryOptions = {},
@@ -71,23 +87,97 @@ export function createAnthropicMessagesTransport(
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
       assertNoUnsupportedAudioInput(request, "Anthropic Messages");
       assertBinaryInputWithinLimits(request);
-      const body = buildAnthropicBody(request);
-      if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
-        return streamAnthropicTurn(request, body, fetchImpl);
-      }
-      const response = await requestAnthropicJson(
-        request.runtimeProfile.profile,
+      return anthropicTurnWithContinuations(
+        request,
+        buildAnthropicBody(request),
         fetchImpl,
-        "/messages",
-        {
-          method: "POST",
-          body,
-          ...(request.signal ? { signal: request.signal } : {}),
-        },
       );
-      return turnFromAnthropicMessage(response);
       });
     },
+  };
+}
+
+async function anthropicTurnWithContinuations(
+  request: TransportRequest,
+  initialBody: Record<string, unknown>,
+  fetchImpl: typeof fetch,
+): Promise<ModelTurn> {
+  const continuationContent: AnthropicContentBlock[][] = [];
+  for (let continuation = 0; continuation <= maxPauseTurnContinuations; continuation += 1) {
+    throwIfAborted(request.signal);
+    const body = bodyWithAnthropicContinuations(initialBody, continuationContent);
+    const response = request.onDelta && request.runtimeProfile.capabilities.streaming
+      ? await streamAnthropicMessage(request, body, fetchImpl)
+      : await requestAnthropicJson(
+          request.runtimeProfile.profile,
+          fetchImpl,
+          "/messages",
+          {
+            method: "POST",
+            body,
+            ...(request.signal ? { signal: request.signal } : {}),
+          },
+        );
+    if (!isRecord(response) || !Array.isArray(response.content)) {
+      throw new Error("Anthropic Messages returned no content blocks.");
+    }
+    if (response.stop_reason !== "pause_turn") {
+      const turn = turnFromAnthropicMessage(response);
+      if (!continuationContent.length) return turn;
+      const priorCitations = continuationContent.flatMap(
+        (content) => citationsFromAnthropicContent(content),
+      );
+      const priorText = continuationContent
+        .map(textFromAnthropicContent)
+        .filter(Boolean)
+        .join("\n\n");
+      const combinedText = [priorText, turn.content ?? ""]
+        .filter(Boolean)
+        .join("\n\n");
+      const citations = normalizeModelCitations([
+        ...priorCitations,
+        ...(turn.citations ?? []),
+      ]);
+      return {
+        ...turn,
+        content: combinedText || null,
+        ...(citations.length ? { citations } : {}),
+        providerState: {
+          kind: "anthropic-messages",
+          content: cloneJsonValue(response.content),
+          continuationContent: cloneJsonValue(continuationContent),
+        },
+      };
+    }
+    if (continuation === maxPauseTurnContinuations) {
+      throw new Error(
+        `Anthropic Messages exceeded ${maxPauseTurnContinuations} pause_turn continuations.`,
+      );
+    }
+    continuationContent.push(cloneJsonValue(
+      response.content as AnthropicContentBlock[],
+    ));
+  }
+  throw new Error("Anthropic Messages continuation limit was reached.");
+}
+
+function bodyWithAnthropicContinuations(
+  initialBody: Record<string, unknown>,
+  continuationContent: readonly AnthropicContentBlock[][],
+): Record<string, unknown> {
+  if (!continuationContent.length) return initialBody;
+  if (!Array.isArray(initialBody.messages)) {
+    throw new Error("Anthropic Messages request body has invalid messages.");
+  }
+  return {
+    ...initialBody,
+    messages: [
+      ...cloneJsonValue(initialBody.messages),
+      ...continuationContent.map((content) => ({
+        role: "assistant",
+        content: cloneJsonValue(content),
+      })),
+    ],
   };
 }
 
@@ -96,6 +186,7 @@ function buildAnthropicBody(
 ): Record<string, unknown> {
   const reasoning = request.runtimeProfile.profile.parameters.reasoning;
   const thinking = anthropicThinking(request);
+  const tools = mappedAnthropicTools(request);
   const generated: Record<string, unknown> = {
     model: request.runtimeProfile.profile.model,
     max_tokens: request.runtimeProfile.profile.parameters.maxOutputTokens,
@@ -104,9 +195,9 @@ function buildAnthropicBody(
     ...(request.runtimeProfile.profile.parameters.temperature !== undefined && !thinkingEnabled(thinking)
       ? { temperature: request.runtimeProfile.profile.parameters.temperature }
       : {}),
-    ...(request.tools.length && request.runtimeProfile.capabilities.tools
+    ...(tools.length
       ? {
-          tools: request.tools.map(mapAnthropicTool),
+          tools,
           tool_choice: { type: "auto" },
         }
       : {}),
@@ -158,8 +249,8 @@ function buildAnthropicMessages(
       continue;
     }
 
-    const stateContent = anthropicStateContent(message);
-    const content = stateContent ?? [
+    const stateMessages = anthropicStateMessages(message);
+    const content = stateMessages?.at(-1) ?? [
       ...(message.content?.trim()
         ? [{ type: "text" as const, text: message.content }]
         : []),
@@ -170,7 +261,13 @@ function buildAnthropicMessages(
         input: safeToolInput(toolCall.arguments),
       })),
     ];
-    messages.push({ role: "assistant", content });
+    if (stateMessages) {
+      for (const stateContent of stateMessages) {
+        messages.push({ role: "assistant", content: stateContent });
+      }
+    } else {
+      messages.push({ role: "assistant", content });
+    }
     index += 1;
   }
   return messages;
@@ -374,11 +471,11 @@ function supportValue(value: unknown): boolean {
   return supportStatus(value) === true;
 }
 
-async function streamAnthropicTurn(
+async function streamAnthropicMessage(
   request: TransportRequest,
   body: Record<string, unknown>,
   fetchImpl: typeof fetch,
-): Promise<ModelTurn> {
+): Promise<Record<string, unknown>> {
   const contentBlocks = new Map<number, AnthropicContentBlock>();
   const inputJson = new Map<number, string>();
   let stopped = false;
@@ -469,7 +566,7 @@ async function streamAnthropicTurn(
   const content = [...contentBlocks.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, block]) => block);
-  return turnFromAnthropicMessage({ content, stop_reason: stopReason });
+  return { content, stop_reason: stopReason };
 }
 
 function turnFromAnthropicMessage(value: unknown): ModelTurn {
@@ -477,10 +574,7 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
     throw new Error("Anthropic Messages returned no content blocks.");
   }
   const contentBlocks = value.content as Array<Record<string, unknown>>;
-  const text = contentBlocks
-    .flatMap((block) => block.type === "text" && typeof block.text === "string" ? [block.text] : [])
-    .join("\n\n")
-    .trim();
+  const text = textFromAnthropicContent(contentBlocks);
   const seenToolCallIds = new Set<string>();
   const toolCalls = contentBlocks.flatMap((block): ModelToolCall[] => {
     if (block.type !== "tool_use") return [];
@@ -499,6 +593,7 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
       arguments: JSON.stringify(block.input),
     }];
   });
+  const citations = citationsFromAnthropicContent(contentBlocks);
   assertCompleteAnthropicStopReason(value.stop_reason, toolCalls.length);
   if (!text && !toolCalls.length) {
     throw new Error("Anthropic Messages returned an empty response.");
@@ -506,11 +601,23 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
   return {
     content: text || null,
     toolCalls,
+    ...(citations.length ? { citations } : {}),
     providerState: {
       kind: "anthropic-messages",
       content: cloneJsonValue(contentBlocks),
     },
   };
+}
+
+function textFromAnthropicContent(
+  contentBlocks: readonly Record<string, unknown>[],
+): string {
+  return contentBlocks
+    .flatMap((block) =>
+      block.type === "text" && typeof block.text === "string" ? [block.text] : []
+    )
+    .join("\n\n")
+    .trim();
 }
 
 function requireUniqueToolCallId(value: unknown, seen: Set<string>): string {
@@ -575,29 +682,76 @@ function thinkingEnabled(value: Record<string, unknown> | undefined): boolean {
   return value?.type === "adaptive" || value?.type === "enabled";
 }
 
-function anthropicStateContent(
+function anthropicStateMessages(
   message: Extract<ModelConversationMessage, { role: "assistant" }>,
-): AnthropicMessageParam["content"] | undefined {
+): AnthropicContentBlock[][] | undefined {
   const state = message.providerState;
   if (
     isRecord(state) &&
     state.kind === "anthropic-messages" &&
     Array.isArray(state.content)
   ) {
-    return cloneJsonValue(state.content);
+    const continuationContent = Array.isArray(state.continuationContent) &&
+        state.continuationContent.every(Array.isArray)
+      ? cloneJsonValue(state.continuationContent) as AnthropicContentBlock[][]
+      : [];
+    return [
+      ...continuationContent,
+      cloneJsonValue(state.content) as AnthropicContentBlock[],
+    ];
   }
   return undefined;
 }
 
-function mapAnthropicTool(tool: TransportRequest["tools"][number]): AnthropicTool {
+function mapAnthropicTool(
+  request: TransportRequest,
+  tool: TransportRequest["tools"][number],
+): AnthropicTool | undefined {
+  if (tool.type === "hosted_web_search") {
+    if (!request.runtimeProfile.profile.advanced.hostedTools?.webSearch) {
+      throw new Error("Anthropic Messages Web Search is not enabled in this Profile.");
+    }
+    if (tool.maxUses !== HOSTED_WEB_SEARCH_MAX_USES) {
+      throw new Error("Anthropic Messages Web Search has an invalid local usage limit.");
+    }
+    return {
+      type: "web_search_20250305",
+      name: "web_search",
+      max_uses: tool.maxUses,
+    };
+  }
+  if (!request.runtimeProfile.capabilities.tools) return undefined;
   const parameters = tool.function.parameters;
   return {
     name: tool.function.name,
     description: tool.function.description,
     input_schema: parameters?.type === "object"
-      ? parameters as AnthropicTool["input_schema"]
+      ? parameters
       : { type: "object", properties: {} },
   };
+}
+
+function mappedAnthropicTools(request: TransportRequest): AnthropicTool[] {
+  return request.tools.flatMap((tool) => {
+    const mapped = mapAnthropicTool(request, tool);
+    return mapped ? [mapped] : [];
+  });
+}
+
+function citationsFromAnthropicContent(
+  contentBlocks: Array<Record<string, unknown>>,
+) {
+  const candidates: Array<Record<string, unknown>> = [];
+  for (const block of contentBlocks) {
+    if (block.type !== "text" || !Array.isArray(block.citations)) continue;
+    for (const citation of block.citations) {
+      if (
+        isRecord(citation) &&
+        citation.type === "web_search_result_location"
+      ) candidates.push(citation);
+    }
+  }
+  return normalizeModelCitations(candidates);
 }
 
 function safeToolInput(value: string): unknown {

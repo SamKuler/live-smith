@@ -74,7 +74,7 @@ export interface DiscoveredModelInfo {
   capabilities: ModelCapabilityHints;
 }
 
-export interface ModelTool {
+export interface ModelFunctionTool {
   type: "function";
   function: {
     name: string;
@@ -82,6 +82,13 @@ export interface ModelTool {
     parameters?: Record<string, unknown>;
   };
 }
+
+export interface ModelHostedWebSearchTool {
+  type: "hosted_web_search";
+  maxUses: number;
+}
+
+export type ModelTool = ModelFunctionTool | ModelHostedWebSearchTool;
 
 export interface TransportRequest {
   runtimeProfile: RuntimeProfile;
