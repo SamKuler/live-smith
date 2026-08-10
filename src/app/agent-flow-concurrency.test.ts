@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { connect } from "node:net";
 import test from "node:test";
-import { ClipSlot, MidiTrack } from "@ableton-extensions/sdk";
+import { ClipSlot, MidiTrack, Sample } from "@ableton-extensions/sdk";
 
 import {
   arrangementSelectionInteractionContext,
@@ -270,6 +270,270 @@ test("two bridges serialize a same-Session send and delete without recreating ev
     );
   } finally {
     releaseModel.resolve();
+    await fixture.close();
+  }
+});
+
+for (const commandKind of ["delete_session", "archive_session"] as const) {
+  test(`two bridges serialize selected source attachment and ${commandKind}`, async () => {
+    const sourceStarted = deferred<void>();
+    const releaseSource = deferred<void>();
+    const fixture = await openCrossBridgeFixture({
+      directoryPrefix: `live-smith-source-${commandKind}-`,
+      firstDependencies: {
+        copySelectedAudioAttachmentSource: async () => {
+          sourceStarted.resolve();
+          await releaseSource.promise;
+          return copiedAudioSource();
+        },
+      },
+      secondDependencies: {},
+    });
+
+    try {
+      const attachment = fetch(fixture.first.endpoint("/command"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "attach_selected_audio_source",
+          sessionId: fixture.sessionId,
+        }),
+      });
+      await resolvesWithin(sourceStarted.promise, "selected source copy");
+
+      let mutationSettled = false;
+      const mutation = fetch(fixture.second.endpoint("/command"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: commandKind,
+          sessionId: fixture.sessionId,
+        }),
+      }).then((response) => {
+        mutationSettled = true;
+        return response;
+      });
+      assert.equal(await Promise.race([
+        mutation.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => {
+          setTimeout(() => resolve("pending"), 100);
+        }),
+      ]), "pending");
+      assert.equal(mutationSettled, false);
+
+      releaseSource.resolve();
+      assert.equal((await attachment).status, 200);
+      assert.equal((await mutation).status, 200);
+      const session = (await listSessions(fixture.directory)).find(
+        (entry) => entry.id === fixture.sessionId,
+      );
+      if (commandKind === "delete_session") {
+        assert.equal(session, undefined);
+        assert.deepEqual(
+          await listSessionAttachments(fixture.directory, fixture.sessionId),
+          [],
+        );
+      } else {
+        assert.ok(session?.archivedAt);
+        assert.equal(
+          (await listSessionAttachments(fixture.directory, fixture.sessionId)).length,
+          1,
+        );
+      }
+    } finally {
+      releaseSource.resolve();
+      await fixture.close();
+    }
+  });
+}
+
+test("a selected source attachment and send share the same-Session fence", async () => {
+  const sourceStarted = deferred<void>();
+  const releaseSource = deferred<void>();
+  const modelStarted = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-source-send-",
+    firstDependencies: {
+      copySelectedAudioAttachmentSource: async () => {
+        sourceStarted.resolve();
+        await releaseSource.promise;
+        return copiedAudioSource();
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => {
+        modelStarted.resolve();
+        return { content: "Done", toolCalls: [] };
+      },
+    },
+  });
+  await saveSavedProfile(fixture.directory, {
+    ...profile({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "key",
+      model: "audio-model",
+    }),
+    apiMode: "chat-completions",
+    advanced: {
+      capabilityOverrides: {
+        tools: true,
+        inputs: { audio: true },
+      },
+    },
+  });
+
+  try {
+    const attachment = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(sourceStarted.promise, "selected source copy");
+    const send = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Analyze the audio",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(await Promise.race([
+      modelStarted.promise.then(() => "model" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]), "pending");
+
+    releaseSource.resolve();
+    assert.equal((await attachment).status, 200);
+    await resolvesWithin(modelStarted.promise, "model after source attachment");
+    assert.equal((await send).status, 200);
+    const userEvent = (await loadSessionEvents(fixture.directory, fixture.sessionId))
+      .find((event) => event.kind === "user");
+    assert.equal(userEvent?.attachments?.length, 1);
+    assert.equal(userEvent?.attachments?.[0]?.kind, "audio");
+  } finally {
+    releaseSource.resolve();
+    await fixture.close();
+  }
+});
+
+test("selected source final state remains inside the same-Session fence", async () => {
+  const finalStateBuildStarted = deferred<void>();
+  const releaseFinalStateBuild = deferred<void>();
+  let sourceCopied = false;
+  let finalStateBlocked = false;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-source-final-state-",
+    firstDependencies: {
+      copySelectedAudioAttachmentSource: async () => {
+        sourceCopied = true;
+        return copiedAudioSource();
+      },
+      loadSessionEvents: async (...args) => {
+        if (sourceCopied && !finalStateBlocked) {
+          finalStateBlocked = true;
+          finalStateBuildStarted.resolve();
+          await releaseFinalStateBuild.promise;
+        }
+        return loadSessionEvents(...args);
+      },
+    },
+    secondDependencies: {},
+  });
+
+  try {
+    const attachment = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(finalStateBuildStarted.promise, "selected source final state");
+
+    let deleteSettled = false;
+    const deletion = fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "delete_session",
+        sessionId: fixture.sessionId,
+      }),
+    }).then((response) => {
+      deleteSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      deletion.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
+    ]), "pending");
+    assert.equal(deleteSettled, false);
+
+    releaseFinalStateBuild.resolve();
+    assert.equal((await attachment).status, 200);
+    assert.equal((await deletion).status, 200);
+  } finally {
+    releaseFinalStateBuild.resolve();
+    await fixture.close();
+  }
+});
+
+test("selected source copies for different Sessions do not share a fence", async () => {
+  const firstSourceStarted = deferred<void>();
+  const releaseFirstSource = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-source-different-session-",
+    firstDependencies: {
+      copySelectedAudioAttachmentSource: async () => {
+        firstSourceStarted.resolve();
+        await releaseFirstSource.promise;
+        return copiedAudioSource();
+      },
+    },
+    secondDependencies: {
+      copySelectedAudioAttachmentSource: async () => copiedAudioSource(),
+    },
+  });
+  const otherSession = await createSession(fixture.directory, {
+    title: "Other",
+    projectKey: (await listSessions(fixture.directory)).find(
+      (session) => session.id === fixture.sessionId,
+    )!.projectKey,
+    scope: { kind: "track", identity: "1", label: "Lead" },
+  });
+
+  try {
+    const first = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(firstSourceStarted.promise, "first selected source copy");
+    const other = await resolvesWithin(fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: otherSession.id,
+      }),
+    }), "different-Session selected source copy");
+    assert.equal(other.status, 200);
+    assert.equal(
+      (await listSessionAttachments(fixture.directory, otherSession.id)).length,
+      1,
+    );
+    releaseFirstSource.resolve();
+    assert.equal((await first).status, 200);
+  } finally {
+    releaseFirstSource.resolve();
     await fixture.close();
   }
 });
@@ -727,6 +991,122 @@ test("attachment upload revalidates its Session after the body-read race window"
     socket.destroy();
     await fixture.close();
   }
+});
+
+test("selected Live source audio becomes pending without a Profile or user event", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-selected-audio-source-"),
+  );
+  const sourcePath = path.join(directory, "Selected Source.wav");
+  const sourceBytes = audioWaveBytes();
+  await fs.writeFile(sourcePath, sourceBytes);
+  const sample = Object.defineProperties(Object.create(Sample.prototype), {
+    handle: { enumerable: true, value: { id: 91n } },
+    name: { enumerable: true, value: "Selected Source" },
+    filePath: { enumerable: true, value: sourcePath },
+  }) as Sample<"1.0.0">;
+  let interaction!: LiveInteractionContext;
+  interaction = {
+    defaultPrompt: "Analyze the selected source",
+    summary: "Sample: Selected Source",
+    target: { object: sample },
+    scope: { kind: "object", identity: "91", label: "Selected Source" },
+    selectionContext: { refresh: () => interaction },
+  };
+  let sessionId = "";
+  const context = {
+    application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        sessionId = initial.activeSessionId;
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "attach_selected_audio_source",
+            sessionId,
+          }),
+        });
+        assert.equal(response.status, 200);
+        const state = await response.json() as ChatDialogState;
+        assert.equal(state.pendingAttachments.length, 1);
+        assert.equal(state.pendingAttachments[0]?.kind, "audio");
+        assert.equal(state.pendingAttachments[0]?.fileName, "Selected Source.wav");
+        assert.equal(state.pendingAttachments[0]?.mediaType, "audio/wav");
+        assert.equal(state.pendingAttachments[0]?.byteLength, sourceBytes.byteLength);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+  });
+  assert.ok(sessionId);
+  assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+  const [stored] = await listSessionAttachments(directory, sessionId);
+  assert.equal(stored?.kind, "audio");
+  assert.equal(stored?.fileName, "Selected Source.wav");
+  assert.equal(JSON.stringify(stored).includes(directory), false);
+});
+
+test("selected source command redacts a failing Live selection refresh", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-selected-audio-refresh-error-"),
+  );
+  const privatePath = "/private/secret/refresh-source.wav";
+  let failRefresh = false;
+  let interaction!: LiveInteractionContext;
+  interaction = {
+    defaultPrompt: "Analyze the selected source",
+    summary: "Sample: Selected Source",
+    target: { object: fakeMidiTrack(92n, "Selected Source") },
+    scope: { kind: "object", identity: "92", label: "Selected Source" },
+    selectionContext: {
+      refresh: () => {
+        if (failRefresh) throw new Error(`SDK refresh failed at ${privatePath}`);
+        return interaction;
+      },
+    },
+  };
+  const context = {
+    application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        failRefresh = true;
+        const response = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "attach_selected_audio_source",
+            sessionId: initial.activeSessionId,
+          }),
+        });
+        assert.equal(response.status, 400);
+        const body = await response.json() as { error?: string };
+        assert.equal(
+          body.error,
+          "The selected Live audio source is unavailable or could not be attached.",
+        );
+        assert.doesNotMatch(JSON.stringify(body), /private|secret|refresh-source/);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+  });
 });
 
 test("model discovery accepts a Draft with blank name and model without changing Runtime", async () => {
@@ -2090,6 +2470,38 @@ function sizedAttachmentPng(byteLength: number): Uint8Array {
     0, 0, 0, 1, 0, 0, 0, 1,
   ]);
   return bytes;
+}
+
+function audioWaveBytes(): Uint8Array {
+  const sampleRate = 8_000;
+  const bytes = NodeBuffer.alloc(44 + sampleRate);
+  bytes.write("RIFF", 0, "ascii");
+  bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+  bytes.write("WAVEfmt ", 8, "ascii");
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate, 28);
+  bytes.writeUInt16LE(1, 32);
+  bytes.writeUInt16LE(8, 34);
+  bytes.write("data", 36, "ascii");
+  bytes.writeUInt32LE(sampleRate, 40);
+  return new Uint8Array(bytes);
+}
+
+function copiedAudioSource() {
+  const bytes = audioWaveBytes();
+  return {
+    fileName: "Selected Source.wav",
+    bytes,
+    inspection: {
+      mediaType: "audio/wav" as const,
+      durationSeconds: 1,
+      sampleRate: 8_000,
+      channels: 1,
+    },
+  };
 }
 
 function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {

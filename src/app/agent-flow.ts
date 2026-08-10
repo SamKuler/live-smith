@@ -25,6 +25,7 @@ import {
 } from "../live/context.js";
 import { observeLive } from "../live/observer.js";
 import { captureLiveActionPreflightSnapshot } from "../live/preflight.js";
+import { copySelectedAudioAttachmentSource } from "../live/audio-attachment-source.js";
 import {
   assertSameExistingPlanTargets,
   bindAgentPlanTargets,
@@ -148,6 +149,7 @@ const maxConsecutiveInvalidToolCalls = 3;
 const sessionMutationFence = new SessionMutationFence();
 
 export interface AgentFlowDependencies {
+  copySelectedAudioAttachmentSource?: typeof copySelectedAudioAttachmentSource;
   deleteSession?: typeof deleteSession;
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
@@ -574,6 +576,81 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (commandInput.kind === "attach_selected_audio_source") {
+      return withSessionMutation(commandInput.sessionId, signal, async () => {
+        try {
+          throwIfAborted(signal);
+          const session = await attachmentSession(commandInput.sessionId);
+          const sessionInteraction = resolveSessionInteraction(session);
+          if (!sessionInteraction) {
+            throw new ChatBridgeResourceNotFoundError(
+              "The current Live source for this Session is unavailable.",
+            );
+          }
+          const events = await loadSessionEvents(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+          );
+          const pending = await listPendingSessionAttachments(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+            consumedAttachmentIds(events),
+          );
+          const source = await (
+            dependencies.copySelectedAudioAttachmentSource ??
+            copySelectedAudioAttachmentSource
+          )({
+            context,
+            target: sessionInteraction.target,
+            signal,
+          });
+          throwIfAborted(signal);
+          await saveSessionAttachment(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+            {
+              fileName: source.fileName,
+              bytes: source.bytes,
+              claimedMediaType: source.inspection.mediaType,
+              signal,
+            },
+            {
+              preSavePendingAttachmentRefs: pending.map(
+                sessionAttachmentRefFromStored,
+              ),
+            },
+          );
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) {
+            status = "Selected audio source attachment requires verification.";
+            openSettingsOnLoad = false;
+            let authoritativeState: ChatDialogState | undefined;
+            try {
+              authoritativeState = await buildState();
+            } catch {
+              authoritativeState = undefined;
+            }
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "The selected audio source may have been attached, but its final state could not be confirmed.",
+              { cause: error, authoritativeState },
+            );
+          }
+          throwIfAborted(signal);
+          throwMappedSelectedAudioSourceError(error);
+        }
+        status = "Selected audio source attached.";
+        openSettingsOnLoad = false;
+        try {
+          return await buildState();
+        } catch (cause) {
+          throw new ChatBridgeCommandOutcomeUnknownError(
+            "The selected audio source was attached, but the resulting Live Smith state could not be confirmed.",
+            { cause, authoritativeState: undefined },
+          );
+        }
+      });
+    }
+
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
       let cacheMutationCompleted = false;
@@ -730,21 +807,7 @@ export async function runAgentFlow(
           },
         );
       } catch (error) {
-        if (
-          error instanceof AttachmentTooLargeError ||
-          error instanceof AttachmentPendingQuotaError ||
-          (error instanceof AttachmentProcessingError &&
-            error.code === "archive_limit")
-        ) {
-          throw new ChatBridgePayloadTooLargeError(error.message);
-        }
-        if (
-          error instanceof UnsupportedAttachmentError ||
-          error instanceof AttachmentProcessingError
-        ) {
-          throw new ChatBridgeAttachmentValidationError(error.message);
-        }
-        throw error;
+        throwMappedAttachmentError(error);
       }
     });
     return buildStateAfterAttachmentMutation();
@@ -1299,6 +1362,42 @@ function scopeKey(scope: LiveInteractionContext["scope"]): string {
 
 function assertNeverCommand(commandInput: never): never {
   throw new Error(`Unsupported bridge command: ${JSON.stringify(commandInput)}`);
+}
+
+function throwMappedAttachmentError(error: unknown): never {
+  if (
+    error instanceof AttachmentTooLargeError ||
+    error instanceof AttachmentPendingQuotaError ||
+    (error instanceof AttachmentProcessingError && error.code === "archive_limit")
+  ) {
+    throw new ChatBridgePayloadTooLargeError(error.message);
+  }
+  if (
+    error instanceof UnsupportedAttachmentError ||
+    error instanceof AttachmentProcessingError
+  ) {
+    throw new ChatBridgeAttachmentValidationError(error.message);
+  }
+  throw error;
+}
+
+function throwMappedSelectedAudioSourceError(error: unknown): never {
+  if (
+    error instanceof ChatBridgeAttachmentValidationError ||
+    error instanceof ChatBridgeConflictError ||
+    error instanceof ChatBridgePayloadTooLargeError ||
+    error instanceof ChatBridgeResourceNotFoundError ||
+    error instanceof ChatBridgeCommandOutcomeUnknownError
+  ) throw error;
+  if (
+    error instanceof AttachmentTooLargeError ||
+    error instanceof AttachmentPendingQuotaError ||
+    error instanceof UnsupportedAttachmentError ||
+    error instanceof AttachmentProcessingError
+  ) throwMappedAttachmentError(error);
+  throw new ChatBridgeAttachmentValidationError(
+    "The selected Live audio source is unavailable or could not be attached.",
+  );
 }
 
 async function appendAgentLoopTraceEvent(

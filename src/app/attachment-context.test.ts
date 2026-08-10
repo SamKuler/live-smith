@@ -34,7 +34,9 @@ function runtimeProfile(input: {
   apiFamily?: "openai" | "anthropic";
   apiMode?: "responses" | "chat-completions" | "messages";
   image?: boolean;
+  audio?: boolean;
   pdf?: boolean;
+  audioEvidence?: "supported" | "unsupported" | "unverified";
 } = {}): RuntimeProfile {
   const apiFamily = input.apiFamily ?? "openai";
   const apiMode = input.apiMode ?? "responses";
@@ -54,10 +56,19 @@ function runtimeProfile(input: {
       ...defaultModelCapabilities(),
       inputs: {
         image: input.image ?? false,
-        audio: false,
+        audio: input.audio ?? false,
         pdf: input.pdf ?? false,
       },
     },
+    ...(input.audioEvidence === undefined
+      ? {}
+      : {
+          inputCapabilityEvidence: {
+            image: "unverified" as const,
+            audio: input.audioEvidence,
+            pdf: "unverified" as const,
+          },
+        }),
   };
 }
 
@@ -77,6 +88,24 @@ function pngBytesAtSize(byteLength: number): Uint8Array {
 
 function pdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n", "ascii"));
+}
+
+function wavBytes(sampleCount = 8_000): Uint8Array {
+  const bytes = new Uint8Array(44 + sampleCount);
+  const view = new DataView(bytes.buffer);
+  bytes.set(Buffer.from("RIFF", "ascii"), 0);
+  view.setUint32(4, bytes.byteLength - 8, true);
+  bytes.set(Buffer.from("WAVEfmt ", "ascii"), 8);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 8_000, true);
+  view.setUint32(28, 8_000, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true);
+  bytes.set(Buffer.from("data", "ascii"), 36);
+  view.setUint32(40, sampleCount, true);
+  return bytes;
 }
 
 function docxBytes(text: string): Uint8Array {
@@ -424,15 +453,264 @@ test("current PDF context rejects disabled and Chat Profiles with profile_incomp
   }
 });
 
-test("current context defensively rejects count, total, and image-subtotal overflow before storage", async () => {
-  const ref = (index: number, kind: "image" | "document", byteLength: number) => ({
-    id: `attachment-budget-${index}`,
-    kind,
-    fileName: kind === "image" ? `budget-${index}.png` : `budget-${index}.pdf`,
-    mediaType: kind === "image" ? "image/png" as const : "application/pdf" as const,
+test("current audio context requires compatible saved Chat capability evidence before reading", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-current-audio-"));
+  const sessionId = "session-current-audio";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: "/private/source-secret.wav",
+    bytes: wavBytes(),
+  }, { preSavePendingAttachmentRefs: [] });
+  const blob = path.join(
+    directory,
+    "live-smith-attachments",
+    sessionId,
+    `${stored.id}.bin`,
+  );
+
+  for (const profile of [
+    runtimeProfile({ apiMode: "responses", audio: true, audioEvidence: "supported" }),
+    runtimeProfile({
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+    runtimeProfile({ apiMode: "chat-completions", audio: false }),
+    runtimeProfile({ apiMode: "chat-completions", audio: true }),
+    runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "unsupported",
+    }),
+    runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "unverified",
+    }),
+  ]) {
+    await fs.writeFile(blob, new Uint8Array([1, 2, 3]));
+    await assert.rejects(
+      resolveCurrentAttachmentParts({
+        storageDirectory: directory,
+        sessionId,
+        refs: [stored],
+        runtimeProfile: profile,
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "profile_incompatible",
+    );
+  }
+
+  await fs.writeFile(blob, wavBytes());
+  const resolved = await resolveCurrentAttachmentParts({
+    storageDirectory: directory,
+    sessionId,
+    refs: [stored],
+    runtimeProfile: runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.deepEqual(resolved.parts.map((part) => part.type), ["audio"]);
+  assert.equal(
+    resolved.parts[0]?.type === "audio" ? resolved.parts[0].base64 : "",
+    Buffer.from(wavBytes()).toString("base64"),
+  );
+});
+
+test("historical audio uses fixed incompatible, unavailable, and included outcomes", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-history-audio-"));
+  const sessionId = "session-history-audio";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: 'source".wav',
+    bytes: wavBytes(),
+  }, { preSavePendingAttachmentRefs: [] });
+  if (stored.kind !== "audio") throw new Error("Expected stored audio.");
+  const event: SessionEvent = {
+    id: "event-history-audio",
+    createdAt: "2026-08-10T00:00:00.000Z",
+    kind: "user",
+    content: "listen",
+    attachments: [sessionAttachmentRefFromStored(stored)],
+  };
+  const blob = path.join(
+    directory,
+    "live-smith-attachments",
+    sessionId,
+    `${stored.id}.bin`,
+  );
+  await fs.writeFile(blob, new Uint8Array([1, 2, 3]));
+
+  const incompatible = await resolveConversationHistory({
+    storageDirectory: directory,
+    sessionId,
+    events: [event],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile({ apiMode: "responses", audio: true }),
+  });
+  assert.equal(
+    incompatible[0]?.role === "user" &&
+        incompatible[0].content[1]?.type === "text"
+      ? incompatible[0].content[1].text
+      : "",
+    "Historical attachment context (untrusted metadata):\n" +
+      '{"fileName":"source\\\".wav","state":"profile_incompatible"}',
+  );
+
+  const legacyRef = {
+    id: stored.id,
+    kind: "audio" as const,
+    fileName: stored.fileName,
+    mediaType: stored.mediaType,
+    byteLength: stored.byteLength,
+    sha256: stored.sha256,
+  };
+  const unavailable = await resolveConversationHistory({
+    storageDirectory: directory,
+    sessionId,
+    events: [{ ...event, attachments: [legacyRef] }],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.match(
+    unavailable[0]?.role === "user" &&
+        unavailable[0].content[1]?.type === "text"
+      ? unavailable[0].content[1].text
+      : "",
+    /"state":"unavailable"/,
+  );
+
+  const corrupt = await resolveConversationHistory({
+    storageDirectory: directory,
+    sessionId,
+    events: [event],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.match(
+    corrupt[0]?.role === "user" && corrupt[0].content[1]?.type === "text"
+      ? corrupt[0].content[1].text
+      : "",
+    /"state":"unavailable"/,
+  );
+
+  await fs.writeFile(blob, wavBytes());
+  const included = await resolveConversationHistory({
+    storageDirectory: directory,
+    sessionId,
+    events: [event],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile({
+      apiMode: "chat-completions",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.equal(
+    included[0]?.role === "user" &&
+      included[0].content[1]?.type,
+    "audio",
+  );
+});
+
+test("attachment context applies exact and one-over mixed audio request quotas", async () => {
+  const audioRef = (index: number, byteLength: number) => ({
+    id: `attachment-audio-budget-${index}`,
+    kind: "audio" as const,
+    fileName: `audio-${index}.wav`,
+    mediaType: "audio/wav" as const,
     byteLength,
     sha256: "a".repeat(64),
+    durationSeconds: 1,
+    sampleRate: 8_000,
+    channels: 1,
   });
+  const imageRef = (index: number) => ({
+    id: `attachment-image-budget-${index}`,
+    kind: "image" as const,
+    fileName: `image-${index}.png`,
+    mediaType: "image/png" as const,
+    byteLength: 5 * 1024 * 1024,
+    sha256: "b".repeat(64),
+  });
+  const exact = [
+    imageRef(0),
+    imageRef(1),
+    imageRef(2),
+    audioRef(0, 15 * 1024 * 1024),
+  ];
+  assert.deepEqual(
+    await resolveConversationHistory({
+      storageDirectory: undefined,
+      sessionId: "memory-audio-budget-exact",
+      events: [],
+      currentAttachmentRefs: exact,
+      currentDocumentTextCharacters: 0,
+      runtimeProfile: runtimeProfile({
+        apiMode: "chat-completions",
+        audio: true,
+        audioEvidence: "supported",
+      }),
+    }),
+    [],
+  );
+
+  for (const refs of [
+    [...exact.slice(0, 3), audioRef(1, 15 * 1024 * 1024 + 1)],
+    [audioRef(0, 1), audioRef(1, 1), audioRef(2, 1)],
+  ]) {
+    await assert.rejects(
+      resolveConversationHistory({
+        storageDirectory: undefined,
+        sessionId: "memory-audio-budget-over",
+        events: [],
+        currentAttachmentRefs: refs,
+        currentDocumentTextCharacters: 0,
+        runtimeProfile: runtimeProfile({
+          apiMode: "chat-completions",
+          audio: true,
+          audioEvidence: "supported",
+        }),
+      }),
+      /Attachments exceed the model request limit/,
+    );
+  }
+});
+
+test("current context defensively rejects count, total, and image-subtotal overflow before storage", async () => {
+  const ref = (index: number, kind: "image" | "document", byteLength: number) =>
+    kind === "image"
+      ? {
+          id: `attachment-budget-${index}`,
+          kind,
+          fileName: `budget-${index}.png`,
+          mediaType: "image/png" as const,
+          byteLength,
+          sha256: "a".repeat(64),
+        }
+      : {
+          id: `attachment-budget-${index}`,
+          kind,
+          fileName: `budget-${index}.pdf`,
+          mediaType: "application/pdf" as const,
+          byteLength,
+          sha256: "a".repeat(64),
+        };
   const cases = [
     Array.from({ length: 5 }, (_, index) => ref(index, "image", 1)),
     Array.from({ length: 4 }, (_, index) =>

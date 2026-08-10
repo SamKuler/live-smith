@@ -201,7 +201,24 @@
           : value.toFixed(1);
       }
 
-      function attachmentTypeLabel(mediaType) {
+      function formatAudioDuration(durationSeconds) {
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return "";
+        const totalTenths = Math.round(durationSeconds * 10);
+        if (totalTenths < 600) {
+          const seconds = totalTenths / 10;
+          return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+        }
+        const minutes = Math.floor(totalTenths / 600);
+        const secondsTenths = totalTenths - minutes * 600;
+        const seconds = secondsTenths / 10;
+        const value = Number.isInteger(seconds)
+          ? String(seconds).padStart(2, "0")
+          : seconds.toFixed(1).padStart(4, "0");
+        return `${minutes}:${value}`;
+      }
+
+      function attachmentTypeLabel(attachment) {
+        const mediaType = attachment.mediaType;
         if (mediaType === "image/png") return "PNG";
         if (mediaType === "image/jpeg") return "JPEG";
         if (mediaType === "image/webp") return "WebP";
@@ -214,6 +231,16 @@
         }
         if (mediaType.includes("presentationml")) {
           return "PPTX · Extracted document";
+        }
+        if (mediaType === "audio/wav") {
+          return ["WAV", formatAudioDuration(attachment.durationSeconds)]
+            .filter(Boolean)
+            .join(" · ");
+        }
+        if (mediaType === "audio/mpeg") {
+          return ["MP3", formatAudioDuration(attachment.durationSeconds)]
+            .filter(Boolean)
+            .join(" · ");
         }
         return "File";
       }
@@ -229,7 +256,7 @@
           chip.className = "timeline-attachment-chip";
           chip.setAttribute("role", "listitem");
           chip.textContent = `${attachment.fileName} · ${
-            attachmentTypeLabel(attachment.mediaType)
+            attachmentTypeLabel(attachment)
           } · ${formatAttachmentBytes(attachment.byteLength)}`;
           list.append(chip);
         }

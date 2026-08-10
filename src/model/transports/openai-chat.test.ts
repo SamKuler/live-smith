@@ -4,9 +4,13 @@ import { TextEncoder } from "node:util";
 import test from "node:test";
 
 import {
+  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
-  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+  MAX_REQUEST_AUDIO_ATTACHMENT_BYTES,
+  MAX_REQUEST_AUDIO_ATTACHMENT_COUNT,
+  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
+  MAX_REQUEST_BINARY_ATTACHMENT_COUNT,
+  MAX_REQUEST_IMAGE_ATTACHMENT_BYTES,
 } from "../../attachments/contracts.js";
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
@@ -75,6 +79,19 @@ function imagePart(
     type: "image",
     fileName,
     mediaType: "image/png",
+    base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function audioPart(
+  byteLength: number,
+  fileName = "attachment.wav",
+  mediaType: "audio/wav" | "audio/mpeg" = "audio/wav",
+): Extract<ModelInputPart, { type: "audio" }> {
+  return {
+    type: "audio",
+    fileName,
+    mediaType,
     base64: canonicalBase64ForByteLength(byteLength),
   };
 }
@@ -222,6 +239,181 @@ test("OpenAI Chat serializes image input and preserves tool replay", async () =>
   assert.doesNotMatch(JSON.stringify(messages), /attachment-secret|private\/tmp/);
 });
 
+test("OpenAI Chat serializes current and historical WAV/MP3 input without local metadata", async () => {
+  let messages: Array<Record<string, unknown>> = [];
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async (_input, init) => {
+      messages = (JSON.parse(String(init?.body)) as {
+        messages: Array<Record<string, unknown>>;
+      }).messages;
+      return completedChatResponse();
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.tools = false;
+  req.runtimeProfile.capabilities.inputs.audio = true;
+  req.runtimeProfile.inputCapabilityEvidence = {
+    image: "unverified",
+    audio: "supported",
+    pdf: "unverified",
+  };
+  req.history = [{
+    role: "user",
+    content: [
+      { type: "text", text: "Earlier audio" },
+      audioPart(3, "/private/history-secret.mp3", "audio/mpeg"),
+    ],
+  }];
+  req.currentUserContent = [
+    { type: "text", text: "Current audio" },
+    audioPart(3, "/private/current-secret.wav"),
+  ];
+
+  await transport.createToolTurn(req);
+
+  assert.deepEqual(messages[1]?.content, [
+    { type: "text", text: "Earlier audio" },
+    { type: "input_audio", input_audio: { data: "AAAA", format: "mp3" } },
+  ]);
+  assert.deepEqual(messages[2]?.content, [
+    { type: "text", text: "Current audio" },
+    { type: "input_audio", input_audio: { data: "AAAA", format: "wav" } },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(messages),
+    /history-secret|current-secret|private|audio\/mpeg|audio\/wav/,
+  );
+});
+
+test("OpenAI Chat rejects disabled or unverified audio before HTTP", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+  for (const [enabled, evidence] of [
+    [false, "supported"],
+    [true, "unsupported"],
+    [true, "unverified"],
+    [true, undefined],
+  ] as const) {
+    const req = request(profile());
+    req.runtimeProfile.capabilities.inputs.audio = enabled;
+    if (evidence === undefined) {
+      delete req.runtimeProfile.inputCapabilityEvidence;
+    } else {
+      req.runtimeProfile.inputCapabilityEvidence = {
+        image: "unverified",
+        audio: evidence,
+        pdf: "unverified",
+      };
+    }
+    req.currentUserContent = [audioPart(3, "/private/audio-secret.wav")];
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) =>
+        error instanceof Error &&
+        /openai\/chat-completions request failed: Audio input/.test(error.message) &&
+        !/audio-secret|private|AAAA/.test(error.message),
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("OpenAI Chat applies audio and mixed binary request limits before body construction", async () => {
+  let fetchCalls = 0;
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return completedChatResponse();
+    },
+  });
+  const makeRequest = () => {
+    const req = request(profile());
+    req.runtimeProfile.capabilities.inputs.image = true;
+    req.runtimeProfile.capabilities.inputs.audio = true;
+    req.runtimeProfile.inputCapabilityEvidence = {
+      image: "supported",
+      audio: "supported",
+      pdf: "unverified",
+    };
+    return req;
+  };
+
+  {
+    const req = makeRequest();
+    req.history = [{
+      role: "user",
+      content: [audioPart(MAX_AUDIO_ATTACHMENT_BYTES, "history.wav")],
+    }];
+    req.currentUserContent = [
+      audioPart(
+        MAX_REQUEST_AUDIO_ATTACHMENT_BYTES - MAX_AUDIO_ATTACHMENT_BYTES,
+        "current.mp3",
+        "audio/mpeg",
+      ),
+    ];
+    await transport.createToolTurn(req);
+  }
+  assert.equal(fetchCalls, 1);
+
+  const overAudioCount = makeRequest();
+  overAudioCount.currentUserContent = Array.from(
+    { length: MAX_REQUEST_AUDIO_ATTACHMENT_COUNT + 1 },
+    (_, index) => audioPart(3, `audio-${index}.wav`),
+  );
+  await assert.rejects(
+    transport.createToolTurn(overAudioCount),
+    /at most 2 audio attachments/,
+  );
+
+  const overSingle = makeRequest();
+  overSingle.currentUserContent = [audioPart(MAX_AUDIO_ATTACHMENT_BYTES + 1)];
+  await assert.rejects(
+    transport.createToolTurn(overSingle),
+    /Audio input may not exceed 20 MiB/,
+  );
+
+  const mixedExact = makeRequest();
+  mixedExact.history = [{
+    role: "user",
+    content: [
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+    ],
+  }];
+  mixedExact.currentUserContent = [
+    imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+    audioPart(
+      MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+    ),
+  ];
+  await transport.createToolTurn(mixedExact);
+  assert.equal(fetchCalls, 2);
+
+  const mixedOver = makeRequest();
+  mixedOver.history = [{
+    role: "user",
+    content: [
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+    ],
+  }];
+  mixedOver.currentUserContent = [
+    imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+    audioPart(
+      MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES + 1,
+    ),
+  ];
+  await assert.rejects(
+    transport.createToolTurn(mixedOver),
+    /Binary input subtotal may not exceed 30 MiB/,
+  );
+  assert.equal(fetchCalls, 2);
+});
+
 test("OpenAI Chat rejects image input when the resolved capability is disabled", async () => {
   let fetchCalls = 0;
   const transport = createOpenAIChatTransport({
@@ -264,7 +456,7 @@ test("OpenAI Chat rejects PDF input with the Live Smith mode boundary before HTT
       base64: "AR==",
     },
     ...Array.from(
-      { length: MAX_PENDING_ATTACHMENT_COUNT + 1 },
+      { length: MAX_REQUEST_BINARY_ATTACHMENT_COUNT + 1 },
       (_, index) => imagePart(3, `over-count-${index}.png`),
     ),
   ];
@@ -286,8 +478,8 @@ test("OpenAI Chat applies shared image limits across current and history before 
   });
   const exact = request(profile());
   exact.runtimeProfile.capabilities.inputs.image = true;
-  const bytesPerImage = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
-    MAX_PENDING_ATTACHMENT_COUNT;
+  const bytesPerImage = MAX_REQUEST_IMAGE_ATTACHMENT_BYTES /
+    MAX_REQUEST_BINARY_ATTACHMENT_COUNT;
   exact.history = [{
     role: "user",
     content: [
@@ -439,17 +631,21 @@ test("OpenAI Chat replays the raw assistant message before tool results", async 
   assert.equal(messages[assistantIndex + 1]?.role, "tool");
 });
 
-test("Extra Body may override generation fields but not structural Chat fields", async () => {
-  const p = profile({ advanced: { extraBody: { temperature: 0.9, messages: [] } } });
+test("Extra Body may override generation fields but not structural or audio-output Chat fields", async () => {
   const transport = createOpenAIChatTransport({
     fetchImpl: async () => {
       throw new Error("network must not be reached");
     },
   });
-  await assert.rejects(
-    transport.createToolTurn(request(p)),
-    /protected field messages/,
-  );
+  for (const field of ["messages", "modalities", "audio"] as const) {
+    const p = profile({
+      advanced: { extraBody: { temperature: 0.9, [field]: [] } },
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(p)),
+      new RegExp(`protected field ${field}`),
+    );
+  }
 });
 
 test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => {
@@ -716,6 +912,7 @@ test("OpenAI Chat requires tool calls to match their terminal reason and type", 
 
 test("OpenAI Chat streaming emits text and assembles fragmented tool calls", async () => {
   const deltas: string[] = [];
+  let sentMessages: Array<Record<string, unknown>> = [];
   const chunks = [
     {
       id: "chunk-1", object: "chat.completion.chunk", created: 1, model: "custom-model",
@@ -734,16 +931,35 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
   ];
   const sse = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
   const transport = createOpenAIChatTransport({
-    fetchImpl: async () => new Response(sse, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    }),
+    fetchImpl: async (_input, init) => {
+      sentMessages = (JSON.parse(String(init?.body)) as {
+        messages: Array<Record<string, unknown>>;
+      }).messages;
+      return new Response(sse, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    },
   });
   const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.audio = true;
+  req.runtimeProfile.inputCapabilityEvidence = {
+    image: "unverified",
+    audio: "supported",
+    pdf: "unverified",
+  };
+  req.currentUserContent = [
+    { type: "text", text: "Stream audio" },
+    audioPart(3),
+  ];
   req.onDelta = (delta) => {
     deltas.push(delta);
   };
   const turn = await transport.createToolTurn(req);
+  assert.deepEqual(sentMessages[1]?.content, [
+    { type: "text", text: "Stream audio" },
+    { type: "input_audio", input_audio: { data: "AAAA", format: "wav" } },
+  ]);
   assert.deepEqual(deltas, ["Working "]);
   assert.deepEqual(turn.toolCalls, [{ id: "call-1", name: "inspect", arguments: "{}" }]);
   assert.equal(

@@ -28,10 +28,11 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Shows model/tool/apply/error events in the active chat session.
-- Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX files by picker, paste, or
-  drag-and-drop. Images and native PDFs require compatible capabilities on the
-  active saved Runtime Profile; Office documents are extracted locally as
-  bounded text.
+- Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 files by picker,
+  paste, or drag-and-drop. A selected Live Audio Clip, Sample, or Simpler source
+  can also be copied into the pending attachments. Images, native PDFs, and
+  audio have explicit provider capability boundaries; Office documents are
+  extracted locally as bounded text.
 - Renders user and assistant messages with locally bundled, sanitized Markdown,
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
@@ -218,7 +219,14 @@ returned response items locally instead of using remote conversation state.
 
 ### File attachments
 
-The **Attach file** control accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX.
+The **Attach file** control accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV,
+and MP3. **Attach selected source** can copy the file backing the selected Live
+Audio Clip, Sample, or Simpler into the same pending Session state. This command
+accepts only the Session ID; the UI and model cannot provide an arbitrary path.
+Uploading or copying a supported file does not require the currently active
+Profile to support that input, so it can remain pending while you switch
+Profiles.
+
 Image sends require the active saved Runtime Profile to resolve `inputs.image`
 to `true`. Native PDF sends require that saved Runtime Profile to resolve
 `inputs.pdf` to `true` and use either OpenAI Responses or Anthropic Messages.
@@ -226,12 +234,27 @@ Live Smith intentionally does not send PDFs through OpenAI Chat Completions in
 this milestone. DOCX, XLSX, and PPTX do not require a model document capability:
 Live Smith validates their OOXML packages and extracts bounded text locally.
 
-The shared attachment policy permits at most 4 pending attachments and 20 MiB
-of raw attachment bytes in pending Session state or one model request. An image
-may be at most 5 MiB and all images together at most 16 MiB; a document and the
-document subtotal may each be at most 20 MiB, while the 20-MiB combined total
-still applies. Office extraction is capped at 100,000 Unicode code points per
-file and 200,000 across one request. The backend rechecks detected type,
+Audio sends are limited to OpenAI Chat Completions and require the active saved
+Runtime Profile both to resolve `inputs.audio` to `true` and to have explicit,
+supported capability evidence from discovery metadata or a manual override.
+Tool support is not an audio-input gate. OpenAI Responses and Anthropic
+Messages reject audio locally in this milestone, before provider network I/O.
+
+Accepted audio is a RIFF/WAVE file containing PCM or IEEE-float samples, or an
+MP3 containing MPEG-1 or MPEG-2 Layer III frames. Each audio file is limited to
+20 MiB and 120 seconds. Live Smith sends the complete original file bytes,
+including embedded metadata; it does not send Live's warped, processed,
+rendered, or mixed output. The local inspector does not execute ID3 metadata,
+but neither that inspection nor copying from Live cleans or sanitizes the file.
+The file name, metadata, and audio content remain untrusted model context.
+
+The shared attachment policy permits at most 4 attachments and 30 MiB of raw
+attachment bytes in pending Session state or one model request. An image may be
+at most 5 MiB and all images together at most 16 MiB; a document and the
+document subtotal may each be at most 20 MiB; audio has a 20-MiB per-file limit,
+a 30-MiB subtotal, and a maximum count of 2. The combined 30-MiB and 4-file
+limits still apply. Office extraction is capped at 100,000 Unicode code points
+per file and 200,000 across one request. The backend rechecks detected type,
 integrity, Session ownership, and quotas; client-side checks are only early
 feedback.
 
@@ -247,8 +270,8 @@ Historical attachments are selected newest-first after reserving the current
 request budget, then restored to chronological message order; only selected
 blobs are opened. Missing, corrupt, incompatible, or omitted historical files
 degrade to fixed untrusted markers rather than failing the new send. File names,
-document text, and image/PDF content are untrusted model context only: they
-cannot become sample-source arguments or authorize filesystem access.
+metadata, document text, and binary content are untrusted model context only:
+they cannot become sample-source arguments or authorize filesystem access.
 
 See [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) for provider details and
 capability resolution.

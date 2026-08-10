@@ -39,6 +39,13 @@ src/
     progress.ts, system-instructions.ts
       Agent-facing progress labels and model instructions.
 
+  attachments/
+    audio.ts
+      Strict, bounded WAV/MP3 inspection without decoding, executing metadata,
+      or changing the owned source bytes.
+    image.ts, pdf.ts, ooxml*.ts, docx.ts, xlsx.ts, pptx.ts
+      Type-specific inspection and bounded local document extraction.
+
   live/
     action-bindings.ts
       Binds existing action targets to SDK handles and revalidates them after
@@ -49,6 +56,9 @@ src/
       Reads allowed Live state for model tools.
     executor.ts
       Applies validated and confirmed actions to the Live Set.
+    audio-attachment-source.ts
+      Copies a selected Audio Clip, Sample, or Simpler source through a
+      race-checked regular-file boundary without exposing its path.
 
   model/
     contracts.ts
@@ -169,15 +179,17 @@ HTTP status and status text.
 
 ## Attachment boundary
 
-The accepted formats are PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX. Shared
-policy constants allow at most 4 pending attachments and 20 MiB of raw bytes in
+The accepted formats are PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
+Shared policy constants allow at most 4 attachments and 30 MiB of raw bytes in
 pending Session state or one model request. Each image is limited to 5 MiB and
 the image subtotal to 16 MiB. Each document and the document subtotal are
-limited to 20 MiB, while the combined 20-MiB total still applies. These are
-intentional cross-provider limits: parsing, base64 wire encoding, and multi-round
-replay must remain bounded in the Extension Host even when a provider accepts
-more. The server detects the actual file type and is authoritative over WebView
-extension/MIME hints.
+limited to 20 MiB. Each audio attachment is limited to 20 MiB and 120 seconds;
+the audio subtotal is 30 MiB and the audio count is at most 2. The combined
+30-MiB and 4-file limits still apply. These are intentional cross-provider
+limits: parsing, base64 wire encoding, and multi-round replay must remain
+bounded in the Extension Host even when a provider accepts more. The server
+detects the actual file type and is authoritative over WebView extension/MIME
+hints.
 
 Attachment blobs and JSON integrity metadata live under a private
 Session-specific directory. Creation is create-only with collision retry;
@@ -196,6 +208,24 @@ is carried as a native binary model part only when the active saved
 or Anthropic Messages. OpenAI Chat PDF input is intentionally outside this Live
 Smith milestone, regardless of what a compatible endpoint may offer.
 
+Audio inspection accepts only RIFF/WAVE with PCM format tag 1 or IEEE-float
+format tag 3, and MP3 with MPEG-1 or MPEG-2 Layer III frames. The inspector
+checks WAV structure and sample math, channel count, sample rate, MP3 frame
+continuity, and duration without decoding the audio. ID3 is not executed or
+interpreted as instructions, but inspection is not cleaning or sanitization.
+The immutable attachment remains the complete original file, including embedded
+metadata.
+
+File upload and `attach_selected_audio_source` may create a pending audio
+attachment without consulting the active Profile. The selected-source command
+contains only the Session ID; it resolves an Audio Clip, Sample, or Simpler
+source inside Live and never accepts or returns a filesystem path. The copy
+opens only a non-symlink regular file without following links, applies a bounded
+read, and compares file identity, size, and change timestamps before and after
+the read. It also resolves the Live source again, so a changed selection/source
+fails instead of attaching bytes from a stale target. This copies the source
+file, not Live's warped, processed, rendered, or mixed output.
+
 DOCX, XLSX, and PPTX are opened by a bounded local OOXML ZIP/XML parser. It
 rejects malformed packages and packages with detected macro, VBA, ActiveX, or
 macrosheet signals, and it never exposes embedded binary parts to the model.
@@ -208,15 +238,16 @@ and 200,000 code points across the request; per-file truncation is labelled in
 the untrusted document wrapper, while a current request that exceeds the
 aggregate limit fails before event append.
 
-Upload, pending-quota validation, deletion, request preparation, event append,
-and existing-Session lifecycle mutations use the same process-wide Session mutation
-fence. Operations check cancellation at their defined boundaries; upload
-hashing, PDF/OOXML inspection, Office extraction, history reads, and waiting for
-the fence yield or recheck cooperatively. Pending references are completely
-resolved before the user event is appended. A confirmed append consumes those
-exact immutable IDs even if the provider later fails; unknown append outcomes
-remain `PromptPersistence=unknown` until authoritative state is refreshed. An
-ID can occur in only one user event, consumed IDs cannot be deleted, and corrupt
+Upload, selected-source copy, pending-quota validation, deletion, request
+preparation, event append, and existing-Session lifecycle mutations use the
+same process-wide Session mutation fence. Operations check cancellation at
+their defined boundaries; upload hashing, audio/PDF/OOXML inspection, Office
+extraction, history reads, and waiting for the fence yield or recheck
+cooperatively. Pending references are completely resolved before the user
+event is appended. A confirmed append consumes those exact immutable IDs even
+if the provider later fails; unknown append outcomes remain
+`PromptPersistence=unknown` until authoritative state is refreshed. An ID can
+occur in only one user event, consumed IDs cannot be deleted, and corrupt
 duplicate occurrences fail closed. A current validation, capability, binary
 budget, or extracted-text-budget failure leaves the files pending.
 
@@ -227,14 +258,18 @@ only selected/current blobs are opened and verified. Missing, corrupt,
 profile-incompatible, and over-budget historical files become fixed untrusted
 markers instead of failing the new send. Assistant history is text-only.
 
-The provider-neutral model contract carries typed user text, image, and native
-PDF parts. Transports recheck `inputs.image === true` or `inputs.pdf === true`
-before network I/O. Office content is locally extracted and encoded with its
-filename and media type in a JSON-escaped block explicitly labelled untrusted.
-File names, document text, and binary content have no instruction authority;
-attachment IDs and local paths are not exposed, and the action schema has no
-attachment or arbitrary-path sample source. A file may inform the model but
-cannot directly become a Live sample or filesystem capability.
+The provider-neutral model contract carries typed user text, image, native PDF,
+and audio parts. Transports recheck the corresponding input capability before
+network I/O. Audio additionally requires OpenAI Chat Completions and explicit
+`supported` audio-input evidence on the active saved `RuntimeProfile`; model
+tool support is unrelated and is not a gate. OpenAI Responses and Anthropic
+Messages reject audio locally in this milestone. Office content is locally
+extracted and encoded with its filename and media type in a JSON-escaped block
+explicitly labelled untrusted. File names, embedded metadata, document text,
+audio, and other binary content have no instruction authority; attachment IDs
+and local paths are not exposed, and the action schema has no attachment or
+arbitrary-path sample source. A file may inform the model but cannot directly
+become a Live sample or filesystem capability.
 
 ## Configuration boundaries
 

@@ -85,9 +85,18 @@ export class ChatBridgeSendFailureError extends Error {
 }
 
 export class ChatBridgeCommandOutcomeUnknownError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly authoritativeState: ChatDialogState | undefined;
+  readonly authoritativeStateAttempted: boolean;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { authoritativeState?: ChatDialogState | undefined },
+  ) {
     super(message, options);
     this.name = "ChatBridgeCommandOutcomeUnknownError";
+    this.authoritativeState = options?.authoritativeState;
+    this.authoritativeStateAttempted = options !== undefined &&
+      Object.prototype.hasOwnProperty.call(options, "authoritativeState");
   }
 }
 
@@ -162,6 +171,7 @@ export type ChatBridgeCommandInput =
   | { kind: "rename_session"; sessionId: string; title: string }
   | { kind: "archive_session"; sessionId: string }
   | { kind: "unarchive_session"; sessionId: string }
+  | { kind: "attach_selected_audio_source"; sessionId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
 export interface ChatBridgeConfirmationRequest {
@@ -580,13 +590,19 @@ export async function createChatBridge(
           return;
         }
         if (
-          (input.kind === "delete_session" || input.kind === "archive_session") &&
+          (
+            input.kind === "delete_session" ||
+            input.kind === "archive_session" ||
+            input.kind === "attach_selected_audio_source"
+          ) &&
           activeSendsBySession.has(input.sessionId)
         ) {
           sendJson(response, {
-            error: `Stop this Session's active request before ${
-              input.kind === "delete_session" ? "deleting" : "archiving"
-            } it.`,
+            error: input.kind === "attach_selected_audio_source"
+              ? "Stop this Session's active request before attaching its selected audio source."
+              : `Stop this Session's active request before ${
+                input.kind === "delete_session" ? "deleting" : "archiving"
+              } it.`,
           }, 409);
           return;
         }
@@ -785,7 +801,16 @@ export async function createChatBridge(
       let sendErrorState: ChatDialogState | undefined;
       let reconciliationRequired: true | undefined;
       if (commandOutcome === "unknown") {
-        try {
+        if (
+          reportedError instanceof ChatBridgeCommandOutcomeUnknownError &&
+          reportedError.authoritativeStateAttempted
+        ) {
+          if (reportedError.authoritativeState === undefined) {
+            reconciliationRequired = true;
+          } else {
+            commandState = stateWithActivities(reportedError.authoritativeState);
+          }
+        } else try {
           commandState = await buildBridgeState();
         } catch {
           reconciliationRequired = true;
@@ -1401,7 +1426,8 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     kind === "restore_session" ||
     kind === "delete_session" ||
     kind === "archive_session" ||
-    kind === "unarchive_session"
+    kind === "unarchive_session" ||
+    kind === "attach_selected_audio_source"
   ) {
     assertOnlyInputKeys(input, ["kind", "sessionId"], `${kind} command`);
     return { kind, sessionId: inputString(input, "sessionId") };
@@ -1443,7 +1469,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "delete_session" ||
     input.kind === "rename_session" ||
     input.kind === "archive_session" ||
-    input.kind === "unarchive_session";
+    input.kind === "unarchive_session" ||
+    input.kind === "attach_selected_audio_source";
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {

@@ -98,6 +98,22 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "archive_session", sessionId: "s1" }),
     });
+    const attachActiveSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: "s1",
+      }),
+    });
+    const attachOtherSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: "s2",
+      }),
+    });
     const profileCommand = await fetch(endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -116,11 +132,16 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     assert.deepEqual(await archiveActiveSession.json(), {
       error: "Stop this Session's active request before archiving it.",
     });
+    assert.equal(attachActiveSession.status, 409);
+    assert.deepEqual(await attachActiveSession.json(), {
+      error: "Stop this Session's active request before attaching its selected audio source.",
+    });
+    assert.equal(attachOtherSession.status, 200);
     assert.equal(profileCommand.status, 409);
     assert.deepEqual(await profileCommand.json(), {
       error: "Profile settings cannot change while an agent request is active.",
     });
-    assert.equal(commandCalls, 2);
+    assert.equal(commandCalls, 3);
   } finally {
     releaseSend();
     await firstSend;
@@ -810,6 +831,46 @@ test("the command state fence covers unknown-outcome reconciliation", async () =
   }
 });
 
+test("a command unknown outcome uses its in-lease authoritative state without rebuilding", async () => {
+  const authoritative = { status: "attached in lease" } as ChatDialogState;
+  let buildCalls = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      buildCalls += 1;
+      throw new Error("Post-lease state build must not run.");
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => {
+      throw new ChatBridgeCommandOutcomeUnknownError(
+        "Selected source outcome is unknown.",
+        { authoritativeState: authoritative },
+      );
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  try {
+    const response = await fetch(`${chatUrl.origin}/command?token=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    assert.equal(response.status, 500);
+    const body = await response.json() as Record<string, unknown>;
+    assert.equal(typeof body.commandId, "string");
+    delete body.commandId;
+    assert.deepEqual(body, {
+      error: "Selected source outcome is unknown.",
+      commandOutcome: "unknown",
+      state: authoritative,
+    });
+    assert.equal(buildCalls, 0);
+  } finally {
+    await bridge.close();
+  }
+});
+
 test("chat bridge correlates command state with the request header without changing the body", async () => {
   const state = { status: "updated" } as ChatDialogState;
   let commandInput: unknown;
@@ -1256,6 +1317,46 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
       /does not support property projectKey/i,
     );
     assert.equal(commandInput, undefined);
+
+    const validSourceAttach = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "attach_selected_audio_source",
+        sessionId: "session-audio",
+      }),
+    });
+    assert.equal(validSourceAttach.status, 200);
+    assert.deepEqual(commandInput, {
+      kind: "attach_selected_audio_source",
+      sessionId: "session-audio",
+    });
+
+    for (const forbidden of [
+      { path: "/private/sample.wav" },
+      { filePath: "/private/sample.wav" },
+      { fileName: "sample.wav" },
+      { attachmentId: "attachment-1" },
+      { profileId: "profile-1" },
+      { profile: { apiKey: "must-not-pass" } },
+    ]) {
+      commandInput = undefined;
+      const rejected = await fetch(endpoint("/command"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "attach_selected_audio_source",
+          sessionId: "session-audio",
+          ...forbidden,
+        }),
+      });
+      assert.equal(rejected.status, 400);
+      assert.match(
+        (await rejected.json() as { error: string }).error,
+        /does not support property/i,
+      );
+      assert.equal(commandInput, undefined);
+    }
   } finally {
     await bridge.close();
   }

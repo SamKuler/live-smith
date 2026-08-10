@@ -93,10 +93,11 @@ function resolveSelectedSource(target: LiveTarget): ResolvedSampleSource {
   if (selected instanceof Sample) return resolved(selected.filePath, selected);
   if (selected instanceof AudioClip) return resolved(selected.filePath, selected);
   if (selected instanceof Simpler) {
-    if (!selected.sample) {
+    const sample = selected.sample;
+    if (!sample) {
       throw new Error(`Selected Simpler "${selected.name}" has no loaded sample.`);
     }
-    return resolved(selected.sample.filePath, selected.sample);
+    return resolved(sample.filePath, sample);
   }
   throw new Error(
     "The selected Live object is not an Audio Clip, Sample, or Simpler with a loaded sample.",

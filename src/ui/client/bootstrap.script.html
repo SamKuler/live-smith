@@ -24,6 +24,7 @@
         const attachments = factories.createAttachments({
           deleteAttachment: bridgeClient.deleteAttachment,
           getState,
+          runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
           uploadAttachments: bridgeClient.uploadAttachments,
         });
@@ -160,6 +161,11 @@
           rename_session: { status: "Renaming Session…" },
           archive_session: { status: "Archiving Session…" },
           unarchive_session: { status: "Returning Session…" },
+          attach_selected_audio_source: {
+            busyLabel: "Attaching…",
+            controlId: "attachSelectedAudioButton",
+            status: "Copying selected source audio…",
+          },
         };
         let activeCommandControl = null;
         let activeCommandAriaLabel = null;

@@ -24,7 +24,14 @@ import {
   unsupportedOpenAIChatPdfInput,
 } from "./input-parts.js";
 
-const protectedFields = ["model", "messages", "tools", "stream"] as const;
+const protectedFields = [
+  "model",
+  "messages",
+  "tools",
+  "stream",
+  "modalities",
+  "audio",
+] as const;
 
 export function createOpenAIChatTransport(
   options: TransportFactoryOptions = {},

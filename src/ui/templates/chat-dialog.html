@@ -1019,9 +1019,23 @@
       }
 
       .attach-file-button {
-        align-self: end;
-        min-width: 88px;
+        width: 100%;
+        min-width: 116px;
         height: 32px;
+      }
+
+      .attachment-actions {
+        display: grid;
+        align-self: end;
+        gap: 5px;
+      }
+
+      .audio-source-note {
+        grid-column: 1 / -1;
+        margin: -1px 0 0;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.35;
       }
 
       textarea,
@@ -1415,9 +1429,13 @@
           </div>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden></div>
-            <input id="attachmentInput" class="visually-hidden" name="attachmentInput" type="file" accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx" tabindex="-1" aria-hidden="true" multiple />
-            <button id="attachFileButton" class="secondary attach-file-button" type="button" aria-describedby="attachmentCapabilityHint">Attach file</button>
+            <input id="attachmentInput" class="visually-hidden" name="attachmentInput" type="file" accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,audio/wav,audio/mpeg,.png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.wav,.mp3" tabindex="-1" aria-hidden="true" multiple />
+            <div class="attachment-actions">
+              <button id="attachFileButton" class="secondary attach-file-button" type="button" aria-describedby="attachmentCapabilityHint">Attach file</button>
+              <button id="attachSelectedAudioButton" class="secondary attach-file-button" type="button" aria-label="Attach selected Audio Clip, Sample, or Simpler source" aria-describedby="audioSourceAttachmentNote" title="Copy the selected Audio Clip, Sample, or Simpler source file into this Session">Attach source audio</button>
+            </div>
             <span id="attachmentCapabilityHint" class="visually-hidden" role="status" aria-live="polite" hidden></span>
+            <p id="audioSourceAttachmentNote" class="audio-source-note">Audio sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
             <textarea id="prompt" name="prompt" aria-label="Message Live Smith" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
             <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>

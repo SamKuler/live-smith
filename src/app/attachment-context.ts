@@ -1,11 +1,13 @@
 import { Buffer } from "node:buffer";
 
 import {
-  attachmentQuotaIsWithinLimits,
+  attachmentRequestQuotaIsWithinLimits,
+  type AttachmentQuotaItem,
   AttachmentProcessingError,
-  MAX_PENDING_ATTACHMENT_BYTES,
   type DocumentAttachmentMediaType,
+  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
+import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import { MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS } from "../attachments/document-text.js";
 import { processAttachment } from "../attachments/processor.js";
 import type {
@@ -17,6 +19,7 @@ import { throwIfAborted } from "../runtime/host.js";
 import {
   isImageAttachmentMediaType,
   readSessionAttachmentBytes,
+  type PersistedSessionAttachmentRef,
   type SessionAttachmentRef,
   type StoredSessionAttachment,
 } from "../storage/attachments.js";
@@ -82,7 +85,7 @@ export async function resolveCurrentAttachmentParts(input: {
       continue;
     }
     wireBinaryBytes += ref.byteLength;
-    if (wireBinaryBytes > MAX_PENDING_ATTACHMENT_BYTES) {
+    if (wireBinaryBytes > MAX_REQUEST_BINARY_ATTACHMENT_BYTES) {
       throw new Error("Binary attachments exceed the model request limit.");
     }
     parts.push(part.part);
@@ -135,8 +138,15 @@ export async function resolveConversationHistory(input: {
         resolved.set(occurrence, preflightMarker);
         continue;
       }
+      if (!isStrictAttachmentRef(ref)) {
+        resolved.set(occurrence, historicalMarker("unavailable", ref.fileName));
+        continue;
+      }
       const quotaItem = attachmentQuotaItem(ref);
-      if (!attachmentQuotaIsWithinLimits([...includedQuotaItems, quotaItem])) {
+      if (!attachmentRequestQuotaIsWithinLimits([
+        ...includedQuotaItems,
+        quotaItem,
+      ])) {
         resolved.set(
           occurrence,
           historicalMarker("omitted_from_request", ref.fileName),
@@ -214,6 +224,21 @@ async function resolveCurrentAttachmentPart(
     );
     return { type: "binary", part: imagePart(ref, bytes) };
   }
+  if (ref.kind === "audio") {
+    if (!audioProfileCompatible(runtimeProfile)) {
+      throw audioProfileIncompatibleError();
+    }
+    if (!isAudioAttachmentInspection(ref)) {
+      throw new Error("Current audio attachment metadata is invalid.");
+    }
+    const bytes = await readAttachmentBytes(
+      storageDirectory,
+      sessionId,
+      ref,
+      signal,
+    );
+    return { type: "binary", part: audioPart(ref, bytes) };
+  }
   if (ref.kind !== "document") {
     throw new Error("Current attachment type is not supported in this request.");
   }
@@ -273,6 +298,16 @@ async function resolveHistoricalAttachment(
         };
       }
       return { type: "included", part: imagePart(ref, bytes) };
+    }
+    if (ref.kind === "audio") {
+      const fileName = ref.fileName;
+      if (!isAudioAttachmentInspection(ref)) {
+        return {
+          type: "marker",
+          part: historicalMarker("unavailable", fileName),
+        };
+      }
+      return { type: "included", part: audioPart(ref, bytes) };
     }
     const processed = await processAttachment({
       bytes,
@@ -338,6 +373,21 @@ function imagePart(
   };
 }
 
+function audioPart(
+  ref: Extract<SessionAttachmentRef, { kind: "audio" }>,
+  bytes: Uint8Array,
+): Extract<ModelInputPart, { type: "audio" }> {
+  if (!isAudioAttachmentInspection(ref)) {
+    throw new Error("Audio attachment metadata is invalid.");
+  }
+  return {
+    type: "audio",
+    fileName: ref.fileName,
+    mediaType: ref.mediaType,
+    base64: Buffer.from(bytes).toString("base64"),
+  };
+}
+
 function documentTextPart(input: {
   fileName: string;
   mediaType: DocumentAttachmentMediaType;
@@ -378,7 +428,7 @@ function nativePdfAllowed(runtimeProfile: RuntimeProfile): boolean {
 }
 
 function historicalPreflightMarker(
-  ref: SessionAttachmentRef,
+  ref: PersistedSessionAttachmentRef,
   runtimeProfile: RuntimeProfile,
 ): ModelInputPart | undefined {
   if (ref.kind === "image") {
@@ -390,8 +440,15 @@ function historicalPreflightMarker(
     }
     return undefined;
   }
-  if (ref.kind !== "document") {
-    return historicalMarker("profile_incompatible", ref.fileName);
+  if (ref.kind === "audio") {
+    const fileName = ref.fileName;
+    if (!isAudioAttachmentInspection(ref)) {
+      return historicalMarker("unavailable", fileName);
+    }
+    if (!audioProfileCompatible(runtimeProfile)) {
+      return historicalMarker("profile_incompatible", fileName);
+    }
+    return undefined;
   }
   if (
     ref.mediaType === "application/pdf" &&
@@ -402,6 +459,12 @@ function historicalPreflightMarker(
   return undefined;
 }
 
+function isStrictAttachmentRef(
+  ref: PersistedSessionAttachmentRef,
+): ref is SessionAttachmentRef {
+  return ref.kind !== "audio" || isAudioAttachmentInspection(ref);
+}
+
 function assertCurrentProfileCompatibility(
   refs: readonly SessionAttachmentRef[],
   runtimeProfile: RuntimeProfile,
@@ -409,6 +472,12 @@ function assertCurrentProfileCompatibility(
   for (const ref of refs) {
     if (ref.kind === "image" && !runtimeProfile.capabilities.inputs.image) {
       throw new AttachmentInputCapabilityError();
+    }
+    if (
+      ref.kind === "audio" &&
+      !audioProfileCompatible(runtimeProfile)
+    ) {
+      throw audioProfileIncompatibleError();
     }
     if (
       ref.kind === "document" &&
@@ -441,8 +510,7 @@ function assertAttachmentRequestBudget(
   refs: readonly SessionAttachmentRef[],
 ): void {
   if (
-    refs.some((ref) => ref.kind !== "image" && ref.kind !== "document") ||
-    !attachmentQuotaIsWithinLimits(refs.map(attachmentQuotaItem))
+    !attachmentRequestQuotaIsWithinLimits(refs.map(attachmentQuotaItem))
   ) {
     throw new Error("Attachments exceed the model request limit.");
   }
@@ -450,11 +518,22 @@ function assertAttachmentRequestBudget(
 
 function attachmentQuotaItem(
   ref: SessionAttachmentRef,
-): { kind: "image" | "document"; byteLength: number } {
-  if (ref.kind !== "image" && ref.kind !== "document") {
-    throw new Error("Attachment type is not supported in this request.");
-  }
+): AttachmentQuotaItem {
   return { kind: ref.kind, byteLength: ref.byteLength };
+}
+
+function audioProfileCompatible(runtimeProfile: RuntimeProfile): boolean {
+  return runtimeProfile.profile.apiFamily === "openai" &&
+    runtimeProfile.profile.apiMode === "chat-completions" &&
+    runtimeProfile.capabilities.inputs.audio &&
+    runtimeProfile.inputCapabilityEvidence?.audio === "supported";
+}
+
+function audioProfileIncompatibleError(): AttachmentProcessingError {
+  return new AttachmentProcessingError(
+    "profile_incompatible",
+    "This Profile/API mode cannot read audio attachments.",
+  );
 }
 
 function assertCurrentDocumentTextCharacters(value: number): void {

@@ -9,6 +9,7 @@ import test from "node:test";
 import { packageBytes } from "../attachments/ooxml-test-helpers.js";
 import {
   AttachmentProcessingError,
+  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
 import { createHostAbortController } from "../runtime/host.js";
@@ -20,6 +21,8 @@ import {
   deleteSessionAttachments,
   listSessionAttachments,
   listPendingSessionAttachments,
+  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_PENDING_SESSION_ATTACHMENT_BYTES,
   MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
@@ -74,6 +77,58 @@ function pendingImageRef(id: string, byteLength: number) {
   };
 }
 
+function waveBytes(options: {
+  channels?: number;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  dataBytes?: number;
+} = {}): Uint8Array {
+  const channels = options.channels ?? 1;
+  const sampleRate = options.sampleRate ?? 8_000;
+  const bitsPerSample = options.bitsPerSample ?? 8;
+  const blockAlign = channels * bitsPerSample / 8;
+  const dataBytes = options.dataBytes ?? sampleRate * blockAlign;
+  const output = Buffer.alloc(44 + dataBytes);
+  output.write("RIFF", 0, "ascii");
+  output.writeUInt32LE(output.byteLength - 8, 4);
+  output.write("WAVE", 8, "ascii");
+  output.write("fmt ", 12, "ascii");
+  output.writeUInt32LE(16, 16);
+  output.writeUInt16LE(1, 20);
+  output.writeUInt16LE(channels, 22);
+  output.writeUInt32LE(sampleRate, 24);
+  output.writeUInt32LE(sampleRate * blockAlign, 28);
+  output.writeUInt16LE(blockAlign, 32);
+  output.writeUInt16LE(bitsPerSample, 34);
+  output.write("data", 36, "ascii");
+  output.writeUInt32LE(dataBytes, 40);
+  return new Uint8Array(output);
+}
+
+function mp3Bytes(): Uint8Array {
+  const frameBytes = Math.floor(144 * 128_000 / 44_100);
+  const frame = new Uint8Array(frameBytes);
+  frame.set([0xff, 0xfb, 0x90, 0]);
+  const bytes = new Uint8Array(frameBytes * 2);
+  bytes.set(frame);
+  bytes.set(frame, frameBytes);
+  return bytes;
+}
+
+function pendingAudioRef(id: string, byteLength: number) {
+  return {
+    id,
+    kind: "audio" as const,
+    fileName: `${id}.wav`,
+    mediaType: "audio/wav" as const,
+    byteLength,
+    sha256: "c".repeat(64),
+    durationSeconds: 1,
+    sampleRate: 8_000,
+    channels: 1,
+  };
+}
+
 test("session attachment stores private image bytes and immutable metadata", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-"));
 
@@ -125,6 +180,99 @@ test("attachment image signature detects JPEG and WebP without trusting names", 
   assert.equal(jpeg.mediaType, "image/jpeg");
   assert.equal(webp.mediaType, "image/webp");
   await deleteSessionAttachments(undefined, sessionId);
+});
+
+test("session attachments classify, store, and reload strict WAV and MP3 metadata", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-audio-"));
+  const wav = waveBytes();
+  const storedWav = await saveSessionAttachment(directory, "session-audio", {
+    fileName: "../recording.bin",
+    claimedMediaType: "image/png",
+    bytes: wav,
+  }, noPendingAttachmentRefs);
+  assert.deepEqual(storedWav, {
+    ...storedWav,
+    kind: "audio",
+    mediaType: "audio/wav",
+    fileName: "recording.bin",
+    durationSeconds: 1,
+    sampleRate: 8_000,
+    channels: 1,
+  });
+  assert.deepEqual(
+    await readSessionAttachmentBytes(directory, "session-audio", storedWav.id),
+    wav,
+  );
+
+  const storedMp3 = await saveSessionAttachment(directory, "session-audio", {
+    fileName: "renamed.wav",
+    claimedMediaType: "audio/wav",
+    bytes: mp3Bytes(),
+  }, { preSavePendingAttachmentRefs: [storedWav] });
+  assert.equal(storedMp3.kind, "audio");
+  assert.equal(storedMp3.mediaType, "audio/mpeg");
+  if (storedMp3.kind === "audio") {
+    assert.equal(storedMp3.sampleRate, 44_100);
+    assert.equal(storedMp3.channels, 2);
+  }
+  assert.deepEqual(
+    await listSessionAttachments(directory, "session-audio"),
+    [storedWav, storedMp3],
+  );
+});
+
+test("audio storage owns mutable input and image classification wins for RIFF WebP", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-audio-owned-"));
+  const source = waveBytes();
+  const expected = new Uint8Array(source);
+  const saving = saveSessionAttachment(directory, "session-audio-owned", {
+    fileName: "owned.wav",
+    bytes: source,
+  }, noPendingAttachmentRefs);
+  source.fill(0);
+  const stored = await saving;
+  assert.deepEqual(
+    await readSessionAttachmentBytes(directory, "session-audio-owned", stored.id),
+    expected,
+  );
+
+  const webp = await saveSessionAttachment(undefined, "memory-webp-before-audio", {
+    fileName: "claimed.wav",
+    bytes: webpBytes,
+  }, noPendingAttachmentRefs);
+  assert.equal(webp.kind, "image");
+  assert.equal(webp.mediaType, "image/webp");
+  await deleteSessionAttachments(undefined, "memory-webp-before-audio");
+});
+
+test("audio metadata corruption and inspection mismatches fail closed on reload", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-audio-corrupt-"));
+  const sessionId = "session-audio-corrupt";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: "recording.wav",
+    bytes: waveBytes(),
+  }, noPendingAttachmentRefs);
+  const metadataPath = path.join(
+    directory,
+    "live-smith-attachments",
+    sessionId,
+    `${stored.id}.json`,
+  );
+  const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as
+    Record<string, unknown>;
+  metadata.durationSeconds = 2;
+  await fs.writeFile(metadataPath, JSON.stringify(metadata));
+  await assert.rejects(
+    readSessionAttachmentBytes(directory, sessionId, stored.id),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+
+  delete metadata.durationSeconds;
+  await fs.writeFile(metadataPath, JSON.stringify(metadata));
+  await assert.rejects(
+    listSessionAttachments(directory, sessionId),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
 });
 
 test("session attachment rejects invalid document bytes and per-image overflow", async () => {
@@ -256,7 +404,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   );
   const exactDocument = await saveSessionAttachment(undefined, exactSession, {
     fileName: "exact.pdf",
-    bytes: pdfBytesAtSize(5 * 1024 * 1024),
+    bytes: pdfBytesAtSize(15 * 1024 * 1024),
   }, { preSavePendingAttachmentRefs: threeFiveMiBImages });
   assert.equal(
     threeFiveMiBImages.reduce((total, ref) => total + ref.byteLength, 0) +
@@ -267,7 +415,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   await assert.rejects(
     saveSessionAttachment(undefined, `memory-pending-over-${Date.now()}`, {
       fileName: "over.pdf",
-      bytes: pdfBytesAtSize(5 * 1024 * 1024 + 1),
+      bytes: pdfBytesAtSize(15 * 1024 * 1024 + 1),
     }, { preSavePendingAttachmentRefs: threeFiveMiBImages }),
     (error: unknown) => error instanceof AttachmentPendingQuotaError,
   );
@@ -312,6 +460,40 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   );
   ownedPending[0]!.byteLength = MAX_PENDING_SESSION_ATTACHMENT_BYTES;
   assert.equal((await ownedPendingSave).kind, "document");
+
+  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT, 2);
+  const exactAudio = await saveSessionAttachment(
+    undefined,
+    `memory-audio-pending-exact-${Date.now()}`,
+    {
+      fileName: "exact.wav",
+      bytes: waveBytes({
+        channels: 2,
+        sampleRate: 48_000,
+        bitsPerSample: 16,
+        dataBytes: MAX_AUDIO_ATTACHMENT_BYTES - 44,
+      }),
+    },
+    {
+      preSavePendingAttachmentRefs: [
+        pendingAudioRef("attachment-audio-pending", 10 * 1024 * 1024),
+      ],
+    },
+  );
+  assert.equal(exactAudio.kind, "audio");
+  await assert.rejects(
+    saveSessionAttachment(undefined, `memory-audio-count-over-${Date.now()}`, {
+      fileName: "third.wav",
+      bytes: waveBytes(),
+    }, {
+      preSavePendingAttachmentRefs: [
+        pendingAudioRef("attachment-audio-one", 1),
+        pendingAudioRef("attachment-audio-two", 1),
+      ],
+    }),
+    (error: unknown) => error instanceof AttachmentPendingQuotaError,
+  );
 });
 
 test("new attachment ordinals preserve upload order under an identical clock", async () => {

@@ -79,7 +79,7 @@ interface DialogHarness {
   stopIds: string[];
   select(selector: string, value: string): void;
   setConfirmResult(value: boolean): void;
-  dispatchPaste(files?: File[]): boolean;
+  dispatchPaste(files?: File[], text?: string): boolean;
   dispatchDrop(files: File[]): boolean;
   dispatchDragOver(files: File[]): boolean;
   selectAttachmentFiles(files: File[]): void;
@@ -233,6 +233,13 @@ function imageCapableState(): ChatDialogState {
   const state = stateFixture();
   state.runtimeProfile!.capabilities.inputs.image = true;
   state.runtimeProfile!.inputCapabilityEvidence.image = "supported";
+  return state;
+}
+
+function audioCapableState(): ChatDialogState {
+  const state = stateFixture();
+  state.runtimeProfile!.capabilities.inputs.audio = true;
+  state.runtimeProfile!.inputCapabilityEvidence.audio = "supported";
   return state;
 }
 
@@ -439,20 +446,42 @@ async function createDialogHarness(
               const attachments = pendingAttachmentsBySession.get(sessionId) ?? [];
               const mediaType = nextAttachmentUnknown?.committedMetadata?.mediaType ??
                 attachmentMediaTypeForFile(file);
-              const attachment = {
+              const commonAttachment = {
                 id: `attachment-${attachments.length + 1}`,
-                kind: mediaType.startsWith("image/")
-                  ? "image" as const
-                  : "document" as const,
                 fileName: nextAttachmentUnknown?.committedMetadata?.fileName ??
                   fileName,
-                mediaType,
                 byteLength: file.size,
                 sha256: nextAttachmentUnknown?.committedMetadata?.sha256 ??
                   createHash("sha256")
                     .update(new Uint8Array(await file.arrayBuffer()))
                     .digest("hex"),
               };
+              let attachment: ChatDialogState["pendingAttachments"][number];
+              if (mediaType.startsWith("image/")) {
+                attachment = {
+                  ...commonAttachment,
+                  kind: "image",
+                  mediaType: mediaType as "image/png" | "image/jpeg" | "image/webp",
+                };
+              } else if (mediaType.startsWith("audio/")) {
+                attachment = {
+                  ...commonAttachment,
+                  kind: "audio",
+                  mediaType: mediaType as "audio/wav" | "audio/mpeg",
+                  durationSeconds: 83.25,
+                  sampleRate: 48_000,
+                  channels: 2,
+                };
+              } else {
+                attachment = {
+                  ...commonAttachment,
+                  kind: "document",
+                  mediaType: mediaType as Extract<
+                    ChatDialogState["pendingAttachments"][number],
+                    { kind: "document" }
+                  >["mediaType"],
+                };
+              }
               const next = [...attachments, attachment];
               pendingAttachmentsBySession.set(sessionId, next);
               if (serverState.activeSessionId === sessionId) {
@@ -579,6 +608,23 @@ async function createDialogHarness(
                 serverState.pendingAttachments = pendingAttachmentsBySession.get(
                   command.sessionId,
                 ) ?? [];
+              } else if (
+                command.kind === "attach_selected_audio_source" &&
+                command.sessionId
+              ) {
+                const attachments = pendingAttachmentsBySession.get(command.sessionId) ?? [];
+                const attachment = pendingAudio(
+                  `attachment-${attachments.length + 1}`,
+                  "Selected audio.wav",
+                  "audio/wav",
+                  96_000,
+                  1.5,
+                );
+                const next = [...attachments, attachment];
+                pendingAttachmentsBySession.set(command.sessionId, next);
+                if (serverState.activeSessionId === command.sessionId) {
+                  serverState.pendingAttachments = next;
+                }
               } else if (command.kind === "restore_session" && command.sessionId) {
                 const restored = serverState.previousSessions.find(
                   (entry) => entry.id === command.sessionId,
@@ -880,10 +926,16 @@ async function createDialogHarness(
     setConfirmResult(value) {
       confirmResult = value;
     },
-    dispatchPaste(files = []) {
+    dispatchPaste(files = [], text = "") {
       const event = new window.Event("paste", { bubbles: true, cancelable: true });
       Object.defineProperty(event, "clipboardData", {
-        value: { files },
+        value: {
+          files,
+          types: text ? ["text/plain", "Files"] : ["Files"],
+          getData(type: string) {
+            return type === "text/plain" ? text : "";
+          },
+        },
       });
       required<HTMLTextAreaElement>("#prompt").dispatchEvent(event);
       return event.defaultPrevented;
@@ -991,6 +1043,17 @@ function documentFile(
   });
 }
 
+function audioFile(
+  window: JSDOM["window"],
+  fileName: string,
+  mediaType: "audio/wav" | "audio/mpeg",
+  byteLength = 24,
+): File {
+  return new window.File([new Uint8Array(byteLength)], fileName, {
+    type: mediaType,
+  });
+}
+
 function attachmentMediaTypeForFile(
   file: File,
 ): ChatDialogState["pendingAttachments"][number]["mediaType"] {
@@ -1004,6 +1067,8 @@ function attachmentMediaTypeForFile(
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "audio/wav",
+    "audio/mpeg",
   ]);
   if (knownMediaTypes.has(
     file.type as ChatDialogState["pendingAttachments"][number]["mediaType"],
@@ -1024,6 +1089,8 @@ function attachmentMediaTypeForFile(
   if (extension === "pptx") {
     return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
   }
+  if (extension === "wav") return "audio/wav";
+  if (extension === "mp3") return "audio/mpeg";
   throw new Error(`Unsupported test attachment ${file.name}`);
 }
 
@@ -1076,6 +1143,26 @@ function pendingDocument(
     mediaType,
     byteLength,
     sha256: "b".repeat(64),
+  };
+}
+
+function pendingAudio(
+  id: string,
+  fileName: string,
+  mediaType: "audio/wav" | "audio/mpeg" = "audio/wav",
+  byteLength = 24,
+  durationSeconds = 1.5,
+): ChatDialogState["pendingAttachments"][number] {
+  return {
+    id,
+    kind: "audio",
+    fileName,
+    mediaType,
+    byteLength,
+    sha256: "c".repeat(64),
+    durationSeconds,
+    sampleRate: 48_000,
+    channels: 2,
   };
 }
 
@@ -4661,6 +4748,281 @@ test("Attach file exposes image and document hints while remaining available wit
   }
 });
 
+test("Attach file advertises WAV and MP3 while source audio stays an explicit secondary action", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const input = harness.document.querySelector<HTMLInputElement>("#attachmentInput");
+    assert.match(input?.accept ?? "", /audio\/wav/);
+    assert.match(input?.accept ?? "", /audio\/mpeg/);
+    assert.match(input?.accept ?? "", /\.wav/);
+    assert.match(input?.accept ?? "", /\.mp3/);
+    const sourceButton = harness.document.querySelector<HTMLButtonElement>(
+      "#attachSelectedAudioButton",
+    );
+    assert.equal(sourceButton?.textContent, "Attach source audio");
+    assert.match(sourceButton?.getAttribute("aria-label") ?? "", /selected.*audio/i);
+    assert.match(
+      harness.document.querySelector("#audioSourceAttachmentNote")?.textContent ?? "",
+      /complete source file.*embedded metadata.*not Live.*warped or processed/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("WAV and MP3 upload without image capability and show authoritative duration", async () => {
+  const state = stateFixture();
+  state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
+  const harness = await createDialogHarness(state);
+  try {
+    harness.dispatchDrop([
+      audioFile(harness.window, "source.wav", "audio/wav"),
+      audioFile(harness.window, "reference.mp3", "audio/mpeg"),
+    ]);
+    await harness.settle();
+    await harness.settleAttachmentOperation();
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["source.wav", "reference.mp3"],
+    );
+    const chips = [...harness.document.querySelectorAll(
+      "#pendingAttachments [data-attachment-id]",
+    )].map((chip) => chip.textContent);
+    assert.deepEqual(chips, [
+      "source.wav · WAV · 1:23.3 · 24 B×",
+      "reference.mp3 · MP3 · 1:23.3 · 24 B×",
+    ]);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("mixed text and audio paste preserves native text behavior while uploading the file", async () => {
+  const harness = await createDialogHarness();
+  try {
+    assert.equal(
+      harness.dispatchPaste(
+        [audioFile(harness.window, "idea.wav", "audio/wav")],
+        "Keep this text",
+      ),
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
+      false,
+    );
+    await harness.settle();
+    await harness.settleAttachmentOperation();
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/attachments").length,
+      1,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("selected source audio uses the strict Session command and reconciles a pending chip", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.click("#attachSelectedAudioButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: {
+        kind: "attach_selected_audio_source",
+        sessionId: "session-1",
+      },
+    });
+    assert.match(
+      harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
+      /Selected audio\.wav · WAV · 1\.5 s · 94 KiB/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("selected source audio exposes busy feedback until its command settles", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.holdNextCommand();
+    harness.click("#attachSelectedAudioButton");
+    await harness.settle();
+    const sourceButton = harness.document.querySelector<HTMLButtonElement>(
+      "#attachSelectedAudioButton",
+    );
+    assert.equal(sourceButton?.disabled, true);
+    assert.equal(sourceButton?.textContent, "Attaching…");
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      true,
+    );
+    harness.releaseHeldCommand();
+    await harness.settle();
+    assert.equal(sourceButton?.disabled, false);
+    assert.equal(sourceButton?.textContent, "Attach source audio");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("audio-bearing Send requires verified OpenAI Chat audio input but not tools", async () => {
+  const unsupportedState = stateFixture();
+  unsupportedState.pendingAttachments = [pendingAudio("audio-1", "idea.wav")];
+  unsupportedState.runtimeProfile!.inputCapabilityEvidence.audio = "unsupported";
+  const unsupportedHarness = await createDialogHarness(unsupportedState);
+  try {
+    unsupportedHarness.input("#prompt", "Describe this sound");
+    unsupportedHarness.click("#sendButton");
+    await unsupportedHarness.settle();
+    assert.equal(unsupportedHarness.calls.some((call) => call.path === "/send"), false);
+    assert.match(
+      unsupportedHarness.document.querySelector("#status")?.textContent ?? "",
+      /does not support audio input/i,
+    );
+  } finally {
+    unsupportedHarness.close();
+  }
+
+  const capableState = audioCapableState();
+  capableState.pendingAttachments = [pendingAudio("audio-1", "idea.wav")];
+  capableState.runtimeProfile!.capabilities.tools = false;
+  const capableHarness = await createDialogHarness(capableState);
+  try {
+    capableHarness.input("#prompt", "Describe this sound");
+    capableHarness.click("#sendButton");
+    await capableHarness.settle();
+    assert.equal(capableHarness.calls.some((call) => call.path === "/send"), true);
+  } finally {
+    capableHarness.close();
+  }
+
+  const wrongModeState = audioCapableState();
+  wrongModeState.pendingAttachments = [pendingAudio("audio-1", "idea.wav")];
+  wrongModeState.runtimeProfile!.profile.apiMode = "responses";
+  const wrongModeHarness = await createDialogHarness(wrongModeState);
+  try {
+    wrongModeHarness.input("#prompt", "Describe this sound");
+    wrongModeHarness.click("#sendButton");
+    await wrongModeHarness.settle();
+    assert.equal(wrongModeHarness.calls.some((call) => call.path === "/send"), false);
+    assert.match(
+      wrongModeHarness.document.querySelector("#status")?.textContent ?? "",
+      /OpenAI Chat Completions.*verified audio input/i,
+    );
+  } finally {
+    wrongModeHarness.close();
+  }
+});
+
+test("audio count and per-kind pending limits are enforced before upload", async () => {
+  const audioState = stateFixture();
+  audioState.pendingAttachments = [
+    pendingAudio("audio-1", "one.wav", "audio/wav", 1),
+    pendingAudio("audio-2", "two.mp3", "audio/mpeg", 1),
+  ];
+  const audioHarness = await createDialogHarness(audioState);
+  try {
+    audioHarness.dispatchDrop([audioFile(audioHarness.window, "three.wav", "audio/wav")]);
+    await audioHarness.settle();
+    assert.equal(audioHarness.calls.some((call) => call.path === "/attachments"), false);
+    assert.match(audioHarness.document.querySelector("#status")?.textContent ?? "", /at most 2 pending audio files/i);
+  } finally {
+    audioHarness.close();
+  }
+
+  const documentState = stateFixture();
+  documentState.pendingAttachments = [pendingDocument(
+    "document-1",
+    "large.pdf",
+    "application/pdf",
+    15 * 1024 * 1024,
+  )];
+  const documentHarness = await createDialogHarness(documentState);
+  try {
+    documentHarness.dispatchDrop([
+      documentFile(documentHarness.window, "another.pdf", "application/pdf", 5 * 1024 * 1024 + 1),
+    ]);
+    await documentHarness.settle();
+    assert.equal(documentHarness.calls.some((call) => call.path === "/attachments"), false);
+    assert.match(documentHarness.document.querySelector("#status")?.textContent ?? "", /pending documents would exceed 20 MiB/i);
+  } finally {
+    documentHarness.close();
+  }
+});
+
+test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", async () => {
+  const perFileHarness = await createDialogHarness();
+  try {
+    perFileHarness.dispatchDrop([
+      audioFile(
+        perFileHarness.window,
+        "exact.wav",
+        "audio/wav",
+        20 * 1024 * 1024,
+      ),
+      audioFile(
+        perFileHarness.window,
+        "over.mp3",
+        "audio/mpeg",
+        20 * 1024 * 1024 + 1,
+      ),
+    ]);
+    await perFileHarness.settleAttachmentOperation();
+    assert.deepEqual(
+      perFileHarness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["exact.wav"],
+    );
+    assert.match(
+      perFileHarness.document.querySelector("#status")?.textContent ?? "",
+      /over\.mp3.*larger than 20 MiB/i,
+    );
+  } finally {
+    perFileHarness.close();
+  }
+
+  const exactState = imageCapableState();
+  exactState.pendingAttachments = [
+    pendingImage("image-1", "reference.png", "image/png", 5 * 1024 * 1024),
+    pendingDocument(
+      "document-1",
+      "score.pdf",
+      "application/pdf",
+      20 * 1024 * 1024,
+    ),
+  ];
+  const exactHarness = await createDialogHarness(exactState);
+  try {
+    exactHarness.dispatchDrop([
+      audioFile(exactHarness.window, "exact-total.wav", "audio/wav", 5 * 1024 * 1024),
+      audioFile(exactHarness.window, "over-total.wav", "audio/wav", 1),
+    ]);
+    await exactHarness.settleAttachmentOperation();
+    assert.deepEqual(
+      exactHarness.calls
+        .filter((call) => call.path === "/attachments")
+        .map((call) => new URL(call.url).searchParams.get("fileName")),
+      ["exact-total.wav"],
+    );
+    assert.match(
+      exactHarness.document.querySelector("#status")?.textContent ?? "",
+      /over-total\.wav.*exceed 30 MiB/i,
+    );
+  } finally {
+    exactHarness.close();
+  }
+});
+
 test("document drop and picker accept MIME hints or extensions without image capability", async () => {
   const state = stateFixture();
   state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
@@ -4861,7 +5223,7 @@ test("document rejection messages are fixed while valid files in the batch remai
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
     assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
-    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX/i);
+    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3/i);
     assert.match(status, /encrypted\.docx: Encrypted Office documents are not supported\./);
     assert.match(
       harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
@@ -4890,7 +5252,7 @@ test("a rejected-only document drop is intercepted and reports every fixed class
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
     assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
-    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX/i);
+    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -4927,7 +5289,7 @@ test("a rejected image paste reports its reason without intercepting accompanyin
   const harness = await createDialogHarness(state);
   try {
     const image = imageFile(harness.window, "pasted.png", "image/png");
-    assert.equal(harness.dispatchPaste([image]), false);
+    assert.equal(harness.dispatchPaste([image], "Pasted text"), false);
     await harness.settle();
 
     assert.equal(
@@ -5580,6 +5942,34 @@ test("timeline labels native PDFs and extracted Office documents without claimin
   }
 });
 
+test("timeline labels consumed audio with authoritative duration and no source-path metadata", async () => {
+  const state = stateFixture();
+  state.events = [{
+    id: "event-audio",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    kind: "user",
+    content: "Listen to these",
+    attachments: [
+      pendingAudio("audio-wav", "take.wav", "audio/wav", 1_024, 83.25),
+      pendingAudio("audio-mp3", "reference.mp3", "audio/mpeg", 2_048, 1.5),
+    ],
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const labels = [...harness.document.querySelectorAll(
+      ".timeline-attachment-chip",
+    )].map((chip) => chip.textContent);
+    assert.deepEqual(labels, [
+      "take.wav · WAV · 1:23.3 · 1 KiB",
+      "reference.mp3 · MP3 · 1.5 s · 2 KiB",
+    ]);
+    assert.doesNotMatch(labels.join(" "), /private|path|sampleRate|channels|base64/i);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("Attach file stays available while image capability controls only image selection", async () => {
   const supportedHarness = await createDialogHarness(imageCapableState());
   try {
@@ -5617,7 +6007,7 @@ test("Attach file stays available while image capability controls only image sel
       "unsupported.png",
       "image/png",
     );
-    assert.equal(unsupportedHarness.dispatchPaste([unsupportedImage]), false);
+    assert.equal(unsupportedHarness.dispatchPaste([unsupportedImage], "Pasted text"), false);
     assert.equal(unsupportedHarness.dispatchDragOver([unsupportedImage]), true);
     assert.equal(unsupportedHarness.dispatchDrop([unsupportedImage]), true);
     await unsupportedHarness.settle();
@@ -5645,7 +6035,7 @@ test("Attach file stays available while image capability controls only image sel
       "unverified.png",
       "image/png",
     );
-    assert.equal(unverifiedHarness.dispatchPaste([unverifiedImage]), false);
+    assert.equal(unverifiedHarness.dispatchPaste([unverifiedImage], "Pasted text"), false);
     assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), true);
     const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
       '[data-attachment-id="attachment-unverified"] button',

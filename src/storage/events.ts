@@ -4,14 +4,17 @@ import * as path from "node:path";
 import {
   attachmentQuotaIsWithinLimits,
   isSafeAttachmentFileName,
+  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_COUNT,
   MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
+import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import type {
   AttachmentMediaType,
+  PersistedSessionAttachmentRef,
   SessionAttachmentRef,
 } from "./attachments.js";
 
@@ -58,9 +61,10 @@ export interface SessionEventInput {
   attachments?: SessionAttachmentRef[];
 }
 
-export interface SessionEvent extends SessionEventInput {
+export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
   id: string;
   createdAt: string;
+  attachments?: PersistedSessionAttachmentRef[];
 }
 
 const eventsDirectoryName = "live-smith-events";
@@ -209,7 +213,7 @@ function isSessionEvent(
 function isSessionAttachmentRefs(
   value: unknown,
   attachmentPolicy: "current" | "persisted",
-): value is SessionAttachmentRef[] {
+): value is PersistedSessionAttachmentRef[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -230,17 +234,23 @@ function isCurrentSessionAttachmentRef(
     return false;
   }
   const record = value as Record<string, unknown>;
-  return hasOnlyKeys(record, [
+  const commonKeys = [
     "id",
     "kind",
     "fileName",
     "mediaType",
     "byteLength",
     "sha256",
-  ]) &&
-    Object.keys(record).length === 6 &&
+  ];
+  const allowedKeys = record.kind === "audio"
+    ? [...commonKeys, "durationSeconds", "sampleRate", "channels"]
+    : commonKeys;
+  return hasOnlyKeys(record, allowedKeys) &&
+    Object.keys(record).length === allowedKeys.length &&
     isSafeStorageId(record.id) &&
-    (record.kind === "image" || record.kind === "document") &&
+    (record.kind === "image" ||
+      record.kind === "document" ||
+      record.kind === "audio") &&
     isSafeAttachmentFileName(record.fileName) &&
     isAttachmentMediaType(record.mediaType) &&
     attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
@@ -249,15 +259,25 @@ function isCurrentSessionAttachmentRef(
     (record.byteLength as number) <= (
       record.kind === "image"
         ? MAX_IMAGE_ATTACHMENT_BYTES
-        : MAX_DOCUMENT_ATTACHMENT_BYTES
+        : record.kind === "audio"
+          ? MAX_AUDIO_ATTACHMENT_BYTES
+          : MAX_DOCUMENT_ATTACHMENT_BYTES
     ) &&
     typeof record.sha256 === "string" &&
-    /^[a-f0-9]{64}$/.test(record.sha256);
+    /^[a-f0-9]{64}$/.test(record.sha256) && (
+      record.kind !== "audio" ||
+      isAudioAttachmentInspection({
+        mediaType: record.mediaType,
+        durationSeconds: record.durationSeconds,
+        sampleRate: record.sampleRate,
+        channels: record.channels,
+      })
+    );
 }
 
 function isLegacySessionAttachmentRefs(
   value: unknown,
-): value is SessionAttachmentRef[] {
+): value is PersistedSessionAttachmentRef[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
@@ -272,7 +292,7 @@ function isLegacySessionAttachmentRefs(
 
 function isLegacySessionAttachmentRef(
   value: unknown,
-): value is SessionAttachmentRef {
+): value is PersistedSessionAttachmentRef {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }

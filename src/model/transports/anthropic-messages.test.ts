@@ -5,7 +5,7 @@ import test from "node:test";
 import {
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
@@ -81,6 +81,17 @@ function pdfPart(
     fileName,
     mediaType: "application/pdf",
     base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function audioPart(
+  fileName = "attachment.wav",
+): Extract<ModelInputPart, { type: "audio" }> {
+  return {
+    type: "audio",
+    fileName,
+    mediaType: "audio/wav",
+    base64: "not canonical or safe to echo",
   };
 }
 
@@ -291,6 +302,39 @@ test("Anthropic Messages rejects PDF input before HTTP when PDF capability is di
   assert.equal(fetchCalls, 0);
 });
 
+test("Anthropic Messages rejects current and historical audio before quotas, body construction, or HTTP", async () => {
+  for (const location of ["current", "history"] as const) {
+    let fetchCalls = 0;
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error("network must not be reached");
+      },
+    });
+    const req = request(profile({
+      advanced: { extraBody: { messages: ["must not be inspected first"] } },
+    }));
+    req.runtimeProfile.capabilities.inputs.audio = true;
+    req.runtimeProfile.inputCapabilityEvidence = {
+      image: "unverified",
+      audio: "supported",
+      pdf: "unverified",
+    };
+    const part = audioPart("/private/audio-secret.wav");
+    if (location === "current") req.currentUserContent = [part];
+    else req.history = [{ role: "user", content: [part] }];
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message ===
+          "anthropic/messages request failed: Audio input is not supported by Anthropic Messages in Live Smith.",
+    );
+    assert.equal(fetchCalls, 0);
+  }
+});
+
 test("Anthropic Messages accepts the exact mixed binary quota across current and history", async () => {
   let fetchCalls = 0;
   const transport = createAnthropicMessagesTransport({
@@ -312,7 +356,7 @@ test("Anthropic Messages accepts the exact mixed binary quota across current and
   req.currentUserContent = [
     imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
     pdfPart(
-      MAX_PENDING_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+      MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
       "current.pdf",
     ),
   ];
@@ -340,14 +384,21 @@ test("Anthropic Messages rejects mixed, PDF, and base64 violations before body c
     const req = makeRequest();
     req.history = [{
       role: "user",
-      content: [imagePart(MAX_IMAGE_ATTACHMENT_BYTES)],
+      content: [
+        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+      ],
     }];
-    req.currentUserContent = [pdfPart(
-      MAX_PENDING_ATTACHMENT_BYTES - MAX_IMAGE_ATTACHMENT_BYTES + 1,
-    )];
+    req.currentUserContent = [
+      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+      pdfPart(
+        MAX_REQUEST_BINARY_ATTACHMENT_BYTES -
+          3 * MAX_IMAGE_ATTACHMENT_BYTES + 1,
+      ),
+    ];
     cases.push({
       request: req,
-      message: /Binary input subtotal may not exceed 20 MiB/,
+      message: /Binary input subtotal may not exceed 30 MiB/,
     });
   }
   {

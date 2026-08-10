@@ -3,12 +3,16 @@ import {
   type ChatDialogState,
 } from "./chat-state.js";
 import {
+  MAX_AUDIO_ATTACHMENT_BYTES,
+  MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
-  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
-} from "../storage/attachments.js";
-import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
+  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../attachments/contracts.js";
 
 export interface ChatClientScripts {
   attachments: string;
@@ -33,12 +37,28 @@ export function composeChatDocument(
       String(MAX_IMAGE_ATTACHMENT_BYTES),
     )
     .replaceAll(
+      "__MAX_AUDIO_ATTACHMENT_BYTES__",
+      String(MAX_AUDIO_ATTACHMENT_BYTES),
+    )
+    .replaceAll(
       "__MAX_PENDING_ATTACHMENT_COUNT__",
-      String(MAX_PENDING_SESSION_ATTACHMENT_COUNT),
+      String(MAX_PENDING_ATTACHMENT_COUNT),
     )
     .replaceAll(
       "__MAX_PENDING_IMAGE_ATTACHMENT_BYTES__",
-      String(MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES),
+      String(MAX_PENDING_IMAGE_ATTACHMENT_BYTES),
+    )
+    .replaceAll(
+      "__MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES__",
+      String(MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES),
+    )
+    .replaceAll(
+      "__MAX_PENDING_AUDIO_ATTACHMENT_BYTES__",
+      String(MAX_PENDING_AUDIO_ATTACHMENT_BYTES),
+    )
+    .replaceAll(
+      "__MAX_PENDING_AUDIO_ATTACHMENT_COUNT__",
+      String(MAX_PENDING_AUDIO_ATTACHMENT_COUNT),
     )
     .replaceAll(
       "__MAX_DOCUMENT_ATTACHMENT_BYTES__",
@@ -46,7 +66,7 @@ export function composeChatDocument(
     )
     .replaceAll(
       "__MAX_PENDING_TOTAL_ATTACHMENT_BYTES__",
-      String(MAX_PENDING_SESSION_ATTACHMENT_BYTES),
+      String(MAX_PENDING_ATTACHMENT_BYTES),
     );
   const document = template
     .replace("__STATE__", () => serializeChatStateForHtml(state))

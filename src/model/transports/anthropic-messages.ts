@@ -27,6 +27,7 @@ import { withTransportContext } from "./errors.js";
 import {
   assertBinaryInputWithinLimits,
   assertImageInputEnabled,
+  assertNoUnsupportedAudioInput,
   assertPdfInputEnabled,
   assertNeverInputPart,
   unsupportedInputPart,
@@ -68,6 +69,7 @@ export function createAnthropicMessagesTransport(
     ),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertNoUnsupportedAudioInput(request, "Anthropic Messages");
       assertBinaryInputWithinLimits(request);
       const body = buildAnthropicBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {

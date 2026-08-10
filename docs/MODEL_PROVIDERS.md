@@ -101,7 +101,7 @@ recoverable Profiles or credentials.
   must agree bidirectionally with the terminal stop reason. Ordinary text blocks
   cannot hide a malformed or missing declared `tool_use` block.
 
-### Image and document input mapping
+### Image, document, and audio input mapping
 
 Live Smith assembles attachment context once as provider-neutral user input
 parts. Assistant history remains text-only, while current and historical user
@@ -121,7 +121,16 @@ resolves `inputs.pdf` to `true`, OpenAI Responses maps it to `input_file` and
 Anthropic Messages maps it to a base64 `document` source. Live Smith
 intentionally does not implement PDF input for OpenAI Chat Completions in this
 milestone; this is a Live Smith boundary, not a claim about every compatible
-endpoint. Audio parts remain unsupported.
+endpoint.
+
+Audio is mapped only by OpenAI Chat Completions, using `input_audio` with
+canonical base64 data and `wav` or `mp3` format. A send requires the active
+saved Runtime Profile to use OpenAI Chat Completions, resolve `inputs.audio` to
+`true`, and carry explicit `supported` evidence for that input capability.
+Discovery metadata and a manual capability override can provide that evidence;
+an unverified fallback cannot. `capabilities.tools` is not an audio-input gate.
+OpenAI Responses and Anthropic Messages reject audio locally in this milestone,
+before making a provider request.
 
 DOCX, XLSX, and PPTX never reach a provider as binary document parts. Live
 Smith validates and extracts them locally, then sends their bounded text in a
@@ -132,15 +141,30 @@ unrecognized embedded binary parts are discarded. File names and extracted
 content remain untrusted and cannot authorize tools, filesystem access, or a
 Live sample source.
 
-The shared policy accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX. It permits
-at most 4 attachments and 20 MiB of raw attachment bytes in pending state or one
-model request. Each image is limited to 5 MiB and the image subtotal to 16 MiB;
-each document and the document subtotal are limited to 20 MiB, with the 20-MiB
-combined total still applying. Office text is limited to 100,000 Unicode code
-points per file and 200,000 per request. The server validates detected type,
-structure, ownership, integrity, and quota; the WebView checks shared limits
-only for early feedback. PDF checks do not promise sanitization, page-count
-validation, or visual rendering.
+The shared policy accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
+It permits at most 4 attachments and 30 MiB of raw attachment bytes in pending
+state or one model request. Each image is limited to 5 MiB and the image
+subtotal to 16 MiB; each document and the document subtotal are limited to
+20 MiB. Each audio file is limited to 20 MiB and 120 seconds, with a 30-MiB
+audio subtotal and at most 2 audio attachments. The combined 30-MiB and 4-file
+limits still apply. Office text is limited to 100,000 Unicode code points per
+file and 200,000 per request. The server validates detected type, structure,
+ownership, integrity, and quota; the WebView checks shared limits only for early
+feedback. PDF checks do not promise sanitization, page-count validation, or
+visual rendering.
+
+Supported audio is narrowly defined as RIFF/WAVE containing PCM or IEEE-float
+samples, or MP3 containing MPEG-1 or MPEG-2 Layer III frames. Live Smith sends
+the complete original file bytes, including embedded metadata. It does not
+upload Live's warped, processed, rendered, or mixed output. ID3 metadata is not
+executed locally, but the parser is not a cleaning or sanitization step. File
+names, embedded metadata, and audio content are untrusted model input.
+
+Audio may enter pending state through ordinary file upload or by copying the
+file backing a selected Live Audio Clip, Sample, or Simpler. Neither path is
+gated by the current Profile, which allows the user to attach first and select a
+compatible Profile before sending. The selected-source command accepts only a
+Session ID; no UI or model request can supply an arbitrary path.
 
 Files remain pending until the associated user event is durably appended. A
 confirmed append consumes those immutable IDs before provider I/O, including
@@ -165,7 +189,9 @@ manual override wins over a valid discovery hint, which wins over documented
 known-model policy. An explicit `false` is unsupported; the conservative
 fallback value remains unknown/unverified in the UI rather than being presented
 as provider evidence. This distinction gates the corresponding image or native
-PDF input, not ordinary text sends or local Office text extraction.
+PDF input. Audio uses the stricter rule above and requires `supported` evidence
+in addition to the OpenAI Chat Completions mode. None of these gates ordinary
+text sends, local Office text extraction, or creation of a pending attachment.
 
 Anthropic discovery reads the official
 `capabilities.image_input.supported` and `capabilities.pdf_input.supported`
@@ -217,8 +243,10 @@ generation fields. It cannot replace `model`, `input`/`messages`, `tools`, or
 `stream`, because Live Smith owns those structures. Responses additionally
 protects `instructions`, `store`, `previous_response_id`, and `conversation` to
 enforce instruction and local-state ownership, and always retains
-`reasoning.encrypted_content` when merging `include`. Anthropic Messages likewise
-protects `system`. Base URLs must not contain username/password credentials.
+`reasoning.encrypted_content` when merging `include`. Chat Completions also
+protects top-level `modalities` and `audio`; audio attachments do not request
+audio output. Anthropic Messages likewise protects `system`. Base URLs must not
+contain username/password credentials.
 Provider connections must use HTTPS. Plain HTTP is accepted only for loopback
 providers such as `localhost`, `127.0.0.1`, or `::1`; private-LAN and remote HTTP
 endpoints are rejected before a Profile can be saved or used for discovery.

@@ -12,13 +12,23 @@ import {
   isLegacyAttachmentFileName,
   isSafeAttachmentFileName,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
+  MAX_AUDIO_ATTACHMENT_BYTES,
+  MAX_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
   MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
   MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
+import {
+  inspectAudioAttachment,
+  isAudioAttachmentCandidate,
+  isAudioAttachmentInspection,
+  type AudioAttachmentInspection,
+} from "../attachments/audio.js";
 import { classifyDocumentAttachment } from "../attachments/processor.js";
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
@@ -49,21 +59,49 @@ export type AttachmentMediaType =
 
 export type ImageAttachmentMediaType = "image/png" | "image/jpeg" | "image/webp";
 
-export interface SessionAttachmentRef {
+export interface SessionAttachmentRefBase {
   id: string;
-  kind: AttachmentKind;
   fileName: string;
-  mediaType: AttachmentMediaType;
   byteLength: number;
   sha256: string;
 }
 
-export interface StoredSessionAttachment extends SessionAttachmentRef {
+export interface ImageSessionAttachmentRef extends SessionAttachmentRefBase {
+  kind: "image";
+  mediaType: ImageAttachmentMediaType;
+}
+
+export interface DocumentSessionAttachmentRef extends SessionAttachmentRefBase {
+  kind: "document";
+  mediaType: DocumentAttachmentMediaType;
+}
+
+export interface AudioSessionAttachmentRef extends SessionAttachmentRefBase,
+  AudioAttachmentInspection {
+  kind: "audio";
+}
+
+/** Read-only shape written into old event logs before audio inspection fields. */
+export interface LegacyAudioSessionAttachmentRef extends SessionAttachmentRefBase {
+  kind: "audio";
+  mediaType: AudioAttachmentInspection["mediaType"];
+}
+
+export type SessionAttachmentRef =
+  | ImageSessionAttachmentRef
+  | DocumentSessionAttachmentRef
+  | AudioSessionAttachmentRef;
+
+export type PersistedSessionAttachmentRef =
+  | SessionAttachmentRef
+  | LegacyAudioSessionAttachmentRef;
+
+export type StoredSessionAttachment = SessionAttachmentRef & {
   sessionId: string;
   createdAt: string;
   /** Missing only on metadata written by Live Smith versions before ordinals. */
   ordinal?: number;
-}
+};
 
 interface MemoryAttachment {
   metadata: StoredSessionAttachment;
@@ -91,11 +129,17 @@ interface AttachmentReadOptions {
 }
 
 export {
+  MAX_AUDIO_ATTACHMENT_BYTES,
+  MAX_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
 };
 export const MAX_PENDING_SESSION_ATTACHMENT_COUNT = MAX_PENDING_ATTACHMENT_COUNT;
 export const MAX_PENDING_SESSION_ATTACHMENT_BYTES = MAX_PENDING_ATTACHMENT_BYTES;
+export const MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES =
+  MAX_PENDING_AUDIO_ATTACHMENT_BYTES;
+export const MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT =
+  MAX_PENDING_AUDIO_ATTACHMENT_COUNT;
 export const MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES =
   MAX_PENDING_IMAGE_ATTACHMENT_BYTES;
 export const MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES =
@@ -116,7 +160,7 @@ export class AttachmentTooLargeError extends Error {
 export class AttachmentPendingQuotaError extends Error {
   constructor() {
     super(
-      "Pending attachments exceed the Session count, total, image, or document limit.",
+      "Pending attachments exceed the Session count, total, image, document, or audio limit.",
     );
     this.name = "AttachmentPendingQuotaError";
   }
@@ -125,7 +169,7 @@ export class AttachmentPendingQuotaError extends Error {
 export class UnsupportedAttachmentError extends Error {
   constructor() {
     super(
-      "The attachment is not a valid PNG, JPEG, WebP, PDF, DOCX, XLSX, or PPTX file.",
+      "The attachment is not a valid PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, or MP3 file.",
     );
     this.name = "UnsupportedAttachmentError";
   }
@@ -216,8 +260,7 @@ export async function saveSessionAttachment(
             id,
             sessionId,
             fileName,
-            kind: classification.kind,
-            mediaType: classification.mediaType,
+            ...classification,
             bytes,
             sha256,
             ordinal,
@@ -241,8 +284,7 @@ export async function saveSessionAttachment(
           id,
           sessionId,
           fileName,
-          kind: classification.kind,
-          mediaType: classification.mediaType,
+          ...classification,
           bytes,
           sha256,
           ordinal,
@@ -437,25 +479,45 @@ export function isImageAttachmentMediaType(
 export function sessionAttachmentRefFromStored(
   attachment: StoredSessionAttachment,
 ): SessionAttachmentRef {
-  return {
+  const base = {
     id: attachment.id,
-    kind: attachment.kind,
     fileName: attachment.fileName,
-    mediaType: attachment.mediaType,
     byteLength: attachment.byteLength,
     sha256: attachment.sha256,
   };
+  if (attachment.kind === "audio") {
+    return {
+      ...base,
+      kind: "audio",
+      mediaType: attachment.mediaType,
+      durationSeconds: attachment.durationSeconds,
+      sampleRate: attachment.sampleRate,
+      channels: attachment.channels,
+    };
+  }
+  if (attachment.kind === "image") {
+    return { ...base, kind: "image", mediaType: attachment.mediaType };
+  }
+  return { ...base, kind: "document", mediaType: attachment.mediaType };
 }
+
+type StoredAttachmentClassification =
+  | {
+      kind: "image";
+      mediaType: ImageAttachmentMediaType;
+    }
+  | {
+      kind: "document";
+      mediaType: DocumentAttachmentMediaType;
+    }
+  | ({ kind: "audio" } & AudioAttachmentInspection);
 
 async function classifyStoredAttachment(input: {
   bytes: Uint8Array;
   fileName: string;
   claimedMediaType?: string;
   signal?: AbortSignal;
-}): Promise<{
-  kind: "image" | "document";
-  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType;
-}> {
+}): Promise<StoredAttachmentClassification> {
   const imageMediaType = detectImageMediaType(input.bytes);
   if (imageMediaType !== null) {
     if (input.bytes.byteLength > MAX_IMAGE_ATTACHMENT_BYTES) {
@@ -467,19 +529,22 @@ async function classifyStoredAttachment(input: {
     return { kind: "image", mediaType: imageMediaType };
   }
 
+  if (isAudioAttachmentCandidate(input.bytes)) {
+    const inspection = await inspectAudioAttachment({
+      bytes: input.bytes,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    return { kind: "audio", ...inspection };
+  }
+
   const mediaType = await classifyDocumentAttachment(input);
   return { kind: "document", mediaType };
 }
 
 function assertPendingAttachmentQuota(
   preSavePendingAttachmentRefs: readonly SessionAttachmentRef[],
-  candidate: { kind: "image" | "document"; byteLength: number },
+  candidate: { kind: AttachmentKind; byteLength: number },
 ): void {
-  if (preSavePendingAttachmentRefs.some((attachment) =>
-    attachment.kind !== "image" && attachment.kind !== "document"
-  )) {
-    throw new AttachmentPendingQuotaError();
-  }
   if (!attachmentQuotaIsWithinLimits([
     ...preSavePendingAttachmentRefs.map((attachment) => ({
       kind: attachment.kind,
@@ -531,7 +596,15 @@ function assertExpectedAttachmentRef(
     metadata.fileName !== expectedRef.fileName ||
     metadata.mediaType !== expectedRef.mediaType ||
     metadata.byteLength !== expectedRef.byteLength ||
-    metadata.sha256 !== expectedRef.sha256
+    metadata.sha256 !== expectedRef.sha256 ||
+    (
+      metadata.kind === "audio" && expectedRef.kind === "audio" &&
+      (
+        metadata.durationSeconds !== expectedRef.durationSeconds ||
+        metadata.sampleRate !== expectedRef.sampleRate ||
+        metadata.channels !== expectedRef.channels
+      )
+    )
   ) {
     throw new AttachmentStorageCorruptionError();
   }
@@ -651,7 +724,9 @@ async function assertBlobHandleMatchesMetadata(
   const info = await handle.stat();
   const maximumBytes = metadata.kind === "image"
     ? MAX_IMAGE_ATTACHMENT_BYTES
-    : MAX_DOCUMENT_ATTACHMENT_BYTES;
+    : metadata.kind === "audio"
+      ? MAX_AUDIO_ATTACHMENT_BYTES
+      : MAX_DOCUMENT_ATTACHMENT_BYTES;
   if (
     !info.isFile() ||
     !Number.isSafeInteger(info.size) ||
@@ -680,6 +755,26 @@ async function verifyBytes(
       !validImageDimensions(bytes, metadata.mediaType)
     ) throw new AttachmentStorageCorruptionError();
     return;
+  }
+
+  if (metadata.kind === "audio") {
+    try {
+      const inspection = await inspectAudioAttachment({
+        bytes,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (
+        inspection.mediaType !== metadata.mediaType ||
+        inspection.durationSeconds !== metadata.durationSeconds ||
+        inspection.sampleRate !== metadata.sampleRate ||
+        inspection.channels !== metadata.channels
+      ) throw new AttachmentStorageCorruptionError();
+      return;
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof AttachmentStorageCorruptionError) throw error;
+      throw new AttachmentStorageCorruptionError(error);
+    }
   }
 
   try {
@@ -714,12 +809,16 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
     "sha256",
     "createdAt",
     "ordinal",
+    "durationSeconds",
+    "sampleRate",
+    "channels",
   ]);
   const keys = Object.keys(record);
   const hasOrdinal = record.ordinal !== undefined;
+  const audioFields = record.kind === "audio" ? 3 : 0;
   if (
     !keys.every((key) => allowed.has(key)) ||
-    keys.length !== (hasOrdinal ? allowed.size : allowed.size - 1) ||
+    keys.length !== (hasOrdinal ? 9 : 8) + audioFields ||
     !isSafeStorageId(record.id) ||
     !isSafeStorageId(record.sessionId) ||
     !Number.isInteger(record.byteLength) ||
@@ -738,14 +837,24 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
 
   return Number.isSafeInteger(record.ordinal) &&
     (record.ordinal as number) > 0 &&
-    (record.kind === "image" || record.kind === "document") &&
+    (record.kind === "image" || record.kind === "document" || record.kind === "audio") &&
     isSafeAttachmentFileName(record.fileName) &&
     isAttachmentMediaType(record.mediaType) &&
     attachmentKindMatchesMediaType(record.kind, record.mediaType) &&
     (record.byteLength as number) <= (
       record.kind === "image"
         ? MAX_IMAGE_ATTACHMENT_BYTES
-        : MAX_DOCUMENT_ATTACHMENT_BYTES
+        : record.kind === "audio"
+          ? MAX_AUDIO_ATTACHMENT_BYTES
+          : MAX_DOCUMENT_ATTACHMENT_BYTES
+    ) && (
+      record.kind !== "audio" ||
+      isAudioAttachmentInspection({
+        mediaType: record.mediaType,
+        durationSeconds: record.durationSeconds,
+        sampleRate: record.sampleRate,
+        channels: record.channels,
+      })
     );
 }
 
@@ -907,16 +1016,19 @@ function isDocumentMediaType(
 }
 
 function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
-  return isImageMediaType(value) || isDocumentMediaType(value);
+  return isImageMediaType(value) ||
+    isDocumentMediaType(value) ||
+    value === "audio/wav" ||
+    value === "audio/mpeg";
 }
 
 function attachmentKindMatchesMediaType(
-  kind: "image" | "document",
+  kind: AttachmentKind,
   mediaType: AttachmentMediaType,
 ): boolean {
-  return kind === "image"
-    ? isImageMediaType(mediaType)
-    : isDocumentMediaType(mediaType);
+  if (kind === "image") return isImageMediaType(mediaType);
+  if (kind === "audio") return mediaType === "audio/wav" || mediaType === "audio/mpeg";
+  return isDocumentMediaType(mediaType);
 }
 
 function ascii(bytes: Uint8Array, start: number, end: number): string {
@@ -925,7 +1037,7 @@ function ascii(bytes: Uint8Array, start: number, end: number): string {
 
 function sanitizedFileName(
   value: string,
-  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType,
+  mediaType: AttachmentMediaType,
 ): string {
   const leaf = String(value).normalize("NFC").replaceAll("\\", "/")
     .split("/").at(-1) ?? "";
@@ -951,7 +1063,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function defaultFileName(
-  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType,
+  mediaType: AttachmentMediaType,
 ): string {
   switch (mediaType) {
     case "image/png": return "image.png";
@@ -964,6 +1076,8 @@ function defaultFileName(
       return "spreadsheet.xlsx";
     case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
       return "presentation.pptx";
+    case "audio/wav": return "audio.wav";
+    case "audio/mpeg": return "audio.mp3";
   }
 }
 
@@ -994,24 +1108,34 @@ function attachmentMetadata(input: {
   id: string;
   sessionId: string;
   fileName: string;
-  kind: "image" | "document";
-  mediaType: ImageAttachmentMediaType | DocumentAttachmentMediaType;
   bytes: Uint8Array;
   sha256: string;
   ordinal: number;
   createdAt: string;
-}): StoredSessionAttachment {
-  return {
+} & StoredAttachmentClassification): StoredSessionAttachment {
+  const base = {
     id: input.id,
     sessionId: input.sessionId,
-    kind: input.kind,
     fileName: input.fileName,
-    mediaType: input.mediaType,
     byteLength: input.bytes.byteLength,
     sha256: input.sha256,
     createdAt: input.createdAt,
     ordinal: input.ordinal,
   };
+  if (input.kind === "audio") {
+    return {
+      ...base,
+      kind: "audio",
+      mediaType: input.mediaType,
+      durationSeconds: input.durationSeconds,
+      sampleRate: input.sampleRate,
+      channels: input.channels,
+    };
+  }
+  if (input.kind === "image") {
+    return { ...base, kind: "image", mediaType: input.mediaType };
+  }
+  return { ...base, kind: "document", mediaType: input.mediaType };
 }
 
 function isAlreadyExistsError(error: unknown): boolean {

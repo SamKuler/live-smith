@@ -126,6 +126,7 @@
           "rename_session",
           "archive_session",
           "unarchive_session",
+          "attach_selected_audio_source",
         ].includes(kind);
         const allowedDuringSend = sessionCommand || kind === "save_global_settings";
         if (sendAttemptsBySession.size && !allowedDuringSend) {

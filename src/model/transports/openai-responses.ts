@@ -21,6 +21,7 @@ import {
 import {
   assertBinaryInputWithinLimits,
   assertImageInputEnabled,
+  assertNoUnsupportedAudioInput,
   assertPdfInputEnabled,
   assertNeverInputPart,
   imageDataUrl,
@@ -50,6 +51,7 @@ export function createOpenAIResponsesTransport(
     listModels: (profile, signal) => listOpenAIModels(profile, fetchImpl, signal),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
+      assertNoUnsupportedAudioInput(request, "OpenAI Responses");
       assertBinaryInputWithinLimits(request);
       const body = buildResponsesBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {

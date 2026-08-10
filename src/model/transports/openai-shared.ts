@@ -9,9 +9,11 @@ import type { DraftProfile } from "../profile.js";
 import { withTransportContext } from "./errors.js";
 import { discoverOpenAIModels } from "./openai-http.js";
 import {
+  assertAudioInputEnabled,
   assertImageInputEnabled,
   assertNeverInputPart,
   imageDataUrl,
+  openAIChatAudioPart,
   unsupportedInputPart,
 } from "./input-parts.js";
 
@@ -86,8 +88,10 @@ function mapOpenAIChatParts(
           image_url: { url: imageDataUrl(part), detail: "auto" },
         };
       case "document":
-      case "audio":
         return unsupportedInputPart(part);
+      case "audio":
+        assertAudioInputEnabled(request);
+        return openAIChatAudioPart(part);
       default:
         return assertNeverInputPart(part);
     }

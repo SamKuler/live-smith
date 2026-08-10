@@ -5,9 +5,9 @@ import test from "node:test";
 import {
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
-  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
+  MAX_REQUEST_BINARY_ATTACHMENT_COUNT,
+  MAX_REQUEST_IMAGE_ATTACHMENT_BYTES,
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
@@ -82,6 +82,17 @@ function pdfPart(
     fileName,
     mediaType: "application/pdf",
     base64: canonicalBase64ForByteLength(byteLength),
+  };
+}
+
+function audioPart(
+  fileName = "attachment.wav",
+): Extract<ModelInputPart, { type: "audio" }> {
+  return {
+    type: "audio",
+    fileName,
+    mediaType: "audio/wav",
+    base64: "not canonical or safe to echo",
   };
 }
 
@@ -304,6 +315,39 @@ test("OpenAI Responses rejects PDF input before HTTP when PDF capability is disa
   assert.equal(fetchCalls, 0);
 });
 
+test("OpenAI Responses rejects current and historical audio before quotas, body construction, or HTTP", async () => {
+  for (const location of ["current", "history"] as const) {
+    let fetchCalls = 0;
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error("network must not be reached");
+      },
+    });
+    const req = request(profile({
+      advanced: { extraBody: { input: ["must not be inspected first"] } },
+    }));
+    req.runtimeProfile.capabilities.inputs.audio = true;
+    req.runtimeProfile.inputCapabilityEvidence = {
+      image: "unverified",
+      audio: "supported",
+      pdf: "unverified",
+    };
+    const part = audioPart("/private/audio-secret.wav");
+    if (location === "current") req.currentUserContent = [part];
+    else req.history = [{ role: "user", content: [part] }];
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message ===
+          "openai/responses request failed: Audio input is not supported by OpenAI Responses in Live Smith.",
+    );
+    assert.equal(fetchCalls, 0);
+  }
+});
+
 test("OpenAI Responses accepts exact binary attachment boundaries across current and history", async () => {
   let fetchCalls = 0;
   const transport = createOpenAIResponsesTransport({
@@ -326,8 +370,8 @@ test("OpenAI Responses accepts exact binary attachment boundaries across current
   }
   {
     const req = makeRequest();
-    const bytesPerImage = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
-      MAX_PENDING_ATTACHMENT_COUNT;
+    const bytesPerImage = MAX_REQUEST_IMAGE_ATTACHMENT_BYTES /
+      MAX_REQUEST_BINARY_ATTACHMENT_COUNT;
     req.history = [{
       role: "user",
       content: [imagePart(bytesPerImage, "history-1.png"), imagePart(
@@ -358,7 +402,7 @@ test("OpenAI Responses accepts exact binary attachment boundaries across current
     req.currentUserContent = [
       imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
       pdfPart(
-        MAX_PENDING_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+        MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
         "current.pdf",
       ),
     ];
@@ -400,10 +444,10 @@ test("OpenAI Responses rejects every binary quota overflow before body construct
     {
       label: "image subtotal",
       configure: (req) => {
-        const bytes = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
-            MAX_PENDING_ATTACHMENT_COUNT + 1;
+        const bytes = MAX_REQUEST_IMAGE_ATTACHMENT_BYTES /
+            MAX_REQUEST_BINARY_ATTACHMENT_COUNT + 1;
         req.currentUserContent = Array.from(
-          { length: MAX_PENDING_ATTACHMENT_COUNT },
+          { length: MAX_REQUEST_BINARY_ATTACHMENT_COUNT },
           (_, index) => imagePart(bytes, `subtotal-${index}.png`),
         );
       },
@@ -421,13 +465,20 @@ test("OpenAI Responses rejects every binary quota overflow before body construct
       configure: (req) => {
         req.history = [{
           role: "user",
-          content: [imagePart(MAX_IMAGE_ATTACHMENT_BYTES)],
+          content: [
+            imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
+            imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
+          ],
         }];
-        req.currentUserContent = [pdfPart(
-          MAX_PENDING_ATTACHMENT_BYTES - MAX_IMAGE_ATTACHMENT_BYTES + 1,
-        )];
+        req.currentUserContent = [
+          imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
+          pdfPart(
+            MAX_REQUEST_BINARY_ATTACHMENT_BYTES -
+              3 * MAX_IMAGE_ATTACHMENT_BYTES + 1,
+          ),
+        ];
       },
-      message: /Binary input subtotal may not exceed 20 MiB/,
+      message: /Binary input subtotal may not exceed 30 MiB/,
     },
     {
       label: "count across current and history",
@@ -533,13 +584,13 @@ test("OpenAI Responses rejects an oversized encoded input before scanning base64
     fileName: "oversized.png",
     mediaType: "image/png",
     base64: "!".repeat(
-      Math.ceil(MAX_PENDING_ATTACHMENT_BYTES / 3) * 4 + 4,
+      Math.ceil(MAX_REQUEST_BINARY_ATTACHMENT_BYTES / 3) * 4 + 4,
     ),
   }];
 
   await assert.rejects(
     transport.createToolTurn(req),
-    /Binary input subtotal may not exceed 20 MiB\.$/,
+    /Binary input subtotal may not exceed 30 MiB\.$/,
   );
   assert.equal(fetchCalls, 0);
 });

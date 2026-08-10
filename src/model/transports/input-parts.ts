@@ -1,16 +1,19 @@
 import {
+  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
-  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
-  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+  MAX_REQUEST_AUDIO_ATTACHMENT_BYTES,
+  MAX_REQUEST_AUDIO_ATTACHMENT_COUNT,
+  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
+  MAX_REQUEST_BINARY_ATTACHMENT_COUNT,
+  MAX_REQUEST_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_REQUEST_IMAGE_ATTACHMENT_BYTES,
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import type { TransportRequest } from "../provider.js";
 
 const MAX_BINARY_BASE64_CHARACTERS =
-  Math.ceil(MAX_PENDING_ATTACHMENT_BYTES / 3) * 4;
+  Math.ceil(MAX_REQUEST_BINARY_ATTACHMENT_BYTES / 3) * 4;
 
 export function assertBinaryInputWithinLimits(
   request: TransportRequest,
@@ -19,12 +22,14 @@ export function assertBinaryInputWithinLimits(
   let totalBytes = 0;
   let imageBytes = 0;
   let pdfBytes = 0;
+  let audioBytes = 0;
+  let audioCount = 0;
 
   for (const part of binaryUserInputParts(request)) {
     count += 1;
-    if (count > MAX_PENDING_ATTACHMENT_COUNT) {
+    if (count > MAX_REQUEST_BINARY_ATTACHMENT_COUNT) {
       throw new Error(
-        `Model requests may contain at most ${MAX_PENDING_ATTACHMENT_COUNT} binary attachments.`,
+        `Model requests may contain at most ${MAX_REQUEST_BINARY_ATTACHMENT_COUNT} binary attachments.`,
       );
     }
 
@@ -35,34 +40,50 @@ export function assertBinaryInputWithinLimits(
         throw new Error("Image input may not exceed 5 MiB per attachment.");
       }
       imageBytes += byteLength;
-      if (imageBytes > MAX_PENDING_IMAGE_ATTACHMENT_BYTES) {
+      if (imageBytes > MAX_REQUEST_IMAGE_ATTACHMENT_BYTES) {
         throw new Error("Image input subtotal may not exceed 16 MiB.");
       }
-    } else {
+    } else if (part.type === "document") {
       if (byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
         throw new Error("PDF input may not exceed 20 MiB per attachment.");
       }
       pdfBytes += byteLength;
-      if (pdfBytes > MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES) {
+      if (pdfBytes > MAX_REQUEST_DOCUMENT_ATTACHMENT_BYTES) {
         throw new Error("PDF input subtotal may not exceed 20 MiB.");
+      }
+    } else {
+      if (byteLength > MAX_AUDIO_ATTACHMENT_BYTES) {
+        throw new Error("Audio input may not exceed 20 MiB per attachment.");
+      }
+      audioBytes += byteLength;
+      audioCount += 1;
+      if (audioCount > MAX_REQUEST_AUDIO_ATTACHMENT_COUNT) {
+        throw new Error(
+          `Model requests may contain at most ${MAX_REQUEST_AUDIO_ATTACHMENT_COUNT} audio attachments.`,
+        );
+      }
+      if (audioBytes > MAX_REQUEST_AUDIO_ATTACHMENT_BYTES) {
+        throw new Error("Audio input subtotal may not exceed 30 MiB.");
       }
     }
 
     totalBytes += byteLength;
-    if (totalBytes > MAX_PENDING_ATTACHMENT_BYTES) {
-      throw new Error("Binary input subtotal may not exceed 20 MiB.");
+    if (totalBytes > MAX_REQUEST_BINARY_ATTACHMENT_BYTES) {
+      throw new Error("Binary input subtotal may not exceed 30 MiB.");
     }
   }
 }
 
 function assertBinaryPartMediaType(
-  part: Extract<ModelInputPart, { type: "image" | "document" }>,
+  part: Extract<ModelInputPart, { type: "image" | "document" | "audio" }>,
 ): void {
   const valid = part.type === "image"
     ? part.mediaType === "image/png" ||
       part.mediaType === "image/jpeg" ||
       part.mediaType === "image/webp"
-    : part.mediaType === "application/pdf";
+    : part.type === "document"
+      ? part.mediaType === "application/pdf"
+      : part.mediaType === "audio/wav" || part.mediaType === "audio/mpeg";
   if (!valid) {
     throw new Error("Binary input has an invalid media type.");
   }
@@ -70,21 +91,29 @@ function assertBinaryPartMediaType(
 
 function* binaryUserInputParts(
   request: TransportRequest,
-): Generator<Extract<ModelInputPart, { type: "image" | "document" }>> {
+): Generator<Extract<ModelInputPart, { type: "image" | "document" | "audio" }>> {
   for (const message of request.history) {
     if (message.role !== "user") continue;
     for (const part of message.content) {
-      if (part.type === "image" || part.type === "document") yield part;
+      if (
+        part.type === "image" ||
+        part.type === "document" ||
+        part.type === "audio"
+      ) yield part;
     }
   }
   for (const part of request.currentUserContent) {
-    if (part.type === "image" || part.type === "document") yield part;
+    if (
+      part.type === "image" ||
+      part.type === "document" ||
+      part.type === "audio"
+    ) yield part;
   }
 }
 
 function canonicalBase64DecodedByteLength(value: unknown): number {
   if (typeof value === "string" && value.length > MAX_BINARY_BASE64_CHARACTERS) {
-    throw new Error("Binary input subtotal may not exceed 20 MiB.");
+    throw new Error("Binary input subtotal may not exceed 30 MiB.");
   }
   if (
     typeof value !== "string" ||
@@ -141,10 +170,35 @@ export function assertPdfInputEnabled(request: TransportRequest): void {
   }
 }
 
+export function assertAudioInputEnabled(request: TransportRequest): void {
+  if (!request.runtimeProfile.capabilities.inputs.audio) {
+    throw new Error(
+      "Audio input is disabled by the active model Profile capability.",
+    );
+  }
+  if (request.runtimeProfile.inputCapabilityEvidence?.audio !== "supported") {
+    throw new Error(
+      "Audio input requires supported capability evidence from the active model Profile.",
+    );
+  }
+}
+
 export function unsupportedOpenAIChatPdfInput(): never {
   throw new Error(
     "OpenAI Chat Completions does not support PDF attachments in Live Smith.",
   );
+}
+
+export function assertNoUnsupportedAudioInput(
+  request: TransportRequest,
+  transportLabel: "OpenAI Responses" | "Anthropic Messages",
+): void {
+  for (const part of allUserInputParts(request)) {
+    if (part.type !== "audio") continue;
+    throw new Error(
+      `Audio input is not supported by ${transportLabel} in Live Smith.`,
+    );
+  }
 }
 
 export function unsupportedInputPart(
@@ -153,6 +207,28 @@ export function unsupportedInputPart(
   throw new Error(
     `${part.type === "document" ? "Document" : "Audio"} input is not supported by this transport milestone.`,
   );
+}
+
+export function openAIChatAudioPart(
+  part: Extract<ModelInputPart, { type: "audio" }>,
+): Record<string, unknown> {
+  return {
+    type: "input_audio",
+    input_audio: {
+      data: part.base64,
+      format: part.mediaType === "audio/wav" ? "wav" : "mp3",
+    },
+  };
+}
+
+function* allUserInputParts(
+  request: TransportRequest,
+): Generator<ModelInputPart> {
+  for (const message of request.history) {
+    if (message.role !== "user") continue;
+    yield* message.content;
+  }
+  yield* request.currentUserContent;
 }
 
 export function imageDataUrl(

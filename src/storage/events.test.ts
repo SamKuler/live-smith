@@ -5,7 +5,10 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT,
   MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES,
   MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   type SessionAttachmentRef,
@@ -34,8 +37,20 @@ const documentRef: SessionAttachmentRef = {
   kind: "document",
   fileName: "reference.pdf",
   mediaType: "application/pdf",
-  byteLength: 5 * 1024 * 1024,
+  byteLength: 15 * 1024 * 1024,
   sha256: "b".repeat(64),
+};
+
+const audioRef: SessionAttachmentRef = {
+  id: "attachment-audio",
+  kind: "audio",
+  fileName: "reference.wav",
+  mediaType: "audio/wav",
+  byteLength: 10 * 1024 * 1024,
+  sha256: "c".repeat(64),
+  durationSeconds: 120,
+  sampleRate: 48_000,
+  channels: 2,
 };
 
 test("event attachments persist strict immutable references only on user events", async () => {
@@ -111,18 +126,24 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
     }),
     /invalid/i,
   );
-  await assert.rejects(
-    appendSessionEvent(undefined, sessionId, {
-      kind: "user",
-      content: "audio is not implemented",
-      attachments: [{
-        ...imageRef,
-        kind: "audio",
-        mediaType: "audio/wav",
-      } as SessionAttachmentRef],
-    }),
-    /invalid/i,
-  );
+  for (const malformedAudio of [
+    { ...audioRef, durationSeconds: undefined },
+    { ...audioRef, durationSeconds: 120.001 },
+    { ...audioRef, sampleRate: 0 },
+    { ...audioRef, channels: 0 },
+    { ...audioRef, mediaType: "audio/mpeg", channels: 3 },
+    { ...audioRef, mediaType: "audio/mpeg", sampleRate: 8_000 },
+    { ...audioRef, tags: { title: "must-not-persist" } },
+  ]) {
+    await assert.rejects(
+      appendSessionEvent(undefined, sessionId, {
+        kind: "user",
+        content: "malformed audio",
+        attachments: [malformedAudio as SessionAttachmentRef],
+      }),
+      /invalid/i,
+    );
+  }
   await assert.rejects(
     appendSessionEvent(undefined, sessionId, {
       kind: "user",
@@ -156,7 +177,7 @@ test("event loading precisely preserves legacy attachment refs under the old sch
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-legacy-events-"));
   const eventsDirectory = path.join(dir, "live-smith-events");
   await fs.mkdir(eventsDirectory);
-  const legacyRefs: SessionAttachmentRef[] = Array.from(
+  const legacyRefs = Array.from(
     { length: 4 },
     (_, index) => ({
       ...imageRef,
@@ -174,7 +195,7 @@ test("event loading precisely preserves legacy attachment refs under the old sch
           ? { kind: "audio" as const, mediaType: "audio/wav" as const }
           : {}),
     }),
-  );
+  ) as unknown as SessionAttachmentRef[];
   const target = path.join(eventsDirectory, "legacy-event.json");
   const persisted = [{
     id: "event-legacy",
@@ -191,6 +212,21 @@ test("event loading precisely preserves legacy attachment refs under the old sch
     content: "Legacy history remains appendable.",
   });
   assert.equal((await loadSessionEvents(dir, "legacy-event")).length, 2);
+});
+
+test("current audio event refs require and preserve strict technical metadata", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-audio-events-"));
+  const event = await appendSessionEvent(dir, "session-audio-event", {
+    kind: "user",
+    content: "Use this recording",
+    attachments: [audioRef],
+  });
+  assert.deepEqual(event.attachments, [audioRef]);
+  assert.notEqual(event.attachments?.[0], audioRef);
+  assert.deepEqual(
+    (await loadSessionEvents(dir, "session-audio-event"))[0]?.attachments,
+    [audioRef],
+  );
 });
 
 test("event attachment limits accept the exact count and image subtotal boundaries", async () => {
@@ -293,6 +329,61 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
     }),
     /invalid/i,
   );
+});
+
+test("audio event refs enforce single, subtotal, count, and mixed raw quotas", async () => {
+  const sessionId = `memory-event-audio-${Date.now()}`;
+  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT, 2);
+  const exactAudio = [0, 1].map((index) => ({
+    ...audioRef,
+    id: `attachment-audio-exact-${index}`,
+    byteLength: MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES / 2,
+  }));
+  const event = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: "exact audio subtotal",
+    attachments: exactAudio,
+  });
+  assert.equal(
+    event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
+    MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
+  );
+
+  await assert.rejects(
+    appendSessionEvent(undefined, `${sessionId}-count-over`, {
+      kind: "user",
+      content: "three audio refs",
+      attachments: [0, 1, 2].map((index) => ({
+        ...audioRef,
+        id: `attachment-audio-over-${index}`,
+        byteLength: 1,
+      })),
+    }),
+    /invalid/i,
+  );
+  await assert.rejects(
+    appendSessionEvent(undefined, `${sessionId}-single-over`, {
+      kind: "user",
+      content: "single audio over",
+      attachments: [{
+        ...audioRef,
+        id: "attachment-audio-single-over",
+        byteLength: MAX_AUDIO_ATTACHMENT_BYTES + 1,
+      }],
+    }),
+    /invalid/i,
+  );
+
+  await appendSessionEvent(undefined, `${sessionId}-mixed-exact`, {
+    kind: "user",
+    content: "mixed exact raw total",
+    attachments: [
+      { ...imageRef, id: "attachment-mixed-audio-image", byteLength: 5 * 1024 * 1024 },
+      { ...documentRef, id: "attachment-mixed-audio-document" },
+      { ...audioRef, id: "attachment-mixed-audio", byteLength: 10 * 1024 * 1024 },
+    ],
+  });
 });
 
 test("document event refs survive reload and malformed kind-media pairs are corruption", async () => {

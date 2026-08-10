@@ -2,6 +2,7 @@
       window.LiveSmithFactories.createAttachments = function createAttachments({
         deleteAttachment,
         getState,
+        runCommand,
         showStatus,
         uploadAttachments,
       }) {
@@ -16,6 +17,7 @@
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       ]);
+      const audioMediaTypes = new Set(["audio/wav", "audio/mpeg"]);
       const extensionKinds = new Map([
         ["png", "image"],
         ["jpg", "image"],
@@ -25,6 +27,8 @@
         ["docx", "document"],
         ["xlsx", "document"],
         ["pptx", "document"],
+        ["wav", "audio"],
+        ["mp3", "audio"],
       ]);
       const macroEnabledExtensions = new Set([
         "docm",
@@ -48,11 +52,15 @@
       ]);
       const maxImageAttachmentBytes = __MAX_IMAGE_ATTACHMENT_BYTES__;
       const maxDocumentAttachmentBytes = __MAX_DOCUMENT_ATTACHMENT_BYTES__;
+      const maxAudioAttachmentBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
       const maxPendingAttachmentCount = __MAX_PENDING_ATTACHMENT_COUNT__;
       const maxPendingImageBytes = __MAX_PENDING_IMAGE_ATTACHMENT_BYTES__;
+      const maxPendingDocumentBytes = __MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES__;
+      const maxPendingAudioBytes = __MAX_PENDING_AUDIO_ATTACHMENT_BYTES__;
+      const maxPendingAudioCount = __MAX_PENDING_AUDIO_ATTACHMENT_COUNT__;
       const maxPendingTotalBytes = __MAX_PENDING_TOTAL_ATTACHMENT_BYTES__;
       const supportedFileMessage =
-        "only PNG, JPEG, WebP, PDF, DOCX, XLSX, and PPTX are supported";
+        "only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 are supported";
       let busy = false;
       let initialized = false;
 
@@ -83,7 +91,27 @@
         if (attachment.mediaType.includes("wordprocessingml")) return "DOCX";
         if (attachment.mediaType.includes("spreadsheetml")) return "XLSX";
         if (attachment.mediaType.includes("presentationml")) return "PPTX";
-        return attachment.kind === "image" ? "Image" : "Document";
+        if (attachment.mediaType === "audio/wav") return "WAV";
+        if (attachment.mediaType === "audio/mpeg") return "MP3";
+        if (attachment.kind === "image") return "Image";
+        if (attachment.kind === "audio") return "Audio";
+        return "Document";
+      }
+
+      function formatAudioDuration(durationSeconds) {
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return "";
+        const totalTenths = Math.round(durationSeconds * 10);
+        if (totalTenths < 600) {
+          const seconds = totalTenths / 10;
+          return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+        }
+        const minutes = Math.floor(totalTenths / 600);
+        const secondsTenths = totalTenths - minutes * 600;
+        const seconds = secondsTenths / 10;
+        const value = Number.isInteger(seconds)
+          ? String(seconds).padStart(2, "0")
+          : seconds.toFixed(1).padStart(4, "0");
+        return `${minutes}:${value}`;
       }
 
       function renderPending() {
@@ -102,9 +130,15 @@
 
           const label = document.createElement("span");
           label.className = "attachment-chip-label";
-          label.textContent = `${attachment.fileName} · ${
-            attachmentTypeLabel(attachment)
-          } · ${formatBytes(attachment.byteLength)}`;
+          const details = [
+            attachment.fileName,
+            attachmentTypeLabel(attachment),
+            attachment.kind === "audio"
+              ? formatAudioDuration(attachment.durationSeconds)
+              : "",
+            formatBytes(attachment.byteLength),
+          ].filter(Boolean);
+          label.textContent = details.join(" · ");
           label.title = attachment.fileName;
 
           const remove = document.createElement("button");
@@ -157,12 +191,13 @@
       function imageCapabilityHint() {
         if (imageInputStatus() === "supported") return "";
         return imageInputStatus() === "unsupported"
-          ? "The active model does not support image input. Documents can still be attached."
-          : "Image input support for the active model is unverified. Documents can still be attached.";
+          ? "The active model does not support image input. Documents and audio can still be attached."
+          : "Image input support for the active model is unverified. Documents and audio can still be attached.";
       }
 
       function syncAttachAvailability() {
         const attachButton = document.getElementById("attachFileButton");
+        const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
         const input = document.getElementById("attachmentInput");
         const hint = document.getElementById("attachmentCapabilityHint");
         if (attachButton) {
@@ -171,6 +206,7 @@
           attachButton.setAttribute("aria-label", "Attach file");
         }
         if (input) input.disabled = busy;
+        if (selectedAudioButton) selectedAudioButton.disabled = busy;
         if (hint) {
           hint.textContent = imageCapabilityHint();
           hint.hidden = !hint.textContent;
@@ -200,6 +236,7 @@
         const mediaType = String(file?.type || "").toLowerCase();
         if (imageMediaTypes.has(mediaType)) return { kind: "image" };
         if (documentMediaTypes.has(mediaType)) return { kind: "document" };
+        if (audioMediaTypes.has(mediaType)) return { kind: "audio" };
         return { reason: supportedFileMessage };
       }
 
@@ -215,6 +252,17 @@
             total + (attachment.kind === "image" ? attachment.byteLength : 0),
           0,
         );
+        let documentBytes = pending.reduce(
+          (total, attachment) =>
+            total + (attachment.kind === "document" ? attachment.byteLength : 0),
+          0,
+        );
+        let audioBytes = pending.reduce(
+          (total, attachment) =>
+            total + (attachment.kind === "audio" ? attachment.byteLength : 0),
+          0,
+        );
+        let audioCount = pending.filter((attachment) => attachment.kind === "audio").length;
         const accepted = [];
         const failures = [];
         for (const file of files) {
@@ -236,8 +284,20 @@
             file.size > maxDocumentAttachmentBytes
           ) {
             reason = `the document is larger than ${formatBytes(maxDocumentAttachmentBytes)}`;
+          } else if (
+            !reason &&
+            classification.kind === "audio" &&
+            file.size > maxAudioAttachmentBytes
+          ) {
+            reason = `the audio file is larger than ${formatBytes(maxAudioAttachmentBytes)}`;
           } else if (!reason && count >= maxPendingAttachmentCount) {
             reason = `a Session can have at most ${maxPendingAttachmentCount} pending files`;
+          } else if (
+            !reason &&
+            classification.kind === "audio" &&
+            audioCount >= maxPendingAudioCount
+          ) {
+            reason = `a Session can have at most ${maxPendingAudioCount} pending audio files`;
           } else if (!reason && totalBytes + file.size > maxPendingTotalBytes) {
             reason = `pending files would exceed ${formatBytes(maxPendingTotalBytes)}`;
           } else if (
@@ -246,6 +306,18 @@
             imageBytes + file.size > maxPendingImageBytes
           ) {
             reason = `pending images would exceed ${formatBytes(maxPendingImageBytes)}`;
+          } else if (
+            !reason &&
+            classification.kind === "document" &&
+            documentBytes + file.size > maxPendingDocumentBytes
+          ) {
+            reason = `pending documents would exceed ${formatBytes(maxPendingDocumentBytes)}`;
+          } else if (
+            !reason &&
+            classification.kind === "audio" &&
+            audioBytes + file.size > maxPendingAudioBytes
+          ) {
+            reason = `pending audio would exceed ${formatBytes(maxPendingAudioBytes)}`;
           }
           if (reason) {
             failures.push(`${file.name || "Unnamed file"}: ${reason}`);
@@ -255,6 +327,11 @@
           count += 1;
           totalBytes += file.size;
           if (classification.kind === "image") imageBytes += file.size;
+          else if (classification.kind === "document") documentBytes += file.size;
+          else {
+            audioBytes += file.size;
+            audioCount += 1;
+          }
         }
         return { accepted, failures };
       }
@@ -310,6 +387,20 @@
         );
       }
 
+      function audioInputStatus() {
+        const runtime = activeSavedRuntime();
+        if (
+          runtime?.profile?.apiFamily !== "openai" ||
+          runtime?.profile?.apiMode !== "chat-completions"
+        ) return "profile_incompatible";
+        const evidence = runtime.inputCapabilityEvidence?.audio;
+        if (
+          evidence === "supported" &&
+          runtime.capabilities?.inputs?.audio === true
+        ) return "supported";
+        return evidence === "unsupported" ? "unsupported" : "unverified";
+      }
+
       function validateSend() {
         const attachments = pendingAttachments();
         if (attachments.some((attachment) => attachment.kind === "image")) {
@@ -333,6 +424,20 @@
           );
           return false;
         }
+        if (attachments.some((attachment) => attachment.kind === "audio")) {
+          const status = audioInputStatus();
+          if (status !== "supported") {
+            showStatus(
+              status === "unsupported"
+                ? "The active model does not support audio input. Remove the attached audio or activate an audio-capable saved Profile."
+                : status === "unverified"
+                  ? "Audio input support for the active model is unverified. Remove the attached audio, discover model capabilities, or set an explicit audio-input override."
+                  : "Audio attachments require a saved OpenAI Chat Completions Profile with verified audio input support. Remove the attached audio or activate a compatible saved Profile.",
+              true,
+            );
+            return false;
+          }
+        }
         return true;
       }
 
@@ -340,8 +445,21 @@
         return transfer?.files ? [...transfer.files] : [];
       }
 
-      function hasUploadableFile(files) {
-        return selectUploadableFiles(files).accepted.length > 0;
+      function transferContainsFiles(transfer) {
+        if (filesFromTransfer(transfer).length) return true;
+        return [...(transfer?.types || [])].includes("Files");
+      }
+
+      function clipboardHasText(clipboardData) {
+        if (!clipboardData || typeof clipboardData.getData !== "function") return false;
+        return Boolean(clipboardData.getData("text/plain"));
+      }
+
+      async function attachSelectedAudioSource() {
+        if (busy) return;
+        await runCommand("attach_selected_audio_source", {
+          sessionId: getState().activeSessionId,
+        });
       }
 
       function initialize() {
@@ -350,9 +468,13 @@
         const composer = document.querySelector(".composer");
         const prompt = document.getElementById("prompt");
         const attachButton = document.getElementById("attachFileButton");
+        const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
         const input = document.getElementById("attachmentInput");
 
         attachButton?.addEventListener("click", () => input?.click());
+        selectedAudioButton?.addEventListener("click", () => {
+          void attachSelectedAudioSource();
+        });
         input?.addEventListener("change", () => {
           const selected = filesFromTransfer(input);
           input.value = "";
@@ -361,12 +483,17 @@
         prompt?.addEventListener("paste", (event) => {
           const files = filesFromTransfer(event.clipboardData);
           if (!files.length) return;
-          if (hasUploadableFile(files)) event.preventDefault();
-          void uploadFiles(files);
+          if (clipboardHasText(event.clipboardData)) {
+            window.setTimeout(() => {
+              void uploadFiles(files);
+            }, 0);
+          } else {
+            event.preventDefault();
+            void uploadFiles(files);
+          }
         });
         composer?.addEventListener("dragover", (event) => {
-          const files = filesFromTransfer(event.dataTransfer);
-          if (!files.length) return;
+          if (!transferContainsFiles(event.dataTransfer)) return;
           event.preventDefault();
           composer.classList.add("drop-target");
         });
