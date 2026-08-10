@@ -7,12 +7,12 @@ import test from "node:test";
 import {
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT,
-  MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
-  type SessionAttachmentRef,
-} from "./attachments.js";
+  MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
+  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../attachments/contracts.js";
+import type { SessionAttachmentRef } from "./attachments.js";
 
 import {
   appendSessionEvent,
@@ -234,7 +234,7 @@ test("event attachment limits accept the exact count and image subtotal boundari
   const refs = Array.from({ length: MAX_USER_EVENT_ATTACHMENT_COUNT }, (_, index) => ({
     ...imageRef,
     id: `attachment-boundary-${index}`,
-    byteLength: MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES /
+    byteLength: MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
       MAX_USER_EVENT_ATTACHMENT_COUNT,
   }));
   assert.ok(refs.every((ref) => ref.byteLength <= MAX_IMAGE_ATTACHMENT_BYTES));
@@ -248,7 +248,7 @@ test("event attachment limits accept the exact count and image subtotal boundari
   assert.equal(event.attachments?.length, MAX_USER_EVENT_ATTACHMENT_COUNT);
   assert.equal(
     event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
-    MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
+    MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
   );
   await deleteSessionEvents(undefined, sessionId);
 });
@@ -295,7 +295,7 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
       { ...imageRef, id: "attachment-image-remainder", byteLength: 1024 * 1024 },
     ],
   });
-  assert.equal(MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES, 16 * 1024 * 1024);
+  assert.equal(MAX_PENDING_IMAGE_ATTACHMENT_BYTES, 16 * 1024 * 1024);
   await assert.rejects(
     appendSessionEvent(undefined, `${sessionId}-image-over`, {
       kind: "user",
@@ -314,7 +314,7 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
     attachments: [{
       ...documentRef,
       id: "attachment-document-exact",
-      byteLength: MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES,
+      byteLength: MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
     }],
   });
   await assert.rejects(
@@ -324,7 +324,7 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
       attachments: [{
         ...documentRef,
         id: "attachment-document-too-large",
-        byteLength: MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES + 1,
+        byteLength: MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES + 1,
       }],
     }),
     /invalid/i,
@@ -333,12 +333,12 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
 
 test("audio event refs enforce single, subtotal, count, and mixed raw quotas", async () => {
   const sessionId = `memory-event-audio-${Date.now()}`;
-  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
-  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT, 2);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = [0, 1].map((index) => ({
     ...audioRef,
     id: `attachment-audio-exact-${index}`,
-    byteLength: MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES / 2,
+    byteLength: MAX_PENDING_AUDIO_ATTACHMENT_BYTES / 2,
   }));
   const event = await appendSessionEvent(undefined, sessionId, {
     kind: "user",
@@ -347,7 +347,7 @@ test("audio event refs enforce single, subtotal, count, and mixed raw quotas", a
   });
   assert.equal(
     event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
-    MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
+    MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
   );
 
   await assert.rejects(

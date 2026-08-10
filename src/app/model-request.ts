@@ -101,14 +101,6 @@ export function runtimeProfileForSavedProfile(
   };
 }
 
-export function capabilitiesForProfile(
-  profile: SavedProfile,
-  models: DiscoveredModelInfo[] = [],
-): ModelCapabilities {
-  const discovered = models.find((model) => model.id === profile.model);
-  return resolveModelCapabilities(profile, discovered?.capabilities);
-}
-
 export function capabilitiesForProfilePreview(
   profile: DraftProfile,
   models: DiscoveredModelInfo[] = [],

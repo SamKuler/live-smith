@@ -21,7 +21,6 @@ import {
   readSessionAttachmentBytes,
   type PersistedSessionAttachmentRef,
   type SessionAttachmentRef,
-  type StoredSessionAttachment,
 } from "../storage/attachments.js";
 import type { SessionEvent } from "../storage/events.js";
 
@@ -494,16 +493,6 @@ function assertCurrentProfileCompatibility(
 
 function attachmentOccurrenceKey(eventId: string, index: number): string {
   return `${eventId}:${index}`;
-}
-
-export function pendingSessionAttachments(
-  stored: readonly StoredSessionAttachment[],
-  events: readonly SessionEvent[],
-): StoredSessionAttachment[] {
-  const consumedIds = new Set(
-    events.flatMap((event) => event.attachments?.map((attachment) => attachment.id) ?? []),
-  );
-  return stored.filter((attachment) => !consumedIds.has(attachment.id));
 }
 
 function assertAttachmentRequestBudget(

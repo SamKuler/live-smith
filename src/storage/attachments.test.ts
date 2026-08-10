@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +12,11 @@ import {
   AttachmentProcessingError,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
+  MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
 import { createHostAbortController } from "../runtime/host.js";
 import {
@@ -21,11 +27,6 @@ import {
   deleteSessionAttachments,
   listSessionAttachments,
   listPendingSessionAttachments,
-  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT,
-  MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   readSessionAttachmentBytes,
   saveSessionAttachment,
   UnsupportedAttachmentError,
@@ -409,7 +410,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   assert.equal(
     threeFiveMiBImages.reduce((total, ref) => total + ref.byteLength, 0) +
       exactDocument.byteLength,
-    MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+    MAX_PENDING_ATTACHMENT_BYTES,
   );
 
   await assert.rejects(
@@ -429,7 +430,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   }, { preSavePendingAttachmentRefs: imageSubtotal });
   assert.equal(
     imageSubtotal.reduce((total, ref) => total + ref.byteLength, 0) + 1024 * 1024,
-    MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
+    MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
   );
   await assert.rejects(
     saveSessionAttachment(undefined, `memory-image-subtotal-over-${Date.now()}`, {
@@ -458,11 +459,11 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
     { fileName: "owned.pdf", bytes: pdfBytesAtSize(1024 * 1024) },
     { preSavePendingAttachmentRefs: ownedPending },
   );
-  ownedPending[0]!.byteLength = MAX_PENDING_SESSION_ATTACHMENT_BYTES;
+  ownedPending[0]!.byteLength = MAX_PENDING_ATTACHMENT_BYTES;
   assert.equal((await ownedPendingSave).kind, "document");
 
-  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
-  assert.equal(MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT, 2);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = await saveSessionAttachment(
     undefined,
     `memory-audio-pending-exact-${Date.now()}`,
@@ -909,6 +910,123 @@ test("attachment ID collisions and orphan blobs are never overwritten", async ()
     pngBytes,
   );
   assert.deepEqual(await fs.readFile(orphanPath), Buffer.from(orphanBytes));
+});
+
+test("attachment writes reject a replaced Session directory before creating files", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-parent-"),
+  );
+  const external = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-external-"),
+  );
+  const sessionId = "session-parent-identity";
+  await saveSessionAttachment(directory, sessionId, {
+    fileName: "first.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  const sessionDirectory = path.join(
+    directory,
+    "live-smith-attachments",
+    sessionId,
+  );
+  const displacedDirectory = path.join(
+    directory,
+    "displaced-session-attachments",
+  );
+  let replaced = false;
+
+  await assert.rejects(
+    saveSessionAttachment(directory, sessionId, {
+      fileName: "second.jpg",
+      bytes: jpegBytes,
+    }, {
+      createId: () => "attachment-second",
+      now: () => {
+        fsSync.renameSync(sessionDirectory, displacedDirectory);
+        fsSync.symlinkSync(external, sessionDirectory, "dir");
+        replaced = true;
+        return new Date("2026-08-10T00:00:00.000Z");
+      },
+      preSavePendingAttachmentRefs: [],
+    }),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+  assert.equal(replaced, true);
+  assert.deepEqual(await fs.readdir(external), []);
+});
+
+test("attachment writes reject a replaced attachment root", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-root-parent-"),
+  );
+  const external = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-root-external-"),
+  );
+  const sessionId = "session-root-identity";
+  await saveSessionAttachment(directory, sessionId, {
+    fileName: "first.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  const root = path.join(directory, "live-smith-attachments");
+  const displacedRoot = path.join(directory, "displaced-attachment-root");
+
+  await assert.rejects(
+    saveSessionAttachment(directory, sessionId, {
+      fileName: "second.jpg",
+      bytes: jpegBytes,
+    }, {
+      createId: () => "attachment-second",
+      now: () => {
+        fsSync.renameSync(root, displacedRoot);
+        fsSync.symlinkSync(external, root, "dir");
+        return new Date("2026-08-10T00:00:00.000Z");
+      },
+      preSavePendingAttachmentRefs: [],
+    }),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+  assert.deepEqual(await fs.readdir(external), []);
+});
+
+test("attachment reads reject a replaced Session directory after handle access", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-read-parent-"),
+  );
+  const external = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-attachment-read-external-"),
+  );
+  const sessionId = "session-read-identity";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: "first.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  const sessionDirectory = path.join(
+    directory,
+    "live-smith-attachments",
+    sessionId,
+  );
+  const displacedDirectory = path.join(
+    directory,
+    "displaced-read-session-attachments",
+  );
+
+  await assert.rejects(
+    readSessionAttachmentBytes(directory, sessionId, stored.id, {
+      readFile: async (handle) => {
+        fsSync.renameSync(sessionDirectory, displacedDirectory);
+        fsSync.symlinkSync(external, sessionDirectory, "dir");
+        return handle.readFile();
+      },
+    }),
+    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+  assert.deepEqual(await fs.readdir(external), []);
 });
 
 test("attachment deletion is retryable after blob-first partial cleanup", async () => {

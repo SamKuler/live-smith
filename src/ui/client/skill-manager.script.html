@@ -6,8 +6,8 @@
         runCommand,
         showStatus,
       }) {
-      const maxActiveSkills = 4;
-      const maxSkillFileBytes = 64 * 1024;
+      const maxActiveSkills = __MAX_ACTIVE_SKILL_COUNT__;
+      const maxSkillFileBytes = __MAX_SKILL_FILE_BYTES__;
       let busy = false;
       let suggestions = [];
       let selectedSuggestion = -1;

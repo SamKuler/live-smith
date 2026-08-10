@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -190,22 +191,24 @@ test("a regular source replaced by a FIFO around open fails promptly", async () 
   await fs.writeFile(sourcePath, waveBytes({ dataBytes: 16 * 1024 * 1024 }));
   await execFileAsync("mkfifo", [fifoPath]);
 
-  const copying = copySource(fakeSample(sourcePath));
-  const replacement = new Promise<void>((resolve) => {
-    setImmediate(async () => {
-      try {
-        await fs.rename(sourcePath, path.join(directory, "original.wav"));
-        await fs.rename(fifoPath, sourcePath);
-      } finally {
-        resolve();
+  let cancellationChecks = 0;
+  const replacementSignal = {
+    get aborted() {
+      cancellationChecks += 1;
+      // The third check occurs after the initial lstat and immediately before open.
+      if (cancellationChecks === 3) {
+        fsSync.renameSync(sourcePath, path.join(directory, "original.wav"));
+        fsSync.renameSync(fifoPath, sourcePath);
       }
-    });
-  });
+      return false;
+    },
+  } as AbortSignal;
+  const copying = copySource(fakeSample(sourcePath), replacementSignal);
   await assert.rejects(
     settlesWithin(copying, 2_000, "FIFO replacement blocked the source copy."),
     redactedSourceError(directory),
   );
-  await replacement;
+  assert.ok(cancellationChecks >= 3);
 });
 
 test("selected source copying preserves cancellation and does not return partial bytes", async () => {

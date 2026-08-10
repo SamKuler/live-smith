@@ -481,15 +481,19 @@ export async function createChatBridge(
     let commandId: string | undefined;
     let attachmentSessionId: string | undefined;
     let sendPromptPersistence: PromptPersistence | undefined;
+    let attachmentBodyMayBeUnread = false;
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       requestPath = url.pathname;
+      attachmentBodyMayBeUnread = request.method === "POST" &&
+        (requestPath === "/attachments" || requestPath.startsWith("/attachments/"));
       const skillBodyMayBeUnread = request.method === "POST" &&
         requestPath === "/skills";
       if (request.method === "POST" && requestPath === "/send") {
         sendPromptPersistence = "not_persisted";
       }
       if (closing) {
+        if (attachmentBodyMayBeUnread) request.resume();
         if (skillBodyMayBeUnread) request.resume();
         sendJson(response, {
           error: "Live Smith bridge is closing.",
@@ -499,6 +503,7 @@ export async function createChatBridge(
       }
 
       if (url.searchParams.get("token") !== token) {
+        if (attachmentBodyMayBeUnread) request.resume();
         if (skillBodyMayBeUnread) request.resume();
         if (sendPromptPersistence) {
           sendJson(response, {
@@ -554,6 +559,7 @@ export async function createChatBridge(
 
       if (request.method === "POST" && url.pathname === "/attachments") {
         if (!options.preflightAttachmentUpload || !options.handleAttachmentUpload) {
+          request.resume();
           response.writeHead(404).end("Not found");
           return;
         }
@@ -564,6 +570,7 @@ export async function createChatBridge(
           activeSendsBySession.has(query.sessionId) ||
           activeAttachmentTerminals.has(query.sessionId)
         ) {
+          request.resume();
           sendJson(response, {
             error: activeSendsBySession.has(query.sessionId)
               ? "Stop this Session's active request before changing attachments."
@@ -575,17 +582,13 @@ export async function createChatBridge(
         activeAttachmentTerminals.set(query.sessionId, handlerTerminal);
         const controller = createHostAbortController();
         activeAttachmentControllers.set(query.sessionId, controller);
-        try {
-          await options.preflightAttachmentUpload(
-            { sessionId: query.sessionId },
-            controller.signal,
-          );
-          throwIfBridgeAborted(controller.signal);
-        } catch (error) {
-          request.resume();
-          throw error;
-        }
+        await options.preflightAttachmentUpload(
+          { sessionId: query.sessionId },
+          controller.signal,
+        );
+        throwIfBridgeAborted(controller.signal);
         const bytes = await readAttachmentRequestBody(request);
+        attachmentBodyMayBeUnread = false;
         throwIfBridgeAborted(controller.signal);
         const state = stateWithActivities(await options.handleAttachmentUpload({
           ...query,
@@ -904,8 +907,10 @@ export async function createChatBridge(
         return;
       }
 
+      if (attachmentBodyMayBeUnread) request.resume();
       response.writeHead(404).end("Not found");
     } catch (error) {
+      if (attachmentBodyMayBeUnread) request.resume();
       const reportedError = error instanceof ChatBridgeSendFailureError
         ? error.originalError
         : error;
@@ -1195,140 +1200,33 @@ export function readRawAttachmentBody(
   let declaredLength: number | undefined;
   try {
     assertAttachmentContentType(request);
-    declaredLength = attachmentContentLength(request);
+    declaredLength = boundedContentLength(
+      request,
+      "Attachment",
+      MAX_DOCUMENT_ATTACHMENT_BYTES,
+    );
     if (declaredLength === 0) {
       throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
     }
-    if (
-      declaredLength !== undefined &&
-      declaredLength > MAX_DOCUMENT_ATTACHMENT_BYTES
-    ) {
-      throw new ChatBridgePayloadTooLargeError(
-        `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
-      );
-    }
   } catch (error) {
     request.resume();
     throw error;
   }
 
-  let releasePermit: () => void;
-  try {
-    releasePermit = acquireAttachmentBodyReadPermit();
-  } catch (error) {
-    request.resume();
-    throw error;
-  }
-  const allocateBuffer = options.allocateBuffer ?? Buffer.allocUnsafe;
-  let body: Buffer | undefined;
-  try {
-    body = declaredLength === undefined
-      ? undefined
-      : allocateBuffer(declaredLength);
-  } catch (cause) {
-    releasePermit();
-    request.resume();
-    throw new Error("Attachment upload could not be buffered.", { cause });
-  }
-
-  return new Promise<Uint8Array>((resolve, reject) => {
-    let actualLength = 0;
-    let ended = false;
-    let settled = false;
-    const timeoutMs = options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs;
-    const timeout = setTimeout(() => {
-      fail(new ChatBridgeRequestTimeoutError(
-        "Attachment upload timed out before the complete body was received.",
-      ), true);
-    }, timeoutMs);
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      request.off("data", onData);
-      request.off("end", onEnd);
-      request.off("aborted", onAborted);
-      request.off("close", onClose);
-      request.off("error", onError);
-      releasePermit();
-    };
-    const fail = (error: Error, drain = false) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (drain) request.resume();
-      reject(error);
-    };
-    const onData = (chunk: Buffer | Uint8Array | string) => {
-      const buffer = typeof chunk === "string"
-        ? Buffer.from(chunk)
-        : Buffer.isBuffer(chunk)
-          ? chunk
-          : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-      const nextLength = actualLength + buffer.byteLength;
-      if (nextLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
-        fail(new ChatBridgePayloadTooLargeError(
-          `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
-        ), true);
-        return;
-      }
-      if (declaredLength !== undefined && nextLength > declaredLength) {
-        fail(new ChatBridgeRequestValidationError(
-          "Attachment Content-Length does not match the received body.",
-        ), true);
-        return;
-      }
-      if (body === undefined || nextLength > body.byteLength) {
-        let nextCapacity = body?.byteLength ?? initialUnknownAttachmentBodyCapacity;
-        while (nextCapacity < nextLength) {
-          nextCapacity = Math.min(
-            MAX_DOCUMENT_ATTACHMENT_BYTES,
-            nextCapacity * 2,
-          );
-        }
-        try {
-          const expanded = allocateBuffer(nextCapacity);
-          body?.copy(expanded, 0, 0, actualLength);
-          body = expanded;
-        } catch (cause) {
-          fail(new Error("Attachment upload could not be buffered.", { cause }), true);
-          return;
-        }
-      }
-      buffer.copy(body, actualLength);
-      actualLength = nextLength;
-    };
-    const onEnd = () => {
-      ended = true;
-      if (settled) return;
-      if (actualLength === 0) {
-        fail(new ChatBridgeRequestValidationError("Attachment body must not be empty."));
-        return;
-      }
-      if (declaredLength !== undefined && declaredLength !== actualLength) {
-        fail(new ChatBridgeRequestValidationError(
-          "Attachment Content-Length does not match the received body.",
-        ));
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolve(body!.subarray(0, actualLength));
-    };
-    const onAborted = () => fail(new ChatBridgeRequestValidationError(
-      "Attachment upload ended before the complete body was received.",
-    ));
-    const onClose = () => {
-      if (!ended) onAborted();
-    };
-    const onError = () => fail(new ChatBridgeRequestValidationError(
-      "Attachment upload could not be read.",
-    ));
-
-    request.on("data", onData);
-    request.once("end", onEnd);
-    request.once("aborted", onAborted);
-    request.once("close", onClose);
-    request.once("error", onError);
+  return readBoundedRawBody(request, declaredLength, {
+    maximumBytes: MAX_DOCUMENT_ATTACHMENT_BYTES,
+    initialCapacity: initialUnknownAttachmentBodyCapacity,
+    timeoutMs: options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs,
+    allocateBuffer: options.allocateBuffer ?? Buffer.allocUnsafe,
+    acquirePermit: acquireAttachmentBodyReadPermit,
+    emptyMessage: "Attachment body must not be empty.",
+    tooLargeMessage:
+      `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+    mismatchMessage: "Attachment Content-Length does not match the received body.",
+    timeoutMessage: "Attachment upload timed out before the complete body was received.",
+    incompleteMessage: "Attachment upload ended before the complete body was received.",
+    readErrorMessage: "Attachment upload could not be read.",
+    bufferErrorMessage: "Attachment upload could not be buffered.",
   });
 }
 
@@ -1713,14 +1611,6 @@ function assertSkillContentType(request: IncomingMessage): void {
       "Skill uploads require Content-Type text/markdown; charset=utf-8.",
     );
   }
-}
-
-function attachmentContentLength(request: IncomingMessage): number | undefined {
-  return boundedContentLength(
-    request,
-    "Attachment",
-    MAX_DOCUMENT_ATTACHMENT_BYTES,
-  );
 }
 
 function boundedContentLength(

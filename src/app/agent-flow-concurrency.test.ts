@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { connect } from "node:net";
+import { env, execPath } from "node:process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { ClipSlot, MidiTrack, Sample } from "@ableton-extensions/sdk";
 
 import {
@@ -15,10 +18,12 @@ import {
 import type { DiscoveredModelInfo } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
 import {
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
+} from "../attachments/contracts.js";
+import {
   listSessionAttachments,
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
-  MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
   saveSessionAttachment,
 } from "../storage/attachments.js";
 import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
@@ -414,6 +419,372 @@ test("Skills mutate atomically and reject activation during another dialog's act
     releaseModel.resolve();
     await fixture.close();
   }
+});
+
+test("state reports active Skills from the same Session snapshot", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-state-skill-snapshot-"),
+  );
+  const staleSessionRead = deferred<void>();
+  const releaseStaleSessionRead = deferred<void>();
+  let pauseNextSessionRead = false;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        const sessionId = initial.activeSessionId;
+        const markdown = NodeBuffer.from(
+          "---\nname: mix-review\ndescription: Review the mix\n---\nKeep the low end clear.\n",
+        );
+        const install = await fetch(`${endpoint("/skills")}&replace=false`, {
+          method: "POST",
+          headers: { "Content-Type": "text/markdown; charset=utf-8" },
+          body: attachmentRequestBody(markdown),
+        });
+        assert.equal(install.status, 201);
+        const activation = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "set_session_skills",
+            sessionId,
+            skillIds: ["mix-review"],
+          }),
+        });
+        assert.equal(activation.status, 200);
+
+        pauseNextSessionRead = true;
+        const stateRequest = fetch(endpoint("/state"));
+        await staleSessionRead.promise;
+        const clearing = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "set_session_skills",
+            sessionId,
+            skillIds: [],
+          }),
+        });
+        assert.equal(clearing.status, 200);
+        releaseStaleSessionRead.resolve();
+
+        const stateResponse = await stateRequest;
+        assert.equal(stateResponse.status, 200);
+        const state = await stateResponse.json() as ChatDialogState;
+        const activeSession = state.sessions.find(
+          (session) => session.id === state.activeSessionId,
+        );
+        assert.ok(activeSession);
+        assert.deepEqual(state.activeSkillIds, activeSession.activeSkillIds ?? []);
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  }, {
+    renderHtml: () => "<html></html>",
+    getOrCreateDefaultSession: async (...args) => {
+      const session = await getOrCreateDefaultSession(...args);
+      if (pauseNextSessionRead) {
+        pauseNextSessionRead = false;
+        staleSessionRead.resolve();
+        await releaseStaleSessionRead.promise;
+      }
+      return session;
+    },
+  });
+});
+
+test("state revalidates events and pending attachments as one generation", async () => {
+  const stateReadStarted = deferred<void>();
+  const releaseStateRead = deferred<void>();
+  let pauseNextStateRead = false;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-state-session-snapshot-",
+    firstDependencies: {
+      loadSessionEvents: async (...args) => {
+        const events = await loadSessionEvents(...args);
+        if (pauseNextStateRead) {
+          pauseNextStateRead = false;
+          stateReadStarted.resolve();
+          await releaseStateRead.promise;
+        }
+        return events;
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Done", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const imageProfile = profile({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "key",
+      model: "model-a",
+    });
+    imageProfile.advanced.capabilityOverrides = { inputs: { image: true } };
+    await saveSavedProfile(fixture.directory, imageProfile);
+    const attachment = await saveSessionAttachment(
+      fixture.directory,
+      fixture.sessionId,
+      {
+        fileName: "snapshot.png",
+        bytes: sizedAttachmentPng(24),
+      },
+      { preSavePendingAttachmentRefs: [] },
+    );
+    pauseNextStateRead = true;
+    const stateRequest = fetch(fixture.first.endpoint("/state"));
+    await resolvesWithin(stateReadStarted.promise, "active Session state read");
+
+    const send = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Consume the pending attachment",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    const sendResponse = await resolvesWithin(send, "concurrent Session send");
+    const sendBody = await sendResponse.clone().text();
+    assert.equal(sendResponse.status, 200, sendBody);
+
+    releaseStateRead.resolve();
+    const stateResponse = await resolvesWithin(stateRequest, "state snapshot");
+    assert.equal(stateResponse.status, 200);
+    const state = await stateResponse.json() as ChatDialogState;
+    assert.deepEqual(state.pendingAttachments, []);
+    assert.ok(
+      state.events.some((event) =>
+        event.kind === "user" &&
+        event.content === "Consume the pending attachment" &&
+        event.attachments?.some((ref) => ref.id === attachment.id)
+      ),
+    );
+  } finally {
+    releaseStateRead.resolve();
+    await fixture.close();
+  }
+});
+
+test("a held Session state build never acquires the dialog's different active Session", async () => {
+  if (env.LIVE_SMITH_CROSS_SESSION_STATE_FIXTURE !== "1") {
+    const testFile = fileURLToPath(import.meta.url);
+    const result = await runIsolatedProcess(
+      [
+        "--import",
+        "tsx",
+        "--test",
+        "--test-name-pattern=held Session state build never acquires",
+        testFile,
+      ],
+      {
+        cwd: path.dirname(path.dirname(path.dirname(testFile))),
+        timeoutMs: 4_000,
+        environment: { LIVE_SMITH_CROSS_SESSION_STATE_FIXTURE: "1" },
+      },
+    );
+    assert.equal(
+      result.timedOut,
+      false,
+      `isolated cross-Session state scenario deadlocked\n${result.stderr}`,
+    );
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(
+      result.stdout,
+      /✔ a held Session state build never acquires/u,
+      result.stdout,
+    );
+    return;
+  }
+
+  const firstModelStarted = deferred<void>();
+  const releaseFirstModel = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-held-state-no-cross-lock-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        firstModelStarted.resolve();
+        await releaseFirstModel.promise;
+        return { content: "First done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Second done", toolCalls: [] }),
+    },
+  });
+
+  let firstSend: Promise<Response> | undefined;
+  let secondSend: Promise<Response> | undefined;
+  try {
+    const created = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    assert.equal(created.status, 200);
+    const sessionB = (await created.json() as ChatDialogState).activeSessionId;
+    const selectedA = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "select_session",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(selectedA.status, 200);
+
+    firstSend = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Hold Session A",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(firstModelStarted.promise, "Session A model request");
+    const selectedB = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "select_session", sessionId: sessionB }),
+    });
+    assert.equal(selectedB.status, 200);
+
+    secondSend = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Finish Session B independently",
+        sessionId: sessionB,
+      }),
+    });
+    const secondResponse = await resolvesWithin(secondSend, "Session B send");
+    assert.equal(secondResponse.status, 200);
+
+    releaseFirstModel.resolve();
+    assert.equal((await resolvesWithin(firstSend, "Session A send")).status, 200);
+  } finally {
+    releaseFirstModel.resolve();
+    await Promise.allSettled([
+      ...(firstSend ? [firstSend] : []),
+      ...(secondSend ? [secondSend] : []),
+    ]);
+    await fixture.close();
+  }
+});
+
+test("pending attachment cleanup cannot re-enter a held Session lease", {
+  skip: os.platform() === "win32",
+}, async () => {
+  if (env.LIVE_SMITH_PENDING_CLEANUP_FIXTURE !== "1") {
+    const testFile = fileURLToPath(import.meta.url);
+    const result = await runIsolatedProcess(
+      [
+        "--import",
+        "tsx",
+        "--test",
+        "--test-name-pattern=pending attachment cleanup cannot re-enter",
+        testFile,
+      ],
+      {
+        cwd: path.dirname(path.dirname(path.dirname(testFile))),
+        timeoutMs: 4_000,
+        environment: { LIVE_SMITH_PENDING_CLEANUP_FIXTURE: "1" },
+      },
+    );
+    assert.equal(
+      result.timedOut,
+      false,
+      `isolated pending-cleanup scenario deadlocked\n${result.stderr}`,
+    );
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(
+      result.stdout,
+      /✔ pending attachment cleanup cannot re-enter/u,
+      result.stdout,
+    );
+    return;
+  }
+
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-pending-cleanup-lease-"),
+  );
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initial = await (
+          await fetch(endpoint("/state"))
+        ).json() as ChatDialogState;
+        const sessionId = initial.activeSessionId;
+        await saveSessionAttachment(
+          directory,
+          sessionId,
+          {
+            fileName: "reference.png",
+            bytes: NodeBuffer.from([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+              0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+              0, 0, 0, 1, 0, 0, 0, 1,
+            ]),
+          },
+          { preSavePendingAttachmentRefs: [] },
+        );
+        const attachmentRoot = path.join(directory, "live-smith-attachments");
+        await fs.chmod(attachmentRoot, 0o500);
+        try {
+          const deletion = await fetch(endpoint("/command"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: "delete_session", sessionId }),
+          });
+          assert.equal(deletion.status, 500);
+        } finally {
+          await fs.chmod(attachmentRoot, 0o700);
+        }
+
+        const send = await fetch(endpoint("/send"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: "Do not hang", sessionId }),
+        });
+        assert.equal(send.status, 500);
+        const reconciled = await fetch(endpoint("/state"));
+        assert.equal(reconciled.status, 200);
+        assert.deepEqual(
+          await listSessionAttachments(directory, sessionId),
+          [],
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(
+    context as never,
+    {
+      defaultPrompt: "Test prompt",
+      summary: "Track: Lead",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Lead" },
+    },
+    { renderHtml: () => "<html></html>" },
+  );
 });
 
 test("the HTTP send boundary validates whitespace without trimming the persisted prompt", async () => {
@@ -1723,8 +2094,8 @@ test("attachment routes enforce Session ownership, pending state, and immutable 
 
 test("attachment upload accepts the exact pending image subtotal and count limit then rejects one more", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-quota-"));
-  const perAttachmentBytes = MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES /
-    MAX_PENDING_SESSION_ATTACHMENT_COUNT;
+  const perAttachmentBytes = MAX_PENDING_IMAGE_ATTACHMENT_BYTES /
+    MAX_PENDING_ATTACHMENT_COUNT;
   assert.equal(Number.isInteger(perAttachmentBytes), true);
   const context = {
     application: { song: { handle: { id: 1n } } },
@@ -1741,7 +2112,7 @@ test("attachment upload accepts the exact pending image subtotal and count limit
           `&sessionId=${encodeURIComponent(initial.activeSessionId)}` +
           `&fileName=${encodeURIComponent(fileName)}`;
 
-        for (let index = 0; index < MAX_PENDING_SESSION_ATTACHMENT_COUNT; index += 1) {
+        for (let index = 0; index < MAX_PENDING_ATTACHMENT_COUNT; index += 1) {
           const response = await fetch(endpoint(`boundary-${index}.png`), {
             method: "POST",
             headers: { "Content-Type": "application/octet-stream" },
@@ -1753,19 +2124,19 @@ test("attachment upload accepts the exact pending image subtotal and count limit
         const atBoundary = await (await fetch(
           `${chatUrl.origin}/state?token=${encodeURIComponent(token)}`,
         )).json() as ChatDialogState;
-        assert.equal(atBoundary.pendingAttachments.length, MAX_PENDING_SESSION_ATTACHMENT_COUNT);
+        assert.equal(atBoundary.pendingAttachments.length, MAX_PENDING_ATTACHMENT_COUNT);
         assert.equal(
           atBoundary.pendingAttachments.reduce(
             (total, attachment) => total + attachment.byteLength,
             0,
           ),
-          MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES,
+          MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
         );
         assert.equal(
           atBoundary.pendingAttachments.reduce(
             (total, attachment) => total + attachment.byteLength,
             0,
-          ) < MAX_PENDING_SESSION_ATTACHMENT_BYTES,
+          ) < MAX_PENDING_ATTACHMENT_BYTES,
           true,
         );
 
@@ -1777,7 +2148,7 @@ test("attachment upload accepts the exact pending image subtotal and count limit
         assert.equal(over.status, 413);
         assert.equal(
           (await listSessionAttachments(directory, initial.activeSessionId)).length,
-          MAX_PENDING_SESSION_ATTACHMENT_COUNT,
+          MAX_PENDING_ATTACHMENT_COUNT,
         );
       },
     },
@@ -2346,7 +2717,7 @@ test("a state snapshot retries when Session changes while its events are loading
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-cas-"));
   const eventsLoadStarted = deferred<void>();
   const releaseEventsLoad = deferred<void>();
-  let eventsLoadCount = 0;
+  let pauseNextEventsLoad = false;
   const context = {
     application: { song: { handle: { id: 1n } } },
     environment: { storageDirectory: directory },
@@ -2363,6 +2734,7 @@ test("a state snapshot retries when Session changes while its events are loading
           scope: { kind: "track", identity: "track-2", label: "Track B" },
         });
 
+        pauseNextEventsLoad = true;
         const lateStatePromise = fetch(endpoint("/state"));
         await eventsLoadStarted.promise;
         const selected = await fetch(endpoint("/command"), {
@@ -2390,12 +2762,13 @@ test("a state snapshot retries when Session changes while its events are loading
     {
       renderHtml: () => "<html></html>",
       loadSessionEvents: async (...args) => {
-        eventsLoadCount += 1;
-        if (eventsLoadCount === 2) {
+        const events = await loadSessionEvents(...args);
+        if (pauseNextEventsLoad) {
+          pauseNextEventsLoad = false;
           eventsLoadStarted.resolve();
           await releaseEventsLoad.promise;
         }
-        return loadSessionEvents(...args);
+        return events;
       },
     },
   );
@@ -2812,6 +3185,52 @@ async function openCrossBridgeFixture(options: {
     ]);
     throw error;
   }
+}
+
+async function runIsolatedProcess(
+  args: string[],
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    environment?: Record<string, string>;
+  },
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}> {
+  return new Promise((resolve, reject) => {
+    const { NODE_TEST_CONTEXT: _testContext, ...childEnvironment } = env;
+    const child = spawn(execPath, args, {
+      cwd: options.cwd,
+      env: { ...childEnvironment, ...options.environment },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, options.timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
 }
 
 async function waitForSessionActivity(

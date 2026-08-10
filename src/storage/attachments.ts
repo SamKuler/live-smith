@@ -13,15 +13,8 @@ import {
   isSafeAttachmentFileName,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
   MAX_AUDIO_ATTACHMENT_BYTES,
-  MAX_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_BYTES,
-  MAX_PENDING_ATTACHMENT_COUNT,
-  MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
-  MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
-  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
-  MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
 import {
   inspectAudioAttachment,
@@ -108,6 +101,18 @@ interface MemoryAttachment {
   bytes: Uint8Array;
 }
 
+interface AttachmentDirectoryIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface AttachmentDirectoryBinding {
+  root: string;
+  rootIdentity: AttachmentDirectoryIdentity;
+  directory: string;
+  directoryIdentity: AttachmentDirectoryIdentity;
+}
+
 export interface AttachmentSaveOptions {
   /** Test seam for proving collision handling; production always uses createStorageId. */
   createId?: () => string;
@@ -127,23 +132,6 @@ interface AttachmentReadOptions {
   /** Test seam for proving stat rejection happens before blob content is read. */
   readFile?: (handle: fs.FileHandle) => Promise<Uint8Array>;
 }
-
-export {
-  MAX_AUDIO_ATTACHMENT_BYTES,
-  MAX_AUDIO_DURATION_SECONDS,
-  MAX_DOCUMENT_ATTACHMENT_BYTES,
-  MAX_IMAGE_ATTACHMENT_BYTES,
-};
-export const MAX_PENDING_SESSION_ATTACHMENT_COUNT = MAX_PENDING_ATTACHMENT_COUNT;
-export const MAX_PENDING_SESSION_ATTACHMENT_BYTES = MAX_PENDING_ATTACHMENT_BYTES;
-export const MAX_PENDING_SESSION_AUDIO_ATTACHMENT_BYTES =
-  MAX_PENDING_AUDIO_ATTACHMENT_BYTES;
-export const MAX_PENDING_SESSION_AUDIO_ATTACHMENT_COUNT =
-  MAX_PENDING_AUDIO_ATTACHMENT_COUNT;
-export const MAX_PENDING_SESSION_IMAGE_ATTACHMENT_BYTES =
-  MAX_PENDING_IMAGE_ATTACHMENT_BYTES;
-export const MAX_PENDING_SESSION_DOCUMENT_ATTACHMENT_BYTES =
-  MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES;
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
@@ -275,8 +263,12 @@ export async function saveSessionAttachment(
 
       const directory = attachmentSessionDirectory(storageDirectory, sessionId);
       await prepareAttachmentSessionDirectory(storageDirectory, sessionId, true);
+      const binding = await captureAttachmentDirectoryBinding(
+        storageDirectory,
+        sessionId,
+      );
       const ordinal = nextAttachmentOrdinal(
-        await readAllStoredMetadata(directory, sessionId),
+        await readAllStoredMetadataBound(binding, sessionId),
       );
       for (let attempt = 0; attempt < 32; attempt += 1) {
         const id = nextAttachmentId(options);
@@ -293,16 +285,20 @@ export async function saveSessionAttachment(
         const blobTarget = attachmentBlobPath(directory, id);
         const metadataTarget = attachmentMetadataPath(directory, id);
         try {
-          await writeBytesAtomicallyCreateOnly(blobTarget, bytes);
+          await writeAttachmentBytesCreateOnlyBound(binding, blobTarget, bytes);
         } catch (error) {
           if (isAlreadyExistsError(error)) continue;
           throw error;
         }
         try {
-          await writeJsonAtomicallyCreateOnly(metadataTarget, metadata);
+          await writeAttachmentJsonCreateOnlyBound(
+            binding,
+            metadataTarget,
+            metadata,
+          );
         } catch (error) {
           if (!isStorageCommitOutcomeUnknownError(error)) {
-            await removeFileDurably(blobTarget);
+            await removeAttachmentFileBound(binding, blobTarget);
           }
           if (isAlreadyExistsError(error)) continue;
           throw error;
@@ -325,11 +321,14 @@ export async function listSessionAttachments(
   }
 
   return withAttachmentStorageBoundary(async () => {
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
     if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
       return [];
     }
-    return sortMetadata(await readAllStoredMetadata(directory, sessionId));
+    const binding = await captureAttachmentDirectoryBinding(
+      storageDirectory,
+      sessionId,
+    );
+    return sortMetadata(await readAllStoredMetadataBound(binding, sessionId));
   });
 }
 
@@ -354,12 +353,15 @@ export async function listPendingSessionAttachments(
   }
 
   return withAttachmentStorageBoundary(async () => {
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
     if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
       return [];
     }
+    const binding = await captureAttachmentDirectoryBinding(
+      storageDirectory,
+      sessionId,
+    );
     return sortMetadata(
-      await readAllStoredMetadata(directory, sessionId, consumedIds),
+      await readAllStoredMetadataBound(binding, sessionId, consumedIds),
     );
   });
 }
@@ -381,13 +383,20 @@ export async function readSessionAttachmentBytes(
   }
 
   return withAttachmentStorageBoundary(async () => {
-    const directory = attachmentSessionDirectory(storageDirectory, sessionId);
     if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
       throw new AttachmentNotFoundError();
     }
-    const metadata = await readStoredMetadata(directory, sessionId, attachmentId);
+    const binding = await captureAttachmentDirectoryBinding(
+      storageDirectory,
+      sessionId,
+    );
+    const metadata = await readStoredMetadataBound(
+      binding,
+      sessionId,
+      attachmentId,
+    );
     assertExpectedAttachmentRef(metadata, options.expectedRef);
-    return readAndVerifyBlob(directory, metadata, options);
+    return readAndVerifyBlobBound(binding, metadata, options);
   }, options.signal);
 }
 
@@ -413,9 +422,19 @@ export async function deleteSessionAttachment(
       if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) {
         throw new AttachmentNotFoundError();
       }
-      await readStoredMetadata(directory, sessionId, attachmentId);
-      await removeFileDurably(attachmentBlobPath(directory, attachmentId));
-      await removeFileDurably(attachmentMetadataPath(directory, attachmentId));
+      const binding = await captureAttachmentDirectoryBinding(
+        storageDirectory,
+        sessionId,
+      );
+      await readStoredMetadataBound(binding, sessionId, attachmentId);
+      await removeAttachmentFileBound(
+        binding,
+        attachmentBlobPath(directory, attachmentId),
+      );
+      await removeAttachmentFileBound(
+        binding,
+        attachmentMetadataPath(directory, attachmentId),
+      );
     })
   );
 }
@@ -433,9 +452,13 @@ export async function deleteSessionAttachments(
       }
 
       const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-      await assertAttachmentRootIsSafe(storageDirectory);
-      await assertExistingDirectoryIsSafe(directory);
-      await removeDirectoryDurably(directory);
+      if (!await assertAttachmentRootIsSafe(storageDirectory)) return;
+      if (!await assertExistingDirectoryIsSafe(directory)) return;
+      const binding = await captureAttachmentDirectoryBinding(
+        storageDirectory,
+        sessionId,
+      );
+      await removeAttachmentDirectoryBound(binding);
     })
   );
 }
@@ -447,6 +470,7 @@ export async function listSessionAttachmentDirectoryIds(
   return withAttachmentStorageBoundary(async () => {
     const root = path.join(storageDirectory, attachmentsDirectoryName);
     if (!await assertExistingDirectoryIsSafe(root)) return [];
+    const rootIdentity = await captureAttachmentDirectoryIdentity(root);
     const entries = await fs.readdir(root, { withFileTypes: true });
     const ids: string[] = [];
     for (const entry of entries) {
@@ -464,6 +488,7 @@ export async function listSessionAttachmentDirectoryIds(
       }
       ids.push(decoded);
     }
+    await assertAttachmentDirectoryIdentity(root, rootIdentity);
     return ids.sort();
   });
 }
@@ -553,6 +578,108 @@ function assertPendingAttachmentQuota(
     candidate,
   ])) {
     throw new AttachmentPendingQuotaError();
+  }
+}
+
+async function readAllStoredMetadataBound(
+  binding: AttachmentDirectoryBinding,
+  sessionId: string,
+  skippedIds: ReadonlySet<string> = new Set(),
+): Promise<StoredSessionAttachment[]> {
+  return runWithAttachmentDirectoryBinding(
+    binding,
+    () => readAllStoredMetadata(binding.directory, sessionId, skippedIds),
+  );
+}
+
+async function readStoredMetadataBound(
+  binding: AttachmentDirectoryBinding,
+  sessionId: string,
+  attachmentId: string,
+): Promise<StoredSessionAttachment> {
+  return runWithAttachmentDirectoryBinding(
+    binding,
+    () => readStoredMetadata(binding.directory, sessionId, attachmentId),
+  );
+}
+
+async function readAndVerifyBlobBound(
+  binding: AttachmentDirectoryBinding,
+  metadata: StoredSessionAttachment,
+  options: AttachmentReadOptions,
+): Promise<Uint8Array> {
+  return runWithAttachmentDirectoryBinding(
+    binding,
+    () => readAndVerifyBlob(binding.directory, metadata, options),
+  );
+}
+
+async function writeAttachmentBytesCreateOnlyBound(
+  binding: AttachmentDirectoryBinding,
+  target: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  await runWithAttachmentDirectoryBinding(
+    binding,
+    () => writeBytesAtomicallyCreateOnly(target, bytes),
+  );
+}
+
+async function writeAttachmentJsonCreateOnlyBound(
+  binding: AttachmentDirectoryBinding,
+  target: string,
+  metadata: StoredSessionAttachment,
+): Promise<void> {
+  await runWithAttachmentDirectoryBinding(
+    binding,
+    () => writeJsonAtomicallyCreateOnly(target, metadata),
+  );
+}
+
+async function removeAttachmentFileBound(
+  binding: AttachmentDirectoryBinding,
+  target: string,
+): Promise<void> {
+  await runWithAttachmentDirectoryBinding(
+    binding,
+    () => removeFileDurably(target),
+  );
+}
+
+async function removeAttachmentDirectoryBound(
+  binding: AttachmentDirectoryBinding,
+): Promise<void> {
+  await assertAttachmentDirectoryBinding(binding);
+  try {
+    await removeDirectoryDurably(binding.directory);
+  } catch (error) {
+    await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
+    if (!isStorageCommitOutcomeUnknownError(error)) {
+      await assertAttachmentDirectoryIdentity(
+        binding.directory,
+        binding.directoryIdentity,
+      );
+    }
+    throw error;
+  }
+  await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
+  if (await assertExistingDirectoryIsSafe(binding.directory)) {
+    throw new AttachmentStorageCorruptionError();
+  }
+}
+
+async function runWithAttachmentDirectoryBinding<T>(
+  binding: AttachmentDirectoryBinding,
+  operation: () => Promise<T>,
+): Promise<T> {
+  await assertAttachmentDirectoryBinding(binding);
+  try {
+    const result = await operation();
+    await assertAttachmentDirectoryBinding(binding);
+    return result;
+  } catch (error) {
+    await assertAttachmentDirectoryBinding(binding);
+    throw error;
   }
 }
 
@@ -1191,10 +1318,71 @@ async function prepareAttachmentSessionDirectory(
 
 async function assertAttachmentRootIsSafe(
   storageDirectory: string,
-): Promise<void> {
-  await assertExistingDirectoryIsSafe(
+): Promise<boolean> {
+  return assertExistingDirectoryIsSafe(
     path.join(storageDirectory, attachmentsDirectoryName),
   );
+}
+
+async function captureAttachmentDirectoryBinding(
+  storageDirectory: string,
+  sessionId: string,
+): Promise<AttachmentDirectoryBinding> {
+  const root = path.join(storageDirectory, attachmentsDirectoryName);
+  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
+  const binding = {
+    root,
+    rootIdentity: await captureAttachmentDirectoryIdentity(root),
+    directory,
+    directoryIdentity: await captureAttachmentDirectoryIdentity(directory),
+  };
+  await assertAttachmentDirectoryBinding(binding);
+  return binding;
+}
+
+async function captureAttachmentDirectoryIdentity(
+  directory: string,
+): Promise<AttachmentDirectoryIdentity> {
+  try {
+    const info = await fs.lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new AttachmentStorageCorruptionError();
+    }
+    return { dev: info.dev, ino: info.ino };
+  } catch (error) {
+    if (error instanceof AttachmentStorageCorruptionError) throw error;
+    throw new AttachmentStorageCorruptionError(error);
+  }
+}
+
+async function assertAttachmentDirectoryBinding(
+  binding: AttachmentDirectoryBinding,
+): Promise<void> {
+  await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
+  await assertAttachmentDirectoryIdentity(
+    binding.directory,
+    binding.directoryIdentity,
+  );
+}
+
+async function assertAttachmentDirectoryIdentity(
+  directory: string,
+  expected: AttachmentDirectoryIdentity,
+): Promise<void> {
+  try {
+    const actual = await fs.lstat(directory);
+    if (
+      !actual.isDirectory() ||
+      actual.isSymbolicLink() ||
+      actual.dev !== expected.dev ||
+      actual.ino !== expected.ino
+    ) {
+      throw new AttachmentStorageCorruptionError();
+    }
+  } catch (error) {
+    if (error instanceof AttachmentStorageCorruptionError) throw error;
+    throw new AttachmentStorageCorruptionError(error);
+  }
 }
 
 async function assertExistingDirectoryIsSafe(target: string): Promise<boolean> {

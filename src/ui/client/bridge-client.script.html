@@ -174,17 +174,39 @@
           );
           let outcome = await Promise.race([httpOutcome, attempt.sseOutcome]);
           if (
+            outcome.type === "state" &&
+            !isAuthoritativeCommandState(outcome.state)
+          ) {
+            outcome = await recoverLostCommandResponse(
+              attempt,
+              kind,
+              new Error(
+                "The command response ended before its authoritative state was available.",
+              ),
+              outcome.source === "http",
+            );
+          }
+          if (
             outcome.type === "error" &&
             outcome.source === "http" &&
             !outcome.error.httpStatus &&
             outcome.error.commandOutcome !== "unknown"
           ) {
             const networkError = outcome.error;
-            showStatus("Lost the command response. Waiting for authoritative bridge state…", true);
-            outcome = await waitForCommandSseOutcome(attempt);
-            if (outcome.type === "reconcile") {
-              outcome = await reconcileInterruptedCommand(networkError, kind);
-            }
+            outcome = await recoverLostCommandResponse(
+              attempt,
+              kind,
+              networkError,
+              true,
+            );
+          }
+          if (
+            outcome.type === "error" &&
+            outcome.error.commandOutcome === "unknown" &&
+            outcome.error.reconciliationRequired !== true &&
+            !isAuthoritativeCommandState(outcome.error.state)
+          ) {
+            outcome = await reconcileInterruptedCommand(outcome.error, kind);
           }
           if (activeCommandAttempt !== attempt) return false;
           if (outcome.type === "state") {
@@ -195,7 +217,7 @@
             commandSucceeded = true;
           } else if (
             outcome.error.commandOutcome === "unknown" &&
-            outcome.error.state
+            isAuthoritativeCommandState(outcome.error.state)
           ) {
             applyCommandState(kind, outcome.error.state);
             commandWarning = outcome.error.message || String(outcome.error);
@@ -244,6 +266,30 @@
         } finally {
           window.clearTimeout(timeoutId);
         }
+      }
+
+      async function recoverLostCommandResponse(
+        attempt,
+        kind,
+        responseError,
+        waitForSse,
+      ) {
+        showStatus(
+          "Lost the command response. Waiting for authoritative bridge state…",
+          true,
+        );
+        let outcome = waitForSse
+          ? await waitForCommandSseOutcome(attempt)
+          : { type: "reconcile" };
+        if (
+          outcome.type === "state" &&
+          !isAuthoritativeCommandState(outcome.state)
+        ) {
+          outcome = { type: "reconcile" };
+        }
+        return outcome.type === "reconcile"
+          ? reconcileInterruptedCommand(responseError, kind)
+          : outcome;
       }
 
       async function reconcileInterruptedCommand(originalError, kind) {
@@ -607,7 +653,15 @@
           headers: { "Content-Type": "application/json", ...(extraHeaders || {}) },
           body: JSON.stringify(payload),
         });
-        const result = await response.json().catch(() => ({}));
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          throw new Error("The bridge response ended before JSON was complete.");
+        }
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          throw new Error("The bridge response did not contain a JSON object.");
+        }
         if (!response.ok) {
           const error = new Error(result.error || `${response.status} ${response.statusText}`);
           error.httpStatus = response.status;
@@ -639,28 +693,21 @@
         try {
           response = await fetch(bridgeUrl(path), init);
         } catch (error) {
-          let reconciled = false;
-          try {
-            reconciled = await refreshState(undefined, "attachment_reconcile") === true;
-          } catch {
-            reconciled = false;
-          }
-          const message = error.message || String(error);
-          if (!reconciled) {
-            commandReconciliationBlocked = true;
-            const blockedError = new Error(
-              `${message} Current attachment state could not be reconciled. Close and reopen Live Smith before continuing.`,
-            );
-            blockedError.attachmentFailureKind = "blocked";
-            throw blockedError;
-          }
-          const unknownError = new Error(
-            `${message} Authoritative attachment state was refreshed; verify the pending files before continuing.`,
-          );
-          unknownError.attachmentFailureKind = "unknown";
-          throw unknownError;
+          return reconcileAttachmentResponseLoss(error);
         }
-        const result = await response.json().catch(() => ({}));
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          return reconcileAttachmentResponseLoss(
+            new Error("The attachment response ended before its state was available."),
+          );
+        }
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          return reconcileAttachmentResponseLoss(
+            new Error("The attachment response did not contain state."),
+          );
+        }
         if (!response.ok) {
           const error = new Error(
             result.error || `${response.status} ${response.statusText}`,
@@ -668,7 +715,7 @@
           error.httpStatus = response.status;
           if (result.commandOutcome === "unknown") {
             error.attachmentFailureKind = "unknown";
-            if (result.state && typeof result.state === "object") {
+            if (isAuthoritativeCommandState(result.state)) {
               applyCommandState("attachment_reconcile", result.state);
             } else {
               commandReconciliationBlocked = true;
@@ -685,8 +732,36 @@
           }
           throw error;
         }
+        if (!isAuthoritativeCommandState(result)) {
+          return reconcileAttachmentResponseLoss(
+            new Error("The attachment response did not contain authoritative state."),
+          );
+        }
         applyCommandState("attachment", result);
         return result;
+      }
+
+      async function reconcileAttachmentResponseLoss(error) {
+        let reconciled = false;
+        try {
+          reconciled = await refreshState(undefined, "attachment_reconcile") === true;
+        } catch {
+          reconciled = false;
+        }
+        const message = error.message || String(error);
+        if (!reconciled) {
+          commandReconciliationBlocked = true;
+          const blockedError = new Error(
+            `${message} Current attachment state could not be reconciled. Close and reopen Live Smith before continuing.`,
+          );
+          blockedError.attachmentFailureKind = "blocked";
+          throw blockedError;
+        }
+        const unknownError = new Error(
+          `${message} Authoritative attachment state was refreshed; verify the pending files before continuing.`,
+        );
+        unknownError.attachmentFailureKind = "unknown";
+        throw unknownError;
       }
 
       function uploadAttachments(sessionId, files) {
@@ -816,27 +891,83 @@
         }
       }
 
-      async function requestSkill(path, init, retryOnNetworkLoss) {
+      function skillRequestWithNewCommandId(init) {
+        return {
+          ...init,
+          headers: {
+            ...(init.headers || {}),
+            "X-Live-Smith-Command-Id": createCommandId(),
+          },
+        };
+      }
+
+      function unconfirmedSkillResultError(error) {
+        commandReconciliationBlocked = true;
+        return new Error(
+          `${error.message || String(error)} The Skill result is unconfirmed. Close and reopen Live Smith before changing Skills again.`,
+        );
+      }
+
+      async function requestSkill(path, init) {
+        try {
+          return await requestSkillAttempt(
+            path,
+            skillRequestWithNewCommandId(init),
+          );
+        } catch (error) {
+          if (error.skillNetworkFailure !== true) throw error;
+          return retrySkillAfterResponseLoss(path, init, error);
+        }
+      }
+
+      async function retrySkillAfterResponseLoss(path, init, responseError) {
+        showStatus(
+          "Lost the Skill response. Waiting for authoritative bridge state…",
+          true,
+        );
+        try {
+          const refreshed = await refreshState(undefined, "skill_reconcile");
+          if (refreshed !== true) {
+            throw new Error("The bridge did not return current Skill state.");
+          }
+        } catch {
+          throw unconfirmedSkillResultError(responseError);
+        }
+        try {
+          return await requestSkillAttempt(
+            path,
+            skillRequestWithNewCommandId(init),
+          );
+        } catch (error) {
+          throw unconfirmedSkillResultError(error);
+        }
+      }
+
+      async function requestSkillAttempt(path, init) {
         let response;
         try {
           response = await fetch(bridgeUrl(path), init);
         } catch (error) {
-          if (retryOnNetworkLoss) {
-            return requestSkill(path, init, false);
-          }
-          commandReconciliationBlocked = true;
-          throw new Error(
-            `${error.message || String(error)} The Skill result is unconfirmed. Close and reopen Live Smith before changing Skills again.`,
-          );
+          const networkError = new Error(error.message || String(error));
+          networkError.skillNetworkFailure = true;
+          throw networkError;
         }
-        const result = await response.json().catch(() => ({}));
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          throw skillResponseLossError();
+        }
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          throw skillResponseLossError();
+        }
         if (!response.ok) {
           const error = new Error(
             result.error || `${response.status} ${response.statusText}`,
           );
           error.httpStatus = response.status;
           if (result.commandOutcome === "unknown") {
-            if (result.state && typeof result.state === "object") {
+            if (isAuthoritativeCommandState(result.state)) {
               applyCommandState("skill_reconcile", result.state);
             } else {
               commandReconciliationBlocked = true;
@@ -850,31 +981,63 @@
         const state = result.state && typeof result.state === "object"
           ? result.state
           : result;
+        if (!isAuthoritativeCommandState(state)) throw skillResponseLossError();
         applyCommandState("skill", state);
         return result;
+      }
+
+      function skillResponseLossError() {
+        const error = new Error(
+          "The Skill response ended before its authoritative state was available.",
+        );
+        error.skillNetworkFailure = true;
+        return error;
+      }
+
+      function isAuthoritativeCommandState(value) {
+        return Boolean(
+          value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          typeof value.activeSessionId === "string" &&
+          Array.isArray(value.sessions) &&
+          Array.isArray(value.previousSessions) &&
+          Array.isArray(value.archivedSessions) &&
+          Array.isArray(value.events) &&
+          Array.isArray(value.pendingAttachments) &&
+          Array.isArray(value.availableSkills) &&
+          Array.isArray(value.activeSkillIds) &&
+          value.settings &&
+          typeof value.settings === "object" &&
+          typeof value.openSettingsOnLoad === "boolean"
+        );
       }
 
       async function installSkill(file, replace) {
         return runSkillOperation(async () => {
           const contentSha256 = await skillContentSha256(file);
+          if (!contentSha256) {
+            commandReconciliationBlocked = true;
+            throw new Error(
+              "The selected Skill could not be fingerprinted. Close and reopen Live Smith before retrying.",
+            );
+          }
           const result = await requestSkill(
             `/skills?replace=${replace ? "true" : "false"}`,
             {
               method: "POST",
               headers: {
                 "Content-Type": "text/markdown; charset=utf-8",
-                "X-Live-Smith-Command-Id": createCommandId(),
               },
               body: file,
             },
-            true,
           );
           const receipt = result.receipt;
           if (
             !receipt ||
             typeof receipt.id !== "string" ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256 || "") ||
-            (contentSha256 && receipt.sha256 !== contentSha256)
+            receipt.sha256 !== contentSha256
           ) {
             commandReconciliationBlocked = true;
             throw new Error(
@@ -907,9 +1070,7 @@
           `/skills/${encodeURIComponent(skillId)}`,
           {
             method: "DELETE",
-            headers: { "X-Live-Smith-Command-Id": createCommandId() },
           },
-          true,
         ));
       }
 

@@ -1,13 +1,14 @@
 import { Buffer } from "node:buffer";
 
-import { isSafeSkillId, type SkillDefinition } from "../skills/format.js";
 import {
-  listInstalledSkillsInTransaction,
-  readInstalledSkillInTransaction,
+  isSafeSkillId,
+  MAX_ACTIVE_SKILL_COUNT,
+  type SkillDefinition,
+} from "../skills/format.js";
+import {
+  withSkillCatalogTransaction,
 } from "../storage/skills.js";
-import { withStorageTransaction } from "../storage/persistence.js";
 
-export const MAX_ACTIVE_SKILL_COUNT = 4;
 export const MAX_ACTIVE_SKILL_INSTRUCTION_BYTES = 128 * 1024;
 
 export interface ResolvedSkillContext {
@@ -33,13 +34,10 @@ export async function resolveSkillContext(input: {
     return { activeSkillIds: [], instructionBlock: "" };
   }
 
-  return withStorageTransaction(input.storageDirectory, async (transaction) => {
+  return withSkillCatalogTransaction(input.storageDirectory, async (catalog) => {
     let installed;
     try {
-      installed = await listInstalledSkillsInTransaction(
-        transaction,
-        input.storageDirectory,
-      );
+      installed = await catalog.listInstalledSkills();
     } catch {
       throw new SkillContextError(
         "Installed Skill summaries could not be validated.",
@@ -66,11 +64,7 @@ export async function resolveSkillContext(input: {
     const definitions: SkillDefinition[] = [];
     for (const skillId of activeSkillIds) {
       try {
-        definitions.push(await readInstalledSkillInTransaction(
-          transaction,
-          input.storageDirectory,
-          skillId,
-        ));
+        definitions.push(await catalog.readInstalledSkill(skillId));
       } catch {
         throw unavailableSkillError(skillId);
       }

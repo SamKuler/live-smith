@@ -59,12 +59,17 @@ interface DialogHarness {
   ): void;
   failAttachmentNamed(fileName: string, error: string, status?: number): void;
   rejectNextAttachmentAfterCommit(error: string): void;
+  truncateNextAttachmentResponseAfterCommit(): void;
+  rejectNextSkillResponseAfterCommit(error: string): void;
+  truncateNextSkillResponseAfterCommit(): void;
   flushAnimationFrames(): number;
   rejectNextSend(error: string): void;
   rejectNextCommand(error: string): void;
   rejectNextCommandResponse(error: string): void;
+  truncateNextCommandResponseAfterCommit(): void;
   rejectNextState(error: string): void;
   holdNextCommand(): void;
+  holdNextCommandResponse(): void;
   holdNextConfirmation(): void;
   holdNextSend(): void;
   holdNextState(): void;
@@ -72,6 +77,7 @@ interface DialogHarness {
   hostMessages: unknown[];
   input(selector: string, value: string): void;
   releaseHeldCommand(): void;
+  releaseHeldCommandResponse(): void;
   releaseHeldConfirmation(): void;
   releaseHeldSend(): void;
   releaseHeldState(): void;
@@ -300,8 +306,12 @@ async function createDialogHarness(
   let nextSendRejection: Error | null = null;
   let nextCommandRejection: Error | null = null;
   let nextCommandResponseRejection: Error | null = null;
+  let truncatedCommandResponses = 0;
   let nextStateRejection: Error | null = null;
   let nextAttachmentRejection: Error | null = null;
+  let truncatedAttachmentResponses = 0;
+  const skillResponseRejections: Error[] = [];
+  let truncatedSkillResponses = 0;
   let nextAttachmentUnknown: {
     error: string;
     committedMetadata?: {
@@ -315,11 +325,13 @@ async function createDialogHarness(
     { error: string; status: number }
   >();
   let heldCommand: Promise<void> | null = null;
+  let heldCommandResponse: Promise<void> | null = null;
   let heldConfirmation: Promise<void> | null = null;
   const heldSends: Promise<void>[] = [];
   let heldState: Promise<void> | null = null;
   let heldAttachment: Promise<void> | null = null;
   let releaseCommand: (() => void) | null = null;
+  let releaseCommandResponse: (() => void) | null = null;
   let releaseConfirmation: (() => void) | null = null;
   const releaseSends: Array<() => void> = [];
   let releaseState: (() => void) | null = null;
@@ -508,6 +520,10 @@ async function createDialogHarness(
                   state: cloneState(serverState),
                 }, 500, "Internal Server Error");
               }
+              if (truncatedAttachmentResponses > 0) {
+                truncatedAttachmentResponses -= 1;
+                return truncatedJsonResponse();
+              }
               return response(cloneState(serverState));
             }
 
@@ -546,6 +562,12 @@ async function createDialogHarness(
                 ...serverState.availableSkills.filter((skill) => skill.id !== id),
                 { id, description },
               ].sort((left, right) => left.id.localeCompare(right.id));
+              const responseRejection = skillResponseRejections.shift();
+              if (responseRejection) throw responseRejection;
+              if (truncatedSkillResponses > 0) {
+                truncatedSkillResponses -= 1;
+                return truncatedJsonResponse();
+              }
               return response({
                 state: cloneState(serverState),
                 receipt: {
@@ -572,6 +594,10 @@ async function createDialogHarness(
               serverState.availableSkills = serverState.availableSkills.filter(
                 (skill) => skill.id !== skillId,
               );
+              if (truncatedSkillResponses > 0) {
+                truncatedSkillResponses -= 1;
+                return truncatedJsonResponse();
+              }
               return response(cloneState(serverState));
             }
 
@@ -768,10 +794,19 @@ async function createDialogHarness(
                 );
                 serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
               }
+              if (heldCommandResponse) {
+                const wait = heldCommandResponse;
+                heldCommandResponse = null;
+                await wait;
+              }
               if (nextCommandResponseRejection) {
                 const error = nextCommandResponseRejection;
                 nextCommandResponseRejection = null;
                 throw error;
+              }
+              if (truncatedCommandResponses > 0) {
+                truncatedCommandResponses -= 1;
+                return truncatedJsonResponse();
               }
               return response(cloneState(serverState));
             }
@@ -906,6 +941,15 @@ async function createDialogHarness(
     rejectNextAttachmentAfterCommit(error) {
       nextAttachmentRejection = new Error(error);
     },
+    truncateNextAttachmentResponseAfterCommit() {
+      truncatedAttachmentResponses += 1;
+    },
+    rejectNextSkillResponseAfterCommit(error) {
+      skillResponseRejections.push(new Error(error));
+    },
+    truncateNextSkillResponseAfterCommit() {
+      truncatedSkillResponses += 1;
+    },
     flushAnimationFrames() {
       const pending = [...animationFrames.values()];
       animationFrames.clear();
@@ -921,12 +965,20 @@ async function createDialogHarness(
     rejectNextCommandResponse(error) {
       nextCommandResponseRejection = new Error(error);
     },
+    truncateNextCommandResponseAfterCommit() {
+      truncatedCommandResponses += 1;
+    },
     rejectNextState(error) {
       nextStateRejection = new Error(error);
     },
     holdNextCommand() {
       heldCommand = new Promise<void>((resolve) => {
         releaseCommand = resolve;
+      });
+    },
+    holdNextCommandResponse() {
+      heldCommandResponse = new Promise<void>((resolve) => {
+        releaseCommandResponse = resolve;
       });
     },
     holdNextConfirmation() {
@@ -959,6 +1011,12 @@ async function createDialogHarness(
       assert.ok(releaseCommand, "Expected a held command");
       const release = releaseCommand;
       releaseCommand = null;
+      release();
+    },
+    releaseHeldCommandResponse() {
+      assert.ok(releaseCommandResponse, "Expected a held command response");
+      const release = releaseCommandResponse;
+      releaseCommandResponse = null;
       release();
     },
     releaseHeldConfirmation() {
@@ -1084,6 +1142,22 @@ function response(body: unknown): {
     status: 200,
     statusText: "OK",
     json: async () => body,
+  };
+}
+
+function truncatedJsonResponse(): {
+  json(): Promise<never>;
+  ok: true;
+  status: 200;
+  statusText: "OK";
+} {
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => {
+      throw new Error("The response body ended before JSON was complete.");
+    },
   };
 }
 
@@ -3095,7 +3169,11 @@ test("an unreconciled command outcome keeps sends and settings blocked", async (
     harness.failNextCommand(
       "Storage replacement completed, but its durable commit could not be confirmed.",
       undefined,
-      { commandOutcome: "unknown", reconciliationRequired: true },
+      {
+        commandOutcome: "unknown",
+        reconciliationRequired: true,
+        state: {} as ChatDialogState,
+      },
     );
 
     harness.select("#approvalMode", "everything");
@@ -3154,6 +3232,75 @@ test("a command network error reconciles through state after the event stream di
       /refreshed|verify/i,
     );
     assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a committed command with truncated JSON reconciles through authoritative state", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.truncateNextCommandResponseAfterCommit();
+    harness.select("#approvalMode", "low-risk");
+    await harness.settle();
+
+    harness.emitServerEventError();
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/state").length,
+      1,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /refreshed|verify/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a malformed command SSE state reconciles without waiting on the settled SSE promise", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.holdNextCommandResponse();
+    harness.select("#approvalMode", "low-risk");
+    await waitForCondition(
+      () => harness.commandIds.length === 1,
+      "Expected the held command to start.",
+    );
+    harness.emitServerEvent({
+      type: "state",
+      commandId: harness.commandIds[0],
+      state: {},
+    });
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/state").length,
+      1,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+
+    harness.releaseHeldCommandResponse();
+    await harness.settle();
   } finally {
     harness.close();
   }
@@ -5774,6 +5921,41 @@ test("attachment chips reconcile after an unknown upload response before control
   }
 });
 
+test("a committed attachment upload with truncated JSON reconciles as an unknown result", async () => {
+  const harness = await createDialogHarness(imageCapableState());
+  try {
+    harness.truncateNextAttachmentResponseAfterCommit();
+    harness.dispatchPaste([
+      imageFile(harness.window, "truncated-response.png", "image/png"),
+    ]);
+    await harness.settleAttachmentOperation();
+
+    assert.deepEqual(
+      harness.calls.map((call) => call.path),
+      ["/attachments", "/state"],
+    );
+    assert.match(
+      harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
+      /truncated-response\.png/,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /confirmed attached.*do not upload/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /re-select|retry/i,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 for (const [condition, options] of [
   ["Web Crypto is unavailable", { webCryptoAvailable: false }],
   ["Web Crypto digest fails", { webCryptoDigestFails: true }],
@@ -6333,6 +6515,148 @@ test("Skill replacement requires confirmation and retries the same raw file expl
       harness.document.querySelector("[data-skill-id='mix-review']")?.textContent ?? "",
       /New guidance/,
     );
+  } finally {
+    harness.close();
+  }
+});
+
+test("a response-lost Skill replacement crosses the state barrier before a new-ID receipt retry", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{ id: "mix-review", description: "Same summary" }];
+  const harness = await createDialogHarness(state);
+  try {
+    const file = new harness.window.File([
+      "---\nname: mix-review\ndescription: Same summary\n---\nReplacement body that differs from the installed Skill.\n",
+    ], "replacement.md", { type: "text/markdown" });
+    harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
+    harness.selectSkillFile(file);
+
+    await waitForCondition(
+      () => harness.calls.filter((call) => call.path === "/skills").length === 3,
+      "Expected the interrupted replacement to make one reconciled retry.",
+    );
+    await harness.settle();
+
+    const paths = harness.calls.map((call) => call.path);
+    assert.deepEqual(paths, ["/skills", "/skills", "/state", "/skills"]);
+    const replacementCalls = harness.calls.filter(
+      (call) => call.path === "/skills" && call.url.includes("replace=true"),
+    );
+    assert.equal(replacementCalls.length, 2);
+    assert.equal(replacementCalls[0]?.body, file);
+    assert.equal(replacementCalls[1]?.body, file);
+    const firstId = (replacementCalls[0]?.headers as Record<string, string>)[
+      "X-Live-Smith-Command-Id"
+    ];
+    const retryId = (replacementCalls[1]?.headers as Record<string, string>)[
+      "X-Live-Smith-Command-Id"
+    ];
+    assert.match(firstId ?? "", /^[A-Za-z0-9._:-]+$/);
+    assert.match(retryId ?? "", /^[A-Za-z0-9._:-]+$/);
+    assert.notEqual(retryId, firstId);
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.match(
+      harness.document.querySelector("[data-skill-id='mix-review']")?.textContent ?? "",
+      /Same summary/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an interrupted Skill retry that cannot confirm a receipt blocks later mutations", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{ id: "mix-review", description: "Same summary" }];
+  const harness = await createDialogHarness(state);
+  try {
+    const file = new harness.window.File([
+      "---\nname: mix-review\ndescription: Same summary\n---\nReplacement body that must be confirmed.\n",
+    ], "replacement.md", { type: "text/markdown" });
+    harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
+    harness.rejectNextSkillResponseAfterCommit("Bridge response was lost again.");
+    harness.selectSkillFile(file);
+
+    await waitForCondition(
+      () => harness.calls.filter((call) => call.path === "/skills").length === 3,
+      "Expected the unconfirmed replacement to make one reconciled retry.",
+    );
+    await harness.settle();
+
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/skills").length,
+      3,
+    );
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/state").length,
+      1,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
+      true,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Skill result is unconfirmed/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a committed Skill delete with truncated JSON reconciles before an idempotent retry", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{ id: "mix-review", description: "Review balance" }];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.truncateNextSkillResponseAfterCommit();
+    const deleteButton = harness.document.querySelector<HTMLButtonElement>(
+      "[data-skill-id='mix-review'] .skill-delete",
+    );
+    assert.equal(deleteButton?.disabled, false);
+    deleteButton?.click();
+
+    await waitForCondition(
+      () => harness.calls.filter(
+        (call) => call.path === "/skills/mix-review",
+      ).length === 2,
+      "Expected the truncated delete response to cross state reconciliation before retrying.",
+    );
+    await harness.settle();
+
+    assert.deepEqual(
+      harness.calls.map((call) => call.path),
+      ["/skills/mix-review", "/state", "/skills/mix-review"],
+    );
+    const deletes = harness.calls.filter(
+      (call) => call.path === "/skills/mix-review",
+    );
+    const firstId = (deletes[0]?.headers as Record<string, string>)[
+      "X-Live-Smith-Command-Id"
+    ];
+    const retryId = (deletes[1]?.headers as Record<string, string>)[
+      "X-Live-Smith-Command-Id"
+    ];
+    assert.match(firstId ?? "", /^[A-Za-z0-9._:-]+$/);
+    assert.match(retryId ?? "", /^[A-Za-z0-9._:-]+$/);
+    assert.notEqual(retryId, firstId);
+    assert.equal(
+      harness.document.querySelector("[data-skill-id='mix-review']"),
+      null,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }

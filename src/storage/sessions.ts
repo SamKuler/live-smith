@@ -15,7 +15,10 @@ import {
   type StorageTransactionContext,
 } from "./persistence.js";
 import type { ConversationScope } from "../model/contracts.js";
-import { isSafeSkillId } from "../skills/format.js";
+import {
+  isSafeSkillId,
+  MAX_ACTIVE_SKILL_COUNT,
+} from "../skills/format.js";
 
 export interface AgentSession {
   id: string;
@@ -28,8 +31,6 @@ export interface AgentSession {
   createdAt: string;
   updatedAt: string;
 }
-
-export const MAX_ACTIVE_SKILL_IDS_PER_SESSION = 4;
 
 const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
@@ -328,7 +329,7 @@ function normalizedOptionalActiveSkillIds(
 function normalizeActiveSkillIds(value: unknown): string[] {
   if (
     !Array.isArray(value) ||
-    value.length > MAX_ACTIVE_SKILL_IDS_PER_SESSION ||
+    value.length > MAX_ACTIVE_SKILL_COUNT ||
     !value.every(isSafeSkillId) ||
     new Set(value).size !== value.length
   ) {
@@ -340,7 +341,7 @@ function normalizeActiveSkillIds(value: unknown): string[] {
 function isPersistedActiveSkillIds(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
-    value.length <= MAX_ACTIVE_SKILL_IDS_PER_SESSION &&
+    value.length <= MAX_ACTIVE_SKILL_COUNT &&
     value.every(isSafeSkillId) &&
     value.every((skillId, index) => index === 0 || value[index - 1]! < skillId)
   );

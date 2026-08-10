@@ -1785,6 +1785,76 @@ test("Skill install early validation drains its body and does not broadcast an u
   }
 });
 
+test("attachment upload early exits drain unread raw bodies", async () => {
+  const state = {} as ChatDialogState;
+  let resumedAttachmentRequests = 0;
+  const originalResume = IncomingMessage.prototype.resume;
+  IncomingMessage.prototype.resume = function trackedResume() {
+    if (this.url?.startsWith("/attachments")) resumedAttachmentRequests += 1;
+    return originalResume.call(this);
+  };
+
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => undefined,
+    preflightAttachmentUpload: async () => {},
+    handleAttachmentUpload: async () => state,
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const endpoint = `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=idea.png`;
+
+  try {
+    const unauthorized = await fetch(endpoint.replace(`token=${token}`, "token=wrong"), {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: attachmentRequestBody(attachmentPng),
+    });
+    assert.equal(unauthorized.status, 403);
+    assert.ok(resumedAttachmentRequests > 0);
+
+    const resumedAfterUnauthorized = resumedAttachmentRequests;
+    const malformed = await fetch(
+      `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: attachmentRequestBody(attachmentPng),
+      },
+    );
+    assert.equal(malformed.status, 400);
+    assert.ok(resumedAttachmentRequests > resumedAfterUnauthorized);
+
+    const bridgeWithoutAttachmentHandler = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async () => undefined,
+    });
+    try {
+      const unavailableUrl = new URL(bridgeWithoutAttachmentHandler.url);
+      const unavailable = await fetch(
+        `${unavailableUrl.origin}/attachments?token=${unavailableUrl.searchParams.get("token")}` +
+          "&sessionId=session-1&fileName=idea.png",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: attachmentRequestBody(attachmentPng),
+        },
+      );
+      assert.equal(unavailable.status, 404);
+      assert.ok(resumedAttachmentRequests > resumedAfterUnauthorized + 1);
+    } finally {
+      await bridgeWithoutAttachmentHandler.close();
+    }
+  } finally {
+    IncomingMessage.prototype.resume = originalResume;
+    await bridge.close();
+  }
+});
+
 test("Skill raw bodies enforce exact media type and the 64 KiB boundary", async () => {
   for (const [contentType, size, expectedStatus] of [
     ["text/plain; charset=utf-8", 1, 400],

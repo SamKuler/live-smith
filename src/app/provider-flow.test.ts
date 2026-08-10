@@ -26,7 +26,7 @@ import type { ModelTool } from "../model/provider.js";
 import type { SavedProfile } from "../model/profile.js";
 import {
   AttachmentStorageCorruptionError,
-  listSessionAttachments,
+  listPendingSessionAttachments,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
 } from "../storage/attachments.js";
@@ -49,19 +49,16 @@ import {
 } from "./agent-flow.js";
 import {
   AttachmentInputCapabilityError,
-  pendingSessionAttachments,
 } from "./attachment-context.js";
 import { ChatBridgePromptPersistenceUnknownError } from "./chat-bridge.js";
 import {
   buildModelRequest,
-  capabilitiesForProfile,
   capabilitiesForProfilePreview,
   resolveDiscoveredModels,
   runtimeProfileForSavedProfile,
 } from "./model-request.js";
 import {
   activeRecoveryLedgerFromEvents,
-  conversationHistoryFromEvents,
   getOrCreateDefaultSession,
   projectKeyForContext,
   recoveryContextFromEvents,
@@ -77,6 +74,12 @@ function session(title: string, projectKey = "p1"): AgentSession {
     createdAt: "2026-06-16T00:00:00.000Z",
     updatedAt: "2026-06-16T00:00:00.000Z",
   };
+}
+
+function consumedAttachmentIds(events: readonly SessionEvent[]): string[] {
+  return [...new Set(events.flatMap(
+    (event) => event.attachments?.map((attachment) => attachment.id) ?? [],
+  ))];
 }
 
 function attachmentPng(seed: number): Uint8Array {
@@ -388,11 +391,11 @@ test("removing a manual override re-resolves from raw discovery metadata", () =>
   const withoutOverride: SavedProfile = { ...base, advanced: {} };
 
   assert.equal(
-    capabilitiesForProfile(overridden, discovered).temperature,
+    runtimeProfileForSavedProfile(overridden, discovered).capabilities.temperature,
     "supported",
   );
   assert.equal(
-    capabilitiesForProfile(withoutOverride, discovered).temperature,
+    runtimeProfileForSavedProfile(withoutOverride, discovered).capabilities.temperature,
     "unsupported",
   );
   assert.deepEqual(discovered[0]?.capabilities, { maxOutputTokens: 64000 });
@@ -824,23 +827,6 @@ test("preflight does not bind a creator ref to an existing same-name track", asy
   assert.deepEqual(observedTargets, [undefined, undefined]);
 });
 
-test("conversationHistoryFromEvents caps model context to recent messages", () => {
-  const events = Array.from({ length: 50 }, (_, index): SessionEvent => ({
-    id: `event-${index}`,
-    kind: index % 2 === 0 ? "user" : "assistant",
-    content: `message-${index}`,
-    createdAt: "2026-07-31T00:00:00.000Z",
-  }));
-
-  const history = conversationHistoryFromEvents(events);
-  assert.equal(history.length, 24);
-  assert.deepEqual(history[0], {
-    role: "user",
-    content: [{ type: "text", text: "message-26" }],
-  });
-  assert.equal(history.at(-1)?.content, "message-49");
-});
-
 test("recoveryContextFromEvents keeps bounded outcomes and rejected tool inputs", () => {
   const events: SessionEvent[] = [
     {
@@ -1070,9 +1056,10 @@ test("handleAgentRequest sends current and historical images then consumes curre
   const latestUser = [...events].reverse().find((event) => event.kind === "user");
   assert.deepEqual(latestUser?.attachments, [sessionAttachmentRefFromStored(current)]);
   assert.deepEqual(
-    pendingSessionAttachments(
-      await listSessionAttachments(dir, existing.id),
-      events,
+    await listPendingSessionAttachments(
+      dir,
+      existing.id,
+      consumedAttachmentIds(events),
     ),
     [],
   );
@@ -1136,10 +1123,11 @@ test("handleAgentRequest rejects audio without supported evidence before model o
   const events = await loadSessionEvents(dir, existing.id);
   assert.deepEqual(events, []);
   assert.deepEqual(
-    pendingSessionAttachments(
-      await listSessionAttachments(dir, existing.id),
-      events,
-    ).map((attachment) => attachment.id),
+    (await listPendingSessionAttachments(
+      dir,
+      existing.id,
+      consumedAttachmentIds(events),
+    )).map((attachment) => attachment.id),
     [audio.id],
   );
 });
@@ -1368,10 +1356,11 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
       compatible,
     );
     assert.deepEqual(
-      pendingSessionAttachments(
-        await listSessionAttachments(dir, existing.id),
-        events,
-      ).map((attachment) => attachment.id),
+      (await listPendingSessionAttachments(
+        dir,
+        existing.id,
+        consumedAttachmentIds(events),
+      )).map((attachment) => attachment.id),
       compatible ? [] : [stored.id],
     );
   }
@@ -1438,10 +1427,11 @@ test("attachment capability and prompt persistence failures leave images pending
     const events = await loadSessionEvents(dir, existing.id);
     assert.equal(events.some((event) => event.kind === "user"), false);
     assert.equal(
-      pendingSessionAttachments(
-        await listSessionAttachments(dir, existing.id),
-        events,
-      ).length,
+      (await listPendingSessionAttachments(
+        dir,
+        existing.id,
+        consumedAttachmentIds(events),
+      )).length,
       1,
     );
   }
@@ -1503,7 +1493,11 @@ test("provider failure keeps already persisted image refs consumed", async () =>
     [sessionAttachmentRefFromStored(current)],
   );
   assert.deepEqual(
-    pendingSessionAttachments(await listSessionAttachments(dir, existing.id), events),
+    await listPendingSessionAttachments(
+      dir,
+      existing.id,
+      consumedAttachmentIds(events),
+    ),
     [],
   );
 });

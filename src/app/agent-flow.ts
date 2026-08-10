@@ -49,7 +49,11 @@ import {
   type DraftProfile,
   type SavedProfile,
 } from "../model/profile.js";
-import { AttachmentProcessingError } from "../attachments/contracts.js";
+import {
+  AttachmentProcessingError,
+  MAX_PENDING_ATTACHMENT_BYTES,
+  MAX_PENDING_ATTACHMENT_COUNT,
+} from "../attachments/contracts.js";
 import {
   isSafeSkillId,
   parseSkillMarkdown,
@@ -69,8 +73,6 @@ import {
   deleteSessionAttachments,
   listSessionAttachmentDirectoryIds,
   listPendingSessionAttachments,
-  MAX_PENDING_SESSION_ATTACHMENT_BYTES,
-  MAX_PENDING_SESSION_ATTACHMENT_COUNT,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
   UnsupportedAttachmentError,
@@ -300,8 +302,13 @@ export async function runAgentFlow(
     return models;
   };
 
-  const buildState = async (previewProfile?: DraftProfile) => {
-    await retryPendingAttachmentCleanup();
+  const buildState = async (
+    previewProfile?: DraftProfile,
+    options: { heldSessionId?: string } = {},
+  ) => {
+    if (options.heldSessionId === undefined) {
+      await retryPendingAttachmentCleanup();
+    }
     const settings = await loadAgentSettings(context.environment.storageDirectory);
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
@@ -319,29 +326,103 @@ export async function runAgentFlow(
       ? capabilitiesForProfilePreview(modelProfile, models)
       : defaultModelCapabilities();
     for (;;) {
-      const activeSession = await resolveActiveSession();
-      const allSessions = await listSessions(context.environment.storageDirectory);
+      const heldSessionId = options.heldSessionId;
+      const resolvedActiveSession = heldSessionId === undefined
+        ? await resolveActiveSession()
+        : undefined;
+      const stateSessionId = heldSessionId ?? resolvedActiveSession?.id;
+      if (stateSessionId === undefined) {
+        throw new Error("A Session is required to build state.");
+      }
+      const readSessionStateSnapshot = async () => {
+        const storageSnapshot = await withStorageTransaction(
+          context.environment.storageDirectory,
+          async (transaction) => {
+            const allSessions = await listSessionsInTransaction(
+              transaction,
+              context.environment.storageDirectory,
+            );
+            const availableSkills = (await listInstalledSkillsInTransaction(
+              transaction,
+              context.environment.storageDirectory,
+            )).map(({ id, description }) => ({ id, description }));
+            return { allSessions, availableSkills };
+          },
+        );
+        const activeSession = storageSnapshot.allSessions.find(
+          (session) =>
+            session.id === stateSessionId &&
+            session.projectKey === projectKey &&
+            !session.archivedAt,
+        );
+        if (!activeSession) {
+          return { kind: "missing" as const };
+        }
+        const events = await (
+          dependencies.loadSessionEvents ?? loadSessionEvents
+        )(
+          context.environment.storageDirectory,
+          activeSession.id,
+        );
+        const pendingAttachments = (await listPendingSessionAttachments(
+          context.environment.storageDirectory,
+          activeSession.id,
+          consumedAttachmentIds(events),
+        )).map(sessionAttachmentRefFromStored);
+        return {
+          kind: "available" as const,
+          activeSession,
+          events,
+          pendingAttachments,
+          signature: JSON.stringify([
+            storageSnapshot.allSessions,
+            storageSnapshot.availableSkills,
+            events,
+            pendingAttachments,
+          ]),
+          storageSnapshot,
+        };
+      };
+      let sessionStateSnapshot = await readSessionStateSnapshot();
+      if (
+        heldSessionId === undefined &&
+        activeSessionId !== stateSessionId
+      ) continue;
+      if (sessionStateSnapshot.kind === "missing") {
+        if (heldSessionId !== undefined) {
+          throw new Error("The held Session is no longer available for state.");
+        }
+        if (activeSessionId === stateSessionId) {
+          activeSessionId = undefined;
+        }
+        continue;
+      }
+      if (heldSessionId === undefined) {
+        const confirmedSnapshot = await readSessionStateSnapshot();
+        if (activeSessionId !== stateSessionId) continue;
+        if (
+          confirmedSnapshot.kind !== "available" ||
+          confirmedSnapshot.signature !== sessionStateSnapshot.signature
+        ) continue;
+        sessionStateSnapshot = confirmedSnapshot;
+      }
+      const {
+        activeSession,
+        events,
+        pendingAttachments,
+        storageSnapshot,
+      } = sessionStateSnapshot;
+      const allSessions = storageSnapshot.allSessions;
       const sessions = allSessions.filter(
         (session) => session.projectKey === projectKey && !session.archivedAt,
       );
       const previousSessions = previousSessionsForProject(allSessions, projectKey);
       const archivedSessions = allSessions.filter((session) => session.archivedAt);
       const continueInteraction = resolveContinueInteraction();
-      const events = await (
-        dependencies.loadSessionEvents ?? loadSessionEvents
-      )(
-        context.environment.storageDirectory,
-        activeSession.id,
-      );
-      const pendingAttachments = (await listPendingSessionAttachments(
-        context.environment.storageDirectory,
-        activeSession.id,
-        consumedAttachmentIds(events),
-      )).map(sessionAttachmentRefFromStored);
-      const availableSkills = (await listInstalledSkills(
-        context.environment.storageDirectory,
-      )).map(({ id, description }) => ({ id, description }));
-      if (activeSessionId !== activeSession.id) continue;
+      if (
+        heldSessionId === undefined &&
+        activeSessionId !== activeSession.id
+      ) continue;
       const activeInteraction = resolveSessionInteraction(activeSession);
       return {
         defaultPrompt: activeInteraction?.defaultPrompt ?? "",
@@ -357,7 +438,7 @@ export async function runAgentFlow(
         activeSessionId: activeSession.id,
         events,
         pendingAttachments,
-        availableSkills,
+        availableSkills: storageSnapshot.availableSkills,
         activeSkillIds: [...(activeSession.activeSkillIds ?? [])],
         capabilities,
         availableModels: modelProfile
@@ -375,6 +456,13 @@ export async function runAgentFlow(
       };
     }
   };
+
+  const buildStateWhileHoldingSessionMutation = (
+    heldSessionId: string,
+    previewProfile?: DraftProfile,
+  ) => buildState(previewProfile, {
+    heldSessionId,
+  });
 
   const buildStateAfterCommandMutation = async (
     previewProfile?: DraftProfile,
@@ -669,7 +757,9 @@ export async function runAgentFlow(
             openSettingsOnLoad = false;
             let authoritativeState: ChatDialogState | undefined;
             try {
-              authoritativeState = await buildState();
+              authoritativeState = await buildStateWhileHoldingSessionMutation(
+                commandInput.sessionId,
+              );
             } catch {
               authoritativeState = undefined;
             }
@@ -684,7 +774,9 @@ export async function runAgentFlow(
         status = "Selected audio source attached.";
         openSettingsOnLoad = false;
         try {
-          return await buildState();
+          return await buildStateWhileHoldingSessionMutation(
+            commandInput.sessionId,
+          );
         } catch (cause) {
           throw new ChatBridgeCommandOutcomeUnknownError(
             "The selected audio source was attached, but the resulting Live Smith state could not be confirmed.",
@@ -914,8 +1006,8 @@ export async function runAgentFlow(
         0,
       );
       if (
-        pending.length >= MAX_PENDING_SESSION_ATTACHMENT_COUNT ||
-        pendingBytes + input.bytes.byteLength > MAX_PENDING_SESSION_ATTACHMENT_BYTES
+        pending.length >= MAX_PENDING_ATTACHMENT_COUNT ||
+        pendingBytes + input.bytes.byteLength > MAX_PENDING_ATTACHMENT_BYTES
       ) {
         throw new ChatBridgePayloadTooLargeError(
           "Pending attachments exceed the per-Session attachment limit.",
@@ -1241,12 +1333,14 @@ export async function runAgentFlow(
           },
           dependencies.requestModelTurn ?? requestModelTurn,
         );
-        return buildState();
+        return buildStateWhileHoldingSessionMutation(sendInput.sessionId);
       } catch (error) {
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {
-          authoritativeState = await buildState();
+          authoritativeState = await buildStateWhileHoldingSessionMutation(
+            sendInput.sessionId,
+          );
         } catch {
           // Preserve the original failure. The client will reconcile explicitly.
         }

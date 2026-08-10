@@ -2,7 +2,6 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import type { AgentLoopInitialRecoveryState } from "../agent/loop.js";
 import type { LiveInteractionContext } from "../live/context.js";
-import type { ConversationMessage } from "../model/contracts.js";
 import type { SessionEvent } from "../storage/events.js";
 import { createStorageId } from "../storage/id.js";
 import {
@@ -13,7 +12,6 @@ import {
 } from "../storage/sessions.js";
 
 type Api = ExtensionContext<"1.0.0">;
-const maxConversationMessages = 24;
 const maxRecoveryEvents = 12;
 const maxRecoveryContextCharacters = 12_000;
 const activationProjectKeys = new WeakMap<
@@ -45,23 +43,6 @@ export async function getOrCreateDefaultSession(
     projectKey,
     scope,
   });
-}
-
-export function conversationHistoryFromEvents(
-  events: SessionEvent[],
-): ConversationMessage[] {
-  return events.flatMap((event): ConversationMessage[] => {
-    if (event.kind === "user" || event.kind === "assistant") {
-      return event.kind === "assistant"
-        ? [{ role: "assistant", content: event.content }]
-        : [{
-            role: "user",
-            content: [{ type: "text", text: event.content }],
-          }];
-    }
-
-    return [];
-  }).slice(-maxConversationMessages);
 }
 
 export function recoveryContextFromEvents(events: SessionEvent[]): string {

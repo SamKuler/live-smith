@@ -3,6 +3,7 @@ import { TextDecoder } from "node:util";
 export const MAX_SKILL_FILE_BYTES = 64 * 1024;
 export const MAX_SKILL_ID_LENGTH = 64;
 export const MAX_SKILL_DESCRIPTION_LENGTH = 240;
+export const MAX_ACTIVE_SKILL_COUNT = 4;
 
 export interface SkillDefinition {
   id: string;

@@ -10,14 +10,12 @@ import { strToU8, zipSync } from "fflate/browser";
 import { defaultModelCapabilities } from "../model/capabilities.js";
 import type { ModelCapabilities, RuntimeProfile } from "../model/provider.js";
 import {
-  listSessionAttachments,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
 } from "../storage/attachments.js";
 import { appendSessionEvent, type SessionEvent } from "../storage/events.js";
 import {
   AttachmentInputCapabilityError,
-  pendingSessionAttachments,
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
 } from "./attachment-context.js";
@@ -205,6 +203,31 @@ test("attachment context rejects current images for a text-only Profile", async 
   );
 });
 
+test("conversation history caps the live multimodal path to recent messages", async () => {
+  const events = Array.from({ length: 50 }, (_, index): SessionEvent => ({
+    id: `event-${index}`,
+    kind: index % 2 === 0 ? "user" : "assistant",
+    content: `message-${index}`,
+    createdAt: "2026-08-10T00:00:00.000Z",
+  }));
+
+  const history = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-recent-history",
+    events,
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile(),
+  });
+
+  assert.equal(history.length, 24);
+  assert.deepEqual(history[0], {
+    role: "user",
+    content: [{ type: "text", text: "message-26" }],
+  });
+  assert.equal(history.at(-1)?.content, "message-49");
+});
+
 test("conversation history budgets newest images first and returns chronological messages", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-history-"));
   const events: SessionEvent[] = [];
@@ -371,31 +394,6 @@ test("historical duplicate IDs can emit only the newest attachment occurrence", 
     history[1]?.role === "user" &&
       history[1].content.some((part) => part.type === "image"),
     true,
-  );
-});
-
-test("pending attachment selection excludes every consumed event reference", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-pending-"));
-  const first = await saveSessionAttachment(directory, "session-pending", {
-    fileName: "first.png",
-    bytes: pngBytes(1),
-  }, { preSavePendingAttachmentRefs: [] });
-  const second = await saveSessionAttachment(directory, "session-pending", {
-    fileName: "second.png",
-    bytes: pngBytes(2),
-  }, { preSavePendingAttachmentRefs: [sessionAttachmentRefFromStored(first)] });
-  const event = await appendSessionEvent(directory, "session-pending", {
-    kind: "user",
-    content: "consume first",
-    attachments: [sessionAttachmentRefFromStored(first)],
-  });
-
-  assert.deepEqual(
-    pendingSessionAttachments(
-      await listSessionAttachments(directory, "session-pending"),
-      [event],
-    ).map((attachment) => attachment.id),
-    [second.id],
   );
 });
 

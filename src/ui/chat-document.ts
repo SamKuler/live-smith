@@ -13,6 +13,10 @@ import {
   MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
   MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
+import {
+  MAX_ACTIVE_SKILL_COUNT,
+  MAX_SKILL_FILE_BYTES,
+} from "../skills/format.js";
 
 export interface ChatClientScripts {
   attachments: string;
@@ -69,13 +73,22 @@ export function composeChatDocument(
       "__MAX_PENDING_TOTAL_ATTACHMENT_BYTES__",
       String(MAX_PENDING_ATTACHMENT_BYTES),
     );
+  const skillManagerScript = scripts.skillManager
+    .replaceAll(
+      "__MAX_ACTIVE_SKILL_COUNT__",
+      String(MAX_ACTIVE_SKILL_COUNT),
+    )
+    .replaceAll(
+      "__MAX_SKILL_FILE_BYTES__",
+      String(MAX_SKILL_FILE_BYTES),
+    );
   const document = template
     .replace("__STATE__", () => serializeChatStateForHtml(state))
     .replace("__BRIDGE__", () => JSON.stringify(bridge))
     .replace("__HOST_ADAPTER_SCRIPT__", () => scripts.hostAdapter)
     .replace("__PROFILE_EDITOR_SCRIPT__", () => scripts.profileEditor)
     .replace("__ATTACHMENTS_SCRIPT__", () => attachmentsScript)
-    .replace("__SKILL_MANAGER_SCRIPT__", () => scripts.skillManager)
+    .replace("__SKILL_MANAGER_SCRIPT__", () => skillManagerScript)
     .replace("__BRIDGE_CLIENT_SCRIPT__", () => scripts.bridgeClient)
     .replace("__CAPABILITY_PREVIEW_SCRIPT__", () => scripts.capabilityPreview)
     .replace("__MARKDOWN_RENDERER_SCRIPT__", () => scripts.markdownRenderer)
