@@ -1509,7 +1509,7 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
     for (const section of [
       "#profileSettingsSection",
       "#connectionSettingsSection",
-      "#generationSettingsSection",
+      "#generationSettings",
       "#advancedSettings",
     ]) assert.ok(harness.document.querySelector(section));
     const approvalMode = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
@@ -1691,6 +1691,101 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
   }
 });
 
+test("focus treatment stays visible without doubled orange perimeter rings", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const profileName = harness.document.querySelector<HTMLInputElement>("#profileName")!;
+    profileName.focus();
+    assert.notEqual(
+      harness.window.getComputedStyle(profileName).outline,
+      "2px solid var(--accent)",
+    );
+
+    const settingsPanel = harness.document.querySelector<HTMLElement>("#settingsPanel")!;
+    settingsPanel.focus();
+    assert.notEqual(
+      harness.window.getComputedStyle(settingsPanel).boxShadow,
+      "inset 0 0 0 2px var(--accent)",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Response and Advanced use one compact and consistent settings hierarchy", async () => {
+  const harness = await createDialogHarness();
+  try {
+    assert.equal(harness.document.querySelector("#generationSettingsSection"), null);
+    const disclosures = ["#generationSettings", "#advancedSettings"].map(
+      (selector) => harness.document.querySelector<HTMLDetailsElement>(selector)!,
+    );
+    assert.deepEqual(
+      disclosures.map((details) => details.querySelector("summary > span")?.textContent),
+      ["Response", "Advanced"],
+    );
+    for (const details of disclosures) {
+      assert.equal(details.classList.contains("top-level-settings"), true);
+      assert.equal(
+        harness.window.getComputedStyle(details.querySelector("summary > span")!)
+          .textTransform,
+        "uppercase",
+      );
+    }
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Context renders a safe Live-object card with scannable properties", async () => {
+  const state = stateFixture();
+  state.contextSummary = [
+    'MIDI track "Bass <img src=x onerror=alert(1)>"',
+    "mute=false, solo=true, armed=false",
+    "arrangement clips=2",
+    "devices=Operator, EQ Eight",
+  ].join("\n");
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#contextTab");
+    assert.equal(
+      harness.document.querySelector("#context .context-title")?.textContent,
+      'MIDI track "Bass <img src=x onerror=alert(1)>"',
+    );
+    assert.equal(harness.document.querySelector("#context img"), null);
+    assert.deepEqual(
+      [...harness.document.querySelectorAll("#context .context-property")].map(
+        (item) => [
+          item.querySelector(".context-property-label")?.textContent,
+          item.querySelector(".context-property-value")?.textContent,
+        ],
+      ),
+      [
+        ["MUTE", "false"],
+        ["SOLO", "true"],
+        ["ARMED", "false"],
+        ["ARRANGEMENT CLIPS", "2"],
+        ["DEVICES", "Operator, EQ Eight"],
+      ],
+    );
+    const arrangementProperty = [...harness.document.querySelectorAll<HTMLElement>(
+      "#context .context-property",
+    )].find((item) => item.textContent?.includes("ARRANGEMENT CLIPS"));
+    assert.equal(
+      harness.window.getComputedStyle(arrangementProperty!).gridColumn,
+      "1 / -1",
+    );
+    assert.equal(
+      harness.document.querySelector("#context .context-kicker")?.textContent,
+      "Current Live Context",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("first-run setup connects, selects a discovered model, and saves it for use", async () => {
   const state = stateFixture();
   state.settings.profiles = [];
@@ -1776,7 +1871,7 @@ test("Profile actions stay outside the scrollable Settings form", async () => {
     const scroll = harness.document.querySelector<HTMLElement>(".settings-scroll");
     const actions = harness.document.querySelector<HTMLElement>(".settings-actions");
     const generation = harness.document.querySelector<HTMLElement>(
-      "#generationSettingsSection",
+      "#generationSettings",
     );
 
     assert.ok(panel);

@@ -67,7 +67,91 @@
           status.hidden = !state.status;
           delete status.dataset.profileGate;
           status.classList.remove("error");
-          document.getElementById("context").textContent = state.contextSummary || "";
+          renderContextSummary(state.contextSummary || "");
+        }
+
+        function renderContextSummary(summary) {
+          const context = document.getElementById("context");
+          const header = document.createElement("div");
+          header.className = "context-header";
+          const kicker = document.createElement("span");
+          kicker.className = "context-kicker";
+          kicker.textContent = "Current Live Context";
+          const snapshotLabel = document.createElement("span");
+          snapshotLabel.className = "context-snapshot-label";
+          snapshotLabel.textContent = "Session snapshot";
+          header.append(kicker, snapshotLabel);
+
+          const lines = String(summary)
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          if (!lines.length) {
+            const empty = document.createElement("p");
+            empty.className = "context-empty";
+            empty.textContent = "No Live context is available for this Session.";
+            context.replaceChildren(header, empty);
+            return;
+          }
+
+          const card = document.createElement("section");
+          card.className = "context-card";
+          const title = document.createElement("h2");
+          title.className = "context-title";
+          title.textContent = lines[0];
+          card.append(title);
+
+          if (lines.length > 1) {
+            const details = document.createElement("div");
+            details.className = "context-details";
+            for (const line of lines.slice(1)) {
+              const properties = contextPropertiesForLine(line);
+              if (properties.length) {
+                const group = document.createElement("div");
+                group.className = "context-properties";
+                for (const property of properties) {
+                  const item = document.createElement("div");
+                  item.className = "context-property";
+                  const label = document.createElement("span");
+                  label.className = "context-property-label";
+                  label.textContent = property.label.toUpperCase();
+                  const value = document.createElement("span");
+                  value.className = "context-property-value";
+                  value.textContent = property.value || "—";
+                  item.append(label, value);
+                  group.append(item);
+                }
+                details.append(group);
+                continue;
+              }
+              const detail = document.createElement("p");
+              detail.className = "context-detail";
+              detail.textContent = line;
+              details.append(detail);
+            }
+            card.append(details);
+          }
+          context.replaceChildren(header, card);
+        }
+
+        function contextPropertiesForLine(line) {
+          if (line.startsWith("- ")) return [];
+          const segments = line.split(/,\s+/);
+          const segmented = segments.map(parseContextProperty);
+          if (segmented.every(Boolean)) return segmented;
+          const single = parseContextProperty(line);
+          return single ? [single] : [];
+        }
+
+        function parseContextProperty(value) {
+          const separator = value.indexOf("=");
+          if (separator <= 0) return null;
+          const label = value.slice(0, separator).trim();
+          if (!/^[a-z][a-z0-9 ]{0,31}$/i.test(label)) return null;
+          return {
+            label,
+            value: value.slice(separator + 1).trim(),
+          };
         }
 
         function activeProfile() {

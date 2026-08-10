@@ -1216,21 +1216,21 @@
       select:focus {
         outline: 0;
         border-color: var(--accent);
+        box-shadow: inset 0 0 0 1px var(--accent-soft);
       }
 
       button:focus-visible,
-      textarea:focus-visible,
-      input:focus-visible,
-      select:focus-visible,
       summary:focus-visible {
-        outline: 2px solid var(--accent);
+        outline: 1px solid var(--accent);
         outline-offset: 2px;
       }
 
-      .tab-panel:focus,
-      .tab-panel:focus-visible {
+      .tab-panel:focus {
         outline: 0;
-        box-shadow: inset 0 0 0 2px var(--accent);
+      }
+
+      .tab-panel:focus-visible {
+        box-shadow: inset 0 2px 0 rgba(120, 185, 232, 0.85);
       }
 
       button {
@@ -1360,9 +1360,13 @@
 
       .settings {
         display: grid;
-        gap: 14px;
+        gap: 0;
         padding: 12px;
         border-bottom: 1px solid var(--line-soft);
+      }
+
+      .model-setup-guide + .settings-section {
+        margin-top: 14px;
       }
 
       .model-setup-guide {
@@ -1416,8 +1420,9 @@
       }
 
       .settings-section + .settings-section {
-        padding-top: 14px;
-        border-top: 1px solid var(--line-soft);
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #5a5a5a;
       }
 
       .settings-section h2 {
@@ -1599,22 +1604,6 @@
         background: var(--chrome);
       }
 
-      .settings details {
-        border-top: 1px solid var(--line-soft);
-        padding-top: 8px;
-      }
-
-      .settings details > summary {
-        color: var(--muted);
-        cursor: pointer;
-        font-size: 12px;
-        margin-bottom: 8px;
-      }
-
-      .settings details > summary:hover {
-        color: var(--text);
-      }
-
       .advanced-fields {
         display: grid;
         gap: 9px;
@@ -1629,15 +1618,29 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        min-height: 30px;
+        min-height: 28px;
         margin: 0 !important;
         color: var(--text) !important;
         font-weight: 600;
+        cursor: pointer;
+      }
+
+      .settings-disclosure > summary:hover {
+        color: var(--text);
+      }
+
+      .top-level-settings > summary > span {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
       }
 
       .settings-disclosure > summary small {
         color: var(--quiet);
         font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
       }
 
       .settings-disclosure > .advanced-fields {
@@ -1768,13 +1771,124 @@
       }
 
       .context {
+        display: grid;
+        align-content: start;
+        gap: 10px;
         min-height: 0;
         overflow: auto;
-        white-space: pre-wrap;
-        color: var(--muted);
-        line-height: 1.4;
         padding: 12px;
+        color: var(--muted);
         scrollbar-gutter: stable;
+        overscroll-behavior: contain;
+      }
+
+      .context-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .context-kicker {
+        color: var(--text);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .context-snapshot-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--quiet);
+        font-size: 9px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .context-snapshot-label::before {
+        width: 6px;
+        height: 6px;
+        content: "";
+        background: var(--accent);
+        border-radius: 50%;
+        box-shadow: 0 0 0 2px var(--accent-soft);
+      }
+
+      .context-card {
+        min-width: 0;
+        padding: 12px 12px 12px 15px;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 5px;
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+
+      .context-title {
+        margin: 0;
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+        text-wrap: pretty;
+      }
+
+      .context-details {
+        display: grid;
+        gap: 7px;
+        margin-top: 11px;
+      }
+
+      .context-properties {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        background: var(--line-soft);
+        border: 1px solid var(--line-soft);
+        border-radius: 4px;
+      }
+
+      .context-property {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+        padding: 7px 8px;
+        background: var(--pane);
+      }
+
+      .context-property:last-child:nth-child(odd) {
+        grid-column: 1 / -1;
+      }
+
+      .context-property-label {
+        color: var(--quiet);
+        font-size: 9px;
+        letter-spacing: 0.05em;
+      }
+
+      .context-property-value {
+        min-width: 0;
+        color: var(--trace);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .context-detail,
+      .context-empty {
+        margin: 0;
+        padding: 7px 8px;
+        color: var(--muted);
+        background: var(--pane);
+        border-left: 2px solid var(--line-soft);
+        font-size: 11px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -1933,10 +2047,8 @@
                 </div>
               </section>
 
-              <section id="generationSettingsSection" class="settings-section" aria-labelledby="generationSettingsHeading">
-                <h2 id="generationSettingsHeading">Response</h2>
-                <details id="generationSettings" class="settings-disclosure">
-                  <summary>Response settings <small>Optional</small></summary>
+              <details id="generationSettings" class="settings-section settings-disclosure top-level-settings">
+                  <summary><span>Response</span><small>Optional</small></summary>
                   <div class="advanced-fields">
                     <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
                     <div class="field">
@@ -1962,10 +2074,9 @@
                       <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
                     </div>
                   </div>
-                </details>
-              </section>
+              </details>
 
-              <details id="advancedSettings" class="settings-section settings-disclosure advanced-settings">
+              <details id="advancedSettings" class="settings-section settings-disclosure top-level-settings advanced-settings">
                 <summary id="advancedSettingsHeading"><span>Advanced</span><small>Overrides &amp; request JSON</small></summary>
                 <div class="advanced-groups">
                   <fieldset class="advanced-group">
