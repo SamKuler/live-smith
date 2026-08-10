@@ -95,3 +95,58 @@ test("SessionMutationFence does not enqueue an already-aborted operation", async
   });
   assert.equal(starts, 1);
 });
+
+test("SessionMutationFence distinguishes active and queued named operations", async () => {
+  const fence = new SessionMutationFence();
+  let releaseFirst!: () => void;
+  let firstStarted!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const firstActive = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+
+  const first = fence.runNamed("session-a", "send", undefined, async () => {
+    firstStarted();
+    await firstGate;
+  });
+  await firstActive;
+  const queued = fence.runNamed("session-a", "skills", undefined, async () => undefined);
+
+  assert.equal(fence.hasActive("session-a", "send"), true);
+  assert.equal(fence.hasActive("session-a", "skills"), false);
+  assert.equal(fence.hasQueuedOrActive("session-a", "send"), true);
+  assert.equal(fence.hasQueuedOrActive("session-a", "skills"), true);
+  assert.equal(fence.hasActive("session-b", "send"), false);
+  assert.equal(fence.hasQueuedOrActive("session-b", "send"), false);
+
+  releaseFirst();
+  await Promise.all([first, queued]);
+  assert.equal(fence.hasActive("session-a", "send"), false);
+});
+
+test("SessionMutationFence exposes a send queued behind another Session mutation", async () => {
+  const fence = new SessionMutationFence();
+  let releaseFirst!: () => void;
+  let firstStarted!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const firstActive = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+
+  const first = fence.runNamed("session-a", "attachment", undefined, async () => {
+    firstStarted();
+    await firstGate;
+  });
+  await firstActive;
+  const send = fence.runNamed("session-a", "send", undefined, async () => undefined);
+
+  assert.equal(fence.hasActive("session-a", "send"), false);
+  assert.equal(fence.hasQueuedOrActive("session-a", "send"), true);
+
+  releaseFirst();
+  await Promise.all([first, send]);
+});

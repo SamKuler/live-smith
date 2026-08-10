@@ -11,6 +11,7 @@
       __HOST_ADAPTER_SCRIPT__
       __PROFILE_EDITOR_SCRIPT__
       __ATTACHMENTS_SCRIPT__
+      __SKILL_MANAGER_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __CAPABILITY_PREVIEW_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
@@ -954,6 +955,7 @@
       }
 
       .composer {
+        position: relative;
         display: grid;
         grid-template-columns: auto minmax(0, 1fr) auto;
         gap: 8px;
@@ -1036,6 +1038,48 @@
         color: var(--quiet);
         font-size: 10px;
         line-height: 1.35;
+      }
+
+      .skill-autocomplete {
+        position: absolute;
+        z-index: 8;
+        right: 76px;
+        bottom: calc(100% - 4px);
+        left: 142px;
+        display: grid;
+        max-height: 210px;
+        overflow-y: auto;
+        padding: 4px;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+      }
+
+      .skill-autocomplete[hidden] {
+        display: none;
+      }
+
+      .skill-suggestion {
+        display: grid;
+        gap: 2px;
+        width: 100%;
+        min-height: 40px;
+        padding: 6px 8px;
+        color: var(--text);
+        text-align: left;
+        background: transparent;
+        border-radius: 4px;
+      }
+
+      .skill-suggestion span {
+        color: var(--quiet);
+        font-size: 11px;
+      }
+
+      .skill-suggestion[aria-selected="true"],
+      .skill-suggestion:hover {
+        background: var(--accent-soft);
       }
 
       textarea,
@@ -1272,6 +1316,72 @@
         padding: 0 5px;
       }
 
+      .skill-manager {
+        display: grid;
+        gap: 7px;
+      }
+
+      .skill-list {
+        display: grid;
+        gap: 5px;
+      }
+
+      .skill-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 6px;
+        padding: 7px;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 5px;
+      }
+
+      .skill-toggle {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+        gap: 7px;
+        min-width: 0;
+        color: var(--text);
+        cursor: pointer;
+        text-transform: none;
+      }
+
+      .skill-toggle input {
+        width: 16px;
+        height: 16px;
+        margin: 2px 0 0;
+        accent-color: var(--accent);
+      }
+
+      .skill-copy {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .skill-copy strong,
+      .skill-copy span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .skill-copy span,
+      .skill-empty,
+      .skill-note {
+        color: var(--quiet);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .skill-delete {
+        height: 26px;
+        padding: 0 7px;
+        font-size: 11px;
+      }
+
       .draft-status {
         color: var(--quiet);
         font-size: 11px;
@@ -1437,7 +1547,8 @@
             <span id="attachmentCapabilityHint" class="visually-hidden" role="status" aria-live="polite" hidden></span>
             <p id="audioSourceAttachmentNote" class="audio-source-note">Audio sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
-            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
+            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
+            <div id="skillAutocomplete" class="skill-autocomplete" role="listbox" aria-label="Skill suggestions" hidden></div>
             <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>
           </div>
         </section>
@@ -1466,6 +1577,15 @@
                   <label for="profileName">Profile name</label>
                   <input id="profileName" name="profileName" autocomplete="off" oninput="LiveSmithUI.markDraftDirty(this)" />
                 </div>
+              </section>
+
+              <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false">
+                <h2 id="skillsHeading">Skills</h2>
+                <p class="skill-note">Skills add local workflow guidance to this Session. They cannot add tools, access files, or bypass approval.</p>
+                <div id="skillList" class="skill-list" aria-label="Installed Skills"></div>
+                <p id="skillEmptyState" class="skill-empty">No Skills installed.</p>
+                <input id="skillFileInput" class="visually-hidden" type="file" accept=".md,text/markdown" tabindex="-1" aria-hidden="true" />
+                <button id="importSkillButton" class="secondary" type="button">Import SKILL.md</button>
               </section>
 
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">

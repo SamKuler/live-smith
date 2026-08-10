@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { throwIfAborted } from "../runtime/host.js";
 
 interface PendingSessionMutation {
+  kind: string | undefined;
   started: boolean;
   start(): void;
   cancel(): void;
@@ -10,6 +11,25 @@ interface PendingSessionMutation {
 
 export class SessionMutationFence {
   private readonly queues = new Map<string, PendingSessionMutation[]>();
+
+  hasActive(key: string, kind: string): boolean {
+    return this.queues.get(key)?.some(
+      (entry) => entry.started && entry.kind === kind,
+    ) ?? false;
+  }
+
+  hasQueuedOrActive(key: string, kind: string): boolean {
+    return this.queues.get(key)?.some((entry) => entry.kind === kind) ?? false;
+  }
+
+  runNamed<T>(
+    key: string,
+    kind: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.enqueue(key, kind, signal, operation);
+  }
 
   run<T>(key: string, operation: () => Promise<T>): Promise<T>;
   run<T>(
@@ -31,6 +51,15 @@ export class SessionMutationFence {
     if (!operation) {
       return Promise.reject(new Error("Session mutation operation is required."));
     }
+    return this.enqueue(key, undefined, signal, operation);
+  }
+
+  private enqueue<T>(
+    key: string,
+    kind: string | undefined,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     try {
       throwIfAborted(signal);
     } catch (error) {
@@ -40,6 +69,7 @@ export class SessionMutationFence {
     return new Promise<T>((resolve, reject) => {
       let abortListener: (() => void) | undefined;
       const entry: PendingSessionMutation = {
+        kind,
         started: false,
         start: () => {
           if (entry.started) return;

@@ -70,6 +70,8 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     activeSessionId: "",
     events: [],
     pendingAttachments: [],
+    availableSkills: [],
+    activeSkillIds: [],
     capabilities: {
       tools: true,
       streaming: false,

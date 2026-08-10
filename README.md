@@ -33,6 +33,9 @@
   can also be copied into the pending attachments. Images, native PDFs, and
   audio have explicit provider capability boundaries; Office documents are
   extracted locally as bounded text.
+- Installs strict local `SKILL.md` workflow guides, lets each Session keep up to
+  four enabled Skills, and supports one-turn `$skill-id` mentions outside
+  Markdown code. Skill bodies never enter chat state, events, or logs.
 - Renders user and assistant messages with locally bundled, sanitized Markdown,
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
@@ -276,6 +279,44 @@ they cannot become sample-source arguments or authorize filesystem access.
 See [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) for provider details and
 capability resolution.
 
+### Local Skills
+
+Open **Settings → Skills** to import one UTF-8 `SKILL.md`. The file must be at
+most 64 KiB and use exactly this frontmatter shape before a non-empty Markdown
+body:
+
+```markdown
+---
+name: mix-review
+description: Review balance, space, and mix translation
+---
+Your local workflow guidance goes here.
+```
+
+Names use lowercase letters, numbers, and single hyphens. Live Smith stores at
+most 32 Skills and 1 MiB of Skill source in total. A Session can enable at most
+four; enabled Skill IDs persist with that Session. Typing `$mix-review` at a
+normal whitespace boundary adds an installed Skill for one request without
+changing the prompt. Mentions inside inline or fenced Markdown code, email/path
+tokens, currency-like numbers, and numeric-leading IDs are not activated.
+
+Skills are locally installed declarative workflow guidance. They cannot install
+or execute scripts, binaries, MCP servers, plugins, nested resources, or
+arbitrary paths; change provider settings; add tools; or add Live actions. A
+Skill never expands the built-in action schema or tool set. Every action remains
+subject to observation, schema validation, the selected Approval policy,
+preflight, cancellation, process-wide mutation serialization, and state-drift
+revalidation. Skill Markdown has lower priority than Live Smith's system and
+safety instructions and cannot authorize secrets, filesystem access,
+unsupported provider fields, or actions outside the built-in schema.
+
+Import and delete use separate authenticated local bridge routes; `/send`
+remains exactly `{ prompt, sessionId }`. Only Skill ID/description summaries and
+active IDs reach the UI. Selected bodies are read and hash-checked only when a
+request actually activates them, then escaped into a bounded 128-KiB system
+instruction block. Deleting a Skill is blocked while any current, historical,
+or archived Session uses it; the UI can disable it across those Sessions first.
+
 ## Local data and privacy
 
 Settings are stored locally in the per-extension directory supplied by the
@@ -329,12 +370,14 @@ The directory contains:
 - `live-smith-settings.json` — saved Profiles, the active Profile, API keys,
   generation settings, and the global Approval mode.
 - `live-smith-sessions.json` — Session titles, Live object scopes, and
-  timestamps.
+  timestamps, plus optional sorted active Skill IDs.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
   tool results, confirmations, and errors for each Session.
 - `live-smith-attachments/<session-id>/` — private attachment blobs and integrity
   metadata owned by that Session.
 - `live-smith-models-<profile-id>-<hash>.json` — provider model-discovery cache.
+- `live-smith-skills/` — private Skill catalog, recovery metadata, and one
+  strict `SKILL.md` definition per installed ID.
 
 On POSIX systems, Live Smith restricts the directory, JSON files, and attachment
 blobs to the current user. If the SDK does not provide a storage directory, data

@@ -10,6 +10,7 @@ import type { SessionEvent } from "../storage/events.js";
 import type { SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
+import type { SkillSummary } from "../skills/format.js";
 
 export interface ChatDialogState {
   defaultPrompt: string;
@@ -24,6 +25,8 @@ export interface ChatDialogState {
   activeSessionId: string;
   events: SessionEvent[];
   pendingAttachments: SessionAttachmentRef[];
+  availableSkills: SkillSummary[];
+  activeSkillIds: string[];
   capabilities: ModelCapabilities;
   availableModels: ModelInfo[];
   modelStateSource: ChatModelStateSource | null;

@@ -20,6 +20,9 @@ src/
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
+    skill-context.ts
+      Resolves persistent and one-turn Skill activation from one immutable,
+      hash-validated storage snapshot without changing prompt bytes.
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
       context from events.
@@ -45,6 +48,10 @@ src/
       or changing the owned source bytes.
     image.ts, pdf.ts, ooxml*.ts, docx.ts, xlsx.ts, pptx.ts
       Type-specific inspection and bounded local document extraction.
+
+  skills/
+    format.ts
+      Strict UTF-8 `SKILL.md` parser and safe Skill ID/summary contracts.
 
   live/
     action-bindings.ts
@@ -100,6 +107,9 @@ src/
     attachments.ts
       Private create-only attachment blobs, integrity metadata, ownership checks,
       quota policy, and durable Session-scoped cleanup.
+    skills.ts
+      Private bounded Skill catalog with recoverable replacement/deletion and
+      selected-definition integrity checks.
 
   ui/
     chat-state.ts
@@ -111,8 +121,8 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus isolated Profile editor, bridge lifecycle,
-      file attachment, capability preview, and session/timeline factories with
-      an explicit dependency-injection bootstrap.
+      file attachment, local Skill manager, capability preview, and
+      session/timeline factories with an explicit dependency-injection bootstrap.
 ```
 
 ## Model request flow
@@ -125,26 +135,31 @@ src/
 3. `capabilities.ts` resolves effective model capabilities and validates the
    saved generation parameters from manual overrides, raw discovery metadata,
    known policy, and conservative fallback.
-4. Before appending the user event, `attachment-context.ts` verifies pending
+4. Before attachment reads or event append, `skill-context.ts` unions sorted
+   persistent Session IDs with installed `$skill-id` mentions. It validates and
+   copies only selected definitions inside one global storage transaction,
+   escapes their `&<>` boundary text, and freezes one 128-KiB-bounded instruction
+   snapshot for every model turn in the loop. The original prompt is not rewritten.
+5. Before appending the user event, `attachment-context.ts` verifies pending
    attachment metadata/blobs, resolves current plus bounded historical user
    parts, and extracts supported Office text. The append atomically consumes the
    current immutable references only after current-file validation succeeds.
-5. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
+6. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
    Messages.
-6. The transport maps normalized tools/messages/parameters to the wire protocol.
-7. The transport returns normalized text/tool calls and opaque replay state.
-8. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
+7. The transport maps normalized tools/messages/parameters to the wire protocol.
+8. The transport returns normalized text/tool calls and opaque replay state.
+9. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
    tempo, mute, solo, and device parameter value. Host `bigint` values are
    encoded deterministically at this fingerprint boundary instead of being
    passed to ordinary JSON serialization; no Approval mode can bypass the
    guard.
-9. After confirmation and immediately before execution, `agent/loop.ts` invokes
+10. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
    other action-relevant state performs no mutation and returns a failed tool
    result so the model can inspect again before proposing a new confirmation.
-10. `agent/loop.ts` executes the bounded apply loop without inspecting provider
+11. `agent/loop.ts` executes the bounded apply loop without inspecting provider
    or protocol data. Successful or partially successful Live writes and new,
    distinct observations renew a rolling no-progress budget. Repeating the same
    observation and result does not. Execution returns an explicit mutation count,
@@ -176,6 +191,69 @@ current local agent loop and replayed unchanged when their protocol requires it.
 Non-2xx provider response bodies are treated as untrusted and are not read,
 logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and status text.
+
+## Skill boundary
+
+A Skill is one declarative, local UTF-8 `SKILL.md`; it is not a general Codex or
+Claude Code Skill package. The parser accepts exactly two plain frontmatter
+scalars (`name` and `description`) followed by a non-empty Markdown body. It
+rejects malformed UTF-8, BOMs, unsafe controls, ambiguous YAML constructs, and
+files larger than 64 KiB. The catalog permits 32 definitions and 1 MiB total.
+Directories, symlinks, scripts, binaries, assets, nested references, plugins,
+MCP servers, executables, and caller-supplied paths are outside this contract.
+
+`storage/skills.ts` derives every path from a validated Skill ID and uses the
+same global per-storage transaction queue as Sessions. Install/replace/delete
+uses a recoverable pending mutation plus private staging, durable atomic writes,
+directory identity checks before and after mutation, and strict catalog
+validation. Stable catalog listing reads summaries and safe file metadata only;
+only selected definitions are opened, bounded, hash-checked, and parsed. Catalog
+capabilities are scoped to an active opaque storage transaction, and detached
+operations are drained before the transaction releases.
+
+`AgentSession.activeSkillIds` is an optional, sorted, unique list of at most four
+safe IDs. Activation validates the Session and installed catalog, then writes
+the Session inside the same global storage transaction. Normal active Sessions
+can add or remove installed Skills. Archived and foreign-project Sessions allow
+removal-only changes so a user can unblock catalog deletion without restoring a
+historical Live binding. Deletion scans all current, historical, and archived
+Sessions in the same transaction and refuses while any still references the ID.
+
+The per-Session mutation fence labels active sends. A cross-dialog
+`set_session_skills` command fails immediately while that Session is sending;
+otherwise queue order determines whether activation precedes the next send. A
+send resolves persistent IDs and lexical `$skill-id` candidates in one storage
+transaction before attachments or event append. Unknown mentions remain plain
+prompt text. Inline code, CommonMark backtick/tilde fences, email/path tokens,
+currency-like numeric tokens, and numeric-leading IDs are not mention syntax.
+The prompt and persisted user event remain byte-for-byte unchanged.
+
+Selected definitions are escaped at the wrapper boundary, sorted by ID, and
+limited to 128 KiB after final UTF-8 rendering. The same immutable block is used
+for every model turn. System order is the four built-in safety instructions,
+the fixed lower-priority Skill boundary, rendered Skill blocks, then the Live
+action system prompt. Empty activation produces the exact legacy system text.
+Skill IDs/descriptions and active IDs may enter chat state; bodies, hashes,
+frontmatter source, and paths never enter chat state, Session events, logs, or
+errors.
+
+Skills are locally installed declarative workflow guidance. They cannot install
+or execute scripts, binaries, MCP servers, plugins, nested resources, or
+arbitrary paths; change provider settings; add tools; or add Live actions. A
+Skill never expands the built-in action schema or tool set. Every action remains
+subject to observation, schema validation, Approval policy, preflight,
+cancellation, process-wide mutation serialization, and state-drift
+revalidation. Skill Markdown has lower priority than system and safety
+instructions and cannot authorize secrets, filesystem access, unsupported
+provider fields, or actions outside the built-in schema.
+
+The authenticated local bridge exposes a raw `POST /skills` route with exact
+`text/markdown; charset=utf-8`, a 64-KiB reader, a bounded process-wide read
+permit, timeout, optional explicit replacement, and an ID/SHA-256 receipt.
+`DELETE /skills/:id` is idempotent after confirmed absence. Both use command
+correlation and authoritative-state reconciliation. `/send` stays exactly
+`{ prompt, sessionId }`; activation is the strict
+`{ kind: "set_session_skills", sessionId, skillIds }` command.
 
 ## Attachment boundary
 
@@ -398,8 +476,9 @@ whose scope kind matches the current opening scope may use Continue here; this
 does not match names or infer identity. The command sends only the Session ID,
 and `restore_session` atomically binds the history to the current server-owned
 handle while preserving the first binding as `originScope`. Rename, archive,
-unarchive, and delete operate on current or historical Sessions. `archivedAt` is
-an optional additive field, so existing Session files require no migration.
+unarchive, and delete operate on current or historical Sessions. `archivedAt`
+and `activeSkillIds` are optional additive fields, so existing Session files
+require no migration.
 Model context uses the latest 24 user/assistant events plus a separate bounded
 projection of the latest 12 persisted Apply results, rejected tool inputs, and
 errors (at most 12,000 characters). Recovery records are labelled untrusted
@@ -408,7 +487,8 @@ active send per Session while different Sessions may observe and plan in
 parallel. A process-wide lease keyed by normalized storage directory and
 Session ID spans exact Session lookup, attachment consumption, the provider/tool
 loop, all trace/error persistence, and the final authoritative state snapshot.
-Upload/delete and Session rename/archive/unarchive/delete use the same lease, so
+Upload/delete, Skill activation, and Session rename/archive/unarchive/delete use
+the same lease, so
 another dialog cannot delete a Session and then have a running send recreate its
 event log. A send never falls back to another Session when its requested ID is
 missing. Waiting operations recheck cancellation immediately after acquiring
@@ -511,4 +591,5 @@ rather than reordering mutations before the user authorizes them.
 Bridge JSON inputs are strict route-specific contracts. Send accepts only
 `prompt` and `sessionId`; Session and Profile commands accept only their
 command-specific fields; confirmation and Stop reject body fields they do not
-own. Every JSON body is bounded to 1 MiB before parsing.
+own. Every JSON body is bounded to 1 MiB before parsing. Skill source is never a
+JSON field; it uses the separate authenticated raw route described above.

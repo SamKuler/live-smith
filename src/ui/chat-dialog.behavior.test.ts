@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer as NodeBuffer } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
 import * as fs from "node:fs";
 import test from "node:test";
@@ -14,6 +15,7 @@ import { composeChatDocument } from "./chat-document.js";
 interface BridgeCall {
   path: string;
   body: BodyInit | null | undefined;
+  headers?: HeadersInit;
   jsonBody?: unknown;
   url: string;
 }
@@ -83,6 +85,7 @@ interface DialogHarness {
   dispatchDrop(files: File[]): boolean;
   dispatchDragOver(files: File[]): boolean;
   selectAttachmentFiles(files: File[]): void;
+  selectSkillFile(file: File): void;
   settle(): Promise<void>;
   settleAttachmentOperation(): Promise<void>;
   window: JSDOM["window"];
@@ -102,6 +105,7 @@ const clientScripts = {
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
   sessionTimeline: readClientScript("session-timeline"),
+  skillManager: readClientScript("skill-manager"),
 };
 
 function renderChatHtml(
@@ -202,6 +206,8 @@ function stateFixture(): ChatDialogState {
     activeSessionId: "session-1",
     events: [],
     pendingAttachments: [],
+    availableSkills: [],
+    activeSkillIds: [],
     capabilities: capabilities(),
     availableModels: [],
     modelStateSource: modelStateSourceFixture(profileFixture()),
@@ -419,6 +425,7 @@ async function createDialogHarness(
             calls.push({
               path: url.pathname,
               body: init?.body,
+              ...(init?.headers === undefined ? {} : { headers: init.headers }),
               ...(body === undefined ? {} : { jsonBody: body }),
               url: url.toString(),
             });
@@ -519,6 +526,55 @@ async function createDialogHarness(
               return response(cloneState(serverState));
             }
 
+            if (url.pathname === "/skills" && init?.method === "POST") {
+              const file = init.body as File;
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              const source = NodeBuffer.from(bytes).toString("utf8");
+              const id = /^name:\s*(.+)$/m.exec(source)?.[1]?.trim() ?? "";
+              const description = /^description:\s*(.+)$/m.exec(source)?.[1]?.trim() ?? "";
+              const existing = serverState.availableSkills.find(
+                (skill) => skill.id === id,
+              );
+              if (existing && url.searchParams.get("replace") !== "true") {
+                return failedResponse(
+                  { error: `Skill ${id} is already installed.` },
+                  409,
+                  "Conflict",
+                );
+              }
+              serverState.availableSkills = [
+                ...serverState.availableSkills.filter((skill) => skill.id !== id),
+                { id, description },
+              ].sort((left, right) => left.id.localeCompare(right.id));
+              return response({
+                state: cloneState(serverState),
+                receipt: {
+                  id,
+                  sha256: createHash("sha256").update(bytes).digest("hex"),
+                },
+              });
+            }
+
+            if (url.pathname.startsWith("/skills/") && init?.method === "DELETE") {
+              const skillId = decodeURIComponent(url.pathname.slice("/skills/".length));
+              const inUse = [
+                ...serverState.sessions,
+                ...serverState.previousSessions,
+                ...serverState.archivedSessions,
+              ].some((session) => session.activeSkillIds?.includes(skillId));
+              if (inUse) {
+                return failedResponse(
+                  { error: "Remove this Skill from every Session before deleting it." },
+                  409,
+                  "Conflict",
+                );
+              }
+              serverState.availableSkills = serverState.availableSkills.filter(
+                (skill) => skill.id !== skillId,
+              );
+              return response(cloneState(serverState));
+            }
+
             if (url.pathname === "/command") {
               if (nextCommandRejection) {
                 const error = nextCommandRejection;
@@ -541,6 +597,7 @@ async function createDialogHarness(
                 profile?: SavedProfile;
                 profileId?: string;
                 sessionId?: string;
+                skillIds?: string[];
                 title?: string;
               };
               if (
@@ -624,6 +681,20 @@ async function createDialogHarness(
                 pendingAttachmentsBySession.set(command.sessionId, next);
                 if (serverState.activeSessionId === command.sessionId) {
                   serverState.pendingAttachments = next;
+                }
+              } else if (
+                command.kind === "set_session_skills" &&
+                command.sessionId &&
+                Array.isArray(command.skillIds)
+              ) {
+                const session = [
+                  ...serverState.sessions,
+                  ...serverState.previousSessions,
+                  ...serverState.archivedSessions,
+                ].find((entry) => entry.id === command.sessionId);
+                if (session) session.activeSkillIds = [...command.skillIds].sort();
+                if (serverState.activeSessionId === command.sessionId) {
+                  serverState.activeSkillIds = [...command.skillIds].sort();
                 }
               } else if (command.kind === "restore_session" && command.sessionId) {
                 const restored = serverState.previousSessions.find(
@@ -959,6 +1030,11 @@ async function createDialogHarness(
     selectAttachmentFiles(files) {
       const input = required<HTMLInputElement>("#attachmentInput");
       Object.defineProperty(input, "files", { configurable: true, value: files });
+      input.dispatchEvent(new window.Event("change", { bubbles: true }));
+    },
+    selectSkillFile(file) {
+      const input = required<HTMLInputElement>("#skillFileInput");
+      Object.defineProperty(input, "files", { configurable: true, value: [file] });
       input.dispatchEvent(new window.Event("change", { bubbles: true }));
     },
     async settle() {
@@ -6146,6 +6222,240 @@ test("session actions send only their command-specific fields", async () => {
       },
     ]);
     assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Skill import, activation, and deletion keep bodies off JSON command paths", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    const markdown = [
+      "---",
+      "name: mix-review",
+      "description: Review balance and space",
+      "---",
+      "PRIVATE SKILL BODY",
+      "",
+    ].join("\n");
+    const file = new harness.window.File(
+      [markdown],
+      "PRIVATE-local-path-name.md",
+      { type: "text/markdown" },
+    );
+    harness.selectSkillFile(file);
+    await waitForCondition(
+      () => harness.calls.some((call) => call.path === "/skills"),
+      "Expected Skill import request.",
+    );
+    await harness.settle();
+
+    const upload = harness.calls.find((call) => call.path === "/skills");
+    assert.ok(upload);
+    assert.equal(upload.body, file);
+    assert.equal(upload.url.includes("PRIVATE-local-path-name"), false);
+    assert.equal(
+      (upload.headers as Record<string, string>)["Content-Type"],
+      "text/markdown; charset=utf-8",
+    );
+    assert.match(
+      (upload.headers as Record<string, string>)["X-Live-Smith-Command-Id"] ?? "",
+      /^[A-Za-z0-9._:-]+$/,
+    );
+    assert.match(
+      harness.document.querySelector("[data-skill-id='mix-review']")?.textContent ?? "",
+      /Review balance and space/,
+    );
+    assert.doesNotMatch(harness.document.body.textContent ?? "", /PRIVATE SKILL BODY/);
+
+    const toggle = harness.document.querySelector<HTMLInputElement>(
+      "[data-skill-id='mix-review'] input[type='checkbox']",
+    );
+    assert.ok(toggle);
+    toggle.click();
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_session_skills",
+      sessionId: "session-1",
+      skillIds: ["mix-review"],
+    });
+    const deleteButton = harness.document.querySelector<HTMLButtonElement>(
+      "[data-skill-id='mix-review'] .skill-delete",
+    );
+    assert.equal(deleteButton?.disabled, false);
+    assert.equal(deleteButton?.textContent, "Disable");
+    deleteButton?.click();
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_session_skills",
+      sessionId: "session-1",
+      skillIds: [],
+    });
+    const enabledDelete = harness.document.querySelector<HTMLButtonElement>(
+      "[data-skill-id='mix-review'] .skill-delete",
+    );
+    assert.equal(enabledDelete?.disabled, false);
+    enabledDelete?.click();
+    await harness.settle();
+    assert.ok(harness.calls.some((call) => call.path === "/skills/mix-review"));
+    assert.equal(
+      harness.calls.filter((call) => call.jsonBody !== undefined)
+        .some((call) => JSON.stringify(call.jsonBody).includes("PRIVATE SKILL BODY")),
+      false,
+    );
+  } finally {
+    harness.close();
+  }
+});
+
+test("Skill replacement requires confirmation and retries the same raw file explicitly", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{ id: "mix-review", description: "Old guidance" }];
+  const harness = await createDialogHarness(state);
+  try {
+    const file = new harness.window.File([
+      "---\nname: mix-review\ndescription: New guidance\n---\nNew private body.\n",
+    ], "replacement.md", { type: "text/markdown" });
+    harness.selectSkillFile(file);
+    await waitForCondition(
+      () => harness.calls.filter((call) => call.path === "/skills").length === 2,
+      "Expected confirmed Skill replacement request.",
+    );
+    await harness.settle();
+
+    const uploads = harness.calls.filter((call) => call.path === "/skills");
+    assert.equal(uploads.length, 2);
+    assert.match(uploads[0]!.url, /replace=false/);
+    assert.match(uploads[1]!.url, /replace=true/);
+    assert.equal(uploads[0]!.body, file);
+    assert.equal(uploads[1]!.body, file);
+    assert.match(
+      harness.document.querySelector("[data-skill-id='mix-review']")?.textContent ?? "",
+      /New guidance/,
+    );
+  } finally {
+    harness.close();
+  }
+});
+
+test("Skill autocomplete is accessible and skips numeric IDs and Markdown code", async () => {
+  const state = stateFixture();
+  state.availableSkills = [
+    { id: "mix-review", description: "Review balance" },
+    { id: "midi-editor", description: "Edit notes" },
+    { id: "4-on-floor", description: "Numeric ID" },
+  ];
+  const harness = await createDialogHarness(state);
+  try {
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    const listbox = harness.document.querySelector<HTMLElement>("#skillAutocomplete");
+    assert.ok(prompt && listbox);
+    prompt.focus();
+    harness.input("#prompt", "$mi");
+    assert.equal(listbox.hidden, false);
+    assert.equal(prompt.getAttribute("aria-expanded"), "true");
+    assert.deepEqual(
+      [...listbox.querySelectorAll("[role='option'] strong")]
+        .map((option) => option.textContent),
+      ["$midi-editor", "$mix-review"],
+    );
+    prompt.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+    }));
+    assert.equal(prompt.value, "$midi-editor ");
+    assert.equal(listbox.hidden, true);
+
+    for (const value of [
+      "$4",
+      "`$mix`",
+      "```\n$mix\n```",
+      "~~~\n$mix\n~~~",
+      "mail $mix@example.com",
+      "path $mix/review",
+    ]) {
+      harness.input("#prompt", value);
+      assert.equal(listbox.hidden, true, `Expected no suggestion for ${value}`);
+    }
+
+    prompt.value = "$mix-review@example.com";
+    prompt.setSelectionRange("$mix-review".length, "$mix-review".length);
+    prompt.dispatchEvent(new harness.window.Event("input", { bubbles: true }));
+    assert.equal(listbox.hidden, true);
+
+    harness.input("#prompt", "` unmatched $mi");
+    assert.equal(listbox.hidden, false);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Cmd or Ctrl Enter sends the unchanged prompt instead of accepting a Skill suggestion", async () => {
+  const state = stateFixture();
+  state.availableSkills = [
+    { id: "midi-editor", description: "Edit notes" },
+    { id: "mix-review", description: "Review balance" },
+  ];
+  const harness = await createDialogHarness(state);
+  try {
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    const listbox = harness.document.querySelector<HTMLElement>("#skillAutocomplete");
+    assert.ok(prompt && listbox);
+    prompt.focus();
+    harness.input("#prompt", "$mi");
+    assert.equal(listbox.hidden, false);
+
+    prompt.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+      metaKey: true,
+    }));
+    await harness.settle();
+
+    assert.deepEqual(jsonCalls(harness, "/send"), [{
+      path: "/send",
+      body: { prompt: "$mi", sessionId: state.activeSessionId },
+    }]);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a Skill can be disabled from archived history before deletion", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{ id: "history-guide", description: "Historical guidance" }];
+  state.archivedSessions = [{
+    id: "session-archived",
+    title: "Archived mix",
+    projectKey: "previous-project",
+    scope: { kind: "track", identity: "old-track", label: "Old Track" },
+    archivedAt: "2026-08-09T00:00:00.000Z",
+    activeSkillIds: ["history-guide"],
+    createdAt: "2026-08-08T00:00:00.000Z",
+    updatedAt: "2026-08-09T00:00:00.000Z",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const disable = harness.document.querySelector<HTMLButtonElement>(
+      "[data-skill-id='history-guide'] .skill-delete",
+    );
+    assert.equal(disable?.textContent, "Disable");
+    disable?.click();
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_session_skills",
+      sessionId: "session-archived",
+      skillIds: [],
+    });
+    const deletion = harness.document.querySelector<HTMLButtonElement>(
+      "[data-skill-id='history-guide'] .skill-delete",
+    );
+    assert.equal(deletion?.textContent, "Delete");
+    deletion?.click();
+    await harness.settle();
+    assert.ok(harness.calls.some((call) => call.path === "/skills/history-guide"));
   } finally {
     harness.close();
   }

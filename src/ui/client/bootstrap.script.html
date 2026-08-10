@@ -29,6 +29,14 @@
           uploadAttachments: bridgeClient.uploadAttachments,
         });
 
+        const skillManager = factories.createSkillManager({
+          deleteSkill: bridgeClient.deleteSkill,
+          getState,
+          installSkill: bridgeClient.installSkill,
+          runCommand: bridgeClient.runCommand,
+          showStatus: bridgeClient.showStatus,
+        });
+
         const profileEditor = factories.createProfileEditor({
           getState,
           runCommand: bridgeClient.runCommand,
@@ -120,6 +128,7 @@
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
           attachments.renderPending();
+          skillManager.render();
           capabilityPreview.updateReasoningVisibility();
           capabilityPreview.updateDraftActions();
         }
@@ -166,6 +175,7 @@
             controlId: "attachSelectedAudioButton",
             status: "Copying selected source audio…",
           },
+          set_session_skills: { status: "Updating Session Skills…" },
         };
         let activeCommandControl = null;
         let activeCommandAriaLabel = null;
@@ -223,12 +233,14 @@
           attachmentInProgress,
           commandKind,
           sendInProgress,
+          skillInProgress,
         }) {
           const operationBusy = Boolean(commandKind) || sendInProgress ||
-            attachmentInProgress;
-          const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress;
+            attachmentInProgress || skillInProgress;
+          const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress ||
+            skillInProgress;
           const settingsBusy = Boolean(commandKind) || anySendInProgress ||
-            attachmentInProgress;
+            attachmentInProgress || skillInProgress;
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
           sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
@@ -259,10 +271,12 @@
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
-          approvalMode.disabled = Boolean(commandKind) || attachmentInProgress;
+          approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
+            skillInProgress;
           document.getElementById("sendButton").disabled =
-            Boolean(commandKind) || attachmentInProgress;
+            Boolean(commandKind) || attachmentInProgress || skillInProgress;
           attachments.setBusy(operationBusy);
+          skillManager.setBusy(operationBusy);
 
           if (!operationBusy) {
             capabilityPreview.updateReasoningVisibility();
@@ -317,6 +331,7 @@
         };
 
         window.addEventListener("DOMContentLoaded", () => {
+          skillManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();
@@ -325,6 +340,7 @@
           const prompt = document.getElementById("prompt");
           prompt.value = "";
           prompt.addEventListener("keydown", (event) => {
+            if (event.defaultPrevented) return;
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
               event.preventDefault();
               if (!bridgeClient.isOperationInProgress()) bridgeClient.handleSendButton();

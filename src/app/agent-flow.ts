@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
+import { createHash } from "node:crypto";
 
 import {
   AgentPartialCompletionError,
@@ -49,6 +50,11 @@ import {
   type SavedProfile,
 } from "../model/profile.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
+import {
+  isSafeSkillId,
+  parseSkillMarkdown,
+  SkillFormatError,
+} from "../skills/format.js";
 import { transportForProfile } from "../model/registry.js";
 import {
   connectionFingerprint,
@@ -75,15 +81,28 @@ import {
   loadSessionEvents,
   type SessionEvent,
 } from "../storage/events.js";
-import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import {
+  isStorageCommitOutcomeUnknownError,
+  withStorageTransaction,
+} from "../storage/persistence.js";
 import {
   createSession,
   deleteSession,
   listSessions,
+  listSessionsInTransaction,
   restoreSession,
   setSessionArchived,
   updateSession,
+  updateSessionInTransaction,
 } from "../storage/sessions.js";
+import {
+  deleteInstalledSkillInTransaction,
+  installSkillInTransaction,
+  listInstalledSkills,
+  listInstalledSkillsInTransaction,
+  SkillStorageCorruptionError,
+  type InstalledSkill,
+} from "../storage/skills.js";
 import {
   activeSavedProfile,
   activateSavedProfile,
@@ -111,13 +130,18 @@ import {
   ChatBridgePromptPersistenceUnknownError,
   ChatBridgeResourceNotFoundError,
   ChatBridgeSendFailureError,
+  ChatBridgeSkillValidationError,
   createChatBridge,
   type ChatBridgeCommandInput,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
+  type ChatBridgeSkillDeleteInput,
+  type ChatBridgeSkillInstallInput,
+  type ChatBridgeSkillInstallResult,
   type ChatBridgeStream,
   type RawAttachmentBodyReadOptions,
+  type RawSkillBodyReadOptions,
 } from "./chat-bridge.js";
 import {
   resolveConversationHistory,
@@ -143,6 +167,7 @@ import {
   SessionMutationFence,
   sessionMutationFenceKey,
 } from "./session-mutation-fence.js";
+import { resolveSkillContext } from "./skill-context.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
@@ -166,6 +191,8 @@ export interface AgentFlowDependencies {
   liveMutationQueue?: LiveMutationQueue;
   /** Test-only bridge body-reader instrumentation. */
   attachmentBodyReadOptions?: RawAttachmentBodyReadOptions;
+  /** Test-only Skill body-reader instrumentation. */
+  skillBodyReadOptions?: RawSkillBodyReadOptions;
 }
 
 export async function runAgentFlow(
@@ -193,6 +220,17 @@ export async function runAgentFlow(
     operation: () => Promise<T>,
   ) => sessionMutationFence.run(
     sessionMutationFenceKey(context.environment.storageDirectory, sessionId),
+    signal,
+    operation,
+  );
+  const withNamedSessionMutation = <T>(
+    sessionId: string,
+    kind: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ) => sessionMutationFence.runNamed(
+    sessionMutationFenceKey(context.environment.storageDirectory, sessionId),
+    kind,
     signal,
     operation,
   );
@@ -300,6 +338,9 @@ export async function runAgentFlow(
         activeSession.id,
         consumedAttachmentIds(events),
       )).map(sessionAttachmentRefFromStored);
+      const availableSkills = (await listInstalledSkills(
+        context.environment.storageDirectory,
+      )).map(({ id, description }) => ({ id, description }));
       if (activeSessionId !== activeSession.id) continue;
       const activeInteraction = resolveSessionInteraction(activeSession);
       return {
@@ -316,6 +357,8 @@ export async function runAgentFlow(
         activeSessionId: activeSession.id,
         events,
         pendingAttachments,
+        availableSkills,
+        activeSkillIds: [...(activeSession.activeSkillIds ?? [])],
         capabilities,
         availableModels: modelProfile
           ? resolveDiscoveredModels(modelProfile, models)
@@ -651,6 +694,97 @@ export async function runAgentFlow(
       });
     }
 
+    if (commandInput.kind === "set_session_skills") {
+      const mutationKey = sessionMutationFenceKey(
+        context.environment.storageDirectory,
+        commandInput.sessionId,
+      );
+      if (sessionMutationFence.hasQueuedOrActive(mutationKey, "send")) {
+        throw new ChatBridgeConflictError(
+          "Stop this Session's active request before changing its Skills.",
+        );
+      }
+      const requestedSkillIds = [...commandInput.skillIds].sort();
+      await withNamedSessionMutation(
+        commandInput.sessionId,
+        "skills",
+        signal,
+        async () => {
+          try {
+            await withStorageTransaction(
+              context.environment.storageDirectory,
+              async (transaction) => {
+                throwIfAborted(signal);
+                const sessions = await listSessionsInTransaction(
+                  transaction,
+                  context.environment.storageDirectory,
+                );
+                const session = sessions.find(
+                  (candidate) => candidate.id === commandInput.sessionId,
+                );
+                if (!session) {
+                  throw new ChatBridgeResourceNotFoundError(
+                    "That Session does not exist.",
+                  );
+                }
+                const installed = await listInstalledSkillsInTransaction(
+                  transaction,
+                  context.environment.storageDirectory,
+                );
+                const installedIds = new Set(installed.map((skill) => skill.id));
+                const unavailable = requestedSkillIds.find(
+                  (skillId) => !installedIds.has(skillId),
+                );
+                if (unavailable !== undefined) {
+                  throw new ChatBridgeSkillValidationError(
+                    `Skill ${unavailable} is not installed.`,
+                  );
+                }
+
+                const currentSkillIds = session.activeSkillIds ?? [];
+                const removalOnly = requestedSkillIds.every(
+                  (skillId) => currentSkillIds.includes(skillId),
+                );
+                if (
+                  (session.archivedAt !== undefined ||
+                    session.projectKey !== projectKey) &&
+                  !removalOnly
+                ) {
+                  throw new ChatBridgeConflictError(
+                    "Archived or historical Sessions only allow removing active Skills.",
+                  );
+                }
+                throwIfAborted(signal);
+                await updateSessionInTransaction(
+                  transaction,
+                  context.environment.storageDirectory,
+                  session.id,
+                  { activeSkillIds: requestedSkillIds },
+                );
+              },
+            );
+          } catch (error) {
+            if (
+              error instanceof ChatBridgeResourceNotFoundError ||
+              error instanceof ChatBridgeConflictError ||
+              error instanceof ChatBridgeSkillValidationError ||
+              isStorageCommitOutcomeUnknownError(error)
+            ) {
+              throw error;
+            }
+            throw new ChatBridgeSkillValidationError(
+              "Session Skills could not be validated or changed.",
+            );
+          }
+        },
+      );
+      status = requestedSkillIds.length === 0
+        ? "Session Skills cleared."
+        : "Session Skills updated.";
+      openSettingsOnLoad = false;
+      return buildStateAfterCommandMutation();
+    }
+
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
       let cacheMutationCompleted = false;
@@ -858,17 +992,198 @@ export async function runAgentFlow(
     return buildStateAfterAttachmentMutation();
   };
 
+  const buildStateAfterSkillMutation = async () => {
+    try {
+      return await buildState();
+    } catch (cause) {
+      throw new ChatBridgeCommandOutcomeUnknownError(
+        "The Skill catalog changed, but the resulting Live Smith state could not be confirmed.",
+        { cause, authoritativeState: undefined },
+      );
+    }
+  };
+
+  const handleSkillInstall = async (
+    input: ChatBridgeSkillInstallInput,
+    signal: AbortSignal,
+  ): Promise<ChatBridgeSkillInstallResult> => {
+    throwIfAborted(signal);
+    const bytes = Uint8Array.from(input.bytes);
+    let definition;
+    try {
+      definition = parseSkillMarkdown(bytes);
+    } catch (error) {
+      if (error instanceof SkillFormatError) {
+        throw new ChatBridgeSkillValidationError(error.message);
+      }
+      throw new ChatBridgeSkillValidationError(
+        "The uploaded SKILL.md is invalid.",
+      );
+    }
+    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
+    let installed: InstalledSkill | undefined;
+    try {
+      installed = await withStorageTransaction(
+        context.environment.storageDirectory,
+        async (transaction) => {
+          throwIfAborted(signal);
+          const existing = (await listInstalledSkillsInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+          )).find((skill) => skill.id === definition.id);
+          if (existing?.sha256 === expectedSha256) return existing;
+          if (existing !== undefined && !input.replace) {
+            throw new ChatBridgeConflictError(
+              `Skill ${definition.id} is already installed. Confirm replacement to change it.`,
+            );
+          }
+          throwIfAborted(signal);
+          return installSkillInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+            bytes,
+            { replace: input.replace },
+          );
+        },
+      );
+    } catch (error) {
+      if (isStorageCommitOutcomeUnknownError(error)) {
+        try {
+          installed = (await listInstalledSkills(
+            context.environment.storageDirectory,
+          )).find((skill) =>
+            skill.id === definition.id && skill.sha256 === expectedSha256
+          );
+        } catch {
+          installed = undefined;
+        }
+        if (installed === undefined) {
+          let authoritativeState: ChatDialogState | undefined;
+          try {
+            authoritativeState = await buildState();
+          } catch {
+            authoritativeState = undefined;
+          }
+          throw new ChatBridgeCommandOutcomeUnknownError(
+            "The Skill may have been installed, but its final state could not be confirmed.",
+            { cause: error, authoritativeState },
+          );
+        }
+      } else if (error instanceof ChatBridgeConflictError) {
+        throw error;
+      } else if (error instanceof SkillStorageCorruptionError) {
+        throw new ChatBridgeSkillValidationError(
+          "Installed Skill storage is invalid and was not changed.",
+        );
+      } else {
+        throwIfAborted(signal);
+        throw new ChatBridgeSkillValidationError(
+          "The Skill could not be installed or replaced.",
+        );
+      }
+    }
+    if (installed === undefined) {
+      throw new ChatBridgeSkillValidationError(
+        "The Skill installation could not be confirmed.",
+      );
+    }
+    status = `Skill ${installed.id} installed.`;
+    openSettingsOnLoad = false;
+    return {
+      state: await buildStateAfterSkillMutation(),
+      receipt: { id: installed.id, sha256: installed.sha256 },
+    };
+  };
+
+  const handleSkillDelete = async (
+    input: ChatBridgeSkillDeleteInput,
+    signal: AbortSignal,
+  ) => {
+    if (!isSafeSkillId(input.skillId)) {
+      throw new ChatBridgeSkillValidationError("Skill ID is invalid.");
+    }
+    let deleted = false;
+    try {
+      await withStorageTransaction(
+        context.environment.storageDirectory,
+        async (transaction) => {
+          throwIfAborted(signal);
+          const sessions = await listSessionsInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+          );
+          if (sessions.some((session) =>
+            session.activeSkillIds?.includes(input.skillId)
+          )) {
+            throw new ChatBridgeConflictError(
+              "Remove this Skill from every Session before deleting it.",
+            );
+          }
+          const existing = (await listInstalledSkillsInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+          )).some((skill) => skill.id === input.skillId);
+          if (!existing) return;
+          throwIfAborted(signal);
+          await deleteInstalledSkillInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+            input.skillId,
+          );
+          deleted = true;
+        },
+      );
+    } catch (error) {
+      if (isStorageCommitOutcomeUnknownError(error)) {
+        try {
+          const stillInstalled = (await listInstalledSkills(
+            context.environment.storageDirectory,
+          )).some((skill) => skill.id === input.skillId);
+          if (!stillInstalled) deleted = true;
+          else throw error;
+        } catch (reconciliationError) {
+          let authoritativeState: ChatDialogState | undefined;
+          try {
+            authoritativeState = await buildState();
+          } catch {
+            authoritativeState = undefined;
+          }
+          throw new ChatBridgeCommandOutcomeUnknownError(
+            "The Skill may have been deleted, but its final state could not be confirmed.",
+            { cause: reconciliationError, authoritativeState },
+          );
+        }
+      } else if (error instanceof ChatBridgeConflictError) {
+        throw error;
+      } else if (error instanceof SkillStorageCorruptionError) {
+        throw new ChatBridgeSkillValidationError(
+          "Installed Skill storage is invalid and was not changed.",
+        );
+      } else {
+        throwIfAborted(signal);
+        throw new ChatBridgeSkillValidationError(
+          "The Skill could not be deleted.",
+        );
+      }
+    }
+    status = deleted
+      ? `Skill ${input.skillId} deleted.`
+      : `Skill ${input.skillId} is already absent.`;
+    openSettingsOnLoad = false;
+    return buildStateAfterSkillMutation();
+  };
+
   const handleSend = async (
     sendInput: ChatBridgeSendInput,
     stream: ChatBridgeStream,
     signal: AbortSignal,
   ) => {
-    const prompt = sendInput.prompt.trim();
-    if (!prompt) {
+    const prompt = sendInput.prompt;
+    if (!prompt.trim()) {
       throw new Error("Prompt is empty.");
     }
 
-    return withSessionMutation(sendInput.sessionId, signal, async () => {
+    return withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
       try {
         throwIfAborted(signal);
         const session = (await listSessions(
@@ -951,9 +1266,14 @@ export async function runAgentFlow(
     preflightAttachmentUpload,
     handleAttachmentUpload,
     handleAttachmentDelete,
+    handleSkillInstall,
+    handleSkillDelete,
     ...(dependencies.attachmentBodyReadOptions === undefined
       ? {}
       : { attachmentBodyReadOptions: dependencies.attachmentBodyReadOptions }),
+    ...(dependencies.skillBodyReadOptions === undefined
+      ? {}
+      : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
   });
 
   try {
@@ -1014,6 +1334,11 @@ export async function handleAgentRequest(
       context.environment.storageDirectory,
       session.id,
     );
+    const skillContext = await resolveSkillContext({
+      storageDirectory: context.environment.storageDirectory,
+      sessionSkillIds: session.activeSkillIds ?? [],
+      prompt,
+    });
     const currentAttachments = await listPendingSessionAttachments(
       context.environment.storageDirectory,
       session.id,
@@ -1062,6 +1387,7 @@ export async function handleAgentRequest(
       history,
       initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
       recoveryContext: recoveryContextFromEvents(priorEvents),
+      skillContext,
       userEvent,
     };
   };
@@ -1094,6 +1420,7 @@ export async function handleAgentRequest(
           runtimeProfile,
           history: prepared.history,
           attachmentParts: prepared.attachmentParts,
+          skillContext: prepared.skillContext,
           agentMessages: input.messages,
           tools: liveSmithTools(),
           signal: callbacks.signal,

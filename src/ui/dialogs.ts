@@ -6,6 +6,7 @@ import attachmentsScript from "./client/attachments.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import capabilityPreviewScript from "./client/capability-preview.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
+import skillManagerScript from "./client/skill-manager.script.html";
 import bootstrapScript from "./client/bootstrap.script.html";
 import type { ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -34,6 +35,7 @@ export function chatHtml(
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     profileEditor: profileEditorScript,
     sessionTimeline: sessionTimelineScript,
+    skillManager: skillManagerScript,
   });
 }
 

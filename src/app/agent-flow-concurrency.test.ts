@@ -274,6 +274,178 @@ test("two bridges serialize a same-Session send and delete without recreating ev
   }
 });
 
+test("Skills mutate atomically and reject activation during another dialog's active send", async () => {
+  const modelStarted = deferred<void>();
+  const releaseModel = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-skills-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        modelStarted.resolve();
+        await releaseModel.promise;
+        return { content: "Done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+  const markdown = NodeBuffer.from(
+    "---\nname: mix-review\ndescription: Review the mix\n---\nKeep the low end clear.\n",
+  );
+
+  try {
+    const install = await fetch(`${fixture.second.endpoint("/skills")}&replace=false`, {
+      method: "POST",
+      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      body: attachmentRequestBody(markdown),
+    });
+    assert.equal(install.status, 201);
+    const installBody = await install.json() as {
+      receipt: { id: string; sha256: string };
+    };
+    assert.equal(installBody.receipt.id, "mix-review");
+    assert.match(installBody.receipt.sha256, /^[a-f0-9]{64}$/);
+
+    const historical = await createSession(fixture.directory, {
+      title: "Historical mix",
+      projectKey: "foreign-project",
+      scope: { kind: "track", identity: "old-track", label: "Old Track" },
+      activeSkillIds: ["mix-review"],
+    });
+    await setSessionArchived(fixture.directory, historical.id, true);
+    const removalOnly = await fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_skills",
+        sessionId: historical.id,
+        skillIds: [],
+      }),
+    });
+    assert.equal(removalOnly.status, 200);
+    assert.deepEqual(
+      (await listSessions(fixture.directory)).find(
+        (session) => session.id === historical.id,
+      )?.activeSkillIds,
+      [],
+    );
+    const historicalAddition = await fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_skills",
+        sessionId: historical.id,
+        skillIds: ["mix-review"],
+      }),
+    });
+    assert.equal(historicalAddition.status, 409);
+
+    const send = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Hold the Session lease",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await modelStarted.promise;
+
+    const conflict = await resolvesWithin(fetch(
+      fixture.second.endpoint("/command"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "set_session_skills",
+          sessionId: fixture.sessionId,
+          skillIds: ["mix-review"],
+        }),
+      },
+    ), "cross-dialog Skill activation conflict");
+    assert.equal(conflict.status, 409);
+    assert.match((await conflict.json() as { error: string }).error, /active request/i);
+
+    releaseModel.resolve();
+    assert.equal((await send).status, 200);
+
+    const activation = await fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_skills",
+        sessionId: fixture.sessionId,
+        skillIds: ["mix-review"],
+      }),
+    });
+    assert.equal(activation.status, 200);
+    const activeState = await activation.json() as ChatDialogState;
+    assert.deepEqual(activeState.activeSkillIds, ["mix-review"]);
+    assert.deepEqual(
+      activeState.availableSkills,
+      [{ id: "mix-review", description: "Review the mix" }],
+    );
+
+    const deleteInUse = await fetch(
+      fixture.second.endpoint("/skills/mix-review"),
+      { method: "DELETE" },
+    );
+    assert.equal(deleteInUse.status, 409);
+
+    const clearing = await fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_skills",
+        sessionId: fixture.sessionId,
+        skillIds: [],
+      }),
+    });
+    assert.equal(clearing.status, 200);
+
+    const deletion = await fetch(
+      fixture.second.endpoint("/skills/mix-review"),
+      { method: "DELETE" },
+    );
+    assert.equal(deletion.status, 200);
+    const deletedState = await deletion.json() as ChatDialogState;
+    assert.deepEqual(deletedState.availableSkills, []);
+  } finally {
+    releaseModel.resolve();
+    await fixture.close();
+  }
+});
+
+test("the HTTP send boundary validates whitespace without trimming the persisted prompt", async () => {
+  const prompt = "  Keep leading and trailing whitespace.  ";
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-prompt-bytes-",
+    firstDependencies: {
+      requestModelTurn: async (input) => {
+        assert.equal(input.prompt, prompt);
+        return { content: "Done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {},
+  });
+
+  try {
+    const response = await fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, sessionId: fixture.sessionId }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId))
+        .find((event) => event.kind === "user")?.content,
+      prompt,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 for (const commandKind of ["delete_session", "archive_session"] as const) {
   test(`two bridges serialize selected source attachment and ${commandKind}`, async () => {
     const sourceStarted = deferred<void>();

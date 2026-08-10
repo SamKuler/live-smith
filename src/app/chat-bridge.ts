@@ -10,6 +10,10 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { URL } from "node:url";
 
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
+import {
+  isSafeSkillId,
+  MAX_SKILL_FILE_BYTES,
+} from "../skills/format.js";
 import { requireSafeStorageId } from "../storage/id.js";
 import type { SessionEvent } from "../storage/events.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
@@ -39,9 +43,13 @@ const maxAttachmentQueryUtf8Bytes = 2048;
 const maxConcurrentAttachmentBodyReads = 2;
 const defaultAttachmentBodyReadTimeoutMs = 15_000;
 const initialUnknownAttachmentBodyCapacity = 64 * 1024;
+const maxConcurrentSkillBodyReads = 2;
+const defaultSkillBodyReadTimeoutMs = 15_000;
+const initialUnknownSkillBodyCapacity = 8 * 1024;
 const mimeTypePattern =
   /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 let activeAttachmentBodyReads = 0;
+let activeSkillBodyReads = 0;
 
 export interface ChatBridgeSendInput {
   prompt: string;
@@ -58,6 +66,20 @@ export interface ChatBridgeAttachmentInput {
 export interface ChatBridgeAttachmentDeleteInput {
   sessionId: string;
   attachmentId: string;
+}
+
+export interface ChatBridgeSkillInstallInput {
+  bytes: Uint8Array;
+  replace: boolean;
+}
+
+export interface ChatBridgeSkillInstallResult {
+  state: ChatDialogState;
+  receipt: { id: string; sha256: string };
+}
+
+export interface ChatBridgeSkillDeleteInput {
+  skillId: string;
 }
 
 export type PromptPersistence = "persisted" | "not_persisted" | "unknown";
@@ -136,6 +158,15 @@ export class ChatBridgePayloadTooLargeError extends Error {
   }
 }
 
+export class ChatBridgeSkillValidationError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgeSkillValidationError";
+  }
+}
+
 class ChatBridgeRequestValidationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -159,6 +190,13 @@ export interface RawAttachmentBodyReadOptions {
   allocateBuffer?(byteLength: number): Buffer;
 }
 
+export interface RawSkillBodyReadOptions {
+  /** Test seam; production callers use the fixed default. */
+  timeoutMs?: number;
+  /** Test seam for asserting allocation shape without changing ownership. */
+  allocateBuffer?(byteLength: number): Buffer;
+}
+
 export type ChatBridgeCommandInput =
   | { kind: "save_profile"; profile: DraftProfile }
   | { kind: "delete_profile"; profileId: string }
@@ -172,6 +210,7 @@ export type ChatBridgeCommandInput =
   | { kind: "archive_session"; sessionId: string }
   | { kind: "unarchive_session"; sessionId: string }
   | { kind: "attach_selected_audio_source"; sessionId: string }
+  | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
   | { kind: "discover_models"; profile: DraftProfile };
 
 export interface ChatBridgeConfirmationRequest {
@@ -215,8 +254,18 @@ interface ChatBridgeOptions {
     input: ChatBridgeAttachmentDeleteInput,
     signal: AbortSignal,
   ): Promise<ChatDialogState>;
+  handleSkillInstall?(
+    input: ChatBridgeSkillInstallInput,
+    signal: AbortSignal,
+  ): Promise<ChatBridgeSkillInstallResult>;
+  handleSkillDelete?(
+    input: ChatBridgeSkillDeleteInput,
+    signal: AbortSignal,
+  ): Promise<ChatDialogState>;
   /** Test seam; omitted by production callers. */
   attachmentBodyReadOptions?: RawAttachmentBodyReadOptions;
+  /** Test seam; omitted by production callers. */
+  skillBodyReadOptions?: RawSkillBodyReadOptions;
 }
 
 interface PendingConfirmation {
@@ -333,6 +382,17 @@ export async function createChatBridge(
     }
   };
 
+  const readSkillRequestBody = async (
+    request: IncomingMessage,
+  ): Promise<Uint8Array> => {
+    pendingRequestBodies.add(request);
+    try {
+      return await readRawSkillBody(request, options.skillBodyReadOptions);
+    } finally {
+      pendingRequestBodies.delete(request);
+    }
+  };
+
   const waitForStateMutations = async () => {
     for (;;) {
       const command = activeCommandTerminal;
@@ -424,10 +484,13 @@ export async function createChatBridge(
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       requestPath = url.pathname;
+      const skillBodyMayBeUnread = request.method === "POST" &&
+        requestPath === "/skills";
       if (request.method === "POST" && requestPath === "/send") {
         sendPromptPersistence = "not_persisted";
       }
       if (closing) {
+        if (skillBodyMayBeUnread) request.resume();
         sendJson(response, {
           error: "Live Smith bridge is closing.",
           ...(sendPromptPersistence ? { promptPersistence: sendPromptPersistence } : {}),
@@ -436,6 +499,7 @@ export async function createChatBridge(
       }
 
       if (url.searchParams.get("token") !== token) {
+        if (skillBodyMayBeUnread) request.resume();
         if (sendPromptPersistence) {
           sendJson(response, {
             error: "Forbidden",
@@ -558,6 +622,78 @@ export async function createChatBridge(
           await options.handleAttachmentDelete(input, controller.signal),
         );
         sendJson(response, state);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/skills") {
+        if (!options.handleSkillInstall) {
+          request.resume();
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        let query: Pick<ChatBridgeSkillInstallInput, "replace">;
+        try {
+          commandId = commandIdForRequest(request);
+          query = parseSkillInstallQuery(request, url);
+        } catch (error) {
+          request.resume();
+          throw error;
+        }
+        response.setHeader("X-Live-Smith-Command-Id", commandId);
+        if (activeCommandTerminal || activeAttachmentTerminals.size > 0) {
+          request.resume();
+          sendJson(response, {
+            error: "Another Live Smith operation is already in progress.",
+          }, 409);
+          return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeCommandTerminal = handlerTerminal;
+        const controller = createHostAbortController();
+        activeCommandAbort = controller;
+        try {
+          const bytes = await readSkillRequestBody(request);
+          throwIfBridgeAborted(controller.signal);
+          const result = await options.handleSkillInstall(
+            { ...query, bytes },
+            controller.signal,
+          );
+          const state = stateWithActivities(result.state);
+          broadcast({ type: "state", commandId, state });
+          sendJson(response, { state, receipt: result.receipt }, 201);
+        } finally {
+          if (activeCommandAbort === controller) activeCommandAbort = null;
+        }
+        return;
+      }
+
+      if (request.method === "DELETE" && url.pathname.startsWith("/skills/")) {
+        if (!options.handleSkillDelete) {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        commandId = commandIdForRequest(request);
+        response.setHeader("X-Live-Smith-Command-Id", commandId);
+        if (activeCommandTerminal || activeAttachmentTerminals.size > 0) {
+          sendJson(response, {
+            error: "Another Live Smith operation is already in progress.",
+          }, 409);
+          return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeCommandTerminal = handlerTerminal;
+        const controller = createHostAbortController();
+        activeCommandAbort = controller;
+        try {
+          const input = parseSkillDeleteQuery(request, url);
+          const state = stateWithActivities(
+            await options.handleSkillDelete(input, controller.signal),
+          );
+          broadcast({ type: "state", commandId, state });
+          sendJson(response, state);
+        } finally {
+          if (activeCommandAbort === controller) activeCommandAbort = null;
+        }
         return;
       }
 
@@ -775,7 +911,10 @@ export async function createChatBridge(
         : error;
       const attachmentMutation = requestPath === "/attachments" ||
         requestPath.startsWith("/attachments/");
-      const commandOutcome = (requestPath === "/command" || attachmentMutation) &&
+      const skillMutation = requestPath === "/skills" ||
+        requestPath.startsWith("/skills/");
+      const commandOutcome =
+        (requestPath === "/command" || attachmentMutation || skillMutation) &&
           (
             isStorageCommitOutcomeUnknownError(reportedError) ||
             reportedError instanceof ChatBridgeCommandOutcomeUnknownError
@@ -784,6 +923,8 @@ export async function createChatBridge(
         : undefined;
       const message = attachmentMutation
         ? safeAttachmentErrorMessage(reportedError, commandOutcome)
+        : skillMutation
+          ? safeSkillErrorMessage(reportedError, commandOutcome)
         : reportedError instanceof Error
           ? reportedError.message
           : String(reportedError);
@@ -832,7 +973,13 @@ export async function createChatBridge(
           sendErrorState = stateWithActivities(baseState);
         }
       }
-      if (!attachmentMutation && (requestPath !== "/send" || sendId !== undefined)) {
+      if (
+        !attachmentMutation &&
+        (
+          (requestPath === "/send" && sendId !== undefined) ||
+          (requestPath !== "/send" && commandId !== undefined)
+        )
+      ) {
         broadcast({
           type: "error",
           ...(sendId === undefined ? {} : { sendId }),
@@ -870,6 +1017,7 @@ export async function createChatBridge(
           : reportedError instanceof ChatBridgeRequestTimeoutError
             ? reportedError.status
             : reportedError instanceof ChatBridgeAttachmentValidationError ||
+                reportedError instanceof ChatBridgeSkillValidationError ||
                 reportedError instanceof ChatBridgeResourceNotFoundError ||
                 reportedError instanceof ChatBridgeConflictError ||
                 reportedError instanceof ChatBridgePayloadTooLargeError
@@ -1184,6 +1332,171 @@ export function readRawAttachmentBody(
   });
 }
 
+export function readRawSkillBody(
+  request: IncomingMessage,
+  options: RawSkillBodyReadOptions = {},
+): Promise<Uint8Array> {
+  let declaredLength: number | undefined;
+  try {
+    assertSkillContentType(request);
+    declaredLength = boundedContentLength(
+      request,
+      "Skill",
+      MAX_SKILL_FILE_BYTES,
+    );
+    if (declaredLength === 0) {
+      throw new ChatBridgeRequestValidationError(
+        "Skill body must not be empty.",
+      );
+    }
+  } catch (error) {
+    request.resume();
+    throw error;
+  }
+
+  return readBoundedRawBody(request, declaredLength, {
+    maximumBytes: MAX_SKILL_FILE_BYTES,
+    initialCapacity: initialUnknownSkillBodyCapacity,
+    timeoutMs: options.timeoutMs ?? defaultSkillBodyReadTimeoutMs,
+    allocateBuffer: options.allocateBuffer ?? Buffer.allocUnsafe,
+    acquirePermit: acquireSkillBodyReadPermit,
+    emptyMessage: "Skill body must not be empty.",
+    tooLargeMessage: `Skill uploads may not exceed ${MAX_SKILL_FILE_BYTES} bytes.`,
+    mismatchMessage: "Skill Content-Length does not match the received body.",
+    timeoutMessage: "Skill upload timed out before the complete body was received.",
+    incompleteMessage: "Skill upload ended before the complete body was received.",
+    readErrorMessage: "Skill upload could not be read.",
+    bufferErrorMessage: "Skill upload could not be buffered.",
+  });
+}
+
+interface BoundedRawBodyPolicy {
+  maximumBytes: number;
+  initialCapacity: number;
+  timeoutMs: number;
+  allocateBuffer(byteLength: number): Buffer;
+  acquirePermit(): () => void;
+  emptyMessage: string;
+  tooLargeMessage: string;
+  mismatchMessage: string;
+  timeoutMessage: string;
+  incompleteMessage: string;
+  readErrorMessage: string;
+  bufferErrorMessage: string;
+}
+
+function readBoundedRawBody(
+  request: IncomingMessage,
+  declaredLength: number | undefined,
+  policy: BoundedRawBodyPolicy,
+): Promise<Uint8Array> {
+  let releasePermit: () => void;
+  try {
+    releasePermit = policy.acquirePermit();
+  } catch (error) {
+    request.resume();
+    throw error;
+  }
+  let body: Buffer | undefined;
+  try {
+    body = declaredLength === undefined
+      ? undefined
+      : policy.allocateBuffer(declaredLength);
+  } catch (cause) {
+    releasePermit();
+    request.resume();
+    throw new Error(policy.bufferErrorMessage, { cause });
+  }
+
+  return new Promise<Uint8Array>((resolve, reject) => {
+    let actualLength = 0;
+    let ended = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      fail(new ChatBridgeRequestTimeoutError(policy.timeoutMessage), true);
+    }, policy.timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("aborted", onAborted);
+      request.off("close", onClose);
+      request.off("error", onError);
+      releasePermit();
+    };
+    const fail = (error: Error, drain = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (drain) request.resume();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      const buffer = typeof chunk === "string"
+        ? Buffer.from(chunk)
+        : Buffer.isBuffer(chunk)
+          ? chunk
+          : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      const nextLength = actualLength + buffer.byteLength;
+      if (nextLength > policy.maximumBytes) {
+        fail(new ChatBridgePayloadTooLargeError(policy.tooLargeMessage), true);
+        return;
+      }
+      if (declaredLength !== undefined && nextLength > declaredLength) {
+        fail(new ChatBridgeRequestValidationError(policy.mismatchMessage), true);
+        return;
+      }
+      if (body === undefined || nextLength > body.byteLength) {
+        let nextCapacity = body?.byteLength ?? policy.initialCapacity;
+        while (nextCapacity < nextLength) {
+          nextCapacity = Math.min(policy.maximumBytes, nextCapacity * 2);
+        }
+        try {
+          const expanded = policy.allocateBuffer(nextCapacity);
+          body?.copy(expanded, 0, 0, actualLength);
+          body = expanded;
+        } catch (cause) {
+          fail(new Error(policy.bufferErrorMessage, { cause }), true);
+          return;
+        }
+      }
+      buffer.copy(body, actualLength);
+      actualLength = nextLength;
+    };
+    const onEnd = () => {
+      ended = true;
+      if (settled) return;
+      if (actualLength === 0) {
+        fail(new ChatBridgeRequestValidationError(policy.emptyMessage));
+        return;
+      }
+      if (declaredLength !== undefined && declaredLength !== actualLength) {
+        fail(new ChatBridgeRequestValidationError(policy.mismatchMessage));
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(body!.subarray(0, actualLength));
+    };
+    const onAborted = () => fail(
+      new ChatBridgeRequestValidationError(policy.incompleteMessage),
+    );
+    const onClose = () => {
+      if (!ended) onAborted();
+    };
+    const onError = () => fail(
+      new ChatBridgeRequestValidationError(policy.readErrorMessage),
+    );
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("aborted", onAborted);
+    request.once("close", onClose);
+    request.once("error", onError);
+  });
+}
+
 function acquireAttachmentBodyReadPermit(): () => void {
   if (activeAttachmentBodyReads >= maxConcurrentAttachmentBodyReads) {
     throw new ChatBridgeConflictError(
@@ -1196,6 +1509,21 @@ function acquireAttachmentBodyReadPermit(): () => void {
     if (released) return;
     released = true;
     activeAttachmentBodyReads -= 1;
+  };
+}
+
+function acquireSkillBodyReadPermit(): () => void {
+  if (activeSkillBodyReads >= maxConcurrentSkillBodyReads) {
+    throw new ChatBridgeConflictError(
+      "Too many Skill uploads are being received. Try again shortly.",
+    );
+  }
+  activeSkillBodyReads += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeSkillBodyReads -= 1;
   };
 }
 
@@ -1263,6 +1591,65 @@ function parseAttachmentDeleteQuery(
   return { sessionId: attachmentSessionId(url), attachmentId };
 }
 
+function parseSkillInstallQuery(
+  request: IncomingMessage,
+  url: URL,
+): { replace: boolean } {
+  assertSkillQuery(request, url, ["token", "replace"]);
+  const values = url.searchParams.getAll("replace");
+  if (values.length === 0) return { replace: false };
+  if (values.length !== 1 || (values[0] !== "true" && values[0] !== "false")) {
+    throw new ChatBridgeRequestValidationError(
+      "replace must be true or false when provided.",
+    );
+  }
+  return { replace: values[0] === "true" };
+}
+
+function parseSkillDeleteQuery(
+  request: IncomingMessage,
+  url: URL,
+): ChatBridgeSkillDeleteInput {
+  assertSkillQuery(request, url, ["token"]);
+  const encodedId = url.pathname.slice("/skills/".length);
+  if (!encodedId || encodedId.includes("/")) {
+    throw new ChatBridgeRequestValidationError("Skill ID is invalid.");
+  }
+  let skillId: string;
+  try {
+    skillId = decodeURIComponent(encodedId);
+  } catch {
+    throw new ChatBridgeRequestValidationError("Skill ID is invalid.");
+  }
+  if (!isSafeSkillId(skillId)) {
+    throw new ChatBridgeRequestValidationError("Skill ID is invalid.");
+  }
+  return { skillId };
+}
+
+function assertSkillQuery(
+  request: IncomingMessage,
+  url: URL,
+  allowedKeys: readonly string[],
+): void {
+  if (Buffer.byteLength(request.url ?? "", "utf8") > maxAttachmentQueryUtf8Bytes) {
+    throw new ChatBridgeRequestValidationError("Skill request query is too long.");
+  }
+  const allowed = new Set(allowedKeys);
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key)) {
+      throw new ChatBridgeRequestValidationError(
+        `Skill request does not support query parameter ${key}.`,
+      );
+    }
+  }
+  if (url.searchParams.getAll("token").length !== 1) {
+    throw new ChatBridgeRequestValidationError(
+      "token must appear exactly once in the Skill request.",
+    );
+  }
+}
+
 function assertAttachmentQuery(
   request: IncomingMessage,
   url: URL,
@@ -1316,18 +1703,42 @@ function assertAttachmentContentType(request: IncomingMessage): void {
   }
 }
 
+function assertSkillContentType(request: IncomingMessage): void {
+  const contentType = singleHeaderValue(request, "content-type", true);
+  if (
+    contentType === undefined ||
+    !/^text\/markdown\s*;\s*charset\s*=\s*utf-8\s*$/i.test(contentType)
+  ) {
+    throw new ChatBridgeRequestValidationError(
+      "Skill uploads require Content-Type text/markdown; charset=utf-8.",
+    );
+  }
+}
+
 function attachmentContentLength(request: IncomingMessage): number | undefined {
+  return boundedContentLength(
+    request,
+    "Attachment",
+    MAX_DOCUMENT_ATTACHMENT_BYTES,
+  );
+}
+
+function boundedContentLength(
+  request: IncomingMessage,
+  label: string,
+  maximumBytes: number,
+): number | undefined {
   const raw = singleHeaderValue(request, "content-length", false);
   if (raw === undefined) return undefined;
   if (!/^(?:0|[1-9]\d*)$/.test(raw)) {
     throw new ChatBridgeRequestValidationError(
-      "Attachment Content-Length must be a non-negative integer.",
+      `${label} Content-Length must be a non-negative integer.`,
     );
   }
   const value = Number(raw);
-  if (!Number.isSafeInteger(value)) {
+  if (!Number.isSafeInteger(value) || value > maximumBytes) {
     throw new ChatBridgePayloadTooLargeError(
-      `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+      `${label} uploads may not exceed ${maximumBytes} bytes.`,
     );
   }
   return value;
@@ -1378,6 +1789,28 @@ function safeAttachmentErrorMessage(
     return error.message;
   }
   return "The attachment operation could not be completed.";
+}
+
+function safeSkillErrorMessage(
+  error: unknown,
+  commandOutcome: "unknown" | undefined,
+): string {
+  if (commandOutcome === "unknown") {
+    return error instanceof ChatBridgeCommandOutcomeUnknownError
+      ? error.message
+      : "The Skill catalog changed, but its final state could not be confirmed.";
+  }
+  if (
+    error instanceof ChatBridgeRequestValidationError ||
+    error instanceof ChatBridgeRequestTimeoutError ||
+    error instanceof ChatBridgeSkillValidationError ||
+    error instanceof ChatBridgeResourceNotFoundError ||
+    error instanceof ChatBridgeConflictError ||
+    error instanceof ChatBridgePayloadTooLargeError
+  ) {
+    return error.message;
+  }
+  return "The Skill operation could not be completed.";
 }
 
 function throwIfBridgeAborted(signal: AbortSignal): void {
@@ -1444,6 +1877,29 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       title: inputString(input, "title"),
     };
   }
+  if (kind === "set_session_skills") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "skillIds"],
+      `${kind} command`,
+    );
+    const skillIds = input.skillIds;
+    if (
+      !Array.isArray(skillIds) ||
+      skillIds.length > 4 ||
+      !skillIds.every(isSafeSkillId) ||
+      new Set(skillIds).size !== skillIds.length
+    ) {
+      throw new ChatBridgeRequestValidationError(
+        "skillIds must contain at most four unique safe Skill IDs.",
+      );
+    }
+    return {
+      kind,
+      sessionId: inputString(input, "sessionId"),
+      skillIds: [...skillIds],
+    };
+  }
   throw new ChatBridgeRequestValidationError(`Unsupported command ${kind}.`);
 }
 
@@ -1470,7 +1926,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "rename_session" ||
     input.kind === "archive_session" ||
     input.kind === "unarchive_session" ||
-    input.kind === "attach_selected_audio_source";
+    input.kind === "attach_selected_audio_source" ||
+    input.kind === "set_session_skills";
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {

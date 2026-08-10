@@ -9,6 +9,7 @@ import type { ChatDialogState } from "../ui/chat-state.js";
 import { ProfileValidationError } from "../model/profile.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
+import { MAX_SKILL_FILE_BYTES } from "../skills/format.js";
 import {
   ChatBridgeAttachmentValidationError,
   ChatBridgeCommandOutcomeUnknownError,
@@ -19,6 +20,7 @@ import {
   ChatBridgeSendFailureError,
   createChatBridge,
   readRawAttachmentBody,
+  readRawSkillBody,
   readJsonBody,
 } from "./chat-bridge.js";
 
@@ -221,6 +223,61 @@ test("chat bridge treats an early handler failure as not persisted", async () =>
       error: "Unexpected send failure.",
       promptPersistence: "not_persisted",
     });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge parses set_session_skills as a strict bounded command", async () => {
+  const state = {} as ChatDialogState;
+  const received: unknown[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      received.push(input);
+      return state;
+    },
+    handleSend: async () => undefined,
+  });
+  const chatUrl = new URL(bridge.url);
+  const endpoint = `${chatUrl.origin}/command?token=${chatUrl.searchParams.get("token")}`;
+
+  try {
+    const accepted = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_skills",
+        sessionId: "session-1",
+        skillIds: ["mix-review", "drum-editor"],
+      }),
+    });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(received, [{
+      kind: "set_session_skills",
+      sessionId: "session-1",
+      skillIds: ["mix-review", "drum-editor"],
+    }]);
+
+    for (const invalid of [
+      { skillIds: ["mix-review", "mix-review"] },
+      { skillIds: ["Unsafe"] },
+      { skillIds: ["a", "b", "c", "d", "e"] },
+      { skillIds: ["mix-review"], unexpected: true },
+    ]) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "set_session_skills",
+          sessionId: "session-1",
+          ...invalid,
+        }),
+      });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(received.length, 1);
   } finally {
     await bridge.close();
   }
@@ -1546,6 +1603,228 @@ test("attachment upload and delete routes use bounded raw bodies and narrow inpu
   }
 });
 
+test("Skill install and delete routes use raw Markdown, receipts, and narrow inputs", async () => {
+  const state = {} as ChatDialogState;
+  const markdown = NodeBuffer.from(
+    "---\nname: mix-review\ndescription: Review a mix\n---\nKeep the low end clear.\n",
+  );
+  const installs: Array<{ replace: boolean; bytes: Uint8Array }> = [];
+  const deletes: string[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => undefined,
+    handleSkillInstall: async (input) => {
+      installs.push({ replace: input.replace, bytes: Uint8Array.from(input.bytes) });
+      return {
+        state,
+        receipt: { id: "mix-review", sha256: "a".repeat(64) },
+      };
+    },
+    handleSkillDelete: async ({ skillId }) => {
+      deletes.push(skillId);
+      return state;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const install = await fetch(
+      `${chatUrl.origin}/skills?token=${token}&replace=true`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "Text/Markdown; Charset=UTF-8",
+          "X-Live-Smith-Command-Id": "skill-install-1",
+        },
+        body: attachmentRequestBody(markdown),
+      },
+    );
+    assert.equal(install.status, 201);
+    assert.equal(
+      install.headers.get("x-live-smith-command-id"),
+      "skill-install-1",
+    );
+    assert.deepEqual(await install.json(), {
+      state,
+      receipt: { id: "mix-review", sha256: "a".repeat(64) },
+    });
+    assert.equal(installs.length, 1);
+    assert.equal(installs[0]!.replace, true);
+    assert.deepEqual(installs[0]!.bytes, new Uint8Array(markdown));
+
+    const deletion = await fetch(
+      `${chatUrl.origin}/skills/mix-review?token=${token}`,
+      { method: "DELETE" },
+    );
+    assert.equal(deletion.status, 200);
+    assert.deepEqual(deletes, ["mix-review"]);
+
+    const rejected = await fetch(
+      `${chatUrl.origin}/skills?token=${token}&replace=true&extra=1`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        body: attachmentRequestBody(markdown),
+      },
+    );
+    assert.equal(rejected.status, 400);
+    assert.equal(installs.length, 1);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("Skill install early validation drains its body and does not broadcast an uncorrelated error", async () => {
+  const state = {} as ChatDialogState;
+  let handlerCalls = 0;
+  let resumedSkillRequests = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => undefined,
+    handleSkillInstall: async () => {
+      handlerCalls += 1;
+      return {
+        state,
+        receipt: { id: "mix-review", sha256: "a".repeat(64) },
+      };
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const originalResume = IncomingMessage.prototype.resume;
+  IncomingMessage.prototype.resume = function trackedResume() {
+    if (this.url?.startsWith("/skills")) resumedSkillRequests += 1;
+    return originalResume.call(this);
+  };
+
+  try {
+    const unauthorizedResumesBefore = resumedSkillRequests;
+    const unauthorized = await fetch(`${chatUrl.origin}/skills?token=wrong`, {
+      method: "POST",
+      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      body: attachmentRequestBody(NodeBuffer.from("invalid")),
+    });
+    assert.equal(unauthorized.status, 403);
+    assert.ok(resumedSkillRequests > unauthorizedResumesBefore);
+
+    const invalidCommandId = await fetch(
+      `${chatUrl.origin}/skills?token=${token}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "X-Live-Smith-Command-Id": "x".repeat(129),
+        },
+        body: attachmentRequestBody(NodeBuffer.from("invalid")),
+      },
+    );
+    assert.equal(invalidCommandId.status, 400);
+    assert.ok(resumedSkillRequests >= 1);
+
+    const nextEvent = readNextSsePayload(events);
+    const valid = await fetch(`${chatUrl.origin}/skills?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "X-Live-Smith-Command-Id": "valid-skill-command",
+      },
+      body: attachmentRequestBody(NodeBuffer.from("valid")),
+    });
+    assert.equal(valid.status, 201);
+    assert.deepEqual(await nextEvent, {
+      type: "state",
+      commandId: "valid-skill-command",
+      state,
+    });
+    const resumesAfterValidRequest = resumedSkillRequests;
+
+    const invalidQuery = await fetch(
+      `${chatUrl.origin}/skills?token=${token}&replace=maybe`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        body: attachmentRequestBody(NodeBuffer.from("invalid")),
+      },
+    );
+    assert.equal(invalidQuery.status, 400);
+    assert.ok(resumedSkillRequests > resumesAfterValidRequest);
+    assert.equal(handlerCalls, 1);
+
+    const bridgeWithoutSkillHandler = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async () => undefined,
+    });
+    try {
+      const unavailableUrl = new URL(bridgeWithoutSkillHandler.url);
+      const resumesBeforeUnavailable = resumedSkillRequests;
+      const unavailable = await fetch(
+        `${unavailableUrl.origin}/skills?token=${unavailableUrl.searchParams.get("token")}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "text/markdown; charset=utf-8" },
+          body: attachmentRequestBody(NodeBuffer.from("invalid")),
+        },
+      );
+      assert.equal(unavailable.status, 404);
+      assert.ok(resumedSkillRequests > resumesBeforeUnavailable);
+    } finally {
+      await bridgeWithoutSkillHandler.close();
+    }
+  } finally {
+    IncomingMessage.prototype.resume = originalResume;
+    await events.body?.cancel().catch(() => undefined);
+    await bridge.close();
+  }
+});
+
+test("Skill raw bodies enforce exact media type and the 64 KiB boundary", async () => {
+  for (const [contentType, size, expectedStatus] of [
+    ["text/plain; charset=utf-8", 1, 400],
+    ["text/markdown", 1, 400],
+    ["text/markdown; charset=utf-8", MAX_SKILL_FILE_BYTES, 201],
+    ["text/markdown; charset=utf-8", MAX_SKILL_FILE_BYTES + 1, 413],
+  ] as const) {
+    let handlerCalls = 0;
+    const state = {} as ChatDialogState;
+    const bridge = await createChatBridge({
+      buildState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: async () => state,
+      handleSend: async () => undefined,
+      handleSkillInstall: async () => {
+        handlerCalls += 1;
+        return {
+          state,
+          receipt: { id: "bounded", sha256: "b".repeat(64) },
+        };
+      },
+    });
+    const chatUrl = new URL(bridge.url);
+    try {
+      const response = await fetch(
+        `${chatUrl.origin}/skills?token=${chatUrl.searchParams.get("token")}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": contentType },
+          body: attachmentRequestBody(NodeBuffer.alloc(size, 0x61)),
+        },
+      );
+      assert.equal(response.status, expectedStatus);
+      assert.equal(handlerCalls, expectedStatus === 201 ? 1 : 0);
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
 test("attachment upload preflight rejects before reading or allocating its body", async () => {
   const state = {} as ChatDialogState;
   let preflightInput: { sessionId: string } | undefined;
@@ -2304,6 +2583,45 @@ test("raw attachment reader accepts exactly 20 MiB and rejects one byte over", a
       return true;
     },
   );
+});
+
+test("raw Skill reader is bounded, exact-length, cancellable, and releases permits", async () => {
+  const exact = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "text/markdown; charset=utf-8",
+      "content-length": String(MAX_SKILL_FILE_BYTES),
+    },
+  });
+  const exactRead = readRawSkillBody(exact as never);
+  exact.end(new Uint8Array(MAX_SKILL_FILE_BYTES));
+  assert.equal((await exactRead).byteLength, MAX_SKILL_FILE_BYTES);
+
+  const over = Object.assign(new PassThrough(), {
+    headers: {
+      "content-type": "text/markdown; charset=utf-8",
+      "content-length": String(MAX_SKILL_FILE_BYTES + 1),
+    },
+  });
+  assert.throws(
+    () => readRawSkillBody(over as never),
+    ChatBridgePayloadTooLargeError,
+  );
+
+  const stalled = Object.assign(new PassThrough(), {
+    headers: { "content-type": "text/markdown; charset=utf-8" },
+  });
+  await assert.rejects(
+    readRawSkillBody(stalled as never, { timeoutMs: 5 }),
+    /Skill upload timed out/i,
+  );
+  stalled.destroy();
+
+  const afterTimeout = Object.assign(new PassThrough(), {
+    headers: { "content-type": "text/markdown; charset=utf-8" },
+  });
+  const afterRead = readRawSkillBody(afterTimeout as never);
+  afterTimeout.end(new Uint8Array([1]));
+  assert.deepEqual([...(await afterRead)], [1]);
 });
 
 test("attachment protocol tokens use locale-independent ASCII case folding", async () => {

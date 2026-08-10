@@ -50,6 +50,7 @@
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
       let attachmentOperationInProgress = false;
+      let skillOperationInProgress = false;
       let activeCommandAttempt = null;
       const commandSseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
@@ -92,7 +93,8 @@
 
       function isOperationInProgress() {
         return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
-          commandReconciliationBlocked || attachmentOperationInProgress;
+          commandReconciliationBlocked || attachmentOperationInProgress ||
+          skillOperationInProgress;
       }
 
       function syncOperationState() {
@@ -101,6 +103,7 @@
             (commandReconciliationBlocked ? "reconciliation_required" : null),
           anySendInProgress: sendAttemptsBySession.size > 0,
           attachmentInProgress: attachmentOperationInProgress,
+          skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeSendAttempt()),
         });
       }
@@ -114,8 +117,8 @@
       }
 
       async function runCommand(kind, extra) {
-        if (attachmentOperationInProgress) {
-          showStatus("Wait for the current attachment operation to finish.", true);
+        if (attachmentOperationInProgress || skillOperationInProgress) {
+          showStatus("Wait for the current file or Skill operation to finish.", true);
           return false;
         }
         const sessionCommand = [
@@ -127,6 +130,7 @@
           "archive_session",
           "unarchive_session",
           "attach_selected_audio_source",
+          "set_session_skills",
         ].includes(kind);
         const allowedDuringSend = sessionCommand || kind === "save_global_settings";
         if (sendAttemptsBySession.size && !allowedDuringSend) {
@@ -798,6 +802,117 @@
         ));
       }
 
+      async function runSkillOperation(operation) {
+        if (isOperationInProgress()) {
+          throw new Error("Another Live Smith operation is already in progress.");
+        }
+        skillOperationInProgress = true;
+        syncOperationState();
+        try {
+          return await operation();
+        } finally {
+          skillOperationInProgress = false;
+          syncOperationState();
+        }
+      }
+
+      async function requestSkill(path, init, retryOnNetworkLoss) {
+        let response;
+        try {
+          response = await fetch(bridgeUrl(path), init);
+        } catch (error) {
+          if (retryOnNetworkLoss) {
+            return requestSkill(path, init, false);
+          }
+          commandReconciliationBlocked = true;
+          throw new Error(
+            `${error.message || String(error)} The Skill result is unconfirmed. Close and reopen Live Smith before changing Skills again.`,
+          );
+        }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(
+            result.error || `${response.status} ${response.statusText}`,
+          );
+          error.httpStatus = response.status;
+          if (result.commandOutcome === "unknown") {
+            if (result.state && typeof result.state === "object") {
+              applyCommandState("skill_reconcile", result.state);
+            } else {
+              commandReconciliationBlocked = true;
+            }
+          }
+          if (result.reconciliationRequired === true) {
+            commandReconciliationBlocked = true;
+          }
+          throw error;
+        }
+        const state = result.state && typeof result.state === "object"
+          ? result.state
+          : result;
+        applyCommandState("skill", state);
+        return result;
+      }
+
+      async function installSkill(file, replace) {
+        return runSkillOperation(async () => {
+          const contentSha256 = await skillContentSha256(file);
+          const result = await requestSkill(
+            `/skills?replace=${replace ? "true" : "false"}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "text/markdown; charset=utf-8",
+                "X-Live-Smith-Command-Id": createCommandId(),
+              },
+              body: file,
+            },
+            true,
+          );
+          const receipt = result.receipt;
+          if (
+            !receipt ||
+            typeof receipt.id !== "string" ||
+            !/^[a-f0-9]{64}$/.test(receipt.sha256 || "") ||
+            (contentSha256 && receipt.sha256 !== contentSha256)
+          ) {
+            commandReconciliationBlocked = true;
+            throw new Error(
+              "The Skill response could not be matched to the selected file. Close and reopen Live Smith before retrying.",
+            );
+          }
+          return receipt;
+        });
+      }
+
+      async function skillContentSha256(file) {
+        const subtle = globalThis.crypto?.subtle;
+        if (
+          !subtle ||
+          typeof subtle.digest !== "function" ||
+          typeof file?.arrayBuffer !== "function"
+        ) return null;
+        try {
+          const digest = await subtle.digest("SHA-256", await file.arrayBuffer());
+          return [...new Uint8Array(digest)]
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("");
+        } catch {
+          return null;
+        }
+      }
+
+      function deleteSkill(skillId) {
+        return runSkillOperation(() => requestSkill(
+          `/skills/${encodeURIComponent(skillId)}`,
+          {
+            method: "DELETE",
+            headers: { "X-Live-Smith-Command-Id": createCommandId() },
+          },
+          true,
+        ));
+      }
+
       async function refreshState(expectedSendAttempt, commandKind) {
         if (
           expectedSendAttempt &&
@@ -1093,6 +1208,7 @@
         closeWithResult: hostAdapter.closeWithResult,
         connectView,
         deleteAttachment,
+        deleteSkill,
         getAssistantDraft: activeAssistantDraft,
         getPendingConfirmation: activePendingConfirmation,
         handleSendButton,
@@ -1104,6 +1220,7 @@
         runCommand,
         showStatus,
         startEventStream,
+        installSkill,
         uploadAttachments,
       };
       };

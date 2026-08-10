@@ -175,6 +175,33 @@ are opened. Missing, corrupt, incompatible, or omitted historical files degrade
 to fixed untrusted markers. Duplicate attachment IDs across events are storage
 corruption, and consumed IDs cannot be removed or attached to another prompt.
 
+### Local Skill instructions
+
+Local Skills are provider-neutral system guidance. Before reading attachments
+or appending the user event, Live Smith combines the Session's saved active IDs
+with installed one-turn `$skill-id` mentions, sorts and deduplicates the result,
+and reads and hash-checks only those selected bodies in one storage snapshot.
+The prompt and conversation history remain unchanged, and at most four Skills
+can guide one request.
+
+The final escaped Skill block is limited to 128 KiB of UTF-8. It follows the
+built-in safety instructions and a fixed lower-priority boundary, precedes the
+Live action system prompt, and remains identical across all model turns for the
+request. Transports receive it only through the ordinary provider system
+instruction field. They do not receive Skill IDs, descriptions, hashes, paths,
+frontmatter, or a separate Skill protocol field. With no active Skill, the
+system text remains byte-for-byte identical to the legacy request.
+
+Skills are locally installed declarative workflow guidance. They cannot install
+or execute scripts, binaries, MCP servers, plugins, nested resources, or
+arbitrary paths; change provider settings; add tools; or add Live actions. A
+Skill never expands the built-in action schema or tool set. Every action remains
+subject to observation, schema validation, the selected Approval policy,
+preflight, cancellation, process-wide mutation serialization, and state-drift
+revalidation. Skill Markdown has lower priority than Live Smith's system and
+safety instructions and cannot authorize secrets, filesystem access,
+unsupported provider fields, or actions outside the built-in schema.
+
 ## Capability resolution
 
 Capabilities resolve in this order:
