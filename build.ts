@@ -132,6 +132,12 @@ function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
     );
     const hasNodeUrl = hasNamedImport(source, "node:url", "URL", "URL");
     const hasNodeBuffer = hasNamedImport(source, "node:buffer", "Buffer", "Buffer");
+    const hasNodeTextDecoder = hasNamedImport(
+      source,
+      "node:util",
+      "TextDecoder",
+      "TextDecoder",
+    );
     const hasNodeProcess = hasDefaultImport(source, "node:process", "process");
     const isHostBoundary = path.normalize(file) === path.normalize("src/runtime/host.ts");
 
@@ -164,6 +170,9 @@ function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
         }
         if (node.expression.text === "AbortController" && !isHostBoundary) {
           violations.push(`${file}: create abort controllers through src/runtime/host.ts`);
+        }
+        if (node.expression.text === "TextDecoder" && !hasNodeTextDecoder) {
+          violations.push(`${file}: import TextDecoder explicitly from node:util`);
         }
       }
 

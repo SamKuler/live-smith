@@ -8,11 +8,18 @@ import {
   createSession,
   deleteSession,
   listSessions,
+  listSessionsInTransaction,
   restoreSession,
   setSessionArchived,
   SessionStorageCorruptionError,
   sessionScopeKey,
+  updateSession,
+  updateSessionInTransaction,
 } from "./sessions.js";
+import {
+  withStorageTransaction,
+  type StorageTransactionContext,
+} from "./persistence.js";
 
 test("createSession stores title, projectKey, scope, and timestamps", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
@@ -177,6 +184,263 @@ test("restoreSession rebinds a Session while preserving its original scope", asy
     identity: "later-track-handle",
     label: "Drums",
   });
+});
+
+test("activeSkillIds persist as a sorted bounded Session activation", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Guided review",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    activeSkillIds: ["vocal-review", "mixing-review"],
+  });
+
+  assert.deepEqual(session.activeSkillIds, ["mixing-review", "vocal-review"]);
+  assert.deepEqual((await listSessions(dir))[0]?.activeSkillIds, [
+    "mixing-review",
+    "vocal-review",
+  ]);
+
+  await updateSession(dir, session.id, {
+    activeSkillIds: ["transient-check", "gain-staging"],
+  });
+  assert.deepEqual((await listSessions(dir))[0]?.activeSkillIds, [
+    "gain-staging",
+    "transient-check",
+  ]);
+});
+
+test("activeSkillIds validation rejects unsafe, duplicate, oversized, and non-array updates", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Guided review",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    activeSkillIds: ["mixing-review"],
+  });
+  const before = await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8");
+
+  const invalidValues: unknown[] = [
+    ["../escape"],
+    ["Mixing-Review"],
+    ["mixing-review", "mixing-review"],
+    ["one", "two", "three", "four", "five"],
+    "mixing-review",
+  ];
+  for (const activeSkillIds of invalidValues) {
+    await assert.rejects(
+      updateSession(dir, session.id, { activeSkillIds } as never),
+      /Skill activation is invalid/i,
+    );
+    assert.equal(
+      await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8"),
+      before,
+    );
+  }
+});
+
+test("activeSkillIds validation applies to Session creation", async () => {
+  const invalidValues = [
+    ["duplicate", "duplicate"],
+    ["unsafe_id"],
+    ["one", "two", "three", "four", "five"],
+  ];
+
+  for (const activeSkillIds of invalidValues) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+    await assert.rejects(
+      createSession(dir, {
+        title: "Invalid activation",
+        projectKey: "set-001",
+        scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+        activeSkillIds,
+      }),
+      /Skill activation is invalid/i,
+    );
+    await assert.rejects(
+      fs.readFile(path.join(dir, "live-smith-sessions.json")),
+      (error: unknown) =>
+        typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT",
+    );
+  }
+});
+
+test("old Sessions load unchanged and restored Sessions preserve activeSkillIds", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const now = new Date().toISOString();
+  const legacy = {
+    id: "session-legacy",
+    title: "Before Skills",
+    projectKey: "legacy-set",
+    scope: { kind: "selection", identity: "legacy-selection", label: "Live Set" },
+    createdAt: now,
+    updatedAt: now,
+  };
+  await fs.writeFile(target, JSON.stringify([legacy]));
+
+  assert.deepEqual(await listSessions(dir), [legacy]);
+  await updateSession(dir, legacy.id, {
+    activeSkillIds: ["vocal-review", "mixing-review"],
+  });
+  const restored = await restoreSession(dir, legacy.id, {
+    projectKey: "current-set",
+    scope: { kind: "selection", identity: "current-selection", label: "Live Set" },
+  });
+
+  assert.deepEqual(restored.activeSkillIds, ["mixing-review", "vocal-review"]);
+  assert.deepEqual((await listSessions(dir))[0]?.activeSkillIds, restored.activeSkillIds);
+});
+
+test("invalid persisted activeSkillIds make Session storage corrupt without rewriting it", async () => {
+  const invalidValues: unknown[] = [
+    "mixing-review",
+    ["../escape"],
+    ["mixing-review", "mixing-review"],
+    ["z-last", "a-first"],
+    ["one", "two", "three", "four", "five"],
+  ];
+  for (const activeSkillIds of invalidValues) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+    const target = path.join(dir, "live-smith-sessions.json");
+    const now = new Date().toISOString();
+    const original = JSON.stringify([{
+      id: "session-invalid-skills",
+      title: "Invalid activation",
+      projectKey: "set-001",
+      scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+      activeSkillIds,
+      createdAt: now,
+      updatedAt: now,
+    }]);
+    await fs.writeFile(target, original);
+
+    await assert.rejects(
+      listSessions(dir),
+      (error: unknown) => error instanceof SessionStorageCorruptionError,
+    );
+    assert.equal(await fs.readFile(target, "utf8"), original);
+  }
+});
+
+test("Session storage rejects unknown fields instead of projecting them into chat state", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const now = new Date().toISOString();
+  const base = {
+    id: "session-unknown-field",
+    title: "Strict Session",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  for (const value of [
+    { ...base, skillBody: "PRIVATE SKILL BODY" },
+    { ...base, scope: { ...base.scope, privateData: "PRIVATE SKILL BODY" } },
+  ]) {
+    await fs.writeFile(target, JSON.stringify([value]));
+    await assert.rejects(
+      listSessions(dir),
+      (error: unknown) => error instanceof SessionStorageCorruptionError,
+    );
+  }
+});
+
+test("memory Sessions defensively copy activation arrays, scopes, and returned records", async () => {
+  const sourceIds = ["mixing-review"];
+  const sourceScope = {
+    kind: "selection" as const,
+    identity: "memory-selection",
+    label: "Memory Set",
+  };
+  const created = await createSession(undefined, {
+    title: "Memory aliases",
+    projectKey: "memory-set-original",
+    scope: sourceScope,
+    activeSkillIds: sourceIds,
+  });
+  sourceIds[0] = "../unsafe";
+  sourceScope.label = "Mutated source";
+  created.activeSkillIds?.push("duplicate", "duplicate", "three", "four");
+  created.scope.label = "Mutated return";
+
+  const firstRead = (await listSessions(undefined)).find(
+    (session) => session.id === created.id,
+  );
+  assert.deepEqual(firstRead?.activeSkillIds, ["mixing-review"]);
+  assert.equal(firstRead?.scope.label, "Memory Set");
+  firstRead?.activeSkillIds?.splice(0, 1, "../unsafe");
+  if (firstRead) firstRead.scope.label = "Mutated list";
+
+  const updateIds = ["vocal-review"];
+  await updateSession(undefined, created.id, { activeSkillIds: updateIds });
+  updateIds[0] = "../unsafe";
+  const restored = await restoreSession(undefined, created.id, {
+    projectKey: "memory-set-restored",
+    scope: { kind: "selection", identity: "restored", label: "Restored Set" },
+  });
+  restored.activeSkillIds?.push("../unsafe");
+  restored.scope.label = "Mutated restored return";
+
+  const finalRead = (await listSessions(undefined)).find(
+    (session) => session.id === created.id,
+  );
+  assert.deepEqual(finalRead?.activeSkillIds, ["vocal-review"]);
+  assert.equal(finalRead?.scope.label, "Restored Set");
+  await deleteSession(undefined, created.id);
+});
+
+test("Session transaction-scoped APIs require a live context bound to the same storage", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const otherDir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Scoped transaction",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+  });
+  let retained: StorageTransactionContext | undefined;
+
+  await withStorageTransaction(dir, async (context) => {
+    retained = context;
+    assert.equal((await listSessionsInTransaction(context, dir))[0]?.id, session.id);
+    await updateSessionInTransaction(context, dir, session.id, {
+      activeSkillIds: ["mixing-review"],
+    });
+    await assert.rejects(
+      listSessionsInTransaction(context, otherDir),
+      /invalid or no longer active/i,
+    );
+  });
+
+  assert.ok(retained);
+  await assert.rejects(
+    listSessionsInTransaction(retained, dir),
+    /invalid or no longer active/i,
+  );
+  assert.deepEqual((await listSessions(dir))[0]?.activeSkillIds, ["mixing-review"]);
+});
+
+test("updateSession rejects unknown Sessions and fields without writing", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Known",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+  });
+  const target = path.join(dir, "live-smith-sessions.json");
+  const before = await fs.readFile(target, "utf8");
+
+  await assert.rejects(
+    updateSession(dir, "session-missing", { activeSkillIds: [] }),
+    /does not exist/i,
+  );
+  await assert.rejects(
+    updateSession(dir, session.id, { projectKey: "other-set" } as never),
+    /Session update is invalid/i,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), before);
 });
 
 test("restoreSession rejects missing and already-current Sessions", async () => {

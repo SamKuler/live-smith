@@ -9,10 +9,13 @@ import {
 import { isMissingFileError } from "./errors.js";
 import {
   ensurePrivateFile,
+  requireActiveStorageTransaction,
   withStorageTransaction,
   writeJsonAtomically,
+  type StorageTransactionContext,
 } from "./persistence.js";
 import type { ConversationScope } from "../model/contracts.js";
+import { isSafeSkillId } from "../skills/format.js";
 
 export interface AgentSession {
   id: string;
@@ -21,12 +24,19 @@ export interface AgentSession {
   scope: ConversationScope;
   originScope?: ConversationScope | undefined;
   archivedAt?: string | undefined;
+  activeSkillIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
 
+export const MAX_ACTIVE_SKILL_IDS_PER_SESSION = 4;
+
 const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
+
+type CreateSessionInput = Pick<AgentSession, "title" | "projectKey" | "scope"> &
+  Partial<Pick<AgentSession, "activeSkillIds">>;
+type SessionUpdate = Partial<Pick<AgentSession, "title" | "activeSkillIds">>;
 
 export class SessionStorageCorruptionError extends Error {
   constructor(cause?: unknown) {
@@ -40,25 +50,29 @@ export class SessionStorageCorruptionError extends Error {
 
 export async function createSession(
   storageDirectory: string | undefined,
-  input: Pick<AgentSession, "title" | "projectKey" | "scope">,
+  input: CreateSessionInput,
 ): Promise<AgentSession> {
+  const activeSkillIds = normalizedOptionalActiveSkillIds(input);
   const now = new Date().toISOString();
   const session: AgentSession = {
     id: createStorageId("session"),
-    ...input,
+    title: input.title,
+    projectKey: input.projectKey,
+    scope: cloneConversationScope(input.scope),
+    ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
     createdAt: now,
     updatedAt: now,
   };
 
   return withStorageTransaction(storageDirectory, async () => {
     if (!storageDirectory) {
-      memorySessions = [session, ...memorySessions];
-      return session;
+      memorySessions = [cloneSession(session), ...memorySessions];
+      return cloneSession(session);
     }
 
     const sessions = await loadSessionsUnlocked(storageDirectory);
     await saveSessions(storageDirectory, [session, ...sessions]);
-    return session;
+    return cloneSession(session);
   });
 }
 
@@ -69,6 +83,18 @@ export async function listSessions(
   if (!storageDirectory) return filterByProject(memorySessions, projectKey);
 
   return filterByProject(await loadSessionsUnlocked(storageDirectory), projectKey);
+}
+
+export async function listSessionsInTransaction(
+  context: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  projectKey?: string,
+): Promise<AgentSession[]> {
+  requireActiveStorageTransaction(context, storageDirectory);
+  const sessions = storageDirectory === undefined
+    ? memorySessions
+    : await loadSessionsUnlocked(storageDirectory);
+  return filterByProject(sessions, projectKey);
 }
 
 async function loadSessionsUnlocked(
@@ -86,7 +112,7 @@ async function loadSessionsUnlocked(
     ) {
       throw new SessionStorageCorruptionError();
     }
-    return parsed;
+    return parsed.map(cloneSession);
   } catch (error) {
     if (isMissingFileError(error)) return [];
     if (error instanceof SyntaxError) {
@@ -102,34 +128,43 @@ function filterByProject(
 ): AgentSession[] {
   return sessions.filter(
     (session) => projectKey === undefined || session.projectKey === projectKey,
-  );
+  ).map(cloneSession);
 }
 
 export async function updateSession(
   storageDirectory: string | undefined,
   sessionId: string,
-  update: Partial<Pick<AgentSession, "title">>,
+  update: SessionUpdate,
 ): Promise<void> {
-  await withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      memorySessions = memorySessions.map((session) =>
-        session.id === sessionId
-          ? { ...session, ...update, updatedAt: new Date().toISOString() }
-          : session,
-      );
-      return;
-    }
+  await withStorageTransaction(storageDirectory, (context) =>
+    updateSessionInTransaction(context, storageDirectory, sessionId, update)
+  );
+}
 
-    const sessions = await loadSessionsUnlocked(storageDirectory);
-    await saveSessions(
-      storageDirectory,
-      sessions.map((session) =>
-        session.id === sessionId
-          ? { ...session, ...update, updatedAt: new Date().toISOString() }
-          : session,
-      ),
-    );
-  });
+export async function updateSessionInTransaction(
+  context: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  sessionId: string,
+  update: SessionUpdate,
+): Promise<void> {
+  requireActiveStorageTransaction(context, storageDirectory);
+  const normalizedUpdate = normalizeSessionUpdate(update);
+  const sessions = storageDirectory === undefined
+    ? memorySessions
+    : await loadSessionsUnlocked(storageDirectory);
+  if (!sessions.some((session) => session.id === sessionId)) {
+    throw new Error(`Session ${sessionId} does not exist.`);
+  }
+  const updated = sessions.map((session) =>
+    session.id === sessionId
+      ? { ...session, ...normalizedUpdate, updatedAt: new Date().toISOString() }
+      : session,
+  );
+  if (storageDirectory === undefined) {
+    memorySessions = updated.map(cloneSession);
+  } else {
+    await saveSessions(storageDirectory, updated);
+  }
 }
 
 export async function restoreSession(
@@ -158,8 +193,8 @@ export async function restoreSession(
       session.id === sessionId ? restored : session
     );
     if (storageDirectory) await saveSessions(storageDirectory, updated);
-    else memorySessions = updated;
-    return restored;
+    else memorySessions = updated.map(cloneSession);
+    return cloneSession(restored);
   });
 }
 
@@ -191,8 +226,8 @@ export async function setSessionArchived(
       session.id === sessionId ? updated : session
     );
     if (storageDirectory) await saveSessions(storageDirectory, nextSessions);
-    else memorySessions = nextSessions;
-    return updated;
+    else memorySessions = nextSessions.map(cloneSession);
+    return cloneSession(updated);
   });
 }
 
@@ -234,7 +269,19 @@ function isAgentSession(value: unknown): value is AgentSession {
     return false;
   }
   const record = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "id",
+    "title",
+    "projectKey",
+    "scope",
+    "originScope",
+    "archivedAt",
+    "activeSkillIds",
+    "createdAt",
+    "updatedAt",
+  ]);
   return (
+    Object.keys(record).every((key) => allowedKeys.has(key)) &&
     isSafeStorageId(record.id) &&
     typeof record.title === "string" &&
     typeof record.projectKey === "string" &&
@@ -242,8 +289,60 @@ function isAgentSession(value: unknown): value is AgentSession {
     (record.originScope === undefined ||
       isConversationScope(record.originScope)) &&
     (record.archivedAt === undefined || typeof record.archivedAt === "string") &&
+    (record.activeSkillIds === undefined ||
+      isPersistedActiveSkillIds(record.activeSkillIds)) &&
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string"
+  );
+}
+
+function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
+  if (typeof update !== "object" || update === null || Array.isArray(update)) {
+    throw new Error("Session update is invalid.");
+  }
+  const record = update as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => key !== "title" && key !== "activeSkillIds",
+    ) ||
+    (Object.hasOwn(record, "title") && typeof record.title !== "string")
+  ) {
+    throw new Error("Session update is invalid.");
+  }
+
+  return {
+    ...(Object.hasOwn(record, "title") ? { title: record.title as string } : {}),
+    ...(Object.hasOwn(record, "activeSkillIds")
+      ? { activeSkillIds: normalizeActiveSkillIds(record.activeSkillIds) }
+      : {}),
+  };
+}
+
+function normalizedOptionalActiveSkillIds(
+  value: Pick<AgentSession, "activeSkillIds">,
+): string[] | undefined {
+  if (!Object.hasOwn(value, "activeSkillIds")) return undefined;
+  return normalizeActiveSkillIds(value.activeSkillIds);
+}
+
+function normalizeActiveSkillIds(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_ACTIVE_SKILL_IDS_PER_SESSION ||
+    !value.every(isSafeSkillId) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error("Skill activation is invalid.");
+  }
+  return [...value].sort();
+}
+
+function isPersistedActiveSkillIds(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_ACTIVE_SKILL_IDS_PER_SESSION &&
+    value.every(isSafeSkillId) &&
+    value.every((skillId, index) => index === 0 || value[index - 1]! < skillId)
   );
 }
 
@@ -253,6 +352,9 @@ function isConversationScope(value: unknown): value is ConversationScope {
   }
   const record = value as Record<string, unknown>;
   return (
+    Object.keys(record).every(
+      (key) => key === "kind" || key === "identity" || key === "label",
+    ) &&
     (record.kind === "track" ||
       record.kind === "clip" ||
       record.kind === "object" ||
@@ -260,4 +362,32 @@ function isConversationScope(value: unknown): value is ConversationScope {
     typeof record.identity === "string" &&
     typeof record.label === "string"
   );
+}
+
+function cloneSession(session: AgentSession): AgentSession {
+  return {
+    id: session.id,
+    title: session.title,
+    projectKey: session.projectKey,
+    scope: cloneConversationScope(session.scope),
+    ...(session.originScope === undefined
+      ? {}
+      : { originScope: cloneConversationScope(session.originScope) }),
+    ...(session.archivedAt === undefined
+      ? {}
+      : { archivedAt: session.archivedAt }),
+    ...(session.activeSkillIds === undefined
+      ? {}
+      : { activeSkillIds: [...session.activeSkillIds] }),
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  };
+}
+
+function cloneConversationScope(scope: ConversationScope): ConversationScope {
+  return {
+    kind: scope.kind,
+    identity: scope.identity,
+    label: scope.label,
+  };
 }
