@@ -80,6 +80,7 @@ import {
 import {
   appendSessionEvent,
   deleteSessionEvents,
+  listSessionEventLogIds,
   loadSessionEvents,
   type SessionEvent,
 } from "../storage/events.js";
@@ -215,7 +216,7 @@ export async function runAgentFlow(
   let bindInvocationSelectionToNextSession = Boolean(
     interaction.selectionContext,
   );
-  const pendingAttachmentCleanup = new Set<string>();
+  const pendingSessionCleanup = new Set<string>();
   const withSessionMutation = <T>(
     sessionId: string,
     signal: AbortSignal | undefined,
@@ -307,7 +308,7 @@ export async function runAgentFlow(
     options: { heldSessionId?: string } = {},
   ) => {
     if (options.heldSessionId === undefined) {
-      await retryPendingAttachmentCleanup();
+      await retryPendingSessionCleanup();
     }
     const settings = await loadAgentSettings(context.environment.storageDirectory);
     const activeProfile = activeSavedProfile(settings);
@@ -615,10 +616,6 @@ export async function runAgentFlow(
         existed = await sessionExists(commandInput.sessionId);
         throwIfAborted(signal);
         if (existed) {
-          await deleteSessionEvents(
-            context.environment.storageDirectory,
-            commandInput.sessionId,
-          );
           try {
             await (dependencies.deleteSession ?? deleteSession)(
               context.environment.storageDirectory,
@@ -626,7 +623,7 @@ export async function runAgentFlow(
             );
           } catch (cause) {
             if (isStorageCommitOutcomeUnknownError(cause)) {
-              pendingAttachmentCleanup.add(commandInput.sessionId);
+              pendingSessionCleanup.add(commandInput.sessionId);
               throw new ChatBridgeCommandOutcomeUnknownError(
                 "Session deletion storage could not be confirmed.",
                 { cause },
@@ -638,15 +635,19 @@ export async function runAgentFlow(
           if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
         }
         try {
+          await deleteSessionEvents(
+            context.environment.storageDirectory,
+            commandInput.sessionId,
+          );
           await deleteSessionAttachments(
             context.environment.storageDirectory,
             commandInput.sessionId,
           );
-          pendingAttachmentCleanup.delete(commandInput.sessionId);
+          pendingSessionCleanup.delete(commandInput.sessionId);
         } catch (cause) {
-          pendingAttachmentCleanup.add(commandInput.sessionId);
+          pendingSessionCleanup.add(commandInput.sessionId);
           throw new ChatBridgeCommandOutcomeUnknownError(
-            "The Session was deleted, but attachment cleanup could not be confirmed.",
+            "The Session was deleted, but associated data cleanup could not be confirmed.",
             { cause },
           );
         }
@@ -921,29 +922,48 @@ export async function runAgentFlow(
       (session) => session.id === sessionId,
     );
 
-  async function retryPendingAttachmentCleanup(): Promise<void> {
-    for (const sessionId of [...pendingAttachmentCleanup]) {
+  async function retryPendingSessionCleanup(): Promise<void> {
+    for (const sessionId of [...pendingSessionCleanup]) {
       await withSessionMutation(sessionId, undefined, async () => {
         if (await sessionExists(sessionId)) {
-          pendingAttachmentCleanup.delete(sessionId);
+          pendingSessionCleanup.delete(sessionId);
           return;
         }
+        await deleteSessionEvents(
+          context.environment.storageDirectory,
+          sessionId,
+        );
         await deleteSessionAttachments(
           context.environment.storageDirectory,
           sessionId,
         );
-        pendingAttachmentCleanup.delete(sessionId);
+        pendingSessionCleanup.delete(sessionId);
       });
     }
   }
 
-  async function reconcileStartupAttachmentOrphans(): Promise<void> {
-    const directoryIds = await listSessionAttachmentDirectoryIds(
-      context.environment.storageDirectory,
+  async function reconcileStartupSessionOrphans(): Promise<void> {
+    const existingSessionIds = new Set(
+      (await listSessions(context.environment.storageDirectory)).map(
+        (session) => session.id,
+      ),
     );
-    for (const sessionId of directoryIds) {
+    const orphanCandidates = new Set([
+      ...await listSessionAttachmentDirectoryIds(
+        context.environment.storageDirectory,
+      ),
+      ...await listSessionEventLogIds(
+        context.environment.storageDirectory,
+      ),
+    ]);
+    for (const sessionId of [...orphanCandidates].sort()) {
+      if (existingSessionIds.has(sessionId)) continue;
       await withSessionMutation(sessionId, undefined, async () => {
         if (await sessionExists(sessionId)) return;
+        await deleteSessionEvents(
+          context.environment.storageDirectory,
+          sessionId,
+        );
         await deleteSessionAttachments(
           context.environment.storageDirectory,
           sessionId,
@@ -1351,7 +1371,7 @@ export async function runAgentFlow(
 
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
-  await reconcileStartupAttachmentOrphans();
+  await reconcileStartupSessionOrphans();
   const bridge = await createChatBridge({
     buildState,
     renderHtml,

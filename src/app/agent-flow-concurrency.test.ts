@@ -26,7 +26,11 @@ import {
   listSessionAttachments,
   saveSessionAttachment,
 } from "../storage/attachments.js";
-import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
+import {
+  appendSessionEvent,
+  listSessionEventLogIds,
+  loadSessionEvents,
+} from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import {
@@ -276,6 +280,85 @@ test("two bridges serialize a same-Session send and delete without recreating ev
   } finally {
     releaseModel.resolve();
     await fixture.close();
+  }
+});
+
+test("a second dialog opens while an existing Session send holds its fence", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-dialog-startup-fence-"));
+  await saveSavedProfile(directory, profile({
+    baseUrl: "https://provider.test/v1",
+    apiKey: "key",
+    model: "model-a",
+  }));
+  const firstDialog = deferred<string>();
+  const secondDialog = deferred<string>();
+  const closeFirstDialog = deferred<void>();
+  const closeSecondDialog = deferred<void>();
+  const modelStarted = deferred<void>();
+  const releaseModel = deferred<void>();
+  let dialogCount = 0;
+  const leadTrack = fakeMidiTrack(1n, "Lead");
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks: [leadTrack], scenes: [] },
+    },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const index = dialogCount;
+        dialogCount += 1;
+        (index === 0 ? firstDialog : secondDialog).resolve(url);
+        await (index === 0 ? closeFirstDialog.promise : closeSecondDialog.promise);
+      },
+    },
+  };
+  const interaction: LiveInteractionContext = {
+    defaultPrompt: "Test prompt",
+    summary: "Track: Lead",
+    target: { track: leadTrack },
+    scope: { kind: "track", identity: "1", label: "Lead" },
+  };
+  const firstFlow = runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    requestModelTurn: async () => {
+      modelStarted.resolve();
+      await releaseModel.promise;
+      return { content: "Done", toolCalls: [] };
+    },
+  });
+  let secondFlow: Promise<void> | undefined;
+  let send: Promise<Response> | undefined;
+
+  try {
+    const firstUrl = new URL(await resolvesWithin(firstDialog.promise, "first bridge"));
+    const token = firstUrl.searchParams.get("token")!;
+    const endpoint = (pathname: string) =>
+      `${firstUrl.origin}${pathname}?token=${encodeURIComponent(token)}`;
+    const state = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+    send = fetch(endpoint("/send"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Hold this Session fence",
+        sessionId: state.activeSessionId,
+      }),
+    });
+    await resolvesWithin(modelStarted.promise, "first model request");
+
+    secondFlow = runAgentFlow(context as never, interaction, {
+      renderHtml: () => "<html></html>",
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    });
+    await resolvesWithin(secondDialog.promise, "second dialog startup", 300);
+  } finally {
+    releaseModel.resolve();
+    closeFirstDialog.resolve();
+    closeSecondDialog.resolve();
+    await Promise.allSettled([
+      firstFlow,
+      ...(secondFlow ? [secondFlow] : []),
+      ...(send ? [send] : []),
+    ]);
   }
 });
 
@@ -1711,7 +1794,61 @@ test("model discovery accepts a Draft with blank name and model without changing
   });
 });
 
-test("a failed event-log deletion keeps session metadata available for retry", async () => {
+test("a definite Session metadata deletion failure preserves event history", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-metadata-failure-"));
+  let deletedSessionId = "";
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const initialState = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+        deletedSessionId = initialState.activeSessionId;
+        await appendSessionEvent(directory, deletedSessionId, {
+          kind: "user",
+          content: "History must survive a definite metadata failure.",
+        });
+
+        const failed = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
+        });
+        assert.equal(failed.status, 500);
+        assert.ok(
+          (await listSessions(directory)).some((session) => session.id === deletedSessionId),
+        );
+        assert.deepEqual(
+          (await loadSessionEvents(directory, deletedSessionId)).map((event) => event.content),
+          ["History must survive a definite metadata failure."],
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(
+    context as never,
+    {
+      defaultPrompt: "Test prompt",
+      summary: "Track: Lead",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Lead" },
+    },
+    {
+      renderHtml: () => "<html></html>",
+      deleteSession: async () => {
+        throw new Error("sessions metadata write failed");
+      },
+    },
+  );
+  assert.ok(deletedSessionId);
+});
+
+test("an event-log cleanup failure leaves the logically deleted Session reconcilable", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-retry-"));
   let deletedSessionId = "";
   const context = {
@@ -1738,17 +1875,15 @@ test("a failed event-log deletion keeps session metadata available for retry", a
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
         assert.equal(failed.status, 500);
+        const failure = await failed.json() as { commandOutcome?: string };
+        assert.equal(failure.commandOutcome, "unknown");
         assert.ok(
-          (await listSessions(directory)).some((session) => session.id === deletedSessionId),
+          !(await listSessions(directory)).some((session) => session.id === deletedSessionId),
         );
 
         await fs.rmdir(eventPath);
-        const retried = await fetch(endpoint("/command"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
-        });
-        assert.equal(retried.status, 200);
+        const reconciled = await fetch(endpoint("/state"));
+        assert.equal(reconciled.status, 200);
         assert.ok(
           !(await listSessions(directory)).some((session) => session.id === deletedSessionId),
         );
@@ -2162,7 +2297,7 @@ test("attachment upload accepts the exact pending image subtotal and count limit
   }, { renderHtml: () => "<html></html>" });
 });
 
-test("startup orphan reconciliation preserves attachment directories for live Sessions", async () => {
+test("startup orphan reconciliation removes abandoned Session data and preserves live data", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-orphans-"));
   const liveSession = await createSession(directory, {
     title: "Live",
@@ -2173,11 +2308,19 @@ test("startup orphan reconciliation preserves attachment directories for live Se
     fileName: "live.png",
     bytes: sizedAttachmentPng(24),
   }, { preSavePendingAttachmentRefs: [] });
+  await appendSessionEvent(directory, liveSession.id, {
+    kind: "user",
+    content: "Keep the live Session history.",
+  });
   const orphanSessionId = "orphan-session";
   await saveSessionAttachment(directory, orphanSessionId, {
     fileName: "orphan.png",
     bytes: sizedAttachmentPng(24),
   }, { preSavePendingAttachmentRefs: [] });
+  await appendSessionEvent(directory, orphanSessionId, {
+    kind: "user",
+    content: "Remove the abandoned Session history after restart.",
+  });
 
   const context = {
     application: { song: { handle: { id: 1n } } },
@@ -2191,6 +2334,11 @@ test("startup orphan reconciliation preserves attachment directories for live Se
           [liveAttachment.id],
         );
         assert.deepEqual(await listSessionAttachments(directory, orphanSessionId), []);
+        assert.deepEqual(await listSessionEventLogIds(directory), [liveSession.id]);
+        assert.deepEqual(
+          (await loadSessionEvents(directory, liveSession.id)).map((event) => event.content),
+          ["Keep the live Session history."],
+        );
       },
     },
   };

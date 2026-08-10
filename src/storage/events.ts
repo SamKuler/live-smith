@@ -168,6 +168,60 @@ export async function deleteSessionEvents(
   });
 }
 
+export async function listSessionEventLogIds(
+  storageDirectory: string | undefined,
+): Promise<string[]> {
+  return withStorageTransaction(storageDirectory, async () => {
+    if (!storageDirectory) {
+      const ids = [...memoryEvents.keys()];
+      if (!ids.every(isSafeStorageId)) throw new SessionEventsCorruptionError();
+      return ids.sort();
+    }
+
+    const directory = path.join(storageDirectory, eventsDirectoryName);
+    let before: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      before = await fs.lstat(directory);
+    } catch (cause) {
+      if (isMissingFileError(cause)) return [];
+      throw cause;
+    }
+    if (before.isSymbolicLink() || !before.isDirectory()) {
+      throw new SessionEventsCorruptionError();
+    }
+
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    const ids: string[] = [];
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isFile() || !entry.name.endsWith(".json")) {
+        throw new SessionEventsCorruptionError();
+      }
+      const encodedId = entry.name.slice(0, -".json".length);
+      let id: string;
+      try {
+        id = decodeURIComponent(encodedId);
+      } catch (cause) {
+        throw new SessionEventsCorruptionError(cause);
+      }
+      if (!isSafeStorageId(id) || encodeURIComponent(id) !== encodedId) {
+        throw new SessionEventsCorruptionError();
+      }
+      ids.push(id);
+    }
+
+    const after = await fs.lstat(directory);
+    if (
+      after.isSymbolicLink() ||
+      !after.isDirectory() ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino
+    ) {
+      throw new SessionEventsCorruptionError();
+    }
+    return ids.sort();
+  });
+}
+
 function eventsPath(storageDirectory: string, sessionId: string): string {
   const safeSessionId = requireSafeStorageId(sessionId, "Session ID");
   return path.join(

@@ -60,9 +60,9 @@
             .addEventListener("click", () => finishAppConfirmation(true));
           document.addEventListener("keydown", (event) => {
             if (!activeAppConfirmation) return;
+            event.stopImmediatePropagation();
             if (event.key === "Escape") {
               event.preventDefault();
-              event.stopPropagation();
               finishAppConfirmation(false);
               return;
             }
@@ -83,7 +83,7 @@
               event.preventDefault();
               first.focus();
             }
-          });
+          }, true);
         }
 
         const bridgeClient = factories.createBridgeClient({

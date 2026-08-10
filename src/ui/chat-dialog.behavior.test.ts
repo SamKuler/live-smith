@@ -2033,6 +2033,53 @@ test("closing while a send is active requires explicit confirmation", async () =
   }
 });
 
+test("Escape dismisses only the top close confirmation while Live Apply waits", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.input("#prompt", "Keep the Live confirmation pending");
+    harness.holdNextSend();
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      id: "confirm-under-close",
+      message: "Change the Live Set.",
+      groups: [{ title: "Mix", rows: ["Set tempo to 124 BPM"] }],
+    });
+    assert.ok(harness.document.querySelector(".confirm-card"));
+
+    harness.click("#closeButton");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden,
+      false,
+    );
+    harness.document.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }));
+    await Promise.resolve();
+
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden,
+      true,
+    );
+    assert.ok(harness.document.querySelector(".confirm-card"));
+    assert.deepEqual(jsonCalls(harness, "/confirm"), []);
+
+    harness.click("[data-confirm-cancel]");
+    await harness.settle();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("API key visibility exposes an accessible Show and Hide state", async () => {
   const harness = await createDialogHarness();
   try {
