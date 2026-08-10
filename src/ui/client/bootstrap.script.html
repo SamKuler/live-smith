@@ -13,6 +13,78 @@
         const setState = (nextState) => {
           applicationState = nextState;
         };
+        let activeAppConfirmation = null;
+
+        function finishAppConfirmation(accepted) {
+          const confirmation = activeAppConfirmation;
+          if (!confirmation) return;
+          activeAppConfirmation = null;
+          document.getElementById("appConfirmation").hidden = true;
+          document.querySelector(".app").removeAttribute("inert");
+          confirmation.resolve(accepted);
+          if (confirmation.returnFocus?.isConnected && !confirmation.returnFocus.disabled) {
+            confirmation.returnFocus.focus({ preventScroll: true });
+          }
+        }
+
+        function confirmAction({
+          title,
+          message,
+          acceptLabel = "Continue",
+          danger = false,
+        }) {
+          if (activeAppConfirmation) return Promise.resolve(false);
+          const layer = document.getElementById("appConfirmation");
+          document.getElementById("appConfirmationTitle").textContent = title;
+          document.getElementById("appConfirmationMessage").textContent = message;
+          const acceptButton = document.getElementById("appConfirmationAccept");
+          acceptButton.textContent = acceptLabel;
+          acceptButton.classList.toggle("stop", danger);
+          const returnFocus = document.activeElement;
+          document.querySelector(".app").setAttribute("inert", "");
+          layer.hidden = false;
+          return new Promise((resolve) => {
+            activeAppConfirmation = {
+              resolve,
+              returnFocus,
+            };
+            document.getElementById("appConfirmationCancel")
+              .focus({ preventScroll: true });
+          });
+        }
+
+        function initializeAppConfirmation() {
+          document.getElementById("appConfirmationCancel")
+            .addEventListener("click", () => finishAppConfirmation(false));
+          document.getElementById("appConfirmationAccept")
+            .addEventListener("click", () => finishAppConfirmation(true));
+          document.addEventListener("keydown", (event) => {
+            if (!activeAppConfirmation) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              finishAppConfirmation(false);
+              return;
+            }
+            if (event.key !== "Tab") return;
+            const controls = [
+              document.getElementById("appConfirmationCancel"),
+              document.getElementById("appConfirmationAccept"),
+            ];
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (!controls.includes(document.activeElement)) {
+              event.preventDefault();
+              first.focus();
+            } else if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+            }
+          });
+        }
 
         const bridgeClient = factories.createBridgeClient({
           bridgeConfig,
@@ -30,6 +102,7 @@
         });
 
         const skillManager = factories.createSkillManager({
+          confirmAction,
           deleteSkill: bridgeClient.deleteSkill,
           getState,
           installSkill: bridgeClient.installSkill,
@@ -38,6 +111,7 @@
         });
 
         const profileEditor = factories.createProfileEditor({
+          confirmAction,
           getState,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
@@ -196,7 +270,7 @@
           else setInspectorOpen(false);
         }
 
-        function requestClose() {
+        async function requestClose() {
           const operationActive = bridgeClient.isOperationInProgress() ||
             bridgeClient.hasAnySendInProgress();
           const draftDirty = profileEditor.getDraftState().dirty;
@@ -207,7 +281,11 @@
               : draftDirty
                 ? "Discard unsaved Profile changes and close Live Smith?"
                 : "";
-          if (warning && !confirm(warning)) return;
+          if (warning && !(await confirmAction({
+            title: "Close Live Smith?",
+            message: warning,
+            acceptLabel: "Close",
+          }))) return;
           bridgeClient.closeWithResult({ kind: "close" });
         }
 
@@ -422,6 +500,7 @@
         };
 
         window.addEventListener("DOMContentLoaded", () => {
+          initializeAppConfirmation();
           skillManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();

@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createProfileEditor = function createProfileEditor({
+        confirmAction,
         getState,
         runCommand,
         showStatus,
@@ -299,14 +300,22 @@
         markDraftDirty(familyControl);
       }
 
-      function addProfile() {
-        if (draftDirty && !confirm("Discard unsaved profile changes?")) return;
+      async function addProfile() {
+        if (draftDirty && !(await confirmAction({
+          title: "Discard unsaved changes?",
+          message: "Create a new Profile and discard the current unsaved changes?",
+          acceptLabel: "Discard & Add",
+        }))) return;
         setDraftProfile(blankProfile(), null, true);
       }
 
-      function duplicateProfile() {
+      async function duplicateProfile() {
         if (!draftProfile) return;
-        if (draftDirty && !confirm("Duplicate the current unsaved values?")) return;
+        if (draftDirty && !(await confirmAction({
+          title: "Duplicate unsaved values?",
+          message: "Create a new Profile from the values currently shown in the form?",
+          acceptLabel: "Duplicate",
+        }))) return;
         let current;
         try {
           current = profileFromForm();
@@ -339,7 +348,12 @@
 
       async function deleteProfile() {
         if (!savedProfileSnapshot) return;
-        if (!confirm(`Delete profile “${savedProfileSnapshot.name}”?`)) return;
+        if (!(await confirmAction({
+          title: "Delete Profile?",
+          message: `Delete “${savedProfileSnapshot.name}”? This cannot be undone.`,
+          acceptLabel: "Delete",
+          danger: true,
+        }))) return;
         await runCommand("delete_profile", { profileId: savedProfileSnapshot.id });
       }
 
@@ -357,7 +371,11 @@
       async function handleProfileSelection() {
         const next = selectedSavedProfile();
         if (!next) return;
-        if (draftDirty && !confirm("Discard unsaved profile changes?")) {
+        if (draftDirty && !(await confirmAction({
+          title: "Discard unsaved changes?",
+          message: `Switch to “${next.name}” and discard the current unsaved changes?`,
+          acceptLabel: "Discard & Switch",
+        }))) {
           document.getElementById("profileSelector").value = draftProfile?.id || "";
           return;
         }

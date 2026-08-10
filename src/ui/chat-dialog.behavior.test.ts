@@ -26,12 +26,14 @@ interface ParsedBridgeCall {
 }
 
 interface DialogHarness {
+  acceptAppConfirmation(): Promise<void>;
   calls: BridgeCall[];
   clipboardWrites: string[];
   commandIds: string[];
   click(selector: string): void;
   clickButton(label: string): void;
   close(): void;
+  cancelAppConfirmation(): Promise<void>;
   document: Document;
   emitServerEvent(payload: unknown): void;
   emitServerEventError(): void;
@@ -86,7 +88,6 @@ interface DialogHarness {
   sendIds: string[];
   stopIds: string[];
   select(selector: string, value: string): void;
-  setConfirmResult(value: boolean): void;
   dispatchPaste(files?: File[], text?: string): boolean;
   dispatchDrop(files: File[]): boolean;
   dispatchDragOver(files: File[]): boolean;
@@ -292,7 +293,6 @@ async function createDialogHarness(
   const hostMessages: unknown[] = [];
   const animationFrames = new Map<number, FrameRequestCallback>();
   let nextAnimationFrameId = 1;
-  let confirmResult = true;
   let nextCommandError: {
     error: string;
     field?: string;
@@ -393,7 +393,9 @@ async function createDialogHarness(
         });
         Object.defineProperty(window, "confirm", {
           configurable: true,
-          value: () => confirmResult,
+          value: () => {
+            throw new Error("Native confirm is unavailable in the Ableton host.");
+          },
         });
         Object.defineProperty(window.navigator, "clipboard", {
           configurable: true,
@@ -882,6 +884,14 @@ async function createDialogHarness(
   };
 
   return {
+    async acceptAppConfirmation() {
+      await waitForCondition(
+        () => required<HTMLElement>("#appConfirmation").hidden === false,
+        "Expected an in-page confirmation.",
+      );
+      required<HTMLButtonElement>("#appConfirmationAccept").click();
+      await Promise.resolve();
+    },
     calls,
     clipboardWrites,
     commandIds,
@@ -893,6 +903,14 @@ async function createDialogHarness(
         .find((candidate) => candidate.textContent?.trim() === label);
       assert.ok(button, `Expected button ${label} to exist`);
       button.click();
+    },
+    async cancelAppConfirmation() {
+      await waitForCondition(
+        () => required<HTMLElement>("#appConfirmation").hidden === false,
+        "Expected an in-page confirmation.",
+      );
+      required<HTMLButtonElement>("#appConfirmationCancel").click();
+      await Promise.resolve();
     },
     close() {
       window.close();
@@ -1051,9 +1069,6 @@ async function createDialogHarness(
       const field = required<HTMLSelectElement>(selector);
       field.value = value;
       field.dispatchEvent(new window.Event("change", { bubbles: true }));
-    },
-    setConfirmResult(value) {
-      confirmResult = value;
     },
     dispatchPaste(files = [], text = "") {
       const event = new window.Event("paste", { bubbles: true, cancelable: true });
@@ -1713,7 +1728,7 @@ test("focus treatment stays visible without doubled orange perimeter rings", asy
   }
 });
 
-test("Response and Advanced use one compact and consistent settings hierarchy", async () => {
+test("Response and Overrides expose clear disclosure rows", async () => {
   const harness = await createDialogHarness();
   try {
     assert.equal(harness.document.querySelector("#generationSettingsSection"), null);
@@ -1721,16 +1736,26 @@ test("Response and Advanced use one compact and consistent settings hierarchy", 
       (selector) => harness.document.querySelector<HTMLDetailsElement>(selector)!,
     );
     assert.deepEqual(
-      disclosures.map((details) => details.querySelector("summary > span")?.textContent),
-      ["Response", "Advanced"],
+      disclosures.map((details) =>
+        details.querySelector(".settings-disclosure-title")?.textContent
+      ),
+      ["Response", "Overrides"],
     );
     for (const details of disclosures) {
       assert.equal(details.classList.contains("top-level-settings"), true);
+      const summary = details.querySelector("summary")!;
+      const chevron = summary.querySelector(".settings-disclosure-chevron");
+      assert.equal(chevron?.getAttribute("aria-hidden"), "true");
+      assert.notEqual(summary.querySelector("small")?.textContent?.trim(), "");
       assert.equal(
-        harness.window.getComputedStyle(details.querySelector("summary > span")!)
+        harness.window.getComputedStyle(
+          details.querySelector(".settings-disclosure-title")!,
+        )
           .textTransform,
         "uppercase",
       );
+      summary.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }));
+      assert.equal(details.open, true);
     }
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -1831,7 +1856,6 @@ test("first-run setup connects, selects a discovered model, and saves it for use
 test("Accept Everything saves without confirmation and remains visibly dangerous", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.setConfirmResult(false);
     harness.select("#approvalMode", "everything");
     await harness.settle();
 
@@ -1891,16 +1915,94 @@ test("Profile actions stay outside the scrollable Settings form", async () => {
   }
 });
 
-test("closing a dirty Profile requires explicit discard confirmation", async () => {
+test("closing a dirty Profile uses an in-page confirmation instead of native confirm", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Unsaved studio");
-    harness.setConfirmResult(false);
+    const closeButton = harness.document.querySelector<HTMLButtonElement>(
+      "#closeButton",
+    );
+    const app = harness.document.querySelector<HTMLElement>(".app");
+    const setAppAttribute = app!.setAttribute.bind(app);
+    app!.setAttribute = (name, value) => {
+      if (name === "inert") closeButton?.blur();
+      setAppAttribute(name, value);
+    };
+    closeButton?.focus();
     harness.click("#closeButton");
+
+    const confirmation = harness.document.querySelector<HTMLElement>(
+      "#appConfirmation",
+    );
+    assert.equal(confirmation?.hidden, false);
+    assert.equal(confirmation?.getAttribute("role"), "alertdialog");
+    assert.match(
+      confirmation?.querySelector("#appConfirmationMessage")?.textContent ?? "",
+      /discard unsaved profile changes/i,
+    );
+    const cancel = confirmation?.querySelector<HTMLButtonElement>(
+      "#appConfirmationCancel",
+    );
+    const accept = confirmation?.querySelector<HTMLButtonElement>(
+      "#appConfirmationAccept",
+    );
+    assert.equal(harness.document.activeElement, cancel);
+    assert.equal(
+      harness.document.querySelector(".app")?.hasAttribute("inert"),
+      true,
+    );
+    assert.equal(
+      harness.window.getComputedStyle(cancel!).height,
+      harness.window.getComputedStyle(accept!).height,
+    );
+    assert.equal(
+      harness.window.getComputedStyle(cancel!).minWidth,
+      harness.window.getComputedStyle(accept!).minWidth,
+    );
+    assert.equal(
+      harness.window.getComputedStyle(cancel!.parentElement!).gridTemplateColumns,
+      "repeat(2, minmax(0, 1fr))",
+    );
+    assert.equal(harness.window.getComputedStyle(cancel!).width, "100%");
+    assert.equal(harness.window.getComputedStyle(accept!).width, "100%");
     assert.deepEqual(harness.hostMessages, []);
 
-    harness.setConfirmResult(true);
+    cancel?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+      shiftKey: true,
+    }));
+    assert.equal(harness.document.activeElement, accept);
+    accept?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+    }));
+    assert.equal(harness.document.activeElement, cancel);
+    closeButton?.focus();
+    closeButton?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+    }));
+    assert.equal(harness.document.activeElement, cancel);
+    cancel?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    }));
+    await Promise.resolve();
+    assert.equal(confirmation?.hidden, true);
+    assert.equal(
+      harness.document.querySelector(".app")?.hasAttribute("inert"),
+      false,
+    );
+    assert.equal(harness.document.activeElement, closeButton);
+
     harness.click("#closeButton");
+    harness.click("#appConfirmationAccept");
+    await Promise.resolve();
     assert.deepEqual(JSON.parse(JSON.stringify(harness.hostMessages)), [{
       method: "close_and_send",
       params: [JSON.stringify({ kind: "close" })],
@@ -1919,8 +2021,8 @@ test("closing while a send is active requires explicit confirmation", async () =
     harness.click("#sendButton");
     await Promise.resolve();
 
-    harness.setConfirmResult(false);
     harness.click("#closeButton");
+    await harness.cancelAppConfirmation();
 
     assert.deepEqual(harness.hostMessages, []);
     harness.releaseHeldSend();
@@ -2049,6 +2151,57 @@ test("current Session actions keep deletion confirmation in the action menu", as
       bubbles: true,
     }));
     assert.ok(harness.document.querySelector(".session-rename-input"));
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("focused Sessions use macOS Backspace and Windows Delete with the existing confirmation", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const row = harness.document.querySelector<HTMLButtonElement>(
+      '[data-session-id="session-1"] .session-row',
+    );
+    assert.ok(row);
+    assert.equal(row.getAttribute("aria-keyshortcuts"), "Backspace Delete");
+    row.focus();
+    row.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Backspace",
+    }));
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        ".session-delete-confirm",
+      )?.dataset.deleteSessionId,
+      "session-1",
+    );
+    harness.click(".session-delete-confirm [data-delete-cancel]");
+
+    row.focus();
+    row.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Delete",
+    }));
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        ".session-delete-confirm",
+      )?.dataset.deleteSessionId,
+      "session-1",
+    );
+    harness.click(".session-delete-confirm [data-delete-cancel]");
+
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    prompt.focus();
+    prompt.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Backspace",
+    }));
+    assert.equal(harness.document.querySelector(".session-delete-confirm"), null);
+    assert.deepEqual(commandCalls(harness), []);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3456,6 +3609,14 @@ test("dirty drafts disable Send and Discard restores the clean gate", async () =
     assert.equal(send?.disabled, false);
     assert.equal(discard?.disabled, true);
     assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+    assert.equal(
+      harness.window.getComputedStyle(
+        harness.document.querySelector("#discardProfileButton")!,
+      ).height,
+      harness.window.getComputedStyle(
+        harness.document.querySelector("#saveProfileButton")!,
+      ).height,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3466,8 +3627,8 @@ test("cancelling a dirty Profile switch preserves the draft and selector", async
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Keep this draft");
-    harness.setConfirmResult(false);
     harness.select("#profileSelector", "profile-2");
+    await harness.cancelAppConfirmation();
     await harness.settle();
 
     assert.equal(
@@ -3559,7 +3720,6 @@ test("an unknown settings commit applies authoritative state instead of revertin
       { commandOutcome: "unknown", state: authoritative },
     );
 
-    harness.setConfirmResult(false);
     harness.select("#approvalMode", "everything");
     await harness.settle();
 
@@ -3778,6 +3938,7 @@ test("a response-lost Profile deletion rebuilds the editor from reconciled state
   try {
     harness.rejectNextCommandResponse("Bridge response was lost.");
     harness.click("#deleteProfileButton");
+    await harness.acceptAppConfirmation();
     await harness.settle();
     harness.emitServerEventError();
     await harness.settle();
@@ -4249,8 +4410,8 @@ test("Save exposes pending feedback until the Profile command completes", async 
     assert.equal(save?.disabled, true);
     const close = harness.document.querySelector<HTMLButtonElement>("#closeButton");
     assert.equal(close?.disabled, false);
-    harness.setConfirmResult(false);
     close?.click();
+    await harness.cancelAppConfirmation();
     assert.deepEqual(harness.hostMessages, []);
     assert.equal(
       harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
@@ -6944,6 +7105,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
     assert.equal(deleteButton?.disabled, false);
     assert.equal(deleteButton?.textContent, "Disable");
     deleteButton?.click();
+    await harness.acceptAppConfirmation();
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_session_skills",
@@ -6955,6 +7117,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
     );
     assert.equal(enabledDelete?.disabled, false);
     enabledDelete?.click();
+    await harness.acceptAppConfirmation();
     await harness.settle();
     assert.ok(harness.calls.some((call) => call.path === "/skills/mix-review"));
     assert.equal(
@@ -6976,6 +7139,7 @@ test("Skill replacement requires confirmation and retries the same raw file expl
       "---\nname: mix-review\ndescription: New guidance\n---\nNew private body.\n",
     ], "replacement.md", { type: "text/markdown" });
     harness.dropSkillFile(file);
+    await harness.acceptAppConfirmation();
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 2,
       "Expected confirmed Skill replacement request.",
@@ -7007,6 +7171,7 @@ test("a response-lost Skill replacement crosses the state barrier before a new-I
     ], "replacement.md", { type: "text/markdown" });
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
     harness.dropSkillFile(file);
+    await harness.acceptAppConfirmation();
 
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 3,
@@ -7056,6 +7221,7 @@ test("an interrupted Skill retry that cannot confirm a receipt blocks later muta
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost again.");
     harness.dropSkillFile(file);
+    await harness.acceptAppConfirmation();
 
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 3,
@@ -7100,6 +7266,7 @@ test("a committed Skill delete with truncated JSON reconciles before an idempote
     );
     assert.equal(deleteButton?.disabled, false);
     deleteButton?.click();
+    await harness.acceptAppConfirmation();
 
     await waitForCondition(
       () => harness.calls.filter(
@@ -7244,6 +7411,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
     );
     assert.equal(disable?.textContent, "Disable");
     disable?.click();
+    await harness.acceptAppConfirmation();
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_session_skills",
@@ -7255,6 +7423,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
     );
     assert.equal(deletion?.textContent, "Delete");
     deletion?.click();
+    await harness.acceptAppConfirmation();
     await harness.settle();
     assert.ok(harness.calls.some((call) => call.path === "/skills/history-guide"));
   } finally {

@@ -306,8 +306,40 @@
         }
       }
 
+      function handleSessionDeleteShortcut(event) {
+        if (
+          event.defaultPrevented ||
+          !["Backspace", "Delete"].includes(event.key) ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          isCommandInProgress() ||
+          getPendingConfirmation()
+        ) return;
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest("input, textarea, select, [contenteditable='true']")) return;
+        if (!target.closest(".session-row, .session-menu-button")) return;
+        const entry = target.closest(".session-entry");
+        const sessionId = entry?.dataset.sessionId;
+        const record = sessionRecords().find(({ session }) => session.id === sessionId);
+        const menuButton = entry?.querySelector(".session-menu-button");
+        const menu = entry?.querySelector(".session-action-menu");
+        if (!entry || !record || !menuButton || !menu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeSessionMenus();
+        beginDeleteSessions(
+          selectedSessionRecords(record.session, record.archived),
+          entry,
+          menuButton,
+          menu,
+        );
+      }
+
       document.addEventListener("click", handleSessionMenuDocumentClick);
       document.addEventListener("keydown", handleSessionMenuEscape);
+      document.addEventListener("keydown", handleSessionDeleteShortcut);
       document.addEventListener("scroll", () => closeSessionMenus(), true);
       window.addEventListener("resize", () => {
         closeSessionMenus();
@@ -605,6 +637,7 @@
           const row = document.createElement("button");
           row.className = `session-row ${mode}-session-row`;
           row.type = "button";
+          row.setAttribute("aria-keyshortcuts", "Backspace Delete");
           row.disabled = navigationBlocked;
           const isActive = session.id === state.activeSessionId;
           if (mode === "current") {

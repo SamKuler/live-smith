@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createSkillManager = function createSkillManager({
+        confirmAction,
         deleteSkill,
         getState,
         installSkill,
@@ -113,7 +114,12 @@
           render();
           return;
         }
-        if (!confirm(`Delete installed Skill ${skillId}?`)) return;
+        if (!(await confirmAction({
+          title: "Delete Skill?",
+          message: `Delete installed Skill ${skillId}? This cannot be undone.`,
+          acceptLabel: "Delete",
+          danger: true,
+        }))) return;
         try {
           await deleteSkill(skillId);
           showStatus(`Skill ${skillId} deleted.`);
@@ -130,9 +136,13 @@
           render();
           return;
         }
-        if (!confirm(`Disable Skill ${skillId} in ${sessions.length} Session${
-          sessions.length === 1 ? "" : "s"
-        }?`)) return;
+        if (!(await confirmAction({
+          title: "Disable Skill everywhere?",
+          message: `Disable Skill ${skillId} in ${sessions.length} Session${
+            sessions.length === 1 ? "" : "s"
+          }?`,
+          acceptLabel: "Disable",
+        }))) return;
         for (const session of sessions) {
           const changed = await runCommand("set_session_skills", {
             sessionId: session.id,
@@ -159,10 +169,11 @@
           showStatus(`Skill ${receipt.id} installed.`);
           return true;
         } catch (error) {
-          if (
-            error.httpStatus === 409 &&
-            confirm("A Skill with this ID is already installed. Replace it with the incoming Skill definition?")
-          ) {
+          if (error.httpStatus === 409 && (await confirmAction({
+            title: "Replace installed Skill?",
+            message: "A Skill with this ID is already installed. Replace it with the incoming definition?",
+            acceptLabel: "Replace",
+          }))) {
             try {
               const receipt = await installSkill(file, true);
               showStatus(`Skill ${receipt.id} replaced.`);
