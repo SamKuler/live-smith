@@ -183,11 +183,22 @@
         const inputPreview = document.getElementById("inputCapabilitiesPreview");
         if (inputPreview) {
           const inputs = capability.inputs || {};
-          inputPreview.textContent = [
-            inputCapabilityLabel("Images", "image", inputs, selection.authoritative.inputs),
-            inputCapabilityLabel("Audio", "audio", inputs, selection.authoritative.inputs),
-            inputCapabilityLabel("PDF", "pdf", inputs, selection.authoritative.inputs),
-          ].join(" · ");
+          const statuses = [
+            inputCapabilityStatus("Images", "image", inputs, selection.authoritative.inputs),
+            inputCapabilityStatus("Audio", "audio", inputs, selection.authoritative.inputs),
+            inputCapabilityStatus("PDF", "pdf", inputs, selection.authoritative.inputs),
+          ];
+          inputPreview.replaceChildren(...statuses.map((status) => {
+            const item = document.createElement("span");
+            item.className = "capability-status";
+            item.dataset.capabilityState = status.state;
+            item.textContent = `${status.label} · ${status.value}`;
+            return item;
+          }));
+          inputPreview.setAttribute(
+            "aria-label",
+            statuses.map((status) => `${status.label}: ${status.value}`).join(". "),
+          );
         }
         const outputTokensInput = document.getElementById("maxOutputTokens");
         const trustedModelLimit = selection.authoritative.maxOutputTokens
@@ -209,9 +220,11 @@
           : `Model output limit: ${trustedModelLimit}.`;
       }
 
-      function inputCapabilityLabel(label, key, inputs, authoritative) {
-        if (!authoritative[key]) return `${label}: unknown/unverified`;
-        return `${label}: ${inputs[key] ? "supported" : "unsupported"}`;
+      function inputCapabilityStatus(label, key, inputs, authoritative) {
+        if (!authoritative[key]) return { label, state: "unverified", value: "Unverified" };
+        return inputs[key]
+          ? { label, state: "supported", value: "Supported" }
+          : { label, state: "unsupported", value: "Unsupported" };
       }
 
       function updateDraftActions() {

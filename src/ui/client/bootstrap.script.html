@@ -77,6 +77,8 @@
 
         function renderHeaderSummary() {
           const profile = activeProfile();
+          const expanded = document.getElementById("profileSummaryButton")
+            ?.getAttribute("aria-expanded") === "true";
           document.getElementById("activeProfileName").textContent =
             profile?.name || "Configure a Profile";
           document.getElementById("activeProfileModel").textContent =
@@ -84,16 +86,19 @@
           document.getElementById("profileSummaryButton").setAttribute(
             "aria-label",
             profile
-              ? `Profile ${profile.name}, model ${profile.model}. Open Profile Settings.`
-              : "No active Profile. Open Profile Settings.",
+              ? `Profile ${profile.name}, model ${profile.model}. ${
+                  expanded ? "Close settings." : "Open settings."
+                }`
+              : `No active Profile. ${expanded ? "Close settings." : "Open settings."}`,
           );
         }
 
         function setInspectorOpen(open) {
           document.querySelector(".app").classList.toggle("inspector-open", open);
           document.getElementById("inspectorPane").hidden = !open;
-          document.getElementById("inspectorToggleButton")
+          document.getElementById("profileSummaryButton")
             .setAttribute("aria-expanded", String(open));
+          renderHeaderSummary();
         }
 
         function openInspector(tab) {

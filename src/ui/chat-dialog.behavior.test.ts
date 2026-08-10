@@ -1170,6 +1170,14 @@ function commandCalls(harness: DialogHarness): ParsedBridgeCall[] {
   return jsonCalls(harness, "/command");
 }
 
+function renderedCapabilityStatuses(
+  harness: DialogHarness,
+): Array<[string, string | undefined]> {
+  return [...harness.document.querySelectorAll<HTMLElement>(
+    "#inputCapabilitiesPreview [data-capability-state]",
+  )].map((item) => [item.textContent?.trim() ?? "", item.dataset.capabilityState]);
+}
+
 function jsonCalls(harness: DialogHarness, path: string): ParsedBridgeCall[] {
   return harness.calls
     .filter((call) => call.path === path)
@@ -1362,12 +1370,13 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
   try {
     const app = harness.document.querySelector(".app");
     const inspector = harness.document.querySelector<HTMLElement>("#inspectorPane");
-    const settingsToggle = harness.document.querySelector<HTMLButtonElement>(
-      "#inspectorToggleButton",
+    const profileControl = harness.document.querySelector<HTMLButtonElement>(
+      "#profileSummaryButton",
     );
+    assert.equal(harness.document.querySelector("#inspectorToggleButton"), null);
     assert.equal(app?.classList.contains("inspector-open"), false);
     assert.equal(inspector?.hidden, true);
-    assert.equal(settingsToggle?.getAttribute("aria-expanded"), "false");
+    assert.equal(profileControl?.getAttribute("aria-expanded"), "false");
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
       "",
@@ -1389,18 +1398,27 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
     );
     assert.equal(
       harness.document.querySelector("#profileSummaryButton")?.getAttribute("aria-label"),
-      "Profile Studio, model model-a. Open Profile Settings.",
+      "Profile Studio, model model-a. Open settings.",
     );
 
-    settingsToggle?.click();
+    profileControl?.click();
 
     assert.equal(app?.classList.contains("inspector-open"), true);
     assert.equal(inspector?.hidden, false);
-    assert.equal(settingsToggle?.getAttribute("aria-expanded"), "true");
+    assert.equal(profileControl?.getAttribute("aria-expanded"), "true");
+    assert.equal(
+      profileControl?.getAttribute("aria-label"),
+      "Profile Studio, model model-a. Close settings.",
+    );
     assert.equal(
       harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
       "true",
     );
+
+    profileControl?.click();
+    assert.equal(inspector?.hidden, true);
+    assert.equal(profileControl?.getAttribute("aria-expanded"), "false");
+    profileControl?.click();
 
     harness.click("#contextTab");
     assert.equal(
@@ -1492,7 +1510,7 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       "#profileSettingsSection",
       "#connectionSettingsSection",
       "#generationSettingsSection",
-      "#advancedSettingsSection",
+      "#advancedSettings",
     ]) assert.ok(harness.document.querySelector(section));
     const approvalMode = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
     assert.equal(approvalMode?.getAttribute("aria-label"), "Apply approval mode");
@@ -1516,6 +1534,14 @@ test("the compact composer uses one attachment menu and no unsupported file pick
     assert.equal(harness.document.querySelector(".attachment-actions"), null);
     assert.equal(harness.document.querySelector("#attachFileButton"), null);
     assert.equal(harness.document.querySelector("#attachmentInput"), null);
+    assert.equal(
+      harness.document.querySelector("#prompt")?.getAttribute("placeholder"),
+      "Ask about this Live Set…",
+    );
+    assert.match(
+      harness.document.querySelector("#sendButton")?.getAttribute("aria-keyshortcuts") ?? "",
+      /Meta\+Enter.*Control\+Enter/,
+    );
 
     const menuButton = harness.document.querySelector<HTMLButtonElement>(
       "#attachmentMenuButton",
@@ -1561,8 +1587,9 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     );
     const guide = harness.document.querySelector("#modelSetupGuide");
     assert.equal(guide?.querySelectorAll("li").length, 3);
-    assert.match(guide?.textContent ?? "", /provider and protocol/i);
-    assert.match(guide?.textContent ?? "", /connect and load models/i);
+    assert.match(guide?.textContent ?? "", /name the profile.*connection details/i);
+    assert.match(guide?.textContent ?? "", /connect & load models/i);
+    assert.match(guide?.textContent ?? "", /choose a model/i);
     assert.match(guide?.textContent ?? "", /save & use/i);
     assert.equal(
       harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
@@ -1593,19 +1620,19 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       harness.document.querySelector("#saveProfileButton")?.textContent ?? "",
       /save.*use/i,
     );
-    for (const selector of [
-      "#generationSettings",
-      "#inputOverrideSettings",
-      "#generationOverrideSettings",
-      "#reasoningOverrideSettings",
-      "#extraBodySettings",
-    ]) {
+    for (const selector of ["#generationSettings", "#advancedSettings"]) {
       assert.equal(
         harness.document.querySelector<HTMLDetailsElement>(selector)?.open,
         false,
         `${selector} should be collapsed initially`,
       );
     }
+    for (const removedDisclosure of [
+      "#inputOverrideSettings",
+      "#generationOverrideSettings",
+      "#reasoningOverrideSettings",
+      "#extraBodySettings",
+    ]) assert.equal(harness.document.querySelector(removedDisclosure), null);
     assert.equal(
       harness.document.querySelector("#skillManager")?.closest("#skillsPanel")?.id,
       "skillsPanel",
@@ -1620,6 +1647,44 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       true,
     );
     harness.click("#settingsTab");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("the compact workbench prioritizes chat and makes model connection sequential", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const app = harness.document.querySelector<HTMLElement>(".app");
+    const main = harness.document.querySelector<HTMLElement>("main");
+    assert.equal(
+      harness.window.getComputedStyle(main!).gridTemplateColumns,
+      "180px minmax(480px, 1fr) 356px",
+    );
+    assert.equal(harness.document.querySelector("#inspectorToggleButton"), null);
+    assert.equal(
+      harness.document.querySelector("#apiFamily option")?.textContent,
+      "OpenAI / compatible",
+    );
+    assert.equal(
+      harness.document.querySelector('label[for="apiMode"]')?.textContent,
+      "Request format",
+    );
+    const discover = harness.document.querySelector("#discoverModelsButton")!;
+    const modelField = harness.document.querySelector("#model")!;
+    assert.equal(
+      Boolean(discover.compareDocumentPosition(modelField) &
+        harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
+      true,
+    );
+    assert.equal(discover.closest(".connection-action") !== null, true);
+    assert.equal(
+      harness.document.querySelectorAll("#advancedSettingsSection > details").length,
+      0,
+    );
+    assert.ok(harness.document.querySelector("#advancedSettings > .advanced-groups"));
+    assert.equal(app?.classList.contains("inspector-open"), true);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3969,10 +4034,11 @@ test("input capability overrides round-trip through the Profile form", async () 
     harness.select("#overrideInputAudio", "false");
     harness.select("#overrideInputPdf", "true");
 
-    assert.equal(
-      harness.document.querySelector("#inputCapabilitiesPreview")?.textContent,
-      "Images: supported · Audio: unsupported · PDF: supported",
-    );
+    assert.deepEqual(renderedCapabilityStatuses(harness), [
+      ["Images · Supported", "supported"],
+      ["Audio · Unsupported", "unsupported"],
+      ["PDF · Supported", "supported"],
+    ]);
 
     harness.click("#saveProfileButton");
     await harness.settle();
@@ -3994,34 +4060,37 @@ test("input capability overrides round-trip through the Profile form", async () 
 test("input capability preview distinguishes unverified fields from unsupported fields", async () => {
   const harness = await createDialogHarness();
   try {
-    const preview = () =>
-      harness.document.querySelector("#inputCapabilitiesPreview")?.textContent;
-    assert.equal(
-      preview(),
-      "Images: unsupported · Audio: unsupported · PDF: unsupported",
-    );
+    const preview = () => renderedCapabilityStatuses(harness);
+    assert.deepEqual(preview(), [
+      ["Images · Unsupported", "unsupported"],
+      ["Audio · Unsupported", "unsupported"],
+      ["PDF · Unsupported", "unsupported"],
+    ]);
 
     const originalBaseUrl = harness.document.querySelector<HTMLInputElement>(
       "#baseUrl",
     )?.value;
     assert.ok(originalBaseUrl);
     harness.input("#baseUrl", "https://unverified.example/v1");
-    assert.equal(
-      preview(),
-      "Images: unknown/unverified · Audio: unknown/unverified · PDF: unknown/unverified",
-    );
+    assert.deepEqual(preview(), [
+      ["Images · Unverified", "unverified"],
+      ["Audio · Unverified", "unverified"],
+      ["PDF · Unverified", "unverified"],
+    ]);
 
     harness.select("#overrideInputImage", "true");
-    assert.equal(
-      preview(),
-      "Images: supported · Audio: unknown/unverified · PDF: unknown/unverified",
-    );
+    assert.deepEqual(preview(), [
+      ["Images · Supported", "supported"],
+      ["Audio · Unverified", "unverified"],
+      ["PDF · Unverified", "unverified"],
+    ]);
 
     harness.input("#baseUrl", originalBaseUrl);
-    assert.equal(
-      preview(),
-      "Images: supported · Audio: unsupported · PDF: unsupported",
-    );
+    assert.deepEqual(preview(), [
+      ["Images · Supported", "supported"],
+      ["Audio · Unsupported", "unsupported"],
+      ["PDF · Unsupported", "unsupported"],
+    ]);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

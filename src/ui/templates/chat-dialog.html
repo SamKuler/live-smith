@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#2f2f2f" />
+    <meta name="theme-color" content="#262626" />
     <title>Live Smith</title>
     <script>
       window.__LIVE_SMITH_STATE__ = __STATE__;
@@ -21,22 +21,22 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #383838;
-        --chrome: #2f2f2f;
-        --pane: #404040;
-        --pane-2: #4e4e4e;
-        --field: #2c2c2c;
-        --line: #2a2a2a;
-        --line-soft: #343434;
-        --text: #f0f0f0;
-        --muted: #c3c3c3;
-        --quiet: #b0b0b0;
-        --accent: #ffa500;
-        --accent-soft: rgba(255, 165, 0, 0.12);
+        --bg: #292929;
+        --chrome: #262626;
+        --pane: #303030;
+        --pane-2: #393939;
+        --field: #202020;
+        --line: #1d1d1d;
+        --line-soft: #454545;
+        --text: #f2f2f2;
+        --muted: #c6c6c6;
+        --quiet: #a9a9a9;
+        --accent: #ff9f1a;
+        --accent-soft: rgba(255, 159, 26, 0.12);
         --accent-text: #211503;
         --warn: #ffd166;
         --danger: #ff6e57;
-        --trace: #7cb8e8;
+        --trace: #78b9e8;
       }
 
       * {
@@ -59,7 +59,7 @@
 
       .app {
         display: grid;
-        grid-template-rows: 50px 1fr;
+        grid-template-rows: 44px 1fr;
         height: 100%;
         background: var(--bg);
       }
@@ -69,7 +69,7 @@
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 12px;
-        padding: 10px 14px;
+        padding: 6px 12px;
         border-bottom: 1px solid var(--line);
         background: var(--chrome);
       }
@@ -90,11 +90,11 @@
 
       .profile-summary {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
-        grid-template-areas: "signal name" "signal model";
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas: "signal name chevron" "signal model chevron";
         align-items: center;
         column-gap: 7px;
-        max-width: 330px;
+        max-width: 280px;
         height: 32px;
         padding: 3px 9px;
         color: var(--text);
@@ -130,6 +130,21 @@
         grid-area: model;
         color: var(--quiet);
         font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .profile-summary-chevron {
+        grid-area: chevron;
+        color: var(--quiet);
+        font-size: 18px;
+        line-height: 1;
+        transform: rotate(0deg);
+        transition: transform 120ms ease, color 120ms ease;
+      }
+
+      .profile-summary[aria-expanded="true"] .profile-summary-chevron {
+        color: var(--accent);
+        transform: rotate(90deg);
       }
 
       .profile-summary:hover {
@@ -139,13 +154,13 @@
 
       main {
         display: grid;
-        grid-template-columns: 196px minmax(420px, 1fr);
+        grid-template-columns: 180px minmax(480px, 1fr);
         min-height: 0;
         overflow: hidden;
       }
 
       .app.inspector-open main {
-        grid-template-columns: 196px minmax(420px, 1fr) 380px;
+        grid-template-columns: 180px minmax(480px, 1fr) 356px;
       }
 
       .sessions-pane,
@@ -960,7 +975,7 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr);
         gap: 7px;
-        padding: 10px 12px 12px;
+        padding: 9px 12px 10px;
         border-top: 1px solid var(--line);
         background: var(--chrome);
       }
@@ -1021,13 +1036,14 @@
       }
 
       .composer > textarea {
-        min-height: 76px;
+        min-height: 64px;
         border-color: var(--line-soft);
         background: var(--field);
       }
 
       .composer-toolbar {
         justify-content: flex-start;
+        padding-top: 2px;
       }
 
       .composer-toolbar .primary {
@@ -1233,7 +1249,7 @@
       .primary {
         align-self: end;
         min-width: 82px;
-        height: 36px;
+        height: 34px;
         padding: 0 13px;
         color: var(--accent-text);
         background: var(--accent);
@@ -1424,11 +1440,55 @@
         text-transform: uppercase;
       }
 
-      .key-row,
-      .model-row {
+      .key-row {
         display: grid;
         grid-template-columns: 1fr auto;
         gap: 6px;
+      }
+
+      .connection-action {
+        display: grid;
+        gap: 4px;
+      }
+
+      .connection-action button {
+        width: 100%;
+        border-color: rgba(255, 159, 26, 0.55);
+      }
+
+      #model,
+      #activeProfileModel {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .capability-preview {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 2px;
+      }
+
+      .capability-status {
+        padding: 3px 6px;
+        color: var(--quiet);
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 9px;
+        line-height: 1.2;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+
+      .capability-status[data-capability-state="supported"] {
+        color: var(--trace);
+        border-color: rgba(120, 185, 232, 0.45);
+      }
+
+      .capability-status[data-capability-state="unsupported"] {
+        color: #d99a91;
+        border-color: rgba(217, 154, 145, 0.35);
       }
 
       .profile-actions {
@@ -1591,6 +1651,36 @@
         line-height: 1.4;
       }
 
+      .advanced-groups {
+        display: grid;
+        gap: 13px;
+        padding-top: 10px;
+      }
+
+      .advanced-group {
+        display: grid;
+        gap: 9px;
+        min-width: 0;
+        margin: 0;
+        padding: 0 0 13px;
+        border: 0;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .advanced-group:last-child {
+        padding-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .advanced-group legend {
+        padding: 0;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
       .skills-panel {
         padding: 12px;
       }
@@ -1705,12 +1795,12 @@
       <header>
         <h1>Live Smith</h1>
         <div class="header-actions">
-          <button id="profileSummaryButton" class="profile-summary" type="button" aria-label="Open Profile Settings" onclick="LiveSmithUI.openInspector('settings')">
+          <button id="profileSummaryButton" class="profile-summary" type="button" aria-label="Open settings" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()">
             <span class="profile-signal" aria-hidden="true"></span>
             <span id="activeProfileName" class="profile-summary-name"></span>
             <span id="activeProfileModel" class="profile-summary-model" translate="no"></span>
+            <span class="profile-summary-chevron" aria-hidden="true">›</span>
           </button>
-          <button id="inspectorToggleButton" class="secondary" type="button" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()">Settings</button>
           <button id="closeButton" class="icon-button" type="button" title="Close" aria-label="Close Live Smith" onclick="LiveSmithUI.requestClose()">&#215;</button>
         </div>
       </header>
@@ -1735,7 +1825,7 @@
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden></div>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
-            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
+            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
             <div id="skillAutocomplete" class="skill-autocomplete" role="listbox" aria-label="Skill suggestions" hidden></div>
             <div class="composer-options composer-toolbar">
               <div id="attachmentMenuShell" class="attachment-menu-shell">
@@ -1754,7 +1844,7 @@
                 </div>
               </div>
               <label class="approval-mode-label" title="Manual requests approval for every Apply request.">
-                <span>Approval</span>
+                <span>Apply</span>
                 <select id="approvalMode" name="approvalMode" class="approval-mode-select" aria-label="Apply approval mode" aria-describedby="approvalModeLockHint" onchange="LiveSmithUI.saveApprovalMode()">
                   <option value="manual">Manual</option>
                   <option value="low-risk">Low Risk</option>
@@ -1762,7 +1852,7 @@
                 </select>
               </label>
               <span id="approvalModeLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>The setting applies to the next Apply request.</span>
-              <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>
+              <button id="sendButton" class="primary" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" title="Send (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSendButton()">Send</button>
             </div>
           </div>
         </section>
@@ -1778,19 +1868,15 @@
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
               <div class="settings">
               <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading" tabindex="-1">
-                <h2 id="modelSetupGuideHeading">Set up the model used by Live Smith</h2>
+                <h2 id="modelSetupGuideHeading">Connect a model</h2>
                 <ol>
-                  <li>Choose the provider and protocol.</li>
-                  <li>Enter the connection details, then connect and load models.</li>
-                  <li>Select a model, then Save &amp; Use.</li>
+                  <li>Name the Profile and enter connection details.</li>
+                  <li>Select Connect &amp; Load Models.</li>
+                  <li>Choose a model, then Save &amp; Use.</li>
                 </ol>
               </section>
               <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
-                <h2 id="profileSettingsHeading">Profile</h2>
-                <div class="field">
-                  <label for="profileName">Profile name</label>
-                  <input id="profileName" name="profileName" autocomplete="off" oninput="LiveSmithUI.markDraftDirty(this)" />
-                </div>
+                <h2 id="profileSettingsHeading">Profiles</h2>
                 <div id="savedProfileControls" class="saved-profile-controls">
                   <div class="field">
                     <label for="profileSelector">Saved profile</label>
@@ -1802,21 +1888,25 @@
                     <button id="deleteProfileButton" class="secondary" type="button" data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()">Delete</button>
                   </div>
                 </div>
+                <div class="field">
+                  <label for="profileName">Profile name</label>
+                  <input id="profileName" name="profileName" autocomplete="off" placeholder="e.g. Studio…" oninput="LiveSmithUI.markDraftDirty(this)" />
+                </div>
               </section>
 
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
                 <h2 id="connectionSettingsHeading">Model connection</h2>
                 <div class="field">
-                  <label for="apiFamily">Provider API</label>
+                  <label for="apiFamily">Provider</label>
                   <select id="apiFamily" name="apiFamily" autocomplete="off" onchange="LiveSmithUI.handleApiFamilyChange()">
-                    <option value="openai">OpenAI</option>
+                    <option value="openai">OpenAI / compatible</option>
                     <option value="anthropic">Anthropic</option>
                   </select>
                 </div>
                 <div class="field">
-                  <label for="apiMode">Protocol</label>
+                  <label for="apiMode">Request format</label>
                   <select id="apiMode" name="apiMode" autocomplete="off" aria-describedby="apiModeHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
-                  <span id="apiModeHint" class="field-hint">Use Responses for OpenAI when available; compatible services may require Chat Completions. Anthropic uses Messages.</span>
+                  <span id="apiModeHint" class="field-hint">Use Responses when available. Compatible services may require Chat Completions; Anthropic uses Messages.</span>
                 </div>
                 <div class="field">
                   <label for="apiKey">API key</label>
@@ -1830,15 +1920,16 @@
                   <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" aria-describedby="baseUrlHint" oninput="LiveSmithUI.markDraftDirty(this)" />
                   <span id="baseUrlHint" class="field-hint">Include the provider API version path, usually ending in <span translate="no">/v1</span>.</span>
                 </div>
+                <div class="connection-action">
+                  <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Connect &amp; Load Models" onclick="LiveSmithUI.discoverModels()">Connect &amp; Load Models</button>
+                  <span class="field-hint">Checks the connection and loads the models this provider exposes.</span>
+                </div>
                 <div class="field">
                   <label for="model">Model</label>
-                  <div class="model-row">
-                    <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" aria-describedby="modelHint inputCapabilitiesPreview" oninput="LiveSmithUI.markDraftDirty(this)" />
-                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Connect &amp; Load" onclick="LiveSmithUI.discoverModels()">Connect &amp; Load</button>
-                  </div>
+                  <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" aria-describedby="modelHint inputCapabilitiesPreview" oninput="LiveSmithUI.markDraftDirty(this)" />
                   <datalist id="modelOptions"></datalist>
-                  <span id="modelHint" class="field-hint">Load the provider list, then choose a model or enter its exact ID.</span>
-                  <span id="inputCapabilitiesPreview" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                  <span id="modelHint" class="field-hint">Choose a loaded model or enter its exact ID.</span>
+                  <div id="inputCapabilitiesPreview" class="capability-preview" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
               </section>
 
@@ -1874,12 +1965,12 @@
                 </details>
               </section>
 
-              <section id="advancedSettingsSection" class="settings-section" aria-labelledby="advancedSettingsHeading">
-                <h2 id="advancedSettingsHeading">Advanced</h2>
-                <p class="advanced-note">Leave capability overrides on Automatic unless your provider documents different behavior.</p>
-                <details id="inputOverrideSettings" class="settings-disclosure">
-                  <summary>Input support <small>Images, audio, PDF</small></summary>
-                  <div class="advanced-fields">
+              <details id="advancedSettings" class="settings-section settings-disclosure advanced-settings">
+                <summary id="advancedSettingsHeading"><span>Advanced</span><small>Overrides &amp; request JSON</small></summary>
+                <div class="advanced-groups">
+                  <fieldset class="advanced-group">
+                    <legend>Input support</legend>
+                    <p class="advanced-note">Leave these on Automatic unless your provider documents different behavior.</p>
                     <div class="field">
                       <label for="overrideInputImage">Image input</label>
                       <select id="overrideInputImage" name="overrideInputImage" onchange="LiveSmithUI.markDraftDirty(this)">
@@ -1898,11 +1989,9 @@
                         <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
                       </select>
                     </div>
-                  </div>
-                </details>
-                <details id="generationOverrideSettings" class="settings-disclosure">
-                  <summary>Generation support <small>Tools and limits</small></summary>
-                  <div class="advanced-fields">
+                  </fieldset>
+                  <fieldset class="advanced-group">
+                    <legend>Generation support</legend>
                     <div class="field">
                       <label for="overrideTools">Tools capability</label>
                       <select id="overrideTools" name="overrideTools" onchange="LiveSmithUI.markDraftDirty(this)">
@@ -1922,11 +2011,9 @@
                       </select>
                     </div>
                     <div class="field"><label for="overrideMaxOutputTokens">Model output limit</label><input id="overrideMaxOutputTokens" name="overrideMaxOutputTokens" type="number" min="1" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
-                  </div>
-                </details>
-                <details id="reasoningOverrideSettings" class="settings-disclosure">
-                  <summary>Reasoning support <small>Provider-specific</small></summary>
-                  <div class="advanced-fields">
+                  </fieldset>
+                  <fieldset class="advanced-group">
+                    <legend>Reasoning support</legend>
                     <div class="field">
                       <label for="overrideReasoningSupported">Reasoning capability</label>
                       <select id="overrideReasoningSupported" name="overrideReasoningSupported" onchange="LiveSmithUI.markDraftDirty(this)">
@@ -1952,15 +2039,14 @@
                         <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
                       </select>
                     </div>
-                  </div>
-                </details>
-                <details id="extraBodySettings" class="settings-disclosure">
-                  <summary>Raw request JSON <small>Expert use only</small></summary>
-                  <div class="advanced-fields">
+                  </fieldset>
+                  <fieldset class="advanced-group">
+                    <legend>Raw request JSON</legend>
+                    <p class="advanced-note">Expert use only. Values are merged into the provider request after protected fields are applied.</p>
                     <div class="field"><label for="extraBody">Extra Body JSON</label><textarea id="extraBody" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
-                  </div>
-                </details>
-              </section>
+                  </fieldset>
+                </div>
+              </details>
               </div>
             </div>
             <div class="settings-actions">
