@@ -28,14 +28,14 @@ Each Profile stores a complete connection:
 - output limit, optional temperature, and reasoning controls;
 - optional capability overrides and Extra Body JSON.
 
-Add and Duplicate create an unsaved draft. Save Changes validates and persists
+Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
 the entire draft and makes it active. Changing session or sending a message does
 not save the draft. Send remains disabled until the draft is saved or discarded.
 Switching a saved Profile switches the whole connection and parameter set.
 
 The implementation keeps three Profile representations explicit:
 
-- `DraftProfile` is the editable, possibly incomplete form. Load Models checks
+- `DraftProfile` is the editable, possibly incomplete form. **Connect & Load** checks
   only its connection fields, so name and model may still be blank.
 - `SavedProfile` is the fully validated value persisted by Profile CRUD.
 - `RuntimeProfile` combines the active Saved Profile with resolved capabilities.
@@ -261,8 +261,8 @@ Reasoning has three modes:
 
 Create an OpenAI Profile and choose the protocol the endpoint actually supports.
 Enter its base URL exactly as required, including `/v1` when applicable. Use
-Load Models if it implements the OpenAI model-list endpoint, or type the model
-ID manually.
+**Connect & Load** if it implements the OpenAI model-list endpoint, or type the
+model ID manually.
 
 Advanced capability overrides describe endpoint/model features without adding a
 vendor-specific adapter. Extra Body JSON can add or override nonstandard

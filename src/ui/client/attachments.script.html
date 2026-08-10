@@ -64,6 +64,16 @@
       let busy = false;
       let initialized = false;
 
+      function setAttachmentMenuOpen(open, { restoreFocus = false } = {}) {
+        const button = document.getElementById("attachmentMenuButton");
+        const menu = document.getElementById("attachmentMenu");
+        if (!button || !menu) return;
+        const nextOpen = Boolean(open) && !busy;
+        menu.hidden = !nextOpen;
+        button.setAttribute("aria-expanded", String(nextOpen));
+        if (!nextOpen && restoreFocus) button.focus({ preventScroll: true });
+      }
+
       function pendingAttachments() {
         return Array.isArray(getState().pendingAttachments)
           ? getState().pendingAttachments
@@ -196,21 +206,19 @@
       }
 
       function syncAttachAvailability() {
-        const attachButton = document.getElementById("attachFileButton");
+        const menuButton = document.getElementById("attachmentMenuButton");
         const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
-        const input = document.getElementById("attachmentInput");
         const hint = document.getElementById("attachmentCapabilityHint");
-        if (attachButton) {
-          attachButton.disabled = busy;
-          attachButton.title = imageCapabilityHint();
-          attachButton.setAttribute("aria-label", "Attach file");
+        if (menuButton) {
+          menuButton.disabled = busy;
+          menuButton.title = imageCapabilityHint();
         }
-        if (input) input.disabled = busy;
         if (selectedAudioButton) selectedAudioButton.disabled = busy;
         if (hint) {
           hint.textContent = imageCapabilityHint();
           hint.hidden = !hint.textContent;
         }
+        if (busy) setAttachmentMenuOpen(false);
       }
 
       function fileExtension(file) {
@@ -457,6 +465,7 @@
 
       async function attachSelectedAudioSource() {
         if (busy) return;
+        setAttachmentMenuOpen(false, { restoreFocus: true });
         await runCommand("attach_selected_audio_source", {
           sessionId: getState().activeSessionId,
         });
@@ -467,18 +476,28 @@
         initialized = true;
         const composer = document.querySelector(".composer");
         const prompt = document.getElementById("prompt");
-        const attachButton = document.getElementById("attachFileButton");
+        const menuShell = document.getElementById("attachmentMenuShell");
+        const menuButton = document.getElementById("attachmentMenuButton");
         const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
-        const input = document.getElementById("attachmentInput");
 
-        attachButton?.addEventListener("click", () => input?.click());
+        menuButton?.addEventListener("click", () => {
+          const expanded = menuButton.getAttribute("aria-expanded") === "true";
+          setAttachmentMenuOpen(!expanded);
+        });
         selectedAudioButton?.addEventListener("click", () => {
           void attachSelectedAudioSource();
         });
-        input?.addEventListener("change", () => {
-          const selected = filesFromTransfer(input);
-          input.value = "";
-          void uploadFiles(selected);
+        document.addEventListener("click", (event) => {
+          if (!menuShell?.contains(event.target)) setAttachmentMenuOpen(false);
+        });
+        document.addEventListener("keydown", (event) => {
+          if (
+            event.key === "Escape" &&
+            menuButton?.getAttribute("aria-expanded") === "true"
+          ) {
+            event.preventDefault();
+            setAttachmentMenuOpen(false, { restoreFocus: true });
+          }
         });
         prompt?.addEventListener("paste", (event) => {
           const files = filesFromTransfer(event.clipboardData);
@@ -515,10 +534,8 @@
 
       return {
         initialize,
-        removePending,
         renderPending,
         setBusy,
-        uploadFiles,
         validateSend,
       };
       };

@@ -145,7 +145,7 @@
       }
 
       .app.inspector-open main {
-        grid-template-columns: 196px minmax(420px, 1fr) 340px;
+        grid-template-columns: 196px minmax(420px, 1fr) 380px;
       }
 
       .sessions-pane,
@@ -518,7 +518,7 @@
 
       .chat-pane {
         display: grid;
-        grid-template-rows: 1fr auto auto auto;
+        grid-template-rows: 1fr auto auto;
         min-width: 0;
         background: var(--bg);
       }
@@ -526,9 +526,9 @@
       .composer-options {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 8px 12px;
-        background: var(--chrome);
+        gap: 8px;
+        min-width: 0;
+        padding: 4px 2px;
       }
 
       .composer-lock-hint {
@@ -540,14 +540,15 @@
       .approval-mode-label {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 6px;
         color: var(--text);
-        font-size: 12px;
+        font-size: 11px;
+        text-transform: none;
       }
 
       .approval-mode-select {
         width: auto;
-        min-width: 152px;
+        min-width: 126px;
         height: 28px;
         font-weight: 600;
       }
@@ -957,9 +958,9 @@
       .composer {
         position: relative;
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto;
-        gap: 8px;
-        padding: 12px;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 7px;
+        padding: 10px 12px 12px;
         border-top: 1px solid var(--line);
         background: var(--chrome);
       }
@@ -971,7 +972,6 @@
 
       .pending-attachments {
         display: flex;
-        grid-column: 1 / -1;
         flex-wrap: wrap;
         gap: 6px;
         min-width: 0;
@@ -1020,32 +1020,121 @@
         background: rgba(255, 110, 87, 0.1);
       }
 
-      .attach-file-button {
-        width: 100%;
-        min-width: 116px;
-        height: 32px;
+      .composer > textarea {
+        min-height: 76px;
+        border-color: var(--line-soft);
+        background: var(--field);
       }
 
-      .attachment-actions {
+      .composer-toolbar {
+        justify-content: flex-start;
+      }
+
+      .composer-toolbar .primary {
+        margin-left: auto;
+      }
+
+      .attachment-menu-shell {
+        position: relative;
+        flex: 0 0 auto;
+      }
+
+      .attachment-menu-button {
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        color: var(--text);
+        background: var(--pane-2);
+        border: 1px solid var(--line-soft);
+        border-radius: 50%;
+        font-size: 20px;
+        line-height: 1;
+      }
+
+      .attachment-menu-button[aria-expanded="true"] {
+        color: var(--accent);
+        border-color: rgba(255, 165, 0, 0.55);
+        background: var(--accent-soft);
+      }
+
+      .attachment-menu {
+        position: absolute;
+        z-index: 12;
+        bottom: calc(100% + 8px);
+        left: 0;
         display: grid;
-        align-self: end;
-        gap: 5px;
+        gap: 4px;
+        width: min(292px, calc(100vw - 36px));
+        padding: 5px;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 7px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.44);
       }
 
+      .attachment-menu[hidden] {
+        display: none;
+      }
+
+      .attachment-drop-hint,
+      .attachment-menu-action {
+        display: grid;
+        gap: 2px;
+        width: 100%;
+        min-height: 48px;
+        padding: 7px 9px;
+        text-align: left;
+        border-radius: 5px;
+      }
+
+      .attachment-drop-hint {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px dashed #626262;
+      }
+
+      .attachment-menu-action {
+        color: var(--text);
+        background: transparent;
+        border: 0;
+      }
+
+      .attachment-menu-action:hover:not(:disabled),
+      .attachment-menu-action:focus-visible {
+        background: var(--accent-soft);
+      }
+
+      .attachment-drop-hint strong,
+      .attachment-menu-action strong {
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .attachment-drop-hint span,
+      .attachment-menu-action span,
+      .attachment-capability-hint,
       .audio-source-note {
-        grid-column: 1 / -1;
-        margin: -1px 0 0;
         color: var(--quiet);
         font-size: 10px;
         line-height: 1.35;
+      }
+
+      .audio-source-note {
+        margin: 0;
+        padding: 3px 9px 5px;
+      }
+
+      .attachment-capability-hint {
+        padding: 3px 9px;
+        color: var(--warn);
       }
 
       .skill-autocomplete {
         position: absolute;
         z-index: 8;
         right: 76px;
-        bottom: calc(100% - 4px);
-        left: 142px;
+        bottom: 54px;
+        left: 12px;
         display: grid;
         max-height: 210px;
         overflow-y: auto;
@@ -1120,6 +1209,12 @@
       summary:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
+      }
+
+      .tab-panel:focus,
+      .tab-panel:focus-visible {
+        outline: 0;
+        box-shadow: inset 0 0 0 2px var(--accent);
       }
 
       button {
@@ -1254,6 +1349,37 @@
         border-bottom: 1px solid var(--line-soft);
       }
 
+      .model-setup-guide {
+        display: grid;
+        gap: 7px;
+        padding: 10px;
+        color: var(--muted);
+        background: rgba(124, 184, 232, 0.08);
+        border: 1px solid rgba(124, 184, 232, 0.3);
+        border-radius: 6px;
+        line-height: 1.4;
+      }
+
+      .model-setup-guide h2 {
+        color: var(--text);
+        font-size: 12px;
+        margin: 0;
+      }
+
+      .model-setup-guide ol {
+        display: grid;
+        gap: 3px;
+        margin: 0;
+        padding-left: 20px;
+        font-size: 11px;
+      }
+
+      .field-hint {
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.35;
+      }
+
       .settings-lock-notice {
         margin: 12px 12px 0;
         padding: 8px 10px;
@@ -1309,6 +1435,16 @@
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 5px;
+      }
+
+      .saved-profile-controls {
+        display: grid;
+        gap: 7px;
+      }
+
+      .model-setup-guide[hidden],
+      .saved-profile-controls[hidden] {
+        display: none;
       }
 
       .profile-actions button {
@@ -1424,28 +1560,98 @@
         gap: 9px;
       }
 
-      .settings textarea {
-        height: 100px;
+      .settings-disclosure {
+        margin: 0;
+      }
+
+      .settings-disclosure > summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 30px;
+        margin: 0 !important;
+        color: var(--text) !important;
+        font-weight: 600;
+      }
+
+      .settings-disclosure > summary small {
+        color: var(--quiet);
+        font-weight: 400;
+      }
+
+      .settings-disclosure > .advanced-fields {
+        padding-top: 9px;
+      }
+
+      .advanced-note {
+        margin: 0;
+        color: var(--quiet);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .skills-panel {
+        padding: 12px;
+      }
+
+      .skill-drop-zone {
+        display: grid;
+        gap: 3px;
+        min-height: 70px;
+        padding: 12px;
+        color: var(--muted);
+        text-align: center;
+        background: rgba(255, 255, 255, 0.025);
+        border: 1px dashed #626262;
+        border-radius: 6px;
+      }
+
+      .skill-drop-zone.drop-target {
+        color: var(--text);
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .skill-drop-zone strong {
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .skill-drop-zone span {
+        color: var(--quiet);
+        font-size: 10px;
+      }
+
+      .skill-paste {
+        border-top: 1px solid var(--line-soft);
+        padding-top: 8px;
+      }
+
+      .skill-paste > summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .skill-paste-fields {
+        display: grid;
+        gap: 7px;
+        padding-top: 8px;
+      }
+
+      .skill-paste textarea {
+        height: 150px;
         resize: vertical;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
       }
 
-      .toggle-label {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        cursor: pointer;
-        text-transform: none;
-        color: var(--text);
-        font-size: 13px;
-      }
-
-      .toggle-label input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        accent-color: var(--accent);
-        cursor: pointer;
+      .settings textarea {
+        height: 100px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
       }
 
       .toggle-hint {
@@ -1526,80 +1732,91 @@
           <div id="timeline" class="timeline" aria-label="Conversation"></div>
           <div id="conversationAnnouncements" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
           <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
-          <div class="composer-options">
-            <label class="approval-mode-label" title="Manual requests approval for every Apply request.">
-              <span>Approval</span>
-              <select id="approvalMode" name="approvalMode" class="approval-mode-select" aria-label="Apply approval mode" aria-describedby="approvalModeLockHint" onchange="LiveSmithUI.saveApprovalMode()">
-                <option value="manual">Manual</option>
-                <option value="low-risk">Low Risk</option>
-                <option value="everything">Accept Everything</option>
-              </select>
-            </label>
-            <span id="approvalModeLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>The setting applies to the next Apply request.</span>
-          </div>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden></div>
-            <input id="attachmentInput" class="visually-hidden" name="attachmentInput" type="file" accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,audio/wav,audio/mpeg,.png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.wav,.mp3" tabindex="-1" aria-hidden="true" multiple />
-            <div class="attachment-actions">
-              <button id="attachFileButton" class="secondary attach-file-button" type="button" aria-describedby="attachmentCapabilityHint">Attach file</button>
-              <button id="attachSelectedAudioButton" class="secondary attach-file-button" type="button" aria-label="Attach selected Audio Clip, Sample, or Simpler source" aria-describedby="audioSourceAttachmentNote" title="Copy the selected Audio Clip, Sample, or Simpler source file into this Session">Attach source audio</button>
-            </div>
-            <span id="attachmentCapabilityHint" class="visually-hidden" role="status" aria-live="polite" hidden></span>
-            <p id="audioSourceAttachmentNote" class="audio-source-note">Audio sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
             <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask Live Smith… (Cmd/Ctrl+Enter to send)"></textarea>
             <div id="skillAutocomplete" class="skill-autocomplete" role="listbox" aria-label="Skill suggestions" hidden></div>
-            <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>
+            <div class="composer-options composer-toolbar">
+              <div id="attachmentMenuShell" class="attachment-menu-shell">
+                <button id="attachmentMenuButton" class="attachment-menu-button" type="button" aria-label="Add attachment" aria-controls="attachmentMenu" aria-describedby="attachmentCapabilityHint" aria-expanded="false">+</button>
+                <div id="attachmentMenu" class="attachment-menu" aria-label="Attachment options" hidden>
+                  <div class="attachment-drop-hint">
+                    <strong>Drop or paste files</strong>
+                    <span>Images, PDF, Office documents, WAV, and MP3. File browsing is not available in this Ableton window.</span>
+                  </div>
+                  <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
+                  <button id="attachSelectedAudioButton" class="attachment-menu-action" type="button" aria-label="Attach selected Live audio source" aria-describedby="audioSourceAttachmentNote" title="Copy the selected Audio Clip, Sample, or Simpler source file into this Session">
+                    <strong>Attach selected Live audio</strong>
+                    <span>Audio Clip, Sample, or Simpler source</span>
+                  </button>
+                  <p id="audioSourceAttachmentNote" class="audio-source-note">Sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
+                </div>
+              </div>
+              <label class="approval-mode-label" title="Manual requests approval for every Apply request.">
+                <span>Approval</span>
+                <select id="approvalMode" name="approvalMode" class="approval-mode-select" aria-label="Apply approval mode" aria-describedby="approvalModeLockHint" onchange="LiveSmithUI.saveApprovalMode()">
+                  <option value="manual">Manual</option>
+                  <option value="low-risk">Low Risk</option>
+                  <option value="everything">Accept Everything</option>
+                </select>
+              </label>
+              <span id="approvalModeLockHint" class="composer-lock-hint" role="status" aria-live="polite" hidden>The setting applies to the next Apply request.</span>
+              <button id="sendButton" class="primary" type="button" onclick="LiveSmithUI.handleSendButton()">Send</button>
+            </div>
           </div>
         </section>
 
         <aside id="inspectorPane" class="inspector-pane" aria-label="Inspector" hidden>
           <div class="tab-bar" role="tablist" aria-label="Inspector Views">
-            <button id="settingsTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel" tabindex="0" onclick="LiveSmithUI.openInspector('settings')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Settings</button>
+            <button id="settingsTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel" tabindex="0" onclick="LiveSmithUI.openInspector('settings')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Model</button>
+            <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Skills</button>
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Context</button>
           </div>
-          <div id="settingsPanel" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="settingsTab" aria-busy="false">
+          <div id="settingsPanel" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="settingsTab" aria-busy="false" tabindex="0">
             <div class="settings-scroll">
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
               <div class="settings">
+              <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading" tabindex="-1">
+                <h2 id="modelSetupGuideHeading">Set up the model used by Live Smith</h2>
+                <ol>
+                  <li>Choose the provider and protocol.</li>
+                  <li>Enter the connection details, then connect and load models.</li>
+                  <li>Select a model, then Save &amp; Use.</li>
+                </ol>
+              </section>
               <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
                 <h2 id="profileSettingsHeading">Profile</h2>
-                <div class="field">
-                  <label for="profileSelector">Saved profile</label>
-                  <select id="profileSelector" name="profileSelector" autocomplete="off" onchange="LiveSmithUI.handleProfileSelection()"></select>
-                </div>
-                <div class="profile-actions">
-                  <button class="secondary" type="button" onclick="LiveSmithUI.addProfile()">Add</button>
-                  <button id="duplicateProfileButton" class="secondary" type="button" onclick="LiveSmithUI.duplicateProfile()">Duplicate</button>
-                  <button id="deleteProfileButton" class="secondary" type="button" data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()">Delete</button>
-                </div>
                 <div class="field">
                   <label for="profileName">Profile name</label>
                   <input id="profileName" name="profileName" autocomplete="off" oninput="LiveSmithUI.markDraftDirty(this)" />
                 </div>
-              </section>
-
-              <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false">
-                <h2 id="skillsHeading">Skills</h2>
-                <p class="skill-note">Skills add local workflow guidance to this Session. They cannot add tools, access files, or bypass approval.</p>
-                <div id="skillList" class="skill-list" aria-label="Installed Skills"></div>
-                <p id="skillEmptyState" class="skill-empty">No Skills installed.</p>
-                <input id="skillFileInput" class="visually-hidden" type="file" accept=".md,text/markdown" tabindex="-1" aria-hidden="true" />
-                <button id="importSkillButton" class="secondary" type="button">Import SKILL.md</button>
+                <div id="savedProfileControls" class="saved-profile-controls">
+                  <div class="field">
+                    <label for="profileSelector">Saved profile</label>
+                    <select id="profileSelector" name="profileSelector" autocomplete="off" onchange="LiveSmithUI.handleProfileSelection()"></select>
+                  </div>
+                  <div class="profile-actions">
+                    <button class="secondary" type="button" onclick="LiveSmithUI.addProfile()">Add</button>
+                    <button id="duplicateProfileButton" class="secondary" type="button" onclick="LiveSmithUI.duplicateProfile()">Duplicate</button>
+                    <button id="deleteProfileButton" class="secondary" type="button" data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()">Delete</button>
+                  </div>
+                </div>
               </section>
 
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
-                <h2 id="connectionSettingsHeading">Connection</h2>
+                <h2 id="connectionSettingsHeading">Model connection</h2>
                 <div class="field">
-                  <label for="apiFamily">API family</label>
+                  <label for="apiFamily">Provider API</label>
                   <select id="apiFamily" name="apiFamily" autocomplete="off" onchange="LiveSmithUI.handleApiFamilyChange()">
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                   </select>
                 </div>
                 <div class="field">
-                  <label for="apiMode">API mode</label>
-                  <select id="apiMode" name="apiMode" autocomplete="off" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                  <label for="apiMode">Protocol</label>
+                  <select id="apiMode" name="apiMode" autocomplete="off" aria-describedby="apiModeHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                  <span id="apiModeHint" class="field-hint">Use Responses for OpenAI when available; compatible services may require Chat Completions. Anthropic uses Messages.</span>
                 </div>
                 <div class="field">
                   <label for="apiKey">API key</label>
@@ -1609,115 +1826,138 @@
                   </div>
                 </div>
                 <div class="field">
-                  <label for="baseUrl">Base URL</label>
-                  <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" oninput="LiveSmithUI.markDraftDirty(this)" />
+                  <label for="baseUrl">Endpoint URL</label>
+                  <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" aria-describedby="baseUrlHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                  <span id="baseUrlHint" class="field-hint">Include the provider API version path, usually ending in <span translate="no">/v1</span>.</span>
                 </div>
                 <div class="field">
                   <label for="model">Model</label>
                   <div class="model-row">
-                    <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" oninput="LiveSmithUI.markDraftDirty(this)" />
-                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
+                    <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" aria-describedby="modelHint inputCapabilitiesPreview" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Connect &amp; Load" onclick="LiveSmithUI.discoverModels()">Connect &amp; Load</button>
                   </div>
                   <datalist id="modelOptions"></datalist>
+                  <span id="modelHint" class="field-hint">Load the provider list, then choose a model or enter its exact ID.</span>
+                  <span id="inputCapabilitiesPreview" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
                 </div>
               </section>
 
               <section id="generationSettingsSection" class="settings-section" aria-labelledby="generationSettingsHeading">
-                <h2 id="generationSettingsHeading">Generation</h2>
-                <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
-                <div class="field">
-                  <label for="temperature">Temperature</label>
-                  <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="Provider default…" oninput="LiveSmithUI.markDraftDirty(this)" />
-                </div>
-                <div class="field">
-                  <label for="maxOutputTokens">Requested max output tokens</label>
-                  <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
-                  <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
-                </div>
-                <div id="reasoningModeRow" class="field">
-                  <label for="reasoningMode">Reasoning</label>
-                  <select id="reasoningMode" name="reasoningMode" aria-describedby="reasoningHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
-                  <span id="reasoningHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true" hidden>Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced.</span>
-                </div>
-                <div id="reasoningEffortRow" class="field" hidden>
-                  <label for="reasoningEffort">Reasoning effort</label>
-                  <select id="reasoningEffort" name="reasoningEffort" onchange="LiveSmithUI.markDraftDirty(this)"></select>
-                </div>
-                <div id="reasoningBudgetRow" class="field" hidden>
-                  <label for="reasoningBudgetTokens">Thinking budget</label>
-                  <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
-                </div>
+                <h2 id="generationSettingsHeading">Response</h2>
+                <details id="generationSettings" class="settings-disclosure">
+                  <summary>Response settings <small>Optional</small></summary>
+                  <div class="advanced-fields">
+                    <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
+                    <div class="field">
+                      <label for="temperature">Temperature</label>
+                      <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="Provider default…" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    </div>
+                    <div class="field">
+                      <label for="maxOutputTokens">Requested max output tokens</label>
+                      <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div id="reasoningModeRow" class="field">
+                      <label for="reasoningMode">Reasoning</label>
+                      <select id="reasoningMode" name="reasoningMode" aria-describedby="reasoningHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                      <span id="reasoningHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true" hidden>Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced.</span>
+                    </div>
+                    <div id="reasoningEffortRow" class="field" hidden>
+                      <label for="reasoningEffort">Reasoning effort</label>
+                      <select id="reasoningEffort" name="reasoningEffort" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                    </div>
+                    <div id="reasoningBudgetRow" class="field" hidden>
+                      <label for="reasoningBudgetTokens">Thinking budget</label>
+                      <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    </div>
+                  </div>
+                </details>
               </section>
 
               <section id="advancedSettingsSection" class="settings-section" aria-labelledby="advancedSettingsHeading">
                 <h2 id="advancedSettingsHeading">Advanced</h2>
-                <details>
-                  <summary>Capabilities and Extra Body</summary>
+                <p class="advanced-note">Leave capability overrides on Automatic unless your provider documents different behavior.</p>
+                <details id="inputOverrideSettings" class="settings-disclosure">
+                  <summary>Input support <small>Images, audio, PDF</small></summary>
                   <div class="advanced-fields">
-                  <div class="field">
-                    <label for="overrideTools">Tools capability</label>
-                    <select id="overrideTools" name="overrideTools" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
+                    <div class="field">
+                      <label for="overrideInputImage">Image input</label>
+                      <select id="overrideInputImage" name="overrideInputImage" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideInputAudio">Audio input</label>
+                      <select id="overrideInputAudio" name="overrideInputAudio" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideInputPdf">PDF input</label>
+                      <select id="overrideInputPdf" name="overrideInputPdf" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
                   </div>
-                  <div class="field">
-                    <label for="overrideStreaming">Streaming capability</label>
-                    <select id="overrideStreaming" name="overrideStreaming" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
+                </details>
+                <details id="generationOverrideSettings" class="settings-disclosure">
+                  <summary>Generation support <small>Tools and limits</small></summary>
+                  <div class="advanced-fields">
+                    <div class="field">
+                      <label for="overrideTools">Tools capability</label>
+                      <select id="overrideTools" name="overrideTools" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideStreaming">Streaming capability</label>
+                      <select id="overrideStreaming" name="overrideStreaming" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideTemperature">Temperature capability</label>
+                      <select id="overrideTemperature" name="overrideTemperature" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="supported">Supported</option><option value="unsupported">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field"><label for="overrideMaxOutputTokens">Model output limit</label><input id="overrideMaxOutputTokens" name="overrideMaxOutputTokens" type="number" min="1" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
                   </div>
-                  <div class="field">
-                    <label for="overrideTemperature">Temperature capability</label>
-                    <select id="overrideTemperature" name="overrideTemperature" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="supported">Supported</option><option value="unsupported">Unsupported</option>
-                    </select>
+                </details>
+                <details id="reasoningOverrideSettings" class="settings-disclosure">
+                  <summary>Reasoning support <small>Provider-specific</small></summary>
+                  <div class="advanced-fields">
+                    <div class="field">
+                      <label for="overrideReasoningSupported">Reasoning capability</label>
+                      <select id="overrideReasoningSupported" name="overrideReasoningSupported" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideReasoningCanDisable">Can disable reasoning</label>
+                      <select id="overrideReasoningCanDisable" name="overrideReasoningCanDisable" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Yes</option><option value="false">No</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="overrideReasoningStrategy">Reasoning strategy</label>
+                      <select id="overrideReasoningStrategy" name="overrideReasoningStrategy" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="effort">Effort</option><option value="adaptive-thinking">Adaptive thinking</option><option value="budget-thinking">Budget thinking</option><option value="none">None</option>
+                      </select>
+                    </div>
+                    <div class="field"><label for="overrideReasoningEfforts">Allowed efforts (comma separated)</label><input id="overrideReasoningEfforts" name="overrideReasoningEfforts" autocomplete="off" spellcheck="false" placeholder="low, medium, high…" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
+                    <div class="field">
+                      <label for="overrideReasoningBudget">Thinking budget capability</label>
+                      <select id="overrideReasoningBudget" name="overrideReasoningBudget" onchange="LiveSmithUI.markDraftDirty(this)">
+                        <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
+                      </select>
+                    </div>
                   </div>
-                  <div class="field"><label for="overrideMaxOutputTokens">Model output limit</label><input id="overrideMaxOutputTokens" name="overrideMaxOutputTokens" type="number" min="1" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
-                  <div class="field">
-                    <label for="overrideInputImage">Image input</label>
-                    <select id="overrideInputImage" name="overrideInputImage" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="overrideInputAudio">Audio input</label>
-                    <select id="overrideInputAudio" name="overrideInputAudio" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="overrideInputPdf">PDF input</label>
-                    <select id="overrideInputPdf" name="overrideInputPdf" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Provider default</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
-                  </div>
-                  <span id="inputCapabilitiesPreview" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
-                  <div class="field">
-                    <label for="overrideReasoningSupported">Reasoning capability</label>
-                    <select id="overrideReasoningSupported" name="overrideReasoningSupported" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="overrideReasoningCanDisable">Can disable reasoning</label>
-                    <select id="overrideReasoningCanDisable" name="overrideReasoningCanDisable" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="true">Yes</option><option value="false">No</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="overrideReasoningStrategy">Reasoning strategy</label>
-                    <select id="overrideReasoningStrategy" name="overrideReasoningStrategy" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="effort">Effort</option><option value="adaptive-thinking">Adaptive thinking</option><option value="budget-thinking">Budget thinking</option><option value="none">None</option>
-                    </select>
-                  </div>
-                  <div class="field"><label for="overrideReasoningEfforts">Allowed efforts (comma separated)</label><input id="overrideReasoningEfforts" name="overrideReasoningEfforts" autocomplete="off" spellcheck="false" placeholder="low, medium, high…" oninput="LiveSmithUI.markDraftDirty(this)" /></div>
-                  <div class="field">
-                    <label for="overrideReasoningBudget">Thinking budget capability</label>
-                    <select id="overrideReasoningBudget" name="overrideReasoningBudget" onchange="LiveSmithUI.markDraftDirty(this)">
-                      <option value="inherit">Automatic</option><option value="true">Supported</option><option value="false">Unsupported</option>
-                    </select>
-                  </div>
-                  <div class="field"><label for="extraBody">Extra Body JSON</label><textarea id="extraBody" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
+                </details>
+                <details id="extraBodySettings" class="settings-disclosure">
+                  <summary>Raw request JSON <small>Expert use only</small></summary>
+                  <div class="advanced-fields">
+                    <div class="field"><label for="extraBody">Extra Body JSON</label><textarea id="extraBody" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
                   </div>
                 </details>
               </section>
@@ -1726,10 +1966,30 @@
             <div class="settings-actions">
               <span id="draftStatus" class="draft-status"></span>
               <button id="discardProfileButton" class="secondary" type="button" onclick="LiveSmithUI.discardProfileChanges()">Discard</button>
-              <button id="saveProfileButton" class="secondary" type="button" data-idle-label="Save Changes" onclick="LiveSmithUI.saveProfile()">Save Changes</button>
+              <button id="saveProfileButton" class="primary" type="button" data-idle-label="Save &amp; Use" onclick="LiveSmithUI.saveProfile()">Save &amp; Use</button>
             </div>
           </div>
-          <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" hidden>
+          <div id="skillsPanel" class="tab-panel skills-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
+            <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false">
+              <h2 id="skillsHeading">Session Skills</h2>
+              <p class="skill-note">Skills add local workflow guidance to this Session. They cannot add tools, access files, or bypass approval.</p>
+              <div id="skillDropZone" class="skill-drop-zone">
+                <strong>Drop a SKILL.md file here</strong>
+                <span>File browsing is not available in this Ableton window.</span>
+              </div>
+              <details class="skill-paste">
+                <summary>Paste Skill Markdown</summary>
+                <div class="skill-paste-fields">
+                  <label for="skillPasteText">SKILL.md content</label>
+                  <textarea id="skillPasteText" name="skillMarkdown" autocomplete="off" spellcheck="false" placeholder="---&#10;name: my-skill&#10;description: What this Skill does&#10;---&#10;Instructions…"></textarea>
+                  <button id="installPastedSkillButton" class="secondary" type="button" disabled>Install pasted Skill</button>
+                </div>
+              </details>
+              <div id="skillList" class="skill-list" role="list" aria-label="Installed Skills"></div>
+              <p id="skillEmptyState" class="skill-empty">No Skills installed.</p>
+            </section>
+          </div>
+          <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
             <div id="context" class="context"></div>
           </div>
         </aside>

@@ -44,6 +44,7 @@
           const row = document.createElement("div");
           row.className = "skill-row";
           row.dataset.skillId = skill.id;
+          row.setAttribute("role", "listitem");
 
           const toggleLabel = document.createElement("label");
           toggleLabel.className = "skill-toggle";
@@ -144,44 +145,67 @@
         showStatus(`Skill ${skillId} disabled in every Session.`);
       }
 
-      async function importSelectedSkill() {
-        const input = document.getElementById("skillFileInput");
-        const file = input?.files?.[0];
-        if (input) input.value = "";
-        if (!file) return;
+      async function importSkillFile(file) {
+        if (!file) return false;
         if (file.size === 0 || file.size > maxSkillFileBytes) {
           showStatus(
             `SKILL.md must contain 1-${maxSkillFileBytes} UTF-8 bytes.`,
             true,
           );
-          return;
+          return false;
         }
         try {
           const receipt = await installSkill(file, false);
           showStatus(`Skill ${receipt.id} installed.`);
+          return true;
         } catch (error) {
           if (
             error.httpStatus === 409 &&
-            confirm("A Skill with this ID is already installed. Replace it with the selected file?")
+            confirm("A Skill with this ID is already installed. Replace it with the incoming Skill definition?")
           ) {
             try {
               const receipt = await installSkill(file, true);
               showStatus(`Skill ${receipt.id} replaced.`);
+              return true;
             } catch (replacementError) {
               showStatus(replacementError.message || String(replacementError), true);
+              return false;
             }
           } else {
             showStatus(error.message || String(error), true);
+            return false;
           }
         }
       }
 
+      function syncPastedSkillAction() {
+        const text = document.getElementById("skillPasteText");
+        const button = document.getElementById("installPastedSkillButton");
+        if (button) button.disabled = busy || !text?.value.trim();
+      }
+
+      async function installPastedSkill() {
+        if (busy) return;
+        const text = document.getElementById("skillPasteText");
+        const markdown = text?.value || "";
+        if (!markdown.trim()) return;
+        const installed = await importSkillFile(new File(
+          [markdown],
+          "SKILL.md",
+          { type: "text/markdown" },
+        ));
+        if (installed && text) text.value = "";
+        syncPastedSkillAction();
+      }
+
       function setBusy(nextBusy) {
         busy = Boolean(nextBusy);
-        const input = document.getElementById("skillFileInput");
-        const button = document.getElementById("importSkillButton");
-        if (input) input.disabled = busy;
-        if (button) button.disabled = busy;
+        const dropZone = document.getElementById("skillDropZone");
+        const pasteText = document.getElementById("skillPasteText");
+        dropZone?.setAttribute("aria-disabled", String(busy));
+        if (busy) dropZone?.classList.remove("drop-target");
+        if (pasteText) pasteText.disabled = busy;
+        syncPastedSkillAction();
         document.getElementById("skillManager")
           ?.setAttribute("aria-busy", String(busy));
         render();
@@ -372,13 +396,38 @@
       }
 
       function initialize() {
-        const fileInput = document.getElementById("skillFileInput");
-        document.getElementById("importSkillButton")?.addEventListener("click", () => {
-          if (!busy) fileInput?.click();
+        const dropZone = document.getElementById("skillDropZone");
+        dropZone?.addEventListener("dragover", (event) => {
+          if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
+          event.preventDefault();
+          if (busy) return;
+          dropZone.classList.add("drop-target");
         });
-        fileInput?.addEventListener("change", () => {
-          void importSelectedSkill();
+        dropZone?.addEventListener("dragleave", (event) => {
+          if (!dropZone.contains(event.relatedTarget)) {
+            dropZone.classList.remove("drop-target");
+          }
         });
+        dropZone?.addEventListener("drop", (event) => {
+          const files = [...(event.dataTransfer?.files || [])];
+          if (!files.length) return;
+          event.preventDefault();
+          dropZone.classList.remove("drop-target");
+          if (busy) return;
+          if (files.length !== 1) {
+            showStatus("Drop one SKILL.md file at a time.", true);
+            return;
+          }
+          void importSkillFile(files[0]);
+        });
+        document.getElementById("skillPasteText")?.addEventListener(
+          "input",
+          syncPastedSkillAction,
+        );
+        document.getElementById("installPastedSkillButton")?.addEventListener(
+          "click",
+          () => { void installPastedSkill(); },
+        );
         const prompt = document.getElementById("prompt");
         prompt?.addEventListener("input", updateAutocomplete);
         prompt?.addEventListener("click", updateAutocomplete);

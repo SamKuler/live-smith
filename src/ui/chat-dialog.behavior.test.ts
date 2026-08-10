@@ -90,8 +90,8 @@ interface DialogHarness {
   dispatchPaste(files?: File[], text?: string): boolean;
   dispatchDrop(files: File[]): boolean;
   dispatchDragOver(files: File[]): boolean;
-  selectAttachmentFiles(files: File[]): void;
-  selectSkillFile(file: File): void;
+  dropAttachmentFiles(files: File[]): void;
+  dropSkillFile(file: File): boolean;
   settle(): Promise<void>;
   settleAttachmentOperation(): Promise<void>;
   window: JSDOM["window"];
@@ -1085,15 +1085,20 @@ async function createDialogHarness(
       required<HTMLElement>(".composer").dispatchEvent(event);
       return event.defaultPrevented;
     },
-    selectAttachmentFiles(files) {
-      const input = required<HTMLInputElement>("#attachmentInput");
-      Object.defineProperty(input, "files", { configurable: true, value: files });
-      input.dispatchEvent(new window.Event("change", { bubbles: true }));
+    dropAttachmentFiles(files) {
+      const event = new window.Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", {
+        value: { files, types: ["Files"] },
+      });
+      required<HTMLElement>(".composer").dispatchEvent(event);
     },
-    selectSkillFile(file) {
-      const input = required<HTMLInputElement>("#skillFileInput");
-      Object.defineProperty(input, "files", { configurable: true, value: [file] });
-      input.dispatchEvent(new window.Event("change", { bubbles: true }));
+    dropSkillFile(file) {
+      const event = new window.Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", {
+        value: { files: [file], types: ["Files"] },
+      });
+      required<HTMLElement>("#skillDropZone").dispatchEvent(event);
+      return event.defaultPrevented;
     },
     async settle() {
       await Promise.resolve();
@@ -1367,6 +1372,16 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
       "",
     );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#modelSetupGuide")?.hidden,
+      true,
+    );
+    assert.equal(
+      harness.window.getComputedStyle(
+        harness.document.querySelector<HTMLElement>("#modelSetupGuide")!,
+      ).display,
+      "none",
+    );
     assert.equal(harness.document.activeElement?.id, "prompt");
     assert.match(
       harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
@@ -1443,9 +1458,35 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       "tablist",
     );
     assert.equal(harness.document.querySelector("#settingsTab")?.getAttribute("role"), "tab");
+    assert.equal(harness.document.querySelector("#skillsTab")?.getAttribute("role"), "tab");
     assert.equal(
       harness.document.querySelector("#settingsPanel")?.getAttribute("role"),
       "tabpanel",
+    );
+    for (const selector of ["#settingsPanel", "#skillsPanel", "#contextPanel"]) {
+      assert.equal(harness.document.querySelector(selector)?.getAttribute("tabindex"), "0");
+    }
+    const activePanel = harness.document.querySelector<HTMLElement>("#settingsPanel");
+    activePanel?.focus();
+    assert.notEqual(
+      harness.window.getComputedStyle(activePanel!).boxShadow,
+      "none",
+    );
+    assert.equal(
+      harness.document.querySelector("#modelSetupGuideHeading")?.tagName,
+      "H2",
+    );
+    assert.equal(
+      harness.document.querySelector("#apiMode")?.getAttribute("aria-describedby"),
+      "apiModeHint",
+    );
+    assert.equal(
+      harness.document.querySelector("#baseUrl")?.getAttribute("aria-describedby"),
+      "baseUrlHint",
+    );
+    assert.match(
+      harness.document.querySelector("#model")?.getAttribute("aria-describedby") ?? "",
+      /modelHint.*inputCapabilitiesPreview/,
     );
     for (const section of [
       "#profileSettingsSection",
@@ -1462,6 +1503,164 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
         ["low-risk", "Low Risk"],
         ["everything", "Accept Everything"],
       ],
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("the compact composer uses one attachment menu and no unsupported file picker", async () => {
+  const harness = await createDialogHarness();
+  try {
+    assert.equal(harness.document.querySelector(".attachment-actions"), null);
+    assert.equal(harness.document.querySelector("#attachFileButton"), null);
+    assert.equal(harness.document.querySelector("#attachmentInput"), null);
+
+    const menuButton = harness.document.querySelector<HTMLButtonElement>(
+      "#attachmentMenuButton",
+    );
+    const menu = harness.document.querySelector<HTMLElement>("#attachmentMenu");
+    assert.equal(menuButton?.getAttribute("aria-expanded"), "false");
+    assert.equal(menu?.hidden, true);
+
+    harness.click("#attachmentMenuButton");
+    assert.equal(menuButton?.getAttribute("aria-expanded"), "true");
+    assert.equal(menu?.hidden, false);
+    assert.match(menu?.textContent ?? "", /drop or paste files/i);
+    assert.match(menu?.textContent ?? "", /selected Live audio/i);
+
+    harness.document.dispatchEvent(
+      new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    assert.equal(menu?.hidden, true);
+    assert.equal(menuButton?.getAttribute("aria-expanded"), "false");
+    assert.equal(harness.document.activeElement, menuButton);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("first-run model setup is primary while advanced controls stay collapsed", async () => {
+  const state = stateFixture();
+  state.settings.profiles = [];
+  state.settings.activeProfileId = null;
+  state.runtimeProfile = null;
+  state.modelStateSource = null;
+  state.availableModels = [];
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#inspectorPane")?.hidden,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
+      "true",
+    );
+    const guide = harness.document.querySelector("#modelSetupGuide");
+    assert.equal(guide?.querySelectorAll("li").length, 3);
+    assert.match(guide?.textContent ?? "", /provider and protocol/i);
+    assert.match(guide?.textContent ?? "", /connect and load models/i);
+    assert.match(guide?.textContent ?? "", /save & use/i);
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
+      true,
+    );
+    assert.equal(
+      harness.window.getComputedStyle(
+        harness.document.querySelector<HTMLElement>("#savedProfileControls")!,
+      ).display,
+      "none",
+    );
+    assert.equal(harness.document.activeElement?.id, "modelSetupGuide");
+    assert.equal(
+      harness.document.querySelector("#profileSettingsSection")?.nextElementSibling?.id,
+      "connectionSettingsSection",
+    );
+    assert.equal(
+      harness.document.querySelector("#connectionSettingsSection")?.contains(
+        harness.document.querySelector("#model"),
+      ),
+      true,
+    );
+    assert.match(
+      harness.document.querySelector("#discoverModelsButton")?.textContent ?? "",
+      /connect.*load/i,
+    );
+    assert.match(
+      harness.document.querySelector("#saveProfileButton")?.textContent ?? "",
+      /save.*use/i,
+    );
+    for (const selector of [
+      "#generationSettings",
+      "#inputOverrideSettings",
+      "#generationOverrideSettings",
+      "#reasoningOverrideSettings",
+      "#extraBodySettings",
+    ]) {
+      assert.equal(
+        harness.document.querySelector<HTMLDetailsElement>(selector)?.open,
+        false,
+        `${selector} should be collapsed initially`,
+      );
+    }
+    assert.equal(
+      harness.document.querySelector("#skillManager")?.closest("#skillsPanel")?.id,
+      "skillsPanel",
+    );
+    harness.click("#skillsTab");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#skillsPanel")?.hidden,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#settingsPanel")?.hidden,
+      true,
+    );
+    harness.click("#settingsTab");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("first-run setup connects, selects a discovered model, and saves it for use", async () => {
+  const state = stateFixture();
+  state.settings.profiles = [];
+  state.settings.activeProfileId = null;
+  state.runtimeProfile = null;
+  state.modelStateSource = null;
+  state.availableModels = [];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#profileName", "Studio model");
+    harness.input("#apiKey", "first-run-key");
+    harness.input("#baseUrl", "https://provider.test/v1");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>("#modelOptions option")]
+        .map((option) => option.value),
+      ["model-discovered"],
+    );
+    harness.input("#model", "model-discovered");
+    harness.click("#saveProfileButton");
+    await harness.settle();
+
+    assert.match(
+      harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
+      /Studio model.*model-discovered/s,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#modelSetupGuide")?.hidden,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
+      false,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -2422,6 +2621,65 @@ test("a background assistant event resets only that Session's streaming draft", 
 
     harness.releaseHeldSend();
     await harness.settle();
+  } finally {
+    harness.close();
+  }
+});
+
+test("a background send keeps global Skill mutations locked until it settles", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{
+    id: "mix-review",
+    description: "Review balance and space",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Hold the Bass Session open");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await harness.settle();
+
+    const skillRow = harness.document.querySelector<HTMLElement>(
+      '[data-skill-id="mix-review"]',
+    );
+    assert.equal(skillRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled, true);
+    assert.equal(skillRow?.querySelector<HTMLButtonElement>("button")?.disabled, true);
+    assert.equal(
+      harness.document.querySelector("#skillDropZone")?.getAttribute("aria-disabled"),
+      "true",
+    );
+
+    const file = new harness.window.File([
+      "---\nname: another-skill\ndescription: Another Skill\n---\nBody\n",
+    ], "SKILL.md", { type: "text/markdown" });
+    assert.equal(harness.dropSkillFile(file), true);
+    await harness.settle();
+    assert.equal(harness.calls.some((call) => call.path === "/skills"), false);
+    assert.equal(
+      commandCalls(harness).some(
+        (call) => (call.body as { kind?: string }).kind === "set_session_skills",
+      ),
+      false,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    const restoredSkillRow = harness.document.querySelector<HTMLElement>(
+      '[data-skill-id="mix-review"]',
+    );
+    assert.equal(
+      restoredSkillRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled,
+      false,
+    );
+    assert.equal(restoredSkillRow?.querySelector<HTMLButtonElement>("button")?.disabled, false);
+    assert.equal(
+      harness.document.querySelector("#skillDropZone")?.getAttribute("aria-disabled"),
+      "false",
+    );
+    assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
@@ -3412,14 +3670,14 @@ test("a command network error blocks mutations when stream and state reconciliat
   }
 });
 
-test("Load Models sends the current draft without saving or overwriting it", async () => {
+test("Connect and Load sends the current draft without saving or overwriting it", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Draft discovery");
     harness.input("#apiKey", "draft-key");
     harness.input("#baseUrl", "https://draft.example/v1");
     harness.input("#model", "typed-model");
-    harness.clickButton("Load Models");
+    harness.click("#discoverModelsButton");
     await harness.settle();
 
     const commands = commandCalls(harness);
@@ -3455,7 +3713,7 @@ test("Load Models sends the current draft without saving or overwriting it", asy
   }
 });
 
-test("Load Models permits blank Draft name and model without changing Runtime display", async () => {
+test("Connect and Load permits blank Draft name and model without changing Runtime display", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "");
@@ -3474,7 +3732,7 @@ test("Load Models permits blank Draft name and model without changing Runtime di
       "Unsaved Draft preview",
     );
 
-    harness.clickButton("Load Models");
+    harness.click("#discoverModelsButton");
     await harness.settle();
 
     const command = commandCalls(harness).at(-1);
@@ -3510,7 +3768,7 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
     harness.input("#apiKey", "draft-key");
     harness.input("#baseUrl", "https://draft.example/v1");
     harness.input("#model", "typed-model");
-    harness.clickButton("Load Models");
+    harness.click("#discoverModelsButton");
     await harness.settle();
 
     assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 1);
@@ -3576,7 +3834,7 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
       modelStateSource: modelStateSourceFixture(draft),
     });
     harness.holdNextCommand();
-    harness.clickButton("Load Models");
+    harness.click("#discoverModelsButton");
     await Promise.resolve();
     const commandId = harness.commandIds.at(-1);
     assert.ok(commandId);
@@ -3597,7 +3855,7 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
   }
 });
 
-test("Save Changes sends the complete current draft for its selected API mode", async () => {
+test("Save and Use sends the complete current draft for its selected API mode", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Anthropic studio");
@@ -3839,7 +4097,7 @@ test("Save exposes pending feedback until the Profile command completes", async 
     harness.releaseHeldCommand();
     await harness.settle();
 
-    assert.equal(save?.textContent, "Save Changes");
+    assert.equal(save?.textContent, "Save & Use");
     assert.equal(save?.disabled, true);
     assert.equal(close?.disabled, false);
     assert.equal(
@@ -4947,47 +5205,59 @@ test("pasted plain text remains native and does not start an attachment upload",
   }
 });
 
-test("Attach file exposes image and document hints while remaining available without image capability", async () => {
+test("the attachment menu explains the supported drop and paste path without image capability", async () => {
   const state = stateFixture();
   state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
   const harness = await createDialogHarness(state);
   try {
-    const attach = harness.document.querySelector<HTMLButtonElement>(
-      "#attachFileButton",
+    const menuButton = harness.document.querySelector<HTMLButtonElement>(
+      "#attachmentMenuButton",
     );
-    const input = harness.document.querySelector<HTMLInputElement>(
-      "#attachmentInput",
-    );
-    assert.equal(attach?.textContent, "Attach file");
-    assert.equal(attach?.disabled, false);
-    assert.match(input?.accept ?? "", /image\/png/);
-    assert.match(input?.accept ?? "", /application\/pdf/);
-    assert.match(input?.accept ?? "", /\.docx/);
-    assert.match(input?.accept ?? "", /\.xlsx/);
-    assert.match(input?.accept ?? "", /\.pptx/);
+    assert.equal(menuButton?.disabled, false);
+    assert.match(menuButton?.title ?? "", /does not support image input/i);
+    harness.click("#attachmentMenuButton");
+    const menuText = harness.document.querySelector("#attachmentMenu")?.textContent ?? "";
+    assert.match(menuText, /drop or paste files/i);
+    assert.match(menuText, /images, PDF, Office documents, WAV, and MP3/i);
+    assert.match(menuText, /file browsing is not available in this Ableton window/i);
+    assert.match(menuText, /active model does not support image input/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
 });
 
-test("Attach file advertises WAV and MP3 while source audio stays an explicit secondary action", async () => {
+test("the attachment menu keeps selected Live audio as an explicit secondary action", async () => {
   const harness = await createDialogHarness();
   try {
-    const input = harness.document.querySelector<HTMLInputElement>("#attachmentInput");
-    assert.match(input?.accept ?? "", /audio\/wav/);
-    assert.match(input?.accept ?? "", /audio\/mpeg/);
-    assert.match(input?.accept ?? "", /\.wav/);
-    assert.match(input?.accept ?? "", /\.mp3/);
+    harness.click("#attachmentMenuButton");
     const sourceButton = harness.document.querySelector<HTMLButtonElement>(
       "#attachSelectedAudioButton",
     );
-    assert.equal(sourceButton?.textContent, "Attach source audio");
-    assert.match(sourceButton?.getAttribute("aria-label") ?? "", /selected.*audio/i);
+    assert.match(sourceButton?.textContent ?? "", /Attach selected Live audio/);
+    assert.match(sourceButton?.getAttribute("aria-label") ?? "", /selected Live audio/i);
     assert.match(
       harness.document.querySelector("#audioSourceAttachmentNote")?.textContent ?? "",
       /complete source file.*embedded metadata.*not Live.*warped or processed/i,
     );
+    sourceButton?.focus();
+    sourceButton?.click();
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector("#attachmentMenuButton"),
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#attachmentMenu")?.hidden,
+      true,
+    );
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: {
+        kind: "attach_selected_audio_source",
+        sessionId: "session-1",
+      },
+    });
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -5082,7 +5352,11 @@ test("selected source audio exposes busy feedback until its command settles", as
       "#attachSelectedAudioButton",
     );
     assert.equal(sourceButton?.disabled, true);
-    assert.equal(sourceButton?.textContent, "Attaching…");
+    assert.equal(
+      sourceButton?.getAttribute("aria-label"),
+      "Attaching selected Live audio…",
+    );
+    assert.match(sourceButton?.textContent ?? "", /Attach selected Live audio/);
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
       true,
@@ -5090,7 +5364,7 @@ test("selected source audio exposes busy feedback until its command settles", as
     harness.releaseHeldCommand();
     await harness.settle();
     assert.equal(sourceButton?.disabled, false);
-    assert.equal(sourceButton?.textContent, "Attach source audio");
+    assert.equal(sourceButton?.getAttribute("aria-label"), "Attach selected Live audio source");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -5246,7 +5520,7 @@ test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", asy
   }
 });
 
-test("document drop and picker accept MIME hints or extensions without image capability", async () => {
+test("document drop paths accept MIME hints or extensions without image capability", async () => {
   const state = stateFixture();
   state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
   const harness = await createDialogHarness(state);
@@ -5275,7 +5549,7 @@ test("document drop and picker accept MIME hints or extensions without image cap
       /blocked\.png.*does not support image input/i,
     );
 
-    harness.selectAttachmentFiles([
+    harness.dropAttachmentFiles([
       documentFile(
         harness.window,
         "data.xlsx",
@@ -5394,7 +5668,7 @@ test("OOXML Send is independent of model image and PDF capabilities", async () =
 test("document local preflight accepts exactly 20 MiB and rejects one byte over", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
-    harness.selectAttachmentFiles([
+    harness.dropAttachmentFiles([
       documentFile(harness.window, "exact.pdf", "application/pdf", 20 * 1024 * 1024),
       documentFile(
         harness.window,
@@ -5428,7 +5702,7 @@ test("document rejection messages are fixed while valid files in the batch remai
       "Encrypted Office documents are not supported.",
       400,
     );
-    harness.selectAttachmentFiles([
+    harness.dropAttachmentFiles([
       documentFile(harness.window, "macro.docm", "", 24),
       documentFile(harness.window, "legacy.doc", "", 24),
       documentFile(harness.window, "unknown.zip", "application/zip", 24),
@@ -5622,11 +5896,11 @@ test("dropped JPEG, PDF, and WebP files upload serially", async () => {
   }
 });
 
-test("the attachment file picker uses the same upload path", async () => {
+test("dropped attachment files use the same serialized upload path", async () => {
   const harness = await createDialogHarness(imageCapableState());
   try {
     const file = imageFile(harness.window, "picked.png", "image/png");
-    harness.selectAttachmentFiles([file]);
+    harness.dropAttachmentFiles([file]);
     await harness.settleAttachmentOperation();
     const upload = harness.calls.find((call) => call.path === "/attachments");
     assert.equal(upload?.body, file);
@@ -5644,7 +5918,7 @@ test("one failed image upload does not skip later files and names the retry targ
   const harness = await createDialogHarness(imageCapableState());
   try {
     harness.failAttachmentNamed("broken.png", "Image validation failed.");
-    harness.selectAttachmentFiles([
+    harness.dropAttachmentFiles([
       imageFile(harness.window, "broken.png", "image/png"),
       imageFile(harness.window, "kept.png", "image/png"),
     ]);
@@ -5678,7 +5952,7 @@ test("an attachment conflict is retryable rather than a policy rejection", async
       "Attachment state changed concurrently.",
       409,
     );
-    harness.selectAttachmentFiles([
+    harness.dropAttachmentFiles([
       imageFile(harness.window, "busy.png", "image/png"),
     ]);
     await harness.settleAttachmentOperation();
@@ -6228,20 +6502,16 @@ test("timeline labels consumed audio with authoritative duration and no source-p
   }
 });
 
-test("Attach file stays available while image capability controls only image selection", async () => {
+test("the compact attachment menu stays available while image capability gates only images", async () => {
   const supportedHarness = await createDialogHarness(imageCapableState());
   try {
     assert.equal(
       supportedHarness.document.querySelector<HTMLButtonElement>(
-        "#attachFileButton",
+        "#attachmentMenuButton",
       )?.disabled,
       false,
     );
-    const input = supportedHarness.document.querySelector<HTMLInputElement>(
-      "#attachmentInput",
-    );
-    assert.equal(input?.tabIndex, -1);
-    assert.equal(input?.getAttribute("aria-hidden"), "true");
+    assert.equal(supportedHarness.document.querySelector("#attachmentInput"), null);
   } finally {
     supportedHarness.close();
   }
@@ -6251,7 +6521,7 @@ test("Attach file stays available while image capability controls only image sel
   const unsupportedHarness = await createDialogHarness(unsupportedState);
   try {
     const attach = unsupportedHarness.document.querySelector<HTMLButtonElement>(
-      "#attachFileButton",
+      "#attachmentMenuButton",
     );
     assert.equal(attach?.disabled, false);
     assert.match(attach?.title ?? "", /does not support image input/i);
@@ -6284,7 +6554,7 @@ test("Attach file stays available while image capability controls only image sel
   const unverifiedHarness = await createDialogHarness(unverifiedState);
   try {
     const attach = unverifiedHarness.document.querySelector<HTMLButtonElement>(
-      "#attachFileButton",
+      "#attachmentMenuButton",
     );
     assert.equal(attach?.disabled, false);
     assert.match(attach?.title ?? "", /unverified/i);
@@ -6409,6 +6679,49 @@ test("session actions send only their command-specific fields", async () => {
   }
 });
 
+test("keyboard users can paste Skill Markdown without a native file picker", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    const install = harness.document.querySelector<HTMLButtonElement>(
+      "#installPastedSkillButton",
+    );
+    assert.equal(
+      harness.document.querySelector("#skillPasteText")?.getAttribute("name"),
+      "skillMarkdown",
+    );
+    assert.equal(install?.disabled, true);
+    harness.input("#skillPasteText", [
+      "---",
+      "name: pasted-skill",
+      "description: Imported from pasted Markdown",
+      "---",
+      "Pasted Skill body",
+      "",
+    ].join("\n"));
+    assert.equal(install?.disabled, false);
+    harness.click("#installPastedSkillButton");
+    await waitForCondition(
+      () => harness.calls.some((call) => call.path === "/skills"),
+      "Expected pasted Skill install request.",
+    );
+    await harness.settle();
+
+    const upload = harness.calls.find((call) => call.path === "/skills");
+    assert.ok(upload?.body instanceof harness.window.File);
+    assert.match(
+      harness.document.querySelector("[data-skill-id='pasted-skill']")?.textContent ?? "",
+      /Imported from pasted Markdown/,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#skillPasteText")?.value,
+      "",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("Skill import, activation, and deletion keep bodies off JSON command paths", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
@@ -6425,7 +6738,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
       "PRIVATE-local-path-name.md",
       { type: "text/markdown" },
     );
-    harness.selectSkillFile(file);
+    harness.dropSkillFile(file);
     await waitForCondition(
       () => harness.calls.some((call) => call.path === "/skills"),
       "Expected Skill import request.",
@@ -6498,7 +6811,7 @@ test("Skill replacement requires confirmation and retries the same raw file expl
     const file = new harness.window.File([
       "---\nname: mix-review\ndescription: New guidance\n---\nNew private body.\n",
     ], "replacement.md", { type: "text/markdown" });
-    harness.selectSkillFile(file);
+    harness.dropSkillFile(file);
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 2,
       "Expected confirmed Skill replacement request.",
@@ -6529,7 +6842,7 @@ test("a response-lost Skill replacement crosses the state barrier before a new-I
       "---\nname: mix-review\ndescription: Same summary\n---\nReplacement body that differs from the installed Skill.\n",
     ], "replacement.md", { type: "text/markdown" });
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
-    harness.selectSkillFile(file);
+    harness.dropSkillFile(file);
 
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 3,
@@ -6578,7 +6891,7 @@ test("an interrupted Skill retry that cannot confirm a receipt blocks later muta
     ], "replacement.md", { type: "text/markdown" });
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost.");
     harness.rejectNextSkillResponseAfterCommit("Bridge response was lost again.");
-    harness.selectSkillFile(file);
+    harness.dropSkillFile(file);
 
     await waitForCondition(
       () => harness.calls.filter((call) => call.path === "/skills").length === 3,

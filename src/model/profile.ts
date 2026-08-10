@@ -151,7 +151,7 @@ export function isValidApiModePair(
 /**
  * Construct the Draft used for provider discovery. This gate deliberately
  * validates only connection fields; unrelated unsaved generation fields must
- * not prevent Load Models from working.
+ * not prevent model discovery from working.
  */
 export function validateDraftProfileForDiscovery(value: unknown): DraftProfile {
   const record = requiredRecord(value, "profile", "Profile must be an object.");

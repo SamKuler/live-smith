@@ -391,7 +391,9 @@
         for (const profile of profiles) {
           selector.append(new Option(profile.name, profile.id));
         }
+        document.getElementById("savedProfileControls").hidden = profiles.length === 0;
         const active = activeSavedProfile();
+        document.getElementById("modelSetupGuide").hidden = Boolean(active);
         syncModelStateSource(state.modelStateSource);
         setDraftProfile(active || blankProfile(), active, !active);
       }

@@ -28,8 +28,8 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Shows model/tool/apply/error events in the active chat session.
-- Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 files by picker,
-  paste, or drag-and-drop. A selected Live Audio Clip, Sample, or Simpler source
+- Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 files by paste
+  or drag-and-drop. A selected Live Audio Clip, Sample, or Simpler source
   can also be copied into the pending attachments. Images, native PDFs, and
   audio have explicit provider capability boundaries; Office documents are
   extracted locally as bounded text.
@@ -181,7 +181,7 @@ Example model action shape:
 
 ## Model Providers
 
-Open `Ask Live Smith`, switch to Settings, and create a named profile. Each
+Open `Ask Live Smith`, switch to the Inspector's **Model** tab, and create a named profile. Each
 profile saves the complete connection and generation configuration:
 
 - API family and mode: OpenAI `Responses`, OpenAI `Chat Completions`, or
@@ -191,7 +191,7 @@ profile saves the complete connection and generation configuration:
 - Capability-aware reasoning effort or thinking budget
 - Optional manual capability overrides and Extra Body JSON
 
-Click `Save Changes` to persist and activate it. Add, Duplicate, Delete, and
+Click **Save & Use** to persist and activate it. Add, Duplicate, Delete, and
 Discard operate on profile drafts; sending is blocked while the draft has
 unsaved changes. Model discovery can use the current draft without saving or
 activating it, even before Profile name or model has been entered.
@@ -201,7 +201,7 @@ activating it, even before Profile name or model has been entered.
 The UI keeps configuration in three explicit states:
 
 - `DraftProfile` is the editable preview and may be incomplete. Its connection
-  fields can be used by Load Models before the Profile name or model is filled.
+  fields can be used by **Connect & Load** before the Profile name or model is filled.
 - `SavedProfile` is the fully validated value written by Profile CRUD.
 - `RuntimeProfile` combines the active Saved Profile with resolved capabilities;
   model requests and the header summary use the same runtime value.
@@ -211,7 +211,7 @@ OpenAI-compatible services use an OpenAI profile with `Chat Completions` (or
 profiles always use `Messages`; their base URL may be the API root or end in
 `/v1`, and Live Smith resolves the `/v1/messages` and `/v1/models` endpoints.
 
-Use `Load Models` in the Connection section to query the provider's model list.
+Use **Connect & Load** in the Model tab to query the provider's model list.
 Endpoints can expose model metadata such as display names, max output
 tokens, streaming, tools, and reasoning controls. Providers
 often still return only model IDs, so token limits and reasoning support may
@@ -222,8 +222,11 @@ returned response items locally instead of using remote conversation state.
 
 ### File attachments
 
-The **Attach file** control accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV,
-and MP3. **Attach selected source** can copy the file backing the selected Live
+Drop a PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, or MP3 onto the composer, or
+paste one from the clipboard. Ableton's embedded extension view does not expose
+a native system file picker, so Live Smith does not show a file-browse control
+that cannot work in the host. The composer's compact **+** menu also offers
+**Attach selected Live audio**, which copies the file backing the selected Live
 Audio Clip, Sample, or Simpler into the same pending Session state. This command
 accepts only the Session ID; the UI and model cannot provide an arbitrary path.
 Uploading or copying a supported file does not require the currently active
@@ -281,7 +284,9 @@ capability resolution.
 
 ### Local Skills
 
-Open **Settings → Skills** to import one UTF-8 `SKILL.md`. The file must be at
+Open the Inspector's **Skills** tab and either drop one UTF-8 `SKILL.md` into its
+import area or paste the Markdown into the keyboard-accessible editor. The
+definition must be at
 most 64 KiB and use exactly this frontmatter shape before a non-empty Markdown
 body:
 

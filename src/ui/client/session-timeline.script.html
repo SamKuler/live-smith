@@ -13,6 +13,7 @@
         minute: "2-digit",
         month: "short",
       });
+      const inspectorTabs = ["settings", "skills", "context"];
       let focusedConfirmationId = null;
       let confirmationReturnFocus = null;
       const selectedSessionIds = new Set();
@@ -147,34 +148,35 @@
       document.addEventListener("keydown", handleConfirmationKeydown);
 
       function switchInspectorTab(tab) {
-        const settingsPanel = document.getElementById("settingsPanel");
-        const contextPanel = document.getElementById("contextPanel");
-        const settingsTab = document.getElementById("settingsTab");
-        const contextTab = document.getElementById("contextTab");
-        const settingsActive = tab === "settings";
-        settingsTab.classList.toggle("active", settingsActive);
-        settingsTab.setAttribute("aria-selected", String(settingsActive));
-        settingsTab.tabIndex = settingsActive ? 0 : -1;
-        contextTab.classList.toggle("active", !settingsActive);
-        contextTab.setAttribute("aria-selected", String(!settingsActive));
-        contextTab.tabIndex = settingsActive ? -1 : 0;
-        settingsPanel.hidden = tab !== "settings";
-        contextPanel.hidden = tab !== "context";
+        const selected = inspectorTabs.includes(tab) ? tab : inspectorTabs[0];
+        for (const name of inspectorTabs) {
+          const active = name === selected;
+          const tabButton = document.getElementById(`${name}Tab`);
+          const panel = document.getElementById(`${name}Panel`);
+          tabButton.classList.toggle("active", active);
+          tabButton.setAttribute("aria-selected", String(active));
+          tabButton.tabIndex = active ? 0 : -1;
+          panel.hidden = !active;
+        }
       }
 
       function handleInspectorTabKeydown(event) {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const currentTab = event.currentTarget?.id === "contextTab"
-          ? "context"
-          : "settings";
+        const currentTab = String(event.currentTarget?.id || "")
+          .replace(/Tab$/, "");
+        const currentIndex = Math.max(0, inspectorTabs.indexOf(currentTab));
         const targetTab = event.key === "Home"
-          ? "settings"
+          ? inspectorTabs[0]
           : event.key === "End"
-            ? "context"
-            : currentTab === "settings"
-              ? "context"
-              : "settings";
+            ? inspectorTabs[inspectorTabs.length - 1]
+            : inspectorTabs[
+              (
+                currentIndex +
+                (event.key === "ArrowRight" ? 1 : -1) +
+                inspectorTabs.length
+              ) % inspectorTabs.length
+            ];
         switchInspectorTab(targetTab);
         document.getElementById(`${targetTab}Tab`).focus();
       }
@@ -792,7 +794,7 @@
 
       function setConfirmationModalActive(active, card) {
         for (const element of document.querySelectorAll(
-          "header, .inspector-pane, .composer-options, .composer",
+          "header, .inspector-pane, .composer",
         )) {
           if (active) element.setAttribute("inert", "");
           else element.removeAttribute("inert");

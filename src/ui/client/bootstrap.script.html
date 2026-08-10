@@ -171,7 +171,7 @@
           archive_session: { status: "Archiving Session…" },
           unarchive_session: { status: "Returning Session…" },
           attach_selected_audio_source: {
-            busyLabel: "Attaching…",
+            busyAriaLabel: "Attaching selected Live audio…",
             controlId: "attachSelectedAudioButton",
             status: "Copying selected source audio…",
           },
@@ -247,6 +247,8 @@
           sessionsPane?.setAttribute("aria-busy", String(sessionControlsBusy));
           document.getElementById("settingsPanel")
             .setAttribute("aria-busy", String(settingsBusy));
+          document.getElementById("skillsPanel")
+            .setAttribute("aria-busy", String(settingsBusy));
           document.getElementById("settingsLockNotice").hidden = !(
             anySendInProgress && !sendInProgress
           );
@@ -267,7 +269,7 @@
               control.disabled = sessionControlsBusy;
             });
           document.querySelectorAll(
-            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
+            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea, #skillsPanel button, #skillsPanel input",
           ).forEach((control) => {
             control.disabled = settingsBusy;
           });
@@ -276,7 +278,7 @@
           document.getElementById("sendButton").disabled =
             Boolean(commandKind) || attachmentInProgress || skillInProgress;
           attachments.setBusy(operationBusy);
-          skillManager.setBusy(operationBusy);
+          skillManager.setBusy(settingsBusy);
 
           if (!operationBusy) {
             capabilityPreview.updateReasoningVisibility();
@@ -350,7 +352,9 @@
           const inspector = document.getElementById("inspectorPane");
           const initialFocus = inspector.hidden
             ? prompt
-            : document.getElementById("profileName");
+            : document.getElementById("modelSetupGuide").hidden
+              ? document.getElementById("profileName")
+              : document.getElementById("modelSetupGuide");
           initialFocus?.focus({ preventScroll: true });
         });
       })();
