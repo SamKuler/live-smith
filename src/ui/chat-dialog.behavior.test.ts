@@ -1429,6 +1429,20 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
       "true",
     );
+    assert.equal(
+      harness.window.getComputedStyle(
+        harness.document.querySelector<HTMLElement>("#settingsPanel")!,
+      ).scrollbarGutter,
+      "auto",
+      "the outer settings panel must not reserve a second scrollbar gutter",
+    );
+    assert.equal(
+      harness.window.getComputedStyle(
+        harness.document.querySelector<HTMLElement>(".settings-scroll")!,
+      ).scrollbarGutter,
+      "stable",
+      "the inner settings scroller owns the only stable scrollbar gutter",
+    );
 
     profileControl?.click();
     assert.equal(inspector?.hidden, true);
