@@ -17,7 +17,15 @@ import type {
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
 import { transportForProfile } from "../model/registry.js";
-import { agentSystemInstructions } from "../agent/system-instructions.js";
+import {
+  agentSystemInstructionsForSkills,
+} from "../agent/system-instructions.js";
+import type { ResolvedSkillContext } from "./skill-context.js";
+
+const emptySkillContext: ResolvedSkillContext = {
+  activeSkillIds: [],
+  instructionBlock: "",
+};
 
 export async function requestModelTurn(input: {
   prompt: string;
@@ -25,6 +33,7 @@ export async function requestModelTurn(input: {
   runtimeProfile: RuntimeProfile;
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
+  skillContext?: ResolvedSkillContext;
   agentMessages: ModelConversationMessage[];
   tools: ModelTool[];
   signal: AbortSignal;
@@ -40,6 +49,7 @@ export function buildModelRequest(input: {
   liveContext: string;
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
+  skillContext?: ResolvedSkillContext;
   agentMessages: ModelConversationMessage[];
   runtimeProfile: RuntimeProfile;
   tools: ModelTool[];
@@ -62,7 +72,9 @@ export function buildModelRequest(input: {
       },
       ...(input.attachmentParts ?? []),
     ],
-    systemInstructions: agentSystemInstructions,
+    systemInstructions: agentSystemInstructionsForSkills(
+      input.skillContext ?? emptySkillContext,
+    ),
     history: input.history,
     agentMessages: input.agentMessages,
     tools: input.tools,

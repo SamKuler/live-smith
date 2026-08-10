@@ -11,7 +11,10 @@ import {
   observationRequestForAction,
   type AgentAction,
 } from "../agent/actions.js";
-import { agentSystemInstructions } from "../agent/system-instructions.js";
+import {
+  agentSystemInstructions,
+  agentSystemInstructionsForSkills,
+} from "../agent/system-instructions.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
 import { resolveModelCapabilities } from "../model/capabilities.js";
 import type {
@@ -33,6 +36,7 @@ import {
   type SessionEvent,
 } from "../storage/events.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import { installSkill } from "../storage/skills.js";
 import {
   createSession,
   listSessions,
@@ -173,6 +177,189 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     tools,
     runtimeProfile: { profile, capabilities },
   });
+
+  const skillContext = {
+    activeSkillIds: ["mixing-review"],
+    instructionBlock: [
+      '<skill id="mixing-review">',
+      "Review routing first.",
+      "</skill>",
+    ].join("\n"),
+  };
+  const guided = buildModelRequest({
+    prompt: "make a bassline",
+    liveContext: "Selected track: Bass",
+    history,
+    agentMessages,
+    runtimeProfile: { profile, capabilities },
+    skillContext,
+    tools,
+  });
+  assert.equal(
+    guided.systemInstructions,
+    agentSystemInstructionsForSkills(skillContext),
+  );
+  assert.deepEqual(guided.currentUserContent, request.currentUserContent);
+  assert.deepEqual(guided.history, history);
+  assert.strictEqual(guided.tools, tools);
+  assert.doesNotMatch(
+    JSON.stringify({
+      currentUserContent: guided.currentUserContent,
+      history: guided.history,
+      agentMessages: guided.agentMessages,
+    }),
+    /Review routing first/,
+  );
+});
+
+test("handleAgentRequest snapshots persistent and one-turn Skill guidance without changing the prompt event", async () => {
+  const directory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    "live-smith-skill-provider-flow-",
+  ));
+  const skillFile = (id: string, body: string) => Buffer.from([
+    "---",
+    `name: ${id}`,
+    `description: Workflow guidance for ${id}.`,
+    "---",
+    body,
+  ].join("\n"), "utf8");
+  await installSkill(directory, skillFile(
+    "persistent-review",
+    "PERSISTENT-SKILL-BODY\n",
+  ));
+  await installSkill(directory, skillFile(
+    "mention-review",
+    "MENTION-SKILL-BODY\n",
+  ));
+  const session = await createSession(directory, {
+    title: "Skill snapshot",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+    activeSkillIds: ["persistent-review"],
+  });
+  const profile: SavedProfile = {
+    id: "provider-skill-snapshot",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: {},
+  };
+  const prompt = "  Preserve $mention-review exactly.  ";
+  let modelCalls = 0;
+
+  await handleAgentRequest(
+    { environment: { storageDirectory: directory } } as never,
+    {
+      defaultPrompt: "Review",
+      summary: "Track: Bass",
+      target: {},
+      scope: { kind: "track", identity: "track-1", label: "Bass" },
+    },
+    prompt,
+    { profile, capabilities: resolveModelCapabilities(profile) },
+    "project-a",
+    session.id,
+    {
+      signal: new AbortController().signal,
+      onDelta: () => {},
+      onProgress: () => {},
+      onSessionEvent: () => {},
+      confirmActions: async () => true,
+    },
+    async (input) => {
+      modelCalls += 1;
+      assert.deepEqual(input.skillContext?.activeSkillIds, [
+        "mention-review",
+        "persistent-review",
+      ]);
+      const request = buildModelRequest(input);
+      assert.match(request.systemInstructions, /PERSISTENT-SKILL-BODY/);
+      assert.match(request.systemInstructions, /MENTION-SKILL-BODY/);
+      assert.match(
+        request.currentUserContent[0]?.type === "text"
+          ? request.currentUserContent[0].text
+          : "",
+        /User request:\n  Preserve \$mention-review exactly\.  /,
+      );
+      assert.doesNotMatch(
+        JSON.stringify({
+          currentUserContent: request.currentUserContent,
+          history: request.history,
+          agentMessages: request.agentMessages,
+        }),
+        /(?:PERSISTENT|MENTION)-SKILL-BODY/,
+      );
+      return { content: "Reviewed.", toolCalls: [] };
+    },
+  );
+
+  assert.equal(modelCalls, 1);
+  const events = await loadSessionEvents(directory, session.id);
+  assert.equal(events.find((event) => event.kind === "user")?.content, prompt);
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /(?:PERSISTENT|MENTION)-SKILL-BODY/,
+  );
+});
+
+test("missing selected Skill blocks model and event persistence", async () => {
+  const directory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    "live-smith-missing-skill-flow-",
+  ));
+  const session = await createSession(directory, {
+    title: "Missing Skill",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "track-1", label: "Bass" },
+    activeSkillIds: ["missing-review"],
+  });
+  const profile: SavedProfile = {
+    id: "provider-missing-skill",
+    name: "Provider",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+    model: "custom-model",
+    parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+    advanced: {},
+  };
+  let modelCalls = 0;
+
+  await assert.rejects(
+    handleAgentRequest(
+      { environment: { storageDirectory: directory } } as never,
+      {
+        defaultPrompt: "Review",
+        summary: "Track: Bass",
+        target: {},
+        scope: { kind: "track", identity: "track-1", label: "Bass" },
+      },
+      "Review",
+      { profile, capabilities: resolveModelCapabilities(profile) },
+      "project-a",
+      session.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => true,
+      },
+      async () => {
+        modelCalls += 1;
+        return { content: "must not run", toolCalls: [] };
+      },
+    ),
+    /Selected Skill missing-review is unavailable/i,
+  );
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(await loadSessionEvents(directory, session.id), []);
 });
 
 test("removing a manual override re-resolves from raw discovery metadata", () => {
