@@ -64,10 +64,15 @@ recoverable Profiles or credentials.
 - Does not use `previous_response_id`.
 - Treats `response.completed` and `response.incomplete` as terminal lifecycle
   events and cancels the reader without waiting for EOF or `[DONE]`.
-- Rejects tool calls unless the overall response is complete and every call has
-  a non-empty, unique protocol ID, a non-empty function name, and a string
-  argument representation. A malformed declared call invalidates the entire
-  turn even when text output is also present.
+- Replays an `incomplete: max_output_tokens` response locally and automatically
+  continues it at most twice. Partial text and citations are retained, while
+  a function call is executable only when the item itself is marked
+  `completed`; partial call items are replayed but never executed.
+- Rejects other incomplete reasons and rejects executable tool calls unless the
+  overall response is complete and every call has a non-empty, unique protocol
+  ID, a non-empty function name, and a string argument representation. A
+  malformed declared call invalidates the entire turn even when text output is
+  also present.
 
 ### OpenAI Chat Completions
 
@@ -179,15 +184,55 @@ Session ID; no UI or model request can supply an arbitrary path.
 Hosted Web Search is an explicit Saved Profile setting, not a model-name guess
 or a client-tool capability override. It is disabled by default. OpenAI
 Responses maps it to `{ "type": "web_search" }`; Anthropic Messages maps it to
-the versioned `web_search_20250305` server tool with a fixed maximum of five
-uses. OpenAI Chat Completions rejects the hosted tool before body construction
-or HTTP rather than switching to a special search model.
+the versioned `web_search_20250305` server tool. Each native request gives the
+model the remaining portion of a 20-call send budget; this is a ceiling, not a
+forced number of searches. Live Smith displays and persists at most 20 distinct
+search activities across the complete agent send, shrinking or removing the
+tool in later model turns as that bound is reached. If a compatible endpoint
+ignores the request field and emits additional activity, Live Smith omits the
+overflow without discarding the model's final answer.
+OpenAI Chat Completions rejects the hosted tool before body construction or
+HTTP rather than switching to a special search model.
+
+Enabling the setting makes hosted search available with automatic tool choice.
+Fixed system policy tells the model to search for explicit lookup requests and
+current or changing facts, and forbids claiming a search or inventing citations
+unless the provider actually executes the server tool. Independently of search,
+every factual premise that affects a Live mutation must have evidence in the
+current request context or be obtained through an available tool. Missing
+evidence is requested from the user when no tool can obtain it; model memory is
+not evidence. When hosted search is absent, the request contains an explicit
+unavailable capability statement and the model may not promise a search. This
+does not require a search when the necessary evidence is already available.
+
+The composer does not contain a second search switch. The saved Profile setting
+only makes the hosted tool available; the model decides whether the current
+request needs it.
+
+Protocol compatibility is not capability discovery. A compatible Responses
+endpoint may omit OpenAI's hosted tool, so the Profile UI does not claim that
+model discovery verified search support. Chat Completions disables the control
+and announces when changing formats turns an enabled Draft setting off.
+
+Live Smith opens a live Web Search timeline card only after a provider event
+indicates search activity. The card shows the bounded query and safe result
+pages as they arrive, then reconciles to one persisted terminal card for each
+provider call. A provider-reported search error becomes a fixed failed card
+with no raw provider error payload or invented result URL. Enabling the Profile
+setting or receiving uncited assistant prose cannot create that status.
 
 The provider executes this tool; it never appears as a client `tool_use` for the
 Live agent loop to run. Complete provider search blocks remain in opaque local
-replay state. Only normalized, bounded HTTP(S) source titles and URLs enter
-assistant Session events. Search results and citations are untrusted data and
-cannot authorize a Live tool, approval, filesystem operation, or mutation.
+replay state. OpenAI Responses requests the complete
+`web_search_call.action.sources` list; Anthropic uses returned
+`web_search_tool_result` pages. Only normalized, bounded HTTP(S) titles and URLs
+enter Web Search Session events. Answer citations are stored separately and
+only when the provider returns citation annotations, so a reviewed result is
+never presented as cited merely because it appeared in the search list. Search
+page text stays inside the provider-hosted model context; neither provider
+exposes that text as a safe user-facing excerpt in Live Smith's source list.
+Search results and citations are untrusted data and cannot authorize a Live tool,
+approval, filesystem operation, or mutation.
 
 Protocol references: [OpenAI Web Search](https://developers.openai.com/api/docs/guides/tools-web-search)
 and [Anthropic Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool).

@@ -128,6 +128,7 @@
         const sessionTimeline = factories.createSessionTimeline({
           getState,
           getAssistantDraft: bridgeClient.getAssistantDraft,
+          getWebSearchUpdates: bridgeClient.getWebSearchUpdates,
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           resolveConfirm: bridgeClient.resolveConfirm,

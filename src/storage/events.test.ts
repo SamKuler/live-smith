@@ -430,15 +430,33 @@ test("memory event storage deep-clones nested input, append, and load values", a
   recovery.completedActionDigests[0] = "c".repeat(64);
   appendedRecovery.recovery!.completedActionDigests[0] = "d".repeat(64);
 
+  const searchQueries = ["original query"];
+  const appendedSearch = await appendSessionEvent(undefined, sessionId, {
+    kind: "web_search",
+    content: "Searched for original query",
+    webSearch: {
+      id: "search-memory-clone",
+      status: "completed",
+      action: "search",
+      queries: searchQueries,
+      sources: [],
+    },
+  });
+  searchQueries[0] = "mutated-input query";
+  appendedSearch.webSearch!.queries[0] = "mutated-return query";
+
   const firstLoad = await loadSessionEvents(undefined, sessionId);
   assert.equal(firstLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
   assert.deepEqual(firstLoad[1]?.recovery?.completedActionDigests, [digest]);
+  assert.deepEqual(firstLoad[2]?.webSearch?.queries, ["original query"]);
   firstLoad[0]!.attachments![0]!.fileName = "mutated-load.png";
   firstLoad[1]!.recovery!.completedActionDigests[0] = "e".repeat(64);
+  firstLoad[2]!.webSearch!.queries[0] = "mutated-load query";
 
   const secondLoad = await loadSessionEvents(undefined, sessionId);
   assert.equal(secondLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
   assert.deepEqual(secondLoad[1]?.recovery?.completedActionDigests, [digest]);
+  assert.deepEqual(secondLoad[2]?.webSearch?.queries, ["original query"]);
   await deleteSessionEvents(undefined, sessionId);
 });
 
@@ -788,6 +806,119 @@ test("assistant events persist strict bounded citations and isolate returned arr
       /Session event input is invalid/,
     );
   }
+});
+
+test("provider-confirmed Web Search activity persists as its own timeline event", async () => {
+  const sessionId = `web-search-memory-${Date.now()}`;
+  await appendSessionEvent(undefined, sessionId, {
+    kind: "web_search",
+    content: "Searched for “Ableton Live release” · 2 pages",
+    webSearch: {
+      id: "search-1",
+      status: "completed",
+      action: "search",
+      queries: ["Ableton Live release"],
+      sources: [
+        { url: "https://example.test/one", title: "First result" },
+        { url: "https://example.test/two", title: "Second result" },
+      ],
+    },
+  });
+  const events = await loadSessionEvents(undefined, sessionId);
+  assert.deepEqual(events, [{
+    id: events[0]?.id,
+    createdAt: events[0]?.createdAt,
+    kind: "web_search",
+    content: "Searched for “Ableton Live release” · 2 pages",
+    webSearch: {
+      id: "search-1",
+      status: "completed",
+      action: "search",
+      queries: ["Ableton Live release"],
+      sources: [
+        { url: "https://example.test/one", title: "First result" },
+        { url: "https://example.test/two", title: "Second result" },
+      ],
+    },
+  }]);
+
+  const failed = await appendSessionEvent(undefined, `${sessionId}-failed`, {
+    kind: "web_search",
+    content: "Web Search failed for “Ableton Live release”",
+    webSearch: {
+      id: "search-failed",
+      status: "failed",
+      action: "search",
+      queries: ["Ableton Live release"],
+      sources: [],
+    },
+  });
+  assert.equal(failed.webSearch?.status, "failed");
+  assert.equal(
+    (await loadSessionEvents(undefined, `${sessionId}-failed`))[0]
+      ?.webSearch?.status,
+    "failed",
+  );
+
+  for (const input of [
+    { kind: "web_search" as const, content: "Missing structured activity" },
+    {
+      kind: "web_search" as const,
+      content: "Searching is transient only",
+      webSearch: {
+        id: "search-live-only",
+        status: "searching" as const,
+        action: "search" as const,
+        queries: ["Ableton Live release"],
+        sources: [],
+      },
+    },
+    {
+      kind: "web_search" as const,
+      content: "Legacy singular query",
+      webSearch: {
+        id: "search-legacy-query",
+        status: "completed",
+        action: "search",
+        query: "Ableton Live release",
+        sources: [],
+      } as never,
+    },
+    {
+      kind: "assistant" as const,
+      content: "Wrong event kind",
+      webSearch: events[0]!.webSearch!,
+    },
+  ]) {
+    await assert.rejects(
+      appendSessionEvent(undefined, `${sessionId}-invalid`, input),
+      /Session event input is invalid/,
+    );
+  }
+});
+
+test("persisted Web Search events reject transient searching status", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-searching-event-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  await fs.writeFile(path.join(eventsDirectory, "searching-session.json"), JSON.stringify([{
+    id: "event-searching",
+    createdAt: "2026-08-11T00:00:00.000Z",
+    kind: "web_search",
+    content: "Searching the web",
+    webSearch: {
+      id: "search-live-only",
+      status: "searching",
+      action: "search",
+      queries: ["Ableton Live release"],
+      sources: [],
+    },
+  }]));
+
+  await assert.rejects(
+    loadSessionEvents(dir, "searching-session"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
 });
 
 test("deleteSessionEvents removes a session event log", async () => {

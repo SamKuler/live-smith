@@ -81,6 +81,14 @@ logs, screenshots, or documentation.
 - Add request-capture and replay tests when transport mapping changes.
 - Drive the real `chat-dialog.html` script through DOM events for UI behavior
   changes instead of relying only on source-pattern assertions.
+- Test observable state, protocol, or DOM behavior instead of checking isolated
+  prompt phrases or static CSS values. Keep generated-instruction assembly in
+  one canonical contract test rather than repeating copy assertions across
+  layers.
+- JSDOM tests cover event and DOM semantics, not rendered geometry. Do not use
+  computed-style assertions as proof of visual layout in the Ableton host.
+- Keep test modules below the structural limits enforced by
+  `npm run test:structure`; split shared harnesses from behavior domains.
 - Keep configuration writes limited to Profile CRUD/activation and the
   dedicated global-settings command.
 
@@ -97,5 +105,5 @@ npm --cache /private/tmp/live-smith-npm-cache audit --json
 Also validate the composed dialog client after editing it:
 
 ```sh
-node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','capability-preview','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
+node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','capability-preview','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
 ```

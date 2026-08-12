@@ -28,7 +28,8 @@
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Can opt a saved OpenAI Responses or Anthropic Messages Profile into
-  provider-hosted Web Search. Search is off by default, and cited answers show
+  provider-hosted Web Search. Search is off by default; when enabled, the model
+  searches when the request needs current information, and cited answers show
   visible source links in the timeline.
 - Shows model/tool/apply/error events in the active chat session.
 - Accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 files by paste
@@ -116,10 +117,15 @@ retried under another equivalent track selector. A compact structured ledger
 stores only SHA-256 action-identity digests, so this protection survives the
 next send in the same Session. Intermediate successful repair stages extend the
 same ledger instead of clearing it; only a final successful repair Apply marked
-`resolvesPriorFailure` clears the operation. Creator identity is independent of
-the model's temporary `ref`, so changing an alias cannot create the same Track
-again. Tool-free model text can never turn an unresolved partial Apply into a
-successful result.
+`resolvesPriorFailure` clears the operation. A failure that completed no Live
+mutation remains visible for the current request but does not create a
+cross-request replay ledger; a
+later successful alternative in that request clears it automatically. This
+keeps an unrelated later prompt from being blocked by a failure that left no
+Live side effects, while preserving strict recovery whenever anything changed.
+Creator identity is independent of the model's temporary `ref`, so changing an
+alias cannot create the same Track again. Tool-free model text can never turn an
+unresolved partial Apply into a successful result.
 
 Confirmation and Live Undo are different boundaries. One confirmation may
 authorize an ordered plan with multiple Undo entries because the 1.0.0 beta SDK
@@ -223,6 +229,12 @@ fall back to built-in capability hints or manual Settings values.
 
 OpenAI Responses always sends `store: false`; Live Smith stores and replays the
 returned response items locally instead of using remote conversation state.
+If Responses stops at `max_output_tokens`, Live Smith replays that exact local
+state and automatically asks the model to continue up to two times. Incomplete
+function-call items are never executed; a call item the provider separately
+marks `completed` may proceed before the next agent turn. Other incomplete
+reasons still fail closed, and repeated exhaustion asks you to raise the
+Profile's Max Output Tokens or continue the Session.
 
 ### Hosted Web Search
 
@@ -233,11 +245,41 @@ Anthropic Messages `web_search_20250305` server tool. OpenAI Chat Completions is
 rejected locally before network I/O; Live Smith never silently changes a
 Profile's model or protocol.
 
+Enabling the Profile control makes the tool available and gives the model a
+clear policy to search for explicit lookup requests and current or changing
+facts. Every factual premise that affects a Live mutation must be supported by
+evidence in the current request context or obtained through an available tool.
+If the evidence is missing and no tool can obtain it, the model asks the user;
+model memory is not evidence. When hosted search is unavailable, every request
+says so explicitly and forbids promising a search. It does not search every
+message, and there is no separate composer switch that overrides the model's
+tool decision. Request format compatibility
+does not prove that an OpenAI-compatible endpoint implements provider-hosted
+search, so the Profile UI states that limitation instead of claiming discovery
+verified it.
+
+When a provider reports hosted search activity, the timeline opens a live Web
+Search card with the query and any search-result pages returned by the
+provider. The same card keeps its expanded or collapsed state when live
+activity becomes a terminal Session event. The terminal card remains in Session
+history, and every safe source-page URL can be opened directly. Hosted search
+keeps page text inside the model context; the source list contains links rather
+than page excerpts. A provider-reported search failure is stored and shown
+explicitly without exposing its raw error payload. Neither indicator appears
+merely because the Profile setting is enabled.
+
+The model may use up to 20 hosted search actions across one send, but it is not
+required to search. If a compatible endpoint emits more activity than the
+bounded timeline can retain, Live Smith omits the excess activity and preserves
+the final answer instead of terminating the send.
+
 Search result content, titles, URLs, excerpts, and citations are untrusted model
 data. They cannot authorize Live tools, approvals, filesystem access, or Set
-mutations. Provider-specific search/replay blocks remain opaque transport state;
-Session history persists only a bounded normalized source title and HTTP(S)
-URL. The timeline renders those citations as visible, clickable source links.
+mutations. Provider-specific search/replay blocks remain opaque transport state.
+Session history stores only the bounded query plus normalized HTTP(S) result
+titles and URLs. The answer's separate **Citations** list contains only URLs the
+provider explicitly attached to answer text; it does not promote every search
+result into a citation.
 
 ### File attachments
 

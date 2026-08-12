@@ -18,7 +18,8 @@ import type {
   SessionAttachmentRef,
 } from "./attachments.js";
 import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js";
-import type { ModelCitation } from "../model/contracts.js";
+import type { ModelCitation, ModelHostedWebSearch } from "../model/contracts.js";
+import { isModelHostedWebSearch } from "../model/web-search.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -43,6 +44,7 @@ import {
 export type SessionEventKind =
   | "user"
   | "assistant"
+  | "web_search"
   | "tool_call"
   | "tool_result"
   | "apply_requested"
@@ -62,6 +64,7 @@ export interface SessionEventInput {
   recovery?: SessionRecoveryLedger;
   attachments?: SessionAttachmentRef[];
   citations?: ModelCitation[];
+  webSearch?: ModelHostedWebSearch;
 }
 
 export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
@@ -91,14 +94,15 @@ export async function appendSessionEvent(
   if (input.attachments !== undefined && input.kind !== "user") {
     throw new TypeError("Only user events may contain Session attachments.");
   }
-  const event: SessionEvent = cloneSessionEvent({
+  const candidate: SessionEvent = {
     id: createStorageId("event"),
     createdAt: new Date().toISOString(),
     ...input,
-  });
-  if (!isSessionEvent(event, "current")) {
+  };
+  if (!isSessionEvent(candidate, "current")) {
     throw new TypeError("Session event input is invalid.");
   }
+  const event = cloneSessionEvent(candidate);
 
   return withStorageTransaction(storageDirectory, async () => {
     if (!storageDirectory) {
@@ -252,6 +256,7 @@ function isSessionEvent(
       "recovery",
       "attachments",
       "citations",
+      "webSearch",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
@@ -268,7 +273,12 @@ function isSessionEvent(
     (record.citations === undefined || (
       record.kind === "assistant" &&
       isSessionEventCitations(record.citations)
-    ))
+    )) &&
+    (record.kind === "web_search"
+      ? isModelHostedWebSearch(record.webSearch) &&
+        (record.webSearch.status === "completed" ||
+          record.webSearch.status === "failed")
+      : record.webSearch === undefined)
   );
 }
 
@@ -426,6 +436,15 @@ function cloneSessionEvent(event: SessionEvent): SessionEvent {
     ...(event.citations === undefined
       ? {}
       : { citations: event.citations.map((citation) => ({ ...citation })) }),
+    ...(event.webSearch === undefined
+      ? {}
+      : {
+          webSearch: {
+            ...event.webSearch,
+            queries: [...event.webSearch.queries],
+            sources: event.webSearch.sources.map((source) => ({ ...source })),
+          },
+        }),
     ...(event.recovery === undefined
       ? {}
       : {
@@ -492,6 +511,7 @@ function isSessionEventKind(value: unknown): value is SessionEventKind {
   return (
     value === "user" ||
     value === "assistant" ||
+    value === "web_search" ||
     value === "tool_call" ||
     value === "tool_result" ||
     value === "apply_requested" ||

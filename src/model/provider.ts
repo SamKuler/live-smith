@@ -1,5 +1,6 @@
 import type {
   ConversationMessage,
+  ModelHostedWebSearch,
   ModelInputPart,
   ModelConversationMessage,
   ModelTurn,
@@ -99,6 +100,9 @@ export interface TransportRequest {
   tools: ModelTool[];
   signal?: AbortSignal;
   onDelta?: ((delta: string) => Promise<void> | void) | undefined;
+  onHostedWebSearch?: ((
+    update: ModelHostedWebSearch,
+  ) => Promise<void> | void) | undefined;
 }
 
 export interface ModelTransport {

@@ -190,16 +190,37 @@ data, parameter labels, or tool output.
 
 Provider-hosted Web Search uses a separate discriminated member of the
 provider-neutral tool union from client-executed Live function tools. A Saved
-Profile must explicitly opt in. OpenAI Responses and Anthropic Messages map the
-hosted member to their native server tool; Chat Completions rejects it before
-HTTP. Search result blocks remain opaque replay state, while only normalized,
-bounded HTTP(S) citation titles and URLs may be copied into assistant Session
-events. Search data cannot authorize client tools, approvals, filesystem access,
-or Live mutations.
+Profile must explicitly opt in. The ordinary path exposes the tool with
+automatic selection and adds fixed policy instructions for explicit lookup
+requests and current or changing facts. The composer does not override provider
+tool choice. OpenAI Responses and Anthropic Messages map the hosted member to
+their native server tool; Chat Completions rejects it before HTTP. Search result
+blocks remain opaque replay state. Transports separately normalize bounded
+provider call IDs, actions, queries, returned result URLs, and answer citation
+annotations. OpenAI Responses explicitly requests
+`web_search_call.action.sources`; Anthropic result blocks supply the returned
+pages. Streaming activity crosses the bridge as a correlated
+`web_search_update`, then the agent loop durably persists each terminal action
+as a distinct read-only Session event before publishing it to the UI. Terminal
+actions are either completed or a fixed, redacted failure; in-flight activity
+never enters Session history. One send exposes the remaining portion of a
+20-action ceiling to each provider turn. Activity beyond that display and
+persistence bound is omitted without discarding an otherwise valid final
+answer. The UI reconciles the transient card by call ID, preserves its disclosure
+state through terminal replacement, and keeps source-page links separate from
+answer citations. Provider-hosted page text is not copied into the Session
+event schema. Search data cannot
+authorize client tools, approvals, filesystem access, or Live mutations.
 
 OpenAI Responses always uses `store: false`. Responses output items, Chat raw
 assistant messages, and Anthropic content blocks are stored only inside the
 current local agent loop and replayed unchanged when their protocol requires it.
+An OpenAI Responses `incomplete` terminal with reason `max_output_tokens` becomes
+a provider-neutral continuation turn: the loop replays every returned output
+item, preserves partial text and citations, and makes at most two additional
+model requests. A function-call item is executable only if its own protocol
+status is `completed`; partial items are replayed but never executed. Other
+incomplete reasons fail closed.
 Non-2xx provider response bodies are treated as untrusted and are not read,
 logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and status text.
@@ -574,8 +595,12 @@ canonical song-level identity before and after Live returns the created Track,
 independent of the temporary `ref`. Successful intermediate repair Applies add
 their completed identities to the still-active ledger. Only a final successful
 repair plan that explicitly sets `resolvesPriorFailure` persists the cleared
-state. Tool-free completion prose remains subordinate to an active unresolved
-failure. The same invalid tool error still
+state. A host rejection with zero completed mutations is deliberately transient:
+it still blocks a false success in the current loop, but it emits no persistent
+replay ledger and a later successful alternative clears it without a model-owned
+flag. Cross-request recovery therefore exists only when actual Live side effects
+need replay protection. Tool-free completion prose remains subordinate to an
+active unresolved failure. The same invalid tool error still
 stops at the configured repeated-error limit. If the result cannot be persisted,
 the failure remains fatal so the model can never retry without knowing what
 already changed. Device parameter values outside the freshly observed range are

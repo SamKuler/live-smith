@@ -1,11 +1,19 @@
 import type {
   ModelConversationMessage,
+  ModelHostedWebSearch,
   ModelInputPart,
   ModelToolCall,
   ModelTurn,
 } from "../contracts.js";
 import { normalizeModelCitations } from "../citations.js";
-import { HOSTED_WEB_SEARCH_MAX_USES } from "../tools.js";
+import {
+  HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
+  isHostedWebSearchRequestMaxUses,
+} from "../tools.js";
+import {
+  normalizeModelHostedWebSearch,
+  safeModelWebSearchId,
+} from "../web-search.js";
 import { cloneJsonValue } from "../json-clone.js";
 import type {
   DiscoveredModelInfo,
@@ -103,11 +111,37 @@ async function anthropicTurnWithContinuations(
   fetchImpl: typeof fetch,
 ): Promise<ModelTurn> {
   const continuationContent: AnthropicContentBlock[][] = [];
+  const initialSearchCalls = unresolvedAnthropicWebSearchCallsFromAgentMessages(
+    request.agentMessages,
+  );
+  const reportedWebSearches = new Map<string, string>();
+  const reportWebSearch = async (search: ModelHostedWebSearch) => {
+    if (
+      !reportedWebSearches.has(search.id) &&
+      reportedWebSearches.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND
+    ) {
+      return;
+    }
+    const signature = JSON.stringify(search);
+    if (reportedWebSearches.get(search.id) === signature) return;
+    reportedWebSearches.set(search.id, signature);
+    await request.onHostedWebSearch?.(search);
+  };
   for (let continuation = 0; continuation <= maxPauseTurnContinuations; continuation += 1) {
     throwIfAborted(request.signal);
     const body = bodyWithAnthropicContinuations(initialBody, continuationContent);
+    const priorSearchCalls = unresolvedAnthropicWebSearchCalls(
+      continuationContent.flat(),
+      initialSearchCalls,
+    );
     const response = request.onDelta && request.runtimeProfile.capabilities.streaming
-      ? await streamAnthropicMessage(request, body, fetchImpl)
+      ? await streamAnthropicMessage(
+          request,
+          body,
+          fetchImpl,
+          priorSearchCalls,
+          reportWebSearch,
+        )
       : await requestAnthropicJson(
           request.runtimeProfile.profile,
           fetchImpl,
@@ -121,8 +155,14 @@ async function anthropicTurnWithContinuations(
     if (!isRecord(response) || !Array.isArray(response.content)) {
       throw new Error("Anthropic Messages returned no content blocks.");
     }
+    for (const search of completedAnthropicWebSearches(
+      response.content as AnthropicContentBlock[],
+      priorSearchCalls,
+    )) {
+      await reportWebSearch(search);
+    }
     if (response.stop_reason !== "pause_turn") {
-      const turn = turnFromAnthropicMessage(response);
+      const turn = turnFromAnthropicMessage(response, priorSearchCalls);
       if (!continuationContent.length) return turn;
       const priorCitations = continuationContent.flatMap(
         (content) => citationsFromAnthropicContent(content),
@@ -138,10 +178,15 @@ async function anthropicTurnWithContinuations(
         ...priorCitations,
         ...(turn.citations ?? []),
       ]);
+      const hostedWebSearches = completedAnthropicWebSearches([
+        ...continuationContent.flat(),
+        ...(response.content as AnthropicContentBlock[]),
+      ], initialSearchCalls);
       return {
         ...turn,
         content: combinedText || null,
         ...(citations.length ? { citations } : {}),
+        ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
         providerState: {
           kind: "anthropic-messages",
           content: cloneJsonValue(response.content),
@@ -475,9 +520,12 @@ async function streamAnthropicMessage(
   request: TransportRequest,
   body: Record<string, unknown>,
   fetchImpl: typeof fetch,
+  priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock>,
+  reportWebSearch: (search: ModelHostedWebSearch) => Promise<void>,
 ): Promise<Record<string, unknown>> {
   const contentBlocks = new Map<number, AnthropicContentBlock>();
   const inputJson = new Map<number, string>();
+  const seenWebSearchResultIds = new Set<string>();
   let stopped = false;
   let stopReason: unknown;
   for await (const event of streamAnthropicEvents(
@@ -500,6 +548,25 @@ async function streamAnthropicMessage(
       const index = eventIndex(event);
       if (index !== undefined && isRecord(event.content_block)) {
         contentBlocks.set(index, cloneJsonValue(event.content_block));
+        if (
+          event.content_block.type === "web_search_tool_result" &&
+          typeof event.content_block.tool_use_id === "string" &&
+          isAnthropicWebSearchResultContent(event.content_block.content)
+        ) {
+          if (seenWebSearchResultIds.has(event.content_block.tool_use_id)) {
+            throw duplicateAnthropicWebSearchResultError();
+          }
+          seenWebSearchResultIds.add(event.content_block.tool_use_id);
+          const search = anthropicWebSearchFromResult(
+            event.content_block,
+            [...contentBlocks.values()],
+            index,
+            priorSearchCalls,
+          );
+          if (search) {
+            await reportWebSearch(search);
+          }
+        }
       }
       continue;
     }
@@ -569,7 +636,10 @@ async function streamAnthropicMessage(
   return { content, stop_reason: stopReason };
 }
 
-function turnFromAnthropicMessage(value: unknown): ModelTurn {
+function turnFromAnthropicMessage(
+  value: unknown,
+  priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
+): ModelTurn {
   if (!isRecord(value) || !Array.isArray(value.content)) {
     throw new Error("Anthropic Messages returned no content blocks.");
   }
@@ -594,6 +664,10 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
     }];
   });
   const citations = citationsFromAnthropicContent(contentBlocks);
+  const hostedWebSearches = completedAnthropicWebSearches(
+    contentBlocks,
+    priorSearchCalls,
+  );
   assertCompleteAnthropicStopReason(value.stop_reason, toolCalls.length);
   if (!text && !toolCalls.length) {
     throw new Error("Anthropic Messages returned an empty response.");
@@ -602,11 +676,128 @@ function turnFromAnthropicMessage(value: unknown): ModelTurn {
     content: text || null,
     toolCalls,
     ...(citations.length ? { citations } : {}),
+    ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
     providerState: {
       kind: "anthropic-messages",
       content: cloneJsonValue(contentBlocks),
     },
   };
+}
+
+function completedAnthropicWebSearches(
+  contentBlocks: readonly Record<string, unknown>[],
+  priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
+): ModelHostedWebSearch[] {
+  const searchCalls = new Map(priorSearchCalls);
+  for (const block of contentBlocks) {
+    if (
+      block.type === "server_tool_use" &&
+      block.name === "web_search" &&
+      typeof block.id === "string" &&
+      block.id
+    ) searchCalls.set(block.id, block);
+  }
+  const searches: ModelHostedWebSearch[] = [];
+  const seenResultIds = new Set<string>();
+  for (const block of contentBlocks) {
+    if (
+      block.type !== "web_search_tool_result" ||
+      typeof block.tool_use_id !== "string" ||
+      !isAnthropicWebSearchResultContent(block.content) ||
+      !searchCalls.has(block.tool_use_id)
+    ) continue;
+    if (searches.length >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND) break;
+    if (seenResultIds.has(block.tool_use_id)) {
+      throw duplicateAnthropicWebSearchResultError();
+    }
+    seenResultIds.add(block.tool_use_id);
+    const search = anthropicWebSearchFromResult(
+      block,
+      [],
+      searches.length,
+      searchCalls,
+    );
+    if (search) searches.push(search);
+  }
+  return searches;
+}
+
+function duplicateAnthropicWebSearchResultError(): Error {
+  return new Error(
+    "Anthropic Messages returned a duplicate Web Search result for one tool call.",
+  );
+}
+
+function anthropicWebSearchFromResult(
+  result: Record<string, unknown>,
+  contentBlocks: readonly Record<string, unknown>[],
+  index: number,
+  priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
+): ModelHostedWebSearch | undefined {
+  if (
+    result.type !== "web_search_tool_result" ||
+    typeof result.tool_use_id !== "string" ||
+    !isAnthropicWebSearchResultContent(result.content)
+  ) return undefined;
+  const call = contentBlocks.find((block) =>
+    block.type === "server_tool_use" &&
+    block.name === "web_search" &&
+    block.id === result.tool_use_id
+  ) ?? priorSearchCalls.get(result.tool_use_id);
+  if (!call) return undefined;
+  const input = call && isRecord(call.input) ? call.input : undefined;
+  const sources = Array.isArray(result.content)
+    ? result.content.filter((candidate) =>
+        isRecord(candidate) && candidate.type === "web_search_result"
+      )
+    : [];
+  return normalizeModelHostedWebSearch({
+    id: safeModelWebSearchId(result.tool_use_id, `anthropic-search-${index + 1}`),
+    status: Array.isArray(result.content) ? "completed" : "failed",
+    action: "search",
+    queries: typeof input?.query === "string" ? [input.query] : [],
+    sources,
+  });
+}
+
+function isAnthropicWebSearchResultContent(value: unknown): boolean {
+  return Array.isArray(value) || (
+    isRecord(value) && value.type === "web_search_tool_result_error"
+  );
+}
+
+function unresolvedAnthropicWebSearchCallsFromAgentMessages(
+  messages: readonly ModelConversationMessage[],
+): Map<string, AnthropicContentBlock> {
+  const contentBlocks = messages.flatMap((message) =>
+    message.role === "assistant"
+      ? anthropicStateMessages(message)?.flat() ?? []
+      : []
+  );
+  return unresolvedAnthropicWebSearchCalls(contentBlocks);
+}
+
+function unresolvedAnthropicWebSearchCalls(
+  contentBlocks: readonly AnthropicContentBlock[],
+  initial: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
+): Map<string, AnthropicContentBlock> {
+  const unresolved = new Map(initial);
+  for (const block of contentBlocks) {
+    if (
+      block.type === "server_tool_use" &&
+      block.name === "web_search" &&
+      typeof block.id === "string" &&
+      block.id
+    ) {
+      unresolved.set(block.id, block);
+    } else if (
+      block.type === "web_search_tool_result" &&
+      typeof block.tool_use_id === "string"
+    ) {
+      unresolved.delete(block.tool_use_id);
+    }
+  }
+  return unresolved;
 }
 
 function textFromAnthropicContent(
@@ -711,7 +902,7 @@ function mapAnthropicTool(
     if (!request.runtimeProfile.profile.advanced.hostedTools?.webSearch) {
       throw new Error("Anthropic Messages Web Search is not enabled in this Profile.");
     }
-    if (tool.maxUses !== HOSTED_WEB_SEARCH_MAX_USES) {
+    if (!isHostedWebSearchRequestMaxUses(tool.maxUses)) {
       throw new Error("Anthropic Messages Web Search has an invalid local usage limit.");
     }
     return {

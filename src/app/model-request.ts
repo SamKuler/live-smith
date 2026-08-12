@@ -1,6 +1,7 @@
 import type {
   ConversationMessage,
   ModelConversationMessage,
+  ModelHostedWebSearch,
   ModelInputPart,
 } from "../model/contracts.js";
 import {
@@ -27,6 +28,19 @@ const emptySkillContext: ResolvedSkillContext = {
   instructionBlock: "",
 };
 
+const automaticWebSearchInstructions = [
+  "Provider-hosted Web Search is available.",
+  "Use it before answering when the user explicitly asks you to search, browse, or look something up, or when a factual answer depends on current or changing information.",
+  "If the request can be answered reliably without current sources, answer without searching.",
+  "When you use Web Search, ground factual claims in the returned pages and preserve the provider's inline citations in the final answer when they are available.",
+  "Never claim that you searched the web unless the provider actually executed the hosted search tool. Never invent citations or source URLs.",
+].join(" ");
+
+const unavailableWebSearchInstructions = [
+  "Provider-hosted Web Search is not available in this request.",
+  "Do not promise to search or browse, and never claim that a search occurred.",
+].join(" ");
+
 export async function requestModelTurn(input: {
   prompt: string;
   liveContext: string;
@@ -38,6 +52,9 @@ export async function requestModelTurn(input: {
   tools: ModelTool[];
   signal: AbortSignal;
   onDelta(delta: string): Promise<void> | void;
+  onHostedWebSearch?(
+    update: ModelHostedWebSearch,
+  ): Promise<void> | void;
 }) {
   return transportForProfile(input.runtimeProfile.profile).createToolTurn(
     buildModelRequest(input),
@@ -55,7 +72,16 @@ export function buildModelRequest(input: {
   tools: ModelTool[];
   signal?: AbortSignal;
   onDelta?: ((delta: string) => Promise<void> | void) | undefined;
+  onHostedWebSearch?: ((
+    update: ModelHostedWebSearch,
+  ) => Promise<void> | void) | undefined;
 }): TransportRequest {
+  const hasHostedWebSearch = input.tools.some(
+    (tool) => tool.type === "hosted_web_search",
+  );
+  const baseSystemInstructions = agentSystemInstructionsForSkills(
+    input.skillContext ?? emptySkillContext,
+  );
   const request: TransportRequest = {
     currentUserContent: [
       {
@@ -73,9 +99,11 @@ export function buildModelRequest(input: {
       },
       ...(input.attachmentParts ?? []),
     ],
-    systemInstructions: agentSystemInstructionsForSkills(
-      input.skillContext ?? emptySkillContext,
-    ),
+    systemInstructions: `${
+      hasHostedWebSearch
+        ? automaticWebSearchInstructions
+        : unavailableWebSearchInstructions
+    }\n\n${baseSystemInstructions}`,
     history: input.history,
     agentMessages: input.agentMessages,
     tools: input.tools,
@@ -83,6 +111,9 @@ export function buildModelRequest(input: {
   };
   if (input.signal) request.signal = input.signal;
   if (input.onDelta) request.onDelta = input.onDelta;
+  if (input.onHostedWebSearch) {
+    request.onHostedWebSearch = input.onHostedWebSearch;
+  }
   return request;
 }
 

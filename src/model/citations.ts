@@ -46,9 +46,10 @@ function normalizeModelCitation(value: unknown): ModelCitation | undefined {
     Buffer.byteLength(parsed.href, "utf8") > MAX_MODEL_CITATION_URL_BYTES
   ) return undefined;
 
-  const title = typeof value.title === "string"
+  const suppliedTitle = typeof value.title === "string"
     ? value.title.trim()
-    : parsed.hostname;
+    : "";
+  const title = suppliedTitle || parsed.hostname;
   if (
     !title ||
     [...title].length > MAX_MODEL_CITATION_TITLE_CODE_POINTS ||

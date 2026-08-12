@@ -16,13 +16,24 @@ import {
 import type {
   ModelCitation,
   ModelConversationMessage,
+  ModelHostedWebSearch,
   ModelToolCall,
   ModelTurn,
 } from "../model/contracts.js";
+import {
+  isModelHostedWebSearch,
+} from "../model/web-search.js";
+import { normalizeModelCitations } from "../model/citations.js";
+import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 import { throwIfAborted } from "../runtime/host.js";
 
 export type AgentLoopTraceEvent =
   | { kind: "assistant"; content: string; citations?: ModelCitation[] }
+  | {
+      kind: "web_search";
+      content: string;
+      webSearch: ModelHostedWebSearch;
+    }
   | { kind: "tool_call"; name: string; content: string }
   | { kind: "tool_result"; name: string; content: string }
   | { kind: "apply_requested"; content: string }
@@ -83,6 +94,8 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   maxIterations?: number;
   /** Protocol guard for one assistant turn, not an accumulated request budget. */
   maxToolCallsPerTurn?: number;
+  /** Bounded replay attempts for provider responses stopped by their output limit. */
+  maxModelContinuations?: number;
   /** Stops repeated host repair attempts that make no actual Live mutation. */
   maxHostFailuresWithoutMutation?: number;
   /** Persisted replay guard from the latest unfinished operation in this Session. */
@@ -170,6 +183,7 @@ export class AgentPartialCompletionError extends Error {
 interface AgentRecoveryState {
   readonly completedActionKeys: Set<string>;
   readonly completedActionDigests: Set<string>;
+  requiresExplicitResolution: boolean;
   requiredObservation: AgentObservationRequest | undefined;
   unresolvedFailure: string | undefined;
 }
@@ -211,6 +225,7 @@ export async function runAgentLoop(
   const messages: ModelConversationMessage[] = [];
   const maxIterations = options.maxIterations ?? 12;
   const maxToolCallsPerTurn = options.maxToolCallsPerTurn ?? 32;
+  const maxModelContinuations = options.maxModelContinuations ?? 2;
   const maxHostFailuresWithoutMutation =
     options.maxHostFailuresWithoutMutation ?? 6;
   let lastMessage = "";
@@ -218,12 +233,16 @@ export async function runAgentLoop(
   let lastArgumentFailure = "";
   let hostFailuresWithoutMutation = 0;
   let planningProgressDeadline = maxIterations;
+  let consecutiveModelContinuations = 0;
+  let pendingContinuationContent = "";
+  let pendingContinuationCitations: ModelCitation[] = [];
   const observedProgress = new Set<string>();
   const recoveryState: AgentRecoveryState = {
     completedActionKeys: new Set(),
     completedActionDigests: new Set(
       options.initialRecoveryState?.completedActionDigests ?? [],
     ),
+    requiresExplicitResolution: options.initialRecoveryState !== undefined,
     requiredObservation: undefined,
     unresolvedFailure: options.initialRecoveryState?.unresolvedFailure,
   };
@@ -255,14 +274,73 @@ export async function runAgentLoop(
         : {}),
     });
 
+    if (turn.hostedWebSearches !== undefined) {
+      const visibleSearches = Array.isArray(turn.hostedWebSearches)
+        ? turn.hostedWebSearches.slice(0, HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND)
+        : [];
+      if (
+        !Array.isArray(turn.hostedWebSearches) ||
+        new Set(visibleSearches.map((search) => search.id)).size !==
+          visibleSearches.length ||
+        visibleSearches.some((search) =>
+          search.status === "searching" || !isModelHostedWebSearch(search)
+        )
+      ) {
+        throw new TypeError("Hosted Web Search activity is invalid.");
+      }
+      for (const search of visibleSearches) {
+        await emitTraceEvent(options, {
+          kind: "web_search",
+          content: webSearchSummary(search),
+          webSearch: search,
+        });
+      }
+    }
+
+    if (turn.continuation) {
+      if (
+        turn.continuation.reason !== "output_limit" ||
+        turn.toolCalls.length !== 0 ||
+        turn.providerState === undefined
+      ) {
+        throw new TypeError("Model continuation state is invalid.");
+      }
+      consecutiveModelContinuations += 1;
+      pendingContinuationContent += turn.content ?? "";
+      pendingContinuationCitations = mergeCitations(
+        pendingContinuationCitations,
+        turn.citations ?? [],
+      );
+      if (consecutiveModelContinuations > maxModelContinuations) {
+        return stopAtSafetyLimit(
+          options,
+          `Stopped after ${maxModelContinuations} automatic continuation attempts because the model repeatedly reached its output-token limit. No incomplete tool call was executed. Increase this Profile's Max Output Tokens or continue in this Session.`,
+        );
+      }
+      planningProgressDeadline += 1;
+      await options.onProgress?.(
+        `Continuing model response after output limit (${consecutiveModelContinuations}/${maxModelContinuations})`,
+      );
+      continue;
+    }
+
+    const completedTurnContent = pendingContinuationContent + (turn.content ?? "");
+    const completedTurnCitations = mergeCitations(
+      pendingContinuationCitations,
+      turn.citations ?? [],
+    );
+    consecutiveModelContinuations = 0;
+    pendingContinuationContent = "";
+    pendingContinuationCitations = [];
+
     if (!turn.toolCalls.length) {
-      const finalText = turn.content?.trim();
+      const finalText = completedTurnContent.trim();
       if (recoveryState.unresolvedFailure) {
         if (finalText) {
           await emitTraceEvent(options, {
             kind: "assistant",
             content: finalText,
-            ...(turn.citations?.length ? { citations: turn.citations } : {}),
+            ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
           });
         }
         const message = unfinishedWorkMessage(
@@ -277,7 +355,7 @@ export async function runAgentLoop(
         await emitTraceEvent(options, {
           kind: "assistant",
           content: lastMessage,
-          ...(turn.citations?.length ? { citations: turn.citations } : {}),
+          ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
         });
       }
       return {
@@ -285,12 +363,12 @@ export async function runAgentLoop(
       };
     }
 
-    if (turn.content?.trim()) {
-      lastMessage = turn.content.trim();
+    if (completedTurnContent.trim()) {
+      lastMessage = completedTurnContent.trim();
       await emitTraceEvent(options, {
         kind: "assistant",
         content: lastMessage,
-        ...(turn.citations?.length ? { citations: turn.citations } : {}),
+        ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
       });
     }
 
@@ -397,6 +475,36 @@ export async function runAgentLoop(
       lastArgumentFailure = "";
     }
   }
+}
+
+function mergeCitations(
+  first: readonly ModelCitation[],
+  second: readonly ModelCitation[],
+): ModelCitation[] {
+  return normalizeModelCitations([...first, ...second]);
+}
+
+export function webSearchSummary(search: ModelHostedWebSearch): string {
+  if (search.status === "failed") {
+    return search.queries[0]
+      ? `Web Search failed for “${search.queries[0]}”`
+      : "Web Search failed";
+  }
+  const pages = search.sources.length;
+  const firstQuery = search.queries[0];
+  const action = search.action === "open_page"
+    ? "Opened a web page"
+    : search.action === "find_in_page"
+      ? "Searched within a web page"
+      : firstQuery
+        ? `Searched for “${firstQuery}”${
+          search.queries.length > 1 ? ` + ${search.queries.length - 1} more` : ""
+        }`
+        : "Searched the web";
+  return [
+    action,
+    ...(pages > 0 ? [`${pages} ${pages === 1 ? "page" : "pages"}`] : []),
+  ].join(" · ");
 }
 
 function unfinishedWorkMessage(
@@ -644,11 +752,15 @@ async function executeToolCall(
           recovery.failureMessage,
         ].join("\n");
         recoveryState.unresolvedFailure = content;
+        recoveryState.requiresExplicitResolution ||= outcome.mutationCount > 0;
+        const recoveryUpdate = recoveryState.requiresExplicitResolution
+          ? recoveryLedgerUpdate(recoveryState)
+          : undefined;
         try {
           await emitTraceEvent(options, {
             kind: "apply_result",
             content,
-            recovery: recoveryLedgerUpdate(recoveryState),
+            ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
           });
         } catch (error) {
           throw new AgentApplyResultReportingError(outcome.results, error);
@@ -665,7 +777,10 @@ async function executeToolCall(
       }
       const content = ["Applied:", ...outcome.results.map((item) => `- ${item}`)].join("\n");
       const recoveryActive = recoveryState.unresolvedFailure !== undefined;
-      const clearsRecovery = recoveryActive && plan.resolvesPriorFailure === true;
+      const clearsRecovery = recoveryActive && (
+        plan.resolvesPriorFailure === true ||
+        !recoveryState.requiresExplicitResolution
+      );
       if (recoveryActive && !clearsRecovery) {
         for (const [index, action] of plan.actions.entries()) {
           rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
@@ -675,7 +790,9 @@ async function executeToolCall(
         }
       }
       const recoveryUpdate = clearsRecovery
-        ? { active: false, completedActionDigests: [] }
+        ? recoveryState.requiresExplicitResolution
+          ? { active: false, completedActionDigests: [] }
+          : undefined
         : recoveryActive
           ? recoveryLedgerUpdate(recoveryState)
           : undefined;
@@ -693,6 +810,7 @@ async function executeToolCall(
         recoveryState.unresolvedFailure = undefined;
         recoveryState.completedActionKeys.clear();
         recoveryState.completedActionDigests.clear();
+        recoveryState.requiresExplicitResolution = false;
       }
       return {
         toolContent: content,
@@ -708,6 +826,8 @@ async function executeToolCall(
     if (error instanceof AgentPartialCompletionError) {
       const failureContent = error.message;
       recoveryState.unresolvedFailure = failureContent;
+      recoveryState.requiresExplicitResolution ||=
+        error.completedMutationCount > 0;
       if (error.failedActionIndex !== undefined && error.failedActionIndex > 0) {
         const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
         const hasGranularCompletionKeys = error.completedActionKeys.some(
@@ -748,10 +868,13 @@ async function executeToolCall(
         }
       }
       try {
+        const recoveryUpdate = recoveryState.requiresExplicitResolution
+          ? recoveryLedgerUpdate(recoveryState)
+          : undefined;
         await emitTraceEvent(options, {
           kind: "apply_result",
           content: failureContent,
-          recovery: recoveryLedgerUpdate(recoveryState),
+          ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
         });
       } catch (reportingError) {
         throw new AgentApplyResultReportingError(

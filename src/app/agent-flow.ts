@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   AgentPartialCompletionError,
   runAgentLoop,
+  webSearchSummary,
   type AgentActionExecutionOutcome,
   type AgentActionPreflightGuard,
   type AgentConfirmationDecision,
@@ -16,7 +17,12 @@ import {
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
-import { modelToolsForProfile } from "../model/tools.js";
+import {
+  HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
+  HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
+  modelToolsForProfile,
+} from "../model/tools.js";
+import type { ModelHostedWebSearch } from "../model/contracts.js";
 import {
   AgentPlanExecutionError,
   executeAgentPlanWithProgress,
@@ -84,6 +90,7 @@ import {
   listSessionEventLogIds,
   loadSessionEvents,
   type SessionEvent,
+  type SessionEventInput,
 } from "../storage/events.js";
 import {
   isStorageCommitOutcomeUnknownError,
@@ -1340,6 +1347,7 @@ export async function runAgentFlow(
             signal,
             onDelta: (delta) => stream.assistantDelta(delta),
             onProgress: (message) => stream.progress(message),
+            onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
             onSessionEvent: (event) => stream.sessionEvent(event),
             withActionExecutionLock: (operation) =>
               liveMutationQueue.run(signal, operation),
@@ -1430,6 +1438,8 @@ export async function handleAgentRequest(
   callbacks: AgentRequestCallbacks,
   requestTurn: typeof requestModelTurn = requestModelTurn,
   appendUserEvent: typeof appendSessionEvent = appendSessionEvent,
+  appendTraceEvent: typeof appendSessionEvent = appendSessionEvent,
+  loadEventsForSearchReconciliation: typeof loadSessionEvents = loadSessionEvents,
 ): Promise<string> {
   const { profile } = runtimeProfile;
   const session = sessionId === undefined
@@ -1504,9 +1514,64 @@ export async function handleAgentRequest(
       recoveryContext: recoveryContextFromEvents(priorEvents),
       skillContext,
       userEvent,
+      priorEventIds: priorEvents.map((event) => event.id),
     };
   };
   const prepared = await prepareRequest();
+  const knownEventIds = new Set([
+    ...prepared.priorEventIds,
+    prepared.userEvent.id,
+  ]);
+  const observedWebSearchIds = new Set<string>();
+  const persistedWebSearches = new Map<string, Promise<SessionEvent>>();
+  const observeWebSearchId = (webSearch: ModelHostedWebSearch): boolean => {
+    if (observedWebSearchIds.has(webSearch.id)) return true;
+    if (observedWebSearchIds.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND) {
+      return false;
+    }
+    observedWebSearchIds.add(webSearch.id);
+    return true;
+  };
+  const ensureTerminalWebSearchEvent = async (
+    webSearch: ModelHostedWebSearch,
+    content = webSearchSummary(webSearch),
+  ): Promise<{ event: SessionEvent; first: boolean } | undefined> => {
+    if (!observeWebSearchId(webSearch)) return undefined;
+    const existing = persistedWebSearches.get(webSearch.id);
+    if (existing) {
+      const event = await existing;
+      if (
+        event.content !== content ||
+        event.webSearch === undefined ||
+        !sameHostedWebSearch(event.webSearch, webSearch)
+      ) {
+        throw new TypeError(
+          "Hosted Web Search ID has conflicting terminal activity.",
+        );
+      }
+      return { event, first: false };
+    }
+
+    const pending = appendTerminalWebSearchEvent(
+      context.environment.storageDirectory,
+      session.id,
+      { kind: "web_search", content, webSearch },
+      knownEventIds,
+      appendTraceEvent,
+      loadEventsForSearchReconciliation,
+    );
+    persistedWebSearches.set(webSearch.id, pending);
+    try {
+      const event = await pending;
+      knownEventIds.add(event.id);
+      return { event, first: true };
+    } catch (error) {
+      if (persistedWebSearches.get(webSearch.id) === pending) {
+        persistedWebSearches.delete(webSearch.id);
+      }
+      throw error;
+    }
+  };
   await callbacks.onSessionEvent(prepared.userEvent);
   if (!session.title.trim()) {
     await updateSession(context.environment.storageDirectory, session.id, {
@@ -1522,6 +1587,7 @@ export async function handleAgentRequest(
       maxConsecutiveFailures: maxConsecutiveInvalidToolCalls,
       maxIterations: 12,
       maxToolCallsPerTurn: 32,
+      maxModelContinuations: 2,
       maxHostFailuresWithoutMutation: 6,
       ...(prepared.initialRecoveryState
         ? { initialRecoveryState: prepared.initialRecoveryState }
@@ -1529,6 +1595,10 @@ export async function handleAgentRequest(
       signal: callbacks.signal,
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
+        const remainingWebSearchEvents = Math.max(
+          0,
+          HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
+        );
         const turn = await requestTurn({
           prompt,
           liveContext: requestLiveContext,
@@ -1537,9 +1607,33 @@ export async function handleAgentRequest(
           attachmentParts: prepared.attachmentParts,
           skillContext: prepared.skillContext,
           agentMessages: input.messages,
-          tools: modelToolsForProfile(profile, liveSmithTools()),
+          tools: modelToolsForProfile(
+            profile,
+            liveSmithTools(),
+            Math.min(
+              HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
+              remainingWebSearchEvents,
+            ),
+          ),
           signal: callbacks.signal,
           onDelta: callbacks.onDelta,
+          onHostedWebSearch: async (update) => {
+            if (update.status !== "searching") {
+              const persisted = await ensureTerminalWebSearchEvent(update);
+              if (persisted?.first) {
+                await callbacks.onSessionEvent(persisted.event);
+              }
+            } else {
+              if (!observeWebSearchId(update)) return;
+              if (persistedWebSearches.has(update.id)) {
+                throw new TypeError(
+                  "Hosted Web Search reported in-flight activity after its terminal event.",
+                );
+              }
+              await callbacks.onWebSearchUpdate?.(update);
+            }
+            await callbacks.onProgress(webSearchProgressMessage(update));
+          },
         });
         throwIfAborted(callbacks.signal);
         await callbacks.onProgress("Reading model response");
@@ -1604,11 +1698,23 @@ export async function handleAgentRequest(
         ? { withActionExecutionLock: callbacks.withActionExecutionLock }
         : {}),
       onEvent: async (event) => {
+        if (event.kind === "web_search") {
+          const persisted = await ensureTerminalWebSearchEvent(
+            event.webSearch,
+            event.content,
+          );
+          if (persisted?.first) {
+            await callbacks.onSessionEvent(persisted.event);
+          }
+          return;
+        }
         const sessionEvent = await appendAgentLoopTraceEvent(
           context.environment.storageDirectory,
           session.id,
           event,
+          appendTraceEvent,
         );
+        knownEventIds.add(sessionEvent.id);
         await callbacks.onSessionEvent(sessionEvent);
       },
       onProgress: callbacks.onProgress,
@@ -1783,6 +1889,9 @@ interface AgentRequestCallbacks {
   signal: AbortSignal;
   onDelta(delta: string): Promise<void> | void;
   onProgress(message: string): Promise<void> | void;
+  onWebSearchUpdate?(
+    update: ModelHostedWebSearch,
+  ): Promise<void> | void;
   onSessionEvent(event: SessionEvent): Promise<void> | void;
   confirmActions(
     plan: AgentPlan,
@@ -1846,18 +1955,20 @@ async function appendAgentLoopTraceEvent(
   storageDirectory: string | undefined,
   sessionId: string,
   event: AgentLoopTraceEvent,
+  appendEvent: typeof appendSessionEvent = appendSessionEvent,
 ): Promise<SessionEvent> {
   if ("name" in event) {
-    return appendSessionEvent(storageDirectory, sessionId, {
+    return appendEvent(storageDirectory, sessionId, {
       kind: event.kind,
       name: event.name,
       content: event.content,
     });
   }
 
-  return appendSessionEvent(storageDirectory, sessionId, {
+  return appendEvent(storageDirectory, sessionId, {
     kind: event.kind,
     content: event.content,
+    ...(event.kind === "web_search" ? { webSearch: event.webSearch } : {}),
     ...(event.kind === "assistant" && event.citations?.length
       ? { citations: event.citations }
       : {}),
@@ -1865,6 +1976,68 @@ async function appendAgentLoopTraceEvent(
       ? { recovery: event.recovery }
       : {}),
   });
+}
+
+async function appendTerminalWebSearchEvent(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  input: SessionEventInput & {
+    kind: "web_search";
+    webSearch: ModelHostedWebSearch;
+  },
+  knownEventIds: ReadonlySet<string>,
+  appendEvent: typeof appendSessionEvent,
+  loadEvents: typeof loadSessionEvents,
+): Promise<SessionEvent> {
+  let reconciledUnknownOutcome = false;
+  for (;;) {
+    try {
+      return await appendEvent(storageDirectory, sessionId, input);
+    } catch (error) {
+      if (!isStorageCommitOutcomeUnknownError(error)) throw error;
+
+      const authoritativeEvents = await loadEvents(storageDirectory, sessionId);
+      const committed = authoritativeEvents.find((event) =>
+        !knownEventIds.has(event.id) &&
+        event.kind === "web_search" &&
+        event.content === input.content &&
+        event.webSearch !== undefined &&
+        sameHostedWebSearch(event.webSearch, input.webSearch)
+      );
+      if (committed) return committed;
+      if (reconciledUnknownOutcome) throw error;
+      reconciledUnknownOutcome = true;
+    }
+  }
+}
+
+function sameHostedWebSearch(
+  left: ModelHostedWebSearch,
+  right: ModelHostedWebSearch,
+): boolean {
+  return left.id === right.id &&
+    left.status === right.status &&
+    left.action === right.action &&
+    left.queries.length === right.queries.length &&
+    left.queries.every((query, index) => query === right.queries[index]) &&
+    left.sources.length === right.sources.length &&
+    left.sources.every((source, index) =>
+      source.url === right.sources[index]?.url &&
+      source.title === right.sources[index]?.title
+    );
+}
+
+function webSearchProgressMessage(update: ModelHostedWebSearch): string {
+  if (update.status === "searching") {
+    return update.queries[0]
+      ? `Searching for “${update.queries[0]}”…`
+      : "Searching the web…";
+  }
+  if (update.status === "failed") return "Web Search failed.";
+  const pages = update.sources.length;
+  return pages > 0
+    ? `Reviewing ${pages} web ${pages === 1 ? "page" : "pages"}…`
+    : "Reading Web Search results…";
 }
 
 export function showAgentError(context: Api, error: unknown): void {

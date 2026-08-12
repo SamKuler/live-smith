@@ -13,7 +13,10 @@
     "build": "tsc --noEmit && tsx build.ts --production",
     "build:dev": "tsc --noEmit && tsx build.ts",
     "start": "npm run build:dev && extensions-cli run --storage-directory .live-smith-data",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "npm run test:structure && npm run test:core && npm run test:ui",
+    "test:structure": "tsx scripts/check-test-structure.ts",
+    "test:core": "tsx --test \"src/agent/**/*.test.ts\" \"src/app/**/*.test.ts\" \"src/attachments/**/*.test.ts\" \"src/live/**/*.test.ts\" \"src/model/**/*.test.ts\" \"src/release/**/*.test.ts\" \"src/runtime/**/*.test.ts\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.ts\"",
+    "test:ui": "tsx --test \"src/ui/**/*.test.ts\"",
     "package": "npm run build && extensions-cli package && npm run verify:package",
     "verify:package": "tsx scripts/verify-package.ts"
   },

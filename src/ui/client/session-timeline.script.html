@@ -2,6 +2,7 @@
       window.LiveSmithFactories.createSessionTimeline = function createSessionTimeline({
         getState,
         getAssistantDraft,
+        getWebSearchUpdates,
         getPendingConfirmation,
         isCommandInProgress,
         resolveConfirm,
@@ -862,26 +863,87 @@
         if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
       }
 
+      function focusedTimelineLinkIdentity(element, timeline) {
+        if (!element?.matches?.("a") || !timeline.contains(element)) return null;
+        const card = element.closest(".timeline-item");
+        const listClass = element.closest(".web-search-source-list")
+          ? "web-search-source-list"
+          : element.closest(".citation-source-list")
+            ? "citation-source-list"
+            : null;
+        if (!card || !listClass || !(element instanceof HTMLAnchorElement)) return null;
+        const eventId = card.dataset.eventId || "";
+        const webSearchId = card.dataset.webSearchId || "";
+        if (!eventId && !webSearchId) return null;
+        return {
+          eventId,
+          href: element.href,
+          listClass,
+          live: card.classList.contains("live"),
+          webSearchId,
+        };
+      }
+
+      function restoreTimelineLinkFocus(timeline, identity) {
+        if (!identity) return false;
+        const cards = [...timeline.querySelectorAll(".timeline-item")];
+        let card = identity.eventId
+          ? cards.find((candidate) => candidate.dataset.eventId === identity.eventId)
+          : null;
+        if (!identity.eventId && identity.webSearchId) {
+          const matchingSearchCards = cards.filter(
+            (candidate) => candidate.dataset.webSearchId === identity.webSearchId,
+          );
+          card = identity.live
+            ? matchingSearchCards.find((candidate) => candidate.classList.contains("live"))
+            : null;
+          card ||= matchingSearchCards[matchingSearchCards.length - 1];
+        }
+        const link = [...card?.querySelectorAll(`.${identity.listClass} a`) || []]
+          .find((candidate) => candidate.href === identity.href);
+        if (!link) return false;
+        link.focus({ preventScroll: true });
+        return true;
+      }
+
       function renderTimeline() {
         const state = getState();
         const assistantDraft = getAssistantDraft();
+        const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
         const timeline = document.getElementById("timeline");
         const focusBeforeRender = document.activeElement;
+        const focusedLinkIdentity = focusedTimelineLinkIdentity(
+          focusBeforeRender,
+          timeline,
+        );
         const detailsState = new Map(
           [...timeline.querySelectorAll("details.timeline-item[data-event-id]")]
             .map((details) => [details.dataset.eventId, details.open]),
         );
-        const focusedSummaryEventId = focusBeforeRender?.matches("summary")
-          ? focusBeforeRender.closest("details[data-event-id]")?.dataset.eventId
+        const webSearchDetailsState = new Map(
+          [...timeline.querySelectorAll(
+            "details.timeline-item.web_search[data-web-search-id]",
+          )].map((details) => [details.dataset.webSearchId, details.open]),
+        );
+        const focusedSummaryDetails = focusBeforeRender?.matches("summary")
+          ? focusBeforeRender.closest("details.timeline-item")
           : null;
+        const focusedSummaryEventId = focusedSummaryDetails?.dataset.eventId || null;
+        const focusedSummaryWebSearchId =
+          focusedSummaryDetails?.dataset.webSearchId || null;
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
         timeline.replaceChildren();
 
         const events = state.events || [];
 
-        if (!events.length && !assistantDraft && !pendingConfirmation) {
+        if (
+          !events.length &&
+          !webSearchUpdates.length &&
+          !assistantDraft &&
+          !pendingConfirmation
+        ) {
           const empty = document.createElement("div");
           empty.className = "empty";
           empty.textContent = "No messages in this session yet.";
@@ -892,6 +954,27 @@
           const item = buildTimelineItem(event);
           if (item instanceof HTMLDetailsElement && detailsState.has(event.id)) {
             item.open = detailsState.get(event.id);
+          } else if (
+            item instanceof HTMLDetailsElement &&
+            item.dataset.webSearchId &&
+            webSearchDetailsState.has(item.dataset.webSearchId)
+          ) {
+            item.open = webSearchDetailsState.get(item.dataset.webSearchId);
+          }
+          timeline.append(item);
+        }
+
+        for (const search of webSearchUpdates) {
+          const item = buildWebSearchItem({
+            eventId: "",
+            search,
+            live: true,
+          });
+          if (
+            item.dataset.webSearchId &&
+            webSearchDetailsState.has(item.dataset.webSearchId)
+          ) {
+            item.open = webSearchDetailsState.get(item.dataset.webSearchId);
           }
           timeline.append(item);
         }
@@ -922,9 +1005,18 @@
             returnFocus.focus({ preventScroll: true });
           } else if (hadConfirmation) {
             document.getElementById("sendButton")?.focus({ preventScroll: true });
+          } else if (restoreTimelineLinkFocus(timeline, focusedLinkIdentity)) {
+            // Keep keyboard users on the same correlated result after an SSE refresh.
           } else if (focusedSummaryEventId) {
             const focusedDetails = [...timeline.querySelectorAll("details[data-event-id]")]
               .find((details) => details.dataset.eventId === focusedSummaryEventId);
+            focusedDetails?.querySelector("summary")?.focus({ preventScroll: true });
+          } else if (focusedSummaryWebSearchId) {
+            const focusedDetails = [...timeline.querySelectorAll(
+              "details.timeline-item.web_search[data-web-search-id]",
+            )].find((details) =>
+              details.dataset.webSearchId === focusedSummaryWebSearchId
+            );
             focusedDetails?.querySelector("summary")?.focus({ preventScroll: true });
           }
         }
@@ -1006,6 +1098,13 @@
 
       function buildTimelineItem(event) {
         const eventContent = event.content || "";
+        if (event.kind === "web_search") {
+          return buildWebSearchItem({
+            eventId: event.id,
+            search: event.webSearch,
+            live: false,
+          });
+        }
         const contentLines = eventContent.split("\n");
         const collapsed = isCollapsedKind(event.kind);
         const firstLine = contentLines[0] || "";
@@ -1060,8 +1159,194 @@
         return item;
       }
 
-      function appendTimelineCitations(target, citations) {
-        if (!Array.isArray(citations) || citations.length === 0) return;
+      function buildWebSearchItem({ eventId, search, live }) {
+        const item = document.createElement("details");
+        item.className = `timeline-item web_search${live ? " live" : ""}`;
+        if (eventId) item.dataset.eventId = eventId;
+        if (typeof search?.id === "string" && search.id) {
+          item.dataset.webSearchId = search.id;
+        }
+        item.open = live;
+
+        const queries = safeWebSearchQueries(search?.queries);
+        const sources = search?.status === "failed"
+          ? []
+          : safeTimelineSources(search?.sources);
+        const summaryText = webSearchUpdateSummary(
+          search,
+          live,
+          queries,
+          sources,
+          true,
+        );
+        const accessibleSummaryText = webSearchUpdateSummary(
+          search,
+          live,
+          queries,
+          sources,
+          false,
+        );
+        item.setAttribute("aria-label", `Web Search: ${accessibleSummaryText}`);
+        const summary = document.createElement("summary");
+        summary.className = "timeline-label";
+        summary.textContent = `Web Search — ${summaryText}`;
+        summary.setAttribute("aria-label", `Web Search: ${accessibleSummaryText}`);
+        item.append(summary);
+
+        const contentElement = document.createElement("div");
+        contentElement.className = "timeline-content";
+        appendWebSearchQueries(contentElement, queries);
+        appendWebSearchSources(
+          contentElement,
+          sources,
+          search?.status === "failed"
+            ? "failed"
+            : live && search?.status === "searching"
+              ? "waiting"
+              : "empty",
+        );
+        item.append(contentElement);
+        return item;
+      }
+
+      function webSearchUpdateSummary(search, live, queries, sources, compact) {
+        const firstQuery = queries[0] || "";
+        const visibleFirstQuery = compact
+          ? webSearchQueryExcerpt(firstQuery)
+          : firstQuery;
+        const action = search?.action || "search";
+        if (search?.status === "failed") {
+          return "Failed before result pages were returned.";
+        }
+        if (search?.status === "searching") {
+          if (action === "open_page") return "Opening a web page…";
+          if (action === "find_in_page") return "Searching within a web page…";
+          return visibleFirstQuery
+            ? `Searching “${visibleFirstQuery}”${queries.length > 1 ? ` + ${queries.length - 1} more` : ""}…`
+            : "Searching…";
+        }
+        const actionSummary = action === "open_page"
+          ? "Opened a web page"
+          : action === "find_in_page"
+            ? "Searched within a web page"
+            : visibleFirstQuery
+              ? `“${visibleFirstQuery}”${queries.length > 1 ? ` + ${queries.length - 1} more` : ""}`
+              : live ? "Search completed" : "Completed";
+        return [
+          actionSummary,
+          ...(sources.length
+            ? [`${sources.length} ${sources.length === 1 ? "page" : "pages"}`]
+            : []),
+        ].join(" · ");
+      }
+
+      function webSearchQueryExcerpt(query) {
+        const codePoints = [...query];
+        return codePoints.length <= 72
+          ? query
+          : `${codePoints.slice(0, 71).join("")}…`;
+      }
+
+      function safeWebSearchQueries(candidates) {
+        if (!Array.isArray(candidates)) return [];
+        const queries = [];
+        const seen = new Set();
+        for (const candidate of candidates.slice(0, 8)) {
+          const query = typeof candidate === "string" ? candidate.trim() : "";
+          if (
+            !query ||
+            [...query].length > 512 ||
+            /[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(query) ||
+            seen.has(query)
+          ) continue;
+          seen.add(query);
+          queries.push(query);
+        }
+        return queries;
+      }
+
+      function appendWebSearchQueries(target, queries) {
+        if (!queries.length) return;
+        const section = document.createElement("section");
+        section.className = "web-search-section";
+        const label = document.createElement("div");
+        label.className = "web-search-section-label";
+        label.textContent = queries.length === 1 ? "Query" : "Queries";
+        if (queries.length === 1) {
+          const query = document.createElement("p");
+          query.className = "web-search-query-single";
+          query.textContent = queries[0];
+          section.append(label, query);
+          target.append(section);
+          return;
+        }
+        const list = document.createElement("ol");
+        list.className = "web-search-query-list";
+        for (const query of queries) {
+          const item = document.createElement("li");
+          item.textContent = query;
+          list.append(item);
+        }
+        section.append(label, list);
+        target.append(section);
+      }
+
+      function appendWebSearchSources(target, sources, emptyState) {
+        const section = document.createElement("section");
+        section.className = "web-search-section";
+        const heading = document.createElement("div");
+        heading.className = "web-search-section-heading";
+        const label = document.createElement("div");
+        label.className = "web-search-section-label";
+        label.textContent = "Source pages";
+        const sourceHelp = document.createElement("span");
+        const sourceHelpText = "Page text is available to the model; Live Smith receives source links, not excerpts. Citations appear with the answer when the provider returns them.";
+        sourceHelp.className = "web-search-source-help";
+        sourceHelp.tabIndex = 0;
+        sourceHelp.textContent = "?";
+        sourceHelp.dataset.tooltip = sourceHelpText;
+        sourceHelp.setAttribute("aria-label", sourceHelpText);
+        heading.append(label, sourceHelp);
+        section.append(heading);
+        if (!sources.length) {
+          const empty = document.createElement("p");
+          empty.className = "web-search-source-empty";
+          empty.textContent = emptyState === "failed"
+            ? "Web Search failed before result pages were returned."
+            : emptyState === "waiting"
+              ? "Waiting for result pages…"
+              : "The provider returned no result page URLs for this search.";
+          section.append(empty);
+          target.append(section);
+          return;
+        }
+        const list = document.createElement("ol");
+        list.className = "web-search-source-list";
+        for (const source of sources) {
+          const row = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = source.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          const title = document.createElement("span");
+          title.className = "web-search-source-title";
+          title.textContent = source.title;
+          const domain = document.createElement("span");
+          domain.className = "web-search-source-domain";
+          domain.textContent = new URL(source.url).hostname;
+          link.append(title);
+          if (source.title.toLowerCase() !== domain.textContent.toLowerCase()) {
+            link.append(domain);
+          }
+          row.append(link);
+          list.append(row);
+        }
+        section.append(list);
+        target.append(section);
+      }
+
+      function safeTimelineSources(citations) {
+        if (!Array.isArray(citations)) return [];
         const sources = [];
         const seen = new Set();
         for (const citation of citations.slice(0, 20)) {
@@ -1081,14 +1366,20 @@
             title: [...title].slice(0, 256).join(""),
           });
         }
+        return sources;
+      }
+
+      function appendTimelineCitations(target, citations) {
+        if (!Array.isArray(citations) || citations.length === 0) return;
+        const sources = safeTimelineSources(citations);
         if (!sources.length) return;
 
         const container = document.createElement("section");
         container.className = "citation-sources";
-        container.setAttribute("aria-label", "Sources");
+        container.setAttribute("aria-label", "Citations");
         const heading = document.createElement("div");
         heading.className = "citation-sources-label";
-        heading.textContent = "Sources";
+        heading.textContent = "Citations";
         const list = document.createElement("ol");
         list.className = "citation-source-list";
         for (const source of sources) {
@@ -1114,6 +1405,14 @@
             parsed.username ||
             parsed.password
           ) return null;
+          parsed.searchParams.delete("ws_call_id");
+          const fragmentParts = parsed.hash.slice(1).split("&");
+          const visibleFragmentParts = fragmentParts.filter((part) =>
+            !/^ws_call_id=[A-Za-z0-9._:-]{1,256}$/u.test(part)
+          );
+          if (visibleFragmentParts.length !== fragmentParts.length) {
+            parsed.hash = visibleFragmentParts.filter(Boolean).join("&");
+          }
           return parsed.href;
         } catch {
           return null;

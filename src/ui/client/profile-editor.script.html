@@ -308,9 +308,10 @@
       function handleApiModeChange() {
         const modeControl = document.getElementById("apiMode");
         const webSearch = document.getElementById("webSearchEnabled");
+        const webSearchWasEnabled = webSearch.checked;
         if (modeControl.value === "chat-completions") webSearch.checked = false;
         markDraftDirty(modeControl);
-        updateHostedToolControls();
+        updateHostedToolControls(false, webSearchWasEnabled && !webSearch.checked);
       }
 
       function handleWebSearchChange(control) {
@@ -318,7 +319,7 @@
         updateHostedToolControls();
       }
 
-      function updateHostedToolControls(settingsLocked = false) {
+      function updateHostedToolControls(settingsLocked = false, wasTurnedOff = false) {
         const control = document.getElementById("webSearchEnabled");
         const hint = document.getElementById("webSearchHint");
         const mode = document.getElementById("apiMode").value;
@@ -326,8 +327,10 @@
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
         hint.textContent = supported
-          ? "Lets this model search public web sources when a request needs current information."
-          : "Live Smith Web Search requires Responses or Anthropic Messages.";
+          ? "Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support."
+          : wasTurnedOff
+          ? "Web Search was turned off because Chat Completions does not support provider-hosted search in Live Smith."
+          : "Chat Completions does not support provider-hosted Web Search in Live Smith.";
       }
 
       async function addProfile() {

@@ -12,12 +12,22 @@ test("citation normalization accepts bounded HTTP sources and de-duplicates URLs
     { url: "https://example.test/source", title: "Duplicate" },
     { url: "http://example.test/other", title: "Other" },
     { url: "https://untitled.example.test/source", title: null },
+    { url: "https://empty-title.example.test/source", title: "" },
+    { url: "https://blank-title.example.test/source", title: " " },
   ]), [
     { url: "https://example.test/source", title: "Source title" },
     { url: "http://example.test/other", title: "Other" },
     {
       url: "https://untitled.example.test/source",
       title: "untitled.example.test",
+    },
+    {
+      url: "https://empty-title.example.test/source",
+      title: "empty-title.example.test",
+    },
+    {
+      url: "https://blank-title.example.test/source",
+      title: "blank-title.example.test",
     },
   ]);
 });
@@ -27,7 +37,6 @@ test("citation normalization rejects unsafe, credential-bearing, and unbounded v
     { url: "javascript:alert(1)", title: "Unsafe" },
     { url: "https://user:secret@example.test/", title: "Credentials" },
     { url: `https://example.test/${"x".repeat(3_000)}`, title: "Long URL" },
-    { url: "https://example.test/empty", title: " " },
     { url: "https://example.test/control", title: "bad\nname" },
     { url: "https://example.test/long", title: "x".repeat(257) },
   ]), []);

@@ -40,10 +40,30 @@ export interface ModelCitation {
   title: string;
 }
 
+export type ModelHostedWebSearchAction =
+  | "search"
+  | "open_page"
+  | "find_in_page";
+
+export interface ModelHostedWebSearch {
+  /** Provider call identity, bounded before it leaves the transport. */
+  id: string;
+  status: "searching" | "completed" | "failed";
+  action: ModelHostedWebSearchAction;
+  /** Provider-confirmed user-facing queries; internal call metadata is removed. */
+  queries: string[];
+  /** Pages returned or opened by this search action; always empty when failed. */
+  sources: ModelCitation[];
+}
+
 export interface ModelTurn {
   content: string | null;
   toolCalls: ModelToolCall[];
+  /** The provider returned replayable state but needs another model turn to finish. */
+  continuation?: { reason: "output_limit" };
   citations?: ModelCitation[];
+  /** Terminal provider-hosted Web Search actions in this model turn. */
+  hostedWebSearches?: ModelHostedWebSearch[];
   providerState?: unknown;
 }
 

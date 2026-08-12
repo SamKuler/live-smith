@@ -42,6 +42,8 @@
 
       let eventSource = null;
       const assistantDraftsBySession = new Map();
+      const webSearchUpdatesBySession = new Map();
+      const webSearchEventIdsAtSendStartBySession = new Map();
       const assistantDraftRenderFramesBySession = new Map();
       const composerDraftsBySession = new Map();
       const pendingConfirmationsBySession = new Map();
@@ -65,6 +67,28 @@
 
       function activeAssistantDraft() {
         return assistantDraftsBySession.get(activeSessionId()) || "";
+      }
+
+      function activeWebSearchUpdates() {
+        return [...(webSearchUpdatesBySession.get(activeSessionId())?.values() || [])];
+      }
+
+      function reconcileWebSearchUpdatesFromState(state) {
+        const sessionId = state?.activeSessionId;
+        const updates = webSearchUpdatesBySession.get(sessionId);
+        const baselineEventIds = webSearchEventIdsAtSendStartBySession.get(sessionId);
+        if (!updates || !baselineEventIds || !Array.isArray(state?.events)) return;
+        for (const event of state.events) {
+          if (
+            typeof event?.id !== "string" ||
+            baselineEventIds.has(event.id)
+          ) continue;
+          const webSearchId = event?.kind === "web_search"
+            ? event.webSearch?.id
+            : null;
+          if (typeof webSearchId === "string") updates.delete(webSearchId);
+        }
+        if (updates.size === 0) webSearchUpdatesBySession.delete(sessionId);
       }
 
       function scheduleAssistantDraftRender(sessionId) {
@@ -314,6 +338,7 @@
         const previousSessionId = activeSessionId();
         const prompt = document.getElementById("prompt");
         if (prompt) composerDraftsBySession.set(previousSessionId, prompt.value);
+        reconcileWebSearchUpdatesFromState(state);
         setState(state);
         requireView().syncModelStateSource(state.modelStateSource);
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
@@ -345,6 +370,24 @@
             ];
           }
         }
+      }
+
+      function applyAuthoritativeSendState(attempt, state) {
+        if (!attempt || !isAuthoritativeCommandState(state)) return false;
+        if (
+          attempt.sessionId === activeSessionId() &&
+          state.activeSessionId === activeSessionId()
+        ) {
+          reconcileWebSearchUpdatesFromState(state);
+          setState(state);
+          requireView().syncModelStateSource(state.modelStateSource);
+          requireView().renderModelOptions();
+          requireView().updateCapabilityPreview();
+        } else {
+          mergeBackgroundState(state, attempt.sessionId);
+        }
+        requireView().render();
+        return true;
       }
 
       function setLocalActivity(sessionId, sendId, status, message) {
@@ -409,6 +452,15 @@
         ) return;
         if (!requireView().validateAttachmentsForSend()) return;
         assistantDraftsBySession.set(sessionId, "");
+        webSearchUpdatesBySession.set(sessionId, new Map());
+        webSearchEventIdsAtSendStartBySession.set(
+          sessionId,
+          new Set(
+            (getState().events || [])
+              .filter((event) => event?.kind === "web_search")
+              .map((event) => event.id),
+          ),
+        );
         composerDraftsBySession.set(sessionId, "");
         const attempt = {
           id: createSendId(),
@@ -572,6 +624,8 @@
         cancelAssistantDraftRender(attempt.sessionId);
         attempt.failureHandled = true;
         assistantDraftsBySession.set(attempt.sessionId, "");
+        webSearchUpdatesBySession.delete(attempt.sessionId);
+        webSearchEventIdsAtSendStartBySession.delete(attempt.sessionId);
         pendingConfirmationsBySession.delete(attempt.sessionId);
         confirmationResolutionsBySession.delete(attempt.sessionId);
         sendAttemptsBySession.delete(attempt.sessionId);
@@ -592,7 +646,13 @@
         }
       }
 
-      async function handleSendFailure(attempt, message, persistence, field) {
+      async function handleSendFailure(
+        attempt,
+        message,
+        persistence,
+        field,
+        authoritativeState,
+      ) {
         if (
           !attempt ||
           attempt.failureHandled ||
@@ -618,11 +678,13 @@
           }
           return;
         }
-        let refreshed = false;
-        try {
-          refreshed = await refreshState(attempt) === true;
-        } catch {
-          refreshed = false;
+        let refreshed = applyAuthoritativeSendState(attempt, authoritativeState);
+        if (!refreshed) {
+          try {
+            refreshed = await refreshState(attempt) === true;
+          } catch {
+            refreshed = false;
+          }
         }
         if (!attemptIsCurrent(attempt)) return;
         const guidance = persistence === "persisted"
@@ -1093,6 +1155,7 @@
             expectedSendAttempt?.sessionId === activeSessionId() &&
             state.activeSessionId === activeSessionId()
           ) {
+            reconcileWebSearchUpdatesFromState(state);
             setState(state);
           } else {
             mergeBackgroundState(
@@ -1191,6 +1254,11 @@
           cancelAssistantDraftRender(sessionId);
           assistantDraftsBySession.set(sessionId, "");
         }
+        if (event.kind === "web_search" && event.webSearch?.id) {
+          const updates = webSearchUpdatesBySession.get(sessionId);
+          updates?.delete(event.webSearch.id);
+          if (updates?.size === 0) webSearchUpdatesBySession.delete(sessionId);
+        }
         if (activeSessionId() !== sessionId) return;
         const state = getState();
         state.events = (state.events || []).filter((item) => item.id !== event.id);
@@ -1217,6 +1285,18 @@
             assistantDraftsBySession.set(payload.sessionId, draft);
             if (activeSessionId() === payload.sessionId) {
               scheduleAssistantDraftRender(payload.sessionId);
+            }
+            return;
+          }
+          if (payload.type === "web_search_update") {
+            if (!isActiveSendPayload(payload)) return;
+            const update = payload.update;
+            if (!update || typeof update.id !== "string") return;
+            const updates = webSearchUpdatesBySession.get(payload.sessionId) || new Map();
+            updates.set(update.id, update);
+            webSearchUpdatesBySession.set(payload.sessionId, updates);
+            if (activeSessionId() === payload.sessionId) {
+              requireView().renderTimeline();
             }
             return;
           }
@@ -1299,31 +1379,20 @@
             if (!isActiveSendPayload(payload)) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
             cancelSendRecovery(attempt);
-            if (
-              payload.sessionId === activeSessionId() &&
-              payload.state.activeSessionId === activeSessionId()
-            ) {
-              setState(payload.state);
-              requireView().syncModelStateSource(payload.state.modelStateSource);
-              requireView().renderModelOptions();
-              requireView().updateCapabilityPreview();
-            } else {
-              mergeBackgroundState(payload.state, payload.sessionId);
-            }
+            applyAuthoritativeSendState(attempt, payload.state);
             settleSendAttempt(attempt);
             if (activeSessionId() === payload.sessionId) showStatus("");
-            requireView().render();
             return;
           }
           if (payload.type === "error") {
             if (payload.sendId !== undefined) {
               if (!isActiveSendPayload(payload)) return;
-              if (payload.state) mergeBackgroundState(payload.state, payload.sessionId);
               void handleSendFailure(
                 sendAttemptsBySession.get(payload.sessionId),
                 payload.message,
                 payload.promptPersistence || "unknown",
                 payload.field,
+                payload.state,
               );
               return;
             }
@@ -1371,6 +1440,7 @@
         deleteAttachment,
         deleteSkill,
         getAssistantDraft: activeAssistantDraft,
+        getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
         handleSendButton,
         isSendInProgress: () => Boolean(activeSendAttempt()),

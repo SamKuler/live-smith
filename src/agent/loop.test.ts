@@ -6,7 +6,9 @@ import {
   digestActionIdentity,
   runAgentLoop,
   type AgentActionExecutionOutcome,
+  type AgentLoopTraceEvent,
   type AgentLoopModelInput,
+  type AgentRecoveryLedgerUpdate,
 } from "./loop.js";
 import type { ModelTurn } from "../model/contracts.js";
 
@@ -130,6 +132,317 @@ test("runAgentLoop preserves normalized citations on assistant trace events", as
     content: "A cited answer.",
     citations,
   }]);
+});
+
+test("runAgentLoop replays an output-limited turn without executing its partial tool call", async () => {
+  const modelInputs: AgentLoopModelInput[] = [];
+  const executedToolCallIds: string[] = [];
+  const events: AgentLoopTraceEvent[] = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxModelContinuations: 2,
+    askModel: async (input) => {
+      modelInputs.push(input);
+      if (input.messages.length === 0) {
+        return {
+          content: "I will inspect the selected track. ",
+          toolCalls: [],
+          continuation: { reason: "output_limit" },
+          citations: [{
+            url: "https://example.test/partial-source",
+            title: "Partial source",
+          }],
+          providerState: {
+            kind: "openai-responses",
+            output: [{
+              type: "function_call",
+              call_id: "partial-call",
+              name: "inspect_track",
+              arguments: "{\"trackName\":\"Le",
+              status: "incomplete",
+            }],
+          },
+        };
+      }
+      if (input.messages.length === 1) {
+        return {
+          content: "Continuing now.",
+          citations: [{
+            url: "https://example.test/complete-source",
+            title: "Complete source",
+          }],
+          toolCalls: [{
+            id: "complete-call",
+            name: "inspect_track",
+            arguments: "{\"trackName\":\"Lead\"}",
+          }],
+        };
+      }
+      return { content: "Done.", toolCalls: [] };
+    },
+    observe: async (request) => {
+      executedToolCallIds.push(request.type);
+      return "Track Lead exists.";
+    },
+    confirmActions: async () => false,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => { events.push(event); },
+  });
+
+  assert.equal(result.message, "Done.");
+  assert.equal(modelInputs.length, 3);
+  assert.equal(modelInputs[1]?.messages.length, 1);
+  assert.deepEqual(executedToolCallIds, ["inspect_track"]);
+  assert.equal(events.some((event) =>
+    event.kind === "tool_call" && event.content.includes("partial-call")
+  ), false);
+  assert.equal(events.some((event) =>
+    event.kind === "assistant" && event.content === "I will inspect the selected track. Continuing now."
+  ), true);
+  assert.deepEqual(
+    events.find((event) => event.kind === "assistant")?.citations,
+    [{
+      url: "https://example.test/partial-source",
+      title: "Partial source",
+    }, {
+      url: "https://example.test/complete-source",
+      title: "Complete source",
+    }],
+  );
+});
+
+test("runAgentLoop bounds repeated output-limit continuations", async () => {
+  let calls = 0;
+  const events: AgentLoopTraceEvent[] = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxModelContinuations: 2,
+    askModel: async () => {
+      calls += 1;
+      return {
+        content: `partial-${calls}`,
+        toolCalls: [],
+        continuation: { reason: "output_limit" as const },
+        providerState: { kind: "test", output: [calls] },
+      };
+    },
+    observe: async () => "unused",
+    confirmActions: async () => false,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => { events.push(event); },
+  });
+
+  assert.equal(calls, 3);
+  assert.match(result.message, /2 automatic continuation attempts/i);
+  assert.equal(events.some((event) => event.kind === "assistant"), false);
+  assert.equal(events.at(-1)?.kind, "error");
+});
+
+test("runAgentLoop honors cancellation between output-limit continuation attempts", async () => {
+  const controller = new AbortController();
+  const reason = new Error("stop continuation");
+  let calls = 0;
+  await assert.rejects(runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxModelContinuations: 2,
+    signal: controller.signal,
+    askModel: async () => {
+      calls += 1;
+      return {
+        content: null,
+        toolCalls: [],
+        continuation: { reason: "output_limit" as const },
+        providerState: { kind: "test", output: [] },
+      };
+    },
+    observe: async () => "unused",
+    confirmActions: async () => false,
+    executeActions: async () => mutationOutcome([]),
+    onProgress: (message) => {
+      if (message.startsWith("Continuing model response")) {
+        controller.abort(reason);
+      }
+    },
+  }), (error: unknown) => error === reason);
+  assert.equal(calls, 1);
+});
+
+test("runAgentLoop keeps continuation citations within the model citation bound", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  let calls = 0;
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => {
+      calls += 1;
+      const citations = Array.from({ length: 20 }, (_, index) => ({
+        url: `https://example.test/${calls}-${index}`,
+        title: `Source ${calls}-${index}`,
+      }));
+      return calls === 1
+        ? {
+            content: "Partial. ",
+            toolCalls: [],
+            continuation: { reason: "output_limit" as const },
+            providerState: { kind: "test", output: [1] },
+            citations,
+          }
+        : { content: "Complete.", toolCalls: [], citations };
+    },
+    observe: async () => "unused",
+    confirmActions: async () => false,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => { events.push(event); },
+  });
+
+  const assistant = events.find((event) => event.kind === "assistant");
+  assert.equal(assistant?.citations?.length, 20);
+});
+
+test("runAgentLoop records only provider-confirmed hosted Web Search activity", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "A current answer.",
+      toolCalls: [],
+      hostedWebSearches: [{
+        id: "search-1",
+        status: "completed",
+        action: "search",
+        queries: ["current Ableton release"],
+        sources: [{
+          url: "https://example.test/result",
+          title: "Release notes",
+        }],
+      }],
+      citations: [{
+        url: "https://example.test/source",
+        title: "Official source",
+      }],
+    }),
+    observe: async () => "",
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.deepEqual(events, [
+    {
+      kind: "web_search",
+      content: "Searched for “current Ableton release” · 1 page",
+      webSearch: {
+        id: "search-1",
+        status: "completed",
+        action: "search",
+        queries: ["current Ableton release"],
+        sources: [{
+          url: "https://example.test/result",
+          title: "Release notes",
+        }],
+      },
+    },
+    {
+      kind: "assistant",
+      content: "A current answer.",
+      citations: [{
+        url: "https://example.test/source",
+        title: "Official source",
+      }],
+    },
+  ]);
+});
+
+test("runAgentLoop records provider-confirmed failed Web Search activity", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "I could not complete the current search.",
+      toolCalls: [],
+      hostedWebSearches: [{
+        id: "search-failed",
+        status: "failed",
+        action: "search",
+        queries: ["current Ableton release"],
+        sources: [],
+      }],
+    }),
+    observe: async () => "",
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.deepEqual(events, [{
+    kind: "web_search",
+    content: "Web Search failed for “current Ableton release”",
+    webSearch: {
+      id: "search-failed",
+      status: "failed",
+      action: "search",
+      queries: ["current Ableton release"],
+      sources: [],
+    },
+  }, {
+    kind: "assistant",
+    content: "I could not complete the current search.",
+  }]);
+});
+
+test("runAgentLoop accepts compatible-provider Web Search overflow within the defensive bound", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "Search completed.",
+      toolCalls: [],
+      hostedWebSearches: Array.from({ length: 6 }, (_, index) => ({
+        id: `search-${index + 1}`,
+        status: "completed" as const,
+        action: "search" as const,
+        queries: [`query ${index + 1}`],
+        sources: [],
+      })),
+    }),
+    observe: async () => "",
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  assert.equal(events.filter((event) => event.kind === "web_search").length, 6);
+});
+
+test("runAgentLoop keeps the answer and truncates hosted Web Search activity beyond the display bound", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "Answer preserved after a provider overflow.",
+      toolCalls: [],
+      hostedWebSearches: Array.from({ length: 21 }, (_, index) => ({
+        id: `search-${index + 1}`,
+        status: "completed" as const,
+        action: "search" as const,
+        queries: [`query ${index + 1}`],
+        sources: [],
+      })),
+    }),
+    observe: async () => "",
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  assert.equal(events.filter((event) => event.kind === "web_search").length, 20);
+  assert.equal(events.at(-1)?.kind, "assistant");
+  assert.equal(events.at(-1)?.content, "Answer preserved after a provider overflow.");
 });
 
 test("runAgentLoop supports inspect_midi_clip tool calls", async () => {
@@ -1921,6 +2234,78 @@ test("an unresolved Live rejection cannot silently end on stale assistant text",
   assert.match(result.message, /stopped with unfinished Live work/i);
   assert.match(result.message, /Failed to insert device/i);
   assert.notEqual(result.message, "Adding Drum Rack.");
+});
+
+test("a zero-mutation rejection is transient and a successful alternative clears it", async () => {
+  let modelCalls = 0;
+  const recoveryUpdates: Array<AgentRecoveryLedgerUpdate | undefined> = [];
+  const executedDevices: string[] = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (): Promise<ModelTurn> => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          content: "Trying the requested device.",
+          toolCalls: [{
+            id: "unavailable-device",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Insert the requested device",
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Unavailable Device",
+              }],
+            }),
+          }],
+        };
+      }
+      if (modelCalls === 2) {
+        return {
+          content: "Using an available alternative.",
+          toolCalls: [{
+            id: "available-alternative",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Insert an available alternative",
+              actions: [{
+                type: "insert_device",
+                trackName: "Lead",
+                deviceName: "Drift",
+              }],
+            }),
+          }],
+        };
+      }
+      return { content: "Drift is now on Lead.", toolCalls: [] };
+    },
+    observe: async () => 'Track "Lead" devices=none',
+    preflightActions: async () => async () => undefined,
+    confirmActions: async () => true,
+    executeActions: async (plan) => {
+      const action = plan.actions[0];
+      assert.equal(action?.type, "insert_device");
+      executedDevices.push(action.deviceName);
+      if (action.deviceName === "Unavailable Device") {
+        throw new AgentPartialCompletionError(
+          [],
+          new Error("Failed to insert device"),
+          0,
+          action,
+          "Lead",
+        );
+      }
+      return mutationOutcome(['Inserted "Drift" on track "Lead".']);
+    },
+    onEvent: (event) => {
+      if (event.kind === "apply_result") recoveryUpdates.push(event.recovery);
+    },
+  });
+
+  assert.equal(result.message, "Drift is now on Lead.");
+  assert.deepEqual(executedDevices, ["Unavailable Device", "Drift"]);
+  assert.deepEqual(recoveryUpdates, [undefined, undefined]);
 });
 
 test("an unresolved Live rejection cannot be hidden by tool-free completion text", async () => {

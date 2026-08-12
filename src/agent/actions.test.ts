@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  actionSystemPrompt,
   validateAgentPlan,
   requiresExplicitConfirmation,
   summarizeActionPlan,
@@ -395,36 +394,6 @@ test("one plan rejects overlapping replacements of the same MIDI clip", () => {
       },
     ],
   }));
-});
-
-test("the model prompt distinguishes whole-clip and segmented MIDI authoring", () => {
-  const prompt = actionSystemPrompt();
-
-  assert.match(prompt, /whole.*clip.*4096 notes/i);
-  assert.match(prompt, /empty.*full-duration.*clip/i);
-  assert.match(prompt, /replace_midi_clip_segment.*replaces.*not append/i);
-  assert.match(prompt, /separate.*confirmation/i);
-});
-
-test("the model prompt teaches exact object, Rack, sample, Clip, and VST boundaries", () => {
-  const prompt = actionSystemPrompt();
-
-  assert.match(prompt, /inspect_current_object first.*specific Live object/i);
-  assert.match(prompt, /inspect_device_tree/i);
-  assert.match(prompt, /complete devicePath/i);
-  assert.match(prompt, /Drum Rack or Simpler.*empty.*configure_drum_pad/i);
-  assert.match(prompt, /SampleSource.*selected Live object.*audio Clip.*Simpler/i);
-  assert.match(prompt, /Arrangement and Session.*startBeat.*slotIndex/i);
-  assert.match(prompt, /cannot browse preset packs.*insert a VST/i);
-  assert.match(prompt, /Existing VST devices.*parameters edited.*duplicated or deleted/i);
-  assert.match(prompt, /staged workflow and a single complete confirmed plan.*both supported/i);
-  assert.match(prompt, /Never request, infer, or emit a filesystem path/i);
-  assert.match(prompt, /Scenes are Session View rows.*Cue Points.*Arrangement/i);
-  assert.match(prompt, /rename_scene.*sceneIndex.*newName.*sceneName.*omit/i);
-  assert.match(
-    prompt,
-    /rename_scene: \{"type":"rename_scene","sceneIndex":0,"newName":"Verse"\}/i,
-  );
 });
 
 test("invalid actions identify their position and type for model repair", () => {

@@ -17,6 +17,7 @@ import {
 import { requireSafeStorageId } from "../storage/id.js";
 import type { SessionEvent } from "../storage/events.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import type { ModelHostedWebSearch } from "../model/contracts.js";
 import {
   isApprovalMode,
   ProfileValidationError,
@@ -220,6 +221,7 @@ export interface ChatBridgeConfirmationRequest {
 
 export interface ChatBridgeStream {
   assistantDelta(delta: string): Promise<void>;
+  webSearchUpdate(update: ModelHostedWebSearch): Promise<void>;
   sessionEvent(event: SessionEvent): Promise<void>;
   progress(message: string): Promise<void>;
   requestConfirmation(request: ChatBridgeConfirmationRequest): Promise<boolean>;
@@ -283,6 +285,12 @@ interface ActiveSend {
 
 type SsePayload =
   | { type: "assistant_delta"; sendId: string; sessionId: string; delta: string }
+  | {
+      type: "web_search_update";
+      sendId: string;
+      sessionId: string;
+      update: ModelHostedWebSearch;
+    }
   | { type: "session_event"; sendId: string; sessionId: string; event: SessionEvent }
   | { type: "progress"; sendId: string; sessionId: string; message: string }
   | { type: "confirm_request"; sendId: string; sessionId: string; id: string; message: string; groups: ActionDiffGroup[] }
@@ -441,6 +449,9 @@ export async function createChatBridge(
   ): ChatBridgeStream => ({
     assistantDelta: async (delta) => {
       broadcast({ type: "assistant_delta", sendId, sessionId, delta });
+    },
+    webSearchUpdate: async (update) => {
+      broadcast({ type: "web_search_update", sendId, sessionId, update });
     },
     sessionEvent: async (event) => {
       onSessionEvent(event);

@@ -167,6 +167,10 @@ test("Anthropic Messages maps hosted Web Search and exposes bounded citations", 
         url: "https://example.test/source",
         title: "Official source",
         encrypted_content: "opaque-provider-state",
+      }, {
+        type: "not_a_web_search_result",
+        url: "https://example.test/not-a-result",
+        title: "Must not become a source",
       }],
     },
     {
@@ -197,11 +201,650 @@ test("Anthropic Messages maps hosted Web Search and exposes bounded citations", 
     name: "web_search",
     max_uses: 5,
   }]);
+  assert.deepEqual(body.tool_choice, { type: "auto" });
   assert.deepEqual(turn.citations, [{
     url: "https://example.test/source",
     title: "Official source",
   }]);
+  assert.deepEqual(turn.hostedWebSearches, [{
+    id: "server-search-1",
+    status: "completed",
+    action: "search",
+    queries: ["Ableton Live release"],
+    sources: [{
+      url: "https://example.test/source",
+      title: "Official source",
+    }],
+  }]);
   assert.deepEqual((turn.providerState as { content: unknown[] }).content, content);
+});
+
+test("Anthropic Messages maps a reduced remaining Web Search allowance", async () => {
+  let body: Record<string, unknown> = {};
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 2 });
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Done." }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await transport.createToolTurn(req);
+  assert.deepEqual((body.tools as Array<Record<string, unknown>>).find(
+    (tool) => tool.type === "web_search_20250305",
+  ), {
+    type: "web_search_20250305",
+    name: "web_search",
+    max_uses: 2,
+  });
+});
+
+test("Anthropic streaming reports actual Web Search activity", async () => {
+  const events = [
+    { type: "message_start", message: { content: [] } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "server_tool_use",
+        id: "server-search-stream-1",
+        name: "web_search",
+        input: {},
+      },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: '{"query":"current Ableton release"}',
+      },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: "server-search-stream-1",
+        content: [{
+          type: "web_search_result",
+          url: "https://example.test/release",
+          title: "Ableton release notes",
+          encrypted_content: "opaque",
+        }],
+      },
+    },
+    { type: "content_block_stop", index: 1 },
+    {
+      type: "content_block_start",
+      index: 2,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 2,
+      delta: { type: "text_delta", text: "Current answer" },
+    },
+    { type: "content_block_stop", index: 2 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.onDelta = () => {};
+  const activity: unknown[] = [];
+  req.onHostedWebSearch = (update) => {
+    activity.push(update);
+  };
+
+  const turn = await transport.createToolTurn(req);
+  assert.deepEqual(activity, [{
+    id: "server-search-stream-1",
+    status: "completed",
+    action: "search",
+    queries: ["current Ableton release"],
+    sources: [{
+      url: "https://example.test/release",
+      title: "Ableton release notes",
+    }],
+  }]);
+  assert.deepEqual(turn.hostedWebSearches, activity);
+});
+
+test("Anthropic does not report a deferred server search as executed", async () => {
+  const events = [
+    { type: "message_start", message: { content: [] } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "server_tool_use",
+        id: "server-search-deferred",
+        name: "web_search",
+        input: {},
+      },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: '{"query":"current Ableton release"}',
+      },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "tool_use",
+        id: "client-tool-1",
+        name: "inspect_live_set",
+        input: {},
+      },
+    },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" } },
+    { type: "message_stop" },
+  ];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.onDelta = () => {};
+  const activity: unknown[] = [];
+  req.onHostedWebSearch = (update) => {
+    activity.push(update);
+  };
+
+  const turn = await transport.createToolTurn(req);
+  assert.deepEqual(activity, []);
+  assert.equal(turn.hostedWebSearches, undefined);
+  assert.deepEqual(turn.toolCalls.map((call) => call.name), ["inspect_live_set"]);
+});
+
+test("Anthropic correlates a deferred server search result returned after a client tool", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const deferredContent = [{
+    type: "server_tool_use",
+    id: "server-search-mixed-1",
+    name: "web_search",
+    input: { query: "current Ableton release" },
+  }, {
+    type: "tool_use",
+    id: "client-tool-mixed-1",
+    name: "inspect",
+    input: {},
+  }];
+  const completedContent = [{
+    type: "web_search_tool_result",
+    tool_use_id: "server-search-mixed-1",
+    content: [{
+      type: "web_search_result",
+      url: "https://example.test/release",
+      title: "Ableton release notes",
+      encrypted_content: "opaque-search-result",
+    }],
+  }, {
+    type: "text",
+    text: "Done",
+  }];
+  let fetchCall = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      fetchCall += 1;
+      return new Response(JSON.stringify(fetchCall === 1
+        ? { stop_reason: "tool_use", content: deferredContent }
+        : { stop_reason: "end_turn", content: completedContent }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  const p = profile({ advanced: { hostedTools: { webSearch: true } } });
+  const firstRequest = request(p);
+  firstRequest.tools.push({ type: "hosted_web_search", maxUses: 5 });
+
+  const firstTurn = await transport.createToolTurn(firstRequest);
+  assert.equal(firstTurn.hostedWebSearches, undefined);
+  const secondRequest = request(p);
+  secondRequest.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  secondRequest.agentMessages = [{
+    role: "assistant",
+    content: firstTurn.content,
+    toolCalls: firstTurn.toolCalls,
+    providerState: firstTurn.providerState,
+  }, {
+    role: "tool",
+    toolCallId: "client-tool-mixed-1",
+    content: "Inspected Live.",
+  }];
+
+  const secondTurn = await transport.createToolTurn(secondRequest);
+  assert.deepEqual(secondTurn.hostedWebSearches, [{
+    id: "server-search-mixed-1",
+    status: "completed",
+    action: "search",
+    queries: ["current Ableton release"],
+    sources: [{
+      url: "https://example.test/release",
+      title: "Ableton release notes",
+    }],
+  }]);
+  assert.deepEqual(
+    (secondTurn.providerState as { content: unknown[] }).content,
+    completedContent,
+  );
+  assert.deepEqual((bodies[1]?.messages as unknown[]).slice(-2), [{
+    role: "assistant",
+    content: deferredContent,
+  }, {
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: "client-tool-mixed-1",
+      content: "Inspected Live.",
+    }],
+  }]);
+});
+
+test("Anthropic streaming correlates a result-only search block with replayed server state", async () => {
+  const deferredContent = [{
+    type: "server_tool_use",
+    id: "server-search-stream-mixed-1",
+    name: "web_search",
+    input: { query: "current Ableton release" },
+  }, {
+    type: "tool_use",
+    id: "client-tool-stream-mixed-1",
+    name: "inspect",
+    input: {},
+  }];
+  const events = [
+    { type: "message_start", message: { content: [] } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: "server-search-stream-mixed-1",
+        content: [{
+          type: "web_search_result",
+          url: "https://example.test/release",
+          title: "Ableton release notes",
+          encrypted_content: "opaque-search-result",
+        }],
+      },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "text_delta", text: "Done" },
+    },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const p = profile({ advanced: { hostedTools: { webSearch: true } } });
+  const req = request(p);
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.agentMessages = [{
+    role: "assistant",
+    content: null,
+    toolCalls: [{
+      id: "client-tool-stream-mixed-1",
+      name: "inspect",
+      arguments: "{}",
+    }],
+    providerState: {
+      kind: "anthropic-messages",
+      content: deferredContent,
+    },
+  }, {
+    role: "tool",
+    toolCallId: "client-tool-stream-mixed-1",
+    content: "Inspected Live.",
+  }];
+  req.onDelta = () => {};
+  const activity: unknown[] = [];
+  req.onHostedWebSearch = (update) => {
+    activity.push(update);
+  };
+
+  const turn = await transport.createToolTurn(req);
+  const expected = [{
+    id: "server-search-stream-mixed-1",
+    status: "completed",
+    action: "search",
+    queries: ["current Ableton release"],
+    sources: [{
+      url: "https://example.test/release",
+      title: "Ableton release notes",
+    }],
+  }];
+  assert.deepEqual(activity, expected);
+  assert.deepEqual(turn.hostedWebSearches, expected);
+});
+
+test("Anthropic surfaces documented Web Search error results without synthetic sources", async () => {
+  const content = [{
+    type: "server_tool_use",
+    id: "server-search-error-1",
+    name: "web_search",
+    input: { query: "current Ableton release" },
+  }, {
+    type: "web_search_tool_result",
+    tool_use_id: "server-search-error-1",
+    content: {
+      type: "web_search_tool_result_error",
+      error_code: "unavailable",
+    },
+  }, {
+    type: "text",
+    text: "Search is temporarily unavailable.",
+  }];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      stop_reason: "end_turn",
+      content,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  const activity: unknown[] = [];
+  req.onHostedWebSearch = (update) => {
+    activity.push(update);
+  };
+
+  const turn = await transport.createToolTurn(req);
+  const expected = [{
+    id: "server-search-error-1",
+    status: "failed",
+    action: "search",
+    queries: ["current Ableton release"],
+    sources: [],
+  }];
+  assert.deepEqual(activity, expected);
+  assert.deepEqual(turn.hostedWebSearches, expected);
+  assert.deepEqual((turn.providerState as { content: unknown[] }).content, content);
+});
+
+test("Anthropic reports confirmed non-streaming searches before a later pause continuation fails", async () => {
+  const activity: unknown[] = [];
+  let fetchCall = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      fetchCall += 1;
+      if (fetchCall > 1) {
+        return new Response("untrusted failure", {
+          status: 503,
+          statusText: "Unavailable",
+        });
+      }
+      return new Response(JSON.stringify({
+        stop_reason: "pause_turn",
+        content: [{
+          type: "server_tool_use",
+          id: "server-search-paused-1",
+          name: "web_search",
+          input: { query: "current Ableton release" },
+        }, {
+          type: "web_search_tool_result",
+          tool_use_id: "server-search-paused-1",
+          content: [{
+            type: "web_search_result",
+            url: "https://example.test/release",
+            title: "Ableton release notes",
+            encrypted_content: "opaque-search-result",
+          }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.onHostedWebSearch = (update) => {
+    activity.push(update);
+  };
+
+  await assert.rejects(transport.createToolTurn(req), /Anthropic HTTP 503/);
+  assert.deepEqual(activity, [{
+    id: "server-search-paused-1",
+    status: "completed",
+    action: "search",
+    queries: ["current Ableton release"],
+    sources: [{
+      url: "https://example.test/release",
+      title: "Ableton release notes",
+    }],
+  }]);
+});
+
+test("Anthropic Messages truncates provider activity above the display bound without losing the answer", async () => {
+  const content: Array<Record<string, unknown>> = Array.from(
+    { length: 21 },
+    (_, index) => [{
+      type: "server_tool_use",
+      id: `server-search-overflow-${index + 1}`,
+      name: "web_search",
+      input: { query: `query ${index + 1}` },
+    }, {
+      type: "web_search_tool_result",
+      tool_use_id: `server-search-overflow-${index + 1}`,
+      content: [],
+    }],
+  ).flat();
+  content.push({ type: "text", text: "Too many searches." });
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      stop_reason: "end_turn",
+      content,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+
+  const turn = await transport.createToolTurn(req);
+  assert.equal(turn.content, "Too many searches.");
+  assert.equal(turn.hostedWebSearches?.length, 20);
+});
+
+test("Anthropic Messages ignores a twenty-first streaming result and keeps the answer", async () => {
+  const events = [
+    { type: "message_start", message: { content: [] } },
+    ...Array.from({ length: 21 }, (_, index) => [{
+      type: "content_block_start",
+      index: index * 2,
+      content_block: {
+        type: "server_tool_use",
+        id: `server-search-stream-overflow-${index + 1}`,
+        name: "web_search",
+        input: { query: `query ${index + 1}` },
+      },
+    }, {
+      type: "content_block_stop",
+      index: index * 2,
+    }, {
+      type: "content_block_start",
+      index: index * 2 + 1,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: `server-search-stream-overflow-${index + 1}`,
+        content: [],
+      },
+    }, {
+      type: "content_block_stop",
+      index: index * 2 + 1,
+    }]).flat(),
+    {
+      type: "content_block_start",
+      index: 42,
+      content_block: { type: "text", text: "Answer preserved." },
+    },
+    { type: "content_block_stop", index: 42 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.onDelta = () => {};
+
+  const turn = await transport.createToolTurn(req);
+  assert.equal(turn.content, "Answer preserved.");
+  assert.equal(turn.hostedWebSearches?.length, 20);
+});
+
+test("Anthropic Messages rejects duplicate and conflicting results for one search call", async () => {
+  for (const secondContent of [
+    [],
+    [{
+      type: "web_search_result",
+      url: "https://example.test/conflict",
+      title: "Conflicting result",
+    }],
+  ]) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        stop_reason: "end_turn",
+        content: [{
+          type: "server_tool_use",
+          id: "server-search-duplicate-1",
+          name: "web_search",
+          input: { query: "current Ableton release" },
+        }, {
+          type: "web_search_tool_result",
+          tool_use_id: "server-search-duplicate-1",
+          content: [],
+        }, {
+          type: "web_search_tool_result",
+          tool_use_id: "server-search-duplicate-1",
+          content: secondContent,
+        }, {
+          type: "text",
+          text: "Duplicate result.",
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+    req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /duplicate Web Search result for one tool call/,
+    );
+  }
+});
+
+test("Anthropic Messages rejects a duplicate streaming result for one search call", async () => {
+  const events = [
+    { type: "message_start", message: { content: [] } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "server_tool_use",
+        id: "server-search-stream-duplicate-1",
+        name: "web_search",
+        input: { query: "current Ableton release" },
+      },
+    },
+    { type: "content_block_stop", index: 0 },
+    ...[1, 2].flatMap((index) => [{
+      type: "content_block_start",
+      index,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: "server-search-stream-duplicate-1",
+        content: [],
+      },
+    }, {
+      type: "content_block_stop",
+      index,
+    }]),
+    {
+      type: "content_block_start",
+      index: 3,
+      content_block: { type: "text", text: "Duplicate result." },
+    },
+    { type: "content_block_stop", index: 3 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /duplicate Web Search result for one tool call/,
+  );
+});
+
+test("Anthropic Messages allows text-only output when hosted Web Search is available but optional", async () => {
+  let body: Record<string, unknown> = {};
+  const p = profile({ advanced: { hostedTools: { webSearch: true } } });
+  const req = request(p);
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return completedAnthropicResponse();
+    },
+  });
+
+  const turn = await transport.createToolTurn(req);
+  assert.deepEqual(body.tool_choice, { type: "auto" });
+  assert.equal(turn.content, "Done");
 });
 
 test("Anthropic Messages rejects an unconfigured hosted Web Search tool before HTTP", async () => {

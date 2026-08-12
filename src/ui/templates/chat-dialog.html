@@ -364,7 +364,7 @@
       }
 
       .can-continue-session-entry .session-meta {
-        padding-right: 54px;
+        max-width: calc(100% - 68px);
       }
 
       .session-continue-button {
@@ -372,13 +372,15 @@
         z-index: 2;
         right: 7px;
         bottom: 7px;
+        width: 56px;
         height: 18px;
-        padding: 0 2px;
+        padding: 0;
         color: var(--accent);
         background: transparent;
         border: 0;
         font-size: 10px;
         font-weight: 600;
+        text-align: right;
       }
 
       .session-continue-button:not(:disabled):hover,
@@ -788,6 +790,7 @@
 
       .timeline-item.tool_call,
       .timeline-item.tool_result,
+      .timeline-item.web_search,
       .timeline-item.apply_requested,
       .timeline-item.apply_auto_approved,
       .timeline-item.apply_result,
@@ -836,14 +839,179 @@
         background: rgba(255, 255, 255, 0.05);
       }
 
+      .timeline-item.web_search .timeline-content {
+        display: grid;
+        gap: 9px;
+      }
+
+      .web-search-section {
+        display: grid;
+        gap: 4px;
+      }
+
+      .web-search-section + .web-search-section {
+        padding-top: 7px;
+        border-top: 1px solid rgba(120, 185, 232, 0.18);
+      }
+
+      .web-search-section-label {
+        color: var(--quiet);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .web-search-section-heading {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        width: fit-content;
+      }
+
+      .web-search-source-empty {
+        margin: 0;
+        color: var(--quiet);
+        font-size: 10px;
+      }
+
+      .web-search-source-help {
+        position: relative;
+        display: inline-grid;
+        place-items: center;
+        width: 14px;
+        height: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        color: var(--quiet);
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: help;
+      }
+
+      .web-search-source-help::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        z-index: 20;
+        top: calc(100% + 7px);
+        left: -5px;
+        width: 250px;
+        padding: 7px 9px;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        background: #171717;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        color: var(--text);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: normal;
+        line-height: 1.4;
+        text-align: left;
+        text-transform: none;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-2px);
+        transition: opacity 100ms ease, transform 100ms ease;
+      }
+
+      .web-search-source-help:hover,
+      .web-search-source-help:focus-visible {
+        border-color: var(--accent);
+        color: var(--text);
+        outline: none;
+      }
+
+      .web-search-source-help:hover::after,
+      .web-search-source-help:focus-visible::after {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .web-search-query-list,
+      .web-search-source-list {
+        display: grid;
+        gap: 3px;
+        margin: 0;
+      }
+
+      .web-search-query-list {
+        padding-left: 18px;
+        color: #d9ecfb;
+        font-size: 10px;
+      }
+
+      .web-search-query-single {
+        margin: 0;
+        color: #d9ecfb;
+        font-size: 10px;
+        overflow-wrap: anywhere;
+      }
+
+      .web-search-query-list li {
+        padding-left: 2px;
+        overflow-wrap: anywhere;
+      }
+
+      .web-search-source-list {
+        padding: 0;
+        list-style: none;
+      }
+
+      .web-search-source-list a {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 2px;
+        color: #d9ecfb;
+        border-bottom: 1px solid rgba(120, 185, 232, 0.12);
+        text-decoration: none;
+      }
+
+      .web-search-source-list li:last-child a {
+        border-bottom: 0;
+      }
+
+      .web-search-source-list a:hover {
+        color: var(--trace);
+        background: rgba(120, 185, 232, 0.06);
+      }
+
+      .web-search-source-list a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      .web-search-source-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .web-search-source-domain {
+        max-width: 150px;
+        overflow: hidden;
+        color: var(--quiet);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       details.timeline-item > .timeline-content {
         margin-top: 4px;
         font-size: 12px;
       }
 
       .timeline-item.tool_call > summary,
-      .timeline-item.tool_result > summary {
+      .timeline-item.tool_result > summary,
+      .timeline-item.web_search > summary {
         color: var(--trace);
+      }
+
+      .timeline-item.web_search.live > summary {
+        color: var(--accent);
       }
 
       .timeline-item.apply_requested > summary,
@@ -857,7 +1025,8 @@
       }
 
       .timeline-item.tool_call .timeline-content,
-      .timeline-item.tool_result .timeline-content {
+      .timeline-item.tool_result .timeline-content,
+      .timeline-item.web_search .timeline-content {
         padding: 8px 10px;
         color: #d9ecfb;
         background: rgba(124, 184, 232, 0.08);
@@ -1537,9 +1706,9 @@
 
       .citation-sources {
         display: grid;
-        gap: 5px;
-        margin-top: 9px;
-        padding-top: 8px;
+        gap: 7px;
+        margin-top: 11px;
+        padding-top: 9px;
         border-top: 1px solid var(--line-soft);
       }
 
@@ -1552,9 +1721,8 @@
       }
 
       .citation-source-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 5px;
+        display: grid;
+        gap: 4px;
         margin: 0;
         padding: 0;
         list-style: none;
@@ -1566,18 +1734,28 @@
       }
 
       .citation-source-list a {
-        display: inline-block;
+        display: block;
         max-width: 100%;
-        padding: 3px 7px;
+        padding: 5px 7px;
         overflow: hidden;
         color: var(--trace);
-        background: rgba(120, 185, 232, 0.08);
-        border: 1px solid rgba(120, 185, 232, 0.28);
-        border-radius: 999px;
-        font-size: 9px;
+        background: rgba(120, 185, 232, 0.06);
+        border-left: 2px solid rgba(120, 185, 232, 0.46);
+        border-radius: 4px;
+        font-size: 10px;
         line-height: 1.3;
         text-overflow: ellipsis;
         white-space: nowrap;
+        text-decoration: none;
+      }
+
+      .citation-source-list a:hover {
+        background: rgba(120, 185, 232, 0.12);
+      }
+
+      .citation-source-list a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
       }
 
       .citation-source-list a::before {
@@ -2247,9 +2425,9 @@
                 <div class="hosted-tool-control">
                   <label class="hosted-tool-toggle" for="webSearchEnabled">
                     <input id="webSearchEnabled" name="webSearchEnabled" type="checkbox" aria-describedby="webSearchHint" onchange="LiveSmithUI.handleWebSearchChange(this)" />
-                    <span><strong>Web search</strong>Use current public sources when the request needs them.</span>
+                    <span><strong>Web Search</strong>The model decides when to search.</span>
                   </label>
-                  <span id="webSearchHint" class="field-hint">Lets this model search public web sources when a request needs current information.</span>
+                  <span id="webSearchHint" class="field-hint" role="status" aria-live="polite" aria-atomic="true">Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support.</span>
                 </div>
               </section>
 
