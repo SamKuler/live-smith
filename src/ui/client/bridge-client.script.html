@@ -155,8 +155,9 @@
           "unarchive_session",
           "attach_selected_audio_source",
           "set_session_skills",
+          "set_session_approval_mode",
         ].includes(kind);
-        const allowedDuringSend = sessionCommand || kind === "save_global_settings";
+        const allowedDuringSend = sessionCommand;
         if (sendAttemptsBySession.size && !allowedDuringSend) {
           showStatus("Profile settings cannot change while an agent request is active.");
           return false;
@@ -343,7 +344,7 @@
         requireView().syncModelStateSource(state.modelStateSource);
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
           requireView().renderSettingsForm();
-        } else if (kind === "save_global_settings") {
+        } else if (kind === "set_session_approval_mode") {
           requireView().renderApprovalMode();
         } else if (kind === "discover_models") {
           requireView().renderModelOptions();
@@ -1278,6 +1279,26 @@
             const attempt = [...sendAttemptsBySession.values()]
               .find((entry) => entry.id === payload.sendId);
             if (attempt) payload.sessionId = attempt.sessionId;
+          }
+          if (payload.type === "approval_mode_changed") {
+            if (
+              typeof payload.sessionId !== "string" ||
+              !["manual", "low-risk", "everything"].includes(payload.approvalMode)
+            ) return;
+            const state = getState();
+            for (const sessions of [
+              state.sessions,
+              state.previousSessions,
+              state.archivedSessions,
+            ]) {
+              const session = sessions.find((entry) => entry.id === payload.sessionId);
+              if (session) session.approvalMode = payload.approvalMode;
+            }
+            if (activeSessionId() === payload.sessionId) {
+              state.approvalMode = payload.approvalMode;
+              requireView().renderApprovalMode();
+            }
+            return;
           }
           if (payload.type === "assistant_delta") {
             if (!isActiveSendPayload(payload)) return;

@@ -293,6 +293,7 @@
         function renderApplication() {
           renderStatusAndContext();
           renderHeaderSummary();
+          profileEditor.renderApprovalMode();
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
           attachments.renderPending();
@@ -322,10 +323,10 @@
             controlId: "profileSelector",
             status: "Switching Profile…",
           },
-          save_global_settings: {
+          set_session_approval_mode: {
             busyAriaLabel: "Saving Approval Mode…",
             controlId: "approvalMode",
-            status: "Saving Global Settings…",
+            status: "Saving Session Approval Mode…",
           },
           new_session: {
             busyLabel: "…",
@@ -420,17 +421,8 @@
           document.getElementById("settingsLockNotice").hidden = !(
             anySendInProgress && !sendInProgress
           );
-          document.getElementById("approvalModeLockHint").hidden = !anySendInProgress;
           const approvalMode = document.getElementById("approvalMode");
-          const approvalModeLabel = approvalMode.closest("label");
-          approvalMode.classList.toggle("is-everything", approvalMode.value === "everything");
-          approvalModeLabel.title = approvalMode.value === "everything"
-            ? "Accept Everything auto-applies every validated change, including deletes and replacement writes."
-            : anySendInProgress
-              ? "The setting applies to the next Apply request."
-              : approvalMode.value === "low-risk"
-                ? "Low Risk auto-applies changes that are not deletes, Clip writes, Arrangement clears, or sample replacements."
-                : "Manual requests approval for every Apply request.";
+          profileEditor.updateApprovalModePresentation();
           document.getElementById("prompt").disabled = operationBusy;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
             .forEach((control) => {

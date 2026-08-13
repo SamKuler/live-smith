@@ -32,12 +32,17 @@ import {
   loadSessionEvents,
 } from "../storage/events.js";
 import { saveModelCache } from "../storage/model-cache.js";
-import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
+import {
+  StorageCommitOutcomeUnknownError,
+  withStorageTransaction,
+} from "../storage/persistence.js";
 import {
   createSession,
   deleteSession,
   listSessions,
   setSessionArchived,
+  updateSession,
+  updateSessionInTransaction,
 } from "../storage/sessions.js";
 import { saveGlobalSettings, saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
@@ -48,8 +53,20 @@ import {
 } from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
 
-test("approval decisions follow Manual, Low Risk, and Accept Everything modes", async () => {
+test("approval decisions follow the target Session and ignore the legacy global mode", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-decision-"));
+  await saveGlobalSettings(directory, { approvalMode: "everything" });
+  const manualSession = await createSession(directory, {
+    title: "Manual",
+    projectKey: "project-1",
+    scope: { kind: "selection", identity: "manual", label: "Manual" },
+  });
+  const automaticSession = await createSession(directory, {
+    title: "Automatic",
+    projectKey: "project-1",
+    scope: { kind: "selection", identity: "automatic", label: "Automatic" },
+    approvalMode: "low-risk",
+  });
   const lowRiskPlan = {
     message: "Set tempo",
     actions: [{ type: "set_tempo" as const, tempo: 128 }],
@@ -64,39 +81,157 @@ test("approval decisions follow Manual, Low Risk, and Accept Everything modes", 
     return true;
   };
 
-  await saveGlobalSettings(directory, { approvalMode: "manual" });
   assert.deepEqual(
-    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      manualSession.id,
+      lowRiskPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "user" },
   );
   assert.deepEqual(
-    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      manualSession.id,
+      explicitPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "user" },
   );
   assert.equal(promptCalls, 2);
 
-  await saveGlobalSettings(directory, { approvalMode: "low-risk" });
   assert.deepEqual(
-    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      automaticSession.id,
+      lowRiskPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "automatic", mode: "low-risk" },
   );
   assert.equal(promptCalls, 2);
   assert.deepEqual(
-    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      automaticSession.id,
+      explicitPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "user" },
   );
   assert.equal(promptCalls, 3);
 
-  await saveGlobalSettings(directory, { approvalMode: "everything" });
+  await updateSession(directory, manualSession.id, { approvalMode: "everything" });
   assert.deepEqual(
-    await decidePlanApproval(directory, lowRiskPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      manualSession.id,
+      lowRiskPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "automatic", mode: "everything" },
   );
   assert.deepEqual(
-    await decidePlanApproval(directory, explicitPlan, requestConfirmation),
+    await decidePlanApproval(
+      directory,
+      manualSession.id,
+      explicitPlan,
+      requestConfirmation,
+    ),
     { confirmed: true, source: "automatic", mode: "everything" },
   );
   assert.equal(promptCalls, 3);
+});
+
+test("approval decisions wait for an earlier Session mode transaction", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-order-"));
+  const session = await createSession(directory, {
+    title: "Ordered",
+    projectKey: "project-1",
+    scope: { kind: "selection", identity: "ordered", label: "Ordered" },
+  });
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const active = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const write = withStorageTransaction(directory, async (transaction) => {
+    started();
+    await gate;
+    await updateSessionInTransaction(
+      transaction,
+      directory,
+      session.id,
+      { approvalMode: "low-risk" },
+    );
+  });
+  await active;
+
+  let settled = false;
+  const decision = decidePlanApproval(
+    directory,
+    session.id,
+    { message: "Set tempo", actions: [{ type: "set_tempo", tempo: 128 }] },
+    async () => true,
+  ).then((value) => {
+    settled = true;
+    return value;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+
+  release();
+  await write;
+  assert.deepEqual(await decision, {
+    confirmed: true,
+    source: "automatic",
+    mode: "low-risk",
+  });
+});
+
+test("Session approval changes publish to every open bridge for the same storage", async () => {
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-approval-notification-",
+    firstDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const events = await fetch(fixture.second.endpoint("/events"));
+    const notification = readSsePayload(events, "approval_mode_changed");
+    const response = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "set_session_approval_mode",
+        sessionId: fixture.sessionId,
+        approvalMode: "everything",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const state = await response.json() as ChatDialogState;
+    assert.equal(state.approvalMode, "everything");
+    assert.deepEqual(await resolvesWithin(notification, "approval mode notification"), {
+      type: "approval_mode_changed",
+      sessionId: fixture.sessionId,
+      approvalMode: "everything",
+    });
+    const secondState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.equal(secondState.approvalMode, "everything");
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("concurrent state and discovery responses each keep models, capabilities, and source from one profile", async () => {

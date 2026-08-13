@@ -204,6 +204,7 @@ function stateFixture(): ChatDialogState {
         title: "Lead session",
         projectKey: "project-1",
         scope: { kind: "track", identity: "track-lead", label: "Lead" },
+        approvalMode: "low-risk",
         createdAt: "2026-08-01T00:01:00.000Z",
         updatedAt: "2026-08-01T00:01:00.000Z",
       },
@@ -211,6 +212,7 @@ function stateFixture(): ChatDialogState {
     previousSessions: [],
     archivedSessions: [],
     activeSessionId: "session-1",
+    approvalMode: "manual",
     events: [],
     pendingAttachments: [],
     availableSkills: [],
@@ -629,10 +631,19 @@ async function createDialogHarness(
                 title?: string;
               };
               if (
-                command.kind === "save_global_settings" &&
+                command.kind === "set_session_approval_mode" &&
+                typeof command.sessionId === "string" &&
                 typeof command.approvalMode === "string"
               ) {
-                serverState.settings.approvalMode = command.approvalMode;
+                const session = [
+                  ...serverState.sessions,
+                  ...serverState.previousSessions,
+                  ...serverState.archivedSessions,
+                ].find((entry) => entry.id === command.sessionId);
+                if (session) session.approvalMode = command.approvalMode;
+                if (serverState.activeSessionId === command.sessionId) {
+                  serverState.approvalMode = command.approvalMode;
+                }
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -690,6 +701,10 @@ async function createDialogHarness(
                   : null;
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
+                const selected = serverState.sessions.find(
+                  (entry) => entry.id === command.sessionId,
+                );
+                serverState.approvalMode = selected?.approvalMode ?? "manual";
                 serverState.pendingAttachments = pendingAttachmentsBySession.get(
                   command.sessionId,
                 ) ?? [];
@@ -795,6 +810,7 @@ async function createDialogHarness(
                   (entry) => entry.id !== command.sessionId,
                 );
                 serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
+                serverState.approvalMode = serverState.sessions[0]?.approvalMode ?? "manual";
               }
               if (heldCommandResponse) {
                 const wait = heldCommandResponse;

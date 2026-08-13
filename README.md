@@ -45,14 +45,15 @@
   code blocks. Raw HTML remains inert text, while tool traces and errors
   preserve their exact text.
 - Shows categorized Apply diffs in the exact execution order, with original
-  action numbers. The Approval selector has three modes: `Manual` asks before
+  action numbers. Each Session keeps its own Approval mode. `Manual` asks before
   every plan, `Low Risk` automatically approves only plans outside the
   protected-action set, and `Accept Everything` automatically approves every
   validated plan, including deletes and replacement writes. Accept Everything
   stays visibly red and does not open an extra mode-change warning. Automatic
-  approvals receive a distinct `Auto-approved` timeline event. The mode can be
-  changed while a Session is running; the current value is read for the next
-  Apply decision and does not alter an approval prompt that is already open.
+  approvals receive a distinct `Auto-approved` timeline event. New Sessions and
+  older Sessions without a saved mode use `Manual`. The mode can be changed
+  while its Session is running; the current value is read for the next Apply
+  decision and does not alter an approval prompt that is already open.
 
 ## Capabilities
 
@@ -434,9 +435,11 @@ raw action JSON, MIDI note payloads, and credentials are not copied into it.
 The directory contains:
 
 - `live-smith-settings.json` — saved Profiles, the active Profile, API keys,
-  generation settings, and the global Approval mode.
+  generation settings, and a legacy Approval field retained only for settings
+  schema compatibility. That field no longer affects Apply authorization.
 - `live-smith-sessions.json` — Session titles, Live object scopes, and
-  timestamps, plus optional sorted active Skill IDs.
+  timestamps, plus each Session's Approval mode and optional sorted active Skill
+  IDs.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
   tool results, confirmations, and errors for each Session.
 - `live-smith-attachments/<session-id>/` — private attachment blobs and integrity
@@ -465,14 +468,16 @@ npm start -- --storage-directory /absolute/path/to/live-smith-data
 ```
 
 These paths contain private persistent data, not SDK temporary files. Do not
-commit, share, or sync them. The current build migrates schema-version-1
-`autoApprove` settings in memory: `false` becomes `Manual`, and `true` becomes
-`Low Risk`. Settings upgrades use registered adjacent-version steps, so future
-schemas add one `vN` to `vN+1` migration instead of branching inside the current
-validator. Reading never rewrites the file; the next settings write persists
-schema version 2 without dropping Profiles or credentials. Future versions and
-historical schemas without a complete migration chain are rejected. Files
-written under other earlier development names are not migrated.
+commit, share, or sync them. The current build still accepts the schema-version-2
+Approval field and migrates schema-version-1 `autoApprove` values in memory so
+existing settings files remain readable without dropping Profiles or
+credentials. Neither legacy value seeds or overrides a Session's Approval mode.
+Settings upgrades use registered adjacent-version steps, so future schemas add
+one `vN` to `vN+1` migration instead of branching inside the current validator.
+Reading never rewrites the file; the next settings write persists schema version
+2. Future versions and historical schemas without a complete migration chain
+are rejected. Files written under other earlier development names are not
+migrated.
 
 If you use `npm start` without passing `--live`, also create `.env` with
 `EXTENSION_HOST_PATH` as described in the SDK quick start.

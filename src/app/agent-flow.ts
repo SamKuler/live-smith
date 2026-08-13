@@ -121,7 +121,6 @@ import {
   loadAgentSettings,
   requireActiveSavedProfile,
   saveSavedProfile,
-  saveGlobalSettings,
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
 import {
@@ -154,6 +153,10 @@ import {
   type RawAttachmentBodyReadOptions,
   type RawSkillBodyReadOptions,
 } from "./chat-bridge.js";
+import {
+  publishSessionApprovalModeChange,
+  subscribeSessionApprovalModeChanges,
+} from "./session-approval-events.js";
 import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
@@ -445,6 +448,7 @@ export async function runAgentFlow(
         previousSessions,
         archivedSessions,
         activeSessionId: activeSession.id,
+        approvalMode: activeSession.approvalMode ?? "manual",
         events,
         pendingAttachments,
         availableSkills: storageSnapshot.availableSkills,
@@ -536,12 +540,37 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
-    if (commandInput.kind === "save_global_settings") {
-      throwIfAborted(signal);
-      await saveGlobalSettings(context.environment.storageDirectory, {
-        approvalMode: commandInput.approvalMode,
-      });
-      status = "Global settings saved.";
+    if (commandInput.kind === "set_session_approval_mode") {
+      await withStorageTransaction(
+        context.environment.storageDirectory,
+        async (transaction) => {
+          throwIfAborted(signal);
+          const session = (await listSessionsInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+            projectKey,
+          )).find(
+            (candidate) =>
+              candidate.id === commandInput.sessionId && !candidate.archivedAt,
+          );
+          if (!session) {
+            throw new ChatBridgeResourceNotFoundError(
+              "That Session is not available in this Live Set.",
+            );
+          }
+          await updateSessionInTransaction(
+            transaction,
+            context.environment.storageDirectory,
+            session.id,
+            { approvalMode: commandInput.approvalMode },
+          );
+          publishSessionApprovalModeChange(context.environment.storageDirectory, {
+            sessionId: commandInput.sessionId,
+            approvalMode: commandInput.approvalMode,
+          });
+        },
+      );
+      status = "Session Approval Mode saved.";
       return buildStateAfterCommandMutation();
     }
 
@@ -559,6 +588,7 @@ export async function runAgentFlow(
         title: "",
         projectKey,
         scope: activeInteraction?.scope ?? interaction.scope,
+        approvalMode: "manual",
       });
       if (activeInteraction?.selectionContext) {
         selectionInteractionsBySessionId.set(session.id, activeInteraction);
@@ -1353,6 +1383,7 @@ export async function runAgentFlow(
               liveMutationQueue.run(signal, operation),
             confirmActions: (plan) => decidePlanApproval(
               context.environment.storageDirectory,
+              session.id,
               plan,
               () => stream.requestConfirmation({
                 message: plan.message,
@@ -1398,20 +1429,38 @@ export async function runAgentFlow(
       ? {}
       : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
   });
+  const unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
+    context.environment.storageDirectory,
+    ({ sessionId, approvalMode }) => {
+      bridge.publishSessionApprovalMode(sessionId, approvalMode);
+    },
+  );
 
   try {
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
+    unsubscribeApprovalModes();
     await bridge.close();
   }
 }
 
 export async function decidePlanApproval(
   storageDirectory: string | undefined,
+  sessionId: string,
   plan: AgentPlan,
   requestConfirmation: () => Promise<boolean>,
 ): Promise<AgentConfirmationDecision> {
-  const { approvalMode } = await loadAgentSettings(storageDirectory);
+  const approvalMode = await withStorageTransaction(
+    storageDirectory,
+    async (transaction) => {
+      const session = (await listSessionsInTransaction(
+        transaction,
+        storageDirectory,
+      )).find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error(`Session ${sessionId} does not exist.`);
+      return session.approvalMode ?? "manual";
+    },
+  );
   if (
     approvalMode === "everything" ||
     (approvalMode === "low-risk" && !requiresExplicitConfirmation(plan))

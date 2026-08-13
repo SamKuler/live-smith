@@ -16,6 +16,10 @@ import {
 } from "./persistence.js";
 import type { ConversationScope } from "../model/contracts.js";
 import {
+  isApprovalMode,
+  type ApprovalMode,
+} from "../model/profile.js";
+import {
   isSafeSkillId,
   MAX_ACTIVE_SKILL_COUNT,
 } from "../skills/format.js";
@@ -28,6 +32,7 @@ export interface AgentSession {
   originScope?: ConversationScope | undefined;
   archivedAt?: string | undefined;
   activeSkillIds?: string[];
+  approvalMode?: ApprovalMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,8 +41,10 @@ const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
 
 type CreateSessionInput = Pick<AgentSession, "title" | "projectKey" | "scope"> &
-  Partial<Pick<AgentSession, "activeSkillIds">>;
-type SessionUpdate = Partial<Pick<AgentSession, "title" | "activeSkillIds">>;
+  Partial<Pick<AgentSession, "activeSkillIds" | "approvalMode">>;
+type SessionUpdate = Partial<
+  Pick<AgentSession, "title" | "activeSkillIds" | "approvalMode">
+>;
 
 export class SessionStorageCorruptionError extends Error {
   constructor(cause?: unknown) {
@@ -54,6 +61,7 @@ export async function createSession(
   input: CreateSessionInput,
 ): Promise<AgentSession> {
   const activeSkillIds = normalizedOptionalActiveSkillIds(input);
+  const approvalMode = normalizedOptionalApprovalMode(input);
   const now = new Date().toISOString();
   const session: AgentSession = {
     id: createStorageId("session"),
@@ -61,6 +69,7 @@ export async function createSession(
     projectKey: input.projectKey,
     scope: cloneConversationScope(input.scope),
     ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
+    ...(approvalMode === undefined ? {} : { approvalMode }),
     createdAt: now,
     updatedAt: now,
   };
@@ -278,6 +287,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     "originScope",
     "archivedAt",
     "activeSkillIds",
+    "approvalMode",
     "createdAt",
     "updatedAt",
   ]);
@@ -292,6 +302,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     (record.archivedAt === undefined || typeof record.archivedAt === "string") &&
     (record.activeSkillIds === undefined ||
       isPersistedActiveSkillIds(record.activeSkillIds)) &&
+    (record.approvalMode === undefined || isApprovalMode(record.approvalMode)) &&
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string"
   );
@@ -304,11 +315,17 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
   const record = update as Record<string, unknown>;
   if (
     Object.keys(record).some(
-      (key) => key !== "title" && key !== "activeSkillIds",
+      (key) =>
+        key !== "title" && key !== "activeSkillIds" && key !== "approvalMode",
     ) ||
-    (Object.hasOwn(record, "title") && typeof record.title !== "string")
+    (Object.hasOwn(record, "title") && typeof record.title !== "string") ||
+    (Object.hasOwn(record, "approvalMode") && !isApprovalMode(record.approvalMode))
   ) {
-    throw new Error("Session update is invalid.");
+    throw new Error(
+      Object.hasOwn(record, "approvalMode")
+        ? "Approval mode is invalid."
+        : "Session update is invalid.",
+    );
   }
 
   return {
@@ -316,7 +333,20 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
     ...(Object.hasOwn(record, "activeSkillIds")
       ? { activeSkillIds: normalizeActiveSkillIds(record.activeSkillIds) }
       : {}),
+    ...(Object.hasOwn(record, "approvalMode")
+      ? { approvalMode: record.approvalMode as ApprovalMode }
+      : {}),
   };
+}
+
+function normalizedOptionalApprovalMode(
+  value: Pick<AgentSession, "approvalMode">,
+): ApprovalMode | undefined {
+  if (!Object.hasOwn(value, "approvalMode")) return undefined;
+  if (!isApprovalMode(value.approvalMode)) {
+    throw new Error("Approval mode is invalid.");
+  }
+  return value.approvalMode;
 }
 
 function normalizedOptionalActiveSkillIds(
@@ -380,6 +410,9 @@ function cloneSession(session: AgentSession): AgentSession {
     ...(session.activeSkillIds === undefined
       ? {}
       : { activeSkillIds: [...session.activeSkillIds] }),
+    ...(session.approvalMode === undefined
+      ? {}
+      : { approvalMode: session.approvalMode }),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };

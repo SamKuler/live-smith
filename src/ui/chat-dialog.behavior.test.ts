@@ -485,7 +485,11 @@ test("Accept Everything saves without confirmation and remains visibly dangerous
 
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "save_global_settings", approvalMode: "everything" },
+      body: {
+        kind: "set_session_approval_mode",
+        sessionId: "session-1",
+        approvalMode: "everything",
+      },
     });
     const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
     assert.equal(control?.value, "everything");
@@ -498,6 +502,53 @@ test("Accept Everything saves without confirmation and remains visibly dangerous
     harness.select("#approvalMode", "manual");
     await harness.settle();
     assert.equal(control?.classList.contains("is-everything"), false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Apply approval mode follows the selected Session", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.select("#approvalMode", "everything");
+    await harness.settle();
+
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
+    );
+
+    harness.click('.session-entry[data-session-id="session-1"] .session-row');
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "everything",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a Session approval update from another dialog refreshes the active control", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.emitServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-1",
+      approvalMode: "everything",
+    });
+
+    const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
+    assert.equal(control?.value, "everything");
+    assert.equal(control?.classList.contains("is-everything"), true);
+    assert.match(
+      control?.closest("label")?.getAttribute("title") ?? "",
+      /including deletes and replacement writes/i,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1355,15 +1406,15 @@ test("a running Session can be left in the background and shows an unread comple
     );
     assert.match(
       harness.document.querySelector("#approvalMode")?.closest("label")?.getAttribute("title") ?? "",
-      /next Apply request/i,
+      /Low Risk auto-applies/i,
     );
     assert.equal(
       harness.document.querySelector("#approvalMode")?.getAttribute("aria-describedby"),
-      "approvalModeLockHint",
+      null,
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#approvalModeLockHint")?.hidden,
-      false,
+      harness.document.querySelector("#approvalModeLockHint"),
+      null,
     );
     assert.equal(
       harness.document.querySelector<HTMLElement>("#settingsLockNotice")?.hidden,
@@ -1378,7 +1429,11 @@ test("a running Session can be left in the background and shows an unread comple
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "save_global_settings", approvalMode: "low-risk" },
+      body: {
+        kind: "set_session_approval_mode",
+        sessionId: "session-2",
+        approvalMode: "low-risk",
+      },
     });
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
@@ -2489,10 +2544,10 @@ test("cancelling a dirty Profile switch preserves the draft and selector", async
   }
 });
 
-test("failed global settings and Profile activation commands restore the saved UI state", async () => {
+test("failed Session approval and Profile activation commands restore the saved UI state", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.failNextCommand("Could not save global settings.");
+    harness.failNextCommand("Could not save Session Approval Mode.");
     harness.select("#approvalMode", "low-risk");
     await harness.settle();
     assert.equal(
@@ -2552,11 +2607,16 @@ test("command IDs stay in headers and stale command SSE state cannot roll back n
   }
 });
 
-test("an unknown settings commit applies authoritative state instead of reverting the control", async () => {
+test("an unknown Session approval commit applies authoritative state instead of reverting the control", async () => {
   const harness = await createDialogHarness();
   try {
     const authoritative = cloneState(stateFixture());
-    authoritative.settings.approvalMode = "everything";
+    authoritative.approvalMode = "everything";
+    const activeSession = authoritative.sessions.find(
+      (session) => session.id === authoritative.activeSessionId,
+    );
+    assert.ok(activeSession);
+    activeSession.approvalMode = "everything";
     harness.failNextCommand(
       "Storage replacement completed, but its durable commit could not be confirmed.",
       undefined,

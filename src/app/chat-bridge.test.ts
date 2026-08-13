@@ -93,7 +93,11 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     const settingsCommand = await fetch(endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "low-risk" }),
+      body: JSON.stringify({
+        kind: "set_session_approval_mode",
+        sessionId: "s1",
+        approvalMode: "low-risk",
+      }),
     });
     const archiveActiveSession = await fetch(endpoint("/command"), {
       method: "POST",
@@ -991,7 +995,11 @@ test("chat bridge returns authoritative state when a command commit outcome is u
         "Content-Type": "application/json",
         "X-Live-Smith-Command-Id": "command-unknown-1",
       },
-      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "everything" }),
+      body: JSON.stringify({
+        kind: "set_session_approval_mode",
+        sessionId: "session-1",
+        approvalMode: "everything",
+      }),
     });
 
     assert.equal(response.status, 500);
@@ -1027,7 +1035,11 @@ test("chat bridge marks an unknown command outcome as blocked when state reconci
         "Content-Type": "application/json",
         "X-Live-Smith-Command-Id": "command-unknown-2",
       },
-      body: JSON.stringify({ kind: "save_global_settings", approvalMode: "manual" }),
+      body: JSON.stringify({
+        kind: "set_session_approval_mode",
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
     });
 
     assert.equal(response.status, 500);
@@ -1419,7 +1431,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
   }
 });
 
-test("global settings commands accept only the three approval modes", async () => {
+test("Session approval commands require one Session and one valid mode", async () => {
   const state = {} as ChatDialogState;
   const received: unknown[] = [];
   const bridge = await createChatBridge({
@@ -1440,20 +1452,25 @@ test("global settings commands accept only the three approval modes", async () =
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "save_global_settings", approvalMode }),
+        body: JSON.stringify({
+          kind: "set_session_approval_mode",
+          sessionId: "session-1",
+          approvalMode,
+        }),
       });
       assert.equal(response.status, 200);
     }
     assert.deepEqual(received, [
-      { kind: "save_global_settings", approvalMode: "manual" },
-      { kind: "save_global_settings", approvalMode: "low-risk" },
-      { kind: "save_global_settings", approvalMode: "everything" },
+      { kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "manual" },
+      { kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "low-risk" },
+      { kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "everything" },
     ]);
 
     for (const body of [
-      { kind: "save_global_settings", approvalMode: "unsafe" },
-      { kind: "save_global_settings", autoApprove: true },
-      { kind: "save_global_settings", approvalMode: "manual", extra: true },
+      { kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "unsafe" },
+      { kind: "set_session_approval_mode", approvalMode: "manual" },
+      { kind: "set_session_approval_mode", sessionId: "session-1", autoApprove: true },
+      { kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "manual", extra: true },
     ]) {
       const response = await fetch(endpoint, {
         method: "POST",

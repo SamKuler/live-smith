@@ -2390,6 +2390,7 @@ test("getOrCreateDefaultSession rejects a preferred session from another project
   assert.notEqual(selected.id, foreign.id);
   assert.equal(selected.projectKey, "project-a");
   assert.equal(selected.title, "");
+  assert.equal(selected.approvalMode, "manual");
 });
 
 test("session reuse follows object handle identity, not duplicate or renamed labels", async () => {

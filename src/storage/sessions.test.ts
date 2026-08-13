@@ -53,6 +53,32 @@ test("deleteSession removes a session", async () => {
   assert.deepEqual(await listSessions(dir), []);
 });
 
+test("deleteSession removes its approval mode with the Session record", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Temporary automatic Session",
+    projectKey: "set-001",
+    scope: { kind: "track", identity: "track-temporary", label: "Temporary" },
+    approvalMode: "everything",
+  });
+
+  await deleteSession(dir, session.id);
+  const replacement = await createSession(dir, {
+    title: "Replacement",
+    projectKey: "set-001",
+    scope: { kind: "track", identity: "track-replacement", label: "Replacement" },
+  });
+
+  assert.deepEqual(await listSessions(dir), [replacement]);
+  assert.equal(replacement.approvalMode, undefined);
+  const persisted = JSON.parse(
+    await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8"),
+  ) as Array<{ id: string; approvalMode?: string }>;
+  assert.deepEqual(persisted.map(({ id }) => id), [replacement.id]);
+  assert.equal(Object.hasOwn(persisted[0]!, "approvalMode"), false);
+  assert.doesNotMatch(JSON.stringify(persisted), /everything/);
+});
+
 test("createSession prepends new sessions", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
   const first = await createSession(dir, {
@@ -72,8 +98,7 @@ test("createSession prepends new sessions", async () => {
     sessions.map((session) => session.id),
     [second.id, first.id],
   );
-}
-);
+});
 
 test("concurrent createSession calls preserve every session", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
@@ -208,6 +233,77 @@ test("activeSkillIds persist as a sorted bounded Session activation", async () =
     "gain-staging",
     "transient-check",
   ]);
+});
+
+test("approvalMode persists as a per-Session authorization", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const session = await createSession(dir, {
+    title: "Automatic mix pass",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    approvalMode: "low-risk",
+  });
+
+  assert.equal(session.approvalMode, "low-risk");
+  assert.equal((await listSessions(dir))[0]?.approvalMode, "low-risk");
+
+  await updateSession(dir, session.id, { approvalMode: "everything" });
+  assert.equal((await listSessions(dir))[0]?.approvalMode, "everything");
+});
+
+test("approvalMode validation rejects invalid created, updated, and persisted values", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  await assert.rejects(
+    createSession(dir, {
+      title: "Invalid approval",
+      projectKey: "set-001",
+      scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+      approvalMode: "unsafe",
+    } as never),
+    /Approval mode is invalid/i,
+  );
+
+  const session = await createSession(dir, {
+    title: "Valid approval",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    approvalMode: "manual",
+  });
+  const target = path.join(dir, "live-smith-sessions.json");
+  const before = await fs.readFile(target, "utf8");
+  await assert.rejects(
+    updateSession(dir, session.id, { approvalMode: false } as never),
+    /Approval mode is invalid/i,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), before);
+
+  const persisted = JSON.parse(before) as Array<Record<string, unknown>>;
+  persisted[0]!.approvalMode = "unsafe";
+  const invalid = JSON.stringify(persisted);
+  await fs.writeFile(target, invalid);
+  await assert.rejects(
+    listSessions(dir),
+    (error: unknown) => error instanceof SessionStorageCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), invalid);
+});
+
+test("legacy Sessions without approvalMode load without being rewritten", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const legacy = JSON.stringify([{
+    id: "session-before-approval-mode",
+    title: "Manual by default",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  }]);
+  await fs.writeFile(target, legacy);
+
+  const [session] = await listSessions(dir);
+  assert.equal(session?.approvalMode, undefined);
+  assert.equal(await fs.readFile(target, "utf8"), legacy);
 });
 
 test("activeSkillIds validation rejects unsafe, duplicate, oversized, and non-array updates", async () => {

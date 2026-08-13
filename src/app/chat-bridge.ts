@@ -202,7 +202,11 @@ export type ChatBridgeCommandInput =
   | { kind: "save_profile"; profile: DraftProfile }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
-  | { kind: "save_global_settings"; approvalMode: ApprovalMode }
+  | {
+      kind: "set_session_approval_mode";
+      sessionId: string;
+      approvalMode: ApprovalMode;
+    }
   | { kind: "new_session" }
   | { kind: "select_session"; sessionId: string }
   | { kind: "restore_session"; sessionId: string }
@@ -229,6 +233,7 @@ export interface ChatBridgeStream {
 
 export interface ChatBridge {
   url: string;
+  publishSessionApprovalMode(sessionId: string, approvalMode: ApprovalMode): void;
   close(): Promise<void>;
 }
 
@@ -296,6 +301,11 @@ type SsePayload =
   | { type: "confirm_request"; sendId: string; sessionId: string; id: string; message: string; groups: ActionDiffGroup[] }
   | { type: "confirm_resolved"; sendId: string; sessionId: string; id: string }
   | { type: "state"; commandId: string; state: ChatDialogState }
+  | {
+      type: "approval_mode_changed";
+      sessionId: string;
+      approvalMode: ApprovalMode;
+    }
   | { type: "done"; sendId: string; sessionId: string; state: ChatDialogState }
   | {
       type: "error";
@@ -1065,6 +1075,9 @@ export async function createChatBridge(
 
   return {
     url: `${bridgeBaseUrl(server)}/chat?token=${token}`,
+    publishSessionApprovalMode: (sessionId, approvalMode) => {
+      broadcast({ type: "approval_mode_changed", sessionId, approvalMode });
+    },
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
@@ -1742,14 +1755,22 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     assertOnlyInputKeys(input, ["kind", "profileId"], `${kind} command`);
     return { kind, profileId: inputString(input, "profileId") };
   }
-  if (kind === "save_global_settings") {
-    assertOnlyInputKeys(input, ["kind", "approvalMode"], `${kind} command`);
+  if (kind === "set_session_approval_mode") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "approvalMode"],
+      `${kind} command`,
+    );
     if (!isApprovalMode(input.approvalMode)) {
       throw new ChatBridgeRequestValidationError(
         "approvalMode must be manual, low-risk, or everything.",
       );
     }
-    return { kind, approvalMode: input.approvalMode };
+    return {
+      kind,
+      sessionId: inputString(input, "sessionId"),
+      approvalMode: input.approvalMode,
+    };
   }
   if (kind === "new_session") {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);
@@ -1828,11 +1849,12 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "archive_session" ||
     input.kind === "unarchive_session" ||
     input.kind === "attach_selected_audio_source" ||
+    input.kind === "set_session_approval_mode" ||
     input.kind === "set_session_skills";
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {
-  return isSessionCommand(input) || input.kind === "save_global_settings";
+  return isSessionCommand(input);
 }
 
 function inputRecord(value: unknown): Record<string, unknown> {

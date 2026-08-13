@@ -42,6 +42,7 @@ export async function getOrCreateDefaultSession(
     title: "",
     projectKey,
     scope,
+    approvalMode: "manual",
   });
 }
 

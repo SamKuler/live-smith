@@ -418,16 +418,27 @@
         }
       }
 
+      function updateApprovalModePresentation() {
+        const control = document.getElementById("approvalMode");
+        control.classList.toggle("is-everything", control.value === "everything");
+        control.closest("label").title = control.value === "everything"
+          ? "Accept Everything auto-applies every validated change, including deletes and replacement writes."
+          : control.value === "low-risk"
+            ? "Low Risk auto-applies changes that are not deletes, Clip writes, Arrangement clears, or sample replacements."
+            : "Manual requests approval for every Apply request.";
+      }
+
       function renderApprovalMode() {
         const control = document.getElementById("approvalMode");
-        control.value = getState().settings.approvalMode;
-        control.classList.toggle("is-everything", control.value === "everything");
+        control.value = getState().approvalMode;
+        updateApprovalModePresentation();
       }
 
       async function saveApprovalMode() {
         const control = document.getElementById("approvalMode");
-        control.classList.toggle("is-everything", control.value === "everything");
-        const saved = await runCommand("save_global_settings", {
+        updateApprovalModePresentation();
+        const saved = await runCommand("set_session_approval_mode", {
+          sessionId: getState().activeSessionId,
           approvalMode: control.value,
         });
         if (!saved) renderApprovalMode();
@@ -566,6 +577,7 @@
         markDraftDirtyForCapabilityAdjustment,
         modelStateMatchesCurrentConnection,
         modelStateMatchesCurrentProfile,
+        updateApprovalModePresentation,
         updateHostedToolControls,
         renderModelOptions,
         renderApprovalMode,

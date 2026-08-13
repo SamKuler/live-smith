@@ -6,6 +6,7 @@ import type {
   RuntimeProfile,
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
+import type { ApprovalMode } from "../model/profile.js";
 import type { SessionEvent } from "../storage/events.js";
 import type { SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
@@ -23,6 +24,7 @@ export interface ChatDialogState {
   previousSessions: AgentSession[];
   archivedSessions: AgentSession[];
   activeSessionId: string;
+  approvalMode: ApprovalMode;
   events: SessionEvent[];
   pendingAttachments: SessionAttachmentRef[];
   availableSkills: SkillSummary[];

@@ -510,8 +510,10 @@ does not match names or infer identity. The command sends only the Session ID,
 and `restore_session` atomically binds the history to the current server-owned
 handle while preserving the first binding as `originScope`. Rename, archive,
 unarchive, and delete operate on current or historical Sessions. `archivedAt`
-and `activeSkillIds` are optional additive fields, so existing Session files
-require no migration.
+and `activeSkillIds` are optional additive fields. `approvalMode` is also
+optional for backward compatibility; a missing value resolves to `manual`,
+while new Sessions explicitly persist `manual`. Existing Session files require
+no migration. Deleting a Session removes the mode with the same metadata record.
 Model context uses the latest 24 user/assistant events plus a separate bounded
 projection of the latest 12 persisted Apply results, rejected tool inputs, and
 errors (at most 12,000 characters). Recovery records are labelled untrusted
@@ -526,9 +528,11 @@ another dialog cannot delete a Session and then have a running send recreate its
 event log. A send never falls back to another Session when its requested ID is
 missing. Waiting operations recheck cancellation immediately after acquiring
 the lease. Different Sessions still overlap. Profile and model-discovery writes
-are locked in both the dialog and bridge while any send is active. The global
-Approval mode selector is the exception: it remains writable during a send and
-is read again immediately before each new Apply decision. Manual requests user
+are locked in both the dialog and bridge while any send is active. The active
+Session's Approval mode selector is the exception: it remains writable during a
+send and is read again from that Session immediately before each new Apply
+decision. A committed change is broadcast to other open dialogs for the same
+storage directory. Manual requests user
 approval for every plan. Low Risk automatically approves only plans outside the protected
 action set. Accept Everything automatically approves every validated plan,
 including deletes and replacement writes. An automatic decision persists a
@@ -541,14 +545,17 @@ RuntimeProfile state remain the request-start snapshot, and a confirmation
 already open is not changed. Confirmed Live mutations enter one process-wide
 queue; after acquiring the queue lock, each plan repeats its preflight
 immediately before execution.
-The settings schema stores the mode as `manual`, `low-risk`, or `everything`.
+The settings schema still validates its legacy `approvalMode` field as
+`manual`, `low-risk`, or `everything` so existing files remain readable. Runtime
+authorization never reads that field: it neither seeds nor overrides a Session.
 Persisted settings pass through an adjacent-version migration registry before
-current-schema validation. Loading a valid schema-version-1 file maps
+current-schema validation. Loading a valid schema-version-1 file still maps
 `autoApprove: false` to Manual and `autoApprove: true` to Low Risk while
-preserving Profiles and credentials. Reads never rewrite the file; the next
-authorized settings mutation persists schema version 2. A future schema version
-or a historical version without a complete `vN` to `vN+1` migration chain fails
-closed as settings corruption.
+preserving Profiles and credentials, but the mapped compatibility value has no
+Apply effect. Reads never rewrite the file; the next authorized settings
+mutation persists schema version 2. A future schema version or a historical
+version without a complete `vN` to `vN+1` migration chain fails closed as
+settings corruption.
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
 tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call
 limit. Distinct validation errors are treated as an evolving repair attempt and
