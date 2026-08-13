@@ -8,9 +8,9 @@ Live Smith has two API families and three supported protocol combinations:
 | OpenAI | Chat Completions |
 | Anthropic | Messages |
 
-There are no endpoint or vendor presets. A service that implements the OpenAI
-protocol is configured as an ordinary OpenAI profile with its own base URL,
-model, API mode, and parameters.
+There are no endpoint or vendor presets. A compatible service is configured as
+an ordinary Profile for the OpenAI or Anthropic protocol family it implements,
+with its own base URL, model, API mode, and parameters.
 
 For all three modes, a non-2xx HTTP response reports the API family/mode, status
 code, and status text only. Its response body is untrusted and is never read or
@@ -24,7 +24,7 @@ provider message.
 Each Profile stores a complete connection:
 
 - name, API family, and API mode;
-- base URL, API key, and model;
+- base URL and model, plus an API key unless the endpoint is local loopback;
 - output limit, optional temperature, and reasoning controls;
 - optional provider-hosted Web Search;
 - optional capability overrides and Extra Body JSON.
@@ -328,12 +328,13 @@ Reasoning has three modes:
 - Enabled: use the policy's effort, adaptive-thinking, or budget-thinking
   strategy.
 
-## Custom OpenAI-compatible endpoints
+## Compatible endpoints
 
-Create an OpenAI Profile and choose the protocol the endpoint actually supports.
-Enter its base URL exactly as required, including `/v1` when applicable. Use
-**Connect & Load** if it implements the OpenAI model-list endpoint, or type the
-model ID manually.
+Create an OpenAI or Anthropic Profile for the protocol family the endpoint
+actually implements. OpenAI Profiles choose Responses or Chat Completions;
+Anthropic Profiles use Messages. Enter the base URL exactly as required,
+including `/v1` when applicable. Use **Connect & Load** if the endpoint
+implements the corresponding model-list API, or type the model ID manually.
 
 Advanced capability overrides describe endpoint/model features without adding a
 vendor-specific adapter. Extra Body JSON can add or override nonstandard
@@ -348,6 +349,8 @@ contain username/password credentials.
 Provider connections must use HTTPS. Plain HTTP is accepted only for loopback
 providers such as `localhost`, `127.0.0.1`, or `::1`; private-LAN and remote HTTP
 endpoints are rejected before a Profile can be saved or used for discovery.
+Loopback endpoints may leave API key blank, in which case Live Smith omits the
+authentication header entirely. Every non-loopback endpoint requires a key.
 
 Live context and tool results are sent as explicitly labelled untrusted data.
 Track, Clip, Device, parameter, and MIDI names/content never gain instruction
@@ -355,7 +358,8 @@ authority merely because they appear in a Live Set or tool response.
 
 ## Credential storage
 
-API keys are stored as plain text in Ableton's local extension storage directory.
+Configured API keys are stored as plain text in Ableton's local extension
+storage directory.
 Use a dedicated key with provider-side spending and rate limits. Do not commit,
 share, or cloud-sync the storage directory. Environment variables and `.env`
 files are not read as model configuration. On POSIX hosts, Live Smith creates or

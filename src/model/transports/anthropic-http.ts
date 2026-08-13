@@ -112,14 +112,15 @@ function anthropicRequestInit(
   profile: DraftProfile | SavedProfile,
   options: AnthropicRequestOptions,
 ): RequestInit {
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "anthropic-version": anthropicApiVersion,
+    "content-type": "application/json",
+  };
+  if (profile.apiKey) headers["x-api-key"] = profile.apiKey;
   const init: RequestInit = {
     method: options.method,
-    headers: {
-      accept: "application/json",
-      "anthropic-version": anthropicApiVersion,
-      "content-type": "application/json",
-      "x-api-key": profile.apiKey,
-    },
+    headers,
   };
   if (options.body) init.body = JSON.stringify(options.body);
   if (options.signal) init.signal = options.signal;

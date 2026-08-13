@@ -165,6 +165,24 @@ test("OpenAI Chat maps standard parameters and preserves raw assistant state", a
   );
 });
 
+test("OpenAI Chat omits authorization for a keyless loopback Profile", async () => {
+  let headers = new Headers();
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async (_input, init) => {
+      headers = new Headers(init?.headers);
+      return completedChatResponse();
+    },
+  });
+
+  await transport.createToolTurn(request(profile({
+    baseUrl: "http://127.0.0.1:1234/v1",
+    apiKey: "",
+  })));
+
+  assert.equal(headers.has("authorization"), false);
+  assert.equal(headers.get("content-type"), "application/json");
+});
+
 test("OpenAI Chat serializes image input and preserves tool replay", async () => {
   let messages: Array<Record<string, unknown>> = [];
   const transport = createOpenAIChatTransport({

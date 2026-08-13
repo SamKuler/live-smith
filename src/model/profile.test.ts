@@ -89,6 +89,37 @@ test("Profile validation permits plaintext HTTP only for loopback providers", ()
   }
 });
 
+test("loopback Profiles may omit authentication while remote Profiles require it", () => {
+  for (const [apiFamily, apiMode] of [
+    ["openai", "chat-completions"],
+    ["anthropic", "messages"],
+  ] as const) {
+    const localProfile = {
+      ...profile("http://127.0.0.1:1234/v1"),
+      apiFamily,
+      apiMode,
+      apiKey: "   ",
+    };
+    assert.equal(validateDraftProfileForDiscovery(localProfile).apiKey, "");
+    assert.equal(validateDraftProfileForSave(localProfile).apiKey, "");
+
+    assert.throws(
+      () => validateDraftProfileForDiscovery({
+        ...localProfile,
+        baseUrl: "https://models.example.test/v1",
+      }),
+      /API key is required for non-local endpoints/,
+    );
+    assert.throws(
+      () => validateDraftProfileForSave({
+        ...localProfile,
+        baseUrl: "https://models.example.test/v1",
+      }),
+      /API key is required for non-local endpoints/,
+    );
+  }
+});
+
 test("Profile validation rejects unsafe or overlong internal IDs", () => {
   for (const id of ["../profile", "profile.with-dot", "a".repeat(129)]) {
     assert.throws(

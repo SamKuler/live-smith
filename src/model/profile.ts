@@ -177,13 +177,14 @@ export function validateDraftProfileForDiscovery(value: unknown): DraftProfile {
     "baseUrl",
     "Base URL is required.",
   );
+  const baseUrl = normalizedBaseUrl(rawBaseUrl);
   return {
     id,
     name: draftString(record.name, "name"),
     apiFamily,
     apiMode,
-    baseUrl: normalizedBaseUrl(rawBaseUrl),
-    apiKey: requiredString(record.apiKey, "apiKey", "API key is required."),
+    baseUrl,
+    apiKey: apiKeyValue(record.apiKey, baseUrl),
     model: draftString(record.model, "model"),
     parameters: draftParameters(record.parameters),
     advanced: draftAdvanced(record.advanced),
@@ -244,7 +245,7 @@ export function validateDraftProfileForSave(
     apiFamily,
     apiMode,
     baseUrl,
-    apiKey: requiredString(record.apiKey, "apiKey", "API key is required."),
+    apiKey: apiKeyValue(record.apiKey, baseUrl),
     model: requiredString(record.model, "model", "Model is required."),
     parameters: {
       maxOutputTokens: positiveInteger(
@@ -599,6 +600,18 @@ function isLoopbackHostname(hostname: string): boolean {
   if (isIP(unbracketed) !== 6) return false;
   return unbracketed === "::1" ||
     /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(unbracketed);
+}
+
+function apiKeyValue(value: unknown, baseUrl: string): string {
+  if (typeof value !== "string") {
+    throw new ProfileValidationError("apiKey", "API key must be a string.");
+  }
+  const apiKey = value.trim();
+  if (apiKey || isLoopbackHostname(new URL(baseUrl).hostname)) return apiKey;
+  throw new ProfileValidationError(
+    "apiKey",
+    "API key is required for non-local endpoints.",
+  );
 }
 
 function apiFamilyValue(value: unknown): ApiFamily {

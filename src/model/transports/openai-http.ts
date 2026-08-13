@@ -109,13 +109,14 @@ function openAIRequestInit(
   profile: DraftProfile | SavedProfile,
   options: OpenAIRequestOptions,
 ): RequestInit {
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
   const init: RequestInit = {
     method: options.method,
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${profile.apiKey}`,
-      "content-type": "application/json",
-    },
+    headers,
   };
   if (options.body) init.body = JSON.stringify(options.body);
   if (options.signal) init.signal = options.signal;

@@ -471,7 +471,7 @@ test("assistant Web Search citations render as bounded safe source links", async
     assert.match(searchStatus?.textContent ?? "", /Source pages/);
     assert.equal(searchStatus?.querySelector(".web-search-source-note"), null);
     const sourceHelp = searchStatus?.querySelector<HTMLElement>(
-      ".web-search-source-help",
+      ".inline-help",
     );
     assert.equal(sourceHelp?.textContent, "?");
     assert.equal(sourceHelp?.tabIndex, 0);
@@ -797,7 +797,7 @@ test("Web Search pages appear live and reconcile into the persisted search card"
     );
     assert.equal(terminalCard?.querySelector(".web-search-source-note"), null);
     assert.match(
-      terminalCard?.querySelector(".web-search-source-help")
+      terminalCard?.querySelector(".inline-help")
         ?.getAttribute("aria-label") ?? "",
       /page text is available to the model/i,
     );

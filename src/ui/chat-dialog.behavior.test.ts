@@ -340,7 +340,23 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
     assert.equal(harness.document.querySelector("#inspectorToggleButton"), null);
     assert.equal(
       harness.document.querySelector("#apiFamily option")?.textContent,
-      "OpenAI / compatible",
+      "OpenAI",
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll("#apiFamily option")].map(
+        (option) => option.textContent,
+      ),
+      ["OpenAI", "Anthropic"],
+    );
+    const connectionHelp = [...harness.document.querySelectorAll<HTMLElement>(
+      "#connectionSettingsSection .inline-help",
+    )];
+    assert.equal(connectionHelp.length, 2);
+    assert.match(connectionHelp[0]?.getAttribute("aria-label") ?? "", /official and compatible endpoints/i);
+    assert.match(connectionHelp[1]?.getAttribute("aria-label") ?? "", /optional.*local.*loopback/i);
+    assert.deepEqual(
+      connectionHelp.map((help) => [help.textContent, help.tabIndex, help.dataset.tooltip]),
+      connectionHelp.map((help) => ["?", 0, help.getAttribute("aria-label")]),
     );
     assert.equal(
       harness.document.querySelector('label[for="apiMode"]')?.textContent,
@@ -445,8 +461,8 @@ test("first-run setup connects, selects a discovered model, and saves it for use
   const harness = await createDialogHarness(state);
   try {
     harness.input("#profileName", "Studio model");
-    harness.input("#apiKey", "first-run-key");
-    harness.input("#baseUrl", "https://provider.test/v1");
+    harness.input("#apiKey", "");
+    harness.input("#baseUrl", "http://localhost:1234/v1");
     harness.click("#discoverModelsButton");
     await harness.settle();
 
@@ -458,6 +474,12 @@ test("first-run setup connects, selects a discovered model, and saves it for use
     harness.input("#model", "model-discovered");
     harness.click("#saveProfileButton");
     await harness.settle();
+
+    const savedProfile = (commandCalls(harness).at(-1)?.body as {
+      profile: { apiKey: string; baseUrl: string };
+    }).profile;
+    assert.equal(savedProfile.apiKey, "");
+    assert.equal(savedProfile.baseUrl, "http://localhost:1234/v1");
 
     assert.match(
       harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
@@ -2937,10 +2959,12 @@ test("Connect and Load sends the current draft without saving or overwriting it"
   }
 });
 
-test("Connect and Load permits blank Draft name and model without changing Runtime display", async () => {
+test("Connect and Load permits a local keyless Draft with blank name and model", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "");
+    harness.input("#apiKey", "");
+    harness.input("#baseUrl", "http://127.0.0.1:1234/v1");
     harness.input("#model", "");
 
     assert.equal(
@@ -2962,10 +2986,12 @@ test("Connect and Load permits blank Draft name and model without changing Runti
     const command = commandCalls(harness).at(-1);
     const body = command?.body as {
       kind: string;
-      profile: { name: string; model: string };
+      profile: { name: string; apiKey: string; baseUrl: string; model: string };
     };
     assert.equal(body.kind, "discover_models");
     assert.equal(body.profile.name, "");
+    assert.equal(body.profile.apiKey, "");
+    assert.equal(body.profile.baseUrl, "http://127.0.0.1:1234/v1");
     assert.equal(body.profile.model, "");
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.value,

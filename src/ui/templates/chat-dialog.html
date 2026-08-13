@@ -869,7 +869,7 @@
         font-size: 10px;
       }
 
-      .web-search-source-help {
+      .inline-help {
         position: relative;
         display: inline-grid;
         place-items: center;
@@ -884,7 +884,7 @@
         cursor: help;
       }
 
-      .web-search-source-help::after {
+      .inline-help::after {
         content: attr(data-tooltip);
         position: absolute;
         z-index: 20;
@@ -909,15 +909,15 @@
         transition: opacity 100ms ease, transform 100ms ease;
       }
 
-      .web-search-source-help:hover,
-      .web-search-source-help:focus-visible {
+      .inline-help:hover,
+      .inline-help:focus-visible {
         border-color: var(--accent);
         color: var(--text);
         outline: none;
       }
 
-      .web-search-source-help:hover::after,
-      .web-search-source-help:focus-visible::after {
+      .inline-help:hover::after,
+      .inline-help:focus-visible::after {
         opacity: 1;
         transform: translateY(0);
       }
@@ -1562,6 +1562,13 @@
         color: var(--quiet);
         font-size: 10px;
         line-height: 1.35;
+      }
+
+      .field-label-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        width: fit-content;
       }
 
       .settings-lock-notice {
@@ -2382,19 +2389,25 @@
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
                 <h2 id="connectionSettingsHeading">Model connection</h2>
                 <div class="field">
-                  <label for="apiFamily">Provider</label>
+                  <div class="field-label-row">
+                    <label for="apiFamily">Provider</label>
+                    <span class="inline-help" tabindex="0" role="note" aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported.">?</span>
+                  </div>
                   <select id="apiFamily" name="apiFamily" autocomplete="off" onchange="LiveSmithUI.handleApiFamilyChange()">
-                    <option value="openai">OpenAI / compatible</option>
+                    <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                   </select>
                 </div>
                 <div class="field">
                   <label for="apiMode">Request format</label>
                   <select id="apiMode" name="apiMode" autocomplete="off" aria-describedby="apiModeHint" onchange="LiveSmithUI.handleApiModeChange()"></select>
-                  <span id="apiModeHint" class="field-hint">Use Responses when available. Compatible services may require Chat Completions; Anthropic uses Messages.</span>
+                  <span id="apiModeHint" class="field-hint">OpenAI endpoints can use Responses or Chat Completions; Anthropic endpoints use Messages.</span>
                 </div>
                 <div class="field">
-                  <label for="apiKey">API key</label>
+                  <div class="field-label-row">
+                    <label for="apiKey">API key</label>
+                    <span class="inline-help" tabindex="0" role="note" aria-label="Optional for local loopback endpoints; required for every other endpoint." data-tooltip="Optional for local loopback endpoints; required for every other endpoint.">?</span>
+                  </div>
                   <div class="key-row">
                     <input id="apiKey" name="apiKey" type="password" autocomplete="off" spellcheck="false" oninput="LiveSmithUI.markDraftDirty(this)" />
                     <button id="apiKeyVisibilityButton" class="secondary" type="button" aria-controls="apiKey" aria-pressed="false" onclick="LiveSmithUI.toggleApiKeyVisibility()">Show</button>

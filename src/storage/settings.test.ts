@@ -190,6 +190,17 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   ]);
 });
 
+test("saveSavedProfile persists a keyless loopback connection", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
+  const saved = await saveSavedProfile(directory, profile({
+    baseUrl: "http://127.0.0.1:1234/v1",
+    apiKey: "",
+  }));
+
+  assert.equal(saved.profiles[0]?.apiKey, "");
+  assert.equal((await loadAgentSettings(directory)).profiles[0]?.apiKey, "");
+});
+
 test("concurrent profile saves neither fail nor lose profiles", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   const profiles = Array.from({ length: 16 }, (_, index) =>

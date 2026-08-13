@@ -23,8 +23,8 @@
 - Opens a ChatApp-style modal with scoped sessions, tool trace history, Live
   context, named connection profiles, and model capability hints.
 - Supports two API families through three explicit modes: OpenAI Responses,
-  OpenAI Chat Completions, and Anthropic Messages. Custom OpenAI-compatible
-  base URLs are regular OpenAI profiles.
+  OpenAI Chat Completions, and Anthropic Messages. Compatible endpoints use an
+  ordinary Profile for the protocol family they implement.
 - Uses real tool calls for observation and mutation. The agent can inspect the
   Live Set, tracks, devices, and MIDI notes before deciding what to apply.
 - Can opt a saved OpenAI Responses or Anthropic Messages Profile into
@@ -196,7 +196,7 @@ profile saves the complete connection and generation configuration:
 
 - API family and mode: OpenAI `Responses`, OpenAI `Chat Completions`, or
   Anthropic `Messages`
-- API key, base URL, and model
+- Base URL and model, plus an API key unless the endpoint is local loopback
 - Temperature and maximum output tokens
 - Capability-aware reasoning effort or thinking budget
 - Optional provider-hosted Web Search for Responses or Messages
@@ -217,10 +217,12 @@ The UI keeps configuration in three explicit states:
 - `RuntimeProfile` combines the active Saved Profile with resolved capabilities;
   model requests and the header summary use the same runtime value.
 
-OpenAI-compatible services use an OpenAI profile with `Chat Completions` (or
-`Responses` if the service implements it) and the service's base URL. Anthropic
-profiles always use `Messages`; their base URL may be the API root or end in
+Compatible services use a Profile for the protocol family they implement.
+OpenAI-family endpoints use `Chat Completions` or `Responses`; Anthropic-family
+endpoints use `Messages`. An Anthropic base URL may be the API root or end in
 `/v1`, and Live Smith resolves the `/v1/messages` and `/v1/models` endpoints.
+Local loopback endpoints can leave API key blank; Live Smith then sends no
+authentication header. Every non-loopback endpoint still requires a key.
 
 Use **Connect & Load** in the Model tab to query the provider's model list.
 Endpoints can expose model metadata such as display names, max output
@@ -390,7 +392,7 @@ Settings are stored locally in the per-extension directory supplied by the
 Ableton Extensions SDK as `context.environment.storageDirectory`. Live Smith
 does not choose or hard-code the production path; when Live manages the
 Extension Host, Live owns that path and its exact OS location may change during
-the SDK beta. API keys are currently stored there as plain text, so use a
+the SDK beta. Configured API keys are currently stored there as plain text, so use a
 restricted provider key and do not share or sync that directory. Never commit
 provider credentials.
 

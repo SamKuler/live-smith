@@ -146,6 +146,24 @@ test("Anthropic Messages maps adaptive thinking and preserves content blocks", a
   assert.equal((turn.providerState as { content: unknown[] }).content.length, 2);
 });
 
+test("Anthropic Messages omits authentication for a keyless loopback Profile", async () => {
+  let headers = new Headers();
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      headers = new Headers(init?.headers);
+      return completedAnthropicResponse();
+    },
+  });
+
+  await transport.createToolTurn(request(profile({
+    baseUrl: "http://localhost:1234",
+    apiKey: "",
+  })));
+
+  assert.equal(headers.has("x-api-key"), false);
+  assert.equal(headers.get("anthropic-version"), "2023-06-01");
+});
+
 test("Anthropic Messages maps hosted Web Search and exposes bounded citations", async () => {
   let body: Record<string, unknown> = {};
   const p = profile({ advanced: { hostedTools: { webSearch: true } } });
