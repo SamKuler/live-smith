@@ -472,7 +472,7 @@ rechecks the segment against the current Clip duration before assigning notes.
 Every note must state its velocity explicitly; validation never invents a hidden
 musical default.
 
-Extensions SDK 1.0.0-beta.0 accepts an exact built-in name through
+Extensions SDK 1.0.0-beta.1 accepts an exact built-in name through
 `insertDevice`, but exposes no Browser, installed-device catalog, list, or
 search API, and its insertion failure callback carries no host detail. The
 agent therefore must not present a bundled name list as current-host truth.

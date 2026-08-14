@@ -5,8 +5,8 @@
 **A context-aware AI production agent for Ableton Live.**
 
 [![Status: Beta](https://img.shields.io/badge/status-beta-F59E0B?style=flat-square)](#development-setup)
-[![Ableton Extensions SDK](https://img.shields.io/badge/Ableton_Extensions_SDK-1.0.0--beta.0-111111?style=flat-square)](#device-and-content-boundaries)
-[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A524.14-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
+[![Ableton Extensions SDK](https://img.shields.io/badge/Ableton_Extensions_SDK-1.0.0--beta.1-111111?style=flat-square)](#device-and-content-boundaries)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A524.16-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json)
 
 [Capabilities](#capabilities) · [Providers](#model-providers) · [Sessions](#sessions-and-history) · [Local data](#local-data-and-privacy) · [Development](#development-setup)
@@ -14,7 +14,7 @@
 </div>
 
 > [!NOTE]
-> Live Smith currently targets the Ableton Extensions SDK `1.0.0-beta.0` and
+> Live Smith currently targets the Ableton Extensions SDK `1.0.0-beta.1` and
 > requires an Ableton Live build with Extensions support.
 
 ## Overview
@@ -497,8 +497,8 @@ does not permit redistributing the SDK or its files separately from an
 application. Obtain the SDK through Ableton's official developer channel and
 place these two archives in `extensions-sdk-1/`:
 
-- `ableton-extensions-sdk-1.0.0-beta.0.tgz`
-- `ableton-extensions-cli-1.0.0-beta.0.tgz`
+- `ableton-extensions-sdk-1.0.0-beta.1.tgz`
+- `ableton-extensions-cli-1.0.0-beta.1.tgz`
 
 Then install and verify the project:
 

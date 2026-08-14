@@ -1,13 +1,13 @@
 {
   "name": "live-smith",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An AI agent extension for inspecting and editing Ableton Live Sets.",
   "author": "Sam Kuler",
   "private": true,
   "type": "module",
   "main": "dist/extension.js",
   "engines": {
-    "node": ">=24.14.0"
+    "node": ">=24.16.0"
   },
   "scripts": {
     "build": "tsc --noEmit && tsx build.ts --production",
@@ -21,19 +21,23 @@
     "verify:package": "tsx scripts/verify-package.ts"
   },
   "dependencies": {
-    "@ableton-extensions/sdk": "file:extensions-sdk-1/ableton-extensions-sdk-1.0.0-beta.0.tgz",
+    "@ableton-extensions/sdk": "file:extensions-sdk-1/ableton-extensions-sdk-1.0.0-beta.1.tgz",
     "dompurify": "^3.4.13",
     "fast-xml-parser": "5.10.1",
     "fflate": "0.8.3",
     "marked": "^18.0.9"
   },
   "devDependencies": {
-    "@ableton-extensions/cli": "file:extensions-sdk-1/ableton-extensions-cli-1.0.0-beta.0.tgz",
+    "@ableton-extensions/cli": "file:extensions-sdk-1/ableton-extensions-cli-1.0.0-beta.1.tgz",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^24.1.0",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
   }
 }
