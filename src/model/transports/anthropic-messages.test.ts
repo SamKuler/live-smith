@@ -1354,6 +1354,53 @@ test("Anthropic Messages continues pause_turn responses and replays every opaque
   ]);
 });
 
+test("Anthropic Messages aborts an in-flight pause_turn continuation", async () => {
+  const controller = new AbortController();
+  let fetchCalls = 0;
+  let continuationSignal: AbortSignal | null | undefined;
+  let markContinuationStarted!: () => void;
+  const continuationStarted = new Promise<void>((resolve) => {
+    markContinuationStarted = resolve;
+  });
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async (_input, init) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Response(JSON.stringify({
+          stop_reason: "pause_turn",
+          content: [{
+            type: "server_tool_use",
+            id: "search-interrupted",
+            name: "web_search",
+            input: { query: "Ableton Live release" },
+          }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      continuationSignal = init?.signal;
+      markContinuationStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        continuationSignal?.addEventListener(
+          "abort",
+          () => reject(continuationSignal?.reason),
+          { once: true },
+        );
+      });
+    },
+  });
+  const p = profile({ advanced: { hostedTools: { webSearch: true } } });
+  const req = request(p);
+  req.tools.push({ type: "hosted_web_search", maxUses: 5 });
+  req.signal = controller.signal;
+
+  const pending = transport.createToolTurn(req);
+  await continuationStarted;
+  controller.abort(new Error("interrupt pause continuation"));
+
+  await assert.rejects(pending, /interrupt pause continuation|aborted/i);
+  assert.equal(fetchCalls, 2);
+  assert.equal(continuationSignal?.aborted, true);
+});
+
 test("Anthropic Messages bounds repeated pause_turn continuations", async () => {
   let fetchCalls = 0;
   const p = profile({ advanced: { hostedTools: { webSearch: true } } });
@@ -1612,6 +1659,10 @@ test("Anthropic Messages replays thinking blocks and groups tool results", async
       providerState: { kind: "anthropic-messages", content: [{ type: "thinking", thinking: "hidden", signature: "sig" }, { type: "tool_use", id: "tool-1", name: "inspect", input: {} }] },
     },
     { role: "tool", toolCallId: "tool-1", content: "result" },
+    {
+      role: "user",
+      content: "Steer toward the Lead track.",
+    },
   ];
   await transport.createToolTurn(req);
   const assistant = messages.find((message) => message.role === "assistant");
@@ -1621,7 +1672,14 @@ test("Anthropic Messages replays thinking blocks and groups tool results", async
     Array.isArray(message.content) &&
     (message.content as Array<{ type?: string }>).some((item) => item.type === "tool_result")
   );
-  assert.equal((results?.content as Array<{ type: string }>).some((item) => item.type === "tool_result"), true);
+  assert.deepEqual(results?.content, [{
+    type: "tool_result",
+    tool_use_id: "tool-1",
+    content: "result",
+  }, {
+    type: "text",
+    text: "Steer toward the Lead track.",
+  }]);
 });
 
 test("Anthropic Messages streaming emits text and returns the final content blocks", async () => {

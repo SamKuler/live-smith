@@ -661,10 +661,18 @@ test("OpenAI Chat replays the raw assistant message before tool results", async 
       },
     },
     { role: "tool", toolCallId: "call-1", content: "result" },
+    {
+      role: "user",
+      content: "Steer toward the Lead track.",
+    },
   ]));
   const assistantIndex = messages.findIndex((message) => message.reasoning_content === "opaque");
   assert.ok(assistantIndex >= 0);
   assert.equal(messages[assistantIndex + 1]?.role, "tool");
+  assert.deepEqual(messages[assistantIndex + 2], {
+    role: "user",
+    content: "Steer toward the Lead track.",
+  });
 });
 
 test("Extra Body may override generation fields but not structural or audio-output Chat fields", async () => {

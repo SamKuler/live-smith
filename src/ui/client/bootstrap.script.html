@@ -403,6 +403,7 @@
           commandKind,
           sendInProgress,
           skillInProgress,
+          steerInProgress,
         }) {
           const operationBusy = Boolean(commandKind) || sendInProgress ||
             attachmentInProgress || skillInProgress;
@@ -423,7 +424,8 @@
           );
           const approvalMode = document.getElementById("approvalMode");
           profileEditor.updateApprovalModePresentation();
-          document.getElementById("prompt").disabled = operationBusy;
+          document.getElementById("prompt").disabled = Boolean(commandKind) ||
+            attachmentInProgress || skillInProgress;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
             .forEach((control) => {
               control.disabled = sessionControlsBusy;
@@ -438,6 +440,10 @@
             skillInProgress;
           document.getElementById("sendButton").disabled =
             Boolean(commandKind) || attachmentInProgress || skillInProgress;
+          const steerButton = document.getElementById("steerButton");
+          steerButton.hidden = !sendInProgress;
+          steerButton.disabled = !sendInProgress || Boolean(commandKind) ||
+            attachmentInProgress || skillInProgress || steerInProgress;
           attachments.setBusy(operationBusy);
           skillManager.setBusy(settingsBusy);
 
@@ -485,6 +491,7 @@
           handleProfileSelection: profileEditor.handleProfileSelection,
           handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
+          handleSteerButton: bridgeClient.handleSteerButton,
           markDraftDirty: profileEditor.markDraftDirty,
           openInspector,
           requestClose,
@@ -505,11 +512,20 @@
           sessionTimeline.switchInspectorTab("settings");
           const prompt = document.getElementById("prompt");
           prompt.value = "";
-          prompt.addEventListener("keydown", (event) => {
+          prompt.addEventListener("input", bridgeClient.handleComposerInput);
+          document.addEventListener("keydown", (event) => {
             if (event.defaultPrevented) return;
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-              event.preventDefault();
-              if (!bridgeClient.isOperationInProgress()) bridgeClient.handleSendButton();
+              if (bridgeClient.isSendInProgress()) {
+                event.preventDefault();
+                bridgeClient.handleSteerButton();
+              } else if (
+                event.target === prompt &&
+                !bridgeClient.isOperationInProgress()
+              ) {
+                event.preventDefault();
+                bridgeClient.handleSendButton();
+              }
             }
           });
           bridgeClient.startEventStream();

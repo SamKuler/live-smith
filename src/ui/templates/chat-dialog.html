@@ -1213,6 +1213,10 @@
         margin-left: auto;
       }
 
+      #steerButton:not([hidden]) + #sendButton {
+        margin-left: 0;
+      }
+
       .attachment-menu-shell {
         position: relative;
         flex: 0 0 auto;
@@ -2344,6 +2348,7 @@
                   <option value="everything">Accept Everything</option>
                 </select>
               </label>
+              <button id="steerButton" class="primary" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" title="Guide the active request (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSteerButton()" hidden>Steer</button>
               <button id="sendButton" class="primary" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" title="Send (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSendButton()">Send</button>
             </div>
           </div>

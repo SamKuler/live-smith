@@ -65,6 +65,13 @@ export function buildOpenAIChatMessages(
       });
       continue;
     }
+    if (message.role === "user") {
+      messages.push({
+        role: "user",
+        content: message.content,
+      });
+      continue;
+    }
     messages.push(chatAssistantMessage(message));
   }
   return messages;

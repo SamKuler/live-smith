@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,7 +21,9 @@ import {
   loadSessionEvents,
   MAX_USER_EVENT_ATTACHMENT_BYTES,
   MAX_USER_EVENT_ATTACHMENT_COUNT,
+  SessionSteeringReceiptConflictError,
   SessionEventsCorruptionError,
+  type SessionSteeringReceipt,
 } from "./events.js";
 
 const imageRef: SessionAttachmentRef = {
@@ -52,6 +55,155 @@ const audioRef: SessionAttachmentRef = {
   sampleRate: 48_000,
   channels: 2,
 };
+
+function steeringReceipt(
+  sendId: string,
+  id: string,
+  content: string,
+): SessionSteeringReceipt {
+  return {
+    sendId,
+    id,
+    sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+  };
+}
+
+test("steering receipts make identical user-event appends idempotent", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-event-receipt-"));
+  const sessionId = "session-steering-idempotent";
+  const content = "Keep the drums dry and move the bass down one octave.";
+  const expectedReceipt = steeringReceipt("send-steering-1", "steer-1", content);
+  const inputReceipt = { ...expectedReceipt };
+
+  const first = await appendSessionEvent(dir, sessionId, {
+    kind: "user",
+    content,
+    steeringReceipt: inputReceipt,
+  });
+  const target = path.join(
+    dir,
+    "live-smith-events",
+    `${encodeURIComponent(sessionId)}.json`,
+  );
+  const bytesAfterFirstAppend = await fs.readFile(target);
+  inputReceipt.id = "mutated-input";
+  first.steeringReceipt!.id = "mutated-return";
+
+  const retried = await appendSessionEvent(dir, sessionId, {
+    kind: "user",
+    content,
+    steeringReceipt: { ...expectedReceipt },
+  });
+
+  assert.equal(retried.id, first.id);
+  assert.equal(retried.createdAt, first.createdAt);
+  assert.deepEqual(retried.steeringReceipt, expectedReceipt);
+  assert.deepEqual(await fs.readFile(target), bytesAfterFirstAppend);
+  assert.deepEqual(await loadSessionEvents(dir, sessionId), [{
+    id: first.id,
+    createdAt: first.createdAt,
+    kind: "user",
+    content,
+    steeringReceipt: expectedReceipt,
+  }]);
+});
+
+test("a steering receipt cannot be reused for different user guidance", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-event-receipt-"));
+  const sessionId = "session-steering-conflict";
+  const firstContent = "Keep the first arrangement.";
+  const secondContent = "Replace the first arrangement.";
+  const receiptIdentity = {
+    sendId: "send-steering-conflict",
+    id: "steer-conflict",
+  };
+  await appendSessionEvent(dir, sessionId, {
+    kind: "user",
+    content: firstContent,
+    steeringReceipt: steeringReceipt(
+      receiptIdentity.sendId,
+      receiptIdentity.id,
+      firstContent,
+    ),
+  });
+  const target = path.join(dir, "live-smith-events", `${sessionId}.json`);
+  const original = await fs.readFile(target);
+
+  await assert.rejects(
+    appendSessionEvent(dir, sessionId, {
+      kind: "user",
+      content: secondContent,
+      steeringReceipt: steeringReceipt(
+        receiptIdentity.sendId,
+        receiptIdentity.id,
+        secondContent,
+      ),
+    }),
+    (error: unknown) =>
+      error instanceof SessionSteeringReceiptConflictError &&
+      error.sendId === receiptIdentity.sendId &&
+      error.id === receiptIdentity.id,
+  );
+  assert.deepEqual(await fs.readFile(target), original);
+  assert.equal((await loadSessionEvents(dir, sessionId)).length, 1);
+});
+
+test("new steering receipts require strict IDs, hashes, event shape, and content binding", async () => {
+  const sessionId = `memory-steering-receipt-validation-${Date.now()}`;
+  const content = "Use the selected track instead.";
+  const valid = steeringReceipt("send-valid", "steer-valid", content);
+  const inputs = [
+    {
+      kind: "assistant" as const,
+      content,
+      steeringReceipt: valid,
+    },
+    {
+      kind: "user" as const,
+      content,
+      name: "steering",
+      steeringReceipt: valid,
+    },
+    {
+      kind: "user" as const,
+      content,
+      attachments: [imageRef],
+      steeringReceipt: valid,
+    },
+    {
+      kind: "user" as const,
+      content,
+      steeringReceipt: { ...valid, sendId: "unsafe/send" },
+    },
+    {
+      kind: "user" as const,
+      content,
+      steeringReceipt: { ...valid, id: ".unsafe" },
+    },
+    {
+      kind: "user" as const,
+      content,
+      steeringReceipt: { ...valid, sha256: valid.sha256.toUpperCase() },
+    },
+    {
+      kind: "user" as const,
+      content: `${content} changed`,
+      steeringReceipt: valid,
+    },
+    {
+      kind: "user" as const,
+      content,
+      steeringReceipt: { ...valid, extra: "not allowed" },
+    },
+  ];
+
+  for (const [index, input] of inputs.entries()) {
+    await assert.rejects(
+      appendSessionEvent(undefined, `${sessionId}-${index}`, input as never),
+      /Session event input is invalid/,
+    );
+  }
+});
 
 test("event attachments persist strict immutable references only on user events", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
@@ -445,18 +597,43 @@ test("memory event storage deep-clones nested input, append, and load values", a
   searchQueries[0] = "mutated-input query";
   appendedSearch.webSearch!.queries[0] = "mutated-return query";
 
+  const steeringContent = "Keep the original steering guidance.";
+  const expectedSteeringReceipt = steeringReceipt(
+    "send-memory-clone",
+    "steer-memory-clone",
+    steeringContent,
+  );
+  const inputSteeringReceipt = { ...expectedSteeringReceipt };
+  const appendedSteering = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: steeringContent,
+    steeringReceipt: inputSteeringReceipt,
+  });
+  inputSteeringReceipt.id = "mutated-input";
+  appendedSteering.steeringReceipt!.id = "mutated-return";
+
   const firstLoad = await loadSessionEvents(undefined, sessionId);
   assert.equal(firstLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
   assert.deepEqual(firstLoad[1]?.recovery?.completedActionDigests, [digest]);
   assert.deepEqual(firstLoad[2]?.webSearch?.queries, ["original query"]);
+  assert.deepEqual(firstLoad[3]?.steeringReceipt, expectedSteeringReceipt);
   firstLoad[0]!.attachments![0]!.fileName = "mutated-load.png";
   firstLoad[1]!.recovery!.completedActionDigests[0] = "e".repeat(64);
   firstLoad[2]!.webSearch!.queries[0] = "mutated-load query";
+  firstLoad[3]!.steeringReceipt!.id = "mutated-load";
 
   const secondLoad = await loadSessionEvents(undefined, sessionId);
   assert.equal(secondLoad[0]?.attachments?.[0]?.fileName, imageRef.fileName);
   assert.deepEqual(secondLoad[1]?.recovery?.completedActionDigests, [digest]);
   assert.deepEqual(secondLoad[2]?.webSearch?.queries, ["original query"]);
+  assert.deepEqual(secondLoad[3]?.steeringReceipt, expectedSteeringReceipt);
+  const retriedSteering = await appendSessionEvent(undefined, sessionId, {
+    kind: "user",
+    content: steeringContent,
+    steeringReceipt: { ...expectedSteeringReceipt },
+  });
+  assert.equal(retriedSteering.id, appendedSteering.id);
+  assert.equal((await loadSessionEvents(undefined, sessionId)).length, 4);
   await deleteSessionEvents(undefined, sessionId);
 });
 
@@ -706,6 +883,81 @@ test("duplicate persisted event IDs block reads and appends without changing byt
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
   assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("duplicate persisted steering receipt identities are event-log corruption", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-event-receipt-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "duplicate-steering-receipts.json");
+  const firstContent = "Use the Lead track.";
+  const secondContent = "Use the Rhythm track.";
+  const original = JSON.stringify([
+    {
+      id: "event-steering-first",
+      createdAt: "2026-08-15T00:00:00.000Z",
+      kind: "user",
+      content: firstContent,
+      steeringReceipt: steeringReceipt(
+        "send-duplicate-receipt",
+        "steer-duplicate-receipt",
+        firstContent,
+      ),
+    },
+    {
+      id: "event-steering-second",
+      createdAt: "2026-08-15T00:00:01.000Z",
+      kind: "user",
+      content: secondContent,
+      steeringReceipt: steeringReceipt(
+        "send-duplicate-receipt",
+        "steer-duplicate-receipt",
+        secondContent,
+      ),
+    },
+  ]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    loadSessionEvents(dir, "duplicate-steering-receipts"),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  await assert.rejects(
+    appendSessionEvent(dir, "duplicate-steering-receipts", {
+      kind: "assistant",
+      content: "Must not overwrite",
+    }),
+    (error: unknown) => error instanceof SessionEventsCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
+test("persisted steering receipts reject malformed shape and content hashes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-event-receipt-"));
+  const eventsDirectory = path.join(dir, "live-smith-events");
+  await fs.mkdir(eventsDirectory);
+  const target = path.join(eventsDirectory, "invalid-steering-receipt.json");
+  const content = "Keep the current device chain.";
+  const valid = steeringReceipt("send-persisted", "steer-persisted", content);
+  const invalidReceipts = [
+    { ...valid, sha256: "f".repeat(64) },
+    { ...valid, sendId: "unsafe/send" },
+    { ...valid, id: "steer-persisted", extra: true },
+  ];
+
+  for (const invalidReceipt of invalidReceipts) {
+    await fs.writeFile(target, JSON.stringify([{
+      id: "event-invalid-steering-receipt",
+      createdAt: "2026-08-15T00:00:00.000Z",
+      kind: "user",
+      content,
+      steeringReceipt: invalidReceipt,
+    }]));
+    await assert.rejects(
+      loadSessionEvents(dir, "invalid-steering-receipt"),
+      (error: unknown) => error instanceof SessionEventsCorruptionError,
+    );
+  }
 });
 
 test("duplicate persisted attachment IDs across events are corruption", async () => {

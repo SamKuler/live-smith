@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -57,6 +58,12 @@ export interface SessionRecoveryLedger {
   completedActionDigests: string[];
 }
 
+export interface SessionSteeringReceipt {
+  sendId: string;
+  id: string;
+  sha256: string;
+}
+
 export interface SessionEventInput {
   kind: SessionEventKind;
   content: string;
@@ -65,6 +72,7 @@ export interface SessionEventInput {
   attachments?: SessionAttachmentRef[];
   citations?: ModelCitation[];
   webSearch?: ModelHostedWebSearch;
+  steeringReceipt?: SessionSteeringReceipt;
 }
 
 export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
@@ -83,6 +91,18 @@ export class SessionEventsCorruptionError extends Error {
       { cause },
     );
     this.name = "SessionEventsCorruptionError";
+  }
+}
+
+export class SessionSteeringReceiptConflictError extends Error {
+  constructor(
+    readonly sendId: string,
+    readonly id: string,
+  ) {
+    super(
+      `Steering receipt ${JSON.stringify(id)} for send ${JSON.stringify(sendId)} conflicts with its persisted user event.`,
+    );
+    this.name = "SessionSteeringReceiptConflictError";
   }
 }
 
@@ -107,12 +127,16 @@ export async function appendSessionEvent(
   return withStorageTransaction(storageDirectory, async () => {
     if (!storageDirectory) {
       const events = memoryEvents.get(sessionId) ?? [];
+      const existing = matchingSteeringReceiptEvent(events, event);
+      if (existing) return cloneSessionEvent(existing);
       assertAttachmentIdsUnconsumed(events, event);
       memoryEvents.set(sessionId, [...events, cloneSessionEvent(event)]);
       return cloneSessionEvent(event);
     }
 
     const events = await loadSessionEventsUnlocked(storageDirectory, sessionId);
+    const existing = matchingSteeringReceiptEvent(events, event);
+    if (existing) return cloneSessionEvent(existing);
     assertAttachmentIdsUnconsumed(events, event);
     await ensurePrivateDirectory(storageDirectory);
     await writeJsonAtomically(
@@ -147,7 +171,8 @@ async function loadSessionEventsUnlocked(
       !Array.isArray(parsed) ||
       !parsed.every((event) => isSessionEvent(event, "persisted")) ||
       !hasUniqueStorageIds(parsed) ||
-      !hasUniqueConsumedAttachmentIds(parsed)
+      !hasUniqueConsumedAttachmentIds(parsed) ||
+      !hasUniqueSteeringReceiptIds(parsed)
     ) {
       throw new SessionEventsCorruptionError();
     }
@@ -257,6 +282,7 @@ function isSessionEvent(
       "attachments",
       "citations",
       "webSearch",
+      "steeringReceipt",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
@@ -273,6 +299,13 @@ function isSessionEvent(
     (record.citations === undefined || (
       record.kind === "assistant" &&
       isSessionEventCitations(record.citations)
+    )) &&
+    (record.steeringReceipt === undefined || (
+      record.kind === "user" &&
+      record.name === undefined &&
+      record.attachments === undefined &&
+      isSessionSteeringReceipt(record.steeringReceipt) &&
+      steeringReceiptMatchesContent(record.steeringReceipt, record.content)
     )) &&
     (record.kind === "web_search"
       ? isModelHostedWebSearch(record.webSearch) &&
@@ -427,6 +460,70 @@ function hasUniqueConsumedAttachmentIds(events: readonly SessionEvent[]): boolea
   return new Set(ids).size === ids.length;
 }
 
+function matchingSteeringReceiptEvent(
+  events: readonly SessionEvent[],
+  candidate: SessionEvent,
+): SessionEvent | undefined {
+  const receipt = candidate.steeringReceipt;
+  if (receipt === undefined) return undefined;
+  const existing = events.find((event) =>
+    event.steeringReceipt?.sendId === receipt.sendId &&
+    event.steeringReceipt.id === receipt.id
+  );
+  if (existing === undefined) return undefined;
+  if (
+    existing.content !== candidate.content ||
+    existing.steeringReceipt?.sha256 !== receipt.sha256
+  ) {
+    throw new SessionSteeringReceiptConflictError(receipt.sendId, receipt.id);
+  }
+  return existing;
+}
+
+function hasUniqueSteeringReceiptIds(
+  events: readonly SessionEvent[],
+): boolean {
+  const idsBySend = new Map<string, Set<string>>();
+  for (const event of events) {
+    const receipt = event.steeringReceipt;
+    if (receipt === undefined) continue;
+    const ids = idsBySend.get(receipt.sendId) ?? new Set<string>();
+    if (ids.has(receipt.id)) return false;
+    ids.add(receipt.id);
+    idsBySend.set(receipt.sendId, ids);
+  }
+  return true;
+}
+
+function isSessionSteeringReceipt(
+  value: unknown,
+): value is SessionSteeringReceipt {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return hasOnlyKeys(record, ["sendId", "id", "sha256"]) &&
+    Object.keys(record).length === 3 &&
+    isSteeringCorrelationId(record.sendId) &&
+    isSteeringCorrelationId(record.id) &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.sha256);
+}
+
+function isSteeringCorrelationId(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+}
+
+function steeringReceiptMatchesContent(
+  receipt: SessionSteeringReceipt,
+  content: string,
+): boolean {
+  return receipt.sha256 === createHash("sha256")
+    .update(content, "utf8")
+    .digest("hex");
+}
+
 function cloneSessionEvent(event: SessionEvent): SessionEvent {
   return {
     ...event,
@@ -445,6 +542,9 @@ function cloneSessionEvent(event: SessionEvent): SessionEvent {
             sources: event.webSearch.sources.map((source) => ({ ...source })),
           },
         }),
+    ...(event.steeringReceipt === undefined
+      ? {}
+      : { steeringReceipt: { ...event.steeringReceipt } }),
     ...(event.recovery === undefined
       ? {}
       : {

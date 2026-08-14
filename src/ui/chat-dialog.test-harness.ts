@@ -49,6 +49,8 @@ interface DialogHarness {
   ): void;
   failNextConfirmation(error: string): void;
   failNextSend(error: string, promptPersistence?: string): void;
+  failNextSteer(error: string, steeringOutcome?: "unknown"): void;
+  rejectNextSteerResponseAfterCommit(error: string): void;
   failNextState(error: string): void;
   failNextAttachmentUnknown(
     error: string,
@@ -73,6 +75,7 @@ interface DialogHarness {
   holdNextCommandResponse(): void;
   holdNextConfirmation(): void;
   holdNextSend(): void;
+  holdNextSteer(): void;
   holdNextState(): void;
   holdNextAttachment(): void;
   hostMessages: unknown[];
@@ -81,6 +84,7 @@ interface DialogHarness {
   releaseHeldCommandResponse(): void;
   releaseHeldConfirmation(): void;
   releaseHeldSend(): void;
+  releaseHeldSteer(): void;
   releaseHeldState(): void;
   releaseHeldAttachment(): void;
   queueStopTerminals(...values: boolean[]): void;
@@ -304,6 +308,11 @@ async function createDialogHarness(
   } | null = null;
   let nextConfirmationError: { error: string } | null = null;
   let nextSendError: { error: string; promptPersistence?: string } | null = null;
+  let nextSteerError: {
+    error: string;
+    steeringOutcome?: "unknown";
+  } | null = null;
+  let nextSteerResponseRejection: Error | null = null;
   let nextStateError: { error: string } | null = null;
   let nextSendRejection: Error | null = null;
   let nextCommandRejection: Error | null = null;
@@ -330,12 +339,14 @@ async function createDialogHarness(
   let heldCommandResponse: Promise<void> | null = null;
   let heldConfirmation: Promise<void> | null = null;
   const heldSends: Promise<void>[] = [];
+  let heldSteer: Promise<void> | null = null;
   let heldState: Promise<void> | null = null;
   let heldAttachment: Promise<void> | null = null;
   let releaseCommand: (() => void) | null = null;
   let releaseCommandResponse: (() => void) | null = null;
   let releaseConfirmation: (() => void) | null = null;
   const releaseSends: Array<() => void> = [];
+  let releaseSteer: (() => void) | null = null;
   let releaseState: (() => void) | null = null;
   let releaseAttachment: (() => void) | null = null;
   const stopTerminals: boolean[] = [];
@@ -862,6 +873,30 @@ async function createDialogHarness(
               }
               return response({ ok: true });
             }
+            if (url.pathname === "/steer") {
+              if (heldSteer) {
+                const wait = heldSteer;
+                heldSteer = null;
+                await wait;
+              }
+              if (nextSteerError) {
+                const error = nextSteerError;
+                nextSteerError = null;
+                return failedResponse(
+                  error,
+                  error.steeringOutcome === "unknown" ? 503 : 409,
+                  error.steeringOutcome === "unknown"
+                    ? "Service Unavailable"
+                    : "Conflict",
+                );
+              }
+              if (nextSteerResponseRejection) {
+                const error = nextSteerResponseRejection;
+                nextSteerResponseRejection = null;
+                throw error;
+              }
+              return response({ ok: true });
+            }
             if (url.pathname === "/confirm") {
               if (heldConfirmation) {
                 const wait = heldConfirmation;
@@ -960,6 +995,15 @@ async function createDialogHarness(
         ...(promptPersistence ? { promptPersistence } : {}),
       };
     },
+    failNextSteer(error, steeringOutcome) {
+      nextSteerError = {
+        error,
+        ...(steeringOutcome ? { steeringOutcome } : {}),
+      };
+    },
+    rejectNextSteerResponseAfterCommit(error) {
+      nextSteerResponseRejection = new Error(error);
+    },
     failNextState(error) {
       nextStateError = { error };
     },
@@ -1025,6 +1069,11 @@ async function createDialogHarness(
         releaseSends.push(resolve);
       }));
     },
+    holdNextSteer() {
+      heldSteer = new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+    },
     holdNextState() {
       heldState = new Promise<void>((resolve) => {
         releaseState = resolve;
@@ -1062,6 +1111,12 @@ async function createDialogHarness(
     releaseHeldSend() {
       const release = releaseSends.shift();
       assert.ok(release, "Expected a held send");
+      release();
+    },
+    releaseHeldSteer() {
+      assert.ok(releaseSteer, "Expected a held steering request");
+      const release = releaseSteer;
+      releaseSteer = null;
       release();
     },
     releaseHeldState() {

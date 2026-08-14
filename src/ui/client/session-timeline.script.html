@@ -126,24 +126,30 @@
           return;
         }
         if (event.key !== "Tab") return;
-        const controls = [...card.querySelectorAll("button")]
-          .filter((control) => !control.disabled);
+        const controls = [
+          ...card.querySelectorAll("button"),
+          ...document.querySelectorAll(
+            ".composer textarea, .composer button, .composer select, .composer input",
+          ),
+        ].filter((control) =>
+          !control.disabled &&
+          !control.hidden &&
+          !control.closest("[hidden]")
+        );
         if (!controls.length) {
           event.preventDefault();
           return;
         }
         const first = controls[0];
-        const last = controls[controls.length - 1];
-        if (!card.contains(document.activeElement)) {
-          event.preventDefault();
+        const currentIndex = controls.indexOf(document.activeElement);
+        event.preventDefault();
+        if (currentIndex < 0) {
           first.focus();
-        } else if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
+          return;
         }
+        const offset = event.shiftKey ? -1 : 1;
+        controls[(currentIndex + offset + controls.length) % controls.length]
+          .focus();
       }
 
       document.addEventListener("keydown", handleConfirmationKeydown);
@@ -828,7 +834,7 @@
 
       function setConfirmationModalActive(active, card) {
         for (const element of document.querySelectorAll(
-          "header, .inspector-pane, .composer",
+          "header, .inspector-pane",
         )) {
           if (active) element.setAttribute("inert", "");
           else element.removeAttribute("inert");
@@ -1030,7 +1036,6 @@
         const card = document.createElement("article");
         card.className = "confirm-card";
         card.setAttribute("role", "alertdialog");
-        card.setAttribute("aria-modal", "true");
         card.setAttribute("aria-labelledby", "pendingConfirmationTitle");
 
         const groups = Array.isArray(confirm.groups) ? confirm.groups : [];

@@ -1965,7 +1965,7 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
 
     const dialog = harness.document.querySelector<HTMLElement>(".confirm-card");
     assert.equal(dialog?.getAttribute("role"), "alertdialog");
-    assert.equal(dialog?.getAttribute("aria-modal"), "true");
+    assert.equal(dialog?.hasAttribute("aria-modal"), false);
     const labelledBy = dialog?.getAttribute("aria-labelledby") ?? "";
     assert.equal(
       harness.document.getElementById(labelledBy)?.textContent,
@@ -1998,12 +1998,28 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
       shiftKey: true,
       bubbles: true,
     }));
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector("#sendButton"),
+    );
+    harness.document.activeElement?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+    }));
+    assert.equal(harness.document.activeElement, cancel);
+    cancel?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+    }));
     assert.equal(harness.document.activeElement, apply);
     apply?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
       key: "Tab",
       bubbles: true,
     }));
-    assert.equal(harness.document.activeElement, cancel);
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector("#prompt"),
+    );
 
     harness.document.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
       key: "Escape",

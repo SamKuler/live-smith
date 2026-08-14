@@ -294,6 +294,15 @@ function buildAnthropicMessages(
       continue;
     }
 
+    if (message.role === "user") {
+      appendAnthropicUserContent(
+        messages,
+        [{ type: "text", text: message.content }],
+      );
+      index += 1;
+      continue;
+    }
+
     const stateMessages = anthropicStateMessages(message);
     const content = stateMessages?.at(-1) ?? [
       ...(message.content?.trim()
@@ -316,6 +325,18 @@ function buildAnthropicMessages(
     index += 1;
   }
   return messages;
+}
+
+function appendAnthropicUserContent(
+  messages: AnthropicMessageParam[],
+  content: AnthropicContentBlock[],
+): void {
+  const previous = messages.at(-1);
+  if (previous?.role === "user" && Array.isArray(previous.content)) {
+    previous.content.push(...content);
+    return;
+  }
+  messages.push({ role: "user", content });
 }
 
 function mapAnthropicInputParts(

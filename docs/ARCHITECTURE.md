@@ -570,11 +570,33 @@ distinct `apply_auto_approved` Session event with the selected mode; this
 records the approval source without claiming that Live grouped the plan into a
 single Undo entry. Accept Everything changes approval only and cannot bypass
 observation, action-schema validation, preflight, the process-wide mutation
-queue, cancellation, or target/state-drift revalidation. Profile and
-RuntimeProfile state remain the request-start snapshot, and a confirmation
-already open is not changed. Confirmed Live mutations enter one process-wide
-queue; after acquiring the queue lock, each plan repeats its preflight
-immediately before execution.
+queue, cancellation, or target/state-drift revalidation. Profile,
+RuntimeProfile, attachment, and Skill state remain the request-start snapshot.
+An active send can additionally accept bounded, pure-text steering for its
+exact bridge-owned send ID. The current send owner persists each steering
+message as an ordinary user event before acknowledging it or adding it to model
+context. That event carries a strict `(sendId, steerId, prompt SHA-256)` receipt;
+an exact retry returns the original event without rewriting the log, while a
+receipt reused for different content fails closed. Mid-loop `$skill` text does
+not load another Skill snapshot. Steering aborts only the current provider
+call, discards its unaccepted partial output, and replans from the last
+protocol-complete local context. If OpenAI Responses is between output-limit
+continuation calls, the loop removes the entire unfinished continuation suffix,
+including opaque provider state, before adding steering. Stop remains the
+terminal cancellation path for the whole send.
+
+A newly queued steering message supersedes an open confirmation without
+approving it. The loop checks again before each tool, after confirmation, inside
+the mutation queue, after state revalidation, and between individual validated
+Live actions. An action that already crossed its execution boundary is allowed
+to finish; later actions in that plan are withheld and the completed results
+enter the same partial-recovery ledger used by Stop and host failures. Confirmed
+Live mutations enter one process-wide queue; after acquiring the queue lock,
+each plan repeats its preflight immediately before execution.
+Steering detected at the first per-action guard has no completed action and is
+therefore a clean supersession, not a partial host failure; it closes the tool
+call and replans without opening a recovery ledger. A guard reached after any
+completed action retains the partial-recovery path.
 The settings schema still validates its legacy `approvalMode` field as
 `manual`, `low-risk`, or `everything` so existing files remain readable. Runtime
 authorization never reads that field: it neither seeds nor overrides a Session.
@@ -592,8 +614,10 @@ limit. Distinct validation errors are treated as an evolving repair attempt and
 do not trigger the short repeated-error stop; they remain bounded by the rolling
 no-progress window. Distinct host failures have an additional consecutive
 no-mutation budget; this is not a total tool or workflow quota.
-Completed Live mutations and new distinct observations renew the rolling window;
-there is no fixed total-step ceiling, so normal multi-stage work can continue.
+Completed Live mutations, new distinct observations, and accepted steering
+renew the rolling window. One send accepts at most 32 distinct steering IDs, so
+steering cannot extend the loop without bound; normal multi-stage work otherwise
+has no fixed total-step ceiling.
 Host observation, preflight, and execution failures are classified separately
 and returned for evidence-based recovery rather than being counted as malformed
 arguments. Observation argument objects reject unknown fields and invalid
@@ -663,7 +687,19 @@ validated plan's original order and action numbers; category headings may repeat
 rather than reordering mutations before the user authorizes them.
 
 Bridge JSON inputs are strict route-specific contracts. Send accepts only
-`prompt` and `sessionId`; Session and Profile commands accept only their
+`prompt` and `sessionId`. Steer accepts the same two fields but requires the
+exact active `X-Live-Smith-Send-Id` plus a unique
+`X-Live-Smith-Steer-Id`; its prompt is limited to 64 KiB of UTF-8, with at most
+eight unsettled and 32 total submissions per send. Same-ID retries are
+idempotent only when their prompt is identical and do not supersede a later
+confirmation again. The durable receipt remains authoritative after the send
+leaves memory, so a terminal same-ID retry can return success only for the exact
+original send and prompt. If a storage commit and the receipt read are both
+uncertain, `/steer` returns a prompt-free
+`steeringOutcome: "unknown"`; the client retains the same ID. Every terminal
+send state also carries the Session events for that send, and the client
+reconciles a pending steering receipt before clearing or safely retaining its
+draft. Session and Profile commands accept only their
 command-specific fields; confirmation and Stop reject body fields they do not
 own. Every JSON body is bounded to 1 MiB before parsing. Skill source is never a
 JSON field; it uses the separate authenticated raw route described above.

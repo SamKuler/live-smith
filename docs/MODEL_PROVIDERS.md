@@ -50,6 +50,42 @@ recoverable Profiles or credentials.
 
 ## API behavior
 
+### In-loop steering
+
+Steering has one provider-neutral meaning: bounded, persisted user guidance is
+added to the active agent send at the next protocol-safe boundary. It is not a
+provider-native continuation feature. Each model call receives a child
+cancellation signal; Steer cancels only that call, while Stop cancels the parent
+send. Partial text, tool arguments, reasoning state, and an Anthropic
+`pause_turn` chain from an interrupted call are discarded. The next request is
+rebuilt from the last complete locally accepted context plus the new user
+message. Completed hosted searches remain persisted and continue to count
+against the send budget.
+
+This also applies between OpenAI Responses output-limit continuation calls. The
+agent loop tracks the first message in the unfinished continuation chain and
+removes that entire canonical-message suffix before installing steering, so an
+obsolete partial function call or encrypted reasoning item cannot be replayed
+ahead of the new user message. Without steering, a completed continuation chain
+remains available for normal local replay.
+
+When a complete assistant tool turn was already accepted, every tool call is
+closed with a real or explicit skipped result before steering is replayed:
+
+- OpenAI Responses places the user message after all linked
+  `function_call_output` items.
+- OpenAI Chat Completions places it after all `role: tool` messages.
+- Anthropic Messages places `tool_result` blocks first and steering text after
+  them in the same user content block.
+
+Steering is text-only. It does not resnapshot the Profile, attachments, active
+Skills, capabilities, or Extra Body. Persistence and retry are also
+provider-neutral: each accepted steering user event has a receipt bound to the
+original send ID, steering ID, and prompt hash. Exact retries are idempotent,
+including after the send has reached terminal state. An explicit unknown
+persistence outcome keeps the same client steering ID until authoritative
+Session state confirms presence or absence.
+
 ### OpenAI Responses
 
 - Sends the protocol directly over HTTP/SSE without an OpenAI SDK runtime

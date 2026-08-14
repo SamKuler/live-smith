@@ -1,15 +1,26 @@
 import { TextDecoder } from "node:util";
 
+import { throwIfAborted } from "../../runtime/host.js";
+
 export async function* parseServerSentEventData(
   body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let reachedEnd = false;
+  const onAbort = (): void => {
+    void reader.cancel(signal?.reason).catch(() => {
+      // The cancellation reason is reported by throwIfAborted below.
+    });
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
+    throwIfAborted(signal);
     while (true) {
       const result = await reader.read();
+      throwIfAborted(signal);
       if (result.done) {
         reachedEnd = true;
         break;
@@ -28,6 +39,7 @@ export async function* parseServerSentEventData(
     const data = eventData(buffer);
     if (data !== undefined) yield data;
   } finally {
+    signal?.removeEventListener("abort", onAbort);
     if (!reachedEnd) {
       try {
         await reader.cancel();

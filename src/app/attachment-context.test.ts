@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -226,6 +227,34 @@ test("conversation history caps the live multimodal path to recent messages", as
     content: [{ type: "text", text: "message-26" }],
   });
   assert.equal(history.at(-1)?.content, "message-49");
+});
+
+test("steering receipts remain storage metadata and replay only user text", async () => {
+  const content = "Keep the drums dry.";
+  const history = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-steering-history",
+    events: [{
+      id: "event-steering-history",
+      kind: "user",
+      content,
+      createdAt: "2026-08-15T00:00:00.000Z",
+      steeringReceipt: {
+        sendId: "send-steering-history",
+        id: "steer-history",
+        sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+      },
+    }],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile(),
+  });
+
+  assert.deepEqual(history, [{
+    role: "user",
+    content: [{ type: "text", text: content }],
+  }]);
+  assert.doesNotMatch(JSON.stringify(history), /send-steering-history|steer-history|sha256/);
 });
 
 test("conversation history budgets newest images first and returns chronological messages", async () => {

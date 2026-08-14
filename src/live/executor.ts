@@ -83,6 +83,7 @@ export async function executeAgentPlanWithProgress(
   target: LiveTarget,
   signal?: AbortSignal,
   initialBindings?: AgentPlanBindings,
+  beforeAction?: (actionIndex: number, action: AgentAction) => void,
 ): Promise<AgentPlanExecutionOutcome> {
   const bindings = initialBindings ?? bindAgentPlanTargets(context, plan, target);
   const results: string[] = [];
@@ -101,6 +102,7 @@ export async function executeAgentPlanWithProgress(
     );
     try {
       throwIfAborted(signal);
+      beforeAction?.(actionIndex, action);
       const result = await executeAction(
         context,
         action,

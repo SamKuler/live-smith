@@ -1034,10 +1034,21 @@ test("OpenAI Responses replays output items and links function outputs by call_i
       providerState: { kind: "openai-responses", output: [{ id: "rs-1", type: "reasoning", encrypted_content: "cipher", summary: [] }, { id: "fc-1", type: "function_call", call_id: "call-1", name: "inspect", arguments: "{}" }] },
     },
     { role: "tool", toolCallId: "call-1", content: "result" },
+    {
+      role: "user",
+      content: "Steer toward the Lead track.",
+    },
   ];
   await transport.createToolTurn(req);
   assert.equal(input.some((item) => item.encrypted_content === "cipher"), true);
   assert.equal(input.some((item) => item.type === "function_call_output" && item.call_id === "call-1"), true);
+  const outputIndex = input.findIndex((item) =>
+    item.type === "function_call_output" && item.call_id === "call-1"
+  );
+  assert.deepEqual(input[outputIndex + 1], {
+    role: "user",
+    content: "Steer toward the Lead track.",
+  });
 });
 
 test("OpenAI Responses streaming emits deltas and retains the completed output", async () => {

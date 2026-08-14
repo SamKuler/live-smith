@@ -101,6 +101,12 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   /** Persisted replay guard from the latest unfinished operation in this Session. */
   initialRecoveryState?: AgentLoopInitialRecoveryState;
   signal?: AbortSignal;
+  /** Returns newly persisted user guidance accepted by the active send. */
+  consumeSteering?(): Promise<readonly string[]>;
+  /** Synchronous guard used immediately before an irreversible Live boundary. */
+  hasPendingSteering?(): boolean;
+  /** Clears transient provider output after the new user guidance is installed. */
+  onSteeringApplied?(messageCount: number): Promise<void> | void;
   askModel(input: AgentLoopModelInput): Promise<ModelTurn>;
   observe(request: AgentObservationRequest): Promise<string>;
   preflightActions?(
@@ -128,6 +134,13 @@ export class AgentActionPreflightError extends Error {
   ) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "AgentActionPreflightError";
+  }
+}
+
+export class AgentSteeringInterruptError extends Error {
+  constructor() {
+    super("The current model turn was interrupted by newer user guidance.");
+    this.name = "AgentSteeringInterruptError";
   }
 }
 
@@ -219,6 +232,16 @@ class AgentObservationError extends Error {
   }
 }
 
+export class AgentSteeringBeforeApplyError extends Error {
+  constructor(
+    message =
+      "The proposed Live actions were not applied because a newer user steering message superseded the plan.",
+  ) {
+    super(message);
+    this.name = "AgentSteeringBeforeApplyError";
+  }
+}
+
 export async function runAgentLoop(
   options: AgentLoopOptions<unknown>,
 ): Promise<AgentLoopResult> {
@@ -236,6 +259,7 @@ export async function runAgentLoop(
   let consecutiveModelContinuations = 0;
   let pendingContinuationContent = "";
   let pendingContinuationCitations: ModelCitation[] = [];
+  let pendingContinuationMessageStart: number | undefined;
   const observedProgress = new Set<string>();
   const recoveryState: AgentRecoveryState = {
     completedActionKeys: new Set(),
@@ -246,9 +270,27 @@ export async function runAgentLoop(
     requiredObservation: undefined,
     unresolvedFailure: options.initialRecoveryState?.unresolvedFailure,
   };
+  const appendSteering = () => appendPendingSteering(
+    options,
+    messages,
+    () => {
+      if (pendingContinuationMessageStart === undefined) return;
+      messages.splice(pendingContinuationMessageStart);
+      pendingContinuationMessageStart = undefined;
+    },
+  );
 
+  planningLoop:
   for (let iteration = 1; ; iteration += 1) {
     throwIfAborted(options.signal);
+    if (await appendSteering()) {
+      planningProgressDeadline = iteration + maxIterations;
+      repeatedArgumentFailures = 0;
+      lastArgumentFailure = "";
+      consecutiveModelContinuations = 0;
+      pendingContinuationContent = "";
+      pendingContinuationCitations = [];
+    }
     if (iteration > planningProgressDeadline) {
       return stopAtSafetyLimit(
         options,
@@ -259,12 +301,42 @@ export async function runAgentLoop(
     await options.onProgress?.(`Planning step ${iteration}`);
     throwIfAborted(options.signal);
 
-    const turn = await options.askModel({
-      messages: [...messages],
-      iteration,
-    });
+    let turn: ModelTurn;
+    try {
+      turn = await options.askModel({
+        messages: [...messages],
+        iteration,
+      });
+    } catch (error) {
+      if (!(error instanceof AgentSteeringInterruptError)) throw error;
+      throwIfAborted(options.signal);
+      if (!(await appendSteering())) {
+        throw new Error(
+          "A model turn reported a steering interruption without any pending user guidance.",
+          { cause: error },
+        );
+      }
+      planningProgressDeadline = iteration + maxIterations;
+      repeatedArgumentFailures = 0;
+      lastArgumentFailure = "";
+      consecutiveModelContinuations = 0;
+      pendingContinuationContent = "";
+      pendingContinuationCitations = [];
+      continue;
+    }
     throwIfAborted(options.signal);
 
+    if (await appendSteering()) {
+      planningProgressDeadline = iteration + maxIterations;
+      repeatedArgumentFailures = 0;
+      lastArgumentFailure = "";
+      consecutiveModelContinuations = 0;
+      pendingContinuationContent = "";
+      pendingContinuationCitations = [];
+      continue;
+    }
+
+    const assistantMessageIndex = messages.length;
     messages.push({
       role: "assistant",
       content: turn.content,
@@ -305,6 +377,7 @@ export async function runAgentLoop(
       ) {
         throw new TypeError("Model continuation state is invalid.");
       }
+      pendingContinuationMessageStart ??= assistantMessageIndex;
       consecutiveModelContinuations += 1;
       pendingContinuationContent += turn.content ?? "";
       pendingContinuationCitations = mergeCitations(
@@ -332,6 +405,7 @@ export async function runAgentLoop(
     consecutiveModelContinuations = 0;
     pendingContinuationContent = "";
     pendingContinuationCitations = [];
+    pendingContinuationMessageStart = undefined;
 
     if (!turn.toolCalls.length) {
       const finalText = completedTurnContent.trim();
@@ -342,6 +416,10 @@ export async function runAgentLoop(
             content: finalText,
             ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
           });
+        }
+        if (await appendSteering()) {
+          planningProgressDeadline = iteration + maxIterations;
+          continue;
         }
         const message = unfinishedWorkMessage(
           recoveryState.unresolvedFailure,
@@ -357,6 +435,10 @@ export async function runAgentLoop(
           content: lastMessage,
           ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
         });
+      }
+      if (await appendSteering()) {
+        planningProgressDeadline = iteration + maxIterations;
+        continue;
       }
       return {
         message: lastMessage || "Done.",
@@ -395,6 +477,23 @@ export async function runAgentLoop(
 
     for (const [toolCallIndex, toolCall] of turn.toolCalls.entries()) {
       throwIfAborted(options.signal);
+      if (options.hasPendingSteering?.()) {
+        skipRemainingToolCalls(
+          messages,
+          turn.toolCalls,
+          toolCallIndex,
+          "not executed because a newer user steering message superseded this tool batch",
+        );
+        if (!(await appendSteering())) {
+          throw new Error(
+            "Pending steering disappeared before it could be added to the conversation.",
+          );
+        }
+        planningProgressDeadline = iteration + maxIterations;
+        repeatedArgumentFailures = 0;
+        lastArgumentFailure = "";
+        continue planningLoop;
+      }
       await options.onProgress?.(progressLabelForToolCall(toolCall));
       await emitTraceEvent(options, {
         kind: "tool_call",
@@ -408,6 +507,24 @@ export async function runAgentLoop(
         toolCallId: toolCall.id,
         content: result.toolContent,
       });
+
+      if (options.hasPendingSteering?.()) {
+        skipRemainingToolCalls(
+          messages,
+          turn.toolCalls,
+          toolCallIndex + 1,
+          "not executed because a newer user steering message superseded this tool batch",
+        );
+        if (!(await appendSteering())) {
+          throw new Error(
+            "Pending steering disappeared before it could be added to the conversation.",
+          );
+        }
+        planningProgressDeadline = iteration + maxIterations;
+        repeatedArgumentFailures = 0;
+        lastArgumentFailure = "";
+        continue planningLoop;
+      }
 
       const newObservationProgress = result.progressKey !== undefined &&
         !observedProgress.has(result.progressKey);
@@ -533,14 +650,39 @@ function skipRemainingToolCalls(
   messages: ModelConversationMessage[],
   toolCalls: ModelToolCall[],
   startIndex: number,
+  reason = "not executed because an earlier tool call in this turn did not complete",
 ): void {
   for (const toolCall of toolCalls.slice(startIndex)) {
     messages.push({
       role: "tool",
       toolCallId: toolCall.id,
-      content: `Tool call "${toolCall.name}" was not executed because an earlier tool call in this turn did not complete.`,
+      content: `Tool call "${toolCall.name}" was ${reason}.`,
     });
   }
+}
+
+async function appendPendingSteering(
+  options: AgentLoopOptions<unknown>,
+  messages: ModelConversationMessage[],
+  beforeAppend?: () => void,
+): Promise<number> {
+  const steering = await options.consumeSteering?.() ?? [];
+  for (const content of steering) {
+    if (typeof content !== "string" || !content.trim()) {
+      throw new TypeError("A steering message must contain non-empty text.");
+    }
+  }
+  if (steering.length) beforeAppend?.();
+  for (const content of steering) {
+    messages.push({
+      role: "user",
+      content,
+    });
+  }
+  if (steering.length) {
+    await options.onSteeringApplied?.(steering.length);
+  }
+  return steering.length;
 }
 
 function answerToolCallsWithoutExecution(
@@ -672,12 +814,18 @@ async function executeToolCall(
         kind: "apply_requested",
         content: summary,
       });
+      if (options.hasPendingSteering?.()) {
+        throw new AgentSteeringBeforeApplyError();
+      }
       throwIfAborted(options.signal);
       const rawDecision = await options.confirmActions(plan);
       const decision: AgentConfirmationDecision = typeof rawDecision === "boolean"
         ? { confirmed: rawDecision, source: "user" }
         : rawDecision;
       throwIfAborted(options.signal);
+      if (options.hasPendingSteering?.()) {
+        throw new AgentSteeringBeforeApplyError();
+      }
 
       if (decision.confirmed && decision.source === "automatic") {
         const actionCount = plan.actions.length;
@@ -711,12 +859,19 @@ async function executeToolCall(
 
       const executeConfirmedActions = async () => {
         throwIfAborted(options.signal);
+        if (options.hasPendingSteering?.()) {
+          throw new AgentSteeringBeforeApplyError();
+        }
         let bindings: unknown;
         try {
           bindings = await revalidateActions();
           throwIfAborted(options.signal);
+          if (options.hasPendingSteering?.()) {
+            throw new AgentSteeringBeforeApplyError();
+          }
         } catch (error) {
           throwIfAborted(options.signal);
+          if (error instanceof AgentSteeringBeforeApplyError) throw error;
           throw new AgentActionPreflightError(
             `Live state changed after confirmation; refusing to execute actions: ${errorMessage(error)}`,
             error,
@@ -823,6 +978,19 @@ async function executeToolCall(
 
     throw new Error(`Unsupported model tool call: ${toolCall.name}`);
   } catch (error) {
+    if (error instanceof AgentSteeringBeforeApplyError) {
+      await emitTraceEvent(options, {
+        kind: "apply_result",
+        content: error.message,
+      });
+      return {
+        toolContent: error.message,
+        userMessage: error.message,
+        cancelled: false,
+        failed: false,
+        mutationProgress: false,
+      };
+    }
     if (error instanceof AgentPartialCompletionError) {
       const failureContent = error.message;
       recoveryState.unresolvedFailure = failureContent;

@@ -26,6 +26,13 @@
         return `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       }
 
+      function createSteerId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+          return globalThis.crypto.randomUUID();
+        }
+        return `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
       function createCommandId() {
         if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
           return globalThis.crypto.randomUUID();
@@ -46,6 +53,7 @@
       const webSearchEventIdsAtSendStartBySession = new Map();
       const assistantDraftRenderFramesBySession = new Map();
       const composerDraftsBySession = new Map();
+      const composerDraftRevisionsBySession = new Map();
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
       const sendAttemptsBySession = new Map();
@@ -54,11 +62,25 @@
       let attachmentOperationInProgress = false;
       let skillOperationInProgress = false;
       let activeCommandAttempt = null;
+      let nextComposerDraftRevision = 1;
       const commandSseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
 
       function activeSendAttempt() {
         return sendAttemptsBySession.get(activeSessionId()) || null;
+      }
+
+      function recordComposerDraft(sessionId, value) {
+        composerDraftsBySession.set(sessionId, value);
+        composerDraftRevisionsBySession.set(
+          sessionId,
+          nextComposerDraftRevision++,
+        );
+      }
+
+      function handleComposerInput() {
+        const prompt = document.getElementById("prompt");
+        if (prompt) recordComposerDraft(activeSessionId(), prompt.value);
       }
 
       function activePendingConfirmation() {
@@ -122,13 +144,15 @@
       }
 
       function syncOperationState() {
+        const activeAttempt = activeSendAttempt();
         requireView().setOperationState({
           commandKind: commandInProgress ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
           anySendInProgress: sendAttemptsBySession.size > 0,
           attachmentInProgress: attachmentOperationInProgress,
           skillInProgress: skillOperationInProgress,
-          sendInProgress: Boolean(activeSendAttempt()),
+          sendInProgress: Boolean(activeAttempt),
+          steerInProgress: Boolean(activeAttempt?.steerInProgress),
         });
       }
 
@@ -375,6 +399,14 @@
 
       function applyAuthoritativeSendState(attempt, state) {
         if (!attempt || !isAuthoritativeCommandState(state)) return false;
+        if (!reconcileSteeringReceipt(attempt, state)) {
+          setAttemptStatus(
+            attempt,
+            "The steering outcome could not be reconciled from Session state. Close and reopen Live Smith before continuing.",
+            true,
+          );
+          return false;
+        }
         if (
           attempt.sessionId === activeSessionId() &&
           state.activeSessionId === activeSessionId()
@@ -462,7 +494,7 @@
               .map((event) => event.id),
           ),
         );
-        composerDraftsBySession.set(sessionId, "");
+        recordComposerDraft(sessionId, "");
         const attempt = {
           id: createSendId(),
           sessionId,
@@ -493,10 +525,14 @@
               error.promptPersistence = result.promptPersistence;
             }
             if (typeof result.field === "string") error.field = result.field;
+            if (result.state && typeof result.state === "object") {
+              error.state = result.state;
+            }
             throw error;
           }
           if (!attemptIsCurrent(attempt)) return;
-          const refreshed = await refreshState(attempt);
+          let refreshed = applyAuthoritativeSendState(attempt, result.state);
+          if (!refreshed) refreshed = await refreshState(attempt);
           if (!attemptIsCurrent(attempt)) return;
           if (refreshed !== true) {
             setAttemptStatus(
@@ -518,8 +554,131 @@
               message,
               error.promptPersistence || "unknown",
               error.field,
+              error.state,
             );
           }
+        }
+      }
+
+      function acknowledgeSteering(attempt, steering) {
+        if (attempt.steering !== steering) return false;
+        const isCurrent = attemptIsCurrent(attempt);
+        attempt.steering = null;
+        attempt.steerInProgress = false;
+        const promptControl = document.getElementById("prompt");
+        const draftRevision = composerDraftRevisionsBySession.get(attempt.sessionId);
+        const submittedDraftIsCurrent = draftRevision === steering.draftRevision;
+        if (
+          submittedDraftIsCurrent &&
+          activeSessionId() === attempt.sessionId &&
+          promptControl.value === steering.prompt
+        ) {
+          promptControl.value = "";
+          recordComposerDraft(attempt.sessionId, "");
+        } else if (activeSessionId() === attempt.sessionId) {
+          composerDraftsBySession.set(attempt.sessionId, promptControl.value);
+        } else if (
+          submittedDraftIsCurrent &&
+          composerDraftsBySession.get(attempt.sessionId) === steering.prompt
+        ) {
+          recordComposerDraft(attempt.sessionId, "");
+        }
+        if (isCurrent) {
+          setAttemptStatus(attempt, "Steering applied", false);
+          syncOperationState();
+        }
+        return true;
+      }
+
+      function reconcileSteeringReceipt(attempt, state) {
+        const steering = attempt?.steering;
+        if (!steering) return true;
+        if (
+          !state ||
+          state.activeSessionId !== attempt.sessionId ||
+          !Array.isArray(state.events)
+        ) return false;
+        const matches = state.events.filter((event) =>
+          event &&
+          event.steeringReceipt &&
+          event.steeringReceipt.sendId === attempt.id &&
+          event.steeringReceipt.id === steering.id
+        );
+        if (matches.length > 1) return false;
+        if (matches.length === 1) {
+          const event = matches[0];
+          if (
+            event.kind !== "user" ||
+            event.content !== steering.prompt ||
+            typeof event.steeringReceipt.sha256 !== "string" ||
+            !/^[a-f0-9]{64}$/.test(event.steeringReceipt.sha256)
+          ) return false;
+          return acknowledgeSteering(attempt, steering);
+        }
+        attempt.steering = null;
+        attempt.steerInProgress = false;
+        return true;
+      }
+
+      async function steerPrompt() {
+        const attempt = activeSendAttempt();
+        if (
+          !attempt ||
+          attempt.steerInProgress ||
+          commandInProgress ||
+          commandReconciliationBlocked ||
+          attachmentOperationInProgress ||
+          skillOperationInProgress
+        ) return;
+        const promptControl = document.getElementById("prompt");
+        const prompt = promptControl.value;
+        if (!prompt.trim()) {
+          showStatus("Enter guidance for the active request.", true);
+          promptControl.focus({ preventScroll: true });
+          return;
+        }
+        const steering = {
+          id: attempt.steering?.prompt === prompt
+            ? attempt.steering.id
+            : createSteerId(),
+          prompt,
+          draftRevision: composerDraftRevisionsBySession.get(attempt.sessionId),
+        };
+        attempt.steering = steering;
+        attempt.steerInProgress = true;
+        composerDraftsBySession.set(attempt.sessionId, prompt);
+        setAttemptStatus(attempt, "Sending guidance to the active request…", false);
+        syncOperationState();
+        try {
+          await postBridge(
+            "/steer",
+            { prompt, sessionId: attempt.sessionId },
+            {
+              "X-Live-Smith-Send-Id": attempt.id,
+              "X-Live-Smith-Steer-Id": steering.id,
+            },
+          );
+          acknowledgeSteering(attempt, steering);
+        } catch (error) {
+          if (
+            !attemptIsCurrent(attempt) ||
+            attempt.steering !== steering
+          ) return;
+          const outcomeUnknown = !error.httpStatus ||
+            error.steeringOutcome === "unknown";
+          if (!outcomeUnknown) attempt.steering = null;
+          attempt.steerInProgress = false;
+          if (activeSessionId() === attempt.sessionId) {
+            composerDraftsBySession.set(attempt.sessionId, promptControl.value);
+          }
+          setAttemptStatus(
+            attempt,
+            outcomeUnknown
+              ? `${error.message || String(error)} Retry the unchanged guidance to resolve it safely.`
+              : error.message || String(error),
+            true,
+          );
+          syncOperationState();
         }
       }
 
@@ -666,7 +825,7 @@
         confirmationResolutionsBySession.delete(attempt.sessionId);
         if (activeSessionId() === attempt.sessionId) requireView().renderTimeline();
         if (persistence === "not_persisted") {
-          composerDraftsBySession.set(attempt.sessionId, attempt.payload.prompt);
+          recordComposerDraft(attempt.sessionId, attempt.payload.prompt);
           if (!settleSendAttempt(attempt)) return;
           if (activeSessionId() === attempt.sessionId) {
             document.getElementById("prompt").value = attempt.payload.prompt;
@@ -730,6 +889,7 @@
           error.httpStatus = response.status;
           if (typeof result.field === "string") error.field = result.field;
           if (result.commandOutcome === "unknown") error.commandOutcome = "unknown";
+          if (result.steeringOutcome === "unknown") error.steeringOutcome = "unknown";
           if (result.state && typeof result.state === "object") error.state = result.state;
           if (result.reconciliationRequired === true) error.reconciliationRequired = true;
           throw error;
@@ -1151,6 +1311,10 @@
         ) return;
         if (commandKind) {
           applyCommandState(commandKind, state);
+        } else if (expectedSendAttempt) {
+          if (!applyAuthoritativeSendState(expectedSendAttempt, state)) {
+            return false;
+          }
         } else {
           if (
             expectedSendAttempt?.sessionId === activeSessionId() &&
@@ -1195,6 +1359,10 @@
         } else {
           void sendPrompt();
         }
+      }
+
+      function handleSteerButton() {
+        void steerPrompt();
       }
 
       async function stopAgent() {
@@ -1309,6 +1477,30 @@
             }
             return;
           }
+          if (payload.type === "assistant_reset") {
+            if (!isActiveSendPayload(payload)) return;
+            cancelAssistantDraftRender(payload.sessionId);
+            assistantDraftsBySession.set(payload.sessionId, "");
+            if (activeSessionId() === payload.sessionId) {
+              requireView().renderAssistantDraft();
+            }
+            return;
+          }
+          if (payload.type === "steer_accepted") {
+            if (!isActiveSendPayload(payload)) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            const steering = attempt?.steering;
+            if (!steering || payload.steerId !== steering.id) return;
+            acknowledgeSteering(attempt, steering);
+            setLocalActivity(
+              payload.sessionId,
+              payload.sendId,
+              "running",
+              "Steering applied",
+            );
+            requireView().renderSessions();
+            return;
+          }
           if (payload.type === "web_search_update") {
             if (!isActiveSendPayload(payload)) return;
             const update = payload.update;
@@ -1400,7 +1592,7 @@
             if (!isActiveSendPayload(payload)) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
             cancelSendRecovery(attempt);
-            applyAuthoritativeSendState(attempt, payload.state);
+            if (!applyAuthoritativeSendState(attempt, payload.state)) return;
             settleSendAttempt(attempt);
             if (activeSessionId() === payload.sessionId) showStatus("");
             return;
@@ -1463,7 +1655,9 @@
         getAssistantDraft: activeAssistantDraft,
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
+        handleComposerInput,
         handleSendButton,
+        handleSteerButton,
         isSendInProgress: () => Boolean(activeSendAttempt()),
         hasAnySendInProgress: () => sendAttemptsBySession.size > 0,
         isOperationInProgress,

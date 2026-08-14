@@ -76,7 +76,7 @@ export async function* streamAnthropicEvents(
     throw new Error("Anthropic returned a streaming response without a body.");
   }
 
-  for await (const data of parseServerSentEventData(response.body)) {
+  for await (const data of parseServerSentEventData(response.body, signal)) {
     throwIfAborted(signal);
     if (data === "[DONE]") return;
     let event: unknown;

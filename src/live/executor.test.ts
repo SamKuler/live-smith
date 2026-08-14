@@ -1344,6 +1344,44 @@ test("already-matching scalar writes do not count as Live mutations", async () =
   assert.equal(outcome.results.length, 5);
 });
 
+test("executeAgentPlanWithProgress checks its guard between atomic actions", async () => {
+  const song = { tracks: [], tempo: 120 };
+  const boundaryIndexes: number[] = [];
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      { application: { song } } as never,
+      {
+        message: "Change tempo twice",
+        actions: [
+          { type: "set_tempo", tempo: 121 },
+          { type: "set_tempo", tempo: 122 },
+        ],
+      },
+      {},
+      undefined,
+      undefined,
+      (actionIndex) => {
+        boundaryIndexes.push(actionIndex);
+        if (actionIndex === 1) {
+          throw new Error("Newer user guidance superseded the remaining plan.");
+        }
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.failedActionIndex, 1);
+      assert.equal(error.completedResults.length, 1);
+      assert.equal(error.completedMutationCount, 1);
+      assert.match(error.message, /newer user guidance/i);
+      return true;
+    },
+  );
+
+  assert.deepEqual(boundaryIndexes, [0, 1]);
+  assert.equal(song.tempo, 121);
+});
+
 test("already-matching parameter and Clip writes do not invoke SDK setters", async () => {
   let parameterWrites = 0;
   const parameter = {

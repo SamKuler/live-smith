@@ -327,8 +327,12 @@ test("chat bridge publishes only the send failure state captured inside its Sess
       body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
     });
     const errorEvent = await readSsePayload(events, "error");
+    const errorBody = await response.json() as {
+      state?: ChatDialogState;
+    };
 
     assert.equal(response.status, 500);
+    assert.equal(errorBody.state?.activeSessionId, "s1");
     assert.equal(errorEvent.message, "Model request failed.");
     assert.equal(errorEvent.promptPersistence, "persisted");
     assert.equal((errorEvent.state as ChatDialogState).activeSessionId, "s1");

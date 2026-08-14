@@ -206,6 +206,13 @@ function buildResponsesInput(
       });
       continue;
     }
+    if (message.role === "user") {
+      input.push({
+        role: "user",
+        content: message.content,
+      });
+      continue;
+    }
     const state = message.providerState;
     if (
       isRecord(state) &&

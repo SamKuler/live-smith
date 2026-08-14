@@ -89,7 +89,7 @@ test("Send remains busy until its HTTP fallback state refresh settles", async ()
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
-      true,
+      false,
     );
 
     harness.releaseHeldState();
@@ -1373,7 +1373,7 @@ test("Send keeps its attempt busy when the HTTP fallback state is unavailable", 
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
-      true,
+      false,
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
@@ -1420,7 +1420,7 @@ for (const promptPersistence of ["persisted", undefined] as const) {
       assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
       assert.equal(
         harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
-        true,
+        false,
       );
       assert.equal(
         harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
@@ -1631,7 +1631,7 @@ test("late SSE from send A cannot settle send B or restore A over B", async () =
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
-      true,
+      false,
     );
 
     harness.releaseHeldSend();

@@ -25,6 +25,13 @@ import {
   type DraftProfile,
 } from "../model/profile.js";
 import { createHostAbortController } from "../runtime/host.js";
+import {
+  SteeringCapacityError,
+  SteeringChannel,
+  SteeringClosedError,
+  SteeringConflictError,
+  SteeringPersistenceOutcomeUnknownError,
+} from "./steering.js";
 import type { ActionDiffGroup } from "../ui/action-diff.js";
 import type {
   ChatDialogState,
@@ -39,6 +46,7 @@ const sensitiveResponseHeaders = {
   "X-Content-Type-Options": "nosniff",
 } as const;
 const maxRequestBodyBytes = 1024 * 1024;
+const maxSteeringPromptUtf8Bytes = 64 * 1024;
 const maxAttachmentFileNameUtf8Bytes = 160;
 const maxAttachmentQueryUtf8Bytes = 2048;
 const maxConcurrentAttachmentBodyReads = 2;
@@ -56,6 +64,27 @@ export interface ChatBridgeSendInput {
   prompt: string;
   sessionId: string;
 }
+
+export interface ChatBridgeSteeringInput {
+  prompt: string;
+  sessionId: string;
+}
+
+export interface ChatBridgeSendContext {
+  sendId: string;
+}
+
+export interface ChatBridgeSteeringReceiptLookupInput {
+  sessionId: string;
+  sendId: string;
+  steerId: string;
+  prompt: string;
+}
+
+export type ChatBridgeSteeringReceiptLookupResult =
+  | "accepted"
+  | "absent"
+  | "conflict";
 
 export interface ChatBridgeAttachmentInput {
   sessionId: string;
@@ -225,6 +254,7 @@ export interface ChatBridgeConfirmationRequest {
 
 export interface ChatBridgeStream {
   assistantDelta(delta: string): Promise<void>;
+  assistantReset(): Promise<void>;
   webSearchUpdate(update: ModelHostedWebSearch): Promise<void>;
   sessionEvent(event: SessionEvent): Promise<void>;
   progress(message: string): Promise<void>;
@@ -248,7 +278,12 @@ interface ChatBridgeOptions {
     input: ChatBridgeSendInput,
     stream: ChatBridgeStream,
     signal: AbortSignal,
+    steering: SteeringChannel,
+    context: ChatBridgeSendContext,
   ): Promise<ChatDialogState | void>;
+  lookupSteeringReceipt?(
+    input: ChatBridgeSteeringReceiptLookupInput,
+  ): Promise<ChatBridgeSteeringReceiptLookupResult>;
   preflightAttachmentUpload?(
     input: { sessionId: string },
     signal: AbortSignal,
@@ -275,6 +310,18 @@ interface ChatBridgeOptions {
   skillBodyReadOptions?: RawSkillBodyReadOptions;
 }
 
+async function lookupSteeringReceiptSafely(
+  options: ChatBridgeOptions,
+  input: ChatBridgeSteeringReceiptLookupInput,
+): Promise<ChatBridgeSteeringReceiptLookupResult | "unknown"> {
+  if (!options.lookupSteeringReceipt) return "absent";
+  try {
+    return await options.lookupSteeringReceipt(input);
+  } catch {
+    return "unknown";
+  }
+}
+
 interface PendingConfirmation {
   sendId: string;
   sessionId: string;
@@ -286,10 +333,18 @@ interface ActiveSend {
   sendId: string;
   sessionId: string;
   controller: AbortController;
+  steering: SteeringChannel;
 }
 
 type SsePayload =
   | { type: "assistant_delta"; sendId: string; sessionId: string; delta: string }
+  | { type: "assistant_reset"; sendId: string; sessionId: string }
+  | {
+      type: "steer_accepted";
+      sendId: string;
+      sessionId: string;
+      steerId: string;
+    }
   | {
       type: "web_search_update";
       sendId: string;
@@ -460,6 +515,9 @@ export async function createChatBridge(
     assistantDelta: async (delta) => {
       broadcast({ type: "assistant_delta", sendId, sessionId, delta });
     },
+    assistantReset: async () => {
+      broadcast({ type: "assistant_reset", sendId, sessionId });
+    },
     webSearchUpdate: async (update) => {
       broadcast({ type: "web_search_update", sendId, sessionId, update });
     },
@@ -472,7 +530,10 @@ export async function createChatBridge(
       broadcast({ type: "progress", sendId, sessionId, message });
     },
     requestConfirmation: (request) => {
-      if (closing) return Promise.resolve(false);
+      const activeSend = activeSendsById.get(sendId);
+      if (!activeSend || closing || activeSend.steering.hasPending()) {
+        return Promise.resolve(false);
+      }
       return new Promise<boolean>((resolve) => {
         const id = randomUUID();
         pendingConfirmations.set(id, { sendId, sessionId, request, resolve });
@@ -834,10 +895,12 @@ export async function createChatBridge(
         }
         inFlightMutationHandlers.add(handlerTerminal);
         const controller = createHostAbortController();
+        const steering = new SteeringChannel();
         const activeSend = {
           sendId,
           sessionId: input.sessionId,
           controller,
+          steering,
         };
         activeSendsById.set(sendId, activeSend);
         activeSendsBySession.set(input.sessionId, activeSend);
@@ -849,11 +912,20 @@ export async function createChatBridge(
           const stream = createStream(sendId, input.sessionId, (event) => {
             if (event.kind === "user") sendPromptPersistence = "persisted";
           });
-          const handledState = await options.handleSend(
-            input,
-            stream,
-            controller.signal,
-          );
+          let handledState: ChatDialogState | void;
+          try {
+            handledState = await options.handleSend(
+              input,
+              stream,
+              controller.signal,
+              steering,
+              { sendId },
+            );
+          } finally {
+            steering.close(new SteeringClosedError(
+              "The target agent request is no longer accepting steering.",
+            ));
+          }
           const baseState = handledState ?? await options.buildState();
           updateActivity(input.sessionId, sendId, "completed", {
             message: "Completed",
@@ -866,8 +938,11 @@ export async function createChatBridge(
             sessionId: input.sessionId,
             state,
           });
-          sendJson(response, { ok: true });
+          sendJson(response, { ok: true, state });
         } finally {
+          steering.close(new SteeringClosedError(
+            "The target agent request is no longer accepting steering.",
+          ));
           if (activeSendsById.get(sendId) === activeSend) {
             activeSendsById.delete(sendId);
           }
@@ -875,6 +950,109 @@ export async function createChatBridge(
             activeSendsBySession.delete(input.sessionId);
           }
         }
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/steer") {
+        const targetSendId = steeringSendIdForRequest(request);
+        const steerId = steeringIdForRequest(request);
+        const input = parseSteeringInput(await readRequestBody<unknown>(request));
+        if (closing) {
+          sendJson(response, { error: "Live Smith bridge is closing." }, 503);
+          return;
+        }
+        const activeSend = activeSendsById.get(targetSendId);
+        if (!activeSend || activeSend.sessionId !== input.sessionId) {
+          const receiptOutcome = await lookupSteeringReceiptSafely(
+            options,
+            {
+              sessionId: input.sessionId,
+              sendId: targetSendId,
+              steerId,
+              prompt: input.prompt,
+            },
+          );
+          if (receiptOutcome === "accepted") {
+            broadcast({
+              type: "steer_accepted",
+              sendId: targetSendId,
+              sessionId: input.sessionId,
+              steerId,
+            });
+            sendJson(response, { ok: true });
+            return;
+          }
+          if (receiptOutcome === "unknown") {
+            sendJson(response, {
+              error: "The steering persistence outcome could not be confirmed.",
+              steeringOutcome: "unknown",
+            }, 503);
+            return;
+          }
+          sendJson(response, {
+            error: receiptOutcome === "conflict"
+              ? "That steering correlation ID belongs to different guidance."
+              : "The target agent request is no longer active for this Session.",
+          }, 409);
+          return;
+        }
+        try {
+          const submission = activeSend.steering.enqueue(steerId, input.prompt);
+          if (submission.created) {
+            resolveConfirmationsForSend(targetSendId, false);
+          }
+          await submission.completion;
+        } catch (error) {
+          if (
+            error instanceof SteeringPersistenceOutcomeUnknownError ||
+            error instanceof SteeringClosedError
+          ) {
+            const receiptOutcome = await lookupSteeringReceiptSafely(
+              options,
+              {
+                sessionId: input.sessionId,
+                sendId: targetSendId,
+                steerId,
+                prompt: input.prompt,
+              },
+            );
+            if (receiptOutcome === "accepted") {
+              // The durable Session event is the authoritative acknowledgement.
+            } else if (receiptOutcome === "unknown") {
+              sendJson(response, {
+                error: "The steering persistence outcome could not be confirmed.",
+                steeringOutcome: "unknown",
+              }, 503);
+              return;
+            } else if (receiptOutcome === "conflict") {
+              throw new ChatBridgeConflictError(
+                "That steering correlation ID belongs to different guidance.",
+              );
+            } else if (error instanceof SteeringClosedError) {
+              throw new ChatBridgeConflictError(error.message);
+            } else {
+              sendJson(response, {
+                error: "The steering message was not persisted.",
+              }, 500);
+              return;
+            }
+          } else if (
+            error instanceof SteeringConflictError ||
+            error instanceof SteeringCapacityError ||
+            error instanceof SteeringClosedError
+          ) {
+            throw new ChatBridgeConflictError(error.message);
+          } else {
+            throw error;
+          }
+        }
+        broadcast({
+          type: "steer_accepted",
+          sendId: targetSendId,
+          sessionId: input.sessionId,
+          steerId,
+        });
+        sendJson(response, { ok: true });
         return;
       }
 
@@ -918,7 +1096,9 @@ export async function createChatBridge(
           updateActivity(activeSend.sessionId, stoppedSendId, "stopped", {
             message: "Stopped",
           });
-          activeSend.controller.abort(new Error("Stopped by user."));
+          const stoppedError = new SteeringClosedError("Stopped by user.");
+          activeSend.steering.close(stoppedError);
+          activeSend.controller.abort(stoppedError);
         }
         sendJson(response, {
           ok: true,
@@ -1033,7 +1213,11 @@ export async function createChatBridge(
           ...(field === undefined ? {} : { field }),
           ...(promptPersistence === undefined ? {} : { promptPersistence }),
           ...(commandOutcome === undefined ? {} : { commandOutcome }),
-          ...(commandState === undefined ? {} : { state: commandState }),
+          ...(sendErrorState !== undefined
+            ? { state: sendErrorState }
+            : commandState === undefined
+              ? {}
+              : { state: commandState }),
           ...(reconciliationRequired === undefined
             ? {}
             : { reconciliationRequired }),
@@ -1090,7 +1274,9 @@ export async function createChatBridge(
       pendingRequestBodies.clear();
       resolveAllConfirmations(false);
       for (const activeSend of activeSendsById.values()) {
-        activeSend.controller.abort(new Error("Live Smith window closed."));
+        const closedError = new SteeringClosedError("Live Smith window closed.");
+        activeSend.steering.close(closedError);
+        activeSend.controller.abort(closedError);
       }
       for (const controller of activeAttachmentControllers.values()) {
         controller.abort(new Error("Live Smith window closed."));
@@ -1137,6 +1323,37 @@ function stopSendIdForRequest(request: IncomingMessage): string {
     throw new ChatBridgeRequestValidationError(
       "X-Live-Smith-Send-Id must identify the send to stop.",
     );
+  }
+  return raw;
+}
+
+function steeringSendIdForRequest(request: IncomingMessage): string {
+  return requiredCorrelationId(
+    request,
+    "x-live-smith-send-id",
+    "X-Live-Smith-Send-Id must identify the send to steer.",
+  );
+}
+
+function steeringIdForRequest(request: IncomingMessage): string {
+  return requiredCorrelationId(
+    request,
+    "x-live-smith-steer-id",
+    "X-Live-Smith-Steer-Id must be a valid unique correlation ID.",
+  );
+}
+
+function requiredCorrelationId(
+  request: IncomingMessage,
+  headerName: string,
+  errorMessage: string,
+): string {
+  const raw = singleHeaderValue(request, headerName, true);
+  if (
+    raw === undefined ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw)
+  ) {
+    throw new ChatBridgeRequestValidationError(errorMessage);
   }
   return raw;
 }
@@ -1737,6 +1954,26 @@ function parseSendInput(value: unknown): ChatBridgeSendInput {
   assertOnlyInputKeys(input, ["prompt", "sessionId"], "Send request");
   return {
     prompt: inputString(input, "prompt"),
+    sessionId: inputString(input, "sessionId"),
+  };
+}
+
+function parseSteeringInput(value: unknown): ChatBridgeSteeringInput {
+  const input = inputRecord(value);
+  assertOnlyInputKeys(input, ["prompt", "sessionId"], "Steering request");
+  const prompt = inputString(input, "prompt");
+  if (!prompt.trim()) {
+    throw new ChatBridgeRequestValidationError(
+      "prompt must be a non-empty string.",
+    );
+  }
+  if (Buffer.byteLength(prompt, "utf8") > maxSteeringPromptUtf8Bytes) {
+    throw new ChatBridgeRequestValidationError(
+      `prompt may not exceed ${maxSteeringPromptUtf8Bytes} UTF-8 bytes.`,
+    );
+  }
+  return {
+    prompt,
     sessionId: inputString(input, "sessionId"),
   };
 }

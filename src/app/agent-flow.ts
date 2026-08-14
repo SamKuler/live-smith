@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 
 import {
   AgentPartialCompletionError,
+  AgentSteeringBeforeApplyError,
+  AgentSteeringInterruptError,
   runAgentLoop,
   webSearchSummary,
   type AgentActionExecutionOutcome,
@@ -22,7 +24,7 @@ import {
   HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
   modelToolsForProfile,
 } from "../model/tools.js";
-import type { ModelHostedWebSearch } from "../model/contracts.js";
+import type { ModelHostedWebSearch, ModelTurn } from "../model/contracts.js";
 import {
   AgentPlanExecutionError,
   executeAgentPlanWithProgress,
@@ -89,8 +91,10 @@ import {
   deleteSessionEvents,
   listSessionEventLogIds,
   loadSessionEvents,
+  SessionSteeringReceiptConflictError,
   type SessionEvent,
   type SessionEventInput,
+  type SessionSteeringReceipt,
 } from "../storage/events.js";
 import {
   isStorageCommitOutcomeUnknownError,
@@ -146,9 +150,12 @@ import {
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
+  type ChatBridgeSendContext,
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
   type ChatBridgeSkillInstallResult,
+  type ChatBridgeSteeringReceiptLookupInput,
+  type ChatBridgeSteeringReceiptLookupResult,
   type ChatBridgeStream,
   type RawAttachmentBodyReadOptions,
   type RawSkillBodyReadOptions,
@@ -182,6 +189,11 @@ import {
   sessionMutationFenceKey,
 } from "./session-mutation-fence.js";
 import { resolveSkillContext } from "./skill-context.js";
+import {
+  SteeringClosedError,
+  SteeringPersistenceOutcomeUnknownError,
+  type SteeringChannel,
+} from "./steering.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
@@ -1327,6 +1339,8 @@ export async function runAgentFlow(
     sendInput: ChatBridgeSendInput,
     stream: ChatBridgeStream,
     signal: AbortSignal,
+    steering: SteeringChannel,
+    sendContext: ChatBridgeSendContext,
   ) => {
     const prompt = sendInput.prompt;
     if (!prompt.trim()) {
@@ -1375,7 +1389,10 @@ export async function runAgentFlow(
           session.id,
           {
             signal,
+            steering,
+            steeringSendId: sendContext.sendId,
             onDelta: (delta) => stream.assistantDelta(delta),
+            onAssistantReset: () => stream.assistantReset(),
             onProgress: (message) => stream.progress(message),
             onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
             onSessionEvent: (event) => stream.sessionEvent(event),
@@ -1393,8 +1410,12 @@ export async function runAgentFlow(
           },
           dependencies.requestModelTurn ?? requestModelTurn,
         );
+        steering.close();
         return buildStateWhileHoldingSessionMutation(sendInput.sessionId);
       } catch (error) {
+        steering.close(new SteeringClosedError(
+          "The active send ended before steering was accepted.",
+        ));
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {
@@ -1409,6 +1430,36 @@ export async function runAgentFlow(
     });
   };
 
+  const lookupSteeringReceipt = async (
+    input: ChatBridgeSteeringReceiptLookupInput,
+  ): Promise<ChatBridgeSteeringReceiptLookupResult> => {
+    const session = (await listSessions(
+      context.environment.storageDirectory,
+      projectKey,
+    )).find((entry) =>
+      entry.id === input.sessionId && entry.projectKey === projectKey
+    );
+    if (!session) return "absent";
+    const events = await (
+      dependencies.loadSessionEvents ?? loadSessionEvents
+    )(context.environment.storageDirectory, session.id);
+    const event = events.find((candidate) =>
+      candidate.steeringReceipt?.sendId === input.sendId &&
+      candidate.steeringReceipt.id === input.steerId
+    );
+    if (!event) return "absent";
+    const expected = steeringReceiptFor(
+      input.sendId,
+      input.steerId,
+      input.prompt,
+    );
+    return event.kind === "user" &&
+        event.content === input.prompt &&
+        event.steeringReceipt?.sha256 === expected.sha256
+      ? "accepted"
+      : "conflict";
+  };
+
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
   await reconcileStartupSessionOrphans();
@@ -1417,6 +1468,7 @@ export async function runAgentFlow(
     renderHtml,
     handleCommand,
     handleSend,
+    lookupSteeringReceipt,
     preflightAttachmentUpload,
     handleAttachmentUpload,
     handleAttachmentDelete,
@@ -1642,49 +1694,122 @@ export async function handleAgentRequest(
         ? { initialRecoveryState: prepared.initialRecoveryState }
         : {}),
       signal: callbacks.signal,
+      ...(callbacks.steering
+        ? {
+          consumeSteering: async () => {
+            const entries = callbacks.steering?.takePending(1) ?? [];
+            const acceptedPrompts: string[] = [];
+            let acceptedCount = 0;
+            try {
+              for (const entry of entries) {
+                if (!callbacks.steeringSendId) {
+                  throw new Error(
+                    "The active send is missing its steering correlation ID.",
+                  );
+                }
+                const event = await appendSteeringUserEvent(
+                  context.environment.storageDirectory,
+                  session.id,
+                  callbacks.steeringSendId,
+                  entry.id,
+                  entry.prompt,
+                  appendUserEvent,
+                  loadEventsForSearchReconciliation,
+                );
+                knownEventIds.add(event.id);
+                entry.accept();
+                acceptedCount += 1;
+                acceptedPrompts.push(entry.prompt);
+                await callbacks.onSessionEvent(event);
+              }
+              return acceptedPrompts;
+            } catch (error) {
+              const rejection = error instanceof SteeringPersistenceOutcomeUnknownError
+                ? error
+                : new Error(
+                  "The steering message could not be persisted.",
+                  { cause: error },
+                );
+              for (const entry of entries.slice(acceptedCount)) {
+                try {
+                  entry.reject(rejection);
+                } catch {
+                  // Stop may have closed and rejected the entry concurrently.
+                }
+              }
+              throwIfAborted(callbacks.signal);
+              throw error;
+            }
+          },
+          hasPendingSteering: () => callbacks.steering?.hasPending() ?? false,
+          onSteeringApplied: async (messageCount: number) => {
+            await callbacks.onAssistantReset?.();
+            await callbacks.onProgress(
+              messageCount === 1
+                ? "Replanning with new guidance"
+                : `Replanning with ${messageCount} new guidance messages`,
+            );
+          },
+        }
+        : {}),
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
         const remainingWebSearchEvents = Math.max(
           0,
           HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
         );
-        const turn = await requestTurn({
-          prompt,
-          liveContext: requestLiveContext,
-          runtimeProfile,
-          history: prepared.history,
-          attachmentParts: prepared.attachmentParts,
-          skillContext: prepared.skillContext,
-          agentMessages: input.messages,
-          tools: modelToolsForProfile(
-            profile,
-            liveSmithTools(),
-            Math.min(
-              HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
-              remainingWebSearchEvents,
+        const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
+        let turn: ModelTurn;
+        try {
+          turn = await requestTurn({
+            prompt,
+            liveContext: requestLiveContext,
+            runtimeProfile,
+            history: prepared.history,
+            attachmentParts: prepared.attachmentParts,
+            skillContext: prepared.skillContext,
+            agentMessages: input.messages,
+            tools: modelToolsForProfile(
+              profile,
+              liveSmithTools(),
+              Math.min(
+                HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
+                remainingWebSearchEvents,
+              ),
             ),
-          ),
-          signal: callbacks.signal,
-          onDelta: callbacks.onDelta,
-          onHostedWebSearch: async (update) => {
-            if (update.status !== "searching") {
-              const persisted = await ensureTerminalWebSearchEvent(update);
-              if (persisted?.first) {
-                await callbacks.onSessionEvent(persisted.event);
+            signal: modelTurn?.signal ?? callbacks.signal,
+            onDelta: callbacks.onDelta,
+            onHostedWebSearch: async (update) => {
+              if (update.status !== "searching") {
+                const persisted = await ensureTerminalWebSearchEvent(update);
+                if (persisted?.first) {
+                  await callbacks.onSessionEvent(persisted.event);
+                }
+              } else {
+                if (!observeWebSearchId(update)) return;
+                if (persistedWebSearches.has(update.id)) {
+                  throw new TypeError(
+                    "Hosted Web Search reported in-flight activity after its terminal event.",
+                  );
+                }
+                await callbacks.onWebSearchUpdate?.(update);
               }
-            } else {
-              if (!observeWebSearchId(update)) return;
-              if (persistedWebSearches.has(update.id)) {
-                throw new TypeError(
-                  "Hosted Web Search reported in-flight activity after its terminal event.",
-                );
-              }
-              await callbacks.onWebSearchUpdate?.(update);
-            }
-            await callbacks.onProgress(webSearchProgressMessage(update));
-          },
-        });
+              await callbacks.onProgress(webSearchProgressMessage(update));
+            },
+          });
+        } catch (error) {
+          throwIfAborted(callbacks.signal);
+          if (modelTurn?.wasInterrupted()) {
+            throw new AgentSteeringInterruptError();
+          }
+          throw error;
+        } finally {
+          modelTurn?.dispose();
+        }
         throwIfAborted(callbacks.signal);
+        if (modelTurn?.wasInterrupted()) {
+          throw new AgentSteeringInterruptError();
+        }
         await callbacks.onProgress("Reading model response");
         return turn;
       },
@@ -1711,8 +1836,26 @@ export async function handleAgentRequest(
             interaction.target,
             callbacks.signal,
             bindings,
+            () => {
+              if (callbacks.steering?.hasPending()) {
+                throw new AgentSteeringBeforeApplyError(
+                  "Newer user guidance arrived before the next Live action began. " +
+                    "The remaining actions in this plan were not executed.",
+                );
+              }
+            },
           );
         } catch (error) {
+          if (
+            error instanceof AgentPlanExecutionError &&
+            error.cause instanceof AgentSteeringBeforeApplyError &&
+            error.failedActionIndex === 0 &&
+            error.completedResults.length === 0 &&
+            error.completedMutationCount === 0
+          ) {
+            throwIfAborted(callbacks.signal);
+            throw error.cause;
+          }
           if (
             callbacks.signal.aborted &&
             error instanceof AgentPlanExecutionError &&
@@ -1941,7 +2084,10 @@ async function captureAgentPlanPreflightSnapshots(
 
 interface AgentRequestCallbacks {
   signal: AbortSignal;
+  steering?: SteeringChannel;
+  steeringSendId?: string;
   onDelta(delta: string): Promise<void> | void;
+  onAssistantReset?(): Promise<void> | void;
   onProgress(message: string): Promise<void> | void;
   onWebSearchUpdate?(
     update: ModelHostedWebSearch,
@@ -2063,6 +2209,72 @@ async function appendTerminalWebSearchEvent(
       reconciledUnknownOutcome = true;
     }
   }
+}
+
+async function appendSteeringUserEvent(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  sendId: string,
+  steerId: string,
+  content: string,
+  appendEvent: typeof appendSessionEvent,
+  loadEvents: typeof loadSessionEvents,
+): Promise<SessionEvent> {
+  const steeringReceipt = steeringReceiptFor(sendId, steerId, content);
+  const input = {
+    kind: "user" as const,
+    content,
+    steeringReceipt,
+  };
+  let reconciledUnknownOutcome = false;
+  for (;;) {
+    try {
+      return await appendEvent(storageDirectory, sessionId, input);
+    } catch (error) {
+      if (!isStorageCommitOutcomeUnknownError(error)) throw error;
+
+      let authoritativeEvents: SessionEvent[];
+      try {
+        authoritativeEvents = await loadEvents(storageDirectory, sessionId);
+      } catch (cause) {
+        throw new SteeringPersistenceOutcomeUnknownError(sendId, steerId, {
+          cause,
+        });
+      }
+      const committed = authoritativeEvents.find((event) =>
+        event.steeringReceipt?.sendId === sendId &&
+        event.steeringReceipt.id === steerId
+      );
+      if (committed) {
+        if (
+          committed.kind !== "user" ||
+          committed.content !== content ||
+          committed.steeringReceipt?.sha256 !== steeringReceipt.sha256
+        ) {
+          throw new SessionSteeringReceiptConflictError(sendId, steerId);
+        }
+        return committed;
+      }
+      if (reconciledUnknownOutcome) {
+        throw new SteeringPersistenceOutcomeUnknownError(sendId, steerId, {
+          cause: error,
+        });
+      }
+      reconciledUnknownOutcome = true;
+    }
+  }
+}
+
+function steeringReceiptFor(
+  sendId: string,
+  steerId: string,
+  content: string,
+): SessionSteeringReceipt {
+  return {
+    sendId,
+    id: steerId,
+    sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+  };
 }
 
 function sameHostedWebSearch(
