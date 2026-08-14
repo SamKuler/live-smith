@@ -211,6 +211,64 @@ const actionDescriptors = {
       notes: [{ pitch: 60, startTime: 0, duration: 4, velocity: 96 }],
     },
   ),
+  transpose_midi_notes: defineAction(
+    "transpose_midi_notes",
+    {
+      ...midiTransformClipFields(),
+      semitones: requiredIntegerInRange(-127, 127),
+    },
+    {
+      type: "transpose_midi_notes",
+      trackName: "Lead",
+      clipName: "Lead Loop",
+      slotIndex: 0,
+      semitones: 12,
+    },
+  ),
+  quantize_midi_notes: defineAction(
+    "quantize_midi_notes",
+    {
+      ...midiTransformClipFields(),
+      gridBeats: requiredPositiveNumber(),
+      strength: requiredNumberInRange(0, 1),
+    },
+    {
+      type: "quantize_midi_notes",
+      trackName: "Lead",
+      clipName: "Lead Loop",
+      slotIndex: 0,
+      gridBeats: 0.25,
+      strength: 1,
+    },
+  ),
+  scale_midi_velocity: defineAction(
+    "scale_midi_velocity",
+    {
+      ...midiTransformClipFields(),
+      factor: requiredNumberInRange(0.01, 16),
+    },
+    {
+      type: "scale_midi_velocity",
+      trackName: "Lead",
+      clipName: "Lead Loop",
+      slotIndex: 0,
+      factor: 0.85,
+    },
+  ),
+  shift_midi_notes: defineAction(
+    "shift_midi_notes",
+    {
+      ...midiTransformClipFields(),
+      offsetBeats: requiredNumber(),
+    },
+    {
+      type: "shift_midi_notes",
+      trackName: "Lead",
+      clipName: "Lead Loop",
+      slotIndex: 0,
+      offsetBeats: 0.25,
+    },
+  ),
   insert_device: defineAction(
     "insert_device",
     {
@@ -670,6 +728,16 @@ function requiredString(description?: string): ActionField<string, true> {
       return value.trim();
     },
   );
+}
+
+function midiTransformClipFields() {
+  return {
+    trackName: optionalString(),
+    trackRef: optionalRef(),
+    clipName: optionalString(),
+    startBeat: optionalNumber(),
+    slotIndex: optionalInteger(0),
+  };
 }
 
 function optionalRef(): ActionField<string, false> {

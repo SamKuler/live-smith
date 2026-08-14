@@ -122,6 +122,29 @@ test("actionDiffGroups labels actions that consume a creator ref", () => {
   assert.match(groups[1]?.rows[0] ?? "", /AI Instrument.*ref instrument/);
 });
 
+test("actionDiffGroups discloses whole-Clip MIDI transforms", () => {
+  const groups = actionDiffGroups([
+    {
+      type: "transpose_midi_notes",
+      trackName: "Lead",
+      clipName: "Verse",
+      startBeat: 8,
+      semitones: -12,
+    },
+    {
+      type: "quantize_midi_notes",
+      trackName: "Lead",
+      slotIndex: 0,
+      gridBeats: 0.25,
+      strength: 0.75,
+    },
+  ]);
+
+  assert.equal(groups[0]?.title, "Transform MIDI");
+  assert.match(groups[0]?.rows[0] ?? "", /Verse.*arrangement beat 8.*-12 semitones/i);
+  assert.match(groups[0]?.rows[1] ?? "", /Session slot 0.*0\.25-beat grid.*0\.75/i);
+});
+
 test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle changes", () => {
   const groups = actionDiffGroups([
     {

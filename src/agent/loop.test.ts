@@ -523,6 +523,41 @@ test("runAgentLoop supports inspect_song_info tool calls", async () => {
   assert.equal(result.message, "The tempo is 120 BPM.");
 });
 
+test("runAgentLoop supports strict analyze_audio_clip tool calls", async () => {
+  const observedRequests: unknown[] = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => input.messages.length === 0
+      ? {
+          content: "I will analyze the rendered Clip.",
+          toolCalls: [{
+            id: "audio_analysis",
+            name: "analyze_audio_clip",
+            arguments: JSON.stringify({
+              trackName: "Vocals",
+              clipName: "Lead Vocal",
+              startBeat: 16,
+            }),
+          }],
+        }
+      : { content: "The pre-FX RMS is -18 dBFS.", toolCalls: [] },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return "rmsDbfs=-18";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "analyze_audio_clip",
+    trackName: "Vocals",
+    clipName: "Lead Vocal",
+    startBeat: 16,
+  }]);
+  assert.match(result.message, /-18 dBFS/);
+});
+
 test("runAgentLoop emits callbacks for assistant, tool call, and tool result", async () => {
   const eventKinds: string[] = [];
 

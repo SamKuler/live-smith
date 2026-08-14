@@ -1103,6 +1103,12 @@ function observationCoversRecovery(
       return actual.type === "inspect_midi_clip" &&
         optionalTextMatches(actual.trackName, required.trackName) &&
         optionalTextMatches(actual.clipName, required.clipName) &&
+        actual.startBeat === required.startBeat &&
+        actual.slotIndex === required.slotIndex;
+    case "analyze_audio_clip":
+      return actual.type === "analyze_audio_clip" &&
+        optionalTextMatches(actual.trackName, required.trackName) &&
+        optionalTextMatches(actual.clipName, required.clipName) &&
         actual.startBeat === required.startBeat;
   }
 }
@@ -1219,16 +1225,35 @@ function observationRequestFromToolCall(
     case "inspect_midi_clip":
       assertOnlyKeys(
         args,
-        ["trackName", "clipName", "startBeat", "noteOffset", "noteLimit"],
+        ["trackName", "clipName", "startBeat", "slotIndex", "noteOffset", "noteLimit"],
+        `${toolCall.name} arguments`,
+      );
+      {
+        const request = {
+          type: "inspect_midi_clip",
+          ...optionalStringProp(args.trackName, "trackName"),
+          ...optionalStringProp(args.clipName, "clipName"),
+          ...optionalNumberProp(args.startBeat, "startBeat"),
+          ...optionalIntegerProp(args.slotIndex, "slotIndex", 0),
+          ...optionalIntegerProp(args.noteOffset, "noteOffset", 0),
+          ...optionalIntegerProp(args.noteLimit, "noteLimit", 1, 256),
+        } as Extract<AgentObservationRequest, { type: "inspect_midi_clip" }>;
+        if (request.startBeat !== undefined && request.slotIndex !== undefined) {
+          throw new Error("inspect_midi_clip uses either startBeat or slotIndex, not both.");
+        }
+        return request;
+      }
+    case "analyze_audio_clip":
+      assertOnlyKeys(
+        args,
+        ["trackName", "clipName", "startBeat"],
         `${toolCall.name} arguments`,
       );
       return {
-        type: "inspect_midi_clip",
+        type: "analyze_audio_clip",
         ...optionalStringProp(args.trackName, "trackName"),
         ...optionalStringProp(args.clipName, "clipName"),
         ...optionalNumberProp(args.startBeat, "startBeat"),
-        ...optionalIntegerProp(args.noteOffset, "noteOffset", 0),
-        ...optionalIntegerProp(args.noteLimit, "noteLimit", 1, 256),
       };
     case "inspect_song_info":
       assertOnlyKeys(args, observationItemPageKeys, `${toolCall.name} arguments`);
@@ -1297,6 +1322,7 @@ function isObservationTool(name: string): boolean {
     name === "inspect_mixer" ||
     name === "inspect_clip" ||
     name === "inspect_midi_clip" ||
+    name === "analyze_audio_clip" ||
     name === "inspect_song_info"
   );
 }

@@ -219,6 +219,58 @@ test("create_midi_clip requires explicit confirmation because it may replace not
   );
 });
 
+test("whole-Clip MIDI transforms validate exact locations and always confirm", () => {
+  const plan = validateAgentPlan({
+    message: "Tighten and transpose the loop",
+    actions: [
+      {
+        type: "quantize_midi_notes",
+        trackName: "Lead",
+        clipName: "Lead Loop",
+        slotIndex: 1,
+        gridBeats: 0.25,
+        strength: 0.8,
+      },
+      {
+        type: "transpose_midi_notes",
+        trackName: "Lead",
+        clipName: "Verse",
+        startBeat: 16,
+        semitones: -12,
+      },
+    ],
+  });
+
+  assert.equal(requiresExplicitConfirmation(plan), true);
+  assert.match(summarizeActionPlan(plan), /every note start.*0\.25-beat grid.*0\.8/i);
+  assert.match(summarizeActionPlan(plan), /every note.*Verse.*-12 semitones/i);
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Ambiguous",
+      actions: [{
+        type: "shift_midi_notes",
+        trackName: "Lead",
+        startBeat: 0,
+        slotIndex: 0,
+        offsetBeats: 0.25,
+      }],
+    }),
+    /exactly one of startBeat or slotIndex/i,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Invalid velocity scale",
+      actions: [{
+        type: "scale_midi_velocity",
+        trackName: "Lead",
+        slotIndex: 0,
+        factor: 0,
+      }],
+    }),
+    /factor must be between 0\.01 and 16/i,
+  );
+});
+
 test("create_midi_clip accepts a 64-bar MIDI arrangement", () => {
   const notes = Array.from({ length: 256 }, (_, index) => ({
     pitch: 36 + (index % 12),

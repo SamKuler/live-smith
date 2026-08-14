@@ -237,7 +237,11 @@ function hasTrackTarget(
 function requiresMidiTrack(action: AgentAction): boolean {
   return action.type === "create_midi_clip" ||
     action.type === "create_session_midi_clip" ||
-    action.type === "replace_midi_clip_segment";
+    action.type === "replace_midi_clip_segment" ||
+    action.type === "transpose_midi_notes" ||
+    action.type === "quantize_midi_notes" ||
+    action.type === "scale_midi_velocity" ||
+    action.type === "shift_midi_notes";
 }
 
 function bindActionObjects(
@@ -296,6 +300,12 @@ function bindActionObjects(
             action.clipName,
           );
         }
+        break;
+      case "transpose_midi_notes":
+      case "quantize_midi_notes":
+      case "scale_midi_velocity":
+      case "shift_midi_notes":
+        if (track) binding.clip = resolveClipLocator(track, action);
         break;
       case "insert_chain_device":
         if (track) {

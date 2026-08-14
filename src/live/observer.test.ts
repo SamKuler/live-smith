@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import * as fs from "node:fs/promises";
 import test from "node:test";
 import {
+  AudioClip,
+  AudioTrack,
   DrumChain,
   DrumRack,
   MidiClip,
@@ -10,6 +14,251 @@ import {
 } from "@ableton-extensions/sdk";
 
 import { observeLive } from "./observer.js";
+
+test("analyze_audio_clip renders the exact isolated Arrangement Clip pre-FX range", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-audio-");
+  const rendered = `${directory}/render.wav`;
+  await fs.writeFile(rendered, monoPcm16Wave([0, 0.5, -0.5, 0], 48_000));
+  const clip = analysisAudioClip({
+    handle: { id: "clip-1" },
+    name: "Vocal",
+    startTime: 16,
+    endTime: 24,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Vocals",
+    arrangementClips: [clip],
+  });
+  const renderedRanges: unknown[] = [];
+
+  try {
+    const result = await observeLive(
+      {
+        application: { song: { tracks: [track] } },
+        resources: {
+          renderPreFxAudio: async (...args: unknown[]) => {
+            renderedRanges.push(args);
+            return rendered;
+          },
+        },
+      } as never,
+      {
+        type: "analyze_audio_clip",
+        trackName: "Vocals",
+        clipName: "Vocal",
+        startBeat: 16,
+      },
+      { track, clip },
+    );
+
+    assert.deepEqual(renderedRanges, [[track, 16, 24]]);
+    assert.match(result, /Pre-FX Arrangement audio analysis/);
+    assert.match(result, /samplePeak=.*rms=/s);
+    assert.match(result, /not realtime listening or integrated LUFS/i);
+    assert.doesNotMatch(result, /render\.wav|\/tmp\//);
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+function monoPcm16Wave(samples: number[], sampleRate: number): Buffer {
+  const dataBytes = samples.length * 2;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write("WAVEfmt ", 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(dataBytes, 40);
+  samples.forEach((sample, index) => {
+    buffer.writeInt16LE(Math.round(sample * 32767), 44 + index * 2);
+  });
+  return buffer;
+}
+
+function sdkObject<T extends object>(
+  prototype: object,
+  properties: Record<string, unknown>,
+): T {
+  return Object.defineProperties(
+    Object.create(prototype),
+    Object.fromEntries(Object.entries(properties).map(([key, value]) => [
+      key,
+      { configurable: true, enumerable: true, writable: true, value },
+    ])),
+  ) as T;
+}
+
+function analysisAudioClip(properties: Record<string, unknown>): AudioClip<"1.0.0"> {
+  const startTime = Number(properties.startTime ?? 0);
+  const endTime = Number(properties.endTime ?? 8);
+  return sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    startMarker: startTime,
+    endMarker: endTime,
+    looping: false,
+    loopStart: startTime,
+    loopEnd: endTime,
+    muted: false,
+    filePath: "/tmp/source.wav",
+    warping: true,
+    warpMode: "beats",
+    warpMarkers: [],
+    ...properties,
+  });
+}
+
+test("analyze_audio_clip refuses overlapping Clips and redacts render failures", async () => {
+  const clip = analysisAudioClip({
+    handle: { id: "clip-1" },
+    name: "Target",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const overlap = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-2" },
+    name: "Overlap",
+    startTime: 4,
+    endTime: 12,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    arrangementClips: [clip, overlap],
+  });
+  const context = {
+    application: { song: { tracks: [track] } },
+    resources: {
+      renderPreFxAudio: async () => {
+        throw new Error("/Users/alice/Secret/render.wav failed");
+      },
+    },
+  } as never;
+
+  await assert.rejects(
+    observeLive(
+      context,
+      { type: "analyze_audio_clip", trackName: "Audio", clipName: "Target" },
+      { track },
+    ),
+    /could not isolate.*1 other Clip/i,
+  );
+  Object.defineProperty(track, "arrangementClips", {
+    configurable: true,
+    value: [clip],
+  });
+  await assert.rejects(
+    observeLive(
+      context,
+      { type: "analyze_audio_clip", trackName: "Audio", clipName: "Target" },
+      { track },
+    ),
+    (error: unknown) => {
+      assert.match(String(error), /Could not analyze pre-FX audio/);
+      assert.doesNotMatch(String(error), /Users|Secret|render\.wav/);
+      return true;
+    },
+  );
+});
+
+test("analyze_audio_clip rejects target state drift during rendering", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-audio-");
+  const rendered = `${directory}/render.wav`;
+  await fs.writeFile(rendered, monoPcm16Wave([0, 0.5, -0.5, 0], 48_000));
+  const clip = analysisAudioClip({
+    handle: { id: "clip-1" },
+    name: "Target",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+
+  try {
+    await assert.rejects(
+      observeLive(
+        {
+          application: { song: { tracks: [track] } },
+          resources: {
+            renderPreFxAudio: async () => {
+              Reflect.set(clip, "startTime", 16);
+              Reflect.set(clip, "endTime", 24);
+              return rendered;
+            },
+          },
+        } as never,
+        { type: "analyze_audio_clip", trackName: "Audio", startBeat: 0 },
+        { track, clip },
+      ),
+      (error: unknown) => {
+        assert.match(String(error), /Live state changed during audio analysis/i);
+        assert.doesNotMatch(String(error), /render\.wav|\/tmp\//);
+        return true;
+      },
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("analyze_audio_clip rejects a new overlap introduced during rendering", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-audio-");
+  const rendered = `${directory}/render.wav`;
+  await fs.writeFile(rendered, monoPcm16Wave([0, 0.5, -0.5, 0], 48_000));
+  const clip = analysisAudioClip({
+    handle: { id: "clip-1" },
+    name: "Target",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const overlap = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "clip-2" },
+    name: "Late overlap",
+    startTime: 4,
+    endTime: 12,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+
+  try {
+    await assert.rejects(
+      observeLive(
+        {
+          application: { song: { tracks: [track] } },
+          resources: {
+            renderPreFxAudio: async () => {
+              Reflect.set(track, "arrangementClips", [clip, overlap]);
+              return rendered;
+            },
+          },
+        } as never,
+        { type: "analyze_audio_clip", trackName: "Audio", startBeat: 0 },
+        { track, clip },
+      ),
+      /Live state changed during audio analysis/i,
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
 
 test("inspect_midi_clip resolves an explicitly selected take-lane MIDI clip", async () => {
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
@@ -44,9 +293,6 @@ test("inspect_midi_clip resolves an explicitly selected take-lane MIDI clip", as
     context,
     {
       type: "inspect_midi_clip",
-      trackName: "Lead",
-      clipName: "Take phrase",
-      startBeat: 8,
       noteOffset: 0,
       noteLimit: 128,
     },
@@ -55,6 +301,93 @@ test("inspect_midi_clip resolves an explicitly selected take-lane MIDI clip", as
 
   assert.match(result, /MIDI clip "Take phrase"/);
   assert.match(result, /start=8, end=24, duration=16/);
+});
+
+test("inspect_midi_clip resolves an exact Session slot without same-name ambiguity", async () => {
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Loop",
+    startTime: 0,
+    endTime: 4,
+    duration: 4,
+    looping: true,
+    muted: false,
+    notes: [],
+  });
+  const other = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-2" },
+    name: "Loop",
+    startTime: 0,
+    endTime: 4,
+    duration: 4,
+    looping: true,
+    muted: false,
+    notes: [],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [other],
+    takeLanes: [],
+    clipSlots: [{ clip }, { clip: other }],
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_midi_clip",
+      trackName: "Lead",
+      clipName: "Loop",
+      slotIndex: 0,
+    },
+    { track },
+  );
+
+  assert.match(result, /MIDI clip "Loop"/);
+});
+
+test("inspect_midi_clip startBeat resolves Arrangement without same-name Session ambiguity", async () => {
+  const arrangement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "arrangement-clip" },
+    name: "Loop",
+    startTime: 0,
+    endTime: 4,
+    duration: 4,
+    looping: true,
+    muted: false,
+    notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
+  });
+  const session = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "session-clip" },
+    name: "Loop",
+    startTime: 0,
+    endTime: 4,
+    duration: 4,
+    looping: true,
+    muted: false,
+    notes: [{ pitch: 72, startTime: 0, duration: 1, velocity: 100 }],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [arrangement],
+    takeLanes: [],
+    clipSlots: [{ clip: session }],
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_midi_clip",
+      trackName: "Lead",
+      clipName: "Loop",
+      startBeat: 0,
+    },
+    { track },
+  );
+
+  assert.match(result, /pitch=60/);
+  assert.doesNotMatch(result, /pitch=72/);
 });
 
 test("inspect_device_tree reports Drum Rack pads, nested paths, and sample basenames", async () => {

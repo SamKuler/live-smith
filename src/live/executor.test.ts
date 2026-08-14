@@ -1660,6 +1660,425 @@ test("partial creation reporting survives an unreadable host object name", async
   );
 });
 
+test("whole-Clip MIDI transforms edit exact Arrangement and Session clips", async () => {
+  const arrangement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "arrangement-clip" },
+    name: "Verse",
+    startTime: 8,
+    duration: 4,
+    notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 80 }],
+  });
+  const session = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "session-clip" },
+    name: "Loop",
+    startTime: 0,
+    duration: 4,
+    notes: [{ pitch: 64, startTime: 0.3, duration: 0.5, velocity: 100 }],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [arrangement],
+    clipSlots: [{ handle: { id: "slot-1" }, clip: session }],
+  });
+
+  const result = await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Transform both clips",
+      actions: [
+        {
+          type: "transpose_midi_notes",
+          trackName: "Lead",
+          clipName: "Verse",
+          startBeat: 8,
+          semitones: 7,
+        },
+        {
+          type: "quantize_midi_notes",
+          trackName: "Lead",
+          clipName: "Loop",
+          slotIndex: 0,
+          gridBeats: 0.25,
+          strength: 1,
+        },
+      ],
+    },
+    {},
+  );
+
+  assert.equal(arrangement.notes[0]?.pitch, 67);
+  assert.equal(session.notes[0]?.startTime, 0.25);
+  assert.match(result[0] ?? "", /Transposed every note by 7 semitones/);
+  assert.match(result[1] ?? "", /Quantized every note start/);
+});
+
+test("whole-Clip MIDI transforms fail before mutation when output leaves bounds", async () => {
+  const original = [{ pitch: 127, startTime: 0, duration: 1, velocity: 80 }];
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "High",
+    startTime: 0,
+    duration: 4,
+    notes: original,
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [clip],
+    clipSlots: [],
+  });
+
+  await assert.rejects(
+    executeAgentPlan(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Too high",
+        actions: [{
+          type: "transpose_midi_notes",
+          trackName: "Lead",
+          startBeat: 0,
+          semitones: 1,
+        }],
+      },
+      {},
+    ),
+    /pitch 128.*outside/i,
+  );
+  assert.deepEqual(clip.notes, original);
+});
+
+test("velocity factor one preserves an implicit SDK default as a no-op", async () => {
+  const notes = [{ pitch: 60, startTime: 0, duration: 1 }];
+  let noteWrites = 0;
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Loop",
+    startTime: 0,
+    duration: 4,
+  });
+  Object.defineProperty(clip, "notes", {
+    configurable: true,
+    get: () => notes,
+    set: () => {
+      noteWrites += 1;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [clip],
+    clipSlots: [],
+  });
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Keep default velocity",
+      actions: [{
+        type: "scale_midi_velocity",
+        trackName: "Lead",
+        startBeat: 0,
+        factor: 1,
+      }],
+    },
+    {},
+  );
+
+  assert.equal(outcome.mutationCount, 0);
+  assert.equal(noteWrites, 0);
+  assert.match(outcome.results[0] ?? "", /no note changes/i);
+});
+
+test("a transform refuses a Session Clip replaced earlier in the same plan", async () => {
+  const detached = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-old" },
+    name: "Loop",
+    duration: 8,
+    notes: [{ pitch: 48, startTime: 0, duration: 1, velocity: 90 }],
+  });
+  const replacement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-new" },
+    name: "Untitled",
+    duration: 4,
+    notes: [],
+  });
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "slot-1" },
+    clip: detached,
+    deleteClip: async () => {
+      (slot as unknown as { clip: MidiClip<"1.0.0"> | null }).clip = null;
+    },
+    createMidiClip: async () => {
+      (slot as unknown as { clip: MidiClip<"1.0.0"> | null }).clip = replacement;
+      return replacement;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [],
+    clipSlots: [slot],
+  });
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Replace then transpose",
+        actions: [
+          {
+            type: "create_session_midi_clip",
+            trackName: "Lead",
+            slotIndex: 0,
+            durationBeats: 4,
+            name: "Loop",
+            notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
+          },
+          {
+            type: "transpose_midi_notes",
+            trackName: "Lead",
+            clipName: "Loop",
+            slotIndex: 0,
+            semitones: 12,
+          },
+        ],
+      },
+      {},
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.completedResults.length, 1);
+      assert.match(error.message, /MIDI Clip.*changed earlier in this plan/i);
+      return true;
+    },
+  );
+
+  assert.equal(slot.clip, replacement);
+  assert.equal(replacement.notes[0]?.pitch, 60);
+  assert.equal(detached.notes[0]?.pitch, 48);
+});
+
+test("a transform refuses an Arrangement Clip replaced earlier in the same plan", async () => {
+  const detached = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-old" },
+    name: "Verse",
+    startTime: 8,
+    duration: 8,
+    notes: [{ pitch: 48, startTime: 0, duration: 1, velocity: 90 }],
+  });
+  const replacement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-new" },
+    name: "Untitled",
+    startTime: 8,
+    duration: 4,
+    notes: [],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [detached],
+    clipSlots: [],
+    createMidiClip: async () => {
+      (track as unknown as { arrangementClips: MidiClip<"1.0.0">[] })
+        .arrangementClips = [replacement];
+      return replacement;
+    },
+  });
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Replace then transpose",
+        actions: [
+          {
+            type: "create_midi_clip",
+            trackName: "Lead",
+            startBeat: 8,
+            durationBeats: 4,
+            name: "Verse",
+            notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
+          },
+          {
+            type: "transpose_midi_notes",
+            trackName: "Lead",
+            clipName: "Verse",
+            startBeat: 8,
+            semitones: 12,
+          },
+        ],
+      },
+      {},
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.completedResults.length, 1);
+      assert.match(error.message, /MIDI Clip.*changed earlier in this plan/i);
+      return true;
+    },
+  );
+
+  assert.equal(track.arrangementClips[0], replacement);
+  assert.equal(replacement.notes[0]?.pitch, 60);
+  assert.equal(detached.notes[0]?.pitch, 48);
+});
+
+test("sequential transforms keep using the same unchanged Clip handle", async () => {
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Verse",
+    startTime: 8,
+    duration: 4,
+    notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [clip],
+    clipSlots: [],
+  });
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Transform twice",
+      actions: [
+        {
+          type: "transpose_midi_notes",
+          trackName: "Lead",
+          startBeat: 8,
+          semitones: 12,
+        },
+        {
+          type: "scale_midi_velocity",
+          trackName: "Lead",
+          startBeat: 8,
+          factor: 0.5,
+        },
+      ],
+    },
+    {},
+  );
+
+  assert.equal(outcome.mutationCount, 2);
+  assert.deepEqual(clip.notes, [
+    { pitch: 72, startTime: 0, duration: 1, velocity: 50 },
+  ]);
+});
+
+test("timing transforms apply exact changes below the host round-trip tolerance", async () => {
+  const scenarios = [
+    {
+      name: "tiny shift",
+      startTime: 1,
+      action: {
+        type: "shift_midi_notes",
+        trackName: "Lead",
+        startBeat: 0,
+        offsetBeats: 5e-8,
+      },
+      expectedStartTime: 1 + 5e-8,
+    },
+    {
+      name: "near-grid quantize",
+      startTime: 1.00000005,
+      action: {
+        type: "quantize_midi_notes",
+        trackName: "Lead",
+        startBeat: 0,
+        gridBeats: 1,
+        strength: 1,
+      },
+      expectedStartTime: 1,
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+      handle: { id: `clip-${scenario.name}` },
+      name: "Precise",
+      startTime: 0,
+      duration: 4,
+      notes: [{
+        pitch: 60,
+        startTime: scenario.startTime,
+        duration: 1,
+        velocity: 100,
+      }],
+    });
+    const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+      handle: { id: `track-${scenario.name}` },
+      name: "Lead",
+      devices: [],
+      arrangementClips: [clip],
+      clipSlots: [],
+    });
+
+    const outcome = await executeAgentPlanWithProgress(
+      { application: { song: { tracks: [track] } } } as never,
+      { message: scenario.name, actions: [scenario.action] },
+      {},
+    );
+
+    assert.equal(outcome.mutationCount, 1, scenario.name);
+    assert.equal(
+      clip.notes[0]?.startTime,
+      scenario.expectedStartTime,
+      scenario.name,
+    );
+  }
+});
+
+test("non-finite quantization fails before assigning Clip notes", async () => {
+  const notes = [{ pitch: 60, startTime: 0.3, duration: 1, velocity: 100 }];
+  let noteWrites = 0;
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Loop",
+    startTime: 0,
+    duration: 4,
+  });
+  Object.defineProperty(clip, "notes", {
+    configurable: true,
+    get: () => notes,
+    set: () => {
+      noteWrites += 1;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [clip],
+    clipSlots: [],
+  });
+
+  await assert.rejects(
+    executeAgentPlan(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Unsafe quantize",
+        actions: [{
+          type: "quantize_midi_notes",
+          trackName: "Lead",
+          startBeat: 0,
+          gridBeats: Number.MIN_VALUE,
+          strength: 1,
+        }],
+      },
+      {},
+    ),
+    /quantize.*finite/i,
+  );
+  assert.equal(noteWrites, 0);
+  assert.deepEqual(notes, [{ pitch: 60, startTime: 0.3, duration: 1, velocity: 100 }]);
+});
+
 function compositeCreationFailureScenarios() {
   let midiTrackCreates = 0;
   let audioTrackCreates = 0;

@@ -31,6 +31,14 @@ export interface ObservationParameterPage {
   valueItemLimit?: number;
 }
 
+type MidiTransformAction = Extract<AgentAction, {
+  type:
+    | "transpose_midi_notes"
+    | "quantize_midi_notes"
+    | "scale_midi_velocity"
+    | "shift_midi_notes";
+}>;
+
 const referencePattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 export function requiresExplicitConfirmation(plan: AgentPlan): boolean {
@@ -46,6 +54,10 @@ export function requiresExplicitConfirmation(plan: AgentPlan): boolean {
       action.type === "create_midi_clip" ||
       action.type === "create_session_midi_clip" ||
       action.type === "replace_midi_clip_segment" ||
+      action.type === "transpose_midi_notes" ||
+      action.type === "quantize_midi_notes" ||
+      action.type === "scale_midi_velocity" ||
+      action.type === "shift_midi_notes" ||
       action.type === "create_arrangement_audio_clip" ||
       action.type === "create_session_audio_clip" ||
       action.type === "replace_simpler_sample" ||
@@ -83,8 +95,15 @@ export type AgentObservationRequest =
       trackName?: string;
       clipName?: string;
       startBeat?: number;
+      slotIndex?: number;
       noteOffset?: number;
       noteLimit?: number;
+    }
+  | {
+      type: "analyze_audio_clip";
+      trackName?: string;
+      clipName?: string;
+      startBeat?: number;
     }
   | ({ type: "inspect_song_info" } & ObservationItemPage);
 
@@ -162,6 +181,17 @@ export function observationRequestForAction(
         ...optionalTrackName,
         clipName: action.clipName,
         startBeat: action.startBeat,
+      };
+    case "transpose_midi_notes":
+    case "quantize_midi_notes":
+    case "scale_midi_velocity":
+    case "shift_midi_notes":
+      return {
+        type: "inspect_midi_clip",
+        ...optionalTrackName,
+        ...(action.clipName ? { clipName: action.clipName } : {}),
+        ...(action.startBeat === undefined ? {} : { startBeat: action.startBeat }),
+        ...(action.slotIndex === undefined ? {} : { slotIndex: action.slotIndex }),
       };
     case "set_device_parameter":
       return action.devicePath
@@ -318,7 +348,7 @@ export function summarizeActionPlan(plan: AgentPlan): string {
 export function actionSystemPrompt(): string {
   return [
     "You are Live Smith, running inside Ableton Live with tools.",
-    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, and inspect_midi_clip to inspect the exact current Live state needed by the next edit.",
+    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, inspect_midi_clip, and analyze_audio_clip to inspect the exact current Live state needed by the next edit.",
     "Observation collections and device parameters are paged. When a result reports nextOffset, call the same inspection again with the corresponding itemOffset, parameterOffset, or valueItemOffset until the exact target is visible. Never infer an omitted item.",
     "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it, and the beta SDK does not expose the rejection cause. If insertion fails, preserve the failure as cause-unknown, inspect the current device chain, and decide from observed state whether to adjust placement, retry after a state repair, choose another exact name, or explain that no safe repair is known.",
     "Use inspect_midi_clip before analyzing or rewriting MIDI harmony, melody, voicing, or chord correctness unless the exact notes are already in context. For long clips, follow noteOffset pagination until every note has been inspected.",
@@ -329,6 +359,7 @@ export function actionSystemPrompt(): string {
     "Use one apply_live_actions call when every note and device choice is already known and one confirmation is appropriate.",
     "For MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
     "replace_midi_clip_segment replaces every existing note that overlaps its range; it does not append. Each staged apply_live_actions call gets a separate confirmation and remains in the same Session. Never recreate the empty Clip or repeat a completed segment.",
+    "Use transpose_midi_notes, quantize_midi_notes, scale_midi_velocity, or shift_midi_notes for deterministic whole-Clip edits instead of regenerating unchanged notes. Each transform fails without mutation if any resulting pitch or note interval would leave the valid MIDI or Clip bounds.",
     "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
     "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
     "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
@@ -377,6 +408,14 @@ export function summarizeAgentAction(action: AgentAction): string {
       return `Create or replace Session MIDI clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
     case "replace_midi_clip_segment":
       return `Replace notes in MIDI clip "${action.clipName}" on ${targetTrack(action)} at arrangement beat ${action.startBeat}, relative beats ${action.segmentStartTime}-${action.segmentStartTime + action.segmentDurationBeats}, with ${action.notes.length} notes.`;
+    case "transpose_midi_notes":
+      return `Transpose every note in ${clipLocatorText(action)} on ${targetTrack(action)} by ${action.semitones} semitones.`;
+    case "quantize_midi_notes":
+      return `Quantize every note start in ${clipLocatorText(action)} on ${targetTrack(action)} to a ${action.gridBeats}-beat grid at ${action.strength} strength.`;
+    case "scale_midi_velocity":
+      return `Scale every note velocity in ${clipLocatorText(action)} on ${targetTrack(action)} by ${action.factor}, rounded and clamped to 1-127.`;
+    case "shift_midi_notes":
+      return `Shift every note in ${clipLocatorText(action)} on ${targetTrack(action)} by ${action.offsetBeats} beats.`;
     case "insert_device":
       return `Insert Live device "${action.deviceName}" on ${targetTrack(action)} ${action.index === undefined ? "at end" : `at index ${action.index}`}.`;
     case "insert_chain_device":
@@ -543,6 +582,7 @@ function validateActionLocators(action: AgentAction): void {
   if (action.type === "set_clip_properties" || action.type === "set_audio_clip_warp") {
     validateExclusiveClipLocator(action);
   }
+  if (isMidiTransformAction(action)) validateExclusiveClipLocator(action);
   if (
     action.type === "set_clip_properties" &&
     action.newName === undefined &&
@@ -581,6 +621,13 @@ function validateExclusiveClipLocator(action: {
   if (count !== 1) {
     throw new Error("Clip actions require exactly one of startBeat or slotIndex.");
   }
+}
+
+function isMidiTransformAction(action: AgentAction): action is MidiTransformAction {
+  return action.type === "transpose_midi_notes" ||
+    action.type === "quantize_midi_notes" ||
+    action.type === "scale_midi_velocity" ||
+    action.type === "shift_midi_notes";
 }
 
 function validateAudioCreationSettings(
@@ -720,6 +767,7 @@ function sceneIndexDependency(action: AgentAction): string | undefined {
   }
   if (
     action.type === "create_session_midi_clip" ||
+    (isMidiTransformAction(action) && action.slotIndex !== undefined) ||
     action.type === "create_session_audio_clip" ||
     action.type === "delete_session_clip" ||
     ((action.type === "set_clip_properties" ||
@@ -971,6 +1019,7 @@ function requiresObservedExistingTrack(action: AgentAction): boolean {
     action.type === "set_track_mixer_parameter" ||
     action.type === "set_clip_properties" ||
     action.type === "set_audio_clip_warp" ||
+    isMidiTransformAction(action) ||
     action.type === "delete_session_clip" ||
     action.type === "rename_take_lane"
   );

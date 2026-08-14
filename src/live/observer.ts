@@ -1,5 +1,6 @@
 import {
   AudioClip,
+  AudioTrack,
   Clip,
   ClipSlot,
   CuePoint,
@@ -18,6 +19,7 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { AgentObservationRequest } from "../agent/actions.js";
+import { throwIfAborted } from "../runtime/host.js";
 import { summarizeMidiNotes } from "./midi-notes.js";
 import {
   equalsLoose,
@@ -35,6 +37,7 @@ import {
   type DevicePath,
 } from "./device-tree.js";
 import { audioFileLabel } from "./context.js";
+import { analyzeWaveFile, type WaveAnalysis } from "./wave-analysis.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -106,6 +109,7 @@ export async function observeLive(
   context: Api,
   request: AgentObservationRequest,
   target: LiveTarget,
+  signal?: AbortSignal,
 ): Promise<string> {
   switch (request.type) {
     case "inspect_live_set":
@@ -157,9 +161,197 @@ export async function observeLive(
         request.noteLimit ?? 128,
       );
     }
+    case "analyze_audio_clip":
+      return analyzeArrangementAudioClip(context, request, target, signal);
     case "inspect_song_info":
       return summarizeSongInfo(context, request);
   }
+}
+
+async function analyzeArrangementAudioClip(
+  context: Api,
+  request: Extract<AgentObservationRequest, { type: "analyze_audio_clip" }>,
+  target: LiveTarget,
+  signal?: AbortSignal,
+): Promise<string> {
+  const track = resolveTrack(context, request.trackName, target);
+  if (!(track instanceof AudioTrack)) {
+    throw new Error(`Track "${track.name}" is not an audio track.`);
+  }
+  const candidates = track.arrangementClips.filter(
+    (clip): clip is AudioClip<"1.0.0"> =>
+      clip instanceof AudioClip &&
+      (!request.clipName || equalsLoose(clip.name, request.clipName)) &&
+      (request.startBeat === undefined ||
+        Math.abs(clip.startTime - request.startBeat) < 0.0001),
+  );
+  if (candidates.length !== 1) {
+    const available = track.arrangementClips
+      .filter((clip): clip is AudioClip<"1.0.0"> => clip instanceof AudioClip)
+      .map((clip) => `${clip.name}@${clip.startTime}`)
+      .join(", ") || "none";
+    if (!candidates.length) {
+      throw new Error(
+        `Could not find one matching Arrangement Audio Clip on track "${track.name}". Available: ${available}`,
+      );
+    }
+    throw new Error(
+      `Found ${candidates.length} matching Arrangement Audio Clips on track "${track.name}". Add startBeat to disambiguate: ${available}`,
+    );
+  }
+  const clip = candidates[0]!;
+  const snapshot = captureAudioAnalysisSnapshot(track, clip);
+  const overlaps = audioAnalysisOverlaps(track, snapshot);
+  if (overlaps.length) {
+    throw new Error(
+      `Could not isolate Arrangement Audio Clip "${snapshot.clipName}" because ${overlaps.length} other Clip${overlaps.length === 1 ? "" : "s"} overlap its beat range on track "${snapshot.trackName}".`,
+    );
+  }
+  let analysis: WaveAnalysis;
+  try {
+    const rendered = await context.resources.renderPreFxAudio(
+      track,
+      snapshot.startTime,
+      snapshot.endTime,
+    );
+    analysis = await analyzeWaveFile(rendered, signal);
+  } catch (error) {
+    throwIfAborted(signal);
+    throw new Error(
+      `Could not analyze pre-FX audio for Arrangement Clip "${snapshot.clipName}" on track "${snapshot.trackName}".`,
+      { cause: error },
+    );
+  }
+  assertAudioAnalysisStateUnchanged(context, snapshot);
+  return summarizeWaveAnalysis(snapshot, analysis);
+}
+
+function summarizeWaveAnalysis(
+  snapshot: AudioAnalysisSnapshot,
+  analysis: WaveAnalysis,
+): string {
+  return [
+    `Pre-FX Arrangement audio analysis for Clip "${snapshot.clipName}" on track "${snapshot.trackName}"`,
+    `beatRange=${snapshot.startTime}-${snapshot.endTime}, durationSeconds=${roundMetric(analysis.durationSeconds)}, sampleRate=${analysis.sampleRate}, channels=${analysis.channels}`,
+    `samplePeak=${roundMetric(analysis.samplePeak)}, peakDbfs=${dbLabel(analysis.peakDbfs)}`,
+    `rms=${roundMetric(analysis.rms)}, rmsDbfs=${dbLabel(analysis.rmsDbfs)}, crestFactorDb=${dbLabel(analysis.crestFactorDb)}`,
+    `dcOffsetByChannel=[${analysis.dcOffsetByChannel.map(roundMetric).join(",")}], maxAbsoluteDcOffset=${roundMetric(analysis.maxAbsoluteDcOffset)}`,
+    `silentFrameRatio=${roundMetric(analysis.silentFrameRatio)} at amplitude<${roundMetric(analysis.silenceThreshold)}, clippedSampleRatio=${roundMetric(analysis.clippedSampleRatio)}`,
+    "Scope: rendered pre-effects track audio for this Arrangement beat range; metrics are objective sample statistics, not realtime listening or integrated LUFS.",
+  ].join("\n");
+}
+
+interface AudioAnalysisSnapshot {
+  readonly trackId: string;
+  readonly trackName: string;
+  readonly clipId: string;
+  readonly clipName: string;
+  readonly startTime: number;
+  readonly endTime: number;
+  readonly duration: number;
+  readonly startMarker: number;
+  readonly endMarker: number;
+  readonly looping: boolean;
+  readonly loopStart: number;
+  readonly loopEnd: number;
+  readonly muted: boolean;
+  readonly filePath: string;
+  readonly warping: boolean;
+  readonly warpMode: unknown;
+  readonly warpMarkers: readonly { sampleTime: number; beatTime: number }[];
+}
+
+function captureAudioAnalysisSnapshot(
+  track: AudioTrack<"1.0.0">,
+  clip: AudioClip<"1.0.0">,
+): AudioAnalysisSnapshot {
+  return {
+    trackId: requiredAnalysisHandleId(track),
+    trackName: track.name,
+    clipId: requiredAnalysisHandleId(clip),
+    clipName: clip.name,
+    startTime: clip.startTime,
+    endTime: clip.endTime,
+    duration: clip.duration,
+    startMarker: clip.startMarker,
+    endMarker: clip.endMarker,
+    looping: clip.looping,
+    loopStart: clip.loopStart,
+    loopEnd: clip.loopEnd,
+    muted: clip.muted,
+    filePath: clip.filePath,
+    warping: clip.warping,
+    warpMode: clip.warpMode,
+    warpMarkers: clip.warpMarkers.map((marker) => ({
+      sampleTime: marker.sampleTime,
+      beatTime: marker.beatTime,
+    })),
+  };
+}
+
+function assertAudioAnalysisStateUnchanged(
+  context: Api,
+  expected: AudioAnalysisSnapshot,
+): void {
+  try {
+    const track = context.application.song.tracks.find(
+      (candidate) => optionalAnalysisHandleId(candidate) === expected.trackId,
+    );
+    if (!(track instanceof AudioTrack)) throw audioAnalysisStateChanged();
+    const clip = track.arrangementClips.find(
+      (candidate): candidate is AudioClip<"1.0.0"> =>
+        candidate instanceof AudioClip &&
+        optionalAnalysisHandleId(candidate) === expected.clipId,
+    );
+    if (!clip) throw audioAnalysisStateChanged();
+    const current = captureAudioAnalysisSnapshot(track, clip);
+    if (
+      JSON.stringify(current) !== JSON.stringify(expected) ||
+      audioAnalysisOverlaps(track, expected).length
+    ) {
+      throw audioAnalysisStateChanged();
+    }
+  } catch {
+    throw audioAnalysisStateChanged();
+  }
+}
+
+function audioAnalysisOverlaps(
+  track: AudioTrack<"1.0.0">,
+  snapshot: AudioAnalysisSnapshot,
+): Clip<"1.0.0">[] {
+  return track.arrangementClips.filter(
+    (candidate) => optionalAnalysisHandleId(candidate) !== snapshot.clipId &&
+      candidate.startTime < snapshot.endTime &&
+      candidate.endTime > snapshot.startTime,
+  );
+}
+
+function requiredAnalysisHandleId(value: { handle?: { id?: unknown } }): string {
+  const id = optionalAnalysisHandleId(value);
+  if (!id) throw new Error("Could not verify Live object identity for audio analysis.");
+  return id;
+}
+
+function optionalAnalysisHandleId(
+  value: { handle?: { id?: unknown } },
+): string | undefined {
+  const id = value.handle?.id;
+  return id === undefined || id === null ? undefined : String(id);
+}
+
+function audioAnalysisStateChanged(): Error {
+  return new Error(
+    "Live state changed during audio analysis. Inspect the current Arrangement Audio Clip and try again.",
+  );
+}
+
+function roundMetric(value: number): string {
+  return Number(value.toFixed(6)).toString();
+}
+
+function dbLabel(value: number | null): string {
+  return value === null ? "-infinity" : roundMetric(value);
 }
 
 async function summarizeCurrentObject(
@@ -511,13 +703,37 @@ function resolveMidiClip(
     !request.trackName &&
     !request.clipName &&
     request.startBeat === undefined &&
+    request.slotIndex === undefined &&
     target.clip instanceof MidiClip
   ) {
     return target.clip;
   }
 
   const track = resolveTrack(context, request.trackName, target);
-  const candidates = midiClipsOnTrack(track);
+  if (request.slotIndex !== undefined) {
+    const slot = track.clipSlots[request.slotIndex];
+    if (!slot) {
+      throw new Error(
+        `Could not find Session slotIndex ${request.slotIndex} on track "${track.name}".`,
+      );
+    }
+    if (!(slot.clip instanceof MidiClip)) {
+      throw new Error(
+        `Session slotIndex ${request.slotIndex} on track "${track.name}" does not contain a MIDI clip.`,
+      );
+    }
+    if (request.clipName && !equalsLoose(slot.clip.name, request.clipName)) {
+      throw new Error(
+        `Session slotIndex ${request.slotIndex} contains "${slot.clip.name}", not "${request.clipName}".`,
+      );
+    }
+    return slot.clip;
+  }
+  const candidates = request.startBeat === undefined
+    ? midiClipsOnTrack(track)
+    : track.arrangementClips.filter(
+      (clip): clip is MidiClip<"1.0.0"> => clip instanceof MidiClip,
+    );
   const matching = candidates.filter((clip) => {
     const nameMatches = request.clipName ? equalsLoose(clip.name, request.clipName) : true;
     const startMatches =
@@ -540,7 +756,7 @@ function resolveMidiClip(
 
   throw new Error(
     [
-      `Found ${matching.length} matching MIDI clips on track "${track.name}". Add startBeat to disambiguate.`,
+      `Found ${matching.length} matching MIDI clips on track "${track.name}". ${request.startBeat === undefined ? "Add startBeat or slotIndex to disambiguate." : "Add clipName to disambiguate Arrangement Clips at this beat."}`,
       ...matching.map((clip) => `- ${clip.name} start=${clip.startTime} duration=${clip.duration}`),
     ].join("\n"),
   );

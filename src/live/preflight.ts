@@ -130,6 +130,23 @@ export async function captureLiveActionPreflightSnapshot(
         clip: clipContentIdentity(clip),
       });
     }
+    case "transpose_midi_notes":
+    case "quantize_midi_notes":
+    case "scale_midi_velocity":
+    case "shift_midi_notes": {
+      const track = resolveMidiTrack(context, action.trackName, target);
+      const clip = resolveClipLocator(track, action);
+      if (!(clip instanceof MidiClip)) {
+        throw new Error(
+          `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
+        );
+      }
+      return fingerprint(action.type, {
+        song: songIdentity,
+        track: trackIdentity(track),
+        clip: clipContentIdentity(clip),
+      });
+    }
     case "insert_device": {
       const track = resolveTrack(context, action.trackName, target);
       return fingerprint(action.type, {

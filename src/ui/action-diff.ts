@@ -114,6 +114,26 @@ function actionDiffRow(
         title: "Write MIDI",
         row: `± Replace MIDI clip "${action.clipName}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat}, relative beats ${action.segmentStartTime}-${action.segmentStartTime + action.segmentDurationBeats} (${action.notes.length} notes)`,
       };
+    case "transpose_midi_notes":
+      return {
+        title: "Transform MIDI",
+        row: `~ Transpose every note in ${clipLocation(action)} on ${trackLabel(action, refLabels)} by ${action.semitones} semitones`,
+      };
+    case "quantize_midi_notes":
+      return {
+        title: "Transform MIDI",
+        row: `~ Quantize every note start in ${clipLocation(action)} on ${trackLabel(action, refLabels)} to ${action.gridBeats}-beat grid at ${action.strength} strength`,
+      };
+    case "scale_midi_velocity":
+      return {
+        title: "Transform MIDI",
+        row: `~ Scale every note velocity in ${clipLocation(action)} on ${trackLabel(action, refLabels)} by ${action.factor}`,
+      };
+    case "shift_midi_notes":
+      return {
+        title: "Transform MIDI",
+        row: `~ Shift every note in ${clipLocation(action)} on ${trackLabel(action, refLabels)} by ${action.offsetBeats} beats`,
+      };
     case "create_arrangement_audio_clip":
       return {
         title: "Write Audio",

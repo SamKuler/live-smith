@@ -112,7 +112,13 @@ export function liveSmithTools(): ModelFunctionTool[] {
         startBeat: {
           type: "number",
           description:
-            "Optional arrangement start beat for disambiguating clips with the same name.",
+            "Optional arrangement start beat for disambiguating clips with the same name. Do not combine with slotIndex.",
+        },
+        slotIndex: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Optional 0-based Session View Clip Slot index. Do not combine with startBeat.",
         },
         noteOffset: {
           type: "integer",
@@ -125,6 +131,24 @@ export function liveSmithTools(): ModelFunctionTool[] {
           minimum: 1,
           maximum: 256,
           description: "Notes to return in this page. Defaults to 128 and is capped at 256.",
+        },
+      },
+    ),
+    observationTool(
+      "analyze_audio_clip",
+      "Render one exact Arrangement Audio Clip beat range as pre-effects audio and return objective sample peak, RMS, crest factor, DC offset, silence, and clipping metrics. This is not realtime listening and does not include the track device chain.",
+      {
+        trackName: {
+          type: "string",
+          description: "Optional audio track name. Omit it to use the current target track.",
+        },
+        clipName: {
+          type: "string",
+          description: "Optional exact Arrangement Audio Clip name for disambiguation.",
+        },
+        startBeat: {
+          type: "number",
+          description: "Optional exact Arrangement Clip start beat for disambiguation.",
         },
       },
     ),

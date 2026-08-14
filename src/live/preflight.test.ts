@@ -81,6 +81,26 @@ test("replace_midi_clip_segment snapshot detects clip edits while confirmation i
   assert.notEqual(after, before);
 });
 
+test("whole-Clip MIDI transform snapshot detects note drift", async () => {
+  const clip = midiClip(101n);
+  clip.notes = [{ pitch: 60, startTime: 0, duration: 1, velocity: 90 }];
+  const track = midiTrack(11n, [clip]);
+  const context = liveContext(track);
+  const action = {
+    type: "transpose_midi_notes" as const,
+    trackName: "Bass",
+    clipName: "Phrase",
+    startBeat: 0,
+    semitones: 12,
+  };
+
+  const before = await captureLiveActionPreflightSnapshot(context, action, {});
+  clip.notes = [{ pitch: 61, startTime: 0, duration: 1, velocity: 90 }];
+  const after = await captureLiveActionPreflightSnapshot(context, action, {});
+
+  assert.notEqual(after, before);
+});
+
 test("MIDI clip snapshots ignore opaque bigint note metadata while tracking musical fields", async () => {
   const clip = midiClip(101n);
   const note = {

@@ -472,6 +472,36 @@ rechecks the segment against the current Clip duration before assigning notes.
 Every note must state its velocity explicitly; validation never invents a hidden
 musical default.
 
+Deterministic whole-Clip MIDI transforms target exactly one Arrangement or
+Session MIDI Clip. The action binding captures the Clip handle before
+confirmation, preflight fingerprints every current note, and execution applies
+transpose, start quantization, velocity scaling, or beat shifting locally. A
+transform writes the complete resulting note set only after validating every
+pitch, start, and end against MIDI and Clip bounds; invalid output performs no
+mutation. Optional SDK note fields are preserved unchanged.
+
+`analyze_audio_clip` is a client-executed read-only observation. It resolves one
+Arrangement Audio Clip on an Audio Track and refuses same-track overlap in the
+Clip beat range. The SDK `Resources.renderPreFxAudio` service renders that range
+to its extension temp directory. Live Smith opens the returned WAV without
+following symlinks, validates one stable bounded regular-file snapshot, streams
+PCM or IEEE-float samples with cancellation and cooperative yielding, and
+returns path-free sample peak, RMS, crest factor, per-channel DC offset,
+maximum absolute channel DC offset, silent-frame ratio at a 0.001 amplitude
+threshold, and clipped-sample metrics. These are pre-effects track statistics,
+not realtime monitoring or integrated LUFS. The Track, Clip, audible-content
+settings, beat range, and overlap isolation are snapshotted before rendering
+and revalidated afterward; the summary uses only the verified snapshot. The
+SDK creates the WAV in its extension temp directory. Live Smith closes the
+verified file handle but does not unlink the pathname afterward because the
+beta SDK exposes no atomic handle-based cleanup contract; pathname lifecycle
+therefore remains with the SDK temp directory.
+
+SDK `1.0.0-beta.1` exposes no Automation Envelope object or automation-point
+read/write operation. Automation is therefore outside the current action and
+observation contracts; no parameter-write approximation is presented as
+Automation support.
+
 Extensions SDK 1.0.0-beta.1 accepts an exact built-in name through
 `insertDevice`, but exposes no Browser, installed-device catalog, list, or
 search API, and its insertion failure callback carries no host detail. The

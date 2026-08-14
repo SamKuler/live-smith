@@ -33,12 +33,14 @@ test("apply_live_actions exposes every validated action schema", () => {
     "duplicate_track",
     "insert_chain_device",
     "insert_device",
+    "quantize_midi_notes",
     "rename_cue_point",
     "rename_scene",
     "rename_take_lane",
     "rename_track",
     "replace_midi_clip_segment",
     "replace_simpler_sample",
+    "scale_midi_velocity",
     "set_audio_clip_warp",
     "set_clip_properties",
     "set_device_parameter",
@@ -47,6 +49,8 @@ test("apply_live_actions exposes every validated action schema", () => {
     "set_track_mixer_parameter",
     "set_track_mute",
     "set_track_solo",
+    "shift_midi_notes",
+    "transpose_midi_notes",
   ]);
 
   const applyTool = liveSmithTools().find(
@@ -74,6 +78,7 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
     "inspect_device_tree",
     "inspect_mixer",
     "inspect_clip",
+    "analyze_audio_clip",
   ]) {
     assert.ok(tools.has(name), `${name} should be available`);
   }
@@ -98,4 +103,13 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
   };
   assert.ok(inspectSong.properties?.itemOffset);
   assert.ok(inspectSong.properties?.itemLimit);
+
+  const analyzeAudio = tools.get("analyze_audio_clip")?.parameters as {
+    properties?: Record<string, unknown>;
+  };
+  assert.deepEqual(Object.keys(analyzeAudio.properties ?? {}).sort(), [
+    "clipName",
+    "startBeat",
+    "trackName",
+  ]);
 });

@@ -26,7 +26,9 @@
   OpenAI Chat Completions, and Anthropic Messages. Compatible endpoints use an
   ordinary Profile for the protocol family they implement.
 - Uses real tool calls for observation and mutation. The agent can inspect the
-  Live Set, tracks, devices, and MIDI notes before deciding what to apply.
+  Live Set, tracks, devices, and MIDI notes, and can render one isolated
+  Arrangement Audio Clip range for objective pre-FX analysis before deciding
+  what to apply.
 - Can opt a saved OpenAI Responses or Anthropic Messages Profile into
   provider-hosted Web Search. Search is off by default; when enabled, the model
   searches when the request needs current information, and cited answers show
@@ -63,8 +65,8 @@ The action executor exposes a deliberately bounded set of Live mutations:
 | --- | --- |
 | Set structure | Set tempo; create, rename, duplicate, or delete Session View Scenes; create, rename, or delete Arrangement Cue Points. |
 | Tracks and mixer | Create MIDI or audio tracks; rename, duplicate, mute, solo, arm, or delete tracks; set volume, panning, and sends. |
-| MIDI Clips | Create or replace Arrangement and Session MIDI Clips with up to 4096 notes per action; replace bounded ranges of an Arrangement MIDI Clip. |
-| Audio Clips | Create Arrangement or Session audio Clips from an observed sample source; edit Clip properties and warp settings; clear Arrangement ranges; delete Arrangement or Session Clips. |
+| MIDI Clips | Create or replace Arrangement and Session MIDI Clips with up to 4096 notes per action; replace bounded ranges of an Arrangement MIDI Clip; transpose, quantize starts, scale velocity, or shift all notes in one exact Arrangement or Session MIDI Clip. |
+| Audio Clips | Create Arrangement or Session audio Clips from an observed sample source; edit Clip properties and warp settings; clear Arrangement ranges; delete Arrangement or Session Clips; render an isolated Arrangement Clip beat range pre-FX for sample peak, RMS, crest factor, DC offset, silence, and clipping analysis. |
 | Devices and Racks | Insert exact-name native Live devices on tracks or inside Rack chains; inspect and set exposed parameters; duplicate or delete existing devices. |
 | Samples | Load an observed sample into Simpler or configure a Drum Rack pad from the selected object, an observed audio Clip, or another observed Simpler. |
 | Take Lanes | Create and rename Take Lanes using their observed track and lane identity. |
@@ -88,6 +90,26 @@ outside it are preserved. The executor rechecks the complete Clip immediately
 before every write, so a concurrent edit from another Session invalidates the
 pending plan instead of being overwritten. Every MIDI note includes an explicit
 velocity; Live Smith does not inject a hidden musical default.
+
+Whole-Clip MIDI transforms are deterministic local operations. They bind the
+exact Arrangement start beat or Session slot before confirmation, fingerprint
+the complete current note set, preserve optional note metadata, and fail without
+mutation when transposition or timing would move any note outside MIDI pitch
+0-127 or the Clip duration. Velocity scaling rounds and clamps into 1-127.
+
+`analyze_audio_clip` resolves one Arrangement Audio Clip and uses the SDK to
+render that Clip's exact beat range as pre-effects track audio. It refuses the
+analysis if another Clip overlaps the range on the same track, because the
+render could not be attributed to the requested Clip alone. Results are
+objective sample statistics, not realtime listening or integrated LUFS. DC
+offset is reported per channel plus the maximum absolute channel offset; the
+silence ratio counts frames whose peak amplitude is below 0.001. No
+rendered-file path is returned to the model.
+
+The Extensions SDK `1.0.0-beta.1` does not expose Automation Envelopes or
+automation-point read/write APIs. Live Smith therefore does not inspect or edit
+Automation in this release rather than simulating an unsafe or incomplete
+workflow.
 
 The extension does not execute arbitrary code from the model. It parses and
 validates a small JSON action schema. `Manual` asks before every plan. `Low

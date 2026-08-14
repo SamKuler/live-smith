@@ -1689,7 +1689,12 @@ export async function handleAgentRequest(
         return turn;
       },
       observe: async (request) => {
-        const observation = await observeLive(context, request, interaction.target);
+        const observation = await observeLive(
+          context,
+          request,
+          interaction.target,
+          callbacks.signal,
+        );
         throwIfAborted(callbacks.signal);
         return observation;
       },

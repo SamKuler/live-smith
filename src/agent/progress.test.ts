@@ -45,4 +45,12 @@ test("progress labels identify object-aware inspections", () => {
     progressLabelForToolCall({ id: "song", name: "inspect_song_info", arguments: "{}" }),
     "Inspecting song settings and markers",
   );
+  assert.equal(
+    progressLabelForToolCall({
+      id: "audio",
+      name: "analyze_audio_clip",
+      arguments: '{"clipName":"Vocal"}',
+    }),
+    'Analyzing pre-FX audio for "Vocal"',
+  );
 });

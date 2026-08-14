@@ -40,6 +40,7 @@ import {
 } from "./resolve.js";
 import { resolveSampleSource } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
+import { transformMidiNotes, type MidiTransform } from "./midi-transform.js";
 import {
   bindAgentPlanTargets,
   liveActionIdentityKeys,
@@ -497,6 +498,43 @@ async function executeAction(
       resolvedClip.notes = merged;
       return `Replaced relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${removedCount} notes, added ${action.notes.length}, final ${merged.length} notes.`;
     }
+    case "transpose_midi_notes":
+    case "quantize_midi_notes":
+    case "scale_midi_velocity":
+    case "shift_midi_notes": {
+      const track = midiTrackForAction(
+        context,
+        action,
+        actionIndex,
+        target,
+        tracks,
+        actionTracks,
+      );
+      const currentClip = resolveClipLocator(track, action);
+      if (bound?.clip && !sameHostObject(bound.clip, currentClip)) {
+        throw new Error(
+          `MIDI Clip at the requested locator changed earlier in this plan. Inspect the current Clip and apply the transform in a later stage.`,
+        );
+      }
+      const clip = bound?.clip ?? currentClip;
+      if (!(clip instanceof MidiClip)) {
+        throw new Error(
+          `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
+        );
+      }
+      const transformed = transformMidiNotes(
+        clip.notes,
+        clip.duration,
+        midiTransformForAction(action),
+      );
+      if (transformedMidiNotesEqual(clip.notes, transformed)) {
+        return noMutation(
+          `Kept MIDI clip "${clip.name}" on track "${track.name}" because the transform produced no note changes.`,
+        );
+      }
+      clip.notes = transformed;
+      return `${midiTransformResult(action)} in MIDI clip "${clip.name}" on track "${track.name}" (${transformed.length} notes).`;
+    }
     case "insert_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
       const index = action.index ?? track.devices.length;
@@ -856,6 +894,52 @@ async function executeAction(
       await slot.deleteClip();
       return `Deleted Session clip "${name}" from slot ${action.slotIndex} on track "${track.name}".`;
     }
+  }
+}
+
+function midiTransformForAction(
+  action: Extract<AgentAction, {
+    type:
+      | "transpose_midi_notes"
+      | "quantize_midi_notes"
+      | "scale_midi_velocity"
+      | "shift_midi_notes";
+  }>,
+): MidiTransform {
+  switch (action.type) {
+    case "transpose_midi_notes":
+      return { type: "transpose", semitones: action.semitones };
+    case "quantize_midi_notes":
+      return {
+        type: "quantize",
+        gridBeats: action.gridBeats,
+        strength: action.strength,
+      };
+    case "scale_midi_velocity":
+      return { type: "scale_velocity", factor: action.factor };
+    case "shift_midi_notes":
+      return { type: "shift", offsetBeats: action.offsetBeats };
+  }
+}
+
+function midiTransformResult(
+  action: Extract<AgentAction, {
+    type:
+      | "transpose_midi_notes"
+      | "quantize_midi_notes"
+      | "scale_midi_velocity"
+      | "shift_midi_notes";
+  }>,
+): string {
+  switch (action.type) {
+    case "transpose_midi_notes":
+      return `Transposed every note by ${action.semitones} semitones`;
+    case "quantize_midi_notes":
+      return `Quantized every note start to a ${action.gridBeats}-beat grid at ${action.strength} strength`;
+    case "scale_midi_velocity":
+      return `Scaled every note velocity by ${action.factor}`;
+    case "shift_midi_notes":
+      return `Shifted every note by ${action.offsetBeats} beats`;
   }
 }
 
@@ -1380,6 +1464,29 @@ function midiNotesEqual(
         ? candidate.velocity === undefined
         : candidate.velocity !== undefined &&
           sameNumericValue(note.velocity, candidate.velocity));
+  });
+}
+
+function transformedMidiNotesEqual(
+  current: readonly {
+    pitch: number;
+    startTime: number;
+    duration: number;
+    velocity?: number;
+  }[],
+  transformed: readonly {
+    pitch: number;
+    startTime: number;
+    duration: number;
+    velocity?: number;
+  }[],
+): boolean {
+  return current.length === transformed.length && current.every((note, index) => {
+    const candidate = transformed[index]!;
+    return note.pitch === candidate.pitch &&
+      note.startTime === candidate.startTime &&
+      note.duration === candidate.duration &&
+      note.velocity === candidate.velocity;
   });
 }
 
