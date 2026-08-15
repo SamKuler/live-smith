@@ -5,10 +5,11 @@ import {
   activeSavedProfile,
   cloneAgentSettings,
   freshEmptyAgentSettings,
+  incrementDefaultFollowUpBehaviorRevision,
   validateDraftProfileForSave,
-  isApprovalMode,
+  isDefaultFollowUpBehavior,
   type AgentSettings,
-  type ApprovalMode,
+  type DefaultFollowUpBehavior,
   type SavedProfile,
 } from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
@@ -120,16 +121,20 @@ export async function activateSavedProfile(
 
 export async function saveGlobalSettings(
   storageDirectory: string | undefined,
-  input: { approvalMode: ApprovalMode },
+  input: { defaultFollowUpBehavior: DefaultFollowUpBehavior },
 ): Promise<AgentSettings> {
-  if (!isApprovalMode(input.approvalMode)) {
-    throw new Error("Approval mode must be manual, low-risk, or everything.");
+  if (!isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)) {
+    throw new Error("Default follow-up behavior must be queue or steer.");
   }
   return withStorageTransaction(storageDirectory, async () => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
     return persistSettings(storageDirectory, {
       ...settings,
-      approvalMode: input.approvalMode,
+      defaultFollowUpBehavior: input.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision:
+        incrementDefaultFollowUpBehaviorRevision(
+          settings.defaultFollowUpBehaviorRevision,
+        ),
     });
   });
 }

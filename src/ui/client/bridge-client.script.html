@@ -57,10 +57,27 @@
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
       const sendAttemptsBySession = new Map();
+      const queuedFollowUpsBySession = new Map();
+      const pausedFollowUpSessions = new Set();
+      const failedSendRecoveriesBySession = new Map();
+      let confirmedDefaultFollowUpBehavior = isDefaultFollowUpBehavior(
+        getState().settings?.defaultFollowUpBehavior,
+      )
+        ? getState().settings.defaultFollowUpBehavior
+        : "queue";
+      let confirmedDefaultFollowUpBehaviorRevision =
+        isDefaultFollowUpBehaviorRevision(
+          getState().settings?.defaultFollowUpBehaviorRevision,
+        )
+          ? getState().settings.defaultFollowUpBehaviorRevision
+          : "0";
+      let optimisticDefaultFollowUpBehavior = null;
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
       let attachmentOperationInProgress = false;
       let skillOperationInProgress = false;
+      let closeDecisionPending = false;
+      let retainedCanceledFollowUpCount = 0;
       let activeCommandAttempt = null;
       let nextComposerDraftRevision = 1;
       const commandSseReconciliationTimeoutMs = 5000;
@@ -68,6 +85,118 @@
 
       function activeSendAttempt() {
         return sendAttemptsBySession.get(activeSessionId()) || null;
+      }
+
+      function isDefaultFollowUpBehavior(value) {
+        return value === "queue" || value === "steer";
+      }
+
+      function isDefaultFollowUpBehaviorRevision(value) {
+        return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+      }
+
+      function compareDefaultFollowUpBehaviorRevisions(left, right) {
+        if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+        if (left === right) return 0;
+        return left < right ? -1 : 1;
+      }
+
+      function effectiveDefaultFollowUpBehavior() {
+        return optimisticDefaultFollowUpBehavior?.behavior ||
+          confirmedDefaultFollowUpBehavior;
+      }
+
+      function activeQueuedFollowUps() {
+        return queuedFollowUpsBySession.get(activeSessionId()) || [];
+      }
+
+      function queuedFollowUpCount() {
+        let count = 0;
+        for (const entries of queuedFollowUpsBySession.values()) {
+          count += entries.length;
+        }
+        return count;
+      }
+
+      function runnableQueuedFollowUpCount() {
+        let count = 0;
+        for (const [sessionId, entries] of queuedFollowUpsBySession) {
+          if (!pausedFollowUpSessions.has(sessionId)) count += entries.length;
+        }
+        return count;
+      }
+
+      function activeConfirmationIsLocked() {
+        const attempt = activeSendAttempt();
+        const confirmation = activePendingConfirmation();
+        if (!attempt || confirmation?.sendId !== attempt.id) return false;
+        const resolution = confirmationResolutionsBySession.get(attempt.sessionId);
+        return Boolean(attempt.steering || resolution?.sendId === attempt.id);
+      }
+
+      function writeEffectiveFollowUpBehaviorToState(state = getState()) {
+        if (!state?.settings || typeof state.settings !== "object") return state;
+        state.settings.defaultFollowUpBehavior = effectiveDefaultFollowUpBehavior();
+        state.settings.defaultFollowUpBehaviorRevision =
+          confirmedDefaultFollowUpBehaviorRevision;
+        return state;
+      }
+
+      function adoptFollowUpBehaviorFromState(state) {
+        const behavior = state?.settings?.defaultFollowUpBehavior;
+        const revision = state?.settings?.defaultFollowUpBehaviorRevision;
+        if (
+          isDefaultFollowUpBehavior(behavior) &&
+          isDefaultFollowUpBehaviorRevision(revision) &&
+          compareDefaultFollowUpBehaviorRevisions(
+            revision,
+            confirmedDefaultFollowUpBehaviorRevision,
+          ) > 0
+        ) {
+          confirmedDefaultFollowUpBehavior = behavior;
+          confirmedDefaultFollowUpBehaviorRevision = revision;
+          const optimistic = optimisticDefaultFollowUpBehavior;
+          if (
+            optimistic &&
+            compareDefaultFollowUpBehaviorRevisions(
+              revision,
+              optimistic.committedRevision ?? optimistic.startedRevision,
+            ) > 0
+          ) {
+            optimisticDefaultFollowUpBehavior = null;
+          }
+        }
+        return writeEffectiveFollowUpBehaviorToState(state);
+      }
+
+      function adoptFollowUpBehaviorEvent(payload) {
+        const behavior = payload?.defaultFollowUpBehavior;
+        const revision = payload?.defaultFollowUpBehaviorRevision;
+        if (
+          !isDefaultFollowUpBehavior(behavior) ||
+          !isDefaultFollowUpBehaviorRevision(revision) ||
+          compareDefaultFollowUpBehaviorRevisions(
+            revision,
+            confirmedDefaultFollowUpBehaviorRevision,
+          ) <= 0
+        ) return false;
+        confirmedDefaultFollowUpBehavior = behavior;
+        confirmedDefaultFollowUpBehaviorRevision = revision;
+        const optimistic = optimisticDefaultFollowUpBehavior;
+        if (optimistic) {
+          if (payload.commandId === optimistic.commandId) {
+            optimistic.committedRevision = revision;
+          } else if (
+            compareDefaultFollowUpBehaviorRevisions(
+              revision,
+              optimistic.committedRevision ?? optimistic.startedRevision,
+            ) > 0
+          ) {
+            optimisticDefaultFollowUpBehavior = null;
+          }
+        }
+        writeEffectiveFollowUpBehaviorToState();
+        return true;
       }
 
       function recordComposerDraft(sessionId, value) {
@@ -81,6 +210,14 @@
       function handleComposerInput() {
         const prompt = document.getElementById("prompt");
         if (prompt) recordComposerDraft(activeSessionId(), prompt.value);
+      }
+
+      function captureAttemptComposerBaseline(attempt) {
+        if (!attempt) return;
+        attempt.composerDraftRevisionAtStart =
+          composerDraftRevisionsBySession.get(attempt.sessionId);
+        attempt.composerDraftValueAtStart =
+          composerDraftsBySession.get(attempt.sessionId) || "";
       }
 
       function activePendingConfirmation() {
@@ -137,6 +274,31 @@
         );
       }
 
+      function deferSendTerminalWhileAwaitingStop(attempt, terminal) {
+        if (
+          !attempt?.awaitingStopTerminal ||
+          attempt.failureHandled ||
+          !attemptIsCurrent(attempt)
+        ) return false;
+        const previous = attempt.deferredSendTerminal || {};
+        attempt.deferredSendTerminal = {
+          ...previous,
+          ...(typeof terminal?.message === "string"
+            ? { message: terminal.message }
+            : {}),
+          ...(typeof terminal?.field === "string"
+            ? { field: terminal.field }
+            : {}),
+          ...(terminal?.sendFailureKind === "session_unavailable"
+            ? { sendFailureKind: terminal.sendFailureKind }
+            : {}),
+          ...(terminal?.state && typeof terminal.state === "object"
+            ? { state: terminal.state }
+            : {}),
+        };
+        return true;
+      }
+
       function isOperationInProgress() {
         return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
           commandReconciliationBlocked || attachmentOperationInProgress ||
@@ -148,7 +310,8 @@
         requireView().setOperationState({
           commandKind: commandInProgress ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
-          anySendInProgress: sendAttemptsBySession.size > 0,
+          anySendInProgress: sendAttemptsBySession.size > 0 ||
+            runnableQueuedFollowUpCount() > 0,
           attachmentInProgress: attachmentOperationInProgress,
           skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeAttempt),
@@ -164,7 +327,7 @@
         return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token || "")}`;
       }
 
-      async function runCommand(kind, extra) {
+      async function runCommand(kind, extra, options) {
         if (attachmentOperationInProgress || skillOperationInProgress) {
           showStatus("Wait for the current file or Skill operation to finish.", true);
           return false;
@@ -181,8 +344,11 @@
           "set_session_skills",
           "set_session_approval_mode",
         ].includes(kind);
-        const allowedDuringSend = sessionCommand;
-        if (sendAttemptsBySession.size && !allowedDuringSend) {
+        const allowedDuringSend = sessionCommand || kind === "save_global_settings";
+        if (
+          (sendAttemptsBySession.size || runnableQueuedFollowUpCount()) &&
+          !allowedDuringSend
+        ) {
           showStatus("Profile settings cannot change while an agent request is active.");
           return false;
         }
@@ -191,7 +357,7 @@
         let resolveSseOutcome;
         let resolveSseUnavailable;
         const attempt = {
-          id: createCommandId(),
+          id: options?.commandId || createCommandId(),
           kind,
           sseOutcome: new Promise((resolve) => {
             resolveSseOutcome = resolve;
@@ -281,9 +447,17 @@
           if (activeCommandAttempt === attempt) activeCommandAttempt = null;
           commandInProgress = null;
           syncOperationState();
+          startQueuedFollowUpsForIdleSessions();
         }
         if (commandSucceeded) syncActiveSessionUi();
-        if (commandWarning) showStatus(commandWarning, true);
+        if (commandWarning) {
+          showStatus(
+            [commandWarning, attempt.localFollowUpCancellation]
+              .filter(Boolean)
+              .join(" "),
+            true,
+          );
+        }
         if (commandError) {
           const message = commandError.message || String(commandError);
           if (
@@ -359,11 +533,76 @@
         }
       }
 
+      function reconcileLocalFollowUpsWithState(state) {
+        if (!Array.isArray(state?.sessions)) return 0;
+        const availableSessionIds = new Set(
+          state.sessions
+            .map((session) => session?.id)
+            .filter((sessionId) => typeof sessionId === "string"),
+        );
+        const localSessionIds = new Set([
+          ...queuedFollowUpsBySession.keys(),
+          ...pausedFollowUpSessions,
+          ...failedSendRecoveriesBySession.keys(),
+          ...composerDraftsBySession.keys(),
+          ...composerDraftRevisionsBySession.keys(),
+        ]);
+        let canceledCount = 0;
+        for (const sessionId of localSessionIds) {
+          if (availableSessionIds.has(sessionId)) continue;
+          const queuedCount = queuedFollowUpsBySession.get(sessionId)?.length || 0;
+          canceledCount += queuedCount ||
+            (failedSendRecoveriesBySession.has(sessionId) ? 1 : 0);
+          queuedFollowUpsBySession.delete(sessionId);
+          pausedFollowUpSessions.delete(sessionId);
+          failedSendRecoveriesBySession.delete(sessionId);
+          composerDraftsBySession.delete(sessionId);
+          composerDraftRevisionsBySession.delete(sessionId);
+          if (activeSessionId() === sessionId) {
+            document.getElementById("prompt").value = "";
+          }
+        }
+        return canceledCount;
+      }
+
+      function reconcileLocalFollowUpsIntoState(state) {
+        const canceledFollowUpCount = reconcileLocalFollowUpsWithState(state);
+        if (canceledFollowUpCount === 0) return "";
+        const cancellation = `${canceledFollowUpCount} queued follow-up${
+          canceledFollowUpCount === 1 ? "" : "s"
+        } canceled because the target Session is no longer available.`;
+        retainCanceledFollowUps(canceledFollowUpCount);
+        state.status = state.status
+          ? `${state.status} ${cancellation}`
+          : cancellation;
+        return cancellation;
+      }
+
+      function retainCanceledFollowUps(count) {
+        if (Number.isInteger(count) && count > 0) {
+          retainedCanceledFollowUpCount += count;
+        }
+      }
+
+      function withLocalFollowUpCancellation(attempt, message) {
+        const cancellation = attempt?.localFollowUpCancellation;
+        if (!cancellation || String(message).includes(cancellation)) return message;
+        return `${message} ${cancellation}`;
+      }
+
       function applyCommandState(kind, state) {
         const previousSessionId = activeSessionId();
         const prompt = document.getElementById("prompt");
         if (prompt) composerDraftsBySession.set(previousSessionId, prompt.value);
+        const cancellation = reconcileLocalFollowUpsIntoState(state);
+        if (
+          cancellation &&
+          activeCommandAttempt?.kind === kind
+        ) {
+          activeCommandAttempt.localFollowUpCancellation = cancellation;
+        }
         reconcileWebSearchUpdatesFromState(state);
+        adoptFollowUpBehaviorFromState(state);
         setState(state);
         requireView().syncModelStateSource(state.modelStateSource);
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
@@ -378,6 +617,7 @@
           prompt.value = composerDraftsBySession.get(state.activeSessionId) || "";
         }
         requireView().render();
+        return cancellation;
       }
 
       function mergeBackgroundState(state, sessionId) {
@@ -399,6 +639,12 @@
 
       function applyAuthoritativeSendState(attempt, state) {
         if (!attempt || !isAuthoritativeCommandState(state)) return false;
+        adoptFollowUpBehaviorFromState(state);
+        if (!state.sessions.some((session) => session.id === attempt.sessionId)) {
+          attempt.targetSessionUnavailableState = state;
+        }
+        const cancellation = reconcileLocalFollowUpsIntoState(state);
+        if (cancellation) attempt.localFollowUpCancellation = cancellation;
         if (!reconcileSteeringReceipt(attempt, state)) {
           setAttemptStatus(
             attempt,
@@ -418,6 +664,12 @@
           requireView().updateCapabilityPreview();
         } else {
           mergeBackgroundState(state, attempt.sessionId);
+          if (cancellation) {
+            const currentState = getState();
+            currentState.status = currentState.status
+              ? `${currentState.status} ${cancellation}`
+              : cancellation;
+          }
         }
         requireView().render();
         return true;
@@ -440,11 +692,71 @@
         ];
       }
 
+      function renderDefaultFollowUpBehavior() {
+        const behavior = effectiveDefaultFollowUpBehavior();
+        const running = Boolean(activeSendAttempt());
+        const control = document.getElementById("defaultFollowUpBehavior");
+        if (control) control.value = behavior;
+        const hint = document.getElementById("defaultFollowUpBehaviorHint");
+        if (hint) {
+          hint.textContent = behavior === "steer"
+            ? "Steer redirects the response that is currently in progress."
+            : "Queue sends the message as a new turn after the current response finishes.";
+        }
+        const prompt = document.getElementById("prompt");
+        if (prompt) {
+          prompt.placeholder = running
+            ? behavior === "steer"
+              ? "Redirect the response in progress…"
+              : "Add a follow-up for after this response…"
+            : "Ask about this Live Set…";
+          const describedBy = new Set(
+            (prompt.getAttribute("aria-describedby") || "")
+              .split(/\s+/)
+              .filter(Boolean),
+          );
+          if (running) {
+            prompt.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+            describedBy.add("followUpShortcutHint");
+          } else {
+            prompt.removeAttribute("aria-keyshortcuts");
+            describedBy.delete("followUpShortcutHint");
+          }
+          if (describedBy.size) {
+            prompt.setAttribute("aria-describedby", [...describedBy].join(" "));
+          } else {
+            prompt.removeAttribute("aria-describedby");
+          }
+        }
+        const shortcutHint = document.getElementById("followUpShortcutHint");
+        if (shortcutHint) {
+          shortcutHint.textContent = behavior === "steer"
+            ? "Cmd/Ctrl+Enter · Steer current response"
+            : "Cmd/Ctrl+Enter · Queue follow-up";
+          shortcutHint.hidden = !running;
+        }
+      }
+
+      function renderSendButton(running) {
+        const button = document.getElementById("sendButton");
+        if (!button) return;
+        button.textContent = running ? "Stop" : "Send";
+        button.classList.toggle("stop", running);
+        if (running) {
+          button.setAttribute("aria-label", "Stop current response");
+          button.setAttribute("title", "Stop current response");
+          button.removeAttribute("aria-keyshortcuts");
+        } else {
+          button.setAttribute("aria-label", "Send message");
+          button.setAttribute("title", "Send (Cmd/Ctrl+Enter)");
+          button.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+        }
+      }
+
       function syncActiveSessionUi() {
         const attempt = activeSendAttempt();
-        const button = document.getElementById("sendButton");
-        button.textContent = attempt ? "Stop" : "Send";
-        button.classList.toggle("stop", Boolean(attempt));
+        renderSendButton(Boolean(attempt));
+        renderDefaultFollowUpBehavior();
         syncOperationState();
         if (attempt?.progress) showStatus(attempt.progress, attempt.progressIsError);
         else {
@@ -465,48 +777,87 @@
         }
       }
 
-      async function sendPrompt() {
+      function sendPrompt() {
         const sessionId = activeSessionId();
         const promptControl = document.getElementById("prompt");
-        if (!promptControl.value.trim()) {
+        const prompt = promptControl.value;
+        if (!prompt.trim()) {
           showStatus("Enter a request for Live Smith.", true);
           promptControl.focus({ preventScroll: true });
           return;
         }
-        const payload = {
-          prompt: promptControl.value,
-          sessionId,
-        };
-
         if (
           isOperationInProgress() ||
           requireView().isDraftDirty() ||
           !getState().settings.activeProfileId
         ) return;
         if (!requireView().validateAttachmentsForSend()) return;
+        const paused = pausedFollowUpSessions.has(sessionId);
+        const failedQueuedFollowUp = failedSendRecoveriesBySession.get(sessionId);
+        let resumesQueuedFollowUp = false;
+        if (
+          paused &&
+          failedQueuedFollowUp &&
+          failedQueuedFollowUp.entry.prompt === prompt
+        ) {
+          const entries = queuedFollowUpsBySession.get(sessionId) || [];
+          if (entries[0]?.id === failedQueuedFollowUp.entry.id) entries.shift();
+          if (entries.length === 0) queuedFollowUpsBySession.delete(sessionId);
+          failedSendRecoveriesBySession.delete(sessionId);
+          pausedFollowUpSessions.delete(sessionId);
+          resumesQueuedFollowUp = true;
+        } else if (paused && failedQueuedFollowUp) {
+          failedSendRecoveriesBySession.delete(sessionId);
+          pausedFollowUpSessions.delete(sessionId);
+          resumesQueuedFollowUp = true;
+        } else if (paused && !failedQueuedFollowUp) {
+          pausedFollowUpSessions.delete(sessionId);
+          resumesQueuedFollowUp = true;
+        }
+        void startSend({
+          id: createSendId(),
+          prompt,
+          queuedFollowUp: resumesQueuedFollowUp,
+          sessionId,
+        });
+      }
+
+      async function startSend({ id, prompt, queuedFollowUp = false, sessionId }) {
+        if (sendAttemptsBySession.has(sessionId) || !prompt.trim()) return;
+        const payload = { prompt, sessionId };
+        const visible = activeSessionId() === sessionId;
         assistantDraftsBySession.set(sessionId, "");
         webSearchUpdatesBySession.set(sessionId, new Map());
         webSearchEventIdsAtSendStartBySession.set(
           sessionId,
           new Set(
-            (getState().events || [])
-              .filter((event) => event?.kind === "web_search")
-              .map((event) => event.id),
+            visible
+              ? (getState().events || [])
+                .filter((event) => event?.kind === "web_search")
+                .map((event) => event.id)
+              : [],
           ),
         );
-        recordComposerDraft(sessionId, "");
         const attempt = {
-          id: createSendId(),
+          id,
           sessionId,
           payload,
-          progress: "Starting agent loop",
+          progress: "Starting Live Smith…",
           progressIsError: false,
+          queuedFollowUp: Boolean(queuedFollowUp),
           failureHandled: false,
         };
         sendAttemptsBySession.set(sessionId, attempt);
+        if (visible) {
+          const promptControl = document.getElementById("prompt");
+          if (promptControl.value === prompt) promptControl.value = "";
+          recordComposerDraft(sessionId, promptControl.value);
+        } else {
+          recordComposerDraft(sessionId, composerDraftsBySession.get(sessionId) || "");
+        }
+        captureAttemptComposerBaseline(attempt);
         setSendInProgress(sessionId, true);
-        showStatus("Starting agent loop");
-        promptControl.value = "";
+        setAttemptStatus(attempt, "Starting Live Smith…", false);
 
         try {
           const response = await fetch(bridgeUrl("/send"), {
@@ -518,6 +869,12 @@
             body: JSON.stringify(payload),
           });
           const result = await response.json().catch(() => ({}));
+          if (deferSendTerminalWhileAwaitingStop(attempt, {
+            message: response.ok ? undefined : result.error,
+            field: result.field,
+            sendFailureKind: result.sendFailureKind,
+            state: result.state,
+          })) return;
           if (!response.ok) {
             const error = new Error(result.error || `${response.status} ${response.statusText}`);
             error.httpStatus = response.status;
@@ -525,6 +882,9 @@
               error.promptPersistence = result.promptPersistence;
             }
             if (typeof result.field === "string") error.field = result.field;
+            if (result.sendFailureKind === "session_unavailable") {
+              error.sendFailureKind = "session_unavailable";
+            }
             if (result.state && typeof result.state === "object") {
               error.state = result.state;
             }
@@ -534,6 +894,11 @@
           let refreshed = applyAuthoritativeSendState(attempt, result.state);
           if (!refreshed) refreshed = await refreshState(attempt);
           if (!attemptIsCurrent(attempt)) return;
+          if (attempt.awaitingStopTerminal) return;
+          if (cancelReconciledUnavailableSession(
+            attempt,
+            "The target Session is no longer available.",
+          )) return;
           if (refreshed !== true) {
             setAttemptStatus(
               attempt,
@@ -543,9 +908,19 @@
             return;
           }
           settleSendAttempt(attempt);
-          if (activeSessionId() === sessionId) showStatus("");
+          if (activeSessionId() === sessionId && !activeSendAttempt()) {
+            showStatus(
+              attempt.localFollowUpCancellation || getState().status || "",
+            );
+          }
         } catch (error) {
           const message = error.message || String(error);
+          if (deferSendTerminalWhileAwaitingStop(attempt, {
+            message,
+            field: error.field,
+            sendFailureKind: error.sendFailureKind,
+            state: error.state,
+          })) return;
           if (!error.httpStatus && !error.promptPersistence) {
             await recoverInterruptedSend(attempt, message);
           } else {
@@ -555,9 +930,118 @@
               error.promptPersistence || "unknown",
               error.field,
               error.state,
+              error.sendFailureKind,
             );
           }
         }
+      }
+
+      function queueFollowUpPrompt() {
+        const attempt = activeSendAttempt();
+        if (
+          !attempt ||
+          (commandInProgress && commandInProgress !== "save_global_settings") ||
+          commandReconciliationBlocked ||
+          attachmentOperationInProgress ||
+          skillOperationInProgress
+        ) return;
+        const promptControl = document.getElementById("prompt");
+        const prompt = promptControl.value;
+        if (!prompt.trim()) {
+          showStatus("Enter a follow-up for the active request.", true);
+          promptControl.focus({ preventScroll: true });
+          return;
+        }
+        const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
+        entries.push({ id: createSendId(), prompt });
+        queuedFollowUpsBySession.set(attempt.sessionId, entries);
+        promptControl.value = "";
+        recordComposerDraft(attempt.sessionId, "");
+        captureAttemptComposerBaseline(attempt);
+        setAttemptStatus(
+          attempt,
+          entries.length === 1
+            ? "Follow-up queued."
+            : `${entries.length} follow-ups queued.`,
+          false,
+        );
+        requireView().renderTimeline();
+        syncOperationState();
+      }
+
+      function startNextQueuedFollowUp(sessionId) {
+        if (
+          closeDecisionPending ||
+          pausedFollowUpSessions.has(sessionId) ||
+          sendAttemptsBySession.has(sessionId) ||
+          commandInProgress ||
+          commandReconciliationBlocked ||
+          attachmentOperationInProgress ||
+          skillOperationInProgress
+        ) return false;
+        const entries = queuedFollowUpsBySession.get(sessionId);
+        const next = entries?.shift();
+        if (!next) return false;
+        if (entries.length === 0) queuedFollowUpsBySession.delete(sessionId);
+        void startSend({ ...next, queuedFollowUp: true, sessionId });
+        if (activeSessionId() === sessionId) requireView().renderTimeline();
+        return sendAttemptsBySession.has(sessionId);
+      }
+
+      function startQueuedFollowUpsForIdleSessions() {
+        for (const sessionId of [...queuedFollowUpsBySession.keys()]) {
+          startNextQueuedFollowUp(sessionId);
+        }
+      }
+
+      function submitFollowUp() {
+        const attempt = activeSendAttempt();
+        const behavior = effectiveDefaultFollowUpBehavior();
+        if (attempt?.steering && behavior !== "steer") {
+          showStatus(
+            "Resolve the earlier guidance first: switch Follow-ups to Steer and retry that unchanged guidance.",
+            true,
+          );
+          return;
+        }
+        if (behavior === "steer") {
+          void steerPrompt();
+        } else {
+          queueFollowUpPrompt();
+        }
+      }
+
+      async function saveDefaultFollowUpBehavior() {
+        const control = document.getElementById("defaultFollowUpBehavior");
+        const behavior = control?.value;
+        if (!isDefaultFollowUpBehavior(behavior)) {
+          renderDefaultFollowUpBehavior();
+          return false;
+        }
+        const optimistic = {
+          behavior,
+          commandId: createCommandId(),
+          startedRevision: confirmedDefaultFollowUpBehaviorRevision,
+          committedRevision: null,
+        };
+        optimisticDefaultFollowUpBehavior = optimistic;
+        writeEffectiveFollowUpBehaviorToState();
+        renderDefaultFollowUpBehavior();
+        syncOperationState();
+        let saved = false;
+        try {
+          saved = await runCommand("save_global_settings", {
+            defaultFollowUpBehavior: behavior,
+          }, { commandId: optimistic.commandId });
+        } finally {
+          if (optimisticDefaultFollowUpBehavior === optimistic) {
+            optimisticDefaultFollowUpBehavior = null;
+          }
+          writeEffectiveFollowUpBehaviorToState();
+          renderDefaultFollowUpBehavior();
+          syncOperationState();
+        }
+        return saved;
       }
 
       function acknowledgeSteering(attempt, steering) {
@@ -565,6 +1049,14 @@
         const isCurrent = attemptIsCurrent(attempt);
         attempt.steering = null;
         attempt.steerInProgress = false;
+        const confirmation = pendingConfirmationsBySession.get(attempt.sessionId);
+        if (confirmation?.sendId === attempt.id) {
+          pendingConfirmationsBySession.delete(attempt.sessionId);
+          confirmationResolutionsBySession.delete(attempt.sessionId);
+          if (activeSessionId() === attempt.sessionId) {
+            requireView().renderTimeline();
+          }
+        }
         const promptControl = document.getElementById("prompt");
         const draftRevision = composerDraftRevisionsBySession.get(attempt.sessionId);
         const submittedDraftIsCurrent = draftRevision === steering.draftRevision;
@@ -584,7 +1076,7 @@
           recordComposerDraft(attempt.sessionId, "");
         }
         if (isCurrent) {
-          setAttemptStatus(attempt, "Steering applied", false);
+          setAttemptStatus(attempt, "Guidance applied.", false);
           syncOperationState();
         }
         return true;
@@ -622,18 +1114,36 @@
 
       async function steerPrompt() {
         const attempt = activeSendAttempt();
+        const activeResolution = attempt
+          ? confirmationResolutionsBySession.get(attempt.sessionId)
+          : null;
         if (
           !attempt ||
           attempt.steerInProgress ||
-          commandInProgress ||
+          (commandInProgress && commandInProgress !== "save_global_settings") ||
           commandReconciliationBlocked ||
           attachmentOperationInProgress ||
           skillOperationInProgress
         ) return;
+        if (activeResolution?.sendId === attempt.id) {
+          showStatus(
+            "Wait for the current Apply decision to finish before steering.",
+            true,
+          );
+          return;
+        }
         const promptControl = document.getElementById("prompt");
         const prompt = promptControl.value;
         if (!prompt.trim()) {
           showStatus("Enter guidance for the active request.", true);
+          promptControl.focus({ preventScroll: true });
+          return;
+        }
+        if (attempt.steering && attempt.steering.prompt !== prompt) {
+          showStatus(
+            "The earlier steering outcome is unresolved. Retry the unchanged guidance before submitting different text.",
+            true,
+          );
           promptControl.focus({ preventScroll: true });
           return;
         }
@@ -647,7 +1157,11 @@
         attempt.steering = steering;
         attempt.steerInProgress = true;
         composerDraftsBySession.set(attempt.sessionId, prompt);
-        setAttemptStatus(attempt, "Sending guidance to the active request…", false);
+        const pendingConfirmation = pendingConfirmationsBySession.get(attempt.sessionId);
+        if (pendingConfirmation?.sendId === attempt.id) {
+          requireView().setConfirmationState(true);
+        }
+        setAttemptStatus(attempt, "Applying guidance…", false);
         syncOperationState();
         try {
           await postBridge(
@@ -678,12 +1192,25 @@
               : error.message || String(error),
             true,
           );
+          if (
+            !outcomeUnknown &&
+            pendingConfirmationsBySession.get(attempt.sessionId) === pendingConfirmation &&
+            activeSessionId() === attempt.sessionId
+          ) {
+            requireView().setConfirmationState(false);
+          }
           syncOperationState();
         }
       }
 
-      async function recoverInterruptedSend(attempt, message) {
+      async function recoverInterruptedSend(
+        attempt,
+        message,
+        { resumeQueuedAfterStop = false } = {},
+      ) {
         if (!attempt || attempt.failureHandled || !attemptIsCurrent(attempt)) return;
+        attempt.awaitingStopTerminal = true;
+        if (resumeQueuedAfterStop) attempt.resumeQueuedAfterStopRequested = true;
         if (attempt.recoveryInProgress) {
           await attempt.recoveryInProgress;
           return;
@@ -703,15 +1230,60 @@
               );
               if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
               if (result.terminal === true) {
+                const deferredTerminal = attempt.deferredSendTerminal || {};
+                const promptPersistence = [
+                  "persisted",
+                  "not_persisted",
+                  "unknown",
+                ].includes(result.promptPersistence)
+                  ? result.promptPersistence
+                  : null;
+                if (promptPersistence === "not_persisted") {
+                  await handleSendFailure(
+                    attempt,
+                    `${message} The prompt was not persisted.`,
+                    promptPersistence,
+                    deferredTerminal.field,
+                    deferredTerminal.state,
+                    deferredTerminal.sendFailureKind,
+                  );
+                  return;
+                }
+                if (promptPersistence === "unknown") {
+                  await handleSendFailure(
+                    attempt,
+                    message,
+                    promptPersistence,
+                    deferredTerminal.field,
+                    deferredTerminal.state,
+                    deferredTerminal.sendFailureKind,
+                  );
+                  return;
+                }
                 let refreshed = false;
-                try {
-                  refreshed = await refreshState(attempt) === true;
-                } catch {
-                  refreshed = false;
+                if (deferredTerminal.state) {
+                  refreshed = applyAuthoritativeSendState(
+                    attempt,
+                    deferredTerminal.state,
+                  );
+                }
+                if (!refreshed) {
+                  try {
+                    refreshed = await refreshState(attempt) === true;
+                  } catch {
+                    refreshed = false;
+                  }
                 }
                 if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
                 if (refreshed) {
-                  finishInterruptedSend(attempt, message);
+                  if (cancelReconciledUnavailableSession(attempt, message)) return;
+                  finishInterruptedSend(attempt, message, {
+                    resumeQueuedAfterStop: Boolean(
+                      attempt.resumeQueuedAfterStopRequested,
+                    ),
+                    restoreInterruptedAttempt:
+                      promptPersistence !== "persisted",
+                  });
                 } else {
                   setAttemptStatus(
                     attempt,
@@ -778,7 +1350,7 @@
         if (wake) wake();
       }
 
-      function settleSendAttempt(attempt) {
+      function settleSendAttempt(attempt, { promoteQueued = true } = {}) {
         if (!attemptIsCurrent(attempt)) return false;
         cancelSendRecovery(attempt);
         cancelAssistantDraftRender(attempt.sessionId);
@@ -789,21 +1361,144 @@
         pendingConfirmationsBySession.delete(attempt.sessionId);
         confirmationResolutionsBySession.delete(attempt.sessionId);
         sendAttemptsBySession.delete(attempt.sessionId);
-        setSendInProgress(attempt.sessionId, false);
+        const promoted = promoteQueued && startNextQueuedFollowUp(attempt.sessionId);
+        if (!promoted) setSendInProgress(attempt.sessionId, false);
+        else syncActiveSessionUi();
         if (activeSessionId() === attempt.sessionId) {
           requireView().renderTimeline();
         }
         return true;
       }
 
-      function finishInterruptedSend(attempt, message) {
-        if (!settleSendAttempt(attempt)) return;
-        if (activeSessionId() === attempt.sessionId) {
+      function finishInterruptedSend(
+        attempt,
+        message,
+        {
+          resumeQueuedAfterStop = false,
+          restoreInterruptedAttempt = true,
+        } = {},
+      ) {
+        const queuedTailCount =
+          queuedFollowUpsBySession.get(attempt.sessionId)?.length || 0;
+        const restoreQueuedFollowUp = Boolean(
+          attempt?.queuedFollowUp &&
+          !resumeQueuedAfterStop &&
+          restoreInterruptedAttempt,
+        );
+        const pauseQueuedFollowUps = Boolean(
+          !resumeQueuedAfterStop &&
+          (restoreQueuedFollowUp || queuedTailCount > 0),
+        );
+        let queuedRecovery;
+        if (restoreQueuedFollowUp) {
+          queuedRecovery = pauseFailedSendForRecovery(attempt);
+        } else if (pauseQueuedFollowUps) {
+          pausedFollowUpSessions.add(attempt.sessionId);
+        }
+        if (!settleSendAttempt(attempt, {
+          promoteQueued: !pauseQueuedFollowUps,
+        })) return;
+        if (
+          activeSessionId() === attempt.sessionId &&
+          !sendAttemptsBySession.has(attempt.sessionId)
+        ) {
+          if (restoreQueuedFollowUp) requireView().renderTimeline();
           showStatus(
-            `${message} The interrupted request was stopped; check the timeline before trying again.`,
+            [restoreQueuedFollowUp
+              ? queuedRecovery?.restoredToComposer
+                ? `${message} The queued follow-up was restored as a draft; choose Send before later follow-ups can continue.`
+                : `${message} The queued follow-up remains paused under Up next; the newer composer draft was preserved.`
+              : pauseQueuedFollowUps
+                ? `${message} Queued follow-ups remain paused; check the timeline, then choose Send when you are ready to continue.`
+              : `${message} The interrupted request was stopped; check the timeline before trying again.`,
+              attempt.localFollowUpCancellation]
+              .filter(Boolean)
+              .join(" "),
             true,
           );
         }
+      }
+
+      function currentComposerDraft(sessionId) {
+        return activeSessionId() === sessionId
+          ? document.getElementById("prompt").value
+          : composerDraftsBySession.get(sessionId) || "";
+      }
+
+      function pauseFailedSendForRecovery(attempt) {
+        const entry = { id: attempt.id, prompt: attempt.payload.prompt };
+        const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
+        if (entries[0]?.id !== entry.id) entries.unshift(entry);
+        queuedFollowUpsBySession.set(attempt.sessionId, entries);
+        pausedFollowUpSessions.add(attempt.sessionId);
+        const canRestoreToComposer =
+          attempt.composerDraftValueAtStart === "" &&
+          currentComposerDraft(attempt.sessionId) === "" &&
+          composerDraftRevisionsBySession.get(attempt.sessionId) ===
+            attempt.composerDraftRevisionAtStart;
+        if (canRestoreToComposer) {
+          recordComposerDraft(attempt.sessionId, entry.prompt);
+          if (activeSessionId() === attempt.sessionId) {
+            document.getElementById("prompt").value = entry.prompt;
+          }
+        }
+        const recovery = {
+          entry,
+          restoredToComposer: canRestoreToComposer,
+        };
+        failedSendRecoveriesBySession.set(attempt.sessionId, recovery);
+        return recovery;
+      }
+
+      function cancelUnavailableSessionQueue(attempt, authoritativeState, message) {
+        const wasVisible = activeSessionId() === attempt.sessionId;
+        const queuedTailCount = queuedFollowUpsBySession.get(attempt.sessionId)?.length || 0;
+        const canceledCount = queuedTailCount + (attempt.queuedFollowUp ? 1 : 0);
+        queuedFollowUpsBySession.delete(attempt.sessionId);
+        pausedFollowUpSessions.delete(attempt.sessionId);
+        failedSendRecoveriesBySession.delete(attempt.sessionId);
+        composerDraftsBySession.delete(attempt.sessionId);
+        composerDraftRevisionsBySession.delete(attempt.sessionId);
+        if (activeSessionId() === attempt.sessionId) {
+          document.getElementById("prompt").value = "";
+        }
+        const stateReconciled = isAuthoritativeCommandState(authoritativeState);
+        const stateCancellation = stateReconciled
+          ? applyCommandState("session_unavailable", authoritativeState)
+          : "";
+        if (!settleSendAttempt(attempt, { promoteQueued: false })) return true;
+        const cancellationMessage = [`${canceledCount
+            ? `${message} ${canceledCount} queued follow-up${
+                canceledCount === 1 ? "" : "s"
+              } canceled.`
+            : message}${stateReconciled
+              ? ""
+              : " Current Session state is unavailable; close and reopen Live Smith before continuing."}`,
+            stateCancellation]
+            .filter(Boolean)
+            .join(" ");
+        if (canceledCount > 0) {
+          retainCanceledFollowUps(canceledCount);
+        }
+        const currentState = getState();
+        currentState.status = currentState.status &&
+            !cancellationMessage.includes(currentState.status)
+          ? `${currentState.status} ${cancellationMessage}`
+          : cancellationMessage;
+        if (wasVisible || !activeSendAttempt()) {
+          showStatus(currentState.status, true);
+        } else {
+          syncActiveSessionUi();
+        }
+        return true;
+      }
+
+      function cancelReconciledUnavailableSession(attempt, message) {
+        const state = attempt?.targetSessionUnavailableState;
+        if (!state || !attemptIsCurrent(attempt)) return false;
+        attempt.targetSessionUnavailableState = null;
+        cancelUnavailableSessionQueue(attempt, state, message);
+        return true;
       }
 
       async function handleSendFailure(
@@ -812,6 +1507,7 @@
         persistence,
         field,
         authoritativeState,
+        sendFailureKind,
       ) {
         if (
           !attempt ||
@@ -824,15 +1520,43 @@
         pendingConfirmationsBySession.delete(attempt.sessionId);
         confirmationResolutionsBySession.delete(attempt.sessionId);
         if (activeSessionId() === attempt.sessionId) requireView().renderTimeline();
+        if (
+          sendFailureKind === "session_unavailable" &&
+          cancelUnavailableSessionQueue(attempt, authoritativeState, message)
+        ) return;
+        if (
+          isAuthoritativeCommandState(authoritativeState) &&
+          !authoritativeState.sessions.some(
+            (session) => session.id === attempt.sessionId,
+          )
+        ) {
+          cancelUnavailableSessionQueue(attempt, authoritativeState, message);
+          return;
+        }
         if (persistence === "not_persisted") {
-          recordComposerDraft(attempt.sessionId, attempt.payload.prompt);
-          if (!settleSendAttempt(attempt)) return;
+          if (isAuthoritativeCommandState(authoritativeState)) {
+            applyAuthoritativeSendState(attempt, authoritativeState);
+          }
+          const failedRecovery = pauseFailedSendForRecovery(attempt);
+          if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
           if (activeSessionId() === attempt.sessionId) {
-            document.getElementById("prompt").value = attempt.payload.prompt;
+            if (failedRecovery.restoredToComposer) {
+              document.getElementById("prompt").value = attempt.payload.prompt;
+            }
             if (!field || !requireView().showFieldError(field, message)) {
-              showStatus(message, true);
+              showStatus(
+                withLocalFollowUpCancellation(
+                  attempt,
+                  !failedRecovery.restoredToComposer
+                  ? `${message} The failed ${
+                      attempt.queuedFollowUp ? "queued follow-up" : "original request"
+                    } remains paused under Up next; the newer composer draft was preserved.`
+                  : message,
+                ),
+                true,
+              );
             } else {
-              showStatus("");
+              showStatus(attempt.localFollowUpCancellation || "");
             }
             requireView().renderTimeline();
           }
@@ -847,23 +1571,71 @@
           }
         }
         if (!attemptIsCurrent(attempt)) return;
+        if (cancelReconciledUnavailableSession(attempt, message)) return;
         const guidance = persistence === "persisted"
           ? "The prompt is already in this session; check the timeline before trying again."
           : "The send result is unknown; check the timeline before trying again.";
         if (!refreshed) {
           setAttemptStatus(
             attempt,
-            `${message} ${guidance} Authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
+            withLocalFollowUpCancellation(
+              attempt,
+              `${message} ${guidance} Authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
+            ),
             true,
           );
           return;
         }
+        if (persistence === "unknown" && attempt.queuedFollowUp) {
+          const queuedRecovery = pauseFailedSendForRecovery(attempt);
+          if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
+          if (activeSessionId() === attempt.sessionId) {
+            if (queuedRecovery.restoredToComposer) {
+              document.getElementById("prompt").value = attempt.payload.prompt;
+            }
+            requireView().renderTimeline();
+            showStatus(
+              withLocalFollowUpCancellation(
+                attempt,
+                queuedRecovery.restoredToComposer
+                ? `${message} ${guidance}`
+                : `${message} ${guidance} The newer composer draft was preserved; the failed follow-up remains paused under Up next.`,
+              ),
+              true,
+            );
+          }
+          return;
+        }
+        if (
+          persistence === "unknown" &&
+          (queuedFollowUpsBySession.get(attempt.sessionId)?.length || 0) > 0
+        ) {
+          pausedFollowUpSessions.add(attempt.sessionId);
+          if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
+          if (activeSessionId() === attempt.sessionId) {
+            requireView().renderTimeline();
+            showStatus(
+              withLocalFollowUpCancellation(
+                attempt,
+                `${message} ${guidance} Queued follow-ups remain paused until you deliberately continue.`,
+              ),
+              true,
+            );
+          }
+          return;
+        }
         if (!settleSendAttempt(attempt)) return;
-        if (activeSessionId() === attempt.sessionId) {
+        if (
+          activeSessionId() === attempt.sessionId &&
+          !sendAttemptsBySession.has(attempt.sessionId)
+        ) {
           showStatus(
-            persistence === "persisted"
+            withLocalFollowUpCancellation(
+              attempt,
+              persistence === "persisted"
               ? "Request stopped. The prompt and error are saved in this Session; check the timeline before continuing."
               : `${message} ${guidance}`,
+            ),
             true,
           );
         }
@@ -908,6 +1680,7 @@
         } finally {
           attachmentOperationInProgress = false;
           syncOperationState();
+          startQueuedFollowUpsForIdleSessions();
         }
       }
 
@@ -1111,6 +1884,7 @@
         } finally {
           skillOperationInProgress = false;
           syncOperationState();
+          startQueuedFollowUpsForIdleSessions();
         }
       }
 
@@ -1337,17 +2111,41 @@
       }
 
       function showStatus(message, isError) {
+        const visibleAttempt = activeSendAttempt();
+        const cancellation = retainedCanceledFollowUpCount > 0
+          ? `${retainedCanceledFollowUpCount} queued follow-up${
+              retainedCanceledFollowUpCount === 1 ? "" : "s"
+            } canceled because the target Session is no longer available.`
+          : "";
+        const rawMessage = String(message || "");
+        const mentionedCanceledCount = [...rawMessage.matchAll(
+          /(\d+) queued follow-ups? canceled/gi,
+        )].reduce((sum, match) => sum + Number(match[1]), 0);
+        const messageAlreadyHasAggregate = cancellation &&
+          mentionedCanceledCount === retainedCanceledFollowUpCount;
+        const baseMessage = (cancellation && !messageAlreadyHasAggregate
+          ? rawMessage.replace(
+              /(?:^|\s)\d+ queued follow-ups? canceled(?: because the target Session is no longer available)?\.?/gi,
+              " ",
+            )
+          : rawMessage)
+          .replace(/\s+/g, " ")
+          .trim();
+        const renderedMessage = [
+          baseMessage,
+          messageAlreadyHasAggregate ? "" : cancellation,
+        ].filter(Boolean).join(" ");
+        if (cancellation && !visibleAttempt) retainedCanceledFollowUpCount = 0;
         const status = document.getElementById("status");
-        status.textContent = message || "";
-        status.hidden = !message;
-        status.classList.toggle("error", Boolean(isError));
+        status.textContent = renderedMessage;
+        status.hidden = !renderedMessage;
+        status.classList.toggle("error", Boolean(isError) || Boolean(cancellation));
       }
 
       function setSendInProgress(sessionId, value) {
         if (activeSessionId() === sessionId) {
-          const button = document.getElementById("sendButton");
-          button.textContent = value ? "Stop" : "Send";
-          button.classList.toggle("stop", value);
+          renderSendButton(value);
+          renderDefaultFollowUpBehavior();
         }
         syncOperationState();
         if (activeSessionId() !== sessionId) requireView().renderSessions();
@@ -1361,14 +2159,12 @@
         }
       }
 
-      function handleSteerButton() {
-        void steerPrompt();
-      }
-
       async function stopAgent() {
         const attempt = activeSendAttempt();
         if (!attempt) return;
-        await recoverInterruptedSend(attempt, "Agent request stopped.");
+        await recoverInterruptedSend(attempt, "Agent request stopped.", {
+          resumeQueuedAfterStop: true,
+        });
       }
 
       async function resolveConfirm(id, apply) {
@@ -1380,6 +2176,7 @@
           !confirmation ||
           confirmation.sendId !== attempt.id ||
           confirmation.id !== id ||
+          activeConfirmationIsLocked() ||
           activeResolution?.sendId === attempt.id
         ) return;
         const resolution = { sendId: attempt.id, confirmationId: id };
@@ -1412,7 +2209,7 @@
           if (confirmationResolutionsBySession.get(attempt.sessionId) === resolution) {
             confirmationResolutionsBySession.delete(attempt.sessionId);
             if (attemptIsCurrent(attempt) && activeSessionId() === attempt.sessionId) {
-              requireView().setConfirmationState(false);
+              requireView().setConfirmationState(activeConfirmationIsLocked());
             }
           }
         }
@@ -1447,6 +2244,11 @@
             const attempt = [...sendAttemptsBySession.values()]
               .find((entry) => entry.id === payload.sendId);
             if (attempt) payload.sessionId = attempt.sessionId;
+          }
+          if (payload.type === "default_follow_up_behavior_changed") {
+            if (!adoptFollowUpBehaviorEvent(payload)) return;
+            renderDefaultFollowUpBehavior();
+            return;
           }
           if (payload.type === "approval_mode_changed") {
             if (
@@ -1496,7 +2298,7 @@
               payload.sessionId,
               payload.sendId,
               "running",
-              "Steering applied",
+              "Guidance applied",
             );
             requireView().renderSessions();
             return;
@@ -1591,21 +2393,40 @@
           if (payload.type === "done") {
             if (!isActiveSendPayload(payload)) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
+            if (deferSendTerminalWhileAwaitingStop(attempt, {
+              state: payload.state,
+            })) return;
             cancelSendRecovery(attempt);
             if (!applyAuthoritativeSendState(attempt, payload.state)) return;
+            if (cancelReconciledUnavailableSession(
+              attempt,
+              "The target Session is no longer available.",
+            )) return;
             settleSendAttempt(attempt);
-            if (activeSessionId() === payload.sessionId) showStatus("");
+            if (activeSessionId() === payload.sessionId && !activeSendAttempt()) {
+              showStatus(
+                attempt.localFollowUpCancellation || getState().status || "",
+              );
+            }
             return;
           }
           if (payload.type === "error") {
             if (payload.sendId !== undefined) {
               if (!isActiveSendPayload(payload)) return;
+              const attempt = sendAttemptsBySession.get(payload.sessionId);
+              if (deferSendTerminalWhileAwaitingStop(attempt, {
+                message: payload.message,
+                field: payload.field,
+                sendFailureKind: payload.sendFailureKind,
+                state: payload.state,
+              })) return;
               void handleSendFailure(
-                sendAttemptsBySession.get(payload.sessionId),
+                attempt,
                 payload.message,
                 payload.promptPersistence || "unknown",
                 payload.field,
                 payload.state,
+                payload.sendFailureKind,
               );
               return;
             }
@@ -1653,19 +2474,31 @@
         deleteAttachment,
         deleteSkill,
         getAssistantDraft: activeAssistantDraft,
+        getQueuedFollowUps: () => [...activeQueuedFollowUps()],
+        getQueuedFollowUpCount: queuedFollowUpCount,
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
         handleComposerInput,
         handleSendButton,
-        handleSteerButton,
         isSendInProgress: () => Boolean(activeSendAttempt()),
-        hasAnySendInProgress: () => sendAttemptsBySession.size > 0,
+        hasAnySendInProgress: () => sendAttemptsBySession.size > 0 ||
+          queuedFollowUpCount() > 0,
+        hasRunnableSendWork: () => sendAttemptsBySession.size > 0 ||
+          runnableQueuedFollowUpCount() > 0,
         isOperationInProgress,
         isCommandInProgress: () => Boolean(commandInProgress) || commandReconciliationBlocked,
+        isConfirmationLocked: activeConfirmationIsLocked,
         resolveConfirm,
+        renderDefaultFollowUpBehavior,
         runCommand,
+        saveDefaultFollowUpBehavior,
+        setCloseDecisionPending: (pending) => {
+          closeDecisionPending = Boolean(pending);
+          if (!closeDecisionPending) startQueuedFollowUpsForIdleSessions();
+        },
         showStatus,
         startEventStream,
+        submitFollowUp,
         installSkill,
         uploadAttachments,
       };

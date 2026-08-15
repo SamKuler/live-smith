@@ -119,7 +119,7 @@
 
         const capabilityPreview = factories.createCapabilityPreview({
           getState,
-          hasAnySendInProgress: bridgeClient.hasAnySendInProgress,
+          hasRunnableSendWork: bridgeClient.hasRunnableSendWork,
           profileEditor,
           isOperationInProgress: bridgeClient.isOperationInProgress,
           isSendInProgress: bridgeClient.isSendInProgress,
@@ -128,9 +128,11 @@
         const sessionTimeline = factories.createSessionTimeline({
           getState,
           getAssistantDraft: bridgeClient.getAssistantDraft,
+          getQueuedFollowUps: bridgeClient.getQueuedFollowUps,
           getWebSearchUpdates: bridgeClient.getWebSearchUpdates,
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
           isCommandInProgress: bridgeClient.isCommandInProgress,
+          isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
         });
@@ -275,24 +277,40 @@
           const operationActive = bridgeClient.isOperationInProgress() ||
             bridgeClient.hasAnySendInProgress();
           const draftDirty = profileEditor.getDraftState().dirty;
+          const queuedFollowUpCount = bridgeClient.getQueuedFollowUpCount();
+          const queuedFollowUpWarning = queuedFollowUpCount
+            ? ` ${queuedFollowUpCount} queued follow-up${
+                queuedFollowUpCount === 1 ? "" : "s"
+              } will be discarded.`
+            : "";
           const warning = operationActive && draftDirty
-            ? "Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved."
+            ? `Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved.${queuedFollowUpWarning}`
             : operationActive
-              ? "Close Live Smith? The current operation will stop where possible; completed changes stay saved."
+              ? `Close Live Smith? The current operation will stop where possible; completed changes stay saved.${queuedFollowUpWarning}`
               : draftDirty
                 ? "Discard unsaved Profile changes and close Live Smith?"
                 : "";
-          if (warning && !(await confirmAction({
-            title: "Close Live Smith?",
-            message: warning,
-            acceptLabel: "Close",
-          }))) return;
+          if (warning) {
+            bridgeClient.setCloseDecisionPending(true);
+            let accepted = false;
+            try {
+              accepted = await confirmAction({
+                title: "Close Live Smith?",
+                message: warning,
+                acceptLabel: "Close",
+              });
+            } finally {
+              if (!accepted) bridgeClient.setCloseDecisionPending(false);
+            }
+            if (!accepted) return;
+          }
           bridgeClient.closeWithResult({ kind: "close" });
         }
 
         function renderApplication() {
           renderStatusAndContext();
           renderHeaderSummary();
+          bridgeClient.renderDefaultFollowUpBehavior();
           profileEditor.renderApprovalMode();
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
@@ -327,6 +345,11 @@
             busyAriaLabel: "Saving Approval Mode…",
             controlId: "approvalMode",
             status: "Saving Session Approval Mode…",
+          },
+          save_global_settings: {
+            busyAriaLabel: "Saving follow-up behavior…",
+            controlId: "defaultFollowUpBehavior",
+            status: "Saving follow-up behavior…",
           },
           new_session: {
             busyLabel: "…",
@@ -405,6 +428,8 @@
           skillInProgress,
           steerInProgress,
         }) {
+          const composerBlockingCommand = Boolean(commandKind) &&
+            commandKind !== "save_global_settings";
           const operationBusy = Boolean(commandKind) || sendInProgress ||
             attachmentInProgress || skillInProgress;
           const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress ||
@@ -424,7 +449,7 @@
           );
           const approvalMode = document.getElementById("approvalMode");
           profileEditor.updateApprovalModePresentation();
-          document.getElementById("prompt").disabled = Boolean(commandKind) ||
+          document.getElementById("prompt").disabled = composerBlockingCommand ||
             attachmentInProgress || skillInProgress;
           document.querySelectorAll(".sessions-pane button, .sessions-pane input")
             .forEach((control) => {
@@ -438,12 +463,11 @@
           profileEditor.updateHostedToolControls(settingsBusy);
           approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
-          document.getElementById("sendButton").disabled =
+          document.getElementById("defaultFollowUpBehavior").disabled =
             Boolean(commandKind) || attachmentInProgress || skillInProgress;
-          const steerButton = document.getElementById("steerButton");
-          steerButton.hidden = !sendInProgress;
-          steerButton.disabled = !sendInProgress || Boolean(commandKind) ||
-            attachmentInProgress || skillInProgress || steerInProgress;
+          document.getElementById("sendButton").disabled = sendInProgress
+            ? false
+            : composerBlockingCommand || attachmentInProgress || skillInProgress;
           attachments.setBusy(operationBusy);
           skillManager.setBusy(settingsBusy);
 
@@ -491,12 +515,12 @@
           handleProfileSelection: profileEditor.handleProfileSelection,
           handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
-          handleSteerButton: bridgeClient.handleSteerButton,
           markDraftDirty: profileEditor.markDraftDirty,
           openInspector,
           requestClose,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
+          saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           saveProfile: profileEditor.saveProfile,
           toggleInspector,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
@@ -515,12 +539,16 @@
           prompt.addEventListener("input", bridgeClient.handleComposerInput);
           document.addEventListener("keydown", (event) => {
             if (event.defaultPrevented) return;
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            if (
+              event.target === prompt &&
+              !event.isComposing &&
+              (event.metaKey || event.ctrlKey) &&
+              event.key === "Enter"
+            ) {
               if (bridgeClient.isSendInProgress()) {
                 event.preventDefault();
-                bridgeClient.handleSteerButton();
+                bridgeClient.submitFollowUp();
               } else if (
-                event.target === prompt &&
                 !bridgeClient.isOperationInProgress()
               ) {
                 event.preventDefault();

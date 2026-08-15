@@ -124,6 +124,7 @@ import {
   deleteSavedProfile,
   loadAgentSettings,
   requireActiveSavedProfile,
+  saveGlobalSettings,
   saveSavedProfile,
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
@@ -146,11 +147,13 @@ import {
   ChatBridgeSendFailureError,
   ChatBridgeSkillValidationError,
   createChatBridge,
+  type ChatBridgeCommandContext,
   type ChatBridgeCommandInput,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
   type ChatBridgeSendContext,
+  type ChatBridgeSendFailureKind,
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
   type ChatBridgeSkillInstallResult,
@@ -164,6 +167,10 @@ import {
   publishSessionApprovalModeChange,
   subscribeSessionApprovalModeChanges,
 } from "./session-approval-events.js";
+import {
+  publishGlobalSettingsChange,
+  subscribeGlobalSettingsChanges,
+} from "./global-settings-events.js";
 import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
@@ -198,6 +205,7 @@ import {
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
 const sessionMutationFence = new SessionMutationFence();
+const globalSettingsMutationFence = new SessionMutationFence();
 
 export interface AgentFlowDependencies {
   copySelectedAudioAttachmentSource?: typeof copySelectedAudioAttachmentSource;
@@ -205,6 +213,7 @@ export interface AgentFlowDependencies {
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
   requestModelTurn?: typeof requestModelTurn;
+  saveGlobalSettings?: typeof saveGlobalSettings;
   listModels?(
     profile: DraftProfile,
     signal: AbortSignal,
@@ -328,9 +337,12 @@ export async function runAgentFlow(
 
   const buildState = async (
     previewProfile?: DraftProfile,
-    options: { heldSessionId?: string } = {},
+    options: {
+      heldSessionId?: string;
+      sessionMutationHeld?: boolean;
+    } = {},
   ) => {
-    if (options.heldSessionId === undefined) {
+    if (!options.sessionMutationHeld) {
       await retryPendingSessionCleanup();
     }
     const settings = await loadAgentSettings(context.environment.storageDirectory);
@@ -487,6 +499,7 @@ export async function runAgentFlow(
     previewProfile?: DraftProfile,
   ) => buildState(previewProfile, {
     heldSessionId,
+    sessionMutationHeld: true,
   });
 
   const buildStateAfterCommandMutation = async (
@@ -505,6 +518,7 @@ export async function runAgentFlow(
   const handleCommand = async (
     commandInput: ChatBridgeCommandInput,
     signal: AbortSignal,
+    commandContext: ChatBridgeCommandContext,
   ) => {
     throwIfAborted(signal);
     if (commandInput.kind === "save_profile") {
@@ -550,6 +564,60 @@ export async function runAgentFlow(
       status = undefined;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "save_global_settings") {
+      return globalSettingsMutationFence.run(
+        sessionMutationFenceKey(
+          context.environment.storageDirectory,
+          "global-settings",
+        ),
+        signal,
+        async () => {
+          throwIfAborted(signal);
+          try {
+            const settings = await (
+              dependencies.saveGlobalSettings ?? saveGlobalSettings
+            )(context.environment.storageDirectory, {
+              defaultFollowUpBehavior: commandInput.defaultFollowUpBehavior,
+            });
+            publishGlobalSettingsChange(context.environment.storageDirectory, {
+              defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+              defaultFollowUpBehaviorRevision:
+                settings.defaultFollowUpBehaviorRevision,
+              commandId: commandContext.commandId,
+            });
+            status = "Default follow-up behavior saved.";
+            return buildStateAfterCommandMutation();
+          } catch (cause) {
+            if (!isStorageCommitOutcomeUnknownError(cause)) throw cause;
+
+            try {
+              const settings = await loadAgentSettings(
+                context.environment.storageDirectory,
+              );
+              publishGlobalSettingsChange(context.environment.storageDirectory, {
+                defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+                defaultFollowUpBehaviorRevision:
+                  settings.defaultFollowUpBehaviorRevision,
+                commandId: commandContext.commandId,
+              });
+            } catch {
+              // Preserve the unknown commit outcome when settings cannot be read.
+            }
+            let authoritativeState: ChatDialogState | undefined;
+            try {
+              authoritativeState = await buildState();
+            } catch {
+              // The bridge will require an explicit reconciliation when state is unavailable.
+            }
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "Default follow-up behavior storage could not be confirmed.",
+              { cause, authoritativeState },
+            );
+          }
+        },
+      );
     }
 
     if (commandInput.kind === "set_session_approval_mode") {
@@ -1348,6 +1416,7 @@ export async function runAgentFlow(
     }
 
     return withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
+      let sendFailureKind: ChatBridgeSendFailureKind | undefined;
       try {
         throwIfAborted(signal);
         const session = (await listSessions(
@@ -1357,10 +1426,12 @@ export async function runAgentFlow(
           entry.id === sendInput.sessionId && !entry.archivedAt
         );
         if (!session) {
+          sendFailureKind = "session_unavailable";
           throw new Error("That Session is not available in this Live Set.");
         }
         const sessionInteraction = resolveSessionInteraction(session);
         if (!sessionInteraction) {
+          sendFailureKind = "session_unavailable";
           throw new Error(
             `The Live object for this Session is no longer available: ${session.scope.label}.`,
           );
@@ -1419,13 +1490,17 @@ export async function runAgentFlow(
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {
-          authoritativeState = await buildStateWhileHoldingSessionMutation(
-            sendInput.sessionId,
-          );
+          authoritativeState = sendFailureKind === "session_unavailable"
+            ? await buildState(undefined, { sessionMutationHeld: true })
+            : await buildStateWhileHoldingSessionMutation(sendInput.sessionId);
         } catch {
           // Preserve the original failure. The client will reconcile explicitly.
         }
-        throw new ChatBridgeSendFailureError(error, authoritativeState);
+        throw new ChatBridgeSendFailureError(
+          error,
+          authoritativeState,
+          sendFailureKind,
+        );
       }
     });
   };
@@ -1487,11 +1562,18 @@ export async function runAgentFlow(
       bridge.publishSessionApprovalMode(sessionId, approvalMode);
     },
   );
+  const unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
+    context.environment.storageDirectory,
+    (change) => {
+      bridge.publishDefaultFollowUpBehavior(change);
+    },
+  );
 
   try {
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
     unsubscribeApprovalModes();
+    unsubscribeGlobalSettings();
     await bridge.close();
   }
 }

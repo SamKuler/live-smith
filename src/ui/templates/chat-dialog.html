@@ -595,6 +595,16 @@
         text-align: right;
       }
 
+      .timeline-item.queued-follow-up {
+        opacity: 0.88;
+      }
+
+      .timeline-item.user.queued-follow-up .timeline-content {
+        color: var(--muted);
+        background: rgba(255, 165, 0, 0.08);
+        border: 1px dashed rgba(255, 165, 0, 0.55);
+      }
+
       .timeline-label {
         color: var(--quiet);
         font-size: 11px;
@@ -1213,8 +1223,14 @@
         margin-left: auto;
       }
 
-      #steerButton:not([hidden]) + #sendButton {
-        margin-left: 0;
+      .follow-up-shortcut-hint {
+        color: var(--quiet);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .follow-up-shortcut-hint[hidden] {
+        display: none;
       }
 
       .attachment-menu-shell {
@@ -1534,6 +1550,10 @@
       }
 
       .model-setup-guide + .settings-section {
+        margin-top: 14px;
+      }
+
+      .settings-section + .model-setup-guide {
         margin-top: 14px;
       }
 
@@ -2340,6 +2360,7 @@
                   <p id="audioSourceAttachmentNote" class="audio-source-note">Sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
                 </div>
               </div>
+              <span id="followUpShortcutHint" class="follow-up-shortcut-hint" hidden></span>
               <label class="approval-mode-label" title="Manual requests approval for every Apply request.">
                 <span>Apply</span>
                 <select id="approvalMode" name="approvalMode" class="approval-mode-select" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()">
@@ -2348,7 +2369,6 @@
                   <option value="everything">Accept Everything</option>
                 </select>
               </label>
-              <button id="steerButton" class="primary" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" title="Guide the active request (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSteerButton()" hidden>Steer</button>
               <button id="sendButton" class="primary" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" title="Send (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSendButton()">Send</button>
             </div>
           </div>
@@ -2364,6 +2384,17 @@
             <div class="settings-scroll">
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
               <div class="settings">
+              <section id="followUpSettingsSection" class="settings-section" aria-labelledby="followUpSettingsHeading">
+                <h2 id="followUpSettingsHeading">Follow-ups</h2>
+                <div class="field">
+                  <label for="defaultFollowUpBehavior">While Live Smith is working</label>
+                  <select id="defaultFollowUpBehavior" name="defaultFollowUpBehavior" aria-describedby="defaultFollowUpBehaviorHint" onchange="LiveSmithUI.saveDefaultFollowUpBehavior()">
+                    <option value="queue">Queue</option>
+                    <option value="steer">Steer</option>
+                  </select>
+                  <span id="defaultFollowUpBehaviorHint" class="field-hint" role="status" aria-live="polite">Queue sends the message as a new turn after the current response finishes.</span>
+                </div>
+              </section>
               <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading" tabindex="-1">
                 <h2 id="modelSetupGuideHeading">Connect a model</h2>
                 <ol>

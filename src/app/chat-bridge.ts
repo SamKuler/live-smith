@@ -19,9 +19,14 @@ import type { SessionEvent } from "../storage/events.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import type { ModelHostedWebSearch } from "../model/contracts.js";
 import {
+  compareDefaultFollowUpBehaviorRevisions,
   isApprovalMode,
+  isDefaultFollowUpBehavior,
+  isDefaultFollowUpBehaviorRevision,
   ProfileValidationError,
   type ApprovalMode,
+  type DefaultFollowUpBehavior,
+  type DefaultFollowUpBehaviorRevision,
   type DraftProfile,
 } from "../model/profile.js";
 import { createHostAbortController } from "../runtime/host.js";
@@ -32,6 +37,7 @@ import {
   SteeringConflictError,
   SteeringPersistenceOutcomeUnknownError,
 } from "./steering.js";
+import type { GlobalSettingsChange } from "./global-settings-events.js";
 import type { ActionDiffGroup } from "../ui/action-diff.js";
 import type {
   ChatDialogState,
@@ -55,6 +61,8 @@ const initialUnknownAttachmentBodyCapacity = 64 * 1024;
 const maxConcurrentSkillBodyReads = 2;
 const defaultSkillBodyReadTimeoutMs = 15_000;
 const initialUnknownSkillBodyCapacity = 8 * 1024;
+const maxRetainedStopTerminalOutcomes = 64;
+const stateSnapshotCommandId = "bridge-state-snapshot";
 const mimeTypePattern =
   /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 let activeAttachmentBodyReads = 0;
@@ -72,6 +80,10 @@ export interface ChatBridgeSteeringInput {
 
 export interface ChatBridgeSendContext {
   sendId: string;
+}
+
+export interface ChatBridgeCommandContext {
+  commandId: string;
 }
 
 export interface ChatBridgeSteeringReceiptLookupInput {
@@ -113,6 +125,7 @@ export interface ChatBridgeSkillDeleteInput {
 }
 
 export type PromptPersistence = "persisted" | "not_persisted" | "unknown";
+export type ChatBridgeSendFailureKind = "session_unavailable";
 
 export class ChatBridgePromptPersistenceUnknownError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -124,8 +137,13 @@ export class ChatBridgePromptPersistenceUnknownError extends Error {
 export class ChatBridgeSendFailureError extends Error {
   readonly originalError: unknown;
   readonly authoritativeState: ChatDialogState | undefined;
+  readonly sendFailureKind: ChatBridgeSendFailureKind | undefined;
 
-  constructor(originalError: unknown, authoritativeState?: ChatDialogState) {
+  constructor(
+    originalError: unknown,
+    authoritativeState?: ChatDialogState,
+    sendFailureKind?: ChatBridgeSendFailureKind,
+  ) {
     super(
       originalError instanceof Error ? originalError.message : String(originalError),
       { cause: originalError },
@@ -133,7 +151,19 @@ export class ChatBridgeSendFailureError extends Error {
     this.name = "ChatBridgeSendFailureError";
     this.originalError = originalError;
     this.authoritativeState = authoritativeState;
+    this.sendFailureKind = sendFailureKind;
   }
+}
+
+function promptPersistenceForSendOutcome(
+  observed: PromptPersistence | undefined,
+  reportedError: unknown,
+): PromptPersistence {
+  if (observed === "persisted") return "persisted";
+  if (reportedError instanceof ChatBridgePromptPersistenceUnknownError) {
+    return "unknown";
+  }
+  return observed ?? "not_persisted";
 }
 
 export class ChatBridgeCommandOutcomeUnknownError extends Error {
@@ -232,6 +262,10 @@ export type ChatBridgeCommandInput =
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
   | {
+      kind: "save_global_settings";
+      defaultFollowUpBehavior: DefaultFollowUpBehavior;
+    }
+  | {
       kind: "set_session_approval_mode";
       sessionId: string;
       approvalMode: ApprovalMode;
@@ -264,6 +298,7 @@ export interface ChatBridgeStream {
 export interface ChatBridge {
   url: string;
   publishSessionApprovalMode(sessionId: string, approvalMode: ApprovalMode): void;
+  publishDefaultFollowUpBehavior(change: GlobalSettingsChange): void;
   close(): Promise<void>;
 }
 
@@ -273,6 +308,7 @@ interface ChatBridgeOptions {
   handleCommand(
     input: ChatBridgeCommandInput,
     signal: AbortSignal,
+    context: ChatBridgeCommandContext,
   ): Promise<ChatDialogState>;
   handleSend(
     input: ChatBridgeSendInput,
@@ -334,6 +370,7 @@ interface ActiveSend {
   sessionId: string;
   controller: AbortController;
   steering: SteeringChannel;
+  stopRequested: boolean;
 }
 
 type SsePayload =
@@ -361,6 +398,12 @@ type SsePayload =
       sessionId: string;
       approvalMode: ApprovalMode;
     }
+  | {
+      type: "default_follow_up_behavior_changed";
+      defaultFollowUpBehavior: DefaultFollowUpBehavior;
+      defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+      commandId: string;
+    }
   | { type: "done"; sendId: string; sessionId: string; state: ChatDialogState }
   | {
       type: "error";
@@ -370,6 +413,7 @@ type SsePayload =
       message: string;
       field?: string;
       promptPersistence?: PromptPersistence;
+      sendFailureKind?: ChatBridgeSendFailureKind;
       commandOutcome?: "unknown";
       state?: ChatDialogState;
       reconciliationRequired?: boolean;
@@ -386,13 +430,36 @@ export async function createChatBridge(
   const readOnlyResponses = new Set<ServerResponse>();
   const activeSendsById = new Map<string, ActiveSend>();
   const activeSendsBySession = new Map<string, ActiveSend>();
+  const stopTerminalOutcomes = new Map<string, PromptPersistence>();
   const activeAttachmentTerminals = new Map<string, Promise<void>>();
   const activeAttachmentControllers = new Map<string, AbortController>();
   const sessionActivities = new Map<string, ChatSessionActivity>();
   let activeCommandAbort: AbortController | null = null;
   let activeCommandTerminal: Promise<void> | null = null;
+  let latestGlobalSettingsChange: GlobalSettingsChange | undefined;
+  let latestGlobalSettingsFromState = false;
   let closing = false;
   let closePromise: Promise<void> | null = null;
+
+  const retainStopTerminalOutcome = (
+    sendId: string,
+    promptPersistence: PromptPersistence,
+  ) => {
+    if (closing) return;
+    stopTerminalOutcomes.delete(sendId);
+    stopTerminalOutcomes.set(sendId, promptPersistence);
+    if (stopTerminalOutcomes.size <= maxRetainedStopTerminalOutcomes) return;
+    const oldestSendId = stopTerminalOutcomes.keys().next().value;
+    if (oldestSendId !== undefined) stopTerminalOutcomes.delete(oldestSendId);
+  };
+
+  const consumeStopTerminalOutcome = (
+    sendId: string,
+  ): PromptPersistence | undefined => {
+    const outcome = stopTerminalOutcomes.get(sendId);
+    if (outcome !== undefined) stopTerminalOutcomes.delete(sendId);
+    return outcome;
+  };
 
   const broadcast = (payload: SsePayload) => {
     if (closing) return;
@@ -478,13 +545,60 @@ export async function createChatBridge(
     }
   };
 
+  const reconcileGlobalSettings = (state: ChatDialogState): ChatDialogState => {
+    const settings = state.settings;
+    if (
+      !settings ||
+      !isDefaultFollowUpBehavior(settings.defaultFollowUpBehavior) ||
+      !isDefaultFollowUpBehaviorRevision(
+        settings.defaultFollowUpBehaviorRevision,
+      )
+    ) return state;
+    if (
+      latestGlobalSettingsChange === undefined ||
+      compareDefaultFollowUpBehaviorRevisions(
+        settings.defaultFollowUpBehaviorRevision,
+        latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+      ) > 0
+    ) {
+      latestGlobalSettingsChange = {
+        defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+        defaultFollowUpBehaviorRevision:
+          settings.defaultFollowUpBehaviorRevision,
+        commandId: stateSnapshotCommandId,
+      };
+      latestGlobalSettingsFromState = true;
+      return state;
+    }
+    if (
+      latestGlobalSettingsChange !== undefined &&
+      compareDefaultFollowUpBehaviorRevisions(
+        latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+        settings.defaultFollowUpBehaviorRevision,
+      ) > 0
+    ) {
+      return {
+        ...state,
+        settings: {
+          ...settings,
+          defaultFollowUpBehavior:
+            latestGlobalSettingsChange.defaultFollowUpBehavior,
+          defaultFollowUpBehaviorRevision:
+            latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+        },
+      };
+    }
+    return state;
+  };
+
   const stateWithActivities = (state: ChatDialogState): ChatDialogState => {
-    const activities = (state.sessions ?? [])
+    const reconciled = reconcileGlobalSettings(state);
+    const activities = (reconciled.sessions ?? [])
       .map((session) => sessionActivities.get(session.id))
       .filter((activity): activity is ChatSessionActivity => activity !== undefined);
-    return activities.length || state.sessionActivities !== undefined
-      ? { ...state, sessionActivities: activities }
-      : state;
+    return activities.length || reconciled.sessionActivities !== undefined
+      ? { ...reconciled, sessionActivities: activities }
+      : reconciled;
   };
 
   const buildBridgeState = async (): Promise<ChatDialogState> =>
@@ -625,6 +739,12 @@ export async function createChatBridge(
         });
         response.write("\n");
         clients.add(response);
+        if (latestGlobalSettingsChange) {
+          writeSse(response, {
+            type: "default_follow_up_behavior_changed",
+            ...latestGlobalSettingsChange,
+          });
+        }
         for (const [id, pending] of pendingConfirmations) {
           writeSse(response, {
             type: "confirm_request",
@@ -830,7 +950,11 @@ export async function createChatBridge(
         const controller = createHostAbortController();
         activeCommandAbort = controller;
         try {
-          const commandState = await options.handleCommand(input, controller.signal);
+          const commandState = await options.handleCommand(
+            input,
+            controller.signal,
+            { commandId },
+          );
           if (input.kind === "select_session") {
             const activity = sessionActivities.get(input.sessionId);
             if (activity) activity.unread = false;
@@ -896,18 +1020,21 @@ export async function createChatBridge(
         inFlightMutationHandlers.add(handlerTerminal);
         const controller = createHostAbortController();
         const steering = new SteeringChannel();
-        const activeSend = {
+        const activeSend: ActiveSend = {
           sendId,
           sessionId: input.sessionId,
           controller,
           steering,
+          stopRequested: false,
         };
+        stopTerminalOutcomes.delete(sendId);
         activeSendsById.set(sendId, activeSend);
         activeSendsBySession.set(input.sessionId, activeSend);
         updateActivity(input.sessionId, sendId, "running", {
           message: "Starting agent loop",
           unread: false,
         });
+        let sendOutcomeError: unknown;
         try {
           const stream = createStream(sendId, input.sessionId, (event) => {
             if (event.kind === "user") sendPromptPersistence = "persisted";
@@ -939,10 +1066,24 @@ export async function createChatBridge(
             state,
           });
           sendJson(response, { ok: true, state });
+        } catch (error) {
+          sendOutcomeError = error instanceof ChatBridgeSendFailureError
+            ? error.originalError
+            : error;
+          throw error;
         } finally {
           steering.close(new SteeringClosedError(
             "The target agent request is no longer accepting steering.",
           ));
+          if (activeSend.stopRequested) {
+            retainStopTerminalOutcome(
+              sendId,
+              promptPersistenceForSendOutcome(
+                sendPromptPersistence,
+                sendOutcomeError,
+              ),
+            );
+          }
           if (activeSendsById.get(sendId) === activeSend) {
             activeSendsById.delete(sendId);
           }
@@ -1092,6 +1233,7 @@ export async function createChatBridge(
         );
         const activeSend = activeSendsById.get(stoppedSendId);
         if (activeSend) {
+          activeSend.stopRequested = true;
           resolveConfirmationsForSend(stoppedSendId, false);
           updateActivity(activeSend.sessionId, stoppedSendId, "stopped", {
             message: "Stopped",
@@ -1100,10 +1242,15 @@ export async function createChatBridge(
           activeSend.steering.close(stoppedError);
           activeSend.controller.abort(stoppedError);
         }
+        const terminal = activeSend === undefined;
+        const promptPersistence = terminal
+          ? consumeStopTerminalOutcome(stoppedSendId) ?? "unknown"
+          : undefined;
         sendJson(response, {
           ok: true,
-          terminal: !activeSendsById.has(stoppedSendId),
+          terminal,
           sendId: stoppedSendId,
+          ...(promptPersistence === undefined ? {} : { promptPersistence }),
         });
         return;
       }
@@ -1138,11 +1285,10 @@ export async function createChatBridge(
         ? reportedError.field
         : undefined;
       const promptPersistence = requestPath === "/send"
-        ? sendPromptPersistence === "persisted"
-          ? "persisted"
-          : reportedError instanceof ChatBridgePromptPersistenceUnknownError
-            ? "unknown"
-            : sendPromptPersistence ?? "not_persisted"
+        ? promptPersistenceForSendOutcome(sendPromptPersistence, reportedError)
+        : undefined;
+      const sendFailureKind = error instanceof ChatBridgeSendFailureError
+        ? error.sendFailureKind
         : undefined;
       let commandState: ChatDialogState | undefined;
       let sendErrorState: ChatDialogState | undefined;
@@ -1194,6 +1340,7 @@ export async function createChatBridge(
           message,
           ...(field === undefined ? {} : { field }),
           ...(promptPersistence === undefined ? {} : { promptPersistence }),
+          ...(sendFailureKind === undefined ? {} : { sendFailureKind }),
           ...(commandOutcome === undefined ? {} : { commandOutcome }),
           ...(sendErrorState !== undefined
             ? { state: sendErrorState }
@@ -1212,6 +1359,7 @@ export async function createChatBridge(
           ...(commandId === undefined ? {} : { commandId }),
           ...(field === undefined ? {} : { field }),
           ...(promptPersistence === undefined ? {} : { promptPersistence }),
+          ...(sendFailureKind === undefined ? {} : { sendFailureKind }),
           ...(commandOutcome === undefined ? {} : { commandOutcome }),
           ...(sendErrorState !== undefined
             ? { state: sendErrorState }
@@ -1262,6 +1410,31 @@ export async function createChatBridge(
     publishSessionApprovalMode: (sessionId, approvalMode) => {
       broadcast({ type: "approval_mode_changed", sessionId, approvalMode });
     },
+    publishDefaultFollowUpBehavior: (change) => {
+      if (latestGlobalSettingsChange !== undefined) {
+        const revisionOrder = compareDefaultFollowUpBehaviorRevisions(
+          change.defaultFollowUpBehaviorRevision,
+          latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+        );
+        if (
+          revisionOrder < 0 ||
+          (
+            revisionOrder === 0 &&
+            (
+              !latestGlobalSettingsFromState ||
+              change.defaultFollowUpBehavior !==
+                latestGlobalSettingsChange.defaultFollowUpBehavior
+            )
+          )
+        ) return;
+      }
+      latestGlobalSettingsChange = change;
+      latestGlobalSettingsFromState = false;
+      broadcast({
+        type: "default_follow_up_behavior_changed",
+        ...change,
+      });
+    },
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
@@ -1270,6 +1443,7 @@ export async function createChatBridge(
       const connectedClients = [...clients];
       clients.clear();
       readOnlyResponses.clear();
+      stopTerminalOutcomes.clear();
       for (const request of pendingRequestBodies) request.destroy();
       pendingRequestBodies.clear();
       resolveAllConfirmations(false);
@@ -1981,6 +2155,22 @@ function parseSteeringInput(value: unknown): ChatBridgeSteeringInput {
 function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   const input = inputRecord(value);
   const kind = inputString(input, "kind");
+  if (kind === "save_global_settings") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "defaultFollowUpBehavior"],
+      `${kind} command`,
+    );
+    if (!isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)) {
+      throw new ChatBridgeRequestValidationError(
+        "defaultFollowUpBehavior must be queue or steer.",
+      );
+    }
+    return {
+      kind,
+      defaultFollowUpBehavior: input.defaultFollowUpBehavior,
+    };
+  }
   if (kind === "save_profile" || kind === "discover_models") {
     assertOnlyInputKeys(input, ["kind", "profile"], `${kind} command`);
     if (!isRecord(input.profile)) {
@@ -2091,7 +2281,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {
-  return isSessionCommand(input);
+  return isSessionCommand(input) || input.kind === "save_global_settings";
 }
 
 function inputRecord(value: unknown): Record<string, unknown> {

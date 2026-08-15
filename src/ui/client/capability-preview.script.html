@@ -1,13 +1,13 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createCapabilityPreview = function createCapabilityPreview({
         getState,
-        hasAnySendInProgress,
+        hasRunnableSendWork,
         profileEditor,
         isOperationInProgress,
         isSendInProgress,
       }) {
       function updateReasoningVisibility() {
-        const settingsLocked = isOperationInProgress() || hasAnySendInProgress();
+        const settingsLocked = isOperationInProgress() || hasRunnableSendWork();
         const selection = selectedModelCapabilities();
         const capability = selection.capability;
         const reasoning = capability && capability.reasoning;
@@ -231,7 +231,7 @@
         const draft = profileEditor.getDraftState();
         const sendInProgress = isSendInProgress();
         const operationInProgress = isOperationInProgress();
-        const settingsOperationInProgress = operationInProgress || hasAnySendInProgress();
+        const settingsOperationInProgress = operationInProgress || hasRunnableSendWork();
         const hasSaved = Boolean(draft.savedProfile);
         document.getElementById("saveProfileButton").disabled = settingsOperationInProgress || !draft.profile || !draft.dirty;
         document.getElementById("discardProfileButton").disabled = settingsOperationInProgress || !draft.dirty;

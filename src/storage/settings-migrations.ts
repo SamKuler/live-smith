@@ -1,10 +1,14 @@
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   isApprovalMode,
+  isDefaultFollowUpBehavior,
+  isDefaultFollowUpBehaviorRevision,
   ProfileValidationError,
   validateDraftProfileForSave,
   type AgentSettings,
   type ApprovalMode,
+  type DefaultFollowUpBehavior,
+  type DefaultFollowUpBehaviorRevision,
   type SavedProfile,
 } from "../model/profile.js";
 
@@ -25,10 +29,18 @@ interface AgentSettingsV2 extends SharedAgentSettings {
   approvalMode: ApprovalMode;
 }
 
+interface AgentSettingsV3 extends SharedAgentSettings {
+  schemaVersion: 3;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
   [1, migrateSettingsV1ToV2],
+  [2, migrateSettingsV2ToV3],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -47,7 +59,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV2(migrated);
+  return validateSettingsV3(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -57,6 +69,18 @@ function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
     activeProfileId: settings.activeProfileId,
     profiles: settings.profiles,
     approvalMode: settings.autoApprove ? "low-risk" : "manual",
+  };
+}
+
+function migrateSettingsV2ToV3(value: unknown): AgentSettingsV3 {
+  const settings = validateSettingsV2(value);
+  return {
+    schemaVersion: 3,
+    activeProfileId: settings.activeProfileId,
+    profiles: settings.profiles,
+    approvalMode: settings.approvalMode,
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
   };
 }
 
@@ -91,6 +115,37 @@ function validateSettingsV2(value: unknown): AgentSettingsV2 {
     schemaVersion: 2,
     ...shared,
     approvalMode: record.approvalMode,
+  };
+}
+
+function validateSettingsV3(value: unknown): AgentSettingsV3 {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 3) throw unsupportedSchemaVersion();
+  const shared = validatedSharedSettings(record);
+  if (!isApprovalMode(record.approvalMode)) {
+    throw new ProfileValidationError(
+      "approvalMode",
+      "Approval mode must be manual, low-risk, or everything.",
+    );
+  }
+  if (!isDefaultFollowUpBehavior(record.defaultFollowUpBehavior)) {
+    throw new ProfileValidationError(
+      "defaultFollowUpBehavior",
+      "Default follow-up behavior must be queue or steer.",
+    );
+  }
+  if (!isDefaultFollowUpBehaviorRevision(record.defaultFollowUpBehaviorRevision)) {
+    throw new ProfileValidationError(
+      "defaultFollowUpBehaviorRevision",
+      "Default follow-up behavior revision must be a canonical nonnegative decimal string.",
+    );
+  }
+  return {
+    schemaVersion: 3,
+    ...shared,
+    approvalMode: record.approvalMode,
+    defaultFollowUpBehavior: record.defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision: record.defaultFollowUpBehaviorRevision,
   };
 }
 

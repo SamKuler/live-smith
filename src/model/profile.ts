@@ -95,14 +95,18 @@ export interface SavedProfile {
 }
 
 export type ApprovalMode = "manual" | "low-risk" | "everything";
+export type DefaultFollowUpBehavior = "queue" | "steer";
+export type DefaultFollowUpBehaviorRevision = string;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 2 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 3 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
   activeProfileId: string | null;
   profiles: SavedProfile[];
   approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
 }
 
 export class ProfileValidationError extends Error {
@@ -139,11 +143,49 @@ export function freshEmptyAgentSettings(): AgentSettings {
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
   };
 }
 
 export function isApprovalMode(value: unknown): value is ApprovalMode {
   return value === "manual" || value === "low-risk" || value === "everything";
+}
+
+export function isDefaultFollowUpBehavior(
+  value: unknown,
+): value is DefaultFollowUpBehavior {
+  return value === "queue" || value === "steer";
+}
+
+export function isDefaultFollowUpBehaviorRevision(
+  value: unknown,
+): value is DefaultFollowUpBehaviorRevision {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+}
+
+export function compareDefaultFollowUpBehaviorRevisions(
+  left: DefaultFollowUpBehaviorRevision,
+  right: DefaultFollowUpBehaviorRevision,
+): -1 | 0 | 1 {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+export function incrementDefaultFollowUpBehaviorRevision(
+  revision: DefaultFollowUpBehaviorRevision,
+): DefaultFollowUpBehaviorRevision {
+  const digits = [...revision];
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    if (digits[index] === "9") {
+      digits[index] = "0";
+      continue;
+    }
+    digits[index] = String.fromCharCode(revision.charCodeAt(index) + 1);
+    return digits.join("");
+  }
+  return `1${digits.join("")}`;
 }
 
 export function isValidApiModePair(
