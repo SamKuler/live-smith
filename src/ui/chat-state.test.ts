@@ -90,9 +90,11 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     modelStateSource: null,
     runtimeProfile: null,
     settings: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       activeProfileId: null,
       approvalMode: "manual",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
       profiles: [],
     },
     openSettingsOnLoad: false,

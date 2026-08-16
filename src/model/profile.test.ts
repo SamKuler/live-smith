@@ -2,9 +2,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compareDefaultFollowUpBehaviorRevisions,
+  incrementDefaultFollowUpBehaviorRevision,
+  isDefaultFollowUpBehaviorRevision,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
 } from "./profile.js";
+
+test("follow-up behavior revisions are canonical unbounded decimal strings", () => {
+  for (const revision of ["0", "1", "9007199254740993", "1".repeat(256)]) {
+    assert.equal(isDefaultFollowUpBehaviorRevision(revision), true);
+  }
+  for (const revision of [0, "", "00", "01", "+1", "-1", "1.0", "1e3", " 1"]) {
+    assert.equal(isDefaultFollowUpBehaviorRevision(revision), false);
+  }
+
+  assert.equal(incrementDefaultFollowUpBehaviorRevision("0"), "1");
+  assert.equal(incrementDefaultFollowUpBehaviorRevision("9"), "10");
+  assert.equal(incrementDefaultFollowUpBehaviorRevision("1099"), "1100");
+  assert.equal(
+    incrementDefaultFollowUpBehaviorRevision("9007199254740991"),
+    "9007199254740992",
+  );
+  assert.equal(compareDefaultFollowUpBehaviorRevisions("9", "10"), -1);
+  assert.equal(compareDefaultFollowUpBehaviorRevisions("10", "9"), 1);
+  assert.equal(
+    compareDefaultFollowUpBehaviorRevisions(
+      "9007199254740993",
+      "9007199254740993",
+    ),
+    0,
+  );
+});
 
 function profile(baseUrl: string): Record<string, unknown> {
   return {

@@ -53,9 +53,9 @@ import {
 } from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
 
-test("approval decisions follow the target Session and ignore the legacy global mode", async () => {
+test("approval decisions follow the target Session and ignore global follow-up settings", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-decision-"));
-  await saveGlobalSettings(directory, { approvalMode: "everything" });
+  await saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" });
   const manualSession = await createSession(directory, {
     title: "Manual",
     projectKey: "project-1",
@@ -234,6 +234,234 @@ test("Session approval changes publish to every open bridge for the same storage
   }
 });
 
+test("global follow-up behavior changes publish to every open bridge for the same storage", async () => {
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-follow-up-notification-",
+    firstDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const events = await fetch(fixture.second.endpoint("/events"));
+    const notification = readSsePayload(
+      events,
+      "default_follow_up_behavior_changed",
+      (payload) => payload.defaultFollowUpBehaviorRevision === "1",
+    );
+    const response = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-settings-success",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        defaultFollowUpBehavior: "steer",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const state = await response.json() as ChatDialogState;
+    assert.equal(state.settings.defaultFollowUpBehavior, "steer");
+    assert.equal(state.settings.defaultFollowUpBehaviorRevision, "1");
+    assert.deepEqual(await resolvesWithin(notification, "follow-up behavior notification"), {
+      type: "default_follow_up_behavior_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      commandId: "global-settings-success",
+    });
+    const secondState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.equal(secondState.settings.defaultFollowUpBehavior, "steer");
+    assert.equal(secondState.settings.defaultFollowUpBehaviorRevision, "1");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an unknown global settings commit publishes its reconciled value to every bridge", async () => {
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-follow-up-unknown-",
+    firstDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+      saveGlobalSettings: async (storageDirectory, input) => {
+        await saveGlobalSettings(storageDirectory, input);
+        throw new StorageCommitOutcomeUnknownError(
+          new Error("directory sync failed after rename"),
+        );
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const events = await fetch(fixture.second.endpoint("/events"));
+    const notification = readSsePayload(
+      events,
+      "default_follow_up_behavior_changed",
+      (payload) => payload.defaultFollowUpBehaviorRevision === "1",
+    );
+    const response = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-settings-unknown",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        defaultFollowUpBehavior: "steer",
+      }),
+    });
+    const body = await response.json() as {
+      commandOutcome?: string;
+      state?: ChatDialogState;
+      reconciliationRequired?: boolean;
+    };
+
+    assert.equal(response.status, 500);
+    assert.equal(body.commandOutcome, "unknown");
+    assert.equal(body.reconciliationRequired, undefined);
+    assert.equal(body.state?.settings.defaultFollowUpBehavior, "steer");
+    assert.equal(body.state?.settings.defaultFollowUpBehaviorRevision, "1");
+    assert.deepEqual(await resolvesWithin(notification, "unknown commit notification"), {
+      type: "default_follow_up_behavior_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      commandId: "global-settings-unknown",
+    });
+    const peerState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.equal(peerState.settings.defaultFollowUpBehavior, "steer");
+    assert.equal(peerState.settings.defaultFollowUpBehaviorRevision, "1");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("unknown global settings readback stays ordered before a later save", async () => {
+  const firstPersisted = deferred<void>();
+  const releaseUnknown = deferred<void>();
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-follow-up-unknown-order-",
+    firstDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+      saveGlobalSettings: async (storageDirectory, input) => {
+        await saveGlobalSettings(storageDirectory, input);
+        firstPersisted.resolve();
+        await releaseUnknown.promise;
+        throw new StorageCommitOutcomeUnknownError(
+          new Error("directory sync failed after rename"),
+        );
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+  let firstNotification: Promise<Record<string, unknown>> | undefined;
+  let secondNotification: Promise<Record<string, unknown>> | undefined;
+
+  try {
+    const firstEvents = await fetch(fixture.first.endpoint("/events"));
+    firstNotification = readSsePayload(
+      firstEvents,
+      "default_follow_up_behavior_changed",
+      (payload) => payload.defaultFollowUpBehaviorRevision === "1",
+    );
+    const secondEvents = await fetch(fixture.second.endpoint("/events"));
+    secondNotification = readSsePayload(
+      secondEvents,
+      "default_follow_up_behavior_changed",
+      (payload) => payload.defaultFollowUpBehaviorRevision === "2",
+    );
+    const firstResponse = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-settings-unknown-first",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        defaultFollowUpBehavior: "steer",
+      }),
+    });
+    await resolvesWithin(firstPersisted.promise, "first global settings write");
+
+    let secondSettled = false;
+    const secondResponse = fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-settings-success-second",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        defaultFollowUpBehavior: "queue",
+      }),
+    }).then((response) => {
+      secondSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      secondResponse.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]), "pending");
+    assert.equal(secondSettled, false);
+
+    releaseUnknown.resolve();
+    const first = await resolvesWithin(firstResponse, "unknown settings response");
+    assert.equal(first.status, 500);
+    const firstBody = await first.json() as {
+      commandOutcome?: string;
+      state?: ChatDialogState;
+    };
+    assert.equal(firstBody.commandOutcome, "unknown");
+    assert.equal(firstBody.state?.settings.defaultFollowUpBehavior, "steer");
+    assert.equal(firstBody.state?.settings.defaultFollowUpBehaviorRevision, "1");
+
+    const second = await resolvesWithin(secondResponse, "later settings response");
+    assert.equal(second.status, 200);
+    const secondBody = await second.json() as ChatDialogState;
+    assert.equal(secondBody.settings.defaultFollowUpBehavior, "queue");
+    assert.equal(secondBody.settings.defaultFollowUpBehaviorRevision, "2");
+    assert.deepEqual(
+      await resolvesWithin(firstNotification, "first settings notification"),
+      {
+        type: "default_follow_up_behavior_changed",
+        defaultFollowUpBehavior: "steer",
+        defaultFollowUpBehaviorRevision: "1",
+        commandId: "global-settings-unknown-first",
+      },
+    );
+    assert.deepEqual(
+      await resolvesWithin(secondNotification, "second settings notification"),
+      {
+        type: "default_follow_up_behavior_changed",
+        defaultFollowUpBehavior: "queue",
+        defaultFollowUpBehaviorRevision: "2",
+        commandId: "global-settings-success-second",
+      },
+    );
+  } finally {
+    releaseUnknown.resolve();
+    await fixture.close();
+    await Promise.allSettled([
+      ...(firstNotification ? [firstNotification] : []),
+      ...(secondNotification ? [secondNotification] : []),
+    ]);
+  }
+});
+
 test("concurrent state and discovery responses each keep models, capabilities, and source from one profile", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-state-race-"));
   const profileA = profile({
@@ -395,18 +623,48 @@ test("two bridges serialize a same-Session send and delete without recreating ev
       [],
     );
 
+    const deletedEvents = await fetch(fixture.first.endpoint("/events"));
+    const deletedError = readSsePayload(
+      deletedEvents,
+      "error",
+      (payload) => payload.sendId === "deleted-session-send",
+    );
     const deletedSend = await fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "deleted-session-send",
+      },
       body: JSON.stringify({
         prompt: "Must not fall back",
         sessionId: fixture.sessionId,
       }),
     });
     assert.equal(deletedSend.status, 500);
+    const deletedSendBody = await deletedSend.json() as {
+      promptPersistence?: string;
+      sendFailureKind?: string;
+      state?: ChatDialogState;
+    };
+    assert.equal(deletedSendBody.promptPersistence, "not_persisted");
+    assert.equal(deletedSendBody.sendFailureKind, "session_unavailable");
     assert.equal(
-      (await deletedSend.json() as { promptPersistence?: string }).promptPersistence,
-      "not_persisted",
+      deletedSendBody.state?.sessions.some(
+        (session) => session.id === fixture.sessionId,
+      ),
+      false,
+    );
+    const deletedErrorEvent = await resolvesWithin(
+      deletedError,
+      "deleted Session error event",
+    );
+    assert.equal(deletedErrorEvent.promptPersistence, "not_persisted");
+    assert.equal(deletedErrorEvent.sendFailureKind, "session_unavailable");
+    assert.equal(
+      (deletedErrorEvent.state as ChatDialogState).sessions.some(
+        (session) => session.id === fixture.sessionId,
+      ),
+      false,
     );
     assert.deepEqual(
       await loadSessionEvents(fixture.directory, fixture.sessionId),
@@ -2578,13 +2836,36 @@ test("selecting a Track Session refreshes context from that Session's Live objec
         context.application.song.tracks.splice(1, 1);
         const unavailable = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
         assert.match(unavailable.contextSummary, /Live object.*unavailable/i);
+        const events = await fetch(endpoint("/events"));
+        const errorEvent = readSsePayload(
+          events,
+          "error",
+          (payload) => payload.sendId === "unavailable-track-send",
+        );
         const send = await fetch(endpoint("/send"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "unavailable-track-send",
+          },
           body: JSON.stringify({ prompt: "Change this track", sessionId: leadSession.id }),
         });
         assert.equal(send.status, 500);
-        assert.match((await send.json() as { error: string }).error, /no longer available/i);
+        const sendBody = await send.json() as {
+          error: string;
+          promptPersistence?: string;
+          sendFailureKind?: string;
+          state?: ChatDialogState;
+        };
+        assert.match(sendBody.error, /no longer available/i);
+        assert.equal(sendBody.promptPersistence, "not_persisted");
+        assert.equal(sendBody.sendFailureKind, "session_unavailable");
+        assert.equal(sendBody.state?.activeSessionId, leadSession.id);
+        assert.match(sendBody.state?.contextSummary ?? "", /Live object.*unavailable/i);
+        const event = await resolvesWithin(errorEvent, "unavailable Track error event");
+        assert.equal(event.promptPersistence, "not_persisted");
+        assert.equal(event.sendFailureKind, "session_unavailable");
+        assert.equal((event.state as ChatDialogState).activeSessionId, leadSession.id);
       },
     },
   };
@@ -3342,6 +3623,7 @@ function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
 async function readSsePayload(
   response: Response,
   type: string,
+  matches: (payload: Record<string, unknown>) => boolean = () => true,
 ): Promise<Record<string, unknown>> {
   assert.ok(response.body);
   const reader = response.body.getReader();
@@ -3357,7 +3639,7 @@ async function readSsePayload(
           ?.slice("data: ".length);
         if (!data) continue;
         const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type) return payload;
+        if (payload.type === type && matches(payload)) return payload;
       }
     }
   } finally {

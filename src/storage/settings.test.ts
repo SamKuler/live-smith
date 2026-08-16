@@ -4,7 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { SavedProfile } from "../model/profile.js";
+import {
+  compareDefaultFollowUpBehaviorRevisions,
+  type SavedProfile,
+} from "../model/profile.js";
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   decodeAgentSettings,
@@ -42,10 +45,12 @@ function profile(
 test("loadAgentSettings starts empty and rejects every legacy or invalid settings shape", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   assert.deepEqual(await loadAgentSettings(directory), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
   });
 
   const legacyShapes = [
@@ -55,6 +60,13 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     { schemaVersion: 1, activeProfileId: null, profiles: "not-an-array", autoApprove: false },
     { schemaVersion: 1, activeProfileId: null, profiles: [{ provider: "openai" }], autoApprove: false },
     { schemaVersion: 2, activeProfileId: null, profiles: [], approvalMode: "unsafe" },
+    {
+      schemaVersion: 3,
+      activeProfileId: null,
+      profiles: [],
+      approvalMode: "manual",
+      defaultFollowUpBehavior: "later",
+    },
   ];
   for (const legacy of legacyShapes) {
     await fs.writeFile(
@@ -112,8 +124,10 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
     }, null, 2);
     await fs.writeFile(settingsPath, original);
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 2);
+    assert.equal(loaded.schemaVersion, 3);
     assert.equal(loaded.approvalMode, approvalMode);
+    assert.equal(loaded.defaultFollowUpBehavior, "queue");
+    assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
     assert.deepEqual(loaded.profiles, [{
       ...completeProfile,
       baseUrl: "https://example.test/v1",
@@ -122,17 +136,105 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
   }
 });
 
-test("the migration decoder accepts current settings and rejects unsupported versions", () => {
-  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 2);
-  const current = {
+test("schema version 2 settings migrate to queued follow-ups without rewriting on read", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-v2-"));
+  const settingsPath = path.join(directory, "live-smith-settings.json");
+  const original = JSON.stringify({
     schemaVersion: 2,
-    activeProfileId: null,
-    profiles: [],
+    activeProfileId: "profile-1",
+    profiles: [profile()],
     approvalMode: "everything",
-  } as const;
-  assert.deepEqual(decodeAgentSettings(current), current);
+  }, null, 2);
+  await fs.writeFile(settingsPath, original);
 
-  for (const schemaVersion of [0, 3]) {
+  const loaded = await loadAgentSettings(directory);
+  assert.equal(loaded.schemaVersion, 3);
+  assert.equal(loaded.defaultFollowUpBehavior, "queue");
+  assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
+  assert.equal(loaded.approvalMode, "everything");
+  assert.equal(loaded.activeProfileId, "profile-1");
+  assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+
+  const saved = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "steer",
+  });
+  assert.equal(saved.schemaVersion, 3);
+  assert.equal(saved.defaultFollowUpBehavior, "steer");
+  assert.equal(saved.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(saved.approvalMode, "everything");
+  assert.equal(saved.activeProfileId, "profile-1");
+  assert.equal(saved.profiles.length, 1);
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(settingsPath, "utf8")),
+    saved,
+  );
+});
+
+test("the migration decoder accepts only canonical current revisions", () => {
+  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 3);
+  for (const defaultFollowUpBehavior of ["queue", "steer"] as const) {
+    for (const defaultFollowUpBehaviorRevision of [
+      "0",
+      "7",
+      "9007199254740993",
+    ]) {
+      const current = {
+        schemaVersion: 3,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "everything",
+        defaultFollowUpBehavior,
+        defaultFollowUpBehaviorRevision,
+      } as const;
+      assert.deepEqual(decodeAgentSettings(current), current);
+    }
+  }
+
+  for (const invalid of [undefined, "later", false]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        schemaVersion: 3,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "manual",
+        ...(invalid === undefined
+          ? {}
+          : { defaultFollowUpBehavior: invalid }),
+      }),
+      /Default follow-up behavior must be queue or steer/,
+    );
+  }
+
+  for (const invalid of [
+    undefined,
+    0,
+    -1,
+    "",
+    "00",
+    "01",
+    "+1",
+    "-1",
+    "1.0",
+    "1e3",
+    " 1",
+    "1 ",
+  ]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        schemaVersion: 3,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "manual",
+        defaultFollowUpBehavior: "queue",
+        ...(invalid === undefined
+          ? {}
+          : { defaultFollowUpBehaviorRevision: invalid }),
+      }),
+      /Default follow-up behavior revision must be a canonical nonnegative decimal string/,
+    );
+  }
+
+  for (const schemaVersion of [0, 4]) {
     assert.throws(
       () => decodeAgentSettings({
         schemaVersion,
@@ -163,7 +265,7 @@ test("settings mutations preserve the original bytes when one stored Profile is 
   await fs.writeFile(settingsPath, original);
 
   await assert.rejects(
-    saveGlobalSettings(directory, { approvalMode: "everything" }),
+    saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" }),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
   );
   assert.equal(await fs.readFile(settingsPath, "utf8"), original);
@@ -185,6 +287,8 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   assert.deepEqual(Object.keys(persisted).sort(), [
     "activeProfileId",
     "approvalMode",
+    "defaultFollowUpBehavior",
+    "defaultFollowUpBehaviorRevision",
     "profiles",
     "schemaVersion",
   ]);
@@ -274,13 +378,84 @@ test("activation, deletion, and global settings are independent operations", asy
   );
   assert.equal((await activateSavedProfile(directory, "profile-1")).activeProfileId, "profile-1");
 
-  const global = await saveGlobalSettings(directory, { approvalMode: "everything" });
-  assert.equal(global.approvalMode, "everything");
+  const global = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "steer",
+  });
+  assert.equal(global.defaultFollowUpBehavior, "steer");
+  assert.equal(global.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(global.approvalMode, "manual");
   assert.equal(global.profiles.length, 2);
 
   const deleted = await deleteSavedProfile(directory, "profile-1");
   assert.equal(deleted.activeProfileId, "profile-2");
   assert.deepEqual(deleted.profiles.map((entry) => entry.id), ["profile-2"]);
+});
+
+test("global settings accept only queue or steer follow-up behavior", async () => {
+  await assert.rejects(
+    saveGlobalSettings(undefined, {
+      defaultFollowUpBehavior: "later",
+    } as never),
+    /Default follow-up behavior must be queue or steer/,
+  );
+});
+
+test("every global settings write atomically increments and returns its revision", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
+
+  const first = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+  const second = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+  assert.equal(first.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "2");
+
+  const concurrent = await Promise.all(
+    Array.from({ length: 8 }, (_, index) =>
+      saveGlobalSettings(directory, {
+        defaultFollowUpBehavior: index % 2 === 0 ? "steer" : "queue",
+      }),
+    ),
+  );
+  assert.deepEqual(
+    concurrent
+      .map((settings) => settings.defaultFollowUpBehaviorRevision)
+      .sort(compareDefaultFollowUpBehaviorRevisions),
+    ["3", "4", "5", "6", "7", "8", "9", "10"],
+  );
+  assert.equal(
+    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
+    "10",
+  );
+});
+
+test("global settings revisions increment canonically beyond Number.MAX_SAFE_INTEGER", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-large-revision-"));
+  const settingsPath = path.join(directory, "live-smith-settings.json");
+  await fs.writeFile(settingsPath, JSON.stringify({
+    schemaVersion: 3,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "9007199254740991",
+  }));
+
+  const first = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "steer",
+  });
+  const second = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+
+  assert.equal(first.defaultFollowUpBehaviorRevision, "9007199254740992");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "9007199254740993");
+  assert.equal(
+    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
+    "9007199254740993",
+  );
 });
 
 test("settings keep an in-memory fallback without a storage directory", async () => {

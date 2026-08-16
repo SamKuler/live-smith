@@ -661,6 +661,7 @@ test("a delayed stop for an older send cannot abort the current send", async () 
       ok: true,
       terminal: true,
       sendId: "send-old-1",
+      promptPersistence: "unknown",
     });
     assert.equal(currentSignal?.aborted, false);
     releaseSend();
