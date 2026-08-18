@@ -12,10 +12,33 @@ function header(call: { headers?: HeadersInit }, name: string): string {
   return new Headers(call.headers).get(name) ?? "";
 }
 
-test("active sends keep Stop available and post bounded steering input separately", async () => {
+function steeringState() {
   const state = stateFixture();
+  state.settings.defaultFollowUpBehavior = "steer";
+  return state;
+}
+
+function createSteeringDialogHarness(state = steeringState()) {
+  state.settings.defaultFollowUpBehavior = "steer";
+  return createDialogHarness(state);
+}
+
+function submitSteering(
+  harness: Awaited<ReturnType<typeof createDialogHarness>>,
+): void {
+  harness.document.querySelector("#prompt")?.dispatchEvent(
+    new harness.window.KeyboardEvent("keydown", {
+      key: "Enter",
+      ctrlKey: true,
+      bubbles: true,
+    }),
+  );
+}
+
+test("active sends keep Stop available and post bounded steering input separately", async () => {
+  const state = steeringState();
   state.openSettingsOnLoad = false;
-  const harness = await createDialogHarness(state);
+  const harness = await createSteeringDialogHarness(state);
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Build the first version");
@@ -24,14 +47,13 @@ test("active sends keep Stop available and post bounded steering input separatel
 
     const sendId = harness.sendIds[0];
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
-    const steer = harness.document.querySelector<HTMLButtonElement>("#steerButton");
     assert.ok(sendId);
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.equal(prompt?.disabled, false);
-    assert.equal(steer?.hidden, false);
+    assert.equal(harness.document.querySelector("#steerButton"), null);
 
     harness.input("#prompt", "Keep it shorter");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
 
     const steerCall = harness.calls.find((call) => call.path === "/steer");
@@ -42,7 +64,6 @@ test("active sends keep Stop available and post bounded steering input separatel
     assert.equal(header(steerCall!, "X-Live-Smith-Send-Id"), sendId);
     assert.notEqual(header(steerCall!, "X-Live-Smith-Steer-Id"), "");
     assert.equal(prompt?.value, "");
-    assert.equal(steer?.disabled, false);
 
     harness.releaseHeldSend();
     await harness.settle();
@@ -53,7 +74,7 @@ test("active sends keep Stop available and post bounded steering input separatel
 });
 
 test("pending steering is not duplicated and clears only the submitted draft", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the arrangement");
@@ -62,15 +83,11 @@ test("pending steering is not duplicated and clears only the submitted draft", a
 
     harness.holdNextSteer();
     harness.input("#prompt", "Move the chorus earlier");
-    harness.click("#steerButton");
-    harness.click("#steerButton");
+    submitSteering(harness);
+    submitSteering(harness);
     await Promise.resolve();
 
     assert.equal(jsonCalls(harness, "/steer").length, 1);
-    assert.equal(
-      harness.document.querySelector<HTMLButtonElement>("#steerButton")?.disabled,
-      true,
-    );
     harness.input("#prompt", "Move the chorus earlier, but keep the fill");
     harness.releaseHeldSteer();
     await harness.settle();
@@ -78,10 +95,6 @@ test("pending steering is not duplicated and clears only the submitted draft", a
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
       "Move the chorus earlier, but keep the fill",
-    );
-    assert.equal(
-      harness.document.querySelector<HTMLButtonElement>("#steerButton")?.disabled,
-      false,
     );
 
     harness.document.querySelector("#prompt")?.dispatchEvent(
@@ -113,7 +126,7 @@ test("pending steering is not duplicated and clears only the submitted draft", a
 });
 
 test("failed steering keeps the draft retryable without stopping the send", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the mix pass");
@@ -122,7 +135,7 @@ test("failed steering keeps the draft retryable without stopping the send", asyn
 
     harness.failNextSteer("The steering queue is full.");
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
 
     assert.equal(
@@ -130,10 +143,6 @@ test("failed steering keeps the draft retryable without stopping the send", asyn
       "Leave more headroom",
     );
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
-    assert.equal(
-      harness.document.querySelector<HTMLButtonElement>("#steerButton")?.disabled,
-      false,
-    );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
       /steering queue is full/i,
@@ -149,7 +158,7 @@ test("failed steering keeps the draft retryable without stopping the send", asyn
 });
 
 test("response-lost steering retries the same idempotency ID", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the mix pass");
@@ -158,14 +167,14 @@ test("response-lost steering retries the same idempotency ID", async () => {
 
     harness.rejectNextSteerResponseAfterCommit("connection reset after commit");
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
 
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
       "Leave more headroom",
     );
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
 
     const steerCalls = harness.calls.filter((call) => call.path === "/steer");
@@ -188,7 +197,7 @@ test("response-lost steering retries the same idempotency ID", async () => {
 });
 
 test("explicitly unknown steering persistence retries the same idempotency ID", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the mix pass");
@@ -200,9 +209,9 @@ test("explicitly unknown steering persistence retries the same idempotency ID", 
       "unknown",
     );
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
 
     const steerCalls = harness.calls.filter((call) => call.path === "/steer");
@@ -224,8 +233,85 @@ test("explicitly unknown steering persistence retries the same idempotency ID", 
   }
 });
 
+test("unknown steering blocks edited guidance until the original receipt resolves", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.failNextSteer(
+      "The steering persistence outcome could not be confirmed.",
+      "unknown",
+    );
+    harness.input("#prompt", "Leave more headroom");
+    submitSteering(harness);
+    await harness.settle();
+    const firstCall = harness.calls.find((call) => call.path === "/steer");
+    const firstSteerId = header(firstCall!, "X-Live-Smith-Steer-Id");
+
+    harness.input("#prompt", "Leave slightly more headroom");
+    submitSteering(harness);
+    await harness.settle();
+
+    assert.equal(jsonCalls(harness, "/steer").length, 1);
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /unchanged guidance/i,
+    );
+
+    harness.input("#prompt", "Leave more headroom");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCalls = harness.calls.filter((call) => call.path === "/steer");
+    assert.equal(steerCalls.length, 2);
+    assert.equal(header(steerCalls[1]!, "X-Live-Smith-Steer-Id"), firstSteerId);
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Queue mode cannot abandon an unresolved unknown steering receipt", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the arrangement");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.failNextSteer("Steering outcome unknown.", "unknown");
+    harness.input("#prompt", "Move the chorus earlier");
+    submitSteering(harness);
+    await harness.settle();
+
+    harness.select("#defaultFollowUpBehavior", "queue");
+    await harness.settle();
+    harness.input("#prompt", "Queue something else");
+    submitSteering(harness);
+    await harness.settle();
+
+    assert.equal(jsonCalls(harness, "/steer").length, 1);
+    assert.equal(harness.document.querySelector(".queued-follow-up"), null);
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /resolve.*guidance|guidance.*resolve/i,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
 test("terminal Session state acknowledges steering when HTTP and SSE receipts were lost", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the mix pass");
@@ -236,7 +322,7 @@ test("terminal Session state acknowledges steering when HTTP and SSE receipts we
 
     harness.rejectNextSteerResponseAfterCommit("connection reset after commit");
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
     const steerCall = harness.calls.find((call) => call.path === "/steer");
     const steerId = header(steerCall!, "X-Live-Smith-Steer-Id");
@@ -278,7 +364,7 @@ test("terminal Session state acknowledges steering when HTTP and SSE receipts we
 });
 
 test("terminal Session state without a steering receipt keeps the draft safely retryable", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the mix pass");
@@ -289,7 +375,7 @@ test("terminal Session state without a steering receipt keeps the draft safely r
 
     harness.rejectNextSteerResponseAfterCommit("connection reset before commit");
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await harness.settle();
     const terminalState = stateFixture();
     terminalState.openSettingsOnLoad = false;
@@ -320,7 +406,7 @@ test("terminal Session state without a steering receipt keeps the draft safely r
 });
 
 test("a late steering acknowledgement cannot clear a newer send draft", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the first mix pass");
@@ -329,7 +415,7 @@ test("a late steering acknowledgement cannot clear a newer send draft", async ()
 
     harness.holdNextSteer();
     harness.input("#prompt", "Leave more headroom");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await Promise.resolve();
 
     harness.releaseHeldSend();
@@ -356,7 +442,7 @@ test("a late steering acknowledgement cannot clear a newer send draft", async ()
 });
 
 test("accepted steering clears its Session draft while another Session is visible", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start on Bass");
@@ -365,7 +451,7 @@ test("accepted steering clears its Session draft while another Session is visibl
 
     harness.holdNextSteer();
     harness.input("#prompt", "Keep the Bass part sparse");
-    harness.click("#steerButton");
+    submitSteering(harness);
     await Promise.resolve();
 
     harness.click('.session-entry[data-session-id="session-2"] .session-row');
@@ -388,7 +474,7 @@ test("accepted steering clears its Session draft while another Session is visibl
 });
 
 test("assistant reset removes only the obsolete streaming assistant bubble", async () => {
-  const harness = await createDialogHarness();
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Draft a response");
@@ -418,8 +504,8 @@ test("assistant reset removes only the obsolete streaming assistant bubble", asy
   }
 });
 
-test("confirmation leaves the composer available for steering", async () => {
-  const harness = await createDialogHarness();
+test("confirmation leaves the composer available but scopes steering to the prompt", async () => {
+  const harness = await createSteeringDialogHarness();
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Prepare a Live change");
@@ -446,13 +532,17 @@ test("confirmation leaves the composer available for steering", async () => {
       "[data-confirm-cancel]",
     );
     cancel?.focus();
-    harness.document.dispatchEvent(
+    cancel?.dispatchEvent(
       new harness.window.KeyboardEvent("keydown", {
         key: "Enter",
         ctrlKey: true,
         bubbles: true,
       }),
     );
+    await harness.settle();
+    assert.equal(jsonCalls(harness, "/steer").length, 0);
+
+    submitSteering(harness);
     await harness.settle();
 
     assert.deepEqual(jsonCalls(harness, "/steer"), [{
@@ -462,6 +552,7 @@ test("confirmation leaves the composer available for steering", async () => {
         sessionId: "session-1",
       },
     }]);
+    assert.equal(harness.document.querySelector(".confirm-card"), null);
 
     harness.releaseHeldSend();
     await harness.settle();

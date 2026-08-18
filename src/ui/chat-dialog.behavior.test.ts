@@ -1975,7 +1975,11 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     const cancel = dialog?.querySelector<HTMLButtonElement>("[data-confirm-cancel]");
     const apply = dialog?.querySelector<HTMLButtonElement>(".primary");
     assert.equal(harness.document.activeElement, cancel);
-    assert.equal(harness.document.querySelector("header")?.hasAttribute("inert"), true);
+    assert.equal(harness.document.querySelector("header")?.hasAttribute("inert"), false);
+    assert.equal(
+      harness.document.querySelector("#inspectorPane")?.hasAttribute("inert"),
+      false,
+    );
     assert.equal(
       harness.document.querySelector(".sessions-pane")?.hasAttribute("inert"),
       false,
@@ -1993,33 +1997,14 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
       true,
     );
 
-    cancel?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
-      key: "Tab",
-      shiftKey: true,
-      bubbles: true,
-    }));
-    assert.equal(
-      harness.document.activeElement,
-      harness.document.querySelector("#sendButton"),
+    const followUpBehavior = harness.document.querySelector<HTMLSelectElement>(
+      "#defaultFollowUpBehavior",
     );
-    harness.document.activeElement?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-    }));
-    assert.equal(harness.document.activeElement, cancel);
-    cancel?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-    }));
-    assert.equal(harness.document.activeElement, apply);
-    apply?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-    }));
-    assert.equal(
-      harness.document.activeElement,
-      harness.document.querySelector("#prompt"),
-    );
+    assert.equal(followUpBehavior?.disabled, false);
+    followUpBehavior?.focus();
+    assert.equal(harness.document.activeElement, followUpBehavior);
+    assert.equal(cancel?.disabled, false);
+    assert.equal(apply?.disabled, false);
 
     harness.document.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
       key: "Escape",
@@ -2131,7 +2116,7 @@ test("a failed confirmation request terminates the send before dismissing the de
   }
 });
 
-test("a network-interrupted send stops to terminal state before clearing confirmation inertness", async () => {
+test("a network-interrupted send stops to terminal state before clearing its confirmation", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#prompt", "Interrupt while confirming");
@@ -2148,7 +2133,11 @@ test("a network-interrupted send stops to terminal state before clearing confirm
       message: "Set tempo.",
       groups: [{ title: "Song", rows: ["Set tempo to 124 BPM"] }],
     });
-    assert.equal(harness.document.querySelector("header")?.hasAttribute("inert"), true);
+    assert.equal(harness.document.querySelector("header")?.hasAttribute("inert"), false);
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#defaultFollowUpBehavior")?.disabled,
+      false,
+    );
 
     harness.releaseHeldSend();
     await harness.settle();
@@ -2203,10 +2192,13 @@ test("a network-interrupted send polls Stop by send ID until terminal and state 
   }
 });
 
-test("settling send A cancels its Stop poll before send B starts", async () => {
+test("terminal Stop settles send A and cancels its poll before send B starts", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.queueStopTerminals(false);
+    harness.queueStopOutcomes(
+      { terminal: false },
+      { terminal: true, promptPersistence: "persisted" },
+    );
     harness.holdNextSend();
     harness.input("#prompt", "Prompt A");
     harness.click("#sendButton");
@@ -2218,12 +2210,11 @@ test("settling send A cancels its Stop poll before send B starts", async () => {
     await harness.settle();
     assert.deepEqual(harness.stopIds, [sendA]);
 
-    harness.emitServerEvent({
-      type: "done",
-      sendId: sendA,
-      state: cloneState(stateFixture()),
-    });
     harness.releaseHeldSend();
+    await waitForCondition(
+      () => harness.stopIds.length === 2,
+      "Expected Stop polling to reach the correlated terminal classification.",
+    );
     await harness.settle();
 
     harness.holdNextSend();
@@ -2235,7 +2226,7 @@ test("settling send A cancels its Stop poll before send B starts", async () => {
     assert.notEqual(sendB, sendA);
 
     await new Promise<void>((resolve) => setTimeout(resolve, 350));
-    assert.deepEqual(harness.stopIds, [sendA]);
+    assert.deepEqual(harness.stopIds, [sendA, sendA]);
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
 
     harness.releaseHeldSend();
