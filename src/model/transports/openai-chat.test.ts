@@ -14,18 +14,29 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
-import type { SavedProfile } from "../profile.js";
+import type { OpenAIDirectApiConnection, SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
 
-function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
+type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+  Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
+
+function profile(overrides: ProfileOverrides = {}): SavedProfile {
+  const {
+    baseUrl = "https://example.test/v1",
+    apiKey = "secret",
+    ...fields
+  } = overrides;
   return {
     id: "p1",
     name: "Compatible",
-    apiFamily: "openai",
-    apiMode: "chat-completions",
-    baseUrl: "https://example.test/v1",
-    apiKey: "secret",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "chat-completions",
+      baseUrl,
+      apiKey,
+    },
     model: "custom-model",
     parameters: {
       maxOutputTokens: 4096,
@@ -33,7 +44,7 @@ function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
       reasoning: { mode: "default" },
     },
     advanced: {},
-    ...overrides,
+    ...fields,
   };
 }
 

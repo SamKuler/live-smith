@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { resolveModelCapabilities } from "../capabilities.js";
 import type { ModelConversationMessage } from "../contracts.js";
-import type { SavedProfile } from "../profile.js";
+import type { DirectApiConnection, SavedProfile } from "../profile.js";
 import type { ModelTransport, TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
@@ -33,17 +33,30 @@ const agentMessages: ModelConversationMessage[] = [
   { role: "user", content: steeringContent },
 ];
 
-function profile(
-  apiFamily: SavedProfile["apiFamily"],
-  apiMode: SavedProfile["apiMode"],
-): SavedProfile {
+type DirectApiPair =
+  | [apiFamily: "openai", apiMode: "responses" | "chat-completions"]
+  | [apiFamily: "anthropic", apiMode: "messages"];
+
+function profile(...pair: DirectApiPair): SavedProfile {
+  const connection: DirectApiConnection = pair[0] === "openai"
+    ? {
+        kind: "direct-api",
+        apiFamily: pair[0],
+        apiMode: pair[1],
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      }
+    : {
+        kind: "direct-api",
+        apiFamily: pair[0],
+        apiMode: pair[1],
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      };
   return {
-    id: `${apiFamily}-${apiMode}`,
-    name: `${apiFamily} ${apiMode}`,
-    apiFamily,
-    apiMode,
-    baseUrl: "https://example.test/v1",
-    apiKey: "secret",
+    id: `${connection.apiFamily}-${connection.apiMode}`,
+    name: `${connection.apiFamily} ${connection.apiMode}`,
+    connection,
     model: "test-model",
     parameters: {
       maxOutputTokens: 1024,

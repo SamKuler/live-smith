@@ -22,10 +22,13 @@ test(
     const profile: SavedProfile = {
       id: "profile-1",
       name: "Studio",
-      apiFamily: "openai",
-      apiMode: "responses",
-      baseUrl: "https://example.test/v1",
-      apiKey: "secret",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      },
       model: "model-a",
       parameters: {
         maxOutputTokens: 8192,
@@ -88,10 +91,13 @@ test(
     await saveSavedProfile(directory, {
       id: "profile-1",
       name: "Studio",
-      apiFamily: "openai",
-      apiMode: "responses",
-      baseUrl: "https://example.test/v1",
-      apiKey: "secret",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      },
       model: "model-a",
       parameters: {
         maxOutputTokens: 8192,

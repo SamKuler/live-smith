@@ -11,25 +11,36 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
-import type { SavedProfile } from "../profile.js";
+import type { OpenAIDirectApiConnection, SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createOpenAIResponsesTransport } from "./openai-responses.js";
 
-function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
+type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+  Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
+
+function profile(overrides: ProfileOverrides = {}): SavedProfile {
+  const {
+    baseUrl = "https://example.test/v1",
+    apiKey = "secret",
+    ...fields
+  } = overrides;
   return {
     id: "responses",
     name: "Responses",
-    apiFamily: "openai",
-    apiMode: "responses",
-    baseUrl: "https://example.test/v1",
-    apiKey: "secret",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl,
+      apiKey,
+    },
     model: "gpt-5.6",
     parameters: {
       maxOutputTokens: 6000,
       reasoning: { mode: "enabled", effort: "high" },
     },
     advanced: {},
-    ...overrides,
+    ...fields,
   };
 }
 

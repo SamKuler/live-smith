@@ -6,19 +6,26 @@ import { cloneJsonValue } from "./json-clone.js";
 export type ApiFamily = "openai" | "anthropic";
 export type ApiMode = "responses" | "chat-completions" | "messages";
 
-export type ReasoningEffort =
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+const reasoningEfforts = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
 
-export type ReasoningStrategy =
-  | "effort"
-  | "adaptive-thinking"
-  | "budget-thinking"
-  | "none";
+export type ReasoningEffort = (typeof reasoningEfforts)[number];
+
+const reasoningStrategies = [
+  "effort",
+  "adaptive-thinking",
+  "budget-thinking",
+  "none",
+] as const;
+
+export type ReasoningStrategy = (typeof reasoningStrategies)[number];
 
 export interface ModelCapabilityOverrides {
   tools?: boolean;
@@ -44,14 +51,9 @@ export interface HostedToolSettings {
   webSearch?: true;
 }
 
-/** Editable form state. Name and model may intentionally be blank. */
-export interface DraftProfile {
+interface ProfileFields {
   id: string;
   name: string;
-  apiFamily: ApiFamily;
-  apiMode: ApiMode;
-  baseUrl: string;
-  apiKey: string;
   model: string;
   parameters: {
     maxOutputTokens: number;
@@ -68,41 +70,57 @@ export interface DraftProfile {
     extraBody?: Record<string, unknown>;
   };
 }
+
+interface DirectApiConnectionFields {
+  kind: "direct-api";
+  baseUrl: string;
+  apiKey: string;
+}
+
+export interface OpenAIDirectApiConnection extends DirectApiConnectionFields {
+  apiFamily: "openai";
+  apiMode: "responses" | "chat-completions";
+}
+
+export interface AnthropicDirectApiConnection extends DirectApiConnectionFields {
+  apiFamily: "anthropic";
+  apiMode: "messages";
+}
+
+export type DirectApiConnection =
+  | OpenAIDirectApiConnection
+  | AnthropicDirectApiConnection;
+
+type DirectApiPair =
+  | Pick<OpenAIDirectApiConnection, "apiFamily" | "apiMode">
+  | Pick<AnthropicDirectApiConnection, "apiFamily" | "apiMode">;
+
+export interface CodexSubscriptionConnection {
+  kind: "codex-subscription";
+  provider: "openai";
+}
+
+export type ModelConnection = DirectApiConnection | CodexSubscriptionConnection;
+
+/** Editable form state. Name and model may intentionally be blank. */
+export type DraftProfile = ProfileFields & { connection: ModelConnection };
 
 /** Complete, normalized configuration that is safe to persist and activate. */
-export interface SavedProfile {
-  id: string;
-  name: string;
-  apiFamily: ApiFamily;
-  apiMode: ApiMode;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  parameters: {
-    maxOutputTokens: number;
-    temperature?: number;
-    reasoning: {
-      mode: "default" | "disabled" | "enabled";
-      effort?: ReasoningEffort;
-      budgetTokens?: number;
-    };
-  };
-  advanced: {
-    capabilityOverrides?: ModelCapabilityOverrides;
-    hostedTools?: HostedToolSettings;
-    extraBody?: Record<string, unknown>;
-  };
-}
+export type SavedProfile = ProfileFields & { connection: ModelConnection };
 
 export type ApprovalMode = "manual" | "low-risk" | "everything";
+export type DefaultFollowUpBehavior = "queue" | "steer";
+export type DefaultFollowUpBehaviorRevision = string;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 2 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 4 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
   activeProfileId: string | null;
   profiles: SavedProfile[];
   approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
 }
 
 export class ProfileValidationError extends Error {
@@ -115,22 +133,6 @@ export class ProfileValidationError extends Error {
   }
 }
 
-const reasoningEfforts = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-const reasoningStrategies = [
-  "effort",
-  "adaptive-thinking",
-  "budget-thinking",
-  "none",
-] as const;
-
 const profileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export function freshEmptyAgentSettings(): AgentSettings {
@@ -139,11 +141,49 @@ export function freshEmptyAgentSettings(): AgentSettings {
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
   };
 }
 
 export function isApprovalMode(value: unknown): value is ApprovalMode {
   return value === "manual" || value === "low-risk" || value === "everything";
+}
+
+export function isDefaultFollowUpBehavior(
+  value: unknown,
+): value is DefaultFollowUpBehavior {
+  return value === "queue" || value === "steer";
+}
+
+export function isDefaultFollowUpBehaviorRevision(
+  value: unknown,
+): value is DefaultFollowUpBehaviorRevision {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+}
+
+export function compareDefaultFollowUpBehaviorRevisions(
+  left: DefaultFollowUpBehaviorRevision,
+  right: DefaultFollowUpBehaviorRevision,
+): -1 | 0 | 1 {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+export function incrementDefaultFollowUpBehaviorRevision(
+  revision: DefaultFollowUpBehaviorRevision,
+): DefaultFollowUpBehaviorRevision {
+  const digits = [...revision];
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    if (digits[index] === "9") {
+      digits[index] = "0";
+      continue;
+    }
+    digits[index] = String.fromCharCode(revision.charCodeAt(index) + 1);
+    return digits.join("");
+  }
+  return `1${digits.join("")}`;
 }
 
 export function isValidApiModePair(
@@ -155,6 +195,45 @@ export function isValidApiModePair(
     : apiMode === "messages";
 }
 
+export function isDirectApiProfile(
+  profile: DraftProfile | SavedProfile,
+): profile is (DraftProfile | SavedProfile) & {
+  connection: DirectApiConnection;
+} {
+  return profile.connection.kind === "direct-api";
+}
+
+export function profileProvider(
+  profile: DraftProfile | SavedProfile,
+): ApiFamily {
+  return profile.connection.kind === "direct-api"
+    ? profile.connection.apiFamily
+    : profile.connection.provider;
+}
+
+export function profileApiMode(
+  profile: DraftProfile | SavedProfile,
+): ApiMode | null {
+  return profile.connection.kind === "direct-api"
+    ? profile.connection.apiMode
+    : null;
+}
+
+export function requireDirectApiConnection(
+  profile: DraftProfile | SavedProfile,
+): DirectApiConnection {
+  if (profile.connection.kind === "direct-api") return profile.connection;
+  throw new Error("The selected Profile does not use a direct API connection.");
+}
+
+export function profileSecrets(
+  profile: DraftProfile | SavedProfile,
+): string[] {
+  return profile.connection.kind === "direct-api" && profile.connection.apiKey
+    ? [profile.connection.apiKey]
+    : [];
+}
+
 /**
  * Construct the Draft used for provider discovery. This gate deliberately
  * validates only connection fields; unrelated unsaved generation fields must
@@ -162,29 +241,12 @@ export function isValidApiModePair(
  */
 export function validateDraftProfileForDiscovery(value: unknown): DraftProfile {
   const record = requiredRecord(value, "profile", "Profile must be an object.");
+  assertOnlyProfileKeys(record);
   const id = profileIdValue(record.id);
-  const apiFamily = apiFamilyValue(record.apiFamily);
-  const apiMode = apiModeValue(record.apiMode);
-  if (!isValidApiModePair(apiFamily, apiMode)) {
-    throw new ProfileValidationError(
-      "apiMode",
-      `${apiFamily} does not support API mode ${apiMode}.`,
-    );
-  }
-
-  const rawBaseUrl = requiredString(
-    record.baseUrl,
-    "baseUrl",
-    "Base URL is required.",
-  );
-  const baseUrl = normalizedBaseUrl(rawBaseUrl);
   return {
     id,
     name: draftString(record.name, "name"),
-    apiFamily,
-    apiMode,
-    baseUrl,
-    apiKey: apiKeyValue(record.apiKey, baseUrl),
+    connection: connectionValue(record.connection),
     model: draftString(record.model, "model"),
     parameters: draftParameters(record.parameters),
     advanced: draftAdvanced(record.advanced),
@@ -196,17 +258,10 @@ export function validateDraftProfileForSave(
   existingProfiles: SavedProfile[] = [],
 ): SavedProfile {
   const record = requiredRecord(value, "profile", "Profile must be an object.");
+  assertOnlyProfileKeys(record);
   const id = profileIdValue(record.id);
   const name = requiredString(record.name, "name", "Profile name is required.");
-  const apiFamily = apiFamilyValue(record.apiFamily);
-  const apiMode = apiModeValue(record.apiMode);
-
-  if (!isValidApiModePair(apiFamily, apiMode)) {
-    throw new ProfileValidationError(
-      "apiMode",
-      `${apiFamily} does not support API mode ${apiMode}.`,
-    );
-  }
+  const connection = connectionValue(record.connection);
 
   if (existingProfiles.some((profile) => profile.id === id)) {
     throw new ProfileValidationError("id", `Profile ID ${id} already exists.`);
@@ -219,12 +274,6 @@ export function validateDraftProfileForSave(
     throw new ProfileValidationError("name", `Profile name ${name} already exists.`);
   }
 
-  const rawBaseUrl = requiredString(
-    record.baseUrl,
-    "baseUrl",
-    "Base URL is required.",
-  );
-  const baseUrl = normalizedBaseUrl(rawBaseUrl);
   const parameters = requiredRecord(
     record.parameters,
     "parameters",
@@ -235,17 +284,27 @@ export function validateDraftProfileForSave(
     "parameters.reasoning",
     "Reasoning settings are required.",
   );
+  assertOnlyKeys(
+    parameters,
+    ["maxOutputTokens", "temperature", "reasoning"],
+    "parameters",
+  );
+  assertOnlyKeys(
+    reasoning,
+    ["mode", "effort", "budgetTokens"],
+    "parameters.reasoning",
+  );
   const advanced = record.advanced === undefined
     ? {}
     : requiredRecord(record.advanced, "advanced", "Advanced settings must be an object.");
+  if (connection.kind === "codex-subscription") {
+    validateCodexSubscriptionSettings(parameters, reasoning, advanced);
+  }
 
   const normalized: SavedProfile = {
     id,
     name,
-    apiFamily,
-    apiMode,
-    baseUrl,
-    apiKey: apiKeyValue(record.apiKey, baseUrl),
+    connection,
     model: requiredString(record.model, "model", "Model is required."),
     parameters: {
       maxOutputTokens: positiveInteger(
@@ -270,7 +329,7 @@ export function validateDraftProfileForSave(
 
   if (
     normalized.advanced.hostedTools?.webSearch &&
-    normalized.apiMode === "chat-completions"
+    profileApiMode(normalized) === "chat-completions"
   ) {
     throw new ProfileValidationError(
       "advanced.hostedTools.webSearch",
@@ -295,6 +354,125 @@ export function activeSavedProfile(
 
 export function cloneAgentSettings(settings: AgentSettings): AgentSettings {
   return cloneJsonValue(settings);
+}
+
+function assertOnlyProfileKeys(record: Record<string, unknown>): void {
+  assertOnlyKeys(
+    record,
+    ["id", "name", "connection", "model", "parameters", "advanced"],
+    "profile",
+  );
+}
+
+function connectionValue(value: unknown): ModelConnection {
+  const record = requiredRecord(
+    value,
+    "connection",
+    "Profile connection is required.",
+  );
+  if (record.kind === "direct-api") {
+    assertOnlyKeys(
+      record,
+      ["kind", "apiFamily", "apiMode", "baseUrl", "apiKey"],
+      "connection",
+    );
+    const pair = directApiPairValue(
+      apiFamilyValue(record.apiFamily, "connection.apiFamily"),
+      apiModeValue(record.apiMode, "connection.apiMode"),
+    );
+    const rawBaseUrl = requiredString(
+      record.baseUrl,
+      "connection.baseUrl",
+      "Base URL is required.",
+    );
+    const baseUrl = normalizedBaseUrl(rawBaseUrl, "connection.baseUrl");
+    const apiKey = apiKeyValue(record.apiKey, baseUrl, "connection.apiKey");
+    return {
+      kind: "direct-api",
+      ...pair,
+      baseUrl,
+      apiKey,
+    };
+  }
+  if (record.kind === "codex-subscription") {
+    assertOnlyKeys(record, ["kind", "provider"], "connection");
+    if (record.provider !== "openai") {
+      throw new ProfileValidationError(
+        "connection.provider",
+        "Codex subscription Profiles require the OpenAI provider.",
+      );
+    }
+    return { kind: "codex-subscription", provider: "openai" };
+  }
+  throw new ProfileValidationError(
+    "connection.kind",
+    "Profile connection kind is unsupported.",
+  );
+}
+
+function directApiPairValue(
+  apiFamily: ApiFamily,
+  apiMode: ApiMode,
+): DirectApiPair {
+  if (apiFamily === "openai") {
+    if (apiMode !== "responses" && apiMode !== "chat-completions") {
+      throw new ProfileValidationError(
+        "connection.apiMode",
+        `${apiFamily} does not support API mode ${apiMode}.`,
+      );
+    }
+    return { apiFamily, apiMode };
+  }
+  if (apiMode !== "messages") {
+    throw new ProfileValidationError(
+      "connection.apiMode",
+      `${apiFamily} does not support API mode ${apiMode}.`,
+    );
+  }
+  return { apiFamily, apiMode };
+}
+
+function validateCodexSubscriptionSettings(
+  parameters: Record<string, unknown>,
+  reasoning: Record<string, unknown>,
+  advanced: Record<string, unknown>,
+): void {
+  if (reasoning.mode === "disabled") {
+    throw new ProfileValidationError(
+      "parameters.reasoning.mode",
+      "Reasoning cannot be disabled for Codex subscription Profiles.",
+    );
+  }
+  if (parameters.temperature !== undefined) {
+    throw new ProfileValidationError(
+      "parameters.temperature",
+      "Temperature is not supported by Codex subscription Profiles.",
+    );
+  }
+  if (reasoning.budgetTokens !== undefined) {
+    throw new ProfileValidationError(
+      "parameters.reasoning.budgetTokens",
+      "Reasoning token budgets are not supported by Codex subscription Profiles.",
+    );
+  }
+  if (advanced.hostedTools !== undefined) {
+    throw new ProfileValidationError(
+      "advanced.hostedTools",
+      "Provider-hosted tools are not supported by Codex subscription Profiles.",
+    );
+  }
+  if (advanced.capabilityOverrides !== undefined) {
+    throw new ProfileValidationError(
+      "advanced.capabilityOverrides",
+      "Capability overrides are not supported by Codex subscription Profiles.",
+    );
+  }
+  if (advanced.extraBody !== undefined) {
+    throw new ProfileValidationError(
+      "advanced.extraBody",
+      "Extra Body is not supported by Codex subscription Profiles.",
+    );
+  }
 }
 
 function advancedSettings(record: Record<string, unknown>): SavedProfile["advanced"] {
@@ -559,28 +737,28 @@ function reasoningSettings(
   return result;
 }
 
-function normalizedBaseUrl(value: string): string {
+function normalizedBaseUrl(value: string, field = "baseUrl"): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw new ProfileValidationError("baseUrl", "Base URL is invalid.");
+    throw new ProfileValidationError(field, "Base URL is invalid.");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new ProfileValidationError(
-      "baseUrl",
+      field,
       "Base URL must use HTTP or HTTPS.",
     );
   }
   if (parsed.username || parsed.password) {
     throw new ProfileValidationError(
-      "baseUrl",
+      field,
       "Base URL must not include credentials.",
     );
   }
   if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
     throw new ProfileValidationError(
-      "baseUrl",
+      field,
       "Base URL must use HTTPS unless the provider is on a loopback address.",
     );
   }
@@ -602,24 +780,24 @@ function isLoopbackHostname(hostname: string): boolean {
     /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(unbracketed);
 }
 
-function apiKeyValue(value: unknown, baseUrl: string): string {
+function apiKeyValue(value: unknown, baseUrl: string, field = "apiKey"): string {
   if (typeof value !== "string") {
-    throw new ProfileValidationError("apiKey", "API key must be a string.");
+    throw new ProfileValidationError(field, "API key must be a string.");
   }
   const apiKey = value.trim();
   if (apiKey || isLoopbackHostname(new URL(baseUrl).hostname)) return apiKey;
   throw new ProfileValidationError(
-    "apiKey",
+    field,
     "API key is required for non-local endpoints.",
   );
 }
 
-function apiFamilyValue(value: unknown): ApiFamily {
+function apiFamilyValue(value: unknown, field = "apiFamily"): ApiFamily {
   if (value === "openai" || value === "anthropic") return value;
-  throw new ProfileValidationError("apiFamily", "API family is unsupported.");
+  throw new ProfileValidationError(field, "API family is unsupported.");
 }
 
-function apiModeValue(value: unknown): ApiMode {
+function apiModeValue(value: unknown, field = "apiMode"): ApiMode {
   if (
     value === "responses" ||
     value === "chat-completions" ||
@@ -627,14 +805,14 @@ function apiModeValue(value: unknown): ApiMode {
   ) {
     return value;
   }
-  throw new ProfileValidationError("apiMode", "API mode is unsupported.");
+  throw new ProfileValidationError(field, "API mode is unsupported.");
 }
 
-function isReasoningEffort(value: unknown): value is ReasoningEffort {
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return (reasoningEfforts as readonly unknown[]).includes(value);
 }
 
-function isReasoningStrategy(value: unknown): value is ReasoningStrategy {
+export function isReasoningStrategy(value: unknown): value is ReasoningStrategy {
   return (reasoningStrategies as readonly unknown[]).includes(value);
 }
 

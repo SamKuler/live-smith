@@ -4,7 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { SavedProfile } from "../model/profile.js";
+import {
+  compareDefaultFollowUpBehaviorRevisions,
+  type DirectApiConnection,
+  type SavedProfile,
+} from "../model/profile.js";
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   decodeAgentSettings,
@@ -18,16 +22,29 @@ import {
   saveGlobalSettings,
 } from "./settings.js";
 
-function profile(
-  overrides: Partial<SavedProfile> = {},
-): SavedProfile {
+type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> & {
+  connection?: DirectApiConnection;
+  baseUrl?: string;
+  apiKey?: string;
+};
+
+function profile(overrides: ProfileOverrides = {}): SavedProfile {
+  const {
+    baseUrl = "https://example.test/v1/",
+    apiKey = "secret",
+    connection = {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl,
+      apiKey,
+    },
+    ...fields
+  } = overrides;
   return {
     id: "profile-1",
     name: "Studio",
-    apiFamily: "openai",
-    apiMode: "responses",
-    baseUrl: "https://example.test/v1/",
-    apiKey: "secret",
+    connection,
     model: "model-a",
     parameters: {
       maxOutputTokens: 8192,
@@ -35,17 +52,42 @@ function profile(
       reasoning: { mode: "default" },
     },
     advanced: {},
-    ...overrides,
+    ...fields,
+  };
+}
+
+type LegacyProfileFixture = Omit<SavedProfile, "connection"> & {
+  apiFamily: DirectApiConnection["apiFamily"];
+  apiMode: DirectApiConnection["apiMode"];
+  baseUrl: string;
+  apiKey: string;
+};
+
+function legacyProfile(profile: SavedProfile): LegacyProfileFixture {
+  assert.equal(profile.connection.kind, "direct-api");
+  if (profile.connection.kind !== "direct-api") throw new Error("Expected direct Profile.");
+  return {
+    id: profile.id,
+    name: profile.name,
+    apiFamily: profile.connection.apiFamily,
+    apiMode: profile.connection.apiMode,
+    baseUrl: profile.connection.baseUrl,
+    apiKey: profile.connection.apiKey,
+    model: profile.model,
+    parameters: profile.parameters,
+    advanced: profile.advanced,
   };
 }
 
 test("loadAgentSettings starts empty and rejects every legacy or invalid settings shape", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   assert.deepEqual(await loadAgentSettings(directory), {
-    schemaVersion: 2,
+    schemaVersion: 4,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
   });
 
   const legacyShapes = [
@@ -55,6 +97,13 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     { schemaVersion: 1, activeProfileId: null, profiles: "not-an-array", autoApprove: false },
     { schemaVersion: 1, activeProfileId: null, profiles: [{ provider: "openai" }], autoApprove: false },
     { schemaVersion: 2, activeProfileId: null, profiles: [], approvalMode: "unsafe" },
+    {
+      schemaVersion: 3,
+      activeProfileId: null,
+      profiles: [],
+      approvalMode: "manual",
+      defaultFollowUpBehavior: "steer",
+    },
   ];
   for (const legacy of legacyShapes) {
     await fs.writeFile(
@@ -77,7 +126,7 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
 test("schema version 1 auto approval migrates to the equivalent approval mode", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-migration-"));
   const settingsPath = path.join(directory, "live-smith-settings.json");
-  const completeProfile = profile({
+  const completeProfile = legacyProfile(profile({
     parameters: {
       maxOutputTokens: 32_768,
       temperature: 0.7,
@@ -98,7 +147,7 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
       },
       extraBody: { nested: { flag: true }, labels: ["a", "b"] },
     },
-  });
+  }));
 
   for (const [autoApprove, approvalMode] of [
     [false, "manual"],
@@ -112,27 +161,94 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
     }, null, 2);
     await fs.writeFile(settingsPath, original);
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 2);
+    assert.equal(loaded.schemaVersion, 4);
     assert.equal(loaded.approvalMode, approvalMode);
+    assert.equal(loaded.defaultFollowUpBehavior, "queue");
+    assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
     assert.deepEqual(loaded.profiles, [{
-      ...completeProfile,
-      baseUrl: "https://example.test/v1",
+      id: "profile-1",
+      name: "Studio",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      },
+      model: "model-a",
+      parameters: completeProfile.parameters,
+      advanced: completeProfile.advanced,
     }]);
     assert.equal(await fs.readFile(settingsPath, "utf8"), original);
   }
 });
 
-test("the migration decoder accepts current settings and rejects unsupported versions", () => {
-  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 2);
-  const current = {
-    schemaVersion: 2,
-    activeProfileId: null,
-    profiles: [],
-    approvalMode: "everything",
-  } as const;
-  assert.deepEqual(decodeAgentSettings(current), current);
+test("the migration decoder accepts only canonical current revisions", () => {
+  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 4);
+  for (const defaultFollowUpBehavior of ["queue", "steer"] as const) {
+    for (const defaultFollowUpBehaviorRevision of [
+      "0",
+      "7",
+      "90071992547409931234567890",
+    ]) {
+      const current = {
+        schemaVersion: 4,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "everything",
+        defaultFollowUpBehavior,
+        defaultFollowUpBehaviorRevision,
+      } as const;
+      assert.deepEqual(decodeAgentSettings(current), current);
+    }
+  }
 
-  for (const schemaVersion of [0, 3]) {
+  for (const invalid of [undefined, "later", false]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        schemaVersion: 4,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "manual",
+        ...(invalid === undefined
+          ? {}
+          : { defaultFollowUpBehavior: invalid }),
+        defaultFollowUpBehaviorRevision: "0",
+      }),
+      /Default follow-up behavior must be queue or steer/,
+    );
+  }
+
+  for (const invalid of [
+    undefined,
+    0,
+    -1,
+    "",
+    "00",
+    "01",
+    "+1",
+    "-1",
+    "1.0",
+    "1e3",
+    " 1",
+    "1 ",
+  ]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        schemaVersion: 4,
+        activeProfileId: null,
+        profiles: [],
+        approvalMode: "manual",
+        defaultFollowUpBehavior: "queue",
+        ...(invalid === undefined
+          ? {}
+          : { defaultFollowUpBehaviorRevision: invalid }),
+      }),
+      /Default follow-up behavior revision must be a canonical nonnegative decimal string/,
+    );
+  }
+
+  for (const schemaVersion of [0, 5]) {
     assert.throws(
       () => decodeAgentSettings({
         schemaVersion,
@@ -145,6 +261,265 @@ test("the migration decoder accepts current settings and rejects unsupported ver
   }
 });
 
+test("settings v2 migrate every legacy Profile to a direct API connection", () => {
+  const decoded = decodeAgentSettings({
+    schemaVersion: 2,
+    activeProfileId: "p1",
+    profiles: [{
+      id: "p1",
+      name: "Legacy API",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl: "https://example.test/v1",
+      apiKey: "secret",
+      model: "model-a",
+      parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+    approvalMode: "manual",
+  });
+
+  assert.equal(decoded.schemaVersion, 4);
+  assert.equal(decoded.defaultFollowUpBehavior, "queue");
+  assert.equal(decoded.defaultFollowUpBehaviorRevision, "0");
+  assert.deepEqual(decoded.profiles[0]?.connection, {
+    kind: "direct-api",
+    apiFamily: "openai",
+    apiMode: "responses",
+    baseUrl: "https://example.test/v1",
+    apiKey: "secret",
+  });
+});
+
+test("both historical schema-v3 shapes migrate losslessly without rewriting on read", async () => {
+  const cases = [
+    {
+      name: "main-flat",
+      source: {
+        schemaVersion: 3,
+        activeProfileId: "profile-1",
+        profiles: [legacyProfile(profile())],
+        approvalMode: "everything",
+        defaultFollowUpBehavior: "steer",
+        defaultFollowUpBehaviorRevision: "90071992547409931234567890",
+      },
+      behavior: "steer",
+      revision: "90071992547409931234567890",
+    },
+    {
+      name: "subscription-nested",
+      source: {
+        schemaVersion: 3,
+        activeProfileId: "profile-1",
+        profiles: [profile()],
+        approvalMode: "low-risk",
+      },
+      behavior: "queue",
+      revision: "0",
+    },
+  ] as const;
+
+  for (const migrationCase of cases) {
+    const directory = await fs.mkdtemp(
+      path.join(os.tmpdir(), `live-smith-settings-${migrationCase.name}-`),
+    );
+    const settingsPath = path.join(directory, "live-smith-settings.json");
+    const original = JSON.stringify(migrationCase.source, null, 2);
+    await fs.writeFile(settingsPath, original);
+
+    const loaded = await loadAgentSettings(directory);
+    assert.equal(loaded.schemaVersion, 4);
+    assert.equal(loaded.activeProfileId, "profile-1");
+    assert.equal(loaded.defaultFollowUpBehavior, migrationCase.behavior);
+    assert.equal(loaded.defaultFollowUpBehaviorRevision, migrationCase.revision);
+    assert.deepEqual(loaded.profiles, [{
+      ...profile(),
+      connection: {
+        ...profile().connection,
+        baseUrl: "https://example.test/v1",
+      },
+    }]);
+    assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+  }
+});
+
+test("schema-v3 discrimination uses follow-up field presence for empty Profile arrays", () => {
+  assert.deepEqual(decodeAgentSettings({
+    schemaVersion: 3,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "steer",
+    defaultFollowUpBehaviorRevision: "17",
+  }), {
+    schemaVersion: 4,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "steer",
+    defaultFollowUpBehaviorRevision: "17",
+  });
+
+  assert.deepEqual(decodeAgentSettings({
+    schemaVersion: 3,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+  }), {
+    schemaVersion: 4,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+  });
+});
+
+test("schema-v3 migration rejects partial, mixed, and unknown shapes", () => {
+  const flat = legacyProfile(profile());
+  const nested = profile();
+  const shared = {
+    schemaVersion: 3,
+    activeProfileId: "profile-1",
+    approvalMode: "manual",
+  } as const;
+
+  for (const invalid of [
+    {
+      ...shared,
+      profiles: [flat],
+      defaultFollowUpBehavior: "queue",
+    },
+    {
+      ...shared,
+      profiles: [flat],
+      defaultFollowUpBehaviorRevision: "0",
+    },
+    {
+      ...shared,
+      profiles: [nested],
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+    },
+    {
+      ...shared,
+      profiles: [flat],
+    },
+    {
+      ...shared,
+      profiles: [{ ...flat, unexpected: true }],
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+    },
+    {
+      ...shared,
+      profiles: [{ ...nested, unexpected: true }],
+    },
+    {
+      ...shared,
+      profiles: [{
+        ...flat,
+        parameters: { ...flat.parameters, unexpected: true },
+      }],
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+    },
+    {
+      ...shared,
+      profiles: [{
+        ...flat,
+        parameters: {
+          ...flat.parameters,
+          reasoning: { ...flat.parameters.reasoning, mystery: true },
+        },
+      }],
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+    },
+    {
+      ...shared,
+      profiles: [{
+        ...nested,
+        parameters: { ...nested.parameters, unexpected: true },
+      }],
+    },
+    {
+      ...shared,
+      profiles: [{
+        ...nested,
+        parameters: {
+          ...nested.parameters,
+          reasoning: { ...nested.parameters.reasoning, mystery: true },
+        },
+      }],
+    },
+    {
+      ...shared,
+      profiles: [flat],
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      unexpected: true,
+    },
+    {
+      ...shared,
+      profiles: [nested],
+      unexpected: true,
+    },
+  ]) {
+    assert.throws(
+      () => decodeAgentSettings(invalid),
+      (error: unknown) =>
+        error instanceof Error && error.name === "ProfileValidationError",
+    );
+  }
+});
+
+test("schema-v4 rejects unknown top-level and Profile fields", () => {
+  const current = {
+    schemaVersion: 4,
+    activeProfileId: "profile-1",
+    profiles: [profile()],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+  } as const;
+
+  assert.throws(
+    () => decodeAgentSettings({ ...current, unexpected: true }),
+    /does not support property/,
+  );
+  assert.throws(
+    () => decodeAgentSettings({
+      ...current,
+      profiles: [{ ...profile(), unexpected: true }],
+    }),
+    /does not support property/,
+  );
+  assert.throws(
+    () => decodeAgentSettings({
+      ...current,
+      profiles: [{
+        ...profile(),
+        parameters: { ...profile().parameters, unexpected: true },
+      }],
+    }),
+    /parameters does not support property unexpected/,
+  );
+  assert.throws(
+    () => decodeAgentSettings({
+      ...current,
+      profiles: [{
+        ...profile(),
+        parameters: {
+          ...profile().parameters,
+          reasoning: { ...profile().parameters.reasoning, mystery: true },
+        },
+      }],
+    }),
+    /parameters\.reasoning does not support property mystery/,
+  );
+});
+
 test("settings mutations preserve the original bytes when one stored Profile is invalid", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   const settingsPath = path.join(directory, "live-smith-settings.json");
@@ -152,9 +527,9 @@ test("settings mutations preserve the original bytes when one stored Profile is 
     schemaVersion: 1,
     activeProfileId: "profile-1",
     profiles: [
-      profile(),
+      legacyProfile(profile()),
       {
-        ...profile({ id: "profile-2", name: "Recoverable" }),
+        ...legacyProfile(profile({ id: "profile-2", name: "Recoverable" })),
         apiKey: "",
       },
     ],
@@ -163,7 +538,7 @@ test("settings mutations preserve the original bytes when one stored Profile is 
   await fs.writeFile(settingsPath, original);
 
   await assert.rejects(
-    saveGlobalSettings(directory, { approvalMode: "everything" }),
+    saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" }),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
   );
   assert.equal(await fs.readFile(settingsPath, "utf8"), original);
@@ -177,7 +552,12 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   }));
 
   assert.equal(saved.activeProfileId, "profile-1");
-  assert.equal(saved.profiles[0]?.baseUrl, "https://example.test/v1");
+  assert.equal(
+    saved.profiles[0]?.connection.kind === "direct-api"
+      ? saved.profiles[0].connection.baseUrl
+      : undefined,
+    "https://example.test/v1",
+  );
   assert.deepEqual(saved.profiles[0]?.advanced.hostedTools, { webSearch: true });
   const persisted = JSON.parse(
     await fs.readFile(path.join(directory, "live-smith-settings.json"), "utf8"),
@@ -185,6 +565,8 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   assert.deepEqual(Object.keys(persisted).sort(), [
     "activeProfileId",
     "approvalMode",
+    "defaultFollowUpBehavior",
+    "defaultFollowUpBehaviorRevision",
     "profiles",
     "schemaVersion",
   ]);
@@ -197,8 +579,17 @@ test("saveSavedProfile persists a keyless loopback connection", async () => {
     apiKey: "",
   }));
 
-  assert.equal(saved.profiles[0]?.apiKey, "");
-  assert.equal((await loadAgentSettings(directory)).profiles[0]?.apiKey, "");
+  assert.equal(
+    saved.profiles[0]?.connection.kind === "direct-api"
+      ? saved.profiles[0].connection.apiKey
+      : undefined,
+    "",
+  );
+  const loaded = (await loadAgentSettings(directory)).profiles[0];
+  assert.equal(
+    loaded?.connection.kind === "direct-api" ? loaded.connection.apiKey : undefined,
+    "",
+  );
 });
 
 test("concurrent profile saves neither fail nor lose profiles", async () => {
@@ -242,8 +633,18 @@ test("settings persistence does not depend on an ambient process object", async 
 });
 
 test("profiles enforce valid family modes and unique case-insensitive names", async () => {
+  const invalidPair = {
+    ...profile(),
+    connection: {
+      kind: "direct-api",
+      apiFamily: "anthropic",
+      apiMode: "responses",
+      baseUrl: "https://example.test/v1",
+      apiKey: "secret",
+    },
+  } as unknown as SavedProfile;
   await assert.rejects(
-    saveSavedProfile(undefined, profile({ apiFamily: "anthropic", apiMode: "responses" })),
+    saveSavedProfile(undefined, invalidPair),
     /does not support API mode/,
   );
 
@@ -274,13 +675,86 @@ test("activation, deletion, and global settings are independent operations", asy
   );
   assert.equal((await activateSavedProfile(directory, "profile-1")).activeProfileId, "profile-1");
 
-  const global = await saveGlobalSettings(directory, { approvalMode: "everything" });
-  assert.equal(global.approvalMode, "everything");
+  const global = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "steer",
+  });
+  assert.equal(global.defaultFollowUpBehavior, "steer");
+  assert.equal(global.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(global.approvalMode, "manual");
   assert.equal(global.profiles.length, 2);
 
   const deleted = await deleteSavedProfile(directory, "profile-1");
   assert.equal(deleted.activeProfileId, "profile-2");
   assert.deepEqual(deleted.profiles.map((entry) => entry.id), ["profile-2"]);
+});
+
+test("global settings accept only queue or steer follow-up behavior", async () => {
+  await assert.rejects(
+    saveGlobalSettings(undefined, {
+      defaultFollowUpBehavior: "later",
+    } as never),
+    /Default follow-up behavior must be queue or steer/,
+  );
+});
+
+test("every global settings write atomically increments and returns its revision", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
+
+  const first = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+  const second = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+  assert.equal(first.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "2");
+
+  const concurrent = await Promise.all(
+    Array.from({ length: 8 }, (_, index) =>
+      saveGlobalSettings(directory, {
+        defaultFollowUpBehavior: index % 2 === 0 ? "steer" : "queue",
+      }),
+    ),
+  );
+  assert.deepEqual(
+    concurrent
+      .map((settings) => settings.defaultFollowUpBehaviorRevision)
+      .sort(compareDefaultFollowUpBehaviorRevisions),
+    ["3", "4", "5", "6", "7", "8", "9", "10"],
+  );
+  assert.equal(
+    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
+    "10",
+  );
+});
+
+test("global settings revisions increment beyond Number.MAX_SAFE_INTEGER", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-settings-large-revision-"),
+  );
+  const settingsPath = path.join(directory, "live-smith-settings.json");
+  await fs.writeFile(settingsPath, JSON.stringify({
+    schemaVersion: 4,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "9007199254740991",
+  }));
+
+  const first = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "steer",
+  });
+  const second = await saveGlobalSettings(directory, {
+    defaultFollowUpBehavior: "queue",
+  });
+
+  assert.equal(first.defaultFollowUpBehaviorRevision, "9007199254740992");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "9007199254740993");
+  assert.equal(
+    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
+    "9007199254740993",
+  );
 });
 
 test("settings keep an in-memory fallback without a storage directory", async () => {

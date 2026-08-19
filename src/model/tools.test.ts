@@ -11,10 +11,13 @@ function profile(enabled: boolean): SavedProfile {
   return {
     id: "profile",
     name: "Profile",
-    apiFamily: "openai",
-    apiMode: "responses",
-    baseUrl: "https://example.test/v1",
-    apiKey: "secret",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl: "https://example.test/v1",
+      apiKey: "secret",
+    },
     model: "model",
     parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
     advanced: enabled ? { hostedTools: { webSearch: true } } : {},

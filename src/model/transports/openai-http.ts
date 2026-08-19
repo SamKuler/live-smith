@@ -1,7 +1,12 @@
 import { URL } from "node:url";
 
 import { throwIfAborted } from "../../runtime/host.js";
-import type { DraftProfile, SavedProfile } from "../profile.js";
+import {
+  requireDirectApiConnection,
+  type DirectApiConnection,
+  type DraftProfile,
+  type SavedProfile,
+} from "../profile.js";
 import { parseServerSentEventData } from "./server-sent-events.js";
 
 type OpenAIResource = "/models" | "/chat/completions" | "/responses";
@@ -38,9 +43,10 @@ async function requestOpenAIResource(
   resource: OpenAIResource,
   options: OpenAIRequestOptions,
 ): Promise<unknown> {
+  const connection = requireDirectApiConnection(profile);
   const response = await fetchImpl(
-    openAIEndpoint(profile.baseUrl, resource),
-    openAIRequestInit(profile, options),
+    openAIEndpoint(connection.baseUrl, resource),
+    openAIRequestInit(connection, options),
   );
   await assertOpenAIResponse(response, options.signal);
   try {
@@ -61,9 +67,10 @@ export async function* streamOpenAIEvents(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): AsyncGenerator<Record<string, unknown>> {
+  const connection = requireDirectApiConnection(profile);
   const response = await fetchImpl(
-    openAIEndpoint(profile.baseUrl, resource),
-    openAIRequestInit(profile, {
+    openAIEndpoint(connection.baseUrl, resource),
+    openAIRequestInit(connection, {
       method: "POST",
       body: { ...body, stream: true },
       ...(signal ? { signal } : {}),
@@ -106,14 +113,14 @@ function openAIEndpoint(baseUrl: string, resource: OpenAIResource): string {
 }
 
 function openAIRequestInit(
-  profile: DraftProfile | SavedProfile,
+  connection: DirectApiConnection,
   options: OpenAIRequestOptions,
 ): RequestInit {
   const headers: Record<string, string> = {
     accept: "application/json",
     "content-type": "application/json",
   };
-  if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`;
+  if (connection.apiKey) headers.authorization = `Bearer ${connection.apiKey}`;
   const init: RequestInit = {
     method: options.method,
     headers,

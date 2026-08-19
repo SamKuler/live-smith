@@ -65,10 +65,13 @@ function profile(apiMode: "chat-completions" | "responses"): SavedProfile {
   return {
     id: apiMode,
     name: apiMode,
-    apiFamily: "openai",
-    apiMode,
-    baseUrl: "https://example.test/v1",
-    apiKey: "secret",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode,
+      baseUrl: "https://example.test/v1",
+      apiKey: "secret",
+    },
     model: "host-safe-model",
     parameters: {
       maxOutputTokens: 1024,
