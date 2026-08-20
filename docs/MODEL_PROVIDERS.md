@@ -50,6 +50,23 @@ recoverable Profiles or credentials.
 
 ## API behavior
 
+### Follow-up modes
+
+Queue and Steer are deliberately different lifecycles. Queue is the global
+default: the UI holds each pending item for its Session, waits for the current
+send to become terminal, and then starts a new ordinary send with a new
+correlation ID. That turn reloads the active saved Profile and capabilities,
+Skills, attachments, Session history, and recovery state. Queue text never
+enters the preceding provider request or its local replay state.
+
+Steer targets the active send instead. The chosen default is read when each
+follow-up is submitted, so a settings change applies immediately to the next
+item without changing items already queued or submitted. Neither mode is sent as
+a provider field or added to the strict `/send` body. The persisted setting's
+canonical decimal-string revision and bridge replay behavior are
+UI/orchestration metadata only; they never enter provider request or replay
+state.
+
 ### In-loop steering
 
 Steering has one provider-neutral meaning: bounded, persisted user guidance is
@@ -84,7 +101,10 @@ provider-neutral: each accepted steering user event has a receipt bound to the
 original send ID, steering ID, and prompt hash. Exact retries are idempotent,
 including after the send has reached terminal state. An explicit unknown
 persistence outcome keeps the same client steering ID until authoritative
-Session state confirms presence or absence.
+Session state confirms presence or absence. While that receipt is unresolved,
+the client permits only a byte-identical same-ID retry; edited guidance and
+Queue submission remain blocked rather than abandoning a possibly committed
+user event.
 
 ### OpenAI Responses
 

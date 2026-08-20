@@ -368,6 +368,45 @@ they cannot become sample-source arguments or authorize filesystem access.
 See [docs/MODEL_PROVIDERS.md](docs/MODEL_PROVIDERS.md) for provider details and
 capability resolution.
 
+### Queue and Steer follow-ups
+
+While Live Smith is working, the composer keeps a single running control:
+**Stop**. Submit text with the composer shortcut and Live Smith uses the global
+**Follow-ups** setting:
+
+- **Queue** (the default) keeps the message under **Up next**, waits for the
+  current response to finish, then starts a new ordinary turn with a new send ID
+  and fresh Profile, Skill, attachment, history, and Approval state.
+- **Steer** persists the text as guidance for the response already in progress,
+  interrupts only its current provider call, and replans at a protocol-safe
+  boundary. It does not resnapshot request-start configuration.
+
+The setting remains writable during a send and takes effect for the next
+follow-up immediately. Already queued or submitted items keep the mode captured
+when they were submitted. Queue entries are pending work owned by the open Live
+Smith window. If a turn is definitely not accepted, its text returns to an
+untouched composer; if a newer draft exists, that draft is preserved and the
+failed item remains paused under **Up next**. This applies to the original turn
+as well as a promoted follow-up, so later items cannot skip a failed request.
+They wait for an explicit recovery Send. An uncertain original turn likewise
+pauses any queued tail until the user deliberately continues. Stop waits for the
+target send's terminal persistence classification before deciding whether to
+recover or advance queued work; a delayed send response cannot cross that
+barrier. Paused recovery still permits Profile and Skill repair before the retry,
+while runnable Queue work continues to lock request configuration. If the target
+Session has been deleted,
+archived, or is no longer available, its remaining Queue is canceled with a
+visible count rather than being rerouted, and its window-local draft is
+discarded with that Session. The count remains visible alongside foreground
+progress and aggregates separate cancellations. Opening the Close confirmation
+suspends promotion; canceling resumes it, while accepting closes without starting
+work behind the confirmation. Closing likewise warns about and cancels pending
+items without prematurely adding user events to Session history.
+
+If a Steer persistence result is unknown, the exact text and steering ID remain
+one unresolved operation. Different guidance and Queue submission stay blocked
+until an unchanged same-ID retry or authoritative Session state resolves it.
+
 ### Local Skills
 
 Open the Inspector's **Skills** tab and either drop one UTF-8 `SKILL.md` into its
@@ -459,8 +498,9 @@ raw action JSON, MIDI note payloads, and credentials are not copied into it.
 The directory contains:
 
 - `live-smith-settings.json` — saved Profiles, the active Profile, API keys,
-  generation settings, and a legacy Approval field retained only for settings
-  schema compatibility. That field no longer affects Apply authorization.
+  generation settings, the default Queue/Steer follow-up behavior, and a legacy
+  Approval field retained only for settings schema compatibility. That field no
+  longer affects Apply authorization.
 - `live-smith-sessions.json` — Session titles, Live object scopes, and
   timestamps, plus each Session's Approval mode and optional sorted active Skill
   IDs.
@@ -492,14 +532,17 @@ npm start -- --storage-directory /absolute/path/to/live-smith-data
 ```
 
 These paths contain private persistent data, not SDK temporary files. Do not
-commit, share, or sync them. The current build still accepts the schema-version-2
-Approval field and migrates schema-version-1 `autoApprove` values in memory so
+commit, share, or sync them. The current build migrates schema-version-2 settings
+to schema version 3 with Queue as the default follow-up behavior and a monotonic
+follow-up-setting revision, stored as a canonical nonnegative decimal string,
+used to reject stale dialog state without a JavaScript integer ceiling. It also
+migrates schema-version-1 `autoApprove` values through version 2 in memory so
 existing settings files remain readable without dropping Profiles or
-credentials. Neither legacy value seeds or overrides a Session's Approval mode.
+credentials. Neither legacy Approval value seeds or overrides a Session's mode.
 Settings upgrades use registered adjacent-version steps, so future schemas add
 one `vN` to `vN+1` migration instead of branching inside the current validator.
 Reading never rewrites the file; the next settings write persists schema version
-2. Future versions and historical schemas without a complete migration chain
+3. Future versions and historical schemas without a complete migration chain
 are rejected. Files written under other earlier development names are not
 migrated.
 

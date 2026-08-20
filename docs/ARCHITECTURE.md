@@ -385,9 +385,26 @@ become a Live sample or filesystem capability.
 ## Configuration boundaries
 
 Only profile CRUD/activation and the dedicated global-settings command write the
-settings file. Sending, discovering models, and creating/selecting/renaming/
-deleting sessions do not write configuration. Old flattened provider settings
-and environment variables are not configuration sources.
+settings file. The global command currently owns the default Queue/Steer
+follow-up behavior, is allowed while sends are active, and broadcasts committed
+changes to every open dialog for the same storage directory. Sending,
+discovering models, and creating/selecting/renaming/deleting sessions do not
+write configuration. Old flattened provider settings and environment variables
+are not configuration sources.
+
+Each follow-up-setting write increments a persisted canonical nonnegative
+decimal-string revision (`"0"` or a positive value without leading zeroes) under
+a process-wide per-storage fence. Increment and comparison operate on decimal
+digits rather than JavaScript numbers, so ordering has no safe-integer ceiling.
+The same fence covers an unknown-commit readback and publication, so another
+dialog cannot overtake that reconciliation and have its value attributed to the
+wrong command. Each bridge caches the highest revision, overlays older
+full-state snapshots, and replays the cached value when an event stream connects
+or reconnects. The client uses the same length-first, then lexicographic total
+order, so an HTTP response serialized before a newer SSE event cannot roll the
+control back. A bridge state snapshot may seed a revision, but a correlated
+event for the same value and revision replaces that synthetic provenance and is
+replayed.
 
 Settings, sessions, and event logs serialize their read-modify-write operations
 per storage directory. JSON replacement uses a unique private temporary file,
@@ -572,6 +589,51 @@ single Undo entry. Accept Everything changes approval only and cannot bypass
 observation, action-schema validation, preflight, the process-wide mutation
 queue, cancellation, or target/state-drift revalidation. Profile,
 RuntimeProfile, attachment, and Skill state remain the request-start snapshot.
+
+The composer has one follow-up dispatcher and one running control, Stop. Its
+persisted global default is Queue. A Queue submission is captured in a
+Session-scoped, window-local FIFO and is not appended to the event log early.
+After the current send reaches a terminal state, the next item starts through the
+ordinary `/send` path with its own send ID. It therefore reacquires the Session
+lease and snapshots the then-current Profile, capabilities, Skills, attachments,
+history, recovery ledger, and Approval state. Stop terminates only the running
+send; a queued next turn starts after that terminal barrier. Queue promotion is
+retried whenever a command, attachment operation, or Skill operation releases
+its blocker. A pending Close decision is also a promotion barrier. Any turn that
+is definitely not persisted, including the original
+send, is reinserted at a paused FIFO head; a promoted turn with an unknown
+outcome uses the same recovery slot. An original turn with an unknown outcome
+also pauses its queued tail, without duplicating the uncertain original prompt.
+If a promoted turn is confirmed persisted, only its remaining tail is paused;
+the current head is never duplicated. A paused recovery does not count as
+runnable work for Profile, Skill, or attachment repair, but it remains owned by
+the window and included in Close warnings.
+Composer value and revision are captured at send start and refreshed when a
+Queue submission consumes the current draft.
+The failed text therefore refills only an untouched empty composer, while any
+newer draft is preserved. An explicit recovery Send removes that head when
+retrying it. If the user instead sends the preserved newer draft, that deliberate
+turn runs first and then resumes the retained head; a failure of the newer turn
+reinserts it ahead of the retained work. No recovery path silently discards a
+queued prompt or lets a later command pump skip the failed original. A typed
+unavailable-Session terminal state cancels the shifted item and remaining FIFO
+with a visible count even when refreshed state is
+unavailable; prompts are never moved to another Session. Opening the Close
+confirmation suspends every queue pump. Cancel resumes eligible work; acceptance
+keeps promotion suspended while the window closes and discards pending items
+without creating user events.
+Changing the default affects the next submission immediately and never
+reclassifies an item already queued or submitted.
+
+Every authoritative full state, whether from a command, attachment, Skill,
+ordinary send, error, Stop recovery, or state refresh, reconciles window-local
+follow-up ownership against its sendable `sessions` list. Deleting or archiving
+a Session therefore prunes its Queue, pause/recovery slot, composer-only draft,
+and associated composer provenance. Removed queued items contribute a structured
+window-local canceled count. Separate cancellations aggregate, remain visible
+beside foreground progress, and are not stored back as server state. Queues and
+drafts for valid background Sessions remain intact.
+
 An active send can additionally accept bounded, pure-text steering for its
 exact bridge-owned send ID. The current send owner persists each steering
 message as an ordinary user event before acknowledging it or adding it to model
@@ -585,7 +647,7 @@ continuation calls, the loop removes the entire unfinished continuation suffix,
 including opaque provider state, before adding steering. Stop remains the
 terminal cancellation path for the whole send.
 
-A newly queued steering message supersedes an open confirmation without
+A newly submitted steering message supersedes an open confirmation without
 approving it. The loop checks again before each tool, after confirmation, inside
 the mutation queue, after state revalidation, and between individual validated
 Live actions. An action that already crossed its execution boundary is allowed
@@ -597,15 +659,18 @@ Steering detected at the first per-action guard has no completed action and is
 therefore a clean supersession, not a partial host failure; it closes the tool
 call and replans without opening a recovery ledger. A guard reached after any
 completed action retains the partial-recovery path.
-The settings schema still validates its legacy `approvalMode` field as
-`manual`, `low-risk`, or `everything` so existing files remain readable. Runtime
+Settings schema version 3 adds the strict `defaultFollowUpBehavior` value
+`queue | steer` and its canonical nonnegative decimal-string revision; version
+2 migrates to Queue at revision `"0"`. The schema still validates its
+legacy `approvalMode` field as `manual`, `low-risk`, or `everything` so existing
+files remain readable. Runtime
 authorization never reads that field: it neither seeds nor overrides a Session.
 Persisted settings pass through an adjacent-version migration registry before
 current-schema validation. Loading a valid schema-version-1 file still maps
 `autoApprove: false` to Manual and `autoApprove: true` to Low Risk while
 preserving Profiles and credentials, but the mapped compatibility value has no
 Apply effect. Reads never rewrite the file; the next authorized settings
-mutation persists schema version 2. A future schema version or a historical
+mutation persists schema version 3. A future schema version or a historical
 version without a complete `vN` to `vN+1` migration chain fails closed as
 settings corruption.
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
@@ -699,7 +764,19 @@ uncertain, `/steer` returns a prompt-free
 `steeringOutcome: "unknown"`; the client retains the same ID. Every terminal
 send state also carries the Session events for that send, and the client
 reconciles a pending steering receipt before clearing or safely retaining its
-draft. Session and Profile commands accept only their
-command-specific fields; confirmation and Stop reject body fields they do not
-own. Every JSON body is bounded to 1 MiB before parsing. Skill source is never a
+draft. Until that reconciliation, only the byte-identical guidance may retry
+with the retained ID; edited Steer text and Queue submission cannot abandon the
+possibly committed receipt. Queue starts another request through the unchanged
+Send contract; its mode is never added to that body. The global-settings command
+accepts only `kind: "save_global_settings"` and
+`defaultFollowUpBehavior: "queue" | "steer"`.
+Session and Profile commands accept only their command-specific fields;
+confirmation and Stop reject body fields they do not own. Stop targets the
+exact send ID in its header. While that send is active it returns
+`terminal: false`; after cleanup it returns `terminal: true` plus the consumed
+`promptPersistence` classification (`persisted`, `not_persisted`, or `unknown`)
+for that stopped send. The UI uses that classification before recovering or
+advancing Queue work, and an explicit Stop intent remains sticky if an automatic
+recovery poll was already running. Every JSON body is bounded to 1 MiB before
+parsing. Skill source is never a
 JSON field; it uses the separate authenticated raw route described above.
