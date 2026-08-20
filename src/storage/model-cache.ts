@@ -4,7 +4,12 @@ import * as path from "node:path";
 
 import { cloneJsonValue } from "../model/json-clone.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
-import type { DraftProfile, SavedProfile } from "../model/profile.js";
+import {
+  isReasoningEffort,
+  isReasoningStrategy,
+  type DraftProfile,
+  type SavedProfile,
+} from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
 import { writeJsonAtomically } from "./persistence.js";
 
@@ -33,31 +38,26 @@ const reasoningKeys = new Set([
   "budgetTokens",
   "strategy",
 ]);
-const reasoningEfforts = new Set([
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-]);
-const reasoningStrategies = new Set([
-  "effort",
-  "adaptive-thinking",
-  "budget-thinking",
-  "none",
-]);
 const maximumCacheIdSlugLength = 80;
 
 export function connectionFingerprint(profile: DraftProfile | SavedProfile): string {
+  const connection = profile.connection.kind === "direct-api"
+    ? {
+        connectionKind: profile.connection.kind,
+        apiFamily: profile.connection.apiFamily,
+        apiMode: profile.connection.apiMode,
+        baseUrl: profile.connection.baseUrl.replace(/\/+$/, ""),
+        apiKey: profile.connection.apiKey,
+      }
+    : {
+        connectionKind: profile.connection.kind,
+        provider: profile.connection.provider,
+      };
   return createHash("sha256")
     .update(
       JSON.stringify({
         id: profile.id,
-        apiFamily: profile.apiFamily,
-        apiMode: profile.apiMode,
-        baseUrl: profile.baseUrl.replace(/\/+$/, ""),
-        apiKey: profile.apiKey,
+        ...connection,
       }),
     )
     .digest("hex");
@@ -67,6 +67,7 @@ export async function loadModelCache(
   storageDirectory: string | undefined,
   profile: DraftProfile | SavedProfile,
 ): Promise<DiscoveredModelInfo[]> {
+  if (profile.connection.kind === "codex-subscription") return [];
   const expected = connectionFingerprint(profile);
   if (!storageDirectory) {
     const entry = memoryCache.get(profile.id);
@@ -88,6 +89,10 @@ export async function saveModelCache(
   profile: DraftProfile | SavedProfile,
   models: DiscoveredModelInfo[],
 ): Promise<void> {
+  if (profile.connection.kind === "codex-subscription") {
+    memoryCache.delete(profile.id);
+    return;
+  }
   const entry: ModelCacheEntry = {
     schemaVersion: 1,
     fingerprint: connectionFingerprint(profile),
@@ -172,15 +177,13 @@ function isReasoningCapabilityHints(value: unknown): boolean {
     value.efforts !== undefined &&
     (
       !Array.isArray(value.efforts) ||
-      !value.efforts.every(
-        (effort) => typeof effort === "string" && reasoningEfforts.has(effort),
-      )
+      !value.efforts.every(isReasoningEffort)
     )
   ) {
     return false;
   }
   return value.strategy === undefined ||
-    (typeof value.strategy === "string" && reasoningStrategies.has(value.strategy));
+    isReasoningStrategy(value.strategy);
 }
 
 function isRecordWithOnlyKeys(

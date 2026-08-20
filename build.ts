@@ -140,8 +140,20 @@ function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
     );
     const hasNodeProcess = hasDefaultImport(source, "node:process", "process");
     const isHostBoundary = path.normalize(file) === path.normalize("src/runtime/host.ts");
+    const isProcessHostBoundary =
+      path.normalize(file) === path.normalize("src/runtime/process-host.ts");
 
     const visit = (node: ts.Node): void => {
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        ["child_process", "node:child_process"].includes(node.moduleSpecifier.text) &&
+        !isProcessHostBoundary
+      ) {
+        violations.push(
+          `${file}: spawn child processes through src/runtime/process-host.ts`,
+        );
+      }
       if (ts.isIdentifier(node) && node.text === "structuredClone") {
         const message = `${file}: structuredClone is a reserved unsupported identifier`;
         if (!violations.includes(message)) violations.push(message);
