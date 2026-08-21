@@ -1,4 +1,10 @@
-import type { DraftProfile, SavedProfile } from "../profile.js";
+import {
+  profileApiMode,
+  profileProvider,
+  profileSecrets,
+  type DraftProfile,
+  type SavedProfile,
+} from "../profile.js";
 
 export async function withTransportContext<T>(
   profile: DraftProfile | SavedProfile,
@@ -9,20 +15,24 @@ export async function withTransportContext<T>(
     return await run();
   } catch (cause) {
     const rawMessage = cause instanceof Error ? cause.message : String(cause);
-    const message = redactTransportMessage(rawMessage, profile.apiKey);
+    const message = redactTransportMessage(rawMessage, profileSecrets(profile));
+    const apiMode = profileApiMode(profile);
+    const context = apiMode
+      ? `${profileProvider(profile)}/${apiMode}`
+      : `${profileProvider(profile)}/${profile.connection.kind}`;
     throw new Error(
-      `${profile.apiFamily}/${profile.apiMode} ${operation} failed: ${message}`,
+      `${context} ${operation} failed: ${message}`,
     );
   }
 }
 
-function redactTransportMessage(message: string, apiKey: string): string {
-  const withoutUrlCredentials = message.replace(
+function redactTransportMessage(message: string, secrets: string[]): string {
+  let redacted = message.replace(
     /\b(https?:\/\/)[^/\s@]+@/gi,
     "$1[redacted]@",
   );
-  const withoutKey = apiKey
-    ? withoutUrlCredentials.replaceAll(apiKey, "[redacted]")
-    : withoutUrlCredentials;
-  return withoutKey.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
+  for (const secret of secrets) {
+    if (secret) redacted = redacted.replaceAll(secret, "[redacted]");
+  }
+  return redacted.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
 }

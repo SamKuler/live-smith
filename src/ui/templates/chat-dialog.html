@@ -1656,6 +1656,280 @@
         border-color: rgba(255, 159, 26, 0.55);
       }
 
+      .subscription-auth-panel {
+        --subscription-state: var(--quiet);
+        position: relative;
+        display: grid;
+        gap: 9px;
+        min-width: 0;
+        padding: 7px 0 8px 12px;
+        color: var(--muted);
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
+      .subscription-auth-panel::before {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 2px;
+        background: var(--subscription-state);
+        content: "";
+      }
+
+      .subscription-auth-panel[data-auth-state="pending"] {
+        --subscription-state: var(--warn);
+      }
+
+      .subscription-auth-panel[data-auth-state="signed-in"] {
+        --subscription-state: #83d6a1;
+      }
+
+      .subscription-auth-panel[data-auth-state="ineligible"],
+      .subscription-auth-panel[data-auth-state="unavailable"] {
+        --subscription-state: var(--danger);
+      }
+
+      .subscription-auth-panel[hidden],
+      .direct-api-fields[hidden],
+      .anthropic-subscription-hint[hidden] {
+        display: none;
+      }
+
+      .subscription-auth-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .subscription-auth-identity {
+        display: grid;
+        gap: 1px;
+        min-width: 0;
+      }
+
+      .subscription-auth-kicker {
+        color: var(--quiet);
+        font-size: 8px;
+        font-weight: 650;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .subscription-auth-panel h3 {
+        margin: 0;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1.25;
+      }
+
+      .subscription-auth-state-badge {
+        flex: none;
+        max-width: 120px;
+        overflow: hidden;
+        padding: 0;
+        color: var(--subscription-state);
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        font-size: 8px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .subscription-auth-lede {
+        margin: -2px 0 0;
+        color: var(--quiet);
+        line-height: 1.45;
+      }
+
+      .subscription-auth-status {
+        display: grid;
+        gap: 8px;
+      }
+
+      .subscription-auth-state {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+        padding: 0;
+        background: transparent;
+        border: 0;
+      }
+
+      .subscription-auth-state-title {
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .subscription-auth-state-detail {
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .subscription-auth-device-ticket {
+        display: grid;
+        gap: 7px;
+        padding: 9px 10px 10px;
+        background: rgba(255, 209, 102, 0.055);
+        border: 1px solid rgba(255, 209, 102, 0.28);
+        border-radius: 5px;
+      }
+
+      .subscription-auth-device-ticket[hidden],
+      .subscription-auth-open-link[hidden],
+      .subscription-auth-device-error[hidden] {
+        display: none;
+      }
+
+      .subscription-auth-open-link {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 30px;
+        padding: 0 9px;
+        color: var(--trace);
+        background: rgba(120, 185, 232, 0.07);
+        border: 1px solid rgba(120, 185, 232, 0.34);
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .subscription-auth-open-link:hover,
+      .subscription-auth-open-link:focus-visible {
+        color: #9fd4f7;
+        background: rgba(120, 185, 232, 0.12);
+        border-color: rgba(120, 185, 232, 0.58);
+      }
+
+      .subscription-auth-device-error {
+        margin: 0;
+        color: var(--danger);
+      }
+
+      .subscription-auth-code-ticket {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 0;
+        padding-top: 1px;
+      }
+
+      .subscription-auth-code-label {
+        display: grid;
+        gap: 1px;
+        color: var(--quiet);
+        font-size: 8px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .subscription-auth-code-label small {
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+
+      .subscription-auth-code-ticket input {
+        width: min(166px, 62%);
+        height: 38px;
+        min-width: 0;
+        padding: 0 8px;
+        color: var(--text);
+        text-align: center;
+        background: var(--field);
+        border-color: rgba(255, 209, 102, 0.38);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: 0.1em;
+        line-height: 1.15;
+      }
+
+      .subscription-auth-device-guidance {
+        margin: 0;
+        color: var(--quiet);
+      }
+
+      .subscription-auth-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .subscription-auth-actions button {
+        min-width: 0;
+        min-height: 30px;
+        padding: 0 9px;
+        font-size: 10px;
+      }
+
+      .subscription-auth-actions .primary {
+        flex: 1 1 auto;
+      }
+
+      .subscription-auth-actions .subscription-auth-quiet-action {
+        color: var(--quiet);
+        background: transparent;
+        border-color: transparent;
+      }
+
+      .subscription-auth-actions .subscription-auth-quiet-action:not(:disabled):hover,
+      .subscription-auth-actions .subscription-auth-quiet-action:not(:disabled):focus-visible {
+        color: #ff9e8f;
+        background: rgba(255, 110, 87, 0.09);
+        border-color: rgba(255, 110, 87, 0.22);
+      }
+
+      .subscription-auth-actions button[hidden] {
+        display: none;
+      }
+
+      .subscription-auth-details {
+        padding-top: 1px;
+        color: var(--quiet);
+      }
+
+      .subscription-auth-details summary {
+        width: fit-content;
+        color: var(--quiet);
+        cursor: pointer;
+        font-size: 9px;
+      }
+
+      .subscription-auth-details[open] summary {
+        color: var(--muted);
+      }
+
+      .subscription-auth-details ul {
+        display: grid;
+        gap: 4px;
+        margin: 7px 0 0;
+        padding: 8px 8px 0 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.07);
+      }
+
+      .direct-api-fields {
+        display: grid;
+        gap: 9px;
+      }
+
       #model,
       #activeProfileModel {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -2425,6 +2699,14 @@
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
                 <h2 id="connectionSettingsHeading">Model connection</h2>
                 <div class="field">
+                  <label for="connectionKind">Connection</label>
+                  <select id="connectionKind" name="connectionKind" autocomplete="off" onchange="LiveSmithUI.handleConnectionKindChange()">
+                    <option value="direct-api">Direct API</option>
+                    <option value="codex-subscription">ChatGPT subscription (Experimental)</option>
+                  </select>
+                </div>
+                <div id="directApiFields" class="direct-api-fields">
+                <div class="field">
                   <div class="field-label-row">
                     <label for="apiFamily">Provider</label>
                     <span class="inline-help" tabindex="0" role="note" aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported.">?</span>
@@ -2454,6 +2736,48 @@
                   <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" aria-describedby="baseUrlHint" oninput="LiveSmithUI.markDraftDirty(this)" />
                   <span id="baseUrlHint" class="field-hint">Include the provider API version path, usually ending in <span translate="no">/v1</span>.</span>
                 </div>
+                <span id="anthropicSubscriptionHint" class="field-hint anthropic-subscription-hint" hidden>Claude/Anthropic subscription login is not supported here. Anthropic requires an API connection for third-party products unless it grants prior written approval.</span>
+                </div>
+                <section id="codexAuthPanel" class="subscription-auth-panel" data-auth-state="unchecked" aria-labelledby="codexAuthHeading" hidden>
+                  <div class="subscription-auth-header">
+                    <div class="subscription-auth-identity">
+                      <span class="subscription-auth-kicker">Managed · Experimental</span>
+                      <h3 id="codexAuthHeading">ChatGPT subscription</h3>
+                    </div>
+                    <span id="codexAuthStateBadge" class="subscription-auth-state-badge">Not checked</span>
+                  </div>
+                  <p class="subscription-auth-lede">Use your ChatGPT plan through Codex. API-key billing never starts automatically.</p>
+                  <div id="codexAuthStatus" class="subscription-auth-status">
+                    <div id="codexAuthState" class="subscription-auth-state" role="status" aria-live="polite" aria-atomic="true">
+                      <strong id="codexAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
+                      <span id="codexAuthStateDetail" class="subscription-auth-state-detail">Sign in, or check an existing Live Smith session.</span>
+                    </div>
+                    <div id="codexDeviceCodeTicket" class="subscription-auth-device-ticket" aria-labelledby="codexDeviceCodeHeading" hidden>
+                      <a id="codexVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden>
+                        <span>Open OpenAI sign-in page</span><span aria-hidden="true">↗</span>
+                      </a>
+                      <p id="codexVerificationError" class="subscription-auth-device-error" hidden>Live Smith could not verify the sign-in page. Cancel this sign-in and start again.</p>
+                      <div class="subscription-auth-code-ticket">
+                        <label id="codexDeviceCodeHeading" class="subscription-auth-code-label" for="codexUserCode">One-time code<small>Select to copy</small></label>
+                        <input id="codexUserCode" name="codexUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
+                      </div>
+                      <p class="subscription-auth-device-guidance">Keep this window open. Return here after entering the code.</p>
+                    </div>
+                  </div>
+                  <div class="subscription-auth-actions">
+                    <button id="codexSignInButton" class="primary" type="button" aria-describedby="codexAuthState" data-idle-label="Sign in to ChatGPT" onclick="LiveSmithUI.startCodexLogin()">Sign in to ChatGPT</button>
+                    <button id="codexCheckAccountButton" class="secondary" type="button" aria-describedby="codexAuthState" data-idle-label="Check existing session" onclick="LiveSmithUI.refreshCodexAccount()">Check existing session</button>
+                    <button id="codexLogoutButton" class="subscription-auth-quiet-action" type="button" aria-describedby="codexAuthState" data-idle-label="Sign out" onclick="LiveSmithUI.logoutCodex()" hidden>Sign out</button>
+                  </div>
+                  <details class="subscription-auth-details">
+                    <summary>Connection requirements</summary>
+                    <ul>
+                      <li>Requires the official Codex CLI 0.148.x on PATH.</li>
+                      <li>App Server support is experimental; workspace-managed plans are not eligible.</li>
+                      <li>No API key fallback is performed. Choose Direct API for API billing.</li>
+                    </ul>
+                  </details>
+                </section>
                 <div class="connection-action">
                   <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Connect &amp; Load Models" onclick="LiveSmithUI.discoverModels()">Connect &amp; Load Models</button>
                   <span class="field-hint">Checks the connection and loads the models this provider exposes.</span>

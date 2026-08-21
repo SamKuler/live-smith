@@ -73,11 +73,22 @@ src/
     profile.ts
       Named profile schema and structural validation.
     provider.ts
-      Normalized model, capability, tool, and transport contracts.
+      Normalized model, capability, tool, transport, managed-auth, and backend
+      contracts.
     capabilities.ts
       API-mode fallbacks, known model policies, and manual override resolution.
+    backend-registry.ts
+      Selects and owns either a Direct API transport or the lazily started
+      managed Codex backend from the Profile connection discriminant.
     registry.ts
-      Selects a transport from a validated API family/mode pair.
+      Selects a Direct API transport from a validated API family/mode pair.
+    backends/
+      codex-app-server.ts
+        Managed ChatGPT subscription auth, model discovery, ephemeral turns,
+        schema-constrained tool intent, cancellation, and result normalization.
+      codex-rpc.ts
+        Bounded stdio App Server RPC with an exact Codex `0.148.x` handshake,
+        request cancellation/timeouts, redacted stderr, and process shutdown.
     transports/
       openai-responses.ts
       openai-chat.ts
@@ -91,6 +102,10 @@ src/
     host.ts
       Resolves host-provided Fetch and Abort APIs with explicit capability
       errors and shared cancellation checks.
+    process-host.ts
+      Starts the official Codex CLI with a private runtime workspace, isolated
+      `CODEX_HOME`, stripped credential environment, and disabled Codex agent
+      features.
 
   storage/
     settings.ts
@@ -101,7 +116,9 @@ src/
     persistence.ts
       Serialized local transactions plus private, atomic JSON replacement.
     model-cache.ts
-      Profile/fingerprint-isolated raw model-metadata cache.
+      Profile/fingerprint-isolated raw Direct API model-metadata cache;
+      Live Smith's normalized subscription catalogs stay modal-only. Codex's
+      separate isolated upstream cache is described below.
     events.ts, sessions.ts
       Chat session metadata and the canonical event history.
     attachments.ts
@@ -144,13 +161,21 @@ src/
    attachment metadata/blobs, resolves current plus bounded historical user
    parts, and extracts supported Office text. The append atomically consumes the
    current immutable references only after current-file validation succeeds.
-6. `registry.ts` selects OpenAI Responses, OpenAI Chat Completions, or Anthropic
-   Messages.
-7. The transport maps normalized client function tools and provider-hosted
-   tools, messages, and parameters to the wire protocol.
-8. The transport returns normalized text, client tool calls, bounded citations,
+6. `backend-registry.ts` routes strictly on `profile.connection.kind`. A
+   `direct-api` connection asks `registry.ts` for OpenAI Responses, OpenAI Chat
+   Completions, or Anthropic Messages. A `codex-subscription` connection uses
+   the one canonical-storage-keyed, reference-counted Codex App Server shared
+   by every modal. Model names
+   never select or change this connection boundary.
+7. A Direct API transport maps normalized client function tools and
+   provider-hosted tools, messages, and parameters to its wire protocol. The
+   Codex backend instead creates an ephemeral, read-only App Server thread with
+   a strict output schema describing assistant text and Live Smith tool intent;
+   it provides no runtime workspace root, environment, or dynamic Codex tool.
+8. Either backend returns the same normalized text and client tool-call
+   boundary. Direct API transports can additionally return bounded citations
    and opaque replay state. Hosted provider tools never enter the client tool
-   executor.
+   executor, and unexpected App Server tool activity fails the Codex turn.
 9. Before confirmation, `agent-flow.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
@@ -224,6 +249,189 @@ incomplete reasons fail closed.
 Non-2xx provider response bodies are treated as untrusted and are not read,
 logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and status text.
+
+## Model connection boundary
+
+`ModelConnection` is a closed discriminated union. `DirectApiConnection` owns
+`apiFamily`, `apiMode`, `baseUrl`, and `apiKey`; the three existing
+`ModelTransport` implementations remain direct HTTP/SSE adapters.
+`CodexSubscriptionConnection` owns only `kind: "codex-subscription"` and the
+fixed provider identity `openai`. It is exposed as **ChatGPT subscription
+(Experimental)** and is a managed backend, not a fourth API mode and not an
+OpenAI-compatible endpoint preset.
+
+The managed branch requires the official Codex CLI `0.148.x` on `PATH` and
+communicates with `codex app-server` over newline-delimited stdio RPC. App
+Server owns `chatgptDeviceCode` login and the resulting ChatGPT credential.
+Live Smith neither extracts that OAuth token for `/v1/responses` nor accepts
+App Server's API-key login mode. Failure never changes the active connection or
+inherits an environment API key; separately billed API use requires the user
+to select a `direct-api` Profile explicitly.
+
+`process-host.ts` fixes `CODEX_HOME` to the private
+`<storageDirectory>/codex-subscription` directory and refuses to start unless
+the private `runtime-workspace` beneath it is empty, so Live Smith does not read
+or overwrite the user's normal `~/.codex/auth.json`. It rejects symlinked child
+directories, any persistent `config.toml`, and any managed `auth.json` that is
+not a single-link regular file; an accepted auth file is tightened to `0600` on
+POSIX. It forces the CLI file credential store and accepts initialization only
+when App Server reports the canonical isolated home. Before spawn it builds a
+strict child-environment allowlist containing only executable lookup,
+operating-system, temporary-directory, and locale values, then adds its
+controlled `CODEX_HOME`. Parent-process proxy variables, custom-CA settings,
+provider credentials, and arbitrary variables are not inherited. Launch-time
+configuration pins the official OpenAI model endpoint,
+clears MCP servers and custom model providers, requires ChatGPT
+login, turns off notifications, memory use/generation, hosted search,
+request-user-input, planning/goals, automatic/bundled Codex Skill instructions,
+both Codex Skill/MCP orchestrators, and MCP dependency/elicitation surfaces,
+and selects the built-in OpenAI provider without fallback. Permission, apps,
+collaboration-mode, and environment instruction blocks are excluded.
+Project-document discovery is capped at zero bytes and project-root markers are
+empty, so cwd ancestors cannot inject `AGENTS.md` or `.codex/config.toml`. CLI
+history persistence, analytics, feedback, update checks, OTEL export, remote
+plugins/sharing, in-app updates, and remote compaction v2 are disabled. The
+child also receives explicit feature disables for shell/coding and code mode,
+browser/computer use, MCP, apps, plugins, Codex Skills and workspace
+dependencies, hooks, image generation, multi-agent behavior, and Web Search.
+
+Codex 0.148 installs Git-attribution and cloud-config extensions without a
+feature gate. Live Smith therefore forces the process-level ChatGPT
+product-metadata base to a randomized private loopback responder. It accepts
+only `GET .../wham/settings/user` (a fixed attribution-disabled result) and
+`GET .../wham/config/bundle` (an empty bundle), rejects every other route, and
+is closed with the exact child. This prevents external product-settings/cloud-
+config requests and prevents Git-attribution developer instructions. Device
+login plus token refresh/revoke remain on Codex's official auth routes; the
+model transport remains pinned separately to the official ChatGPT Codex
+endpoint. The child does not inherit proxy or custom-CA routing for either the
+official routes or the local responder; future enterprise proxy support would
+require an explicit trusted configuration. Because an empty managed bundle must not bypass workspace policy,
+workspace-managed and unknown plan types are marked ineligible and rejected
+before catalog discovery or thread creation. Codex may retain only the empty
+response in its isolated cloud-config cache for such a rejected account.
+
+Exact Codex 0.148 also owns an unavoidable model-metadata surface. App Server
+starts an online catalog refresh immediately, repeats it every three minutes,
+and may write a five-minute `models_cache.json` entry under the isolated
+managed home. No supported 0.148 switch disables both worker and disk cache
+while retaining dynamic account-aware discovery. Live Smith never copies this
+file into settings, Sessions, events, or its Direct API cache. The upstream
+entry has no account key, so only Live Smith's normalized modal projection—not
+Codex's file—is invalidated and described as account-generation-scoped.
+
+The isolation is defense in depth, not delegated authorization. Every Codex
+thread is ephemeral, has no workspace roots or execution environments, uses
+empty developer instructions, a read-only sandbox and `approvalPolicy: never`,
+has no rollout path, and must return one bounded JSON object accepted by Live
+Smith's output schema.
+The output schema constrains the envelope and tool-name enum. The backend
+rejects App Server runtime-tool items, unknown names, and malformed, non-object,
+or oversized argument strings. Only `agent/loop.ts` authoritatively validates
+action arguments and can observe or mutate Live, so observation, schema
+validation, confirmation, preflight, the process-wide mutation queue,
+cancellation, and drift revalidation remain the final authority. Direct API
+temperature, output-token, reasoning-budget, and reasoning-disable controls are
+unavailable on this branch; only catalog-backed reasoning efforts may be
+selected. Exact `ultra` effort is preserved when advertised, while unknown
+effort values fail catalog validation instead of being silently filtered.
+
+`model-auth-send-fence.ts` and the shared backend-manager registry use the same
+canonical Ableton storage path. Canonicalization resolves the longest existing
+ancestor and then appends any missing suffix, so aliases through a symlinked
+parent converge even before the storage leaf is created. Every modal references one shared App Server,
+so refresh-token locking, in-memory auth, the model worker, and cache writes
+remain process-unique for that managed home; the last modal closes it. The
+fence excludes auth mutations from every active send across all modals, assigns a
+pending device flow to one modal, and blocks other flows and sends until a
+Check observes signed-in, signed-out, or definitive failure, cancellation or
+sign-out succeeds, or the
+owner closes. A pending owner close retires the shared runtime before releasing
+ownership. The same fence carries an auth generation that invalidates each
+modal's auth and catalog projection; each modal clears those projections before
+its next state, auth, discovery, or send operation. Successful mutations update
+the shared process in place. If a login/logout RPC outcome is unknown, the owner first retires the
+exact backend to confirmed exit, then advances generation and releases the auth
+fence. Peer state, auth, discovery, and send reads wait for this storage-keyed
+transition. Unconfirmed shutdown permanently poisons subscription use for that
+storage directory until extension-process restart.
+
+Passive UI hydration reads local account state. Explicit Check, model discovery,
+and the send readiness gate request an App Server credential refresh. Matching
+`account/login/completed` notifications clear successful and failed backend
+flows with fixed safe failure text. A later authoritative read by any modal
+reconciles signed-in, signed-out, or definitive failure with the shared pending
+owner and advances the generation exactly once. Pending-login state and Check
+callers share one storage-wide readiness refresh; send and auth mutation remain
+blocked until it settles, and pending or non-definitive results retain
+ownership. A caller abort cancels only its own wait; RPC timeout, terminal
+connection failure, or last-owner backend close bounds the shared read.
+Ordinary signed-in or signed-out hydration remains passive. Before `appendUserEvent`, a subscription
+send confirms an eligible signed-in account, refreshes any generation-scoped
+catalog miss through the same managed backend, and requires the saved model in
+that catalog; a readiness failure is `not_persisted`, so Queue pauses rather
+than consuming its tail. Live
+Smith's normalized subscription catalog is never
+written to its persistent model cache. The encoded `turn/start` payload is
+bounded from the existing
+30 MiB binary quota plus 16 MiB of transcript/tool headroom; the NDJSON input
+bound is exactly twice that payload bound so App Server can echo a complete
+request with bounded output metadata. Larger Sessions fail before a thread is
+created. App Server EOF rejects notification-only turn waits; if turn start or
+interruption cannot be confirmed, Live Smith closes the process rather than
+allow unobserved work to consume subscription quota.
+
+Both thread and turn creation explicitly clear inherited service-tier values;
+with `fast_mode` disabled, the thread must report a null effective tier before
+inference starts.
+Every validated terminal turn unsubscribes its ephemeral thread. A backend
+admits at most four concurrent turns and requests recycling after eight created
+threads; recycling waits until every active turn and first-turn reservation
+drains. Threshold recycling rejects new reservations but lets already-admitted
+continuations finish. At instantaneous capacity, later steps from persisted
+sends wait FIFO and prevent new first-turn reservations from overtaking them;
+each waiter is tied to its send's abort lifetime and creates no independent
+model task. Unsafe interruption, forbidden runtime items, or unsubscribe
+cleanup block further turns and retire the process after owned work drains.
+Permanent RPC terminal
+events retire only the matching opaque manager slot. A replacement cannot start
+until child exit is confirmed, and failure to observe exit after SIGKILL poisons
+the shared storage-directory fence instead of accepting overlapping process
+ownership. Preflight reserves one first-turn capacity slot before prompt
+persistence, and recycling waits until it is consumed or released. Later loop
+steps reacquire the manager slot, wait for fair admission on an eligible live
+backend when necessary, and otherwise hand off to its confirmed replacement.
+Child `error`, `exit`, and `close` are coalesced into one terminal observation;
+an executable-not-found `error` followed by `close` is reported as unavailable
+without a pointless TERM/KILL sequence or storage poison.
+
+All subscription Profiles under one storage directory share this managed
+ChatGPT account. Deleting a Profile does not sign out; logout is an explicit
+auth action. The `codex` executable is resolved from `PATH`, and Live Smith
+validates the reported `0.148.x` protocol line and isolated home rather than
+binary provenance, so installation of the trusted official binary remains the
+user's responsibility.
+
+This branch remains experimental. OpenAI documents the App Server command as
+experimental and unsupported for production workloads, and its schemas are
+Codex-version-specific. Node child-process tests do not establish that Ableton's
+real Extension Host can start, communicate with, interrupt, and close the
+process; that end-to-end host smoke remains pending.
+
+Claude subscription OAuth has no corresponding backend. Anthropic's published
+credential policy directs third-party products to Console API keys or supported
+cloud providers and restricts offering Claude.ai login or routing consumer plan
+credentials without approval. Unless Anthropic gives Live Smith prior written
+approval, the application must not read `~/.claude`, reuse Claude Code OAuth,
+wrap Claude Code/Agent SDK for inference, or call private Claude.ai endpoints.
+Anthropic remains the Direct API `Anthropic Messages` transport with a Console
+API key.
+
+Official boundary references: [OpenAI Codex
+authentication](https://learn.chatgpt.com/docs/auth), [OpenAI Codex App
+Server](https://learn.chatgpt.com/docs/app-server), [Anthropic authentication
+and credential use](https://code.claude.com/docs/en/legal-and-compliance), and
+[Claude subscription/API billing separation](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console).
 
 ## Skill boundary
 
@@ -371,8 +579,10 @@ markers instead of failing the new send. Assistant history is text-only.
 
 The provider-neutral model contract carries typed user text, image, native PDF,
 and audio parts. Transports recheck the corresponding input capability before
-network I/O. Audio additionally requires OpenAI Chat Completions and explicit
-`supported` audio-input evidence on the active saved `RuntimeProfile`; model
+network I/O. The managed App Server maps image or audio data URLs only when its
+signed-in model catalog explicitly declares that modality. Audio additionally
+requires explicit `supported` evidence on the active saved `RuntimeProfile` and
+either OpenAI Chat Completions or the managed subscription connection; model
 tool support is unrelated and is not a gate. OpenAI Responses and Anthropic
 Messages reject audio locally in this milestone. Office content is locally
 extracted and encoded with its filename and media type in a JSON-escaped block
@@ -434,8 +644,11 @@ Profile when the two channels arrive in either order.
 Profile state has three deliberate boundaries: incomplete `DraftProfile` values
 enter through settings commands, only validated `SavedProfile` values reach
 storage, and generation plus the active UI summary consume one materialized
-`RuntimeProfile`. Model discovery uses the Draft connection gate and therefore
-does not require a Profile name or selected model.
+`RuntimeProfile`. Each representation retains the same `direct-api` or
+`codex-subscription` discriminant. Model discovery uses the Draft connection
+gate and therefore does not require a Profile name or selected model. Secrets
+enumeration returns only Direct API keys; managed subscription credentials stay
+inside the isolated Codex home.
 
 ## Adding a model protocol
 
@@ -595,9 +808,10 @@ persisted global default is Queue. A Queue submission is captured in a
 Session-scoped, window-local FIFO and is not appended to the event log early.
 After the current send reaches a terminal state, the next item starts through the
 ordinary `/send` path with its own send ID. It therefore reacquires the Session
-lease and snapshots the then-current Profile, capabilities, Skills, attachments,
-history, recovery ledger, and Approval state. Stop terminates only the running
-send; a queued next turn starts after that terminal barrier. Queue promotion is
+lease and snapshots the then-current Profile, auth generation, capabilities,
+Skills, attachments, history, recovery ledger, and Approval state. Stop
+terminates only the running send; a queued next turn starts after that terminal
+barrier. Queue promotion is
 retried whenever a command, attachment operation, or Skill operation releases
 its blocker. A pending Close decision is also a promotion barrier. Any turn that
 is definitely not persisted, including the original
@@ -659,20 +873,19 @@ Steering detected at the first per-action guard has no completed action and is
 therefore a clean supersession, not a partial host failure; it closes the tool
 call and replans without opening a recovery ledger. A guard reached after any
 completed action retains the partial-recovery path.
-Settings schema version 3 adds the strict `defaultFollowUpBehavior` value
-`queue | steer` and its canonical nonnegative decimal-string revision; version
-2 migrates to Queue at revision `"0"`. The schema still validates its
-legacy `approvalMode` field as `manual`, `low-risk`, or `everything` so existing
-files remain readable. Runtime
-authorization never reads that field: it neither seeds nor overrides a Session.
-Persisted settings pass through an adjacent-version migration registry before
-current-schema validation. Loading a valid schema-version-1 file still maps
-`autoApprove: false` to Manual and `autoApprove: true` to Low Risk while
-preserving Profiles and credentials, but the mapped compatibility value has no
-Apply effect. Reads never rewrite the file; the next authorized settings
-mutation persists schema version 3. A future schema version or a historical
-version without a complete `vN` to `vN+1` migration chain fails closed as
-settings corruption.
+Current settings schema version 4 combines nested connection Profiles with the
+strict `defaultFollowUpBehavior` value `queue | steer` and a canonical
+nonnegative decimal-string revision. It still validates legacy `approvalMode`
+for compatibility, but runtime authorization never reads that field. Persisted
+settings use adjacent migrations: v1 maps `autoApprove` into v2, v2 wraps flat
+Profiles into the subscription branch's nested v3 shape, and v3 is
+shape-discriminated before migrating to v4. A v3 containing both follow-up
+fields must contain only flat Profiles and preserves its behavior/revision; a
+v3 containing neither must contain only nested Profiles and receives Queue at
+revision `"0"`. Partial fields, mixed Profile shapes, and unknown fields fail
+closed. Reads never rewrite the file; the next authorized settings mutation
+persists version 4. A future version or incomplete adjacent migration chain is
+reported as settings corruption.
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
 tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call
 limit. Distinct validation errors are treated as an evolving repair attempt and
@@ -770,13 +983,13 @@ possibly committed receipt. Queue starts another request through the unchanged
 Send contract; its mode is never added to that body. The global-settings command
 accepts only `kind: "save_global_settings"` and
 `defaultFollowUpBehavior: "queue" | "steer"`.
-Session and Profile commands accept only their command-specific fields;
-confirmation and Stop reject body fields they do not own. Stop targets the
-exact send ID in its header. While that send is active it returns
-`terminal: false`; after cleanup it returns `terminal: true` plus the consumed
-`promptPersistence` classification (`persisted`, `not_persisted`, or `unknown`)
-for that stopped send. The UI uses that classification before recovering or
-advancing Queue work, and an explicit Stop intent remains sticky if an automatic
-recovery poll was already running. Every JSON body is bounded to 1 MiB before
-parsing. Skill source is never a
-JSON field; it uses the separate authenticated raw route described above.
+Session, Profile, and subscription-auth commands accept only their
+command-specific fields; confirmation and Stop reject body fields they do not
+own. Stop targets the exact send ID in its header. While that send is active it
+returns `terminal: false`; after cleanup it returns `terminal: true` plus the
+consumed `promptPersistence` classification (`persisted`, `not_persisted`, or
+`unknown`) for that stopped send. The UI uses that classification before
+recovering or advancing Queue work, and an explicit Stop intent remains sticky
+if an automatic recovery poll was already running. Every JSON body is bounded
+to 1 MiB before parsing. Skill source is never a JSON field; it uses the
+separate authenticated raw route described above.

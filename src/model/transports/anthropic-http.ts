@@ -1,6 +1,11 @@
 import { URL } from "node:url";
 
-import type { DraftProfile, SavedProfile } from "../profile.js";
+import {
+  requireDirectApiConnection,
+  type DirectApiConnection,
+  type DraftProfile,
+  type SavedProfile,
+} from "../profile.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { parseServerSentEventData } from "./server-sent-events.js";
 
@@ -41,9 +46,10 @@ async function requestAnthropicResource(
   resource: "/messages" | "/models",
   options: AnthropicRequestOptions,
 ): Promise<unknown> {
+  const connection = requireDirectApiConnection(profile);
   const response = await fetchImpl(
-    anthropicEndpoint(profile.baseUrl, resource, options.query),
-    anthropicRequestInit(profile, options),
+    anthropicEndpoint(connection.baseUrl, resource, options.query),
+    anthropicRequestInit(connection, options),
   );
   await assertAnthropicResponse(response, options.signal);
   try {
@@ -63,9 +69,10 @@ export async function* streamAnthropicEvents(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): AsyncGenerator<Record<string, unknown>> {
+  const connection = requireDirectApiConnection(profile);
   const response = await fetchImpl(
-    anthropicEndpoint(profile.baseUrl, "/messages"),
-    anthropicRequestInit(profile, {
+    anthropicEndpoint(connection.baseUrl, "/messages"),
+    anthropicRequestInit(connection, {
       method: "POST",
       body: { ...body, stream: true },
       ...(signal ? { signal } : {}),
@@ -109,7 +116,7 @@ function anthropicEndpoint(
 }
 
 function anthropicRequestInit(
-  profile: DraftProfile | SavedProfile,
+  connection: DirectApiConnection,
   options: AnthropicRequestOptions,
 ): RequestInit {
   const headers: Record<string, string> = {
@@ -117,7 +124,7 @@ function anthropicRequestInit(
     "anthropic-version": anthropicApiVersion,
     "content-type": "application/json",
   };
-  if (profile.apiKey) headers["x-api-key"] = profile.apiKey;
+  if (connection.apiKey) headers["x-api-key"] = connection.apiKey;
   const init: RequestInit = {
     method: options.method,
     headers,

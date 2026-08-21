@@ -87,6 +87,27 @@
         return sendAttemptsBySession.get(activeSessionId()) || null;
       }
 
+      function subscriptionSendGateMessage() {
+        const state = getState();
+        const activeProfile = (state.settings?.profiles || []).find(
+          (profile) => profile.id === state.settings.activeProfileId,
+        );
+        if (activeProfile?.connection?.kind !== "codex-subscription") return "";
+        const auth = state.codexAuth;
+        if (auth?.status === "signed-in") {
+          return auth.subscriptionEligible
+            ? ""
+            : "This workspace-managed ChatGPT account is not eligible for subscription requests in Live Smith.";
+        }
+        if (auth?.status === "pending") {
+          return "Complete ChatGPT sign-in before sending a subscription request.";
+        }
+        if (auth?.status === "signed-out") {
+          return "Sign in to ChatGPT before sending a subscription request.";
+        }
+        return "The ChatGPT subscription is unavailable. Check the account status before sending.";
+      }
+
       function isDefaultFollowUpBehavior(value) {
         return value === "queue" || value === "steer";
       }
@@ -791,6 +812,11 @@
           requireView().isDraftDirty() ||
           !getState().settings.activeProfileId
         ) return;
+        const subscriptionGate = subscriptionSendGateMessage();
+        if (subscriptionGate) {
+          showStatus(subscriptionGate, true);
+          return;
+        }
         if (!requireView().validateAttachmentsForSend()) return;
         const paused = pausedFollowUpSessions.has(sessionId);
         const failedQueuedFollowUp = failedSendRecoveriesBySession.get(sessionId);
@@ -2478,6 +2504,7 @@
         getQueuedFollowUpCount: queuedFollowUpCount,
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
+        getSubscriptionSendGateMessage: subscriptionSendGateMessage,
         handleComposerInput,
         handleSendButton,
         isSendInProgress: () => Boolean(activeSendAttempt()),

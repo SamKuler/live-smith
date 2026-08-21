@@ -1361,6 +1361,24 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     assert.match((await command.json() as { error: string }).error, /does not support property settings/i);
     assert.equal(commandInput, undefined);
 
+    for (const kind of [
+      "start_codex_login",
+      "refresh_codex_account",
+      "logout_codex",
+    ]) {
+      const authCommand = await fetch(endpoint("/command"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, accessToken: "must-not-pass" }),
+      });
+      assert.equal(authCommand.status, 400);
+      assert.match(
+        (await authCommand.json() as { error: string }).error,
+        /does not support property accessToken/i,
+      );
+      assert.equal(commandInput, undefined);
+    }
+
     const restore = await fetch(endpoint("/command"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },

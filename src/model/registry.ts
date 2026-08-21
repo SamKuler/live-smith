@@ -4,6 +4,7 @@ import type {
 } from "./provider.js";
 import {
   isValidApiModePair,
+  requireDirectApiConnection,
   type DraftProfile,
   type SavedProfile,
 } from "./profile.js";
@@ -15,15 +16,16 @@ export function transportForProfile(
   profile: DraftProfile | SavedProfile,
   options: TransportFactoryOptions = {},
 ): ModelTransport {
-  if (!isValidApiModePair(profile.apiFamily, profile.apiMode)) {
+  const connection = requireDirectApiConnection(profile);
+  if (!isValidApiModePair(connection.apiFamily, connection.apiMode)) {
     throw new Error(
-      `Unsupported API family/mode combination: ${profile.apiFamily}/${profile.apiMode}.`,
+      `Unsupported API family/mode combination: ${connection.apiFamily}/${connection.apiMode}.`,
     );
   }
-  if (profile.apiFamily === "anthropic") {
+  if (connection.apiFamily === "anthropic") {
     return createAnthropicMessagesTransport(options);
   }
-  return profile.apiMode === "responses"
+  return connection.apiMode === "responses"
     ? createOpenAIResponsesTransport(options)
     : createOpenAIChatTransport(options);
 }

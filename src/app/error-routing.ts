@@ -21,5 +21,6 @@ export function sessionErrorMessage(
 }
 
 function isConfigurationError(message: string): boolean {
-  return /api key|active profile|model profile|profile validation|settings/i.test(message);
+  return /api key|active profile|model profile|profile validation|settings|sign in with chatgpt|codex (?:cli|app server)/i
+    .test(message);
 }

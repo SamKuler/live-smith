@@ -6,6 +6,7 @@ import type {
   ReasoningCapabilities,
 } from "./provider.js";
 import {
+  profileProvider,
   ProfileValidationError,
   type DraftProfile,
   type SavedProfile,
@@ -30,12 +31,20 @@ export function defaultModelCapabilities(): ModelCapabilities {
   };
 }
 
+function codexSubscriptionFallbackCapabilities(): ModelCapabilities {
+  return {
+    ...defaultModelCapabilities(),
+    streaming: false,
+    temperature: "unsupported",
+  };
+}
+
 function knownCapabilitiesForModel(
-  profile: Pick<SavedProfile, "apiFamily" | "apiMode" | "model">,
+  profile: DraftProfile | SavedProfile,
 ): ModelCapabilityHints | undefined {
   const model = profile.model.toLocaleLowerCase();
 
-  if (profile.apiFamily === "openai") {
+  if (profileProvider(profile) === "openai") {
     if (/^gpt-5\.6(?:-|$)/.test(model)) {
       return reasoningPolicy(
         ["low", "medium", "high", "xhigh", "max"],
@@ -170,11 +179,16 @@ export function resolveModelCapabilitiesWithEvidence(
   capabilities: ModelCapabilities;
   inputCapabilityEvidence: InputCapabilityEvidence;
 } {
-  const fallback = defaultModelCapabilities();
-  const known = knownCapabilitiesForModel(profile);
+  const managedSubscription = profile.connection.kind === "codex-subscription";
+  const fallback = managedSubscription
+    ? codexSubscriptionFallbackCapabilities()
+    : defaultModelCapabilities();
+  const known = managedSubscription ? undefined : knownCapabilitiesForModel(profile);
   const withKnown = mergeCapabilities(fallback, known);
   const inputCapabilityEvidence = unverifiedInputCapabilityEvidence();
-  const knownInputs = knownInputCapabilitiesForModel(profile);
+  const knownInputs = managedSubscription
+    ? undefined
+    : knownInputCapabilitiesForModel(profile);
   const withKnownInputs = mergeCapabilities(
     withKnown,
     knownInputs,
@@ -210,10 +224,10 @@ function applyInputCapabilityEvidence(
 }
 
 function knownInputCapabilitiesForModel(
-  profile: Pick<SavedProfile, "apiFamily" | "apiMode" | "model">,
+  profile: DraftProfile | SavedProfile,
 ): ModelCapabilityHints | undefined {
   const model = profile.model.toLocaleLowerCase();
-  if (profile.apiFamily === "openai") {
+  if (profileProvider(profile) === "openai") {
     const documentedImageModel = isExplicitAliasOrSnapshot(
       model,
       "gpt-5.6",

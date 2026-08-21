@@ -14,6 +14,7 @@
           applicationState = nextState;
         };
         let activeAppConfirmation = null;
+        let profileSettingsLocked = false;
 
         function finishAppConfirmation(accepted) {
           const confirmation = activeAppConfirmation;
@@ -119,7 +120,9 @@
 
         const capabilityPreview = factories.createCapabilityPreview({
           getState,
-          hasRunnableSendWork: bridgeClient.hasRunnableSendWork,
+          getSubscriptionSendGateMessage:
+            bridgeClient.getSubscriptionSendGateMessage,
+          hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
           profileEditor,
           isOperationInProgress: bridgeClient.isOperationInProgress,
           isSendInProgress: bridgeClient.isSendInProgress,
@@ -316,6 +319,7 @@
           sessionTimeline.renderTimeline();
           attachments.renderPending();
           skillManager.render();
+          profileEditor.renderCodexAuthState(profileSettingsLocked);
           capabilityPreview.updateReasoningVisibility();
           capabilityPreview.updateDraftActions();
         }
@@ -350,6 +354,21 @@
             busyAriaLabel: "Saving follow-up behavior…",
             controlId: "defaultFollowUpBehavior",
             status: "Saving follow-up behavior…",
+          },
+          start_codex_login: {
+            controlId: "codexSignInButton",
+            busyLabel: "Starting…",
+            status: "Starting ChatGPT sign-in…",
+          },
+          refresh_codex_account: {
+            controlId: "codexCheckAccountButton",
+            busyLabel: "Checking…",
+            status: "Checking ChatGPT sign-in…",
+          },
+          logout_codex: {
+            controlId: "codexLogoutButton",
+            busyLabel: "Signing out…",
+            status: "Ending the ChatGPT session…",
           },
           new_session: {
             busyLabel: "…",
@@ -407,10 +426,12 @@
           activeCommandControl = feedback.controlId
             ? document.getElementById(feedback.controlId)
             : focusedControl;
-          if (activeCommandControl && feedback.busyLabel) {
+          const busyLabel = activeCommandControl?.dataset.busyLabel ||
+            feedback.busyLabel;
+          if (activeCommandControl && busyLabel) {
             activeCommandControl.dataset.commandIdleLabel =
               activeCommandControl.dataset.idleLabel || activeCommandControl.textContent;
-            activeCommandControl.textContent = feedback.busyLabel;
+            activeCommandControl.textContent = busyLabel;
           }
           if (activeCommandControl && feedback.busyAriaLabel) {
             activeCommandAriaLabel = activeCommandControl.getAttribute("aria-label");
@@ -436,6 +457,7 @@
             skillInProgress;
           const settingsBusy = Boolean(commandKind) || anySendInProgress ||
             attachmentInProgress || skillInProgress;
+          profileSettingsLocked = settingsBusy;
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
           sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
@@ -461,6 +483,7 @@
             control.disabled = settingsBusy;
           });
           profileEditor.updateHostedToolControls(settingsBusy);
+          profileEditor.renderCodexAuthState(settingsBusy);
           approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
           document.getElementById("defaultFollowUpBehavior").disabled =
@@ -511,17 +534,21 @@
           duplicateProfile: profileEditor.duplicateProfile,
           handleApiFamilyChange: profileEditor.handleApiFamilyChange,
           handleApiModeChange: profileEditor.handleApiModeChange,
+          handleConnectionKindChange: profileEditor.handleConnectionKindChange,
           handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
           handleProfileSelection: profileEditor.handleProfileSelection,
           handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
           markDraftDirty: profileEditor.markDraftDirty,
+          logoutCodex: profileEditor.logoutCodex,
           openInspector,
+          refreshCodexAccount: profileEditor.refreshCodexAccount,
           requestClose,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           saveProfile: profileEditor.saveProfile,
+          startCodexLogin: profileEditor.startCodexLogin,
           toggleInspector,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
         };

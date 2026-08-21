@@ -115,6 +115,69 @@ export interface ModelTransport {
   createToolTurn(request: TransportRequest): Promise<ModelTurn>;
 }
 
+export type ManagedAuthState =
+  | {
+      status: "unavailable";
+      message: string;
+      /** The backend observed a terminal auth result, not an indeterminate read. */
+      definitive?: boolean;
+    }
+  | { status: "signed-out" }
+  | {
+      status: "pending";
+      verificationUrl: string;
+      userCode: string;
+    }
+  | {
+      status: "signed-in";
+      accountLabel: string | null;
+      planType: string;
+      subscriptionEligible: boolean;
+    };
+
+export interface ManagedAuthReadOptions {
+  /** Proactively refresh managed credentials before reporting readiness. */
+  readiness?: boolean;
+}
+
+export type ModelBackendTerminalListener = (error: Error) => void;
+
+export class ModelBackendShutdownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelBackendShutdownError";
+  }
+}
+
+export interface ModelToolTurnReservation {
+  createToolTurn(request: TransportRequest): Promise<ModelTurn>;
+  release(): Promise<void>;
+}
+
+/**
+ * Provider-neutral execution boundary. Direct API transports are wrapped by
+ * a short-lived backend; managed runtimes may retain process and auth state.
+ */
+export interface ModelBackend {
+  readonly kind: "direct-api" | "codex-subscription";
+  /** Managed backends notify once when their runtime can no longer be reused. */
+  onTerminal?(listener: ModelBackendTerminalListener): () => void;
+  listModels(
+    profile: DraftProfile,
+    signal?: AbortSignal,
+  ): Promise<DiscoveredModelInfo[]>;
+  /** Pins capacity for one future turn across pre-request preparation. */
+  reserveToolTurn?(): ModelToolTurnReservation;
+  createToolTurn(request: TransportRequest): Promise<ModelTurn>;
+  readAuthState?(
+    signal?: AbortSignal,
+    options?: ManagedAuthReadOptions,
+  ): Promise<ManagedAuthState>;
+  beginLogin?(signal?: AbortSignal): Promise<ManagedAuthState>;
+  logout?(signal?: AbortSignal): Promise<ManagedAuthState>;
+  close(): Promise<void>;
+}
+
 export interface TransportFactoryOptions {
   fetchImpl?: typeof fetch;
 }

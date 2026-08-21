@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SavedProfile } from "./profile.js";
+import type { DirectApiConnection, SavedProfile } from "./profile.js";
 import {
   defaultModelCapabilities,
   resolveModelCapabilities,
@@ -9,14 +9,49 @@ import {
   validateGenerationParameters,
 } from "./capabilities.js";
 
-function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
+type DirectModeOverrides =
+  | {
+      apiFamily?: "openai";
+      apiMode?: "responses" | "chat-completions";
+    }
+  | {
+      apiFamily: "anthropic";
+      apiMode: "messages";
+    };
+
+type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+  DirectModeOverrides & {
+    baseUrl?: string;
+    apiKey?: string;
+  };
+
+function profile(overrides: ProfileOverrides = {}): SavedProfile {
+  const {
+    apiFamily,
+    apiMode,
+    baseUrl = "https://example.test/v1",
+    apiKey = "key",
+    ...fields
+  } = overrides;
+  const connection: DirectApiConnection = apiFamily === "anthropic"
+    ? {
+        kind: "direct-api",
+        apiFamily: "anthropic",
+        apiMode: "messages",
+        baseUrl,
+        apiKey,
+      }
+    : {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: apiMode ?? "responses",
+        baseUrl,
+        apiKey,
+      };
   return {
     id: "p1",
     name: "Profile",
-    apiFamily: "openai",
-    apiMode: "responses",
-    baseUrl: "https://example.test/v1",
-    apiKey: "key",
+    connection,
     model: "unknown-model",
     parameters: {
       maxOutputTokens: 4096,
@@ -24,7 +59,21 @@ function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
       reasoning: { mode: "default" },
     },
     advanced: {},
-    ...overrides,
+    ...fields,
+  };
+}
+
+function subscriptionProfile(): SavedProfile {
+  return {
+    id: "subscription",
+    name: "ChatGPT subscription",
+    connection: { kind: "codex-subscription", provider: "openai" },
+    model: "gpt-5.6-sol",
+    parameters: {
+      maxOutputTokens: 16_384,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
   };
 }
 
@@ -39,6 +88,37 @@ test("unknown models use conservative mode capabilities", () => {
     audio: false,
     pdf: false,
   });
+});
+
+test("subscription capabilities come from App Server discovery, not model-name hints", () => {
+  const unresolved = resolveModelCapabilitiesWithEvidence(subscriptionProfile());
+  assert.equal(unresolved.capabilities.streaming, false);
+  assert.equal(unresolved.capabilities.temperature, "unsupported");
+  assert.equal(unresolved.capabilities.reasoning.supported, false);
+  assert.equal(unresolved.capabilities.inputs.image, false);
+  assert.equal(unresolved.inputCapabilityEvidence.image, "unverified");
+
+  const discovered = resolveModelCapabilitiesWithEvidence(
+    subscriptionProfile(),
+    {
+      streaming: false,
+      temperature: "unsupported",
+      reasoning: {
+        supported: true,
+        canDisable: false,
+        efforts: ["low", "high"],
+        budgetTokens: false,
+        strategy: "effort",
+      },
+      inputs: { image: true, audio: true, pdf: false },
+    },
+  );
+  assert.deepEqual(discovered.capabilities.inputs, {
+    image: true,
+    audio: true,
+    pdf: false,
+  });
+  assert.equal(discovered.inputCapabilityEvidence.audio, "supported");
 });
 
 test("input capabilities merge known policy, discovery, and partial overrides", () => {

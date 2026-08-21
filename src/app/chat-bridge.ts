@@ -261,6 +261,9 @@ export type ChatBridgeCommandInput =
   | { kind: "save_profile"; profile: DraftProfile }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
+  | { kind: "start_codex_login" }
+  | { kind: "refresh_codex_account" }
+  | { kind: "logout_codex" }
   | {
       kind: "save_global_settings";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
@@ -2200,6 +2203,14 @@ function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     };
   }
   if (kind === "new_session") {
+    assertOnlyInputKeys(input, ["kind"], `${kind} command`);
+    return { kind };
+  }
+  if (
+    kind === "start_codex_login" ||
+    kind === "refresh_codex_account" ||
+    kind === "logout_codex"
+  ) {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);
     return { kind };
   }

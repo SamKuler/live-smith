@@ -12,7 +12,7 @@ function globalSettingsState(
   return {
     sessions: [],
     settings: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProfileId: null,
       profiles: [],
       approvalMode: "manual",
@@ -139,6 +139,12 @@ test("global follow-up settings are strict commands allowed during an active sen
 
 test("global follow-up events replay and reconcile states by revision", async () => {
   let sourceState = globalSettingsState("queue", "9007199254740991");
+  const pendingAuth = {
+    status: "pending" as const,
+    verificationUrl: "https://auth.openai.com/codex/device",
+    userCode: "ABCD-EFGH",
+  };
+  sourceState.codexAuth = pendingAuth;
   const bridge = await createChatBridge({
     buildState: async () => sourceState,
     renderHtml: () => "<html></html>",
@@ -177,6 +183,7 @@ test("global follow-up events replay and reconcile states by revision", async ()
       overlaid.settings.defaultFollowUpBehaviorRevision,
       "9007199254740992",
     );
+    assert.deepEqual(overlaid.codexAuth, pendingAuth);
 
     sourceState = globalSettingsState("queue", "9007199254740993");
     const adopted = await (await fetch(endpoint("/state"))).json() as ChatDialogState;

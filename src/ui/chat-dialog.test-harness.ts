@@ -179,10 +179,13 @@ function profileFixture(
   return {
     id: "profile-1",
     name: "Studio",
-    apiFamily: "openai",
-    apiMode: "chat-completions",
-    apiKey: "test-key",
-    baseUrl: "https://example.test/v1",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "chat-completions",
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+    },
     model: "model-a",
     parameters: {
       maxOutputTokens: 8192,
@@ -197,10 +200,13 @@ function profileFixture(
 function modelStateSourceFixture(profile: SavedProfile) {
   return {
     profileId: profile.id,
-    apiFamily: profile.apiFamily,
-    apiMode: profile.apiMode,
-    baseUrl: profile.baseUrl.replace(/\/+$/, ""),
-    apiKey: profile.apiKey,
+    connection: profile.connection.kind === "direct-api"
+      ? {
+          ...profile.connection,
+          baseUrl: profile.connection.baseUrl.replace(/\/+$/, ""),
+          apiKey: profile.connection.apiKey.trim(),
+        }
+      : { ...profile.connection },
     model: profile.model,
   };
 }
@@ -240,13 +246,10 @@ function stateFixture(): ChatDialogState {
     capabilities: capabilities(),
     availableModels: [],
     modelStateSource: modelStateSourceFixture(profileFixture()),
-    runtimeProfile: {
-      profile: profileFixture(),
-      capabilities: capabilities(),
-      inputCapabilityEvidence: inputCapabilityEvidence(),
-    },
+    runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
+    codexAuth: { status: "signed-out" },
     settings: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
@@ -256,8 +259,13 @@ function stateFixture(): ChatDialogState {
         profileFixture({
           id: "profile-2",
           name: "Mix review",
-          apiFamily: "anthropic",
-          apiMode: "messages",
+          connection: {
+            kind: "direct-api",
+            apiFamily: "anthropic",
+            apiMode: "messages",
+            apiKey: "test-key",
+            baseUrl: "https://example.test/v1",
+          },
           model: "model-b",
         }),
       ],
@@ -693,6 +701,21 @@ async function createDialogHarness(
                 if (serverState.activeSessionId === command.sessionId) {
                   serverState.approvalMode = command.approvalMode;
                 }
+              } else if (command.kind === "start_codex_login") {
+                serverState.codexAuth = {
+                  status: "pending",
+                  verificationUrl: "https://auth.openai.com/codex/device",
+                  userCode: "ABCD-EFGH",
+                };
+              } else if (command.kind === "refresh_codex_account") {
+                serverState.codexAuth = {
+                  status: "signed-in",
+                  accountLabel: "studio@example.test",
+                  planType: "pro",
+                  subscriptionEligible: true,
+                };
+              } else if (command.kind === "logout_codex") {
+                serverState.codexAuth = { status: "signed-out" };
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -702,9 +725,7 @@ async function createDialogHarness(
                 serverState.settings.activeProfileId = command.profile.id;
                 serverState.modelStateSource = modelStateSourceFixture(command.profile);
                 serverState.runtimeProfile = {
-                  profile: command.profile,
-                  capabilities: capabilities(),
-                  inputCapabilityEvidence: inputCapabilityEvidence(),
+                  ...runtimeSummaryForHarnessProfile(command.profile),
                 };
               } else if (command.kind === "discover_models") {
                 serverState.availableModels = [{
@@ -742,11 +763,7 @@ async function createDialogHarness(
                   ? modelStateSourceFixture(profile)
                   : null;
                 serverState.runtimeProfile = profile
-                  ? {
-                      profile,
-                      capabilities: capabilities(),
-                      inputCapabilityEvidence: inputCapabilityEvidence(),
-                    }
+                  ? runtimeSummaryForHarnessProfile(profile)
                   : null;
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
@@ -1399,7 +1416,18 @@ function runtimeSummaryForHarnessProfile(
     evidence.pdf = "supported";
   }
   return {
-    profile,
+    profile: {
+      id: profile.id,
+      name: profile.name,
+      connectionKind: profile.connection.kind,
+      apiFamily: profile.connection.kind === "direct-api"
+        ? profile.connection.apiFamily
+        : profile.connection.provider,
+      apiMode: profile.connection.kind === "direct-api"
+        ? profile.connection.apiMode
+        : null,
+      model: profile.model,
+    },
     capabilities: runtimeCapabilities,
     inputCapabilityEvidence: evidence,
   };

@@ -7,7 +7,69 @@ import {
   isDefaultFollowUpBehaviorRevision,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
+  type DirectApiConnection,
+  type ReasoningEffort,
 } from "./profile.js";
+
+test("Direct API connection types correlate every family with its supported modes", () => {
+  const valid: DirectApiConnection[] = [
+    {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "test-key",
+    },
+    {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "chat-completions",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "test-key",
+    },
+    {
+      kind: "direct-api",
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      baseUrl: "https://api.anthropic.com",
+      apiKey: "test-key",
+    },
+  ];
+
+  // @ts-expect-error Anthropic direct API connections cannot use Responses.
+  const invalidAnthropicResponses: DirectApiConnection = {
+    kind: "direct-api",
+    apiFamily: "anthropic",
+    apiMode: "responses",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+  };
+  // @ts-expect-error Anthropic direct API connections cannot use Chat Completions.
+  const invalidAnthropicChat: DirectApiConnection = {
+    kind: "direct-api",
+    apiFamily: "anthropic",
+    apiMode: "chat-completions",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+  };
+  // @ts-expect-error OpenAI direct API connections cannot use Messages.
+  const invalidOpenAIMessages: DirectApiConnection = {
+    kind: "direct-api",
+    apiFamily: "openai",
+    apiMode: "messages",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+  };
+
+  assert.deepEqual(valid.map((connection) => connection.apiMode), [
+    "responses",
+    "chat-completions",
+    "messages",
+  ]);
+  void invalidAnthropicResponses;
+  void invalidAnthropicChat;
+  void invalidOpenAIMessages;
+});
 
 test("follow-up behavior revisions are canonical unbounded decimal strings", () => {
   for (const revision of ["0", "1", "9007199254740993", "1".repeat(256)]) {
@@ -39,10 +101,13 @@ function profile(baseUrl: string): Record<string, unknown> {
   return {
     id: "deepseek-anthropic",
     name: "DeepSeek Anthropic",
-    apiFamily: "anthropic",
-    apiMode: "messages",
-    baseUrl,
-    apiKey: "test-key",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      baseUrl,
+      apiKey: "test-key",
+    },
     model: "deepseek-v4-flash",
     parameters: {
       maxOutputTokens: 8192,
@@ -63,7 +128,12 @@ test("Profile validation does not depend on an ambient URL constructor", () => {
     const validated = validateDraftProfileForSave(
       profile("https://api.deepseek.com/anthropic"),
     );
-    assert.equal(validated.baseUrl, "https://api.deepseek.com/anthropic");
+    assert.equal(
+      validated.connection.kind === "direct-api"
+        ? validated.connection.baseUrl
+        : undefined,
+      "https://api.deepseek.com/anthropic",
+    );
   } finally {
     if (descriptor) Object.defineProperty(globalThis, "URL", descriptor);
     else Reflect.deleteProperty(globalThis, "URL");
@@ -102,7 +172,13 @@ test("Profile validation permits plaintext HTTP only for loopback providers", ()
     "http://[::1]:11434/v1",
     "http://[::ffff:127.0.0.1]/v1",
   ]) {
-    assert.equal(validateDraftProfileForSave(profile(baseUrl)).baseUrl, baseUrl);
+    const saved = validateDraftProfileForSave(profile(baseUrl));
+    assert.equal(
+      saved.connection.kind === "direct-api"
+        ? saved.connection.baseUrl
+        : undefined,
+      baseUrl,
+    );
   }
 
   for (const baseUrl of [
@@ -125,24 +201,40 @@ test("loopback Profiles may omit authentication while remote Profiles require it
   ] as const) {
     const localProfile = {
       ...profile("http://127.0.0.1:1234/v1"),
-      apiFamily,
-      apiMode,
-      apiKey: "   ",
+      connection: {
+        kind: "direct-api",
+        apiFamily,
+        apiMode,
+        baseUrl: "http://127.0.0.1:1234/v1",
+        apiKey: "   ",
+      },
     };
-    assert.equal(validateDraftProfileForDiscovery(localProfile).apiKey, "");
-    assert.equal(validateDraftProfileForSave(localProfile).apiKey, "");
+    assert.deepEqual(validateDraftProfileForDiscovery(localProfile).connection, {
+      ...localProfile.connection,
+      apiKey: "",
+    });
+    assert.deepEqual(validateDraftProfileForSave(localProfile).connection, {
+      ...localProfile.connection,
+      apiKey: "",
+    });
 
     assert.throws(
       () => validateDraftProfileForDiscovery({
         ...localProfile,
-        baseUrl: "https://models.example.test/v1",
+        connection: {
+          ...localProfile.connection,
+          baseUrl: "https://models.example.test/v1",
+        },
       }),
       /API key is required for non-local endpoints/,
     );
     assert.throws(
       () => validateDraftProfileForSave({
         ...localProfile,
-        baseUrl: "https://models.example.test/v1",
+        connection: {
+          ...localProfile.connection,
+          baseUrl: "https://models.example.test/v1",
+        },
       }),
       /API key is required for non-local endpoints/,
     );
@@ -173,7 +265,12 @@ test("Draft discovery validation permits blank Profile name and model", () => {
 
   assert.equal(draft.name, "");
   assert.equal(draft.model, "");
-  assert.equal(draft.baseUrl, "https://example.test/v1");
+  assert.equal(
+    draft.connection.kind === "direct-api"
+      ? draft.connection.baseUrl
+      : undefined,
+    "https://example.test/v1",
+  );
 });
 
 test("Draft save validation still requires Profile name and model", () => {
@@ -233,8 +330,13 @@ test("image capability override is strictly validated and preserved", () => {
 test("hosted Web Search is opt-in, normalized, and limited to supported protocols", () => {
   const responses = validateDraftProfileForSave({
     ...profile("https://example.test/v1"),
-    apiFamily: "openai",
-    apiMode: "responses",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl: "https://example.test/v1",
+      apiKey: "test-key",
+    },
     advanced: { hostedTools: { webSearch: true } },
   });
   assert.deepEqual(responses.advanced.hostedTools, { webSearch: true });
@@ -248,8 +350,13 @@ test("hosted Web Search is opt-in, normalized, and limited to supported protocol
   assert.throws(
     () => validateDraftProfileForSave({
       ...profile("https://example.test/v1"),
-      apiFamily: "openai",
-      apiMode: "chat-completions",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "chat-completions",
+        baseUrl: "https://example.test/v1",
+        apiKey: "test-key",
+      },
       advanced: { hostedTools: { webSearch: true } },
     }),
     (error: unknown) =>
@@ -278,4 +385,112 @@ test("draft discovery preserves the hosted Web Search opt-in", () => {
     advanced: { hostedTools: { webSearch: true } },
   });
   assert.deepEqual(draft.advanced.hostedTools, { webSearch: true });
+});
+
+test("subscription Profiles persist no direct API credentials", () => {
+  const saved = validateDraftProfileForSave({
+    id: "codex-subscription",
+    name: "ChatGPT subscription",
+    connection: { kind: "codex-subscription", provider: "openai" },
+    model: "gpt-5.6-sol",
+    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    advanced: {},
+  });
+
+  assert.deepEqual(saved.connection, {
+    kind: "codex-subscription",
+    provider: "openai",
+  });
+  assert.equal(JSON.stringify(saved).includes("apiKey"), false);
+});
+
+test("reasoning effort validation preserves ultra and rejects unknown values", () => {
+  const direct = profile("https://example.test/v1");
+  const ultra: ReasoningEffort = "ultra";
+  const saved = validateDraftProfileForSave({
+    ...direct,
+    parameters: {
+      ...(direct.parameters as Record<string, unknown>),
+      reasoning: { mode: "enabled", effort: ultra },
+    },
+    advanced: {
+      capabilityOverrides: {
+        reasoning: {
+          supported: true,
+          efforts: ["high", ultra],
+          strategy: "effort",
+        },
+      },
+    },
+  });
+  assert.deepEqual(saved.parameters.reasoning, {
+    mode: "enabled",
+    effort: "ultra",
+  });
+  assert.deepEqual(saved.advanced.capabilityOverrides?.reasoning?.efforts, [
+    "high",
+    "ultra",
+  ]);
+
+  for (const reasoning of [
+    { mode: "enabled", effort: "future-effort" },
+    { mode: "enabled", effort: 7 },
+  ]) {
+    assert.throws(
+      () => validateDraftProfileForSave({
+        ...direct,
+        parameters: {
+          ...(direct.parameters as Record<string, unknown>),
+          reasoning,
+        },
+      }),
+      /Reasoning effort is unsupported/i,
+    );
+  }
+});
+
+test("subscription Profiles reject direct credentials and unsupported request settings", () => {
+  const base = {
+    id: "codex-subscription",
+    name: "ChatGPT subscription",
+    connection: { kind: "codex-subscription", provider: "openai" },
+    model: "gpt-5.6-sol",
+    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    advanced: {},
+  };
+
+  for (const connection of [
+    { ...base.connection, apiKey: "forbidden" },
+    { ...base.connection, baseUrl: "https://api.openai.com/v1" },
+    { kind: "codex-subscription", provider: "anthropic" },
+  ]) {
+    assert.throws(
+      () => validateDraftProfileForSave({ ...base, connection }),
+      /does not support property|require.*OpenAI/i,
+    );
+  }
+
+  for (const settings of [
+    {
+      parameters: {
+        ...base.parameters,
+        reasoning: { mode: "disabled" },
+      },
+    },
+    { parameters: { ...base.parameters, temperature: 0.2 } },
+    {
+      parameters: {
+        ...base.parameters,
+        reasoning: { mode: "enabled", budgetTokens: 4096 },
+      },
+    },
+    { advanced: { capabilityOverrides: { tools: true } } },
+    { advanced: { hostedTools: { webSearch: true } } },
+    { advanced: { extraBody: {} } },
+  ]) {
+    assert.throws(
+      () => validateDraftProfileForSave({ ...base, ...settings }),
+      /not supported by Codex subscription Profiles|cannot be disabled/,
+    );
+  }
 });

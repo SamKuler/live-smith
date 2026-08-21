@@ -6,30 +6,44 @@ import {
   ProfileValidationError,
   validateDraftProfileForSave,
   type AgentSettings,
+  type AnthropicDirectApiConnection,
   type ApprovalMode,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
+  type OpenAIDirectApiConnection,
   type SavedProfile,
 } from "../model/profile.js";
 
 export { CURRENT_AGENT_SETTINGS_SCHEMA_VERSION } from "../model/profile.js";
 
-interface SharedAgentSettings {
+interface SharedAgentSettings<Profile> {
   activeProfileId: string | null;
-  profiles: SavedProfile[];
+  profiles: Profile[];
 }
 
-interface AgentSettingsV1 extends SharedAgentSettings {
+type LegacyProfileFields = Omit<SavedProfile, "connection">;
+
+type LegacySavedProfile = LegacyProfileFields & (
+  | Omit<OpenAIDirectApiConnection, "kind">
+  | Omit<AnthropicDirectApiConnection, "kind">
+);
+
+interface AgentSettingsV1 extends SharedAgentSettings<LegacySavedProfile> {
   schemaVersion: 1;
   autoApprove: boolean;
 }
 
-interface AgentSettingsV2 extends SharedAgentSettings {
+interface AgentSettingsV2 extends SharedAgentSettings<LegacySavedProfile> {
   schemaVersion: 2;
   approvalMode: ApprovalMode;
 }
 
-interface AgentSettingsV3 extends SharedAgentSettings {
+interface SubscriptionAgentSettingsV3 extends SharedAgentSettings<SavedProfile> {
+  schemaVersion: 3;
+  approvalMode: ApprovalMode;
+}
+
+interface MainAgentSettingsV3 extends SharedAgentSettings<LegacySavedProfile> {
   schemaVersion: 3;
   approvalMode: ApprovalMode;
   defaultFollowUpBehavior: DefaultFollowUpBehavior;
@@ -41,6 +55,7 @@ type SettingsMigration = (value: unknown) => unknown;
 const migrations = new Map<number, SettingsMigration>([
   [1, migrateSettingsV1ToV2],
   [2, migrateSettingsV2ToV3],
+  [3, migrateSettingsV3ToV4],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -59,7 +74,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV3(migrated);
+  return validateSettingsV4(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -72,10 +87,51 @@ function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
   };
 }
 
-function migrateSettingsV2ToV3(value: unknown): AgentSettingsV3 {
+function migrateSettingsV2ToV3(value: unknown): SubscriptionAgentSettingsV3 {
   const settings = validateSettingsV2(value);
   return {
     schemaVersion: 3,
+    activeProfileId: settings.activeProfileId,
+    profiles: settings.profiles.map(migrateLegacyProfile),
+    approvalMode: settings.approvalMode,
+  };
+}
+
+function migrateSettingsV3ToV4(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 3) throw unsupportedSchemaVersion();
+
+  const hasBehavior = Object.prototype.hasOwnProperty.call(
+    record,
+    "defaultFollowUpBehavior",
+  );
+  const hasRevision = Object.prototype.hasOwnProperty.call(
+    record,
+    "defaultFollowUpBehaviorRevision",
+  );
+  if (hasBehavior !== hasRevision) {
+    throw new ProfileValidationError(
+      "defaultFollowUpBehavior",
+      "Schema version 3 settings must contain both follow-up fields or neither.",
+    );
+  }
+
+  if (hasBehavior) {
+    const settings = validateMainSettingsV3(record);
+    return {
+      schemaVersion: 4,
+      activeProfileId: settings.activeProfileId,
+      profiles: settings.profiles.map(migrateLegacyProfile),
+      approvalMode: settings.approvalMode,
+      defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision:
+        settings.defaultFollowUpBehaviorRevision,
+    };
+  }
+
+  const settings = validateSubscriptionSettingsV3(record);
+  return {
+    schemaVersion: 4,
     activeProfileId: settings.activeProfileId,
     profiles: settings.profiles,
     approvalMode: settings.approvalMode,
@@ -87,7 +143,12 @@ function migrateSettingsV2ToV3(value: unknown): AgentSettingsV3 {
 function validateSettingsV1(value: unknown): AgentSettingsV1 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 1) throw unsupportedSchemaVersion();
-  const shared = validatedSharedSettings(record);
+  assertOnlyKeys(
+    record,
+    ["schemaVersion", "activeProfileId", "profiles", "autoApprove"],
+    "settings",
+  );
+  const shared = validatedLegacySharedSettings(record);
   if (typeof record.autoApprove !== "boolean") {
     throw new ProfileValidationError(
       "autoApprove",
@@ -104,54 +165,106 @@ function validateSettingsV1(value: unknown): AgentSettingsV1 {
 function validateSettingsV2(value: unknown): AgentSettingsV2 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 2) throw unsupportedSchemaVersion();
-  const shared = validatedSharedSettings(record);
-  if (!isApprovalMode(record.approvalMode)) {
-    throw new ProfileValidationError(
-      "approvalMode",
-      "Approval mode must be manual, low-risk, or everything.",
-    );
-  }
+  assertOnlyKeys(
+    record,
+    ["schemaVersion", "activeProfileId", "profiles", "approvalMode"],
+    "settings",
+  );
+  const shared = validatedLegacySharedSettings(record);
+  const approvalMode = approvalModeValue(record.approvalMode);
   return {
     schemaVersion: 2,
     ...shared,
-    approvalMode: record.approvalMode,
+    approvalMode,
   };
 }
 
-function validateSettingsV3(value: unknown): AgentSettingsV3 {
+function validateSubscriptionSettingsV3(
+  value: unknown,
+): SubscriptionAgentSettingsV3 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 3) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    ["schemaVersion", "activeProfileId", "profiles", "approvalMode"],
+    "settings",
+  );
   const shared = validatedSharedSettings(record);
-  if (!isApprovalMode(record.approvalMode)) {
-    throw new ProfileValidationError(
-      "approvalMode",
-      "Approval mode must be manual, low-risk, or everything.",
-    );
-  }
-  if (!isDefaultFollowUpBehavior(record.defaultFollowUpBehavior)) {
-    throw new ProfileValidationError(
-      "defaultFollowUpBehavior",
-      "Default follow-up behavior must be queue or steer.",
-    );
-  }
-  if (!isDefaultFollowUpBehaviorRevision(record.defaultFollowUpBehaviorRevision)) {
-    throw new ProfileValidationError(
-      "defaultFollowUpBehaviorRevision",
-      "Default follow-up behavior revision must be a canonical nonnegative decimal string.",
-    );
-  }
+  const approvalMode = approvalModeValue(record.approvalMode);
   return {
     schemaVersion: 3,
     ...shared,
-    approvalMode: record.approvalMode,
-    defaultFollowUpBehavior: record.defaultFollowUpBehavior,
-    defaultFollowUpBehaviorRevision: record.defaultFollowUpBehaviorRevision,
+    approvalMode,
+  };
+}
+
+function validateMainSettingsV3(value: unknown): MainAgentSettingsV3 {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 3) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+    ],
+    "settings",
+  );
+  const shared = validatedLegacySharedSettings(record);
+  const approvalMode = approvalModeValue(record.approvalMode);
+  const defaultFollowUpBehavior = followUpBehaviorValue(
+    record.defaultFollowUpBehavior,
+  );
+  const defaultFollowUpBehaviorRevision = followUpRevisionValue(
+    record.defaultFollowUpBehaviorRevision,
+  );
+  return {
+    schemaVersion: 3,
+    ...shared,
+    approvalMode,
+    defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision,
+  };
+}
+
+function validateSettingsV4(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 4) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+    ],
+    "settings",
+  );
+  const shared = validatedSharedSettings(record);
+  const approvalMode = approvalModeValue(record.approvalMode);
+  const defaultFollowUpBehavior = followUpBehaviorValue(
+    record.defaultFollowUpBehavior,
+  );
+  const defaultFollowUpBehaviorRevision = followUpRevisionValue(
+    record.defaultFollowUpBehaviorRevision,
+  );
+  return {
+    schemaVersion: 4,
+    ...shared,
+    approvalMode,
+    defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision,
   };
 }
 
 function validatedSharedSettings(
   record: Record<string, unknown>,
-): SharedAgentSettings {
+): SharedAgentSettings<SavedProfile> {
   if (!Array.isArray(record.profiles)) {
     throw new ProfileValidationError("profiles", "Profiles must be an array.");
   }
@@ -160,7 +273,127 @@ function validatedSharedSettings(
   for (const entry of record.profiles) {
     profiles.push(validateDraftProfileForSave(entry, profiles));
   }
+  const activeProfileId = validatedActiveProfileId(record, profiles);
+  return { activeProfileId, profiles };
+}
 
+function validatedLegacySharedSettings(
+  record: Record<string, unknown>,
+): SharedAgentSettings<LegacySavedProfile> {
+  if (!Array.isArray(record.profiles)) {
+    throw new ProfileValidationError("profiles", "Profiles must be an array.");
+  }
+
+  const profiles: LegacySavedProfile[] = [];
+  for (const entry of record.profiles) {
+    profiles.push(validateLegacyProfile(entry, profiles));
+  }
+  const activeProfileId = validatedActiveProfileId(record, profiles);
+  return { activeProfileId, profiles };
+}
+
+function validateLegacyProfile(
+  value: unknown,
+  existingProfiles: LegacySavedProfile[],
+): LegacySavedProfile {
+  const record = settingsRecord(value);
+  assertOnlyKeys(
+    record,
+    [
+      "id",
+      "name",
+      "apiFamily",
+      "apiMode",
+      "baseUrl",
+      "apiKey",
+      "model",
+      "parameters",
+      "advanced",
+    ],
+    "profile",
+  );
+  const profile = validateDraftProfileForSave({
+    id: record.id,
+    name: record.name,
+    connection: {
+      kind: "direct-api",
+      apiFamily: record.apiFamily,
+      apiMode: record.apiMode,
+      baseUrl: record.baseUrl,
+      apiKey: record.apiKey,
+    },
+    model: record.model,
+    parameters: record.parameters,
+    advanced: record.advanced,
+  }, existingProfiles.map(migrateLegacyProfile));
+  if (profile.connection.kind !== "direct-api") {
+    throw new ProfileValidationError(
+      "connection",
+      "Legacy Profile connection is invalid.",
+    );
+  }
+
+  const fields: LegacyProfileFields = {
+    id: profile.id,
+    name: profile.name,
+    model: profile.model,
+    parameters: profile.parameters,
+    advanced: profile.advanced,
+  };
+  if (profile.connection.apiFamily === "openai") {
+    return {
+      ...fields,
+      apiFamily: profile.connection.apiFamily,
+      apiMode: profile.connection.apiMode,
+      baseUrl: profile.connection.baseUrl,
+      apiKey: profile.connection.apiKey,
+    };
+  }
+  return {
+    ...fields,
+    apiFamily: profile.connection.apiFamily,
+    apiMode: profile.connection.apiMode,
+    baseUrl: profile.connection.baseUrl,
+    apiKey: profile.connection.apiKey,
+  };
+}
+
+function migrateLegacyProfile(profile: LegacySavedProfile): SavedProfile {
+  const fields: LegacyProfileFields = {
+    id: profile.id,
+    name: profile.name,
+    model: profile.model,
+    parameters: profile.parameters,
+    advanced: profile.advanced,
+  };
+  if (profile.apiFamily === "openai") {
+    return {
+      ...fields,
+      connection: {
+        kind: "direct-api",
+        apiFamily: profile.apiFamily,
+        apiMode: profile.apiMode,
+        baseUrl: profile.baseUrl,
+        apiKey: profile.apiKey,
+      },
+    };
+  }
+  return {
+    ...fields,
+    connection: {
+      kind: "direct-api",
+      apiFamily: profile.apiFamily,
+      apiMode: profile.apiMode,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+    },
+  };
+}
+
+function validatedActiveProfileId<Profile extends { id: string }>(
+  record: Record<string, unknown>,
+  profiles: Profile[],
+): string | null {
   const activeProfileId = record.activeProfileId;
   if (activeProfileId !== null && typeof activeProfileId !== "string") {
     throw new ProfileValidationError(
@@ -177,7 +410,39 @@ function validatedSharedSettings(
       "Active profile does not exist.",
     );
   }
-  return { activeProfileId, profiles };
+  return activeProfileId;
+}
+
+function approvalModeValue(value: unknown): ApprovalMode {
+  if (!isApprovalMode(value)) {
+    throw new ProfileValidationError(
+      "approvalMode",
+      "Approval mode must be manual, low-risk, or everything.",
+    );
+  }
+  return value;
+}
+
+function followUpBehaviorValue(value: unknown): DefaultFollowUpBehavior {
+  if (!isDefaultFollowUpBehavior(value)) {
+    throw new ProfileValidationError(
+      "defaultFollowUpBehavior",
+      "Default follow-up behavior must be queue or steer.",
+    );
+  }
+  return value;
+}
+
+function followUpRevisionValue(
+  value: unknown,
+): DefaultFollowUpBehaviorRevision {
+  if (!isDefaultFollowUpBehaviorRevision(value)) {
+    throw new ProfileValidationError(
+      "defaultFollowUpBehaviorRevision",
+      "Default follow-up behavior revision must be a canonical nonnegative decimal string.",
+    );
+  }
+  return value;
 }
 
 function settingsSchemaVersion(value: unknown): number {
@@ -193,6 +458,21 @@ function settingsRecord(value: unknown): Record<string, unknown> {
     throw new ProfileValidationError("settings", "Settings must be an object.");
   }
   return value as Record<string, unknown>;
+}
+
+function assertOnlyKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  field: string,
+): void {
+  const allowedKeys = new Set(allowed);
+  const unknown = Object.keys(record).find((key) => !allowedKeys.has(key));
+  if (unknown) {
+    throw new ProfileValidationError(
+      `${field}.${unknown}`,
+      `${field} does not support property ${unknown}.`,
+    );
+  }
 }
 
 function unsupportedSchemaVersion(): ProfileValidationError {

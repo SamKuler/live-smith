@@ -9,18 +9,29 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
-import type { SavedProfile } from "../profile.js";
+import type { AnthropicDirectApiConnection, SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
 
-function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
+type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+  Partial<Pick<AnthropicDirectApiConnection, "baseUrl" | "apiKey">>;
+
+function profile(overrides: ProfileOverrides = {}): SavedProfile {
+  const {
+    baseUrl = "https://example.test",
+    apiKey = "secret",
+    ...fields
+  } = overrides;
   return {
     id: "anthropic",
     name: "Anthropic",
-    apiFamily: "anthropic",
-    apiMode: "messages",
-    baseUrl: "https://example.test",
-    apiKey: "secret",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      baseUrl,
+      apiKey,
+    },
     model: "claude-sonnet-4-6",
     parameters: {
       maxOutputTokens: 6000,
@@ -28,7 +39,7 @@ function profile(overrides: Partial<SavedProfile> = {}): SavedProfile {
       reasoning: { mode: "enabled", effort: "high" },
     },
     advanced: {},
-    ...overrides,
+    ...fields,
   };
 }
 

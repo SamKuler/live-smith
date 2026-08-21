@@ -476,10 +476,12 @@ test("first-run setup connects, selects a discovered model, and saves it for use
     await harness.settle();
 
     const savedProfile = (commandCalls(harness).at(-1)?.body as {
-      profile: { apiKey: string; baseUrl: string };
+      profile: {
+        connection: { apiKey: string; baseUrl: string };
+      };
     }).profile;
-    assert.equal(savedProfile.apiKey, "");
-    assert.equal(savedProfile.baseUrl, "http://localhost:1234/v1");
+    assert.equal(savedProfile.connection.apiKey, "");
+    assert.equal(savedProfile.connection.baseUrl, "http://localhost:1234/v1");
 
     assert.match(
       harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
@@ -2941,8 +2943,13 @@ test("Connect and Load sends the current draft without saving or overwriting it"
         kind: "discover_models",
         profile: profileFixture({
           name: "Draft discovery",
-          apiKey: "draft-key",
-          baseUrl: "https://draft.example/v1",
+          connection: {
+            kind: "direct-api",
+            apiFamily: "openai",
+            apiMode: "chat-completions",
+            apiKey: "draft-key",
+            baseUrl: "https://draft.example/v1",
+          },
           model: "typed-model",
         }),
       },
@@ -2993,12 +3000,16 @@ test("Connect and Load permits a local keyless Draft with blank name and model",
     const command = commandCalls(harness).at(-1);
     const body = command?.body as {
       kind: string;
-      profile: { name: string; apiKey: string; baseUrl: string; model: string };
+      profile: {
+        name: string;
+        connection: { apiKey: string; baseUrl: string };
+        model: string;
+      };
     };
     assert.equal(body.kind, "discover_models");
     assert.equal(body.profile.name, "");
-    assert.equal(body.profile.apiKey, "");
-    assert.equal(body.profile.baseUrl, "http://127.0.0.1:1234/v1");
+    assert.equal(body.profile.connection.apiKey, "");
+    assert.equal(body.profile.connection.baseUrl, "http://127.0.0.1:1234/v1");
     assert.equal(body.profile.model, "");
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
@@ -3031,8 +3042,13 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
     assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 1);
     const draft = profileFixture({
       name: "Draft discovery",
-      apiKey: "draft-key",
-      baseUrl: "https://draft.example/v1",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "chat-completions",
+        apiKey: "draft-key",
+        baseUrl: "https://draft.example/v1",
+      },
       model: "typed-model",
     });
     const discoveryState = Object.assign(cloneState(stateFixture()), {
@@ -3077,8 +3093,13 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
     harness.input("#baseUrl", "https://draft.example/v1");
     harness.input("#model", "typed-model");
     const draft = profileFixture({
-      apiKey: "draft-key",
-      baseUrl: "https://draft.example/v1",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "chat-completions",
+        apiKey: "draft-key",
+        baseUrl: "https://draft.example/v1",
+      },
       model: "typed-model",
     });
     const discoveryState = Object.assign(cloneState(stateFixture()), {
@@ -3138,10 +3159,13 @@ test("Save and Use sends the complete current draft for its selected API mode", 
         profile: {
           id: "profile-1",
           name: "Anthropic studio",
-          apiFamily: "anthropic",
-          apiMode: "messages",
-          apiKey: "anthropic-key",
-          baseUrl: "https://anthropic.example/v1",
+          connection: {
+            kind: "direct-api",
+            apiFamily: "anthropic",
+            apiMode: "messages",
+            apiKey: "anthropic-key",
+            baseUrl: "https://anthropic.example/v1",
+          },
           model: "claude-test",
           parameters: {
             maxOutputTokens: 4096,
@@ -3163,7 +3187,15 @@ test("Save and Use sends the complete current draft for its selected API mode", 
 
 test("Web Search is a single automatic Profile capability", async () => {
   const state = stateFixture();
-  state.settings.profiles[0] = profileFixture({ apiMode: "responses" });
+  state.settings.profiles[0] = profileFixture({
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+    },
+  });
   const harness = await createDialogHarness(state);
   try {
     const control = harness.document.querySelector<HTMLInputElement>(
@@ -3205,7 +3237,13 @@ test("Web Search is a single automatic Profile capability", async () => {
 test("saved Web Search settings round-trip and remain locked with Profile settings", async () => {
   const state = stateFixture();
   state.settings.profiles[0] = profileFixture({
-    apiMode: "responses",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+    },
     advanced: { hostedTools: { webSearch: true } },
   });
   const harness = await createDialogHarness(state);
@@ -3363,7 +3401,7 @@ test("Profile command errors identify and focus the invalid field", async () => 
   const harness = await createDialogHarness(state);
   try {
     harness.input("#baseUrl", "invalid-url");
-    harness.failNextCommand("Base URL is invalid.", "baseUrl");
+    harness.failNextCommand("Base URL is invalid.", "connection.baseUrl");
     harness.click("#saveProfileButton");
     await harness.settle();
 

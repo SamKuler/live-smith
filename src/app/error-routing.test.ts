@@ -11,6 +11,18 @@ test("shouldOpenSettingsForAgentError identifies profile configuration errors", 
     shouldOpenSettingsForAgentError(new Error("No saved model profile is active.")),
     true,
   );
+  assert.equal(
+    shouldOpenSettingsForAgentError(
+      new Error("Sign in with ChatGPT before sending with this Profile."),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldOpenSettingsForAgentError(
+      new Error("Codex App Server connection closed."),
+    ),
+    true,
+  );
 });
 
 test("sessionErrorMessage removes provider credentials before persistence", () => {
