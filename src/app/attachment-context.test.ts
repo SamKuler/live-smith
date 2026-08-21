@@ -9,6 +9,7 @@ import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
 
 import { defaultModelCapabilities } from "../model/capabilities.js";
+import type { DirectApiConnection } from "../model/profile.js";
 import type { ModelCapabilities, RuntimeProfile } from "../model/provider.js";
 import {
   saveSessionAttachment,
@@ -30,6 +31,7 @@ function imageCapabilities(): ModelCapabilities {
 }
 
 function runtimeProfile(input: {
+  subscription?: boolean;
   apiFamily?: "openai" | "anthropic";
   apiMode?: "responses" | "chat-completions" | "messages";
   image?: boolean;
@@ -39,14 +41,37 @@ function runtimeProfile(input: {
 } = {}): RuntimeProfile {
   const apiFamily = input.apiFamily ?? "openai";
   const apiMode = input.apiMode ?? "responses";
-  return {
-    profile: {
-      id: "profile-attachments",
-      name: "Attachments",
+  let directConnection: DirectApiConnection;
+  if (apiFamily === "openai") {
+    if (apiMode !== "responses" && apiMode !== "chat-completions") {
+      throw new Error(`Invalid test Profile mode ${apiFamily}/${apiMode}.`);
+    }
+    directConnection = {
+      kind: "direct-api",
       apiFamily,
       apiMode,
       baseUrl: "https://example.test/v1",
       apiKey: "key",
+    };
+  } else {
+    if (apiMode !== "messages") {
+      throw new Error(`Invalid test Profile mode ${apiFamily}/${apiMode}.`);
+    }
+    directConnection = {
+      kind: "direct-api",
+      apiFamily,
+      apiMode,
+      baseUrl: "https://example.test/v1",
+      apiKey: "key",
+    };
+  }
+  return {
+    profile: {
+      id: "profile-attachments",
+      name: "Attachments",
+      connection: input.subscription
+        ? { kind: "codex-subscription", provider: "openai" }
+        : directConnection,
       model: "test-model",
       parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
       advanced: {},
@@ -160,10 +185,13 @@ test("attachment context resolves current images after labelled request text", a
       profile: {
         id: "profile-1",
         name: "Profile",
-        apiFamily: "openai",
-        apiMode: "responses",
-        baseUrl: "https://example.test/v1",
-        apiKey: "key",
+        connection: {
+          kind: "direct-api",
+          apiFamily: "openai",
+          apiMode: "responses",
+          baseUrl: "https://example.test/v1",
+          apiKey: "key",
+        },
         model: "gpt-5.6",
         parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
         advanced: {},
@@ -545,6 +573,21 @@ test("current audio context requires compatible saved Chat capability evidence b
   assert.equal(
     resolved.parts[0]?.type === "audio" ? resolved.parts[0].base64 : "",
     Buffer.from(wavBytes()).toString("base64"),
+  );
+
+  const subscriptionResolved = await resolveCurrentAttachmentParts({
+    storageDirectory: directory,
+    sessionId,
+    refs: [stored],
+    runtimeProfile: runtimeProfile({
+      subscription: true,
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.deepEqual(
+    subscriptionResolved.parts.map((part) => part.type),
+    ["audio"],
   );
 });
 

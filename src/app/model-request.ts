@@ -11,13 +11,15 @@ import {
 import type {
   DiscoveredModelInfo,
   ModelCapabilities,
+  ModelBackend,
   ModelInfo,
   ModelTool,
+  ModelToolTurnReservation,
   RuntimeProfile,
   TransportRequest,
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
-import { transportForProfile } from "../model/registry.js";
+import { createModelBackend } from "../model/backend-registry.js";
 import {
   agentSystemInstructionsForSkills,
 } from "../agent/system-instructions.js";
@@ -55,10 +57,24 @@ export async function requestModelTurn(input: {
   onHostedWebSearch?(
     update: ModelHostedWebSearch,
   ): Promise<void> | void;
+  /** Modal-lifetime managed backend. Omitted only by direct transport tests. */
+  backend?: ModelBackend;
+  /** One-shot managed capacity reserved before the prompt is persisted. */
+  turnReservation?: ModelToolTurnReservation;
 }) {
-  return transportForProfile(input.runtimeProfile.profile).createToolTurn(
-    buildModelRequest(input),
-  );
+  const ownedBackend = input.backend === undefined
+    ? await createModelBackend(input.runtimeProfile.profile)
+    : undefined;
+  const backend = input.backend ?? ownedBackend;
+  if (!backend) throw new Error("A model backend is required.");
+  try {
+    const request = buildModelRequest(input);
+    return await (input.turnReservation
+      ? input.turnReservation.createToolTurn(request)
+      : backend.createToolTurn(request));
+  } finally {
+    await ownedBackend?.close();
+  }
 }
 
 export function buildModelRequest(input: {

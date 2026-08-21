@@ -50,9 +50,13 @@ import {
 } from "../model/capabilities.js";
 import type {
   DiscoveredModelInfo,
+  ManagedAuthReadOptions,
+  ManagedAuthState,
+  ModelBackend,
   RuntimeProfile,
 } from "../model/provider.js";
 import {
+  profileSecrets,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DraftProfile,
@@ -68,7 +72,11 @@ import {
   parseSkillMarkdown,
   SkillFormatError,
 } from "../skills/format.js";
-import { transportForProfile } from "../model/registry.js";
+import type { ModelBackendManager } from "../model/backend-registry.js";
+import {
+  acquireSharedModelBackendManager,
+  canonicalModelStorageKey,
+} from "../model/shared-backend-manager.js";
 import {
   connectionFingerprint,
   loadModelCache,
@@ -124,6 +132,7 @@ import {
   deleteSavedProfile,
   loadAgentSettings,
   requireActiveSavedProfile,
+  saveGlobalSettings,
   saveSavedProfile,
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
@@ -146,11 +155,13 @@ import {
   ChatBridgeSendFailureError,
   ChatBridgeSkillValidationError,
   createChatBridge,
+  type ChatBridgeCommandContext,
   type ChatBridgeCommandInput,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
   type ChatBridgeSendContext,
+  type ChatBridgeSendFailureKind,
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
   type ChatBridgeSkillInstallResult,
@@ -164,6 +175,10 @@ import {
   publishSessionApprovalModeChange,
   subscribeSessionApprovalModeChanges,
 } from "./session-approval-events.js";
+import {
+  publishGlobalSettingsChange,
+  subscribeGlobalSettingsChanges,
+} from "./global-settings-events.js";
 import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
@@ -190,6 +205,10 @@ import {
 } from "./session-mutation-fence.js";
 import { resolveSkillContext } from "./skill-context.js";
 import {
+  modelAuthSendFenceForStorage,
+  type ModelAuthSendFence,
+} from "./model-auth-send-fence.js";
+import {
   SteeringClosedError,
   SteeringPersistenceOutcomeUnknownError,
   type SteeringChannel,
@@ -198,6 +217,7 @@ import {
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
 const sessionMutationFence = new SessionMutationFence();
+const globalSettingsMutationFence = new SessionMutationFence();
 
 export interface AgentFlowDependencies {
   copySelectedAudioAttachmentSource?: typeof copySelectedAudioAttachmentSource;
@@ -205,10 +225,18 @@ export interface AgentFlowDependencies {
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
   requestModelTurn?: typeof requestModelTurn;
+  saveGlobalSettings?: typeof saveGlobalSettings;
   listModels?(
     profile: DraftProfile,
     signal: AbortSignal,
   ): Promise<DiscoveredModelInfo[]>;
+  /** Test-only modal-owned manager; production shares one per storage root. */
+  modelBackendManager?: Pick<
+    ModelBackendManager,
+    "forProfile" | "codex" | "codexLease" | "invalidateCodex" | "close"
+  >;
+  /** Process-wide in production; injectable only for isolated tests. */
+  modelAuthSendFence?: ModelAuthSendFence;
   renderHtml?(
     state: ChatDialogState,
     bridge: { baseUrl: string; token: string },
@@ -230,6 +258,22 @@ export async function runAgentFlow(
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
+  const codexCatalogGenerationByConnection = new Map<string, number>();
+  const managedStorageDirectory = context.environment.storageDirectory === undefined
+    ? undefined
+    : await canonicalModelStorageKey(context.environment.storageDirectory);
+  const modelAuthSendFence = dependencies.modelAuthSendFence ??
+    modelAuthSendFenceForStorage(managedStorageDirectory);
+  const sharedBackendManagerLease = dependencies.modelBackendManager === undefined
+    ? await acquireSharedModelBackendManager(managedStorageDirectory, {
+      onPoison: (error) => modelAuthSendFence.poison(error),
+    })
+    : undefined;
+  const modelBackendManager = dependencies.modelBackendManager ??
+    sharedBackendManagerLease!.manager;
+  const modelAuthOwner = Symbol("Live Smith modal auth owner");
+  let observedAuthGeneration = modelAuthSendFence.authGeneration();
+  let codexAuth: ManagedAuthState | undefined;
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
   const selectionInteractionsBySessionId = new Map<
@@ -315,9 +359,18 @@ export async function runAgentFlow(
   };
 
   const modelsForProfile = async (profile: DraftProfile | SavedProfile) => {
+    await synchronizeAuthGeneration();
     const fingerprint = connectionFingerprint(profile);
     const cachedModels = modelsByConnection.get(fingerprint);
-    if (cachedModels) return cachedModels;
+    if (
+      cachedModels &&
+      (
+        profile.connection.kind === "direct-api" ||
+        codexCatalogGenerationByConnection.get(fingerprint) ===
+          observedAuthGeneration
+      )
+    ) return cachedModels;
+    if (profile.connection.kind === "codex-subscription") return [];
     const models = await loadModelCache(
       context.environment.storageDirectory,
       profile,
@@ -326,16 +379,205 @@ export async function runAgentFlow(
     return models;
   };
 
-  const buildState = async (
+  async function synchronizeAuthGeneration(): Promise<void> {
+    for (;;) {
+      const generation = modelAuthSendFence.authGeneration();
+      if (generation === observedAuthGeneration) return;
+      if (sharedBackendManagerLease === undefined) {
+        try {
+          await modelBackendManager.invalidateCodex();
+        } catch (error) {
+          modelAuthSendFence.poison(error);
+          throw error;
+        }
+      }
+      modelsByConnection.clear();
+      codexCatalogGenerationByConnection.clear();
+      codexAuth = undefined;
+      observedAuthGeneration = generation;
+    }
+  }
+
+  function recordOwnedAuthState(auth: ManagedAuthState): void {
+    modelAuthSendFence.updateAuthState(
+      modelAuthOwner,
+      auth.status,
+      auth.status === "unavailable" && auth.definitive === true,
+    );
+    observedAuthGeneration = modelAuthSendFence.authGeneration();
+    modelsByConnection.clear();
+    codexCatalogGenerationByConnection.clear();
+  }
+
+  function recordOwnedAuthMutation(auth: ManagedAuthState): void {
+    if (auth.status === "unavailable") codexAuth = undefined;
+    modelAuthSendFence.updateAuthState(modelAuthOwner, auth.status, true);
+    observedAuthGeneration = modelAuthSendFence.authGeneration();
+    modelsByConnection.clear();
+    codexCatalogGenerationByConnection.clear();
+  }
+
+  const unavailableCodexAuth = (): ManagedAuthState => ({
+    status: "unavailable",
+    message:
+      "Codex CLI 0.148.x could not provide a valid ChatGPT subscription session.",
+  });
+
+  const readCodexAuth = async (
+    signal?: AbortSignal,
+    options: ManagedAuthReadOptions = {},
+  ): Promise<ManagedAuthState> => {
+    for (;;) {
+      await synchronizeAuthGeneration();
+      const generation = observedAuthGeneration;
+      let auth: ManagedAuthState;
+      try {
+        const backend = await modelBackendManager.codex();
+        auth = backend.readAuthState
+          ? await backend.readAuthState(signal, options)
+          : unavailableCodexAuth();
+      } catch (error) {
+        throwIfAborted(signal);
+        auth = unavailableCodexAuth();
+      }
+      if (modelAuthSendFence.authGeneration() !== generation) continue;
+      codexAuth = auth;
+      return auth;
+    }
+  };
+
+  const reconcilePendingCodexAuthWhileReading = async (
+    signal?: AbortSignal,
+  ): Promise<ManagedAuthState | undefined> => {
+    if (!modelAuthSendFence.hasPendingLogin()) return undefined;
+    const auth = await modelAuthSendFence.reconcilePendingAuthState(
+      () => readCodexAuth(undefined, { readiness: true }),
+      signal,
+    );
+    if (auth === undefined) return undefined;
+    await synchronizeAuthGeneration();
+    codexAuth = auth;
+    return auth;
+  };
+
+  const withPendingCodexAuthReconciliation = async <T>(
+    signal: AbortSignal | undefined,
+    operation: (auth: ManagedAuthState) => Promise<T>,
+  ): Promise<T | undefined> => {
+    if (!modelAuthSendFence.hasPendingLogin()) return undefined;
+    const release = await modelAuthSendFence.enterRead(signal);
+    try {
+      const auth = await reconcilePendingCodexAuthWhileReading(signal);
+      return auth === undefined ? undefined : await operation(auth);
+    } finally {
+      release();
+    }
+  };
+
+  const runCodexAuthOperation = async (
+    operation: "beginLogin" | "logout",
+    signal: AbortSignal,
+  ): Promise<ManagedAuthState> => {
+    let mutationAttempted = false;
+    let retireBackend: (() => Promise<boolean>) | undefined;
+    let retirementPromise: Promise<void> | undefined;
+    const confirmUnknownMutationRetirement = (): Promise<void> => {
+      retirementPromise ??= (async () => {
+        try {
+          if (retireBackend) await retireBackend();
+          else await modelBackendManager.invalidateCodex();
+        } catch (error) {
+          modelAuthSendFence.poison(error);
+          throw error;
+        }
+      })();
+      return retirementPromise;
+    };
+    try {
+      const lease = await modelBackendManager.codexLease();
+      const backend = lease.backend;
+      retireBackend = lease.retire;
+      const invoke = backend[operation];
+      if (!invoke) {
+        codexAuth = unavailableCodexAuth();
+        return codexAuth;
+      }
+      mutationAttempted = true;
+      const auth = await invoke.call(backend, signal);
+      if (auth.status === "unavailable" && auth.definitive !== true) {
+        await confirmUnknownMutationRetirement();
+      }
+      codexAuth = auth;
+      recordOwnedAuthMutation(auth);
+      return auth;
+    } catch (error) {
+      const auth = unavailableCodexAuth();
+      let retirementError: unknown;
+      if (mutationAttempted) {
+        try {
+          await confirmUnknownMutationRetirement();
+          recordOwnedAuthMutation(auth);
+        } catch (retirementFailure) {
+          retirementError = retirementFailure;
+        }
+      } else {
+        codexAuth = auth;
+      }
+      try {
+        throwIfAborted(signal);
+      } catch (abortError) {
+        throw abortError;
+      }
+      if (retirementError !== undefined) throw retirementError;
+      return auth;
+    }
+  };
+
+  const withExclusiveCodexAuth = async <T>(
+    operation: () => Promise<T>,
+    signal: AbortSignal,
+  ): Promise<T> => {
+    const release = await modelAuthSendFence.enterAuth(modelAuthOwner, signal);
+    if (!release) {
+      throw new ChatBridgeConflictError(
+        "Stop every active agent request before changing ChatGPT sign-in.",
+      );
+    }
+    try {
+      await synchronizeAuthGeneration();
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+
+  type BuildStateOptions = {
+    heldSessionId?: string;
+    sessionMutationHeld?: boolean;
+    codexAuthAlreadyResolved?: boolean;
+  };
+
+  const buildStateWithAuthReadHeld = async (
     previewProfile?: DraftProfile,
-    options: { heldSessionId?: string } = {},
+    options: BuildStateOptions = {},
   ) => {
-    if (options.heldSessionId === undefined) {
+    await synchronizeAuthGeneration();
+    if (!options.sessionMutationHeld) {
       await retryPendingSessionCleanup();
     }
     const settings = await loadAgentSettings(context.environment.storageDirectory);
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
+    if (
+      modelProfile?.connection.kind === "codex-subscription" &&
+      !options.codexAuthAlreadyResolved
+    ) {
+      if (modelAuthSendFence.hasPendingLogin()) {
+        await reconcilePendingCodexAuthWhileReading();
+      } else if (codexAuth === undefined) {
+        await readCodexAuth();
+      }
+    }
     const models = modelProfile ? await modelsForProfile(modelProfile) : [];
     const runtimeProfile = activeProfile
       ? runtimeProfileForSavedProfile(
@@ -476,9 +718,22 @@ export async function runAgentFlow(
           ? chatRuntimeSummary(runtimeProfile)
           : null,
         settings,
+        ...(codexAuth === undefined ? {} : { codexAuth }),
         status,
         openSettingsOnLoad: activeProfile ? openSettingsOnLoad : true,
       };
+    }
+  };
+
+  const buildState = async (
+    previewProfile?: DraftProfile,
+    options: BuildStateOptions = {},
+  ) => {
+    const releaseAuthRead = await modelAuthSendFence.enterRead();
+    try {
+      return await buildStateWithAuthReadHeld(previewProfile, options);
+    } finally {
+      releaseAuthRead();
     }
   };
 
@@ -487,13 +742,14 @@ export async function runAgentFlow(
     previewProfile?: DraftProfile,
   ) => buildState(previewProfile, {
     heldSessionId,
+    sessionMutationHeld: true,
   });
 
-  const buildStateAfterCommandMutation = async (
-    previewProfile?: DraftProfile,
-  ) => {
+  const confirmCommandState = async (
+    build: () => Promise<ChatDialogState>,
+  ): Promise<ChatDialogState> => {
     try {
-      return await buildState(previewProfile);
+      return await build();
     } catch (cause) {
       throw new ChatBridgeCommandOutcomeUnknownError(
         "Command completed, but the resulting Live Smith state could not be confirmed.",
@@ -502,9 +758,15 @@ export async function runAgentFlow(
     }
   };
 
+  const buildStateAfterCommandMutation = (
+    previewProfile?: DraftProfile,
+    options: BuildStateOptions = {},
+  ) => confirmCommandState(() => buildState(previewProfile, options));
+
   const handleCommand = async (
     commandInput: ChatBridgeCommandInput,
     signal: AbortSignal,
+    commandContext: ChatBridgeCommandContext,
   ) => {
     throwIfAborted(signal);
     if (commandInput.kind === "save_profile") {
@@ -550,6 +812,60 @@ export async function runAgentFlow(
       status = undefined;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "save_global_settings") {
+      return globalSettingsMutationFence.run(
+        sessionMutationFenceKey(
+          context.environment.storageDirectory,
+          "global-settings",
+        ),
+        signal,
+        async () => {
+          throwIfAborted(signal);
+          try {
+            const settings = await (
+              dependencies.saveGlobalSettings ?? saveGlobalSettings
+            )(context.environment.storageDirectory, {
+              defaultFollowUpBehavior: commandInput.defaultFollowUpBehavior,
+            });
+            publishGlobalSettingsChange(context.environment.storageDirectory, {
+              defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+              defaultFollowUpBehaviorRevision:
+                settings.defaultFollowUpBehaviorRevision,
+              commandId: commandContext.commandId,
+            });
+            status = "Default follow-up behavior saved.";
+            return buildStateAfterCommandMutation();
+          } catch (cause) {
+            if (!isStorageCommitOutcomeUnknownError(cause)) throw cause;
+
+            try {
+              const settings = await loadAgentSettings(
+                context.environment.storageDirectory,
+              );
+              publishGlobalSettingsChange(context.environment.storageDirectory, {
+                defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+                defaultFollowUpBehaviorRevision:
+                  settings.defaultFollowUpBehaviorRevision,
+                commandId: commandContext.commandId,
+              });
+            } catch {
+              // Preserve the unknown commit outcome when settings cannot be read.
+            }
+            let authoritativeState: ChatDialogState | undefined;
+            try {
+              authoritativeState = await buildState();
+            } catch {
+              // The bridge will require explicit reconciliation when unavailable.
+            }
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "Default follow-up behavior storage could not be confirmed.",
+              { cause, authoritativeState },
+            );
+          }
+        },
+      );
     }
 
     if (commandInput.kind === "set_session_approval_mode") {
@@ -930,33 +1246,97 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
+      const releaseManagedDiscovery = profile.connection.kind === "codex-subscription"
+        ? await modelAuthSendFence.enterSend(signal)
+        : () => undefined;
+      if (!releaseManagedDiscovery) {
+        throw new ChatBridgeConflictError(
+          "Wait for the ChatGPT sign-in operation to finish before loading models.",
+        );
+      }
       let cacheMutationCompleted = false;
       try {
+        await synchronizeAuthGeneration();
         const discovered = await (
           dependencies.listModels ??
-          ((targetProfile, targetSignal) =>
-            transportForProfile(targetProfile).listModels(targetProfile, targetSignal))
+          (async (targetProfile, targetSignal) => {
+            const backend = await modelBackendManager.forProfile(targetProfile);
+            return backend.listModels(targetProfile, targetSignal);
+          })
         )(profile, signal);
         throwIfAborted(signal);
-        await saveModelCache(
-          context.environment.storageDirectory,
-          profile,
-          discovered,
-        );
+        if (profile.connection.kind === "direct-api") {
+          await saveModelCache(
+            context.environment.storageDirectory,
+            profile,
+            discovered,
+          );
+        }
         cacheMutationCompleted = true;
         throwIfAborted(signal);
-        modelsByConnection.set(connectionFingerprint(profile), discovered);
+        const fingerprint = connectionFingerprint(profile);
+        modelsByConnection.set(fingerprint, discovered);
+        if (profile.connection.kind === "codex-subscription") {
+          codexCatalogGenerationByConnection.set(
+            fingerprint,
+            observedAuthGeneration,
+          );
+        }
         status = discovered.length
           ? `Discovered ${discovered.length} model${discovered.length === 1 ? "" : "s"}.`
           : "No models returned by this provider.";
       } catch (error) {
         throwIfAborted(signal);
         status = error instanceof Error ? error.message : String(error);
+      } finally {
+        releaseManagedDiscovery();
       }
       openSettingsOnLoad = true;
       return cacheMutationCompleted
         ? buildStateAfterCommandMutation(profile)
         : buildState(profile);
+    }
+
+    if (commandInput.kind === "start_codex_login") {
+      await withExclusiveCodexAuth(async () => {
+        const auth = await runCodexAuthOperation("beginLogin", signal);
+        status = codexAuthStatusMessage(auth);
+        openSettingsOnLoad = true;
+      }, signal);
+      return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "refresh_codex_account") {
+      const pendingState = await withPendingCodexAuthReconciliation(
+        signal,
+        async (pendingAuth) => {
+          status = codexAuthStatusMessage(pendingAuth);
+          openSettingsOnLoad = true;
+          return confirmCommandState(() =>
+            buildStateWithAuthReadHeld(undefined, {
+              codexAuthAlreadyResolved: true,
+            })
+          );
+        },
+      );
+      if (pendingState) return pendingState;
+      await withExclusiveCodexAuth(async () => {
+        codexAuth = undefined;
+        const auth = await readCodexAuth(signal, { readiness: true });
+        recordOwnedAuthState(auth);
+        status = codexAuthStatusMessage(auth);
+        openSettingsOnLoad = true;
+      }, signal);
+      return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "logout_codex") {
+      await withExclusiveCodexAuth(async () => {
+        const auth = await runCodexAuthOperation("logout", signal);
+        status = codexAuthStatusMessage(auth);
+        openSettingsOnLoad = true;
+      }, signal);
+      return buildStateAfterCommandMutation();
     }
 
     return assertNeverCommand(commandInput);
@@ -1346,8 +1726,15 @@ export async function runAgentFlow(
     if (!prompt.trim()) {
       throw new Error("Prompt is empty.");
     }
-
-    return withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
+    const releaseModelAuthFence = await modelAuthSendFence.enterSend(signal);
+    if (!releaseModelAuthFence) {
+      throw new ChatBridgeConflictError(
+        "Wait for the ChatGPT sign-in operation to finish before sending.",
+      );
+    }
+    try {
+      return await withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
+      let sendFailureKind: ChatBridgeSendFailureKind | undefined;
       try {
         throwIfAborted(signal);
         const session = (await listSessions(
@@ -1357,10 +1744,12 @@ export async function runAgentFlow(
           entry.id === sendInput.sessionId && !entry.archivedAt
         );
         if (!session) {
+          sendFailureKind = "session_unavailable";
           throw new Error("That Session is not available in this Live Set.");
         }
         const sessionInteraction = resolveSessionInteraction(session);
         if (!sessionInteraction) {
+          sendFailureKind = "session_unavailable";
           throw new Error(
             `The Live object for this Session is no longer available: ${session.scope.label}.`,
           );
@@ -1368,48 +1757,157 @@ export async function runAgentFlow(
         const settingsForRequest = await loadAgentSettings(
           context.environment.storageDirectory,
         );
+        await synchronizeAuthGeneration();
         const profile = requireActiveSavedProfile(settingsForRequest);
         const fingerprint = connectionFingerprint(profile);
-        let models = modelsByConnection.get(fingerprint);
+        let requestBackend: ModelBackend | undefined;
+        let models: DiscoveredModelInfo[] | undefined;
+        if (profile.connection.kind === "codex-subscription") {
+          const generation = observedAuthGeneration;
+          const lease = await modelBackendManager.codexLease();
+          requestBackend = lease.backend;
+          models = codexCatalogGenerationByConnection.get(fingerprint) === generation
+            ? modelsByConnection.get(fingerprint)
+            : undefined;
+          let auth: ManagedAuthState;
+          try {
+            if (models === undefined) {
+              models = await requestBackend.listModels(profile, signal);
+              auth = requestBackend.readAuthState
+                ? await requestBackend.readAuthState(signal)
+                : unavailableCodexAuth();
+            } else {
+              auth = requestBackend.readAuthState
+                ? await requestBackend.readAuthState(signal, { readiness: true })
+                : unavailableCodexAuth();
+            }
+          } catch (error) {
+            throwIfAborted(signal);
+            auth = unavailableCodexAuth();
+          }
+          codexAuth = auth;
+          const authError = subscriptionSendAuthError(auth);
+          if (authError) throw new ChatBridgeConflictError(authError);
+          if (models === undefined) {
+            throw new ChatBridgeConflictError(
+              "The ChatGPT subscription model catalog is unavailable.",
+            );
+          }
+          throwIfAborted(signal);
+          if (modelAuthSendFence.authGeneration() !== generation) {
+            throw new ChatBridgeConflictError(
+              "ChatGPT sign-in changed before the subscription request could start.",
+            );
+          }
+          if (
+            codexCatalogGenerationByConnection.get(fingerprint) !== generation
+          ) {
+            modelsByConnection.set(fingerprint, models);
+            codexCatalogGenerationByConnection.set(fingerprint, generation);
+          }
+        } else {
+          models = modelsByConnection.get(fingerprint);
+          if (models === undefined) {
+            models = await loadModelCache(
+              context.environment.storageDirectory,
+              profile,
+            );
+            modelsByConnection.set(fingerprint, models);
+          }
+        }
         if (models === undefined) {
-          models = await loadModelCache(context.environment.storageDirectory, profile);
-          modelsByConnection.set(fingerprint, models);
+          throw new Error("The active model catalog is unavailable.");
+        }
+        if (
+          profile.connection.kind === "codex-subscription" &&
+          !models.some((model) => model.id === profile.model)
+        ) {
+          throw new ChatBridgeConflictError(
+            "The saved subscription model is not available for the signed-in ChatGPT account. Load models and save an available model before sending.",
+          );
         }
         const runtimeProfile = runtimeProfileForSavedProfile(profile, models);
         validateGenerationParameters(
           runtimeProfile.profile,
           runtimeProfile.capabilities,
         );
-        await handleAgentRequest(
-          context,
-          sessionInteraction,
-          prompt,
-          runtimeProfile,
-          projectKey,
-          session.id,
-          {
-            signal,
-            steering,
-            steeringSendId: sendContext.sendId,
-            onDelta: (delta) => stream.assistantDelta(delta),
-            onAssistantReset: () => stream.assistantReset(),
-            onProgress: (message) => stream.progress(message),
-            onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
-            onSessionEvent: (event) => stream.sessionEvent(event),
-            withActionExecutionLock: (operation) =>
-              liveMutationQueue.run(signal, operation),
-            confirmActions: (plan) => decidePlanApproval(
-              context.environment.storageDirectory,
-              session.id,
-              plan,
-              () => stream.requestConfirmation({
-                message: plan.message,
-                groups: actionDiffGroups(plan.actions, plan.targets),
-              }),
-            ),
-          },
-          dependencies.requestModelTurn ?? requestModelTurn,
-        );
+        const requestTurnImplementation = dependencies.requestModelTurn ??
+          requestModelTurn;
+        let preflightBackendForFirstTurn = requestBackend;
+        if (requestBackend && !requestBackend.reserveToolTurn) {
+          throw new ChatBridgeConflictError(
+            "The ChatGPT subscription backend cannot reserve the first model turn.",
+          );
+        }
+        const firstTurnReservation = requestBackend?.reserveToolTurn?.();
+        const requestTurn = async (
+          input: Parameters<typeof requestModelTurn>[0],
+        ) => {
+          const turnReservation = preflightBackendForFirstTurn === undefined
+            ? undefined
+            : firstTurnReservation;
+          const backend = preflightBackendForFirstTurn ??
+            (
+              profile.connection.kind === "codex-subscription" ||
+                dependencies.requestModelTurn === undefined
+                ? await modelBackendManager.forProfile(profile)
+                : undefined
+            );
+          preflightBackendForFirstTurn = undefined;
+          return requestTurnImplementation({
+            ...input,
+            ...(backend === undefined ? {} : { backend }),
+            ...(turnReservation === undefined ? {} : { turnReservation }),
+          });
+        };
+        let requestFailed = false;
+        let requestError: unknown;
+        try {
+          await handleAgentRequest(
+            context,
+            sessionInteraction,
+            prompt,
+            runtimeProfile,
+            projectKey,
+            session.id,
+            {
+              signal,
+              steering,
+              steeringSendId: sendContext.sendId,
+              onDelta: (delta) => stream.assistantDelta(delta),
+              onAssistantReset: () => stream.assistantReset(),
+              onProgress: (message) => stream.progress(message),
+              onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
+              onSessionEvent: (event) => stream.sessionEvent(event),
+              withActionExecutionLock: (operation) =>
+                liveMutationQueue.run(signal, operation),
+              confirmActions: (plan) => decidePlanApproval(
+                context.environment.storageDirectory,
+                session.id,
+                plan,
+                () => stream.requestConfirmation({
+                  message: plan.message,
+                  groups: actionDiffGroups(plan.actions, plan.targets),
+                }),
+              ),
+            },
+            requestTurn,
+          );
+        } catch (error) {
+          requestFailed = true;
+          requestError = error;
+        }
+        let reservationReleaseFailed = false;
+        let reservationReleaseError: unknown;
+        try {
+          await firstTurnReservation?.release();
+        } catch (error) {
+          reservationReleaseFailed = true;
+          reservationReleaseError = error;
+          modelAuthSendFence.poison(error);
+        }
+        if (requestFailed) throw requestError;
+        if (reservationReleaseFailed) throw reservationReleaseError;
         steering.close();
         return buildStateWhileHoldingSessionMutation(sendInput.sessionId);
       } catch (error) {
@@ -1419,15 +1917,22 @@ export async function runAgentFlow(
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {
-          authoritativeState = await buildStateWhileHoldingSessionMutation(
-            sendInput.sessionId,
-          );
+          authoritativeState = sendFailureKind === "session_unavailable"
+            ? await buildState(undefined, { sessionMutationHeld: true })
+            : await buildStateWhileHoldingSessionMutation(sendInput.sessionId);
         } catch {
           // Preserve the original failure. The client will reconcile explicitly.
         }
-        throw new ChatBridgeSendFailureError(error, authoritativeState);
+        throw new ChatBridgeSendFailureError(
+          error,
+          authoritativeState,
+          sendFailureKind,
+        );
       }
-    });
+      });
+    } finally {
+      releaseModelAuthFence();
+    }
   };
 
   const lookupSteeringReceipt = async (
@@ -1462,37 +1967,106 @@ export async function runAgentFlow(
 
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
-  await reconcileStartupSessionOrphans();
-  const bridge = await createChatBridge({
-    buildState,
-    renderHtml,
-    handleCommand,
-    handleSend,
-    lookupSteeringReceipt,
-    preflightAttachmentUpload,
-    handleAttachmentUpload,
-    handleAttachmentDelete,
-    handleSkillInstall,
-    handleSkillDelete,
-    ...(dependencies.attachmentBodyReadOptions === undefined
-      ? {}
-      : { attachmentBodyReadOptions: dependencies.attachmentBodyReadOptions }),
-    ...(dependencies.skillBodyReadOptions === undefined
-      ? {}
-      : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
-  });
-  const unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
-    context.environment.storageDirectory,
-    ({ sessionId, approvalMode }) => {
-      bridge.publishSessionApprovalMode(sessionId, approvalMode);
-    },
-  );
-
+  let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
+  let unsubscribeApprovalModes: (() => void) | undefined;
+  let unsubscribeGlobalSettings: (() => void) | undefined;
   try {
+    await reconcileStartupSessionOrphans();
+    bridge = await createChatBridge({
+      buildState,
+      renderHtml,
+      handleCommand,
+      handleSend,
+      lookupSteeringReceipt,
+      preflightAttachmentUpload,
+      handleAttachmentUpload,
+      handleAttachmentDelete,
+      handleSkillInstall,
+      handleSkillDelete,
+      ...(dependencies.attachmentBodyReadOptions === undefined
+        ? {}
+        : { attachmentBodyReadOptions: dependencies.attachmentBodyReadOptions }),
+      ...(dependencies.skillBodyReadOptions === undefined
+        ? {}
+        : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
+    });
+    unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
+      context.environment.storageDirectory,
+      ({ sessionId, approvalMode }) => {
+        bridge?.publishSessionApprovalMode(sessionId, approvalMode);
+      },
+    );
+    unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
+      context.environment.storageDirectory,
+      (change) => {
+        bridge?.publishDefaultFollowUpBehavior(change);
+      },
+    );
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
-    unsubscribeApprovalModes();
-    await bridge.close();
+    unsubscribeApprovalModes?.();
+    unsubscribeGlobalSettings?.();
+    try {
+      await bridge?.close();
+    } finally {
+      let backendCleanupError: unknown;
+      try {
+        const releasePendingCleanup = await modelAuthSendFence
+          .enterPendingOwnerCleanup(modelAuthOwner);
+        if (releasePendingCleanup) try {
+          await modelBackendManager.invalidateCodex();
+        } finally {
+          releasePendingCleanup();
+        }
+      } catch (error) {
+        modelAuthSendFence.poison(error);
+        backendCleanupError = error;
+      }
+      modelAuthSendFence.releaseOwner(modelAuthOwner);
+      try {
+        if (sharedBackendManagerLease) await sharedBackendManagerLease.release();
+        else await modelBackendManager.close();
+      } catch (error) {
+        modelAuthSendFence.poison(error);
+        backendCleanupError ??= error;
+      }
+      if (backendCleanupError !== undefined) throw backendCleanupError;
+    }
+  }
+}
+
+function codexAuthStatusMessage(state: ManagedAuthState): string {
+  switch (state.status) {
+    case "unavailable":
+      return state.message;
+    case "signed-out":
+      return "Signed out of ChatGPT.";
+    case "pending":
+      return "Complete ChatGPT sign-in in your browser, then check again.";
+    case "signed-in":
+      return state.subscriptionEligible
+        ? "Signed in with ChatGPT."
+        : ineligibleCodexSubscriptionMessage;
+  }
+}
+
+const ineligibleCodexSubscriptionMessage =
+  "This workspace-managed ChatGPT account is not eligible for subscription requests in Live Smith. Use Check after changing accounts, or Logout.";
+
+function subscriptionSendAuthError(
+  state: ManagedAuthState,
+): string | undefined {
+  switch (state.status) {
+    case "signed-in":
+      return state.subscriptionEligible
+        ? undefined
+        : ineligibleCodexSubscriptionMessage;
+    case "pending":
+      return "Complete ChatGPT sign-in before sending a subscription request.";
+    case "signed-out":
+      return "Sign in to ChatGPT before sending a subscription request.";
+    case "unavailable":
+      return "The ChatGPT subscription is unavailable. Check the account status before sending.";
   }
 }
 
@@ -1924,7 +2498,7 @@ export async function handleAgentRequest(
         session.id,
         {
           kind: "error",
-          content: sessionErrorMessage(error, [profile.apiKey]),
+          content: sessionErrorMessage(error, profileSecrets(profile)),
         },
       );
       await callbacks.onSessionEvent(errorEvent);

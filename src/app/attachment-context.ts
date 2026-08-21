@@ -15,6 +15,7 @@ import type {
   ModelInputPart,
 } from "../model/contracts.js";
 import type { RuntimeProfile } from "../model/provider.js";
+import { profileApiMode, profileProvider } from "../model/profile.js";
 import { throwIfAborted } from "../runtime/host.js";
 import {
   isImageAttachmentMediaType,
@@ -421,9 +422,9 @@ function historicalMarker(
 }
 
 function nativePdfAllowed(runtimeProfile: RuntimeProfile): boolean {
+  const apiMode = profileApiMode(runtimeProfile.profile);
   return runtimeProfile.capabilities.inputs.pdf &&
-    (runtimeProfile.profile.apiMode === "responses" ||
-      runtimeProfile.profile.apiMode === "messages");
+    (apiMode === "responses" || apiMode === "messages");
 }
 
 function historicalPreflightMarker(
@@ -512,8 +513,11 @@ function attachmentQuotaItem(
 }
 
 function audioProfileCompatible(runtimeProfile: RuntimeProfile): boolean {
-  return runtimeProfile.profile.apiFamily === "openai" &&
-    runtimeProfile.profile.apiMode === "chat-completions" &&
+  const profile = runtimeProfile.profile;
+  const backendSupportsAudio = profile.connection.kind === "codex-subscription" ||
+    (profileProvider(profile) === "openai" &&
+      profileApiMode(profile) === "chat-completions");
+  return backendSupportsAudio &&
     runtimeProfile.capabilities.inputs.audio &&
     runtimeProfile.inputCapabilityEvidence?.audio === "supported";
 }

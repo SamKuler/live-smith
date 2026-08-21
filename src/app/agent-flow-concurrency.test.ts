@@ -44,7 +44,7 @@ import {
   updateSession,
   updateSessionInTransaction,
 } from "../storage/sessions.js";
-import { saveGlobalSettings, saveSavedProfile } from "../storage/settings.js";
+import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
 import {
@@ -55,7 +55,17 @@ import { getOrCreateDefaultSession } from "./session-context.js";
 
 test("approval decisions follow the target Session and ignore the legacy global mode", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-decision-"));
-  await saveGlobalSettings(directory, { approvalMode: "everything" });
+  await fs.writeFile(
+    path.join(directory, "live-smith-settings.json"),
+    JSON.stringify({
+      schemaVersion: 4,
+      activeProfileId: null,
+      profiles: [],
+      approvalMode: "everything",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+    }),
+  );
   const manualSession = await createSession(directory, {
     title: "Manual",
     projectKey: "project-1",
@@ -1132,9 +1142,9 @@ test("a selected source attachment and send share the same-Session fence", async
     ...profile({
       baseUrl: "https://provider.test/v1",
       apiKey: "key",
+      apiMode: "chat-completions",
       model: "audio-model",
     }),
-    apiMode: "chat-completions",
     advanced: {
       capabilityOverrides: {
         tools: true,
@@ -3249,14 +3259,24 @@ function fakeMidiTrackWithSlots(
 }
 
 function profile(
-  values: Pick<SavedProfile, "baseUrl" | "apiKey" | "model">,
+  values: {
+    baseUrl: string;
+    apiKey: string;
+    apiMode?: "responses" | "chat-completions";
+    model: string;
+  },
 ): SavedProfile {
   return {
     id: "profile-1",
     name: "Provider",
-    apiFamily: "openai",
-    apiMode: "responses",
-    ...values,
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: values.apiMode ?? "responses",
+      baseUrl: values.baseUrl,
+      apiKey: values.apiKey,
+    },
+    model: values.model,
     parameters: {
       maxOutputTokens: 1_000,
       reasoning: { mode: "default" },

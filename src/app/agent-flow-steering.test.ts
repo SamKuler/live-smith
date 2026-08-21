@@ -23,10 +23,13 @@ import {
 const profile: SavedProfile = {
   id: "steering-profile",
   name: "Provider",
-  apiFamily: "openai",
-  apiMode: "responses",
-  apiKey: "key",
-  baseUrl: "https://example.test/v1",
+  connection: {
+    kind: "direct-api",
+    apiFamily: "openai",
+    apiMode: "responses",
+    apiKey: "key",
+    baseUrl: "https://example.test/v1",
+  },
   model: "custom-model",
   parameters: {
     maxOutputTokens: 1024,

@@ -24,10 +24,13 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
     profile: {
       id: "p1",
       name: "Runtime",
-      apiFamily: "openai",
-      apiMode: "responses",
-      baseUrl: "https://example.test/v1",
-      apiKey: "secret-key",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret-key",
+      },
       model: "runtime-model",
       parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
       advanced: { extraBody: { secret: true } },
@@ -44,6 +47,7 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
     profile: {
       id: "p1",
       name: "Runtime",
+      connectionKind: "direct-api",
       apiFamily: "openai",
       apiMode: "responses",
       model: "runtime-model",
@@ -90,9 +94,11 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     modelStateSource: null,
     runtimeProfile: null,
     settings: {
-      schemaVersion: 2,
+      schemaVersion: 4,
       activeProfileId: null,
       approvalMode: "manual",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
       profiles: [],
     },
     openSettingsOnLoad: false,
@@ -103,4 +109,37 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
   assert.match(serialized, /\\u2028/);
   assert.match(serialized, /\\u2029/);
   assert.doesNotMatch(serialized, /[<>&\u2028\u2029]/);
+});
+
+test("managed auth state and subscription connections expose no credential-shaped keys", () => {
+  const managedSurface = {
+    codexAuth: {
+      status: "pending",
+      verificationUrl: "https://auth.openai.com/codex/device",
+      userCode: "ABCD-EFGH",
+    },
+    connection: {
+      kind: "codex-subscription",
+      provider: "openai",
+    },
+  };
+  const keys: string[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      keys.push(key);
+      visit(entry);
+    }
+  };
+
+  visit(managedSurface);
+
+  assert.deepEqual(
+    keys.filter((key) => /access|refresh|token|credentialPath/i.test(key)),
+    [],
+  );
 });
