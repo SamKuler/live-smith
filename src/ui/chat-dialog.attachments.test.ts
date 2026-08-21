@@ -10,6 +10,7 @@ import {
   imageCapableState,
   imageFile,
   jsonCalls,
+  modelStateSourceFixture,
   pendingAudio,
   pendingDocument,
   pendingImage,
@@ -437,8 +438,13 @@ test("PDF Send uses the active saved runtime mode and verified PDF evidence", as
   state.settings.profiles[1] = profileFixture({
     id: "profile-2",
     name: "PDF review",
-    apiFamily: "anthropic",
-    apiMode: "messages",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "anthropic",
+      apiMode: "messages",
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+    },
     model: "pdf-capable-model",
   });
   const harness = await createDialogHarness(state);
@@ -977,6 +983,14 @@ test("Send and Session controls stay disabled while an attachment upload is in f
       harness.document.querySelector<HTMLButtonElement>("#newSessionButton")?.disabled,
       true,
     );
+    assert.equal(
+      harness.document.querySelector("#pendingAttachments")?.getAttribute("aria-busy"),
+      "true",
+    );
+    assert.equal(
+      harness.document.querySelector(".composer")?.hasAttribute("aria-busy"),
+      false,
+    );
     harness.releaseHeldAttachment();
     await harness.settleAttachmentOperation();
     assert.equal(
@@ -1436,22 +1450,93 @@ test("a text-only runtime keeps attachment chips visible but blocks Send precise
   }
 });
 
-test("an unverified runtime blocks only image-bearing Send with distinct guidance", async () => {
-  const state = stateFixture();
-  state.pendingAttachments = [pendingImage("attachment-unverified", "score.png")];
-  const harness = await createDialogHarness(state);
-  try {
-    harness.input("#prompt", "Review this score");
-    harness.click("#sendButton");
-    await harness.settle();
-    assert.equal(harness.calls.some((call) => call.path === "/send"), false);
-    assert.match(
-      harness.document.querySelector("#status")?.textContent ?? "",
-      /image input support.*unverified/i,
-    );
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
+test("unverified attachment guidance separates subscription model reloads from Direct API overrides", async () => {
+  const cases = [
+    {
+      attachment: pendingImage("attachment-unverified", "score.png"),
+      capability: "image",
+      prompt: "Review this score",
+      removeGuidance: /remove the attached images/i,
+      overrideGuidance: /explicit image-input override/i,
+    },
+    {
+      attachment: pendingAudio("audio-unverified", "mix.wav"),
+      capability: "audio",
+      prompt: "Review this mix",
+      removeGuidance: /remove the attached audio/i,
+      overrideGuidance: /explicit audio-input override/i,
+    },
+  ] as const;
+
+  for (const entry of cases) {
+    const directState = stateFixture();
+    directState.pendingAttachments = [entry.attachment];
+    const directHarness = await createDialogHarness(directState);
+    try {
+      directHarness.input("#prompt", entry.prompt);
+      directHarness.click("#sendButton");
+      await directHarness.settle();
+      assert.equal(
+        directHarness.calls.some((call) => call.path === "/send"),
+        false,
+        `Direct API ${entry.capability} should remain gated`,
+      );
+      assert.match(
+        directHarness.document.querySelector("#status")?.textContent ?? "",
+        entry.overrideGuidance,
+      );
+      assert.deepEqual(directHarness.errors, []);
+    } finally {
+      directHarness.close();
+    }
+
+    const subscriptionState = stateFixture();
+    const subscriptionProfile = profileFixture({
+      connection: { kind: "codex-subscription", provider: "openai" },
+      parameters: {
+        maxOutputTokens: 8192,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    });
+    subscriptionState.settings.profiles = [subscriptionProfile];
+    subscriptionState.settings.activeProfileId = subscriptionProfile.id;
+    subscriptionState.modelStateSource = modelStateSourceFixture(subscriptionProfile);
+    subscriptionState.runtimeProfile!.profile.connectionKind = "codex-subscription";
+    subscriptionState.runtimeProfile!.profile.apiMode = null;
+    subscriptionState.codexAuth = {
+      status: "signed-in",
+      accountLabel: "studio@example.test",
+      planType: "pro",
+      subscriptionEligible: true,
+    };
+    subscriptionState.pendingAttachments = [entry.attachment];
+    const subscriptionHarness = await createDialogHarness(subscriptionState);
+    try {
+      assert.equal(
+        subscriptionHarness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+        false,
+      );
+      subscriptionHarness.input("#prompt", entry.prompt);
+      subscriptionHarness.click("#sendButton");
+      await subscriptionHarness.settle();
+      assert.equal(
+        subscriptionHarness.calls.some((call) => call.path === "/send"),
+        false,
+        `Subscription ${entry.capability} should remain gated`,
+      );
+      const status = subscriptionHarness.document.querySelector("#status")?.textContent ?? "";
+      assert.match(status, entry.removeGuidance);
+      assert.match(status, /reload the model list/i);
+      assert.match(
+        status,
+        new RegExp(`select a model with verified ${entry.capability} input support`, "i"),
+      );
+      assert.doesNotMatch(status, /override/i);
+      assert.deepEqual(subscriptionHarness.errors, []);
+    } finally {
+      subscriptionHarness.close();
+    }
   }
 });
 

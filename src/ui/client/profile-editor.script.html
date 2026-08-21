@@ -21,12 +21,17 @@
       let draftDirty = false;
       let modelStateSource = null;
       let renderedModelOptionsMatchConnection = false;
+      let renderedCodexAuthKey = null;
+      const codexSubscriptionStoredMaxOutputTokens = 8192;
       const controlIdByProfileField = {
         name: "profileName",
-        apiFamily: "apiFamily",
-        apiMode: "apiMode",
-        apiKey: "apiKey",
-        baseUrl: "baseUrl",
+        connection: "connectionKind",
+        "connection.kind": "connectionKind",
+        "connection.provider": "connectionKind",
+        "connection.apiFamily": "apiFamily",
+        "connection.apiMode": "apiMode",
+        "connection.apiKey": "apiKey",
+        "connection.baseUrl": "baseUrl",
         model: "model",
         "parameters.temperature": "temperature",
         "parameters.maxOutputTokens": "maxOutputTokens",
@@ -123,10 +128,13 @@
         return {
           id: createProfileId(),
           name: "",
-          apiFamily: "openai",
-          apiMode: "responses",
-          baseUrl: "",
-          apiKey: "",
+          connection: {
+            kind: "direct-api",
+            apiFamily: "openai",
+            apiMode: "responses",
+            baseUrl: "",
+            apiKey: "",
+          },
           model: "",
           parameters: {
             maxOutputTokens: 8192,
@@ -143,12 +151,18 @@
 
       function modelSourceFor(profile) {
         if (!profile) return null;
+        const connection = profile.connection;
         return {
           profileId: profile.profileId || profile.id || "",
-          apiFamily: profile.apiFamily || "",
-          apiMode: profile.apiMode || "",
-          baseUrl: String(profile.baseUrl || "").trim().replace(/\/+$/, ""),
-          apiKey: String(profile.apiKey || "").trim(),
+          connection: connection.kind === "direct-api"
+            ? {
+                kind: "direct-api",
+                apiFamily: connection.apiFamily || "",
+                apiMode: connection.apiMode || "",
+                baseUrl: String(connection.baseUrl || "").trim().replace(/\/+$/, ""),
+                apiKey: String(connection.apiKey || "").trim(),
+              }
+            : { kind: "codex-subscription", provider: "openai" },
           model: String(profile.model || "").trim(),
         };
       }
@@ -156,10 +170,15 @@
       function currentModelSource() {
         return modelSourceFor({
           id: draftProfile?.id || "",
-          apiFamily: document.getElementById("apiFamily").value,
-          apiMode: document.getElementById("apiMode").value,
-          baseUrl: document.getElementById("baseUrl").value,
-          apiKey: document.getElementById("apiKey").value,
+          connection: isCodexSubscription()
+            ? { kind: "codex-subscription", provider: "openai" }
+            : {
+                kind: "direct-api",
+                apiFamily: document.getElementById("apiFamily").value,
+                apiMode: document.getElementById("apiMode").value,
+                baseUrl: document.getElementById("baseUrl").value,
+                apiKey: document.getElementById("apiKey").value,
+              },
           model: document.getElementById("model").value,
         });
       }
@@ -171,8 +190,16 @@
       function modelStateMatchesCurrentConnection() {
         const current = currentModelSource();
         if (!modelStateSource || !current) return false;
-        return ["profileId", "apiFamily", "apiMode", "baseUrl", "apiKey"]
-          .every((key) => modelStateSource[key] === current[key]);
+        if (
+          modelStateSource.profileId !== current.profileId ||
+          modelStateSource.connection.kind !== current.connection.kind
+        ) return false;
+        if (current.connection.kind === "codex-subscription") return true;
+        const source = modelStateSource.connection;
+        return source.apiFamily === current.connection.apiFamily &&
+          source.apiMode === current.connection.apiMode &&
+          source.baseUrl === current.connection.baseUrl &&
+          source.apiKey === current.connection.apiKey;
       }
 
       function modelStateMatchesCurrentProfile() {
@@ -187,12 +214,17 @@
       }
 
       function profileFromForm() {
+        const subscription = isCodexSubscription();
         const temperatureControl = document.getElementById("temperature");
-        const temperatureRaw = temperatureControl.disabled
+        const temperatureRaw = subscription || temperatureControl.disabled
           ? ""
           : temperatureControl.value.trim();
-        const budgetRaw = document.getElementById("reasoningBudgetTokens").value.trim();
-        const extraRaw = document.getElementById("extraBody").value.trim();
+        const budgetRaw = subscription
+          ? ""
+          : document.getElementById("reasoningBudgetTokens").value.trim();
+        const extraRaw = subscription
+          ? ""
+          : document.getElementById("extraBody").value.trim();
         let extraBody;
         if (extraRaw) {
           extraBody = JSON.parse(extraRaw);
@@ -200,8 +232,11 @@
             throw new Error("Extra Body must be a JSON object.");
           }
         }
+        const selectedReasoningMode = document.getElementById("reasoningMode").value;
         const reasoning = {
-          mode: document.getElementById("reasoningMode").value,
+          mode: subscription && selectedReasoningMode === "disabled"
+            ? "default"
+            : selectedReasoningMode,
         };
         const effort = document.getElementById("reasoningEffort").value;
         if (reasoning.mode === "enabled" && effort) reasoning.effort = effort;
@@ -209,10 +244,10 @@
         if (reasoning.mode === "enabled" && budgetRaw && Number.isFinite(budget) && budget > 0) {
           reasoning.budgetTokens = budget;
         }
-        const overrides = capabilityOverridesFromForm();
+        const overrides = subscription ? {} : capabilityOverridesFromForm();
         const advanced = {};
         if (Object.keys(overrides).length) advanced.capabilityOverrides = overrides;
-        if (document.getElementById("webSearchEnabled").checked) {
+        if (!subscription && document.getElementById("webSearchEnabled").checked) {
           advanced.hostedTools = { webSearch: true };
         }
         if (extraBody) advanced.extraBody = extraBody;
@@ -220,18 +255,29 @@
         return {
           id: draftProfile?.id || createProfileId(),
           name: document.getElementById("profileName").value.trim(),
-          apiFamily: document.getElementById("apiFamily").value,
-          apiMode: document.getElementById("apiMode").value,
-          apiKey: document.getElementById("apiKey").value.trim(),
-          baseUrl: document.getElementById("baseUrl").value.trim(),
+          connection: subscription
+            ? { kind: "codex-subscription", provider: "openai" }
+            : {
+                kind: "direct-api",
+                apiFamily: document.getElementById("apiFamily").value,
+                apiMode: document.getElementById("apiMode").value,
+                apiKey: document.getElementById("apiKey").value.trim(),
+                baseUrl: document.getElementById("baseUrl").value.trim(),
+              },
           model: document.getElementById("model").value.trim(),
           parameters: {
-            maxOutputTokens: Number(document.getElementById("maxOutputTokens").value),
+            maxOutputTokens: subscription
+              ? codexSubscriptionStoredMaxOutputTokens
+              : Number(document.getElementById("maxOutputTokens").value),
             ...(temperatureRaw && Number.isFinite(temperature) ? { temperature } : {}),
             reasoning,
           },
           advanced,
         };
+      }
+
+      function isCodexSubscription() {
+        return document.getElementById("connectionKind")?.value === "codex-subscription";
       }
 
       function capabilityOverridesFromForm() {
@@ -297,11 +343,56 @@
         button.setAttribute("aria-pressed", String(visible));
       }
 
+      function handleConnectionKindChange() {
+        const control = document.getElementById("connectionKind");
+        if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
+        applyConnectionKindPresentation();
+        markDraftDirty(control);
+        updateHostedToolControls();
+      }
+
+      function clearManagedSubscriptionIncompatibleSettings() {
+        document.getElementById("temperature").value = "";
+        document.getElementById("maxOutputTokens").value =
+          String(codexSubscriptionStoredMaxOutputTokens);
+        document.getElementById("reasoningBudgetTokens").value = "";
+        document.getElementById("webSearchEnabled").checked = false;
+        document.getElementById("extraBody").value = "";
+        populateCapabilityOverrides({});
+        const reasoningMode = document.getElementById("reasoningMode");
+        if (reasoningMode.value === "disabled") reasoningMode.value = "default";
+      }
+
+      function applyConnectionKindPresentation(settingsLocked = false) {
+        const subscription = isCodexSubscription();
+        document.getElementById("directApiFields").hidden = subscription;
+        document.getElementById("codexAuthPanel").hidden = !subscription;
+        const advancedSettings = document.getElementById("advancedSettings");
+        advancedSettings.hidden = subscription;
+        if (subscription) advancedSettings.open = false;
+        document.querySelectorAll(
+          "#directApiFields input, #directApiFields select, #directApiFields button",
+        ).forEach((control) => {
+          control.disabled = settingsLocked || subscription;
+        });
+        document.querySelectorAll(
+          "#advancedSettings input, #advancedSettings select, #advancedSettings textarea",
+        ).forEach((control) => {
+          control.disabled = settingsLocked || subscription;
+        });
+        document.getElementById("temperature").disabled = settingsLocked || subscription;
+        document.getElementById("maxOutputTokens").disabled = settingsLocked || subscription;
+        document.getElementById("reasoningBudgetTokens").disabled =
+          settingsLocked || subscription || document.getElementById("reasoningBudgetRow").hidden;
+        renderCodexAuthState(settingsLocked);
+      }
+
       function handleApiFamilyChange() {
         const familyControl = document.getElementById("apiFamily");
         const family = familyControl.value;
         renderApiModes(family);
         markDraftDirty(familyControl);
+        updateAnthropicSubscriptionHint();
         updateHostedToolControls();
       }
 
@@ -323,14 +414,224 @@
         const control = document.getElementById("webSearchEnabled");
         const hint = document.getElementById("webSearchHint");
         const mode = document.getElementById("apiMode").value;
-        const supported = mode === "responses" || mode === "messages";
+        const subscription = isCodexSubscription();
+        const supported = !subscription && (mode === "responses" || mode === "messages");
+        if (subscription) control.checked = false;
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
-        hint.textContent = supported
+        hint.textContent = subscription
+          ? "Provider-hosted Web Search is unavailable for ChatGPT subscription Profiles."
+          : supported
           ? "Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support."
           : wasTurnedOff
           ? "Web Search was turned off because Chat Completions does not support provider-hosted search in Live Smith."
           : "Chat Completions does not support provider-hosted Web Search in Live Smith.";
+        applyConnectionKindPresentation(settingsLocked);
+      }
+
+      function updateAnthropicSubscriptionHint() {
+        document.getElementById("anthropicSubscriptionHint").hidden =
+          document.getElementById("apiFamily").value !== "anthropic";
+      }
+
+      function safeVerificationUrl(value) {
+        try {
+          const url = new URL(String(value));
+          return url.protocol === "https:" &&
+            url.hostname === "auth.openai.com" &&
+            !url.username &&
+            !url.password
+            ? url.toString()
+            : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function codexAuthPresentation(auth) {
+        if (!auth) {
+          return {
+            state: "unchecked",
+            badge: "Not checked",
+            title: "Check account status",
+            detail: "Sign in, or check an existing Live Smith session.",
+            signIn: { label: "Sign in to ChatGPT", hidden: false, tone: "primary" },
+            check: { label: "Check account", hidden: false, tone: "secondary" },
+            logout: { label: "Sign out", hidden: true, tone: "quiet" },
+          };
+        }
+        if (auth.status === "unavailable") {
+          return {
+            state: "unavailable",
+            badge: "Unavailable",
+            title: "ChatGPT subscription unavailable",
+            detail: `${auth.message} Fix the issue, then check again.`,
+            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+            check: { label: "Check again", hidden: false, tone: "primary" },
+            logout: { label: "Sign out", hidden: true, tone: "quiet" },
+          };
+        }
+        if (auth.status === "signed-out") {
+          return {
+            state: "signed-out",
+            badge: "Signed out",
+            title: "Sign in to continue",
+            detail: "Use an eligible ChatGPT account. API billing stays off.",
+            signIn: { label: "Sign in to ChatGPT", hidden: false, tone: "primary" },
+            check: { label: "Check account", hidden: false, tone: "secondary" },
+            logout: { label: "Sign out", hidden: true, tone: "quiet" },
+          };
+        }
+        if (auth.status === "pending") {
+          return {
+            state: "pending",
+            badge: "Waiting",
+            title: "Finish sign-in",
+            detail: "Open the OpenAI page, enter the one-time code, then return here.",
+            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+            check: { label: "Check sign-in", hidden: false, tone: "primary" },
+            logout: {
+              label: "Cancel sign-in",
+              busyLabel: "Cancelling…",
+              hidden: false,
+              tone: "quiet",
+            },
+          };
+        }
+        if (!auth.subscriptionEligible) {
+          return {
+            state: "ineligible",
+            badge: "Not eligible",
+            title: "This account isn’t supported",
+            detail: "Workspace-managed plans aren’t supported here. Sign out and connect a personal ChatGPT plan.",
+            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+            check: { label: "Refresh account", hidden: false, tone: "secondary" },
+            logout: { label: "Sign out", hidden: false, tone: "quiet" },
+          };
+        }
+        return {
+          state: "signed-in",
+          badge: "Connected",
+          title: "Subscription ready",
+          detail: auth.accountLabel
+            ? `Signed in as ${auth.accountLabel} (${auth.planType}).`
+            : `Signed in with a ${auth.planType} plan.`,
+          signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+          check: { label: "Refresh account", hidden: false, tone: "secondary" },
+          logout: { label: "Sign out", hidden: false, tone: "quiet" },
+        };
+      }
+
+      function configureCodexAuthAction(button, action) {
+        button.hidden = action.hidden;
+        button.dataset.idleLabel = action.label;
+        button.dataset.busyLabel = action.busyLabel || "";
+        if (!button.dataset.commandIdleLabel) button.textContent = action.label;
+        button.classList.toggle("primary", action.tone === "primary");
+        button.classList.toggle("secondary", action.tone === "secondary");
+        button.classList.toggle(
+          "subscription-auth-quiet-action",
+          action.tone === "quiet",
+        );
+      }
+
+      function renderCodexAuthState(settingsLocked = false) {
+        const auth = getState().codexAuth;
+        const presentation = codexAuthPresentation(auth);
+        const panel = document.getElementById("codexAuthPanel");
+        const ticket = document.getElementById("codexDeviceCodeTicket");
+        const verificationLink = document.getElementById("codexVerificationLink");
+        const verificationError = document.getElementById("codexVerificationError");
+        const userCode = document.getElementById("codexUserCode");
+        const presentationKey = JSON.stringify(auth || null);
+        panel.dataset.authState = presentation.state;
+        document.getElementById("codexAuthStateBadge").textContent = presentation.badge;
+
+        if (renderedCodexAuthKey !== presentationKey) {
+          renderedCodexAuthKey = presentationKey;
+          document.getElementById("codexAuthStateLabel").textContent = presentation.title;
+          document.getElementById("codexAuthStateDetail").textContent = presentation.detail;
+          const pending = auth?.status === "pending";
+          ticket.hidden = !pending;
+          if (pending) {
+            const verificationUrl = safeVerificationUrl(auth.verificationUrl);
+            verificationLink.hidden = !verificationUrl;
+            verificationError.hidden = Boolean(verificationUrl);
+            if (verificationUrl) {
+              verificationLink.href = verificationUrl;
+            } else {
+              verificationLink.removeAttribute("href");
+            }
+            userCode.value = auth.userCode;
+          } else {
+            verificationLink.hidden = true;
+            verificationLink.removeAttribute("href");
+            verificationError.hidden = true;
+            userCode.value = "";
+          }
+        }
+
+        const subscription = isCodexSubscription();
+        const signIn = document.getElementById("codexSignInButton");
+        const check = document.getElementById("codexCheckAccountButton");
+        const logout = document.getElementById("codexLogoutButton");
+        configureCodexAuthAction(signIn, presentation.signIn);
+        configureCodexAuthAction(check, presentation.check);
+        configureCodexAuthAction(logout, presentation.logout);
+        signIn.disabled = settingsLocked || !subscription || presentation.signIn.hidden;
+        check.disabled = settingsLocked || !subscription;
+        logout.disabled = settingsLocked || !subscription || presentation.logout.hidden;
+      }
+
+      function focusAfterCodexAuthCommand(source) {
+        if (!isCodexSubscription()) return;
+        const focused = document.activeElement;
+        if (
+          focused !== source &&
+          focused !== document.body &&
+          focused !== document.documentElement
+        ) return;
+        const auth = getState().codexAuth;
+        const signIn = document.getElementById("codexSignInButton");
+        const check = document.getElementById("codexCheckAccountButton");
+        const verificationLink = document.getElementById("codexVerificationLink");
+        const target = auth?.status === "pending"
+          ? verificationLink.hidden ? check : verificationLink
+          : !auth || auth.status === "signed-out"
+          ? signIn
+          : check;
+        if (!target.hidden && !target.disabled) {
+          target.focus({ preventScroll: true });
+        }
+      }
+
+      async function runCodexAuthCommand(kind, sourceId) {
+        const source = document.getElementById(sourceId);
+        const shouldRestoreFocus = document.activeElement === source;
+        const succeeded = await runCommand(kind);
+        if (shouldRestoreFocus) focusAfterCodexAuthCommand(source);
+        return succeeded;
+      }
+
+      async function startCodexLogin() {
+        await runCodexAuthCommand("start_codex_login", "codexSignInButton");
+      }
+
+      async function refreshCodexAccount() {
+        await runCodexAuthCommand(
+          "refresh_codex_account",
+          "codexCheckAccountButton",
+        );
+      }
+
+      async function logoutCodex() {
+        if (!(await confirmAction({
+          title: "Sign out of ChatGPT?",
+          message: "Sign out of the isolated Live Smith Codex session? Any pending device login will be cancelled.",
+          acceptLabel: "Sign Out",
+          danger: true,
+        }))) return;
+        await runCodexAuthCommand("logout_codex", "codexLogoutButton");
       }
 
       async function addProfile() {
@@ -477,13 +778,16 @@
         }
         selector.value = profile.id;
         document.getElementById("profileName").value = profile.name || "";
-        document.getElementById("apiFamily").value = profile.apiFamily || "openai";
-        renderApiModes(profile.apiFamily || "openai", profile.apiMode);
-        document.getElementById("apiKey").value = profile.apiKey || "";
+        const connection = profile.connection;
+        document.getElementById("connectionKind").value = connection.kind;
+        const directConnection = connection.kind === "direct-api" ? connection : null;
+        document.getElementById("apiFamily").value = directConnection?.apiFamily || "openai";
+        renderApiModes(directConnection?.apiFamily || "openai", directConnection?.apiMode);
+        document.getElementById("apiKey").value = directConnection?.apiKey || "";
         document.getElementById("apiKey").type = "password";
         document.getElementById("apiKeyVisibilityButton").textContent = "Show";
         document.getElementById("apiKeyVisibilityButton").setAttribute("aria-pressed", "false");
-        document.getElementById("baseUrl").value = profile.baseUrl || "";
+        document.getElementById("baseUrl").value = directConnection?.baseUrl || "";
         document.getElementById("model").value = profile.model || "";
         document.getElementById("temperature").value = profile.parameters?.temperature ?? "";
         document.getElementById("maxOutputTokens").value = profile.parameters.maxOutputTokens;
@@ -498,6 +802,11 @@
         document.getElementById("extraBody").value = profile.advanced?.extraBody
           ? JSON.stringify(profile.advanced.extraBody, null, 2)
           : "";
+        if (connection.kind === "codex-subscription") {
+          clearManagedSubscriptionIncompatibleSettings();
+        }
+        updateAnthropicSubscriptionHint();
+        applyConnectionKindPresentation();
         renderModelOptions();
         updateHostedToolControls();
         requireCapabilityView().updateCapabilityPreview();
@@ -571,12 +880,17 @@
         }),
         handleApiFamilyChange,
         handleApiModeChange,
+        handleConnectionKindChange,
         handleProfileSelection,
         handleWebSearchChange,
         markDraftDirty,
         markDraftDirtyForCapabilityAdjustment,
         modelStateMatchesCurrentConnection,
         modelStateMatchesCurrentProfile,
+        isCodexSubscription,
+        logoutCodex,
+        refreshCodexAccount,
+        renderCodexAuthState,
         updateApprovalModePresentation,
         updateHostedToolControls,
         renderModelOptions,
@@ -585,6 +899,7 @@
         saveApprovalMode,
         saveProfile,
         showFieldError,
+        startCodexLogin,
         syncModelStateSource,
         toggleApiKeyVisibility,
       };

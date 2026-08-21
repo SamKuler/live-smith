@@ -6,7 +6,10 @@ import { URL } from "node:url";
 
 import { JSDOM, VirtualConsole } from "jsdom";
 
-import type { SavedProfile } from "../model/profile.js";
+import {
+  incrementDefaultFollowUpBehaviorRevision,
+  type SavedProfile,
+} from "../model/profile.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -48,7 +51,14 @@ interface DialogHarness {
     },
   ): void;
   failNextConfirmation(error: string): void;
-  failNextSend(error: string, promptPersistence?: string): void;
+  failNextSend(
+    error: string,
+    promptPersistence?: string,
+    details?: {
+      sendFailureKind?: "session_unavailable";
+      state?: ChatDialogState;
+    },
+  ): void;
   failNextSteer(error: string, steeringOutcome?: "unknown"): void;
   rejectNextSteerResponseAfterCommit(error: string): void;
   failNextState(error: string): void;
@@ -88,6 +98,12 @@ interface DialogHarness {
   releaseHeldState(): void;
   releaseHeldAttachment(): void;
   queueStopTerminals(...values: boolean[]): void;
+  queueStopOutcomes(
+    ...values: Array<{
+      terminal: boolean;
+      promptPersistence?: "persisted" | "not_persisted" | "unknown";
+    }>
+  ): void;
   sendIds: string[];
   setServerState(state: ChatDialogState): void;
   stopIds: string[];
@@ -163,10 +179,13 @@ function profileFixture(
   return {
     id: "profile-1",
     name: "Studio",
-    apiFamily: "openai",
-    apiMode: "chat-completions",
-    apiKey: "test-key",
-    baseUrl: "https://example.test/v1",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "chat-completions",
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+    },
     model: "model-a",
     parameters: {
       maxOutputTokens: 8192,
@@ -181,10 +200,13 @@ function profileFixture(
 function modelStateSourceFixture(profile: SavedProfile) {
   return {
     profileId: profile.id,
-    apiFamily: profile.apiFamily,
-    apiMode: profile.apiMode,
-    baseUrl: profile.baseUrl.replace(/\/+$/, ""),
-    apiKey: profile.apiKey,
+    connection: profile.connection.kind === "direct-api"
+      ? {
+          ...profile.connection,
+          baseUrl: profile.connection.baseUrl.replace(/\/+$/, ""),
+          apiKey: profile.connection.apiKey.trim(),
+        }
+      : { ...profile.connection },
     model: profile.model,
   };
 }
@@ -224,22 +246,26 @@ function stateFixture(): ChatDialogState {
     capabilities: capabilities(),
     availableModels: [],
     modelStateSource: modelStateSourceFixture(profileFixture()),
-    runtimeProfile: {
-      profile: profileFixture(),
-      capabilities: capabilities(),
-      inputCapabilityEvidence: inputCapabilityEvidence(),
-    },
+    runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
+    codexAuth: { status: "signed-out" },
     settings: {
-      schemaVersion: 2,
+      schemaVersion: 4,
       activeProfileId: "profile-1",
       approvalMode: "manual",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
       profiles: [
         profileFixture(),
         profileFixture({
           id: "profile-2",
           name: "Mix review",
-          apiFamily: "anthropic",
-          apiMode: "messages",
+          connection: {
+            kind: "direct-api",
+            apiFamily: "anthropic",
+            apiMode: "messages",
+            apiKey: "test-key",
+            baseUrl: "https://example.test/v1",
+          },
           model: "model-b",
         }),
       ],
@@ -307,7 +333,12 @@ async function createDialogHarness(
     state?: ChatDialogState;
   } | null = null;
   let nextConfirmationError: { error: string } | null = null;
-  let nextSendError: { error: string; promptPersistence?: string } | null = null;
+  let nextSendError: {
+    error: string;
+    promptPersistence?: string;
+    sendFailureKind?: "session_unavailable";
+    state?: ChatDialogState;
+  } | null = null;
   let nextSteerError: {
     error: string;
     steeringOutcome?: "unknown";
@@ -350,6 +381,10 @@ async function createDialogHarness(
   let releaseState: (() => void) | null = null;
   let releaseAttachment: (() => void) | null = null;
   const stopTerminals: boolean[] = [];
+  const stopOutcomes: Array<{
+    terminal: boolean;
+    promptPersistence?: "persisted" | "not_persisted" | "unknown";
+  }> = [];
   let serverState = cloneState(initialState);
   const pendingAttachmentsBySession = new Map([
     [serverState.activeSessionId, cloneState(serverState).pendingAttachments],
@@ -635,6 +670,7 @@ async function createDialogHarness(
               const command = body as {
                 kind?: string;
                 approvalMode?: "manual" | "low-risk" | "everything";
+                defaultFollowUpBehavior?: "queue" | "steer";
                 profile?: SavedProfile;
                 profileId?: string;
                 sessionId?: string;
@@ -642,6 +678,16 @@ async function createDialogHarness(
                 title?: string;
               };
               if (
+                command.kind === "save_global_settings" &&
+                typeof command.defaultFollowUpBehavior === "string"
+              ) {
+                serverState.settings.defaultFollowUpBehavior =
+                  command.defaultFollowUpBehavior;
+                serverState.settings.defaultFollowUpBehaviorRevision =
+                  incrementDefaultFollowUpBehaviorRevision(
+                    serverState.settings.defaultFollowUpBehaviorRevision,
+                  );
+              } else if (
                 command.kind === "set_session_approval_mode" &&
                 typeof command.sessionId === "string" &&
                 typeof command.approvalMode === "string"
@@ -655,6 +701,21 @@ async function createDialogHarness(
                 if (serverState.activeSessionId === command.sessionId) {
                   serverState.approvalMode = command.approvalMode;
                 }
+              } else if (command.kind === "start_codex_login") {
+                serverState.codexAuth = {
+                  status: "pending",
+                  verificationUrl: "https://auth.openai.com/codex/device",
+                  userCode: "ABCD-EFGH",
+                };
+              } else if (command.kind === "refresh_codex_account") {
+                serverState.codexAuth = {
+                  status: "signed-in",
+                  accountLabel: "studio@example.test",
+                  planType: "pro",
+                  subscriptionEligible: true,
+                };
+              } else if (command.kind === "logout_codex") {
+                serverState.codexAuth = { status: "signed-out" };
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -664,9 +725,7 @@ async function createDialogHarness(
                 serverState.settings.activeProfileId = command.profile.id;
                 serverState.modelStateSource = modelStateSourceFixture(command.profile);
                 serverState.runtimeProfile = {
-                  profile: command.profile,
-                  capabilities: capabilities(),
-                  inputCapabilityEvidence: inputCapabilityEvidence(),
+                  ...runtimeSummaryForHarnessProfile(command.profile),
                 };
               } else if (command.kind === "discover_models") {
                 serverState.availableModels = [{
@@ -704,11 +763,7 @@ async function createDialogHarness(
                   ? modelStateSourceFixture(profile)
                   : null;
                 serverState.runtimeProfile = profile
-                  ? {
-                      profile,
-                      capabilities: capabilities(),
-                      inputCapabilityEvidence: inputCapabilityEvidence(),
-                    }
+                  ? runtimeSummaryForHarnessProfile(profile)
                   : null;
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
@@ -910,9 +965,10 @@ async function createDialogHarness(
               }
             }
             if (url.pathname === "/stop") {
+              const outcome = stopOutcomes.shift();
               return response({
                 ok: true,
-                terminal: stopTerminals.shift() ?? true,
+                ...(outcome || { terminal: stopTerminals.shift() ?? true }),
               });
             }
             return response({ ok: true });
@@ -989,10 +1045,11 @@ async function createDialogHarness(
     failNextConfirmation(error) {
       nextConfirmationError = { error };
     },
-    failNextSend(error, promptPersistence) {
+    failNextSend(error, promptPersistence, details) {
       nextSendError = {
         error,
         ...(promptPersistence ? { promptPersistence } : {}),
+        ...(details || {}),
       };
     },
     failNextSteer(error, steeringOutcome) {
@@ -1133,6 +1190,9 @@ async function createDialogHarness(
     },
     queueStopTerminals(...values) {
       stopTerminals.push(...values);
+    },
+    queueStopOutcomes(...values) {
+      stopOutcomes.push(...values);
     },
     sendIds,
     setServerState(state) {
@@ -1356,7 +1416,18 @@ function runtimeSummaryForHarnessProfile(
     evidence.pdf = "supported";
   }
   return {
-    profile,
+    profile: {
+      id: profile.id,
+      name: profile.name,
+      connectionKind: profile.connection.kind,
+      apiFamily: profile.connection.kind === "direct-api"
+        ? profile.connection.apiFamily
+        : profile.connection.provider,
+      apiMode: profile.connection.kind === "direct-api"
+        ? profile.connection.apiMode
+        : null,
+      model: profile.model,
+    },
     capabilities: runtimeCapabilities,
     inputCapabilityEvidence: evidence,
   };

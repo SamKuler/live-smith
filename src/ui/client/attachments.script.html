@@ -168,7 +168,7 @@
       function setBusy(value) {
         busy = Boolean(value);
         syncAttachAvailability();
-        document.querySelector(".composer")
+        document.getElementById("pendingAttachments")
           ?.setAttribute("aria-busy", String(busy));
         renderPending();
       }
@@ -397,16 +397,26 @@
 
       function audioInputStatus() {
         const runtime = activeSavedRuntime();
-        if (
-          runtime?.profile?.apiFamily !== "openai" ||
-          runtime?.profile?.apiMode !== "chat-completions"
-        ) return "profile_incompatible";
+        const compatible = runtime?.profile?.connectionKind === "codex-subscription" || (
+          runtime?.profile?.apiFamily === "openai" &&
+          runtime?.profile?.apiMode === "chat-completions"
+        );
+        if (!compatible) return "profile_incompatible";
         const evidence = runtime.inputCapabilityEvidence?.audio;
         if (
           evidence === "supported" &&
           runtime.capabilities?.inputs?.audio === true
         ) return "supported";
         return evidence === "unsupported" ? "unsupported" : "unverified";
+      }
+
+      function unverifiedInputGuidance(input) {
+        const attached = input === "image" ? "images" : "audio";
+        const description = input === "image" ? "Image" : "Audio";
+        if (activeSavedRuntime()?.profile?.connectionKind === "codex-subscription") {
+          return `${description} input support for the active model is unverified. Remove the attached ${attached}, reload the model list with Connect & Load Models, or select a model with verified ${input} input support.`;
+        }
+        return `${description} input support for the active model is unverified. Remove the attached ${attached}, discover model capabilities, or set an explicit ${input}-input override.`;
       }
 
       function validateSend() {
@@ -416,7 +426,7 @@
             showStatus(
               imageInputStatus() === "unsupported"
                 ? "The active model does not support image input. Remove the attached images or activate an image-capable Profile."
-                : "Image input support for the active model is unverified. Remove the attached images, discover model capabilities, or set an explicit image-input override.",
+                : unverifiedInputGuidance("image"),
               true,
             );
             return false;
@@ -439,8 +449,8 @@
               status === "unsupported"
                 ? "The active model does not support audio input. Remove the attached audio or activate an audio-capable saved Profile."
                 : status === "unverified"
-                  ? "Audio input support for the active model is unverified. Remove the attached audio, discover model capabilities, or set an explicit audio-input override."
-                  : "Audio attachments require a saved OpenAI Chat Completions Profile with verified audio input support. Remove the attached audio or activate a compatible saved Profile.",
+                  ? unverifiedInputGuidance("audio")
+                  : "Audio attachments require a saved OpenAI Chat Completions or ChatGPT subscription Profile with verified audio input support. Remove the attached audio or activate a compatible saved Profile.",
               true,
             );
             return false;

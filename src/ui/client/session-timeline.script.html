@@ -2,9 +2,11 @@
       window.LiveSmithFactories.createSessionTimeline = function createSessionTimeline({
         getState,
         getAssistantDraft,
+        getQueuedFollowUps,
         getWebSearchUpdates,
         getPendingConfirmation,
         isCommandInProgress,
+        isConfirmationLocked,
         resolveConfirm,
         runCommand,
       }) {
@@ -33,6 +35,12 @@
         for (const entry of document.querySelectorAll(".session-entry")) {
           const selected = selectedSessionIds.has(entry.dataset.sessionId);
           entry.toggleAttribute("data-selected", selected);
+          const selectionStatus = entry.querySelector(".session-selection-status");
+          if (selectionStatus) {
+            selectionStatus.textContent = selected
+              ? "Selected for bulk actions."
+              : "Not selected for bulk actions.";
+          }
         }
         const count = document.getElementById("sessionSelectionCount");
         if (!count) return;
@@ -125,31 +133,6 @@
           resolveConfirm(confirmation.id, false);
           return;
         }
-        if (event.key !== "Tab") return;
-        const controls = [
-          ...card.querySelectorAll("button"),
-          ...document.querySelectorAll(
-            ".composer textarea, .composer button, .composer select, .composer input",
-          ),
-        ].filter((control) =>
-          !control.disabled &&
-          !control.hidden &&
-          !control.closest("[hidden]")
-        );
-        if (!controls.length) {
-          event.preventDefault();
-          return;
-        }
-        const first = controls[0];
-        const currentIndex = controls.indexOf(document.activeElement);
-        event.preventDefault();
-        if (currentIndex < 0) {
-          first.focus();
-          return;
-        }
-        const offset = event.shiftKey ? -1 : 1;
-        controls[(currentIndex + offset + controls.length) % controls.length]
-          .focus();
       }
 
       document.addEventListener("keydown", handleConfirmationKeydown);
@@ -627,6 +610,7 @@
         );
         const list = document.getElementById("sessions");
         list.replaceChildren();
+        let selectionStatusIndex = 0;
 
         if (!state.sessions.length) {
           const empty = document.createElement("div");
@@ -645,6 +629,11 @@
           row.className = `session-row ${mode}-session-row`;
           row.type = "button";
           row.setAttribute("aria-keyshortcuts", "Backspace Delete");
+          const selectionStatus = document.createElement("span");
+          selectionStatus.className = "session-selection-status visually-hidden";
+          selectionStatus.id = `session-selection-status-${selectionStatusIndex}`;
+          selectionStatusIndex += 1;
+          row.setAttribute("aria-describedby", selectionStatus.id);
           row.disabled = navigationBlocked;
           const isActive = session.id === state.activeSessionId;
           if (mode === "current") {
@@ -768,7 +757,7 @@
               return runCommand("restore_session", { sessionId: session.id });
             };
           }
-          entry.append(row);
+          entry.append(row, selectionStatus);
           if (continueButton) entry.append(continueButton);
           entry.append(menuButton, menu);
           list.append(entry);
@@ -815,6 +804,20 @@
         return item;
       }
 
+      function buildQueuedFollowUpItem(followUp) {
+        const item = document.createElement("article");
+        item.className = "timeline-item user queued-follow-up";
+        item.dataset.queuedFollowUpId = followUp.id;
+        const label = document.createElement("div");
+        label.className = "timeline-label";
+        label.textContent = "You / Up next";
+        const body = document.createElement("div");
+        body.className = "timeline-content";
+        body.textContent = followUp.prompt;
+        item.append(label, body);
+        return item;
+      }
+
       function announceAssistantMessage(content) {
         const announcements = document.getElementById("conversationAnnouncements");
         announcements.textContent = content ? `Live Smith: ${content}` : "";
@@ -836,8 +839,7 @@
         for (const element of document.querySelectorAll(
           "header, .inspector-pane",
         )) {
-          if (active) element.setAttribute("inert", "");
-          else element.removeAttribute("inert");
+          element.removeAttribute("inert");
         }
         const timeline = document.getElementById("timeline");
         for (const child of timeline.children) {
@@ -861,8 +863,10 @@
         timeline.querySelector(".empty")?.remove();
         if (!item) {
           item = buildAssistantDraftItem(assistantDraft);
-          const confirmation = timeline.querySelector(".confirm-card");
-          timeline.insertBefore(item, confirmation);
+          const nextLocalItem = timeline.querySelector(
+            ".queued-follow-up, .confirm-card",
+          );
+          timeline.insertBefore(item, nextLocalItem);
         } else {
           renderMarkdown(item.querySelector(".timeline-content"), assistantDraft);
         }
@@ -915,6 +919,7 @@
       function renderTimeline() {
         const state = getState();
         const assistantDraft = getAssistantDraft();
+        const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
         const timeline = document.getElementById("timeline");
@@ -948,6 +953,7 @@
           !events.length &&
           !webSearchUpdates.length &&
           !assistantDraft &&
+          !queuedFollowUps.length &&
           !pendingConfirmation
         ) {
           const empty = document.createElement("div");
@@ -989,10 +995,15 @@
           timeline.append(buildAssistantDraftItem(assistantDraft));
         }
 
+        for (const followUp of queuedFollowUps) {
+          timeline.append(buildQueuedFollowUpItem(followUp));
+        }
+
         if (pendingConfirmation) {
           const confirmation = buildConfirmCard(pendingConfirmation);
           timeline.append(confirmation);
           setConfirmationModalActive(true, confirmation);
+          if (isConfirmationLocked?.()) setConfirmationState(true);
           if (focusedConfirmationId !== pendingConfirmation.id) {
             confirmationReturnFocus = focusBeforeRender;
             focusedConfirmationId = pendingConfirmation.id;

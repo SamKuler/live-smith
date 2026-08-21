@@ -1,6 +1,7 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createCapabilityPreview = function createCapabilityPreview({
         getState,
+        getSubscriptionSendGateMessage,
         hasAnySendInProgress,
         profileEditor,
         isOperationInProgress,
@@ -12,7 +13,8 @@
         const capability = selection.capability;
         const reasoning = capability && capability.reasoning;
         const supported = Boolean(reasoning && reasoning.supported);
-        const budgetSupported = Boolean(reasoning && reasoning.budgetTokens);
+        const subscription = profileEditor.isCodexSubscription();
+        const budgetSupported = !subscription && Boolean(reasoning && reasoning.budgetTokens);
         const modeSelect = document.getElementById("reasoningMode");
         const effortSelect = document.getElementById("reasoningEffort");
         const effortRow = document.getElementById("reasoningEffortRow");
@@ -25,14 +27,25 @@
             : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.";
         }
         let adjusted = false;
-        const requestedMode = modeSelect.dataset.requestedValue ?? modeSelect.value ?? "default";
+        const rawRequestedMode = modeSelect.dataset.requestedValue ?? modeSelect.value ?? "default";
+        const requestedMode = subscription && rawRequestedMode === "disabled"
+          ? "default"
+          : rawRequestedMode;
+        if (requestedMode !== rawRequestedMode) adjusted = true;
         delete modeSelect.dataset.requestedValue;
         const requestedEffort = effortSelect.dataset.requestedValue ?? effortSelect.value;
         delete effortSelect.dataset.requestedValue;
         const budgetInput = document.getElementById("reasoningBudgetTokens");
+        if (subscription) {
+          for (const option of [...modeSelect.options]) {
+            if (option.value === "disabled") option.remove();
+          }
+        }
         if (selection.authoritative.reasoning) {
           modeSelect.replaceChildren(new Option("Provider default", "default"));
-          if (supported && reasoning.canDisable) modeSelect.append(new Option("Disabled", "disabled"));
+          if (supported && reasoning.canDisable && !subscription) {
+            modeSelect.append(new Option("Disabled", "disabled"));
+          }
           if (supported) modeSelect.append(new Option("Enabled", "enabled"));
           modeSelect.value = [...modeSelect.options].some((option) => option.value === requestedMode)
             ? requestedMode
@@ -79,8 +92,9 @@
           });
         }
         const temperatureInput = document.getElementById("temperature");
-        const temperatureUnsupported = selection.authoritative.temperature &&
-          capability.temperature === "unsupported";
+        const temperatureUnsupported = subscription || (
+          selection.authoritative.temperature && capability.temperature === "unsupported"
+        );
         if (temperatureUnsupported && temperatureInput.value) {
           temperatureInput.value = "";
           profileEditor.clearFieldError(temperatureInput);
@@ -152,7 +166,9 @@
           },
         };
         let overrides = {};
-        try { overrides = profileEditor.capabilityOverridesFromForm(); } catch {}
+        if (!profileEditor.isCodexSubscription()) {
+          try { overrides = profileEditor.capabilityOverridesFromForm(); } catch {}
+        }
         for (const key of ["tools", "streaming", "temperature", "maxOutputTokens"]) {
           if (overrides[key] !== undefined) capability[key] = overrides[key];
         }
@@ -177,6 +193,7 @@
 
       function updateCapabilityPreview() {
         updateReasoningVisibility();
+        const settingsLocked = isOperationInProgress() || hasAnySendInProgress();
         const selection = selectedModelCapabilities();
         const capability = selection.capability;
         const modelLimit = capability.maxOutputTokens;
@@ -201,12 +218,15 @@
           );
         }
         const outputTokensInput = document.getElementById("maxOutputTokens");
+        const subscription = profileEditor.isCodexSubscription();
         const trustedModelLimit = selection.authoritative.maxOutputTokens
           ? modelLimit
           : undefined;
-        outputTokensInput.max = String(trustedModelLimit ?? 1000000);
+        outputTokensInput.disabled = settingsLocked || subscription;
+        outputTokensInput.max = String(subscription ? 1000000 : trustedModelLimit ?? 1000000);
         const requestedOutputTokens = Number(outputTokensInput.value);
         if (
+          !subscription &&
           trustedModelLimit !== undefined &&
           Number.isFinite(requestedOutputTokens) &&
           requestedOutputTokens > trustedModelLimit
@@ -215,9 +235,11 @@
           profileEditor.clearFieldError(outputTokensInput);
           profileEditor.markDraftDirtyForCapabilityAdjustment();
         }
-        document.getElementById("maxOutputTokensHint").textContent = trustedModelLimit === undefined
-          ? "Model output limit is unknown; the provider validates this request."
-          : `Model output limit: ${trustedModelLimit}.`;
+        document.getElementById("maxOutputTokensHint").textContent = subscription
+          ? "Codex App Server owns the output limit for subscription requests."
+          : trustedModelLimit === undefined
+            ? "Model output limit is unknown; the provider validates this request."
+            : `Model output limit: ${trustedModelLimit}.`;
       }
 
       function inputCapabilityStatus(label, key, inputs, authoritative) {
@@ -250,18 +272,19 @@
           send.disabled = true;
         } else {
           const noActive = !getState().settings.activeProfileId;
-          send.disabled = draft.dirty || noActive;
+          const subscriptionGate = getSubscriptionSendGateMessage();
+          send.disabled = draft.dirty || noActive || Boolean(subscriptionGate);
           send.title = draft.dirty
             ? "Save or discard profile changes before sending."
             : noActive
               ? "Create and save a profile before sending."
-              : "";
+              : subscriptionGate;
           updateProfileGateStatus(
             noActive
               ? "Create and save a model profile before sending."
               : draft.dirty
                 ? "Save or discard profile changes before sending."
-                : "",
+                : subscriptionGate,
           );
         }
       }
