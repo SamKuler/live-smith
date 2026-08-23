@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
 
-import { resolveModelCapabilities } from "../capabilities.js";
-import type { SavedProfile } from "../profile.js";
+import { runtimeProfileForSavedProfile } from "../../app/model-request.js";
+import type { DirectApiProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
 import { createOpenAIResponsesTransport } from "./openai-responses.js";
@@ -61,7 +61,7 @@ test("OpenAI discovery and both streaming modes avoid ambient Web APIs", async (
   }
 });
 
-function profile(apiMode: "chat-completions" | "responses"): SavedProfile {
+function profile(apiMode: "chat-completions" | "responses"): DirectApiProfile {
   return {
     id: apiMode,
     name: apiMode,
@@ -72,26 +72,21 @@ function profile(apiMode: "chat-completions" | "responses"): SavedProfile {
       baseUrl: "https://example.test/v1",
       apiKey: "secret",
     },
-    model: "host-safe-model",
-    parameters: {
-      maxOutputTokens: 1024,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: "host-safe-model",
+    models: [{
+      model: "host-safe-model",
+      parameters: {
+        maxOutputTokens: 1024,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
   };
 }
 
-function request(profileValue: SavedProfile): TransportRequest {
+function request(profileValue: DirectApiProfile): TransportRequest {
   return {
-    runtimeProfile: {
-      profile: profileValue,
-      capabilities: resolveModelCapabilities(profileValue),
-      inputCapabilityEvidence: {
-        image: "unverified",
-        audio: "unverified",
-        pdf: "unverified",
-      },
-    },
+    runtimeProfile: runtimeProfileForSavedProfile(profileValue),
     currentUserContent: [{ type: "text", text: "test" }],
     systemInstructions: "test instructions",
     history: [],

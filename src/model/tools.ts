@@ -1,11 +1,14 @@
-import type { SavedProfile } from "./profile.js";
-import type { ModelFunctionTool, ModelTool } from "./provider.js";
+import type {
+  ModelFunctionTool,
+  ModelTool,
+  RuntimeModelSource,
+} from "./provider.js";
 
 export const HOSTED_WEB_SEARCH_REQUEST_MAX_USES = 20;
 export const HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND = 20;
 
 export function modelToolsForProfile(
-  profile: SavedProfile,
+  runtime: RuntimeModelSource,
   clientTools: readonly ModelFunctionTool[],
   hostedWebSearchMaxUses = HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
 ): ModelTool[] {
@@ -18,7 +21,7 @@ export function modelToolsForProfile(
   }
   return [
     ...clientTools,
-    ...(profile.advanced.hostedTools?.webSearch && hostedWebSearchMaxUses > 0
+    ...(runtime.model.advanced.hostedTools?.webSearch && hostedWebSearchMaxUses > 0
       ? [{
           type: "hosted_web_search" as const,
           maxUses: hostedWebSearchMaxUses,

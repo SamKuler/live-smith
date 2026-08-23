@@ -11,43 +11,54 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
-import type { OpenAIDirectApiConnection, SavedProfile } from "../profile.js";
-import type { TransportRequest } from "../provider.js";
+import type {
+  DirectApiModelConfig,
+  OpenAIDirectApiConnection,
+} from "../profile.js";
+import type { RuntimeModelSource, TransportRequest } from "../provider.js";
 import { createOpenAIResponsesTransport } from "./openai-responses.js";
 
-type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+type ProfileOverrides = Partial<DirectApiModelConfig> &
+  Partial<{ id: string; name: string }> &
   Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
 
-function profile(overrides: ProfileOverrides = {}): SavedProfile {
+function profile(overrides: ProfileOverrides = {}): RuntimeModelSource {
   const {
     baseUrl = "https://example.test/v1",
     apiKey = "secret",
-    ...fields
-  } = overrides;
-  return {
-    id: "responses",
-    name: "Responses",
-    connection: {
-      kind: "direct-api",
-      apiFamily: "openai",
-      apiMode: "responses",
-      baseUrl,
-      apiKey,
-    },
-    model: "gpt-5.6",
-    parameters: {
+    id = "responses",
+    name = "Responses",
+    model = "gpt-5.6",
+    parameters = {
       maxOutputTokens: 6000,
       reasoning: { mode: "enabled", effort: "high" },
     },
-    advanced: {},
-    ...fields,
+    advanced = {},
+  } = overrides;
+  return {
+    profile: {
+      id,
+      name,
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl,
+        apiKey,
+      },
+    },
+    model: {
+      model,
+      parameters,
+      advanced,
+    },
   };
 }
 
-function request(p: SavedProfile): TransportRequest {
+function request(p: RuntimeModelSource): TransportRequest {
   return {
     runtimeProfile: {
-      profile: p,
+      ...p,
       capabilities: resolveModelCapabilities(p),
       inputCapabilityEvidence: {
         image: "unverified",
@@ -173,6 +184,68 @@ test("OpenAI Responses sends local-state parameters and preserves output items",
   assert.equal((body.tools as Array<{ type: string }>)[0]?.type, "function");
   assert.equal(turn.toolCalls[0]?.id, "call-1");
   assert.equal((turn.providerState as { output: unknown[] }).output.length, 2);
+});
+
+test("OpenAI Responses attaches strict terminal usage to streaming and non-streaming turns", async () => {
+  for (const streaming of [false, true]) {
+    const response = {
+      status: "completed",
+      output_text: "Done",
+      output: [{
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "Done", annotations: [] }],
+      }],
+      usage: { input_tokens: 280, output_tokens: 41, total_tokens: 321 },
+    };
+    const payload = streaming
+      ? `data: ${JSON.stringify({ type: "response.completed", response })}\n\ndata: [DONE]\n\n`
+      : JSON.stringify(response);
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: {
+          "Content-Type": streaming ? "text/event-stream" : "application/json",
+        },
+      }),
+    });
+    const req = request(profile());
+    req.runtimeProfile.capabilities.contextWindowTokens = 4_096;
+    if (streaming) req.onDelta = () => {};
+
+    const turn = await transport.createToolTurn(req);
+
+    assert.deepEqual(turn.contextUsage, {
+      usedTokens: 321,
+      contextWindowTokens: 4_096,
+    });
+  }
+});
+
+test("OpenAI Responses rejects malformed terminal context usage", async () => {
+  for (const totalTokens of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "321"]) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "completed",
+        output_text: "Done",
+        output: [{
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Done", annotations: [] }],
+        }],
+        usage: { total_tokens: totalTokens },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    const req = request(profile());
+    req.runtimeProfile.capabilities.contextWindowTokens = 4_096;
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /context usage/i,
+    );
+  }
 });
 
 test("OpenAI Responses maps opted-in hosted Web Search independently of client tool capability", async () => {

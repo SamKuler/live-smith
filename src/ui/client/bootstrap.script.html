@@ -15,6 +15,7 @@
         };
         let activeAppConfirmation = null;
         let profileSettingsLocked = false;
+        let sessionsPaneCollapsed = false;
         let statusUnderlay = {
           canceledFollowUpCount: 0,
           isError: false,
@@ -30,6 +31,7 @@
           sendInProgress: false,
           skillInProgress: false,
         };
+        const contextTokenFormatter = new Intl.NumberFormat();
 
         function presentStatus({
           canceledFollowUpCount = 0,
@@ -235,10 +237,13 @@
         }
 
         function renderComposerPresentation() {
+          renderComposerRuntimeControls();
           const button = document.getElementById("sendButton");
           if (!button) return;
+          const label = document.getElementById("sendButtonLabel");
           const running = composerOperationState.sendInProgress;
-          button.textContent = running ? "Stop" : "Send";
+          if (label) label.textContent = running ? "Stop" : "Send";
+          button.dataset.action = running ? "stop" : "send";
           button.classList.toggle("stop", running);
           if (running) {
             button.disabled = false;
@@ -264,12 +269,48 @@
             composerOperationState.attachmentInProgress ||
             composerOperationState.skillInProgress;
           button.disabled = composerBlocked || Boolean(profileGate);
-          button.title = draft.dirty
-            ? "Save or discard profile changes before sending."
-            : noActiveProfile
-              ? "Create and save a profile before sending."
-              : subscriptionGate;
+          button.title = composerBlocked
+            ? "Wait for the current operation to finish."
+            : draft.dirty
+              ? "Save or discard profile changes before sending."
+              : noActiveProfile
+                ? "Create and save a profile before sending."
+                : subscriptionGate || "Send (Cmd/Ctrl+Enter)";
           presentProfileGate(composerBlocked ? "" : profileGate);
+        }
+
+        function renderComposerContextUsage() {
+          const indicator = document.getElementById("contextUsage");
+          const value = document.getElementById("contextUsageValue");
+          if (!indicator || !value) return;
+          const usage = bridgeClient.getContextUsage();
+          if (!usage) {
+            const unavailable = "Context usage unavailable for the active Session.";
+            indicator.dataset.state = "unavailable";
+            indicator.style.removeProperty("--context-usage-offset");
+            indicator.setAttribute("aria-label", unavailable);
+            indicator.title = unavailable;
+            value.textContent = "?";
+            return;
+          }
+          const percentage = Math.min(
+            100,
+            Math.max(0, usage.usedTokens / usage.contextWindowTokens * 100),
+          );
+          const roundedPercentage = Math.round(percentage);
+          const description = `Context usage: ${
+            contextTokenFormatter.format(usage.usedTokens)
+          } of ${
+            contextTokenFormatter.format(usage.contextWindowTokens)
+          } tokens (${roundedPercentage}%). Latest accepted model turn.`;
+          indicator.dataset.state = "exact";
+          indicator.style.setProperty(
+            "--context-usage-offset",
+            String(100 - percentage),
+          );
+          indicator.setAttribute("aria-label", description);
+          indicator.title = description;
+          value.textContent = `${roundedPercentage}%`;
         }
 
         function renderContextSummary(summary) {
@@ -361,30 +402,192 @@
           return state.runtimeProfile?.profile || null;
         }
 
-        function renderHeaderSummary() {
-          const profile = activeProfile();
-          const expanded = document.getElementById("profileSummaryButton")
-            ?.getAttribute("aria-expanded") === "true";
-          document.getElementById("activeProfileName").textContent =
-            profile?.name || "Configure a Profile";
-          document.getElementById("activeProfileModel").textContent =
-            profile?.model || "Settings Required";
-          document.getElementById("profileSummaryButton").setAttribute(
-            "aria-label",
-            profile
-              ? `Profile ${profile.name}, model ${profile.model}. ${
-                  expanded ? "Close settings." : "Open settings."
-                }`
-              : `No active Profile. ${expanded ? "Close settings." : "Open settings."}`,
+        function reasoningLabel(reasoning) {
+          if (!reasoning || reasoning.mode === "default") return "Provider default";
+          if (reasoning.mode === "disabled") return "Off";
+          if (!reasoning.effort) return "Enabled";
+          const labels = {
+            minimal: "Minimal",
+            low: "Low",
+            medium: "Medium",
+            high: "High",
+            xhigh: "XHigh",
+            max: "Max",
+            ultra: "Ultra",
+          };
+          return labels[reasoning.effort] || "Enabled";
+        }
+
+        function renderComposerRuntimeControls() {
+          const state = getState();
+          const runtime = state.runtimeProfile;
+          const modelSelect = document.getElementById("composerModel");
+          const reasoningSelect = document.getElementById("composerReasoning");
+          if (!modelSelect || !reasoningSelect) return;
+
+          const configuredModels = Array.isArray(state.configuredModels)
+            ? state.configuredModels
+            : [];
+          const subscriptionCatalogPending =
+            runtime?.profile?.connectionKind === "codex-subscription" &&
+            state.configuredModelsReady === false;
+          modelSelect.replaceChildren();
+          for (const configured of configuredModels) {
+            modelSelect.append(new Option(configured.label || configured.model, configured.model));
+          }
+          if (!runtime || configuredModels.length === 0) {
+            modelSelect.append(new Option(
+              subscriptionCatalogPending ? "Load models…" : "Set up Profile",
+              "",
+            ));
+          }
+          const selectedModel = runtime?.selection?.model || "";
+          modelSelect.value = [...modelSelect.options].some(
+            (option) => option.value === selectedModel,
+          ) ? selectedModel : "";
+
+          reasoningSelect.replaceChildren();
+          const reasoning = runtime?.selection?.reasoning;
+          const efforts = runtime?.capabilities?.reasoning?.efforts || [];
+          if (subscriptionCatalogPending) {
+            reasoningSelect.append(new Option("Load capabilities…", ""));
+          } else if (efforts.length) {
+            reasoningSelect.append(new Option("Default", ""));
+            for (const effort of efforts) {
+              reasoningSelect.append(new Option(
+                effort === "xhigh"
+                  ? "XHigh"
+                  : effort[0].toUpperCase() + effort.slice(1),
+                effort,
+              ));
+            }
+            if (
+              reasoning?.effort &&
+              ![...reasoningSelect.options].some(
+                (option) => option.value === reasoning.effort,
+              )
+            ) {
+              reasoningSelect.append(new Option(
+                reasoningLabel(reasoning),
+                reasoning.effort,
+              ));
+            }
+            reasoningSelect.value = reasoning?.effort || "";
+          } else {
+            reasoningSelect.append(new Option(
+              runtime ? reasoningLabel(reasoning) : "No Profile",
+              "",
+            ));
+          }
+
+          const busy = Boolean(composerOperationState.commandKind) ||
+            composerOperationState.sendInProgress ||
+            composerOperationState.attachmentInProgress ||
+            composerOperationState.skillInProgress;
+          modelSelect.disabled = busy || !runtime ||
+            !subscriptionCatalogPending && configuredModels.length < 2;
+          reasoningSelect.disabled = busy || !runtime ||
+            subscriptionCatalogPending || efforts.length === 0;
+          modelSelect.setAttribute("aria-busy", String(
+            composerOperationState.commandKind === "set_session_model_selection",
+          ));
+          reasoningSelect.setAttribute("aria-busy", String(
+            composerOperationState.commandKind === "set_session_model_selection",
+          ));
+          const selectedLabel = configuredModels.find(
+            (configured) => configured.model === selectedModel,
+          )?.label || selectedModel || "Set up Profile";
+          modelSelect.title = runtime
+            ? subscriptionCatalogPending
+              ? `${runtime.profile.name} · ${selectedLabel} · Open to load capabilities`
+              : `${runtime.profile.name} · ${selectedLabel}`
+            : "Configure a model Profile in Settings";
+          reasoningSelect.title = runtime
+            ? `Reasoning · ${reasoningLabel(reasoning)}`
+            : "Reasoning unavailable";
+        }
+
+        async function ensureSessionModelCapabilities() {
+          const state = getState();
+          const runtime = state.runtimeProfile;
+          if (
+            !runtime ||
+            runtime.profile.connectionKind !== "codex-subscription" ||
+            state.configuredModelsReady !== false ||
+            composerOperationState.sendInProgress ||
+            bridgeClient.isCommandInProgress()
+          ) return false;
+          return bridgeClient.runCommand("load_session_model_capabilities", {
+            sessionId: state.activeSessionId,
+            profileId: runtime.profile.id,
+          });
+        }
+
+        async function saveSessionModelSelection(modelChanged) {
+          const state = getState();
+          const runtime = state.runtimeProfile;
+          const modelSelect = document.getElementById("composerModel");
+          const reasoningSelect = document.getElementById("composerReasoning");
+          if (!runtime || modelSelect.disabled || reasoningSelect.disabled && !modelChanged) {
+            renderComposerRuntimeControls();
+            return false;
+          }
+          const model = modelSelect.value;
+          const reasoningEffort = modelChanged
+            ? null
+            : reasoningSelect.value || null;
+          if (
+            model === runtime.selection.model &&
+            reasoningEffort === (runtime.selection.reasoning.effort || null)
+          ) return true;
+          const saved = await bridgeClient.runCommand(
+            "set_session_model_selection",
+            {
+              sessionId: state.activeSessionId,
+              profileId: runtime.profile.id,
+              model,
+              reasoningEffort,
+            },
           );
+          if (!saved) renderComposerRuntimeControls();
+          return saved;
+        }
+
+        function setSessionsPaneCollapsed(collapsed) {
+          const pane = document.getElementById("sessionsPane");
+          const toggle = document.getElementById("sessionsToggleButton");
+          if (!pane || !toggle) return;
+          const focusWasInside = pane.contains(document.activeElement);
+          sessionsPaneCollapsed = Boolean(collapsed);
+          document.querySelector(".app").classList.toggle(
+            "sessions-collapsed",
+            sessionsPaneCollapsed,
+          );
+          pane.hidden = sessionsPaneCollapsed;
+          toggle.setAttribute("aria-expanded", String(!sessionsPaneCollapsed));
+          const label = sessionsPaneCollapsed
+            ? "Show Sessions"
+            : "Collapse Sessions";
+          toggle.setAttribute("aria-label", label);
+          toggle.title = label;
+          if (sessionsPaneCollapsed && focusWasInside) {
+            toggle.focus({ preventScroll: true });
+          }
+        }
+
+        function toggleSessionsPane() {
+          setSessionsPaneCollapsed(!sessionsPaneCollapsed);
         }
 
         function setInspectorOpen(open) {
           document.querySelector(".app").classList.toggle("inspector-open", open);
           document.getElementById("inspectorPane").hidden = !open;
-          document.getElementById("profileSummaryButton")
-            .setAttribute("aria-expanded", String(open));
-          renderHeaderSummary();
+          const settingsButton = document.getElementById("settingsButton");
+          settingsButton.setAttribute("aria-expanded", String(open));
+          settingsButton.setAttribute(
+            "aria-label",
+            open ? "Close Settings" : "Open Settings",
+          );
         }
 
         function openInspector(tab) {
@@ -434,7 +637,8 @@
 
         function renderApplication() {
           renderStatusAndContext();
-          renderHeaderSummary();
+          renderComposerPresentation();
+          renderComposerContextUsage();
           bridgeClient.renderDefaultFollowUpBehavior();
           profileEditor.renderApprovalMode();
           sessionTimeline.renderSessions();
@@ -471,6 +675,14 @@
             busyAriaLabel: "Saving Approval Mode…",
             controlId: "approvalMode",
             status: "Saving Session Approval Mode…",
+          },
+          set_session_model_selection: {
+            busyAriaLabel: "Saving Session model selection…",
+            status: "Saving Session model selection…",
+          },
+          load_session_model_capabilities: {
+            busyAriaLabel: "Loading model capabilities…",
+            status: "Loading model capabilities…",
           },
           save_global_settings: {
             busyAriaLabel: "Saving follow-up behavior…",
@@ -632,6 +844,7 @@
           isDraftDirty: () => profileEditor.getDraftState().dirty,
           render: renderApplication,
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
+          renderContextUsage: renderComposerContextUsage,
           renderSessions: sessionTimeline.renderSessions,
           renderModelOptions: profileEditor.renderModelOptions,
           renderApprovalMode: profileEditor.renderApprovalMode,
@@ -655,14 +868,17 @@
           discardProfileChanges: profileEditor.discardProfileChanges,
           discoverModels: profileEditor.discoverModels,
           duplicateProfile: profileEditor.duplicateProfile,
+          ensureSessionModelCapabilities,
           handleApiFamilyChange: profileEditor.handleApiFamilyChange,
           handleApiModeChange: profileEditor.handleApiModeChange,
           handleConnectionKindChange: profileEditor.handleConnectionKindChange,
           handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
           handleProfileSelection: profileEditor.handleProfileSelection,
+          handleModelConfigSelection: profileEditor.handleModelConfigSelection,
           handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
           markDraftDirty: profileEditor.markDraftDirty,
+          addModelConfig: profileEditor.addModelConfig,
           logoutCodex: profileEditor.logoutCodex,
           openInspector,
           refreshCodexAccount: profileEditor.refreshCodexAccount,
@@ -671,8 +887,12 @@
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           saveProfile: profileEditor.saveProfile,
+          saveSessionModelSelection,
+          removeModelConfig: profileEditor.removeModelConfig,
+          setDefaultModel: profileEditor.setDefaultModel,
           startCodexLogin: profileEditor.startCodexLogin,
           toggleInspector,
+          toggleSessionsPane,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
         };
 
@@ -682,6 +902,7 @@
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();
+          setSessionsPaneCollapsed(false);
           setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));
           sessionTimeline.switchInspectorTab("settings");
           const prompt = document.getElementById("prompt");

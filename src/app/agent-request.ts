@@ -22,7 +22,11 @@ import {
   HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
   modelToolsForProfile,
 } from "../model/tools.js";
-import type { ModelHostedWebSearch, ModelTurn } from "../model/contracts.js";
+import type {
+  ModelContextUsage,
+  ModelHostedWebSearch,
+  ModelTurn,
+} from "../model/contracts.js";
 import type { RuntimeProfile } from "../model/provider.js";
 import { profileSecrets } from "../model/profile.js";
 import {
@@ -314,7 +318,9 @@ export async function handleAgentRequest(
         ? { onModelTurnAccepted: callbacks.onModelTurnAccepted }
         : {}),
       askModel: async (input) => {
-        await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
+        await callbacks.onProgress(
+          `Thinking with ${profile.name} / ${runtimeProfile.model.model}`,
+        );
         const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
         const turnSignal = modelTurn?.signal ?? callbacks.signal;
         let turn: ModelTurn;
@@ -341,7 +347,7 @@ export async function handleAgentRequest(
                 skillContext: prepared.skillContext,
                 agentMessages: input.messages,
                 tools: modelToolsForProfile(
-                  profile,
+                  runtimeProfile,
                   liveSmithTools(),
                   Math.min(
                     HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
@@ -669,7 +675,7 @@ interface AgentRequestCallbacks {
   steeringSendId?: string;
   onDelta(delta: string): Promise<void> | void;
   onAssistantReset?(): Promise<void> | void;
-  onModelTurnAccepted?(): Promise<void> | void;
+  onModelTurnAccepted?(usage: ModelContextUsage | undefined): Promise<void> | void;
   onProgress(message: string): Promise<void> | void;
   onWebSearchUpdate?(
     update: ModelHostedWebSearch,

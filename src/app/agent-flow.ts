@@ -17,7 +17,7 @@ import {
 import { copySelectedAudioAttachmentSource } from "../live/audio-attachment-source.js";
 import {
   defaultModelCapabilities,
-  resolveModelCapabilities,
+  defaultModelCapabilityEvidence,
   validateGenerationParameters,
 } from "../model/capabilities.js";
 import { decodeDiscoveredModelCatalog } from "../model/catalog.js";
@@ -28,6 +28,7 @@ import type {
   ManagedAuthState,
 } from "../model/provider.js";
 import {
+  ProfileValidationError,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DraftProfile,
@@ -87,6 +88,7 @@ import {
   setSessionArchived,
   updateSession,
   updateSessionInTransaction,
+  type AgentSession,
 } from "../storage/sessions.js";
 import {
   deleteInstalledSkillInTransaction,
@@ -108,6 +110,7 @@ import {
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
 import {
+  chatConfiguredModels,
   chatRuntimeSummary,
   modelStateSourceForProfile,
   type ChatBridgeState,
@@ -146,11 +149,15 @@ import {
   subscribeSessionApprovalModeChanges,
 } from "./session-approval-events.js";
 import {
+  publishSessionModelSelectionChange,
+  subscribeSessionModelSelectionChanges,
+} from "./session-model-selection-events.js";
+import {
   publishGlobalSettingsChange,
   subscribeGlobalSettingsChanges,
 } from "./global-settings-events.js";
 import {
-  capabilitiesForProfilePreview,
+  capabilityPreviewForProfile,
   requestModelTurn,
   resolveDiscoveredModels,
   runtimeProfileForSavedProfile,
@@ -184,6 +191,26 @@ import {
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
+
+function effectiveSessionModelSelection(
+  profile: SavedProfile,
+  session: AgentSession,
+): { model: string; reasoningEffort?: NonNullable<AgentSession["modelSelection"]>["reasoningEffort"] } {
+  const selection = session.modelSelection;
+  if (
+    !selection ||
+    selection.profileId !== profile.id ||
+    !profile.models.some((model) => model.model === selection.model)
+  ) {
+    return { model: profile.defaultModel };
+  }
+  return {
+    model: selection.model,
+    ...(selection.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: selection.reasoningEffort }),
+  };
+}
 
 export interface AgentFlowDependencies {
   copySelectedAudioAttachmentSource?: typeof copySelectedAudioAttachmentSource;
@@ -648,18 +675,18 @@ export async function runAgentFlow(
     const models = modelProfile
       ? await modelsForProfile(modelProfile, signal)
       : [];
-    const runtimeProfile = activeProfile
-      ? runtimeProfileForSavedProfile(
-          activeProfile,
-          modelProfile?.id === activeProfile.id &&
-              connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile)
-            ? models
-            : await modelsForProfile(activeProfile, signal),
-        )
-      : null;
-    const capabilities = modelProfile
-      ? capabilitiesForProfilePreview(modelProfile, models)
-      : defaultModelCapabilities();
+    const activeProfileModels = activeProfile
+      ? modelProfile?.id === activeProfile.id &&
+          connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile)
+        ? models
+        : await modelsForProfile(activeProfile, signal)
+      : [];
+    const capabilityPreview = modelProfile
+      ? capabilityPreviewForProfile(modelProfile, models)
+      : {
+          capabilities: defaultModelCapabilities(),
+          capabilityEvidence: defaultModelCapabilityEvidence(),
+        };
     for (;;) {
       const heldSessionId = options.heldSessionId;
       const resolvedActiveSession = heldSessionId === undefined
@@ -763,6 +790,13 @@ export async function runAgentFlow(
         activeSessionId !== activeSession.id
       ) continue;
       const activeInteraction = resolveSessionInteraction(activeSession);
+      const runtimeProfile = activeProfile
+        ? runtimeProfileForSavedProfile(
+            activeProfile,
+            activeProfileModels,
+            effectiveSessionModelSelection(activeProfile, activeSession),
+          )
+        : null;
       return {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
@@ -779,10 +813,22 @@ export async function runAgentFlow(
         pendingAttachments,
         availableSkills: storageSnapshot.availableSkills,
         activeSkillIds: [...(activeSession.activeSkillIds ?? [])],
-        capabilities,
+        capabilities: capabilityPreview.capabilities,
+        capabilityEvidence: capabilityPreview.capabilityEvidence,
         availableModels: modelProfile
           ? resolveDiscoveredModels(modelProfile, models)
           : [],
+        configuredModels: activeProfile
+          ? chatConfiguredModels(activeProfile, activeProfileModels)
+          : [],
+        configuredModelsReady: activeProfile === null ||
+          activeProfile.connection.kind === "direct-api" ||
+          (
+            modelsByConnection.has(connectionFingerprint(activeProfile)) &&
+            codexCatalogGenerationByConnection.get(
+              connectionFingerprint(activeProfile),
+            ) === modelAuthSendFence.authGeneration()
+          ),
         modelStateSource: modelProfile
           ? modelStateSourceForProfile(modelProfile)
           : null,
@@ -861,24 +907,88 @@ export async function runAgentFlow(
         (profile) => profile.id !== commandInput.profile.id,
       );
       const profile = validateDraftProfileForSave(commandInput.profile, otherProfiles);
-      const profileFingerprint = connectionFingerprint(profile);
-      const cachedModels = modelsByConnection.get(profileFingerprint) ?? [];
-      const capabilities = resolveModelCapabilities(
-        profile,
-        cachedModels.find((model) => model.id === profile.model)?.capabilities,
+      const previousProfile = settings.profiles.find(
+        (entry) => entry.id === profile.id,
       );
-      validateGenerationParameters(profile, capabilities);
-      throwIfAborted(signal);
-      await saveSavedProfile(storageDirectory, profile);
+      const profileFingerprint = connectionFingerprint(profile);
+      const saveWithCatalog = async (
+        cachedModels: DiscoveredModelInfo[],
+      ): Promise<ChatDialogState> => {
+        const modelConfigsToValidate = profile.connection.kind === "direct-api"
+          ? profile.models
+          : profile.models.filter((model) => {
+              if (previousProfile?.connection.kind !== "codex-subscription") {
+                return true;
+              }
+              const previous = previousProfile.models.find(
+                (entry) => entry.model === model.model,
+              );
+              return !previous || JSON.stringify(previous) !== JSON.stringify(model);
+            });
+        if (
+          profile.connection.kind === "codex-subscription" &&
+          modelConfigsToValidate.length > 0 &&
+          cachedModels.length === 0
+        ) {
+          throw new ChatBridgeConflictError(
+            "Load the current ChatGPT model catalog before adding a model or changing its reasoning settings.",
+          );
+        }
+        for (const model of modelConfigsToValidate) {
+          if (
+            profile.connection.kind === "codex-subscription" &&
+            !cachedModels.some((entry) => entry.id === model.model)
+          ) {
+            throw new ProfileValidationError(
+              "models",
+              `Model ${model.model} is not available for the signed-in ChatGPT account.`,
+            );
+          }
+          const runtimeProfile = runtimeProfileForSavedProfile(
+            profile,
+            cachedModels,
+            { model: model.model },
+          );
+          validateGenerationParameters(
+            runtimeProfile,
+            runtimeProfile.capabilities,
+          );
+        }
+        throwIfAborted(signal);
+        await saveSavedProfile(storageDirectory, profile);
+        if (profile.connection.kind === "direct-api") {
+          // Direct API catalogs are durable and are reloaded from storage after
+          // Save. Subscription catalogs are modal-only and remain valid until
+          // the shared auth generation changes.
+          modelsByConnection.delete(profileFingerprint);
+        }
+        status = `Profile ${profile.name} saved.`;
+        openSettingsOnLoad = false;
+        return buildStateAfterCommandMutation(profile, { signal });
+      };
+
       if (profile.connection.kind === "direct-api") {
-        // Direct API catalogs are durable and are reloaded from storage after
-        // Save. Subscription catalogs are modal-only and remain valid until
-        // the shared auth generation changes.
-        modelsByConnection.delete(profileFingerprint);
+        return saveWithCatalog(
+          modelsByConnection.get(profileFingerprint) ?? [],
+        );
       }
-      status = `Profile ${profile.name} saved.`;
-      openSettingsOnLoad = false;
-      return buildStateAfterCommandMutation(profile);
+
+      const releaseManagedSave = await modelAuthSendFence.enterManagedUse(signal);
+      if (!releaseManagedSave) {
+        throw new ChatBridgeConflictError(
+          "Wait for the ChatGPT sign-in operation to finish before saving this Profile.",
+        );
+      }
+      try {
+        const generation = await synchronizeAuthGeneration(signal);
+        const cachedModels =
+          codexCatalogGenerationByConnection.get(profileFingerprint) === generation
+            ? modelsByConnection.get(profileFingerprint) ?? []
+            : [];
+        return await saveWithCatalog(cachedModels);
+      } finally {
+        releaseManagedSave();
+      }
     }
 
     if (commandInput.kind === "delete_profile") {
@@ -991,6 +1101,220 @@ export async function runAgentFlow(
       );
       status = "Session Approval Mode saved.";
       return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "load_session_model_capabilities") {
+      if (
+        sessionMutationFence.hasQueuedOrActive(
+          sessionMutationFenceKey(storageDirectory, commandInput.sessionId),
+          "send",
+        )
+      ) {
+        throw new ChatBridgeConflictError(
+          "Wait for this Session's active request to finish before loading model capabilities.",
+        );
+      }
+      const session = (await listSessions(storageDirectory, projectKey)).find(
+        (candidate) =>
+          candidate.id === commandInput.sessionId && !candidate.archivedAt,
+      );
+      if (!session) {
+        throw new ChatBridgeResourceNotFoundError(
+          "That Session is not available in this Live Set.",
+        );
+      }
+      const settings = await loadAgentSettings(storageDirectory);
+      const profile = requireActiveSavedProfile(settings);
+      if (profile.id !== commandInput.profileId) {
+        throw new ChatBridgeConflictError(
+          "The active Profile changed. Open the model selector again.",
+        );
+      }
+      if (profile.connection.kind === "direct-api") {
+        status = undefined;
+        return buildStateAfterCommandMutation(undefined, { signal });
+      }
+
+      const releaseManagedLoad = await modelAuthSendFence.enterManagedUse(signal);
+      if (!releaseManagedLoad) {
+        throw new ChatBridgeConflictError(
+          "Wait for the ChatGPT sign-in operation to finish before loading model capabilities.",
+        );
+      }
+      try {
+        const generation = await synchronizeAuthGeneration(signal);
+        const fingerprint = connectionFingerprint(profile);
+        if (
+          codexCatalogGenerationByConnection.get(fingerprint) !== generation ||
+          !modelsByConnection.has(fingerprint)
+        ) {
+          const backend = await modelBackendManager.codex(signal);
+          const models = requireDiscoveredModelCatalog(
+            await backend.listModels(profile, signal),
+          );
+          const auth = await backend.readAuthState(signal, { readiness: true });
+          codexAuth = auth;
+          const authError = subscriptionSendAuthError(auth);
+          if (authError) throw new ChatBridgeConflictError(authError);
+          throwIfAborted(signal);
+          if (modelAuthSendFence.authGeneration() !== generation) {
+            throw new ChatBridgeConflictError(
+              "ChatGPT sign-in changed before model capabilities finished loading.",
+            );
+          }
+          modelsByConnection.set(fingerprint, models);
+          codexCatalogGenerationByConnection.set(fingerprint, generation);
+        }
+        status = undefined;
+        openSettingsOnLoad = false;
+        return await buildStateAfterCommandMutation(undefined, { signal });
+      } finally {
+        releaseManagedLoad();
+      }
+    }
+
+    if (commandInput.kind === "set_session_model_selection") {
+      if (
+        sessionMutationFence.hasQueuedOrActive(
+          sessionMutationFenceKey(storageDirectory, commandInput.sessionId),
+          "send",
+        )
+      ) {
+        throw new ChatBridgeConflictError(
+          "Wait for this Session's active request to finish before changing its model.",
+        );
+      }
+      return withSessionMutation(commandInput.sessionId, signal, async () => {
+        throwIfAborted(signal);
+        const initialSettings = await loadAgentSettings(storageDirectory);
+        const initialProfile = requireActiveSavedProfile(initialSettings);
+        if (initialProfile.id !== commandInput.profileId) {
+          throw new ChatBridgeConflictError(
+            "The active Profile changed. Choose the model again.",
+          );
+        }
+        if (
+          !initialProfile.models.some(
+            (model) => model.model === commandInput.model,
+          )
+        ) {
+          throw new ChatBridgeConflictError(
+            "That model is no longer configured in the active Profile.",
+          );
+        }
+
+        const models = await modelsForProfile(initialProfile, signal);
+        const discoveredModel = models.find(
+          (model) => model.id === commandInput.model,
+        );
+        if (
+          initialProfile.connection.kind === "codex-subscription" &&
+          models.length > 0 &&
+          !discoveredModel
+        ) {
+          throw new ChatBridgeConflictError(
+            "That model is not available for the signed-in ChatGPT account.",
+          );
+        }
+        if (
+          initialProfile.connection.kind === "codex-subscription" &&
+          commandInput.reasoningEffort !== null &&
+          !discoveredModel
+        ) {
+          throw new ChatBridgeConflictError(
+            "Load the current ChatGPT model catalog before changing reasoning effort.",
+          );
+        }
+
+        const runtimeProfile = runtimeProfileForSavedProfile(
+          initialProfile,
+          models,
+          {
+            model: commandInput.model,
+            reasoningEffort: commandInput.reasoningEffort,
+          },
+        );
+        if (
+          commandInput.reasoningEffort !== null &&
+          !runtimeProfile.capabilities.reasoning.efforts.includes(
+            commandInput.reasoningEffort,
+          )
+        ) {
+          throw new ChatBridgeConflictError(
+            `Reasoning effort ${commandInput.reasoningEffort} is not supported by this model.`,
+          );
+        }
+        if (
+          initialProfile.connection.kind === "direct-api" ||
+          discoveredModel
+        ) {
+          validateGenerationParameters(
+            runtimeProfile,
+            runtimeProfile.capabilities,
+          );
+        }
+
+        const savedSelection = {
+          profileId: initialProfile.id,
+          model: commandInput.model,
+          ...(commandInput.reasoningEffort === null
+            ? {}
+            : { reasoningEffort: commandInput.reasoningEffort }),
+        };
+
+        await withStorageTransaction(
+          storageDirectory,
+          async (transaction) => {
+            throwIfAborted(signal);
+            const settings = await loadAgentSettings(storageDirectory);
+            const profile = requireActiveSavedProfile(settings);
+            if (
+              profile.id !== initialProfile.id ||
+              connectionFingerprint(profile) !==
+                connectionFingerprint(initialProfile) ||
+              !profile.models.some(
+                (model) => model.model === commandInput.model,
+              )
+            ) {
+              throw new ChatBridgeConflictError(
+                "The active Profile changed. Choose the model again.",
+              );
+            }
+            const session = (await listSessionsInTransaction(
+              transaction,
+              storageDirectory,
+              projectKey,
+            )).find(
+              (candidate) =>
+                candidate.id === commandInput.sessionId &&
+                !candidate.archivedAt,
+            );
+            if (!session) {
+              throw new ChatBridgeResourceNotFoundError(
+                "That Session is not available in this Live Set.",
+              );
+            }
+            await updateSessionInTransaction(
+              transaction,
+              storageDirectory,
+              session.id,
+              {
+                modelSelection: savedSelection,
+              },
+            );
+          },
+        );
+        publishSessionModelSelectionChange(storageDirectory, {
+          sessionId: commandInput.sessionId,
+          modelSelection: savedSelection,
+        });
+        status = undefined;
+        openSettingsOnLoad = false;
+        return buildStateAfterCommandMutation(undefined, {
+          heldSessionId: commandInput.sessionId,
+          sessionMutationHeld: true,
+        });
+      });
     }
 
     if (commandInput.kind === "new_session") {
@@ -1832,12 +2156,21 @@ export async function runAgentFlow(
       let releaseModelAuthFence: (() => void) | undefined;
       try {
         throwIfAborted(signal);
-        const session = (await listSessions(
+        const requestSnapshot = await withStorageTransaction(
           storageDirectory,
-          projectKey,
-        )).find((entry) =>
-          entry.id === sendInput.sessionId && !entry.archivedAt
+          async (transaction) => {
+            const session = (await listSessionsInTransaction(
+              transaction,
+              storageDirectory,
+              projectKey,
+            )).find((entry) =>
+              entry.id === sendInput.sessionId && !entry.archivedAt
+            );
+            const settings = await loadAgentSettings(storageDirectory);
+            return { session, settings };
+          },
         );
+        const session = requestSnapshot.session;
         if (!session) {
           sendFailureKind = "session_unavailable";
           throw new Error("That Session is not available in this Live Set.");
@@ -1849,10 +2182,8 @@ export async function runAgentFlow(
             `The Live object for this Session is no longer available: ${session.scope.label}.`,
           );
         }
-        const settingsForRequest = await loadAgentSettings(
-          storageDirectory,
-        );
-        const profile = requireActiveSavedProfile(settingsForRequest);
+        const profile = requireActiveSavedProfile(requestSnapshot.settings);
+        const modelSelection = effectiveSessionModelSelection(profile, session);
         const fingerprint = connectionFingerprint(profile);
         let requestBackend: CodexSubscriptionBackend | undefined;
         let models: DiscoveredModelInfo[] | undefined;
@@ -1919,15 +2250,19 @@ export async function runAgentFlow(
         }
         if (
           profile.connection.kind === "codex-subscription" &&
-          !models.some((model) => model.id === profile.model)
+          !models.some((model) => model.id === modelSelection.model)
         ) {
           throw new ChatBridgeConflictError(
-            "The saved subscription model is not available for the signed-in ChatGPT account. Load models and save an available model before sending.",
+            "The selected subscription model is not available for the signed-in ChatGPT account. Choose an available model before sending.",
           );
         }
-        const runtimeProfile = runtimeProfileForSavedProfile(profile, models);
+        const runtimeProfile = runtimeProfileForSavedProfile(
+          profile,
+          models,
+          modelSelection,
+        );
         validateGenerationParameters(
-          runtimeProfile.profile,
+          runtimeProfile,
           runtimeProfile.capabilities,
         );
         const requestTurnImplementation = dependencies.requestModelTurn ??
@@ -1969,7 +2304,7 @@ export async function runAgentFlow(
               steeringSendId: sendContext.sendId,
               onDelta: (delta) => stream.assistantDelta(delta),
               onAssistantReset: () => stream.assistantReset(),
-              onModelTurnAccepted: () => stream.modelTurnAccepted(),
+              onModelTurnAccepted: (usage) => stream.modelTurnAccepted(usage),
               onProgress: (message) => stream.progress(message),
               onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
               onSessionEvent: (event) => stream.sessionEvent(event),
@@ -2062,6 +2397,7 @@ export async function runAgentFlow(
     (await import("../ui/dialogs.js")).chatHtml;
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
   let unsubscribeApprovalModes: (() => void) | undefined;
+  let unsubscribeModelSelections: (() => void) | undefined;
   let unsubscribeGlobalSettings: (() => void) | undefined;
   try {
     await reconcileStartupSessionOrphans();
@@ -2092,6 +2428,12 @@ export async function runAgentFlow(
         bridge?.publishSessionApprovalMode(sessionId, approvalMode);
       },
     );
+    unsubscribeModelSelections = subscribeSessionModelSelectionChanges(
+      storageDirectory,
+      ({ sessionId, modelSelection }) => {
+        bridge?.publishSessionModelSelection(sessionId, modelSelection);
+      },
+    );
     unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
       storageDirectory,
       (change) => {
@@ -2101,6 +2443,7 @@ export async function runAgentFlow(
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
     unsubscribeApprovalModes?.();
+    unsubscribeModelSelections?.();
     unsubscribeGlobalSettings?.();
     managedBackendLeaseClosing = true;
     sharedBackendManagerAcquisitionController?.abort(

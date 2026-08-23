@@ -28,9 +28,10 @@ There are two API families and three supported modes:
 - OpenAI Chat Completions
 - Anthropic Messages
 
-A named Profile owns one complete connection plus its model and generation
-configuration. A `direct-api` connection owns family, mode, base URL, API key,
-parameters, capability overrides, and Extra Body. A `codex-subscription`
+A named Profile owns one complete connection plus one or more model
+configurations. Each model configuration owns its generation parameters,
+capability overrides, hosted-tool policy, and Extra Body. A `direct-api`
+connection owns family, mode, base URL, and API key. A `codex-subscription`
 connection owns only the fixed OpenAI managed-backend identity; its supported
 models, reasoning efforts, and input evidence come from the signed-in catalog.
 Do not add endpoint or vendor presets. OpenAI-compatible services use an
@@ -55,6 +56,9 @@ capabilities, not from model-name checks inside either boundary.
 - Send requests contain only `prompt` and `sessionId`. Session commands contain
   only their command-specific fields. Neither path may carry Profile settings
   or credentials.
+- A Session model selection stores only Profile ID, model ID, and an optional
+  reasoning-effort override. Resolve and validate the complete runtime model
+  from the active saved Profile at send admission.
 - OpenAI Responses uses local state and `store: false`.
 - Import Node runtime values such as `URL`, `Buffer`, and process data from
   their `node:` modules. Resolve host-provided Fetch and Abort APIs only through
@@ -93,8 +97,8 @@ logs, screenshots, or documentation.
   computed-style assertions as proof of visual layout in the Ableton host.
 - Keep test modules below the structural limits enforced by
   `npm run test:structure`; split shared harnesses from behavior domains.
-- Keep configuration writes limited to Profile CRUD/activation and the
-  dedicated global-settings command.
+- Keep configuration writes limited to Profile CRUD/activation, explicit
+  Session metadata commands, and the dedicated global-settings command.
 
 ## Verification
 

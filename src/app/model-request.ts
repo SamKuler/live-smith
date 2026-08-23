@@ -4,20 +4,28 @@ import type {
   ModelHostedWebSearch,
   ModelInputPart,
 } from "../model/contracts.js";
-import {
-  resolveModelCapabilities,
-  resolveModelCapabilitiesWithEvidence,
-} from "../model/capabilities.js";
+import { resolveModelCapabilitiesWithEvidence } from "../model/capabilities.js";
+import { cloneJsonValue } from "../model/json-clone.js";
 import type {
   DiscoveredModelInfo,
+  ModelCapabilitySource,
   ModelCapabilities,
+  ModelCapabilityEvidence,
   ModelInfo,
   ModelTool,
   ModelTurnExecutor,
+  RuntimeModelSource,
   RuntimeProfile,
   TransportRequest,
 } from "../model/provider.js";
-import type { DraftProfile, SavedProfile } from "../model/profile.js";
+import type {
+  DraftModelConfig,
+  DraftProfile,
+  ReasoningEffort,
+  SavedModelConfig,
+  SavedProfile,
+} from "../model/profile.js";
+import { isDirectApiProfile } from "../model/profile.js";
 import {
   agentSystemInstructionsForSkills,
 } from "../agent/system-instructions.js";
@@ -122,46 +130,148 @@ export function buildModelRequest(input: {
 export function runtimeProfileForSavedProfile(
   profile: SavedProfile,
   models: DiscoveredModelInfo[] = [],
+  selection: {
+    model?: string | undefined;
+    reasoningEffort?: ReasoningEffort | null | undefined;
+  } = {},
 ): RuntimeProfile {
-  const discovered = models.find((model) => model.id === profile.model);
+  const source = materializeRuntimeModelSource(profile, selection);
+  const discovered = models.find((model) => model.id === source.model.model);
   const resolved = resolveModelCapabilitiesWithEvidence(
-    profile,
+    source,
     discovered?.capabilities,
   );
   return {
-    profile,
+    ...source,
     capabilities: resolved.capabilities,
-    inputCapabilityEvidence: resolved.inputCapabilityEvidence,
+    inputCapabilityEvidence: resolved.capabilityEvidence.inputs,
   };
+}
+
+export function materializeRuntimeModelSource(
+  profile: SavedProfile,
+  selection: {
+    model?: string | undefined;
+    reasoningEffort?: ReasoningEffort | null | undefined;
+  } = {},
+): RuntimeModelSource {
+  const selectedModel = selection.model ?? profile.defaultModel;
+  if (isDirectApiProfile(profile)) {
+    const configured = requireConfiguredModel(profile.models, selectedModel);
+    return {
+      profile: {
+        id: profile.id,
+        name: profile.name,
+        connection: cloneJsonValue(profile.connection),
+      },
+      model: effectiveModelConfig(configured, selection.reasoningEffort),
+    };
+  }
+  const configured = requireConfiguredModel(profile.models, selectedModel);
+  return {
+    profile: {
+      id: profile.id,
+      name: profile.name,
+      connection: cloneJsonValue(profile.connection),
+    },
+    model: effectiveModelConfig(configured, selection.reasoningEffort),
+  };
+}
+
+export function capabilityPreviewForProfile(
+  profile: DraftProfile,
+  models: DiscoveredModelInfo[] = [],
+): {
+  capabilities: ModelCapabilities;
+  capabilityEvidence: ModelCapabilityEvidence;
+} {
+  const source = draftCapabilitySource(profile);
+  const discovered = models.find((model) => model.id === source.model.model);
+  return resolveModelCapabilitiesWithEvidence(
+    withoutManualCapabilityOverrides(source),
+    discovered?.capabilities,
+  );
 }
 
 export function capabilitiesForProfilePreview(
   profile: DraftProfile,
   models: DiscoveredModelInfo[] = [],
 ): ModelCapabilities {
-  const previewProfile = withoutManualCapabilityOverrides(profile);
-  const discovered = models.find((model) => model.id === previewProfile.model);
-  return resolveModelCapabilities(previewProfile, discovered?.capabilities);
+  return capabilityPreviewForProfile(profile, models).capabilities;
 }
 
 export function resolveDiscoveredModels(
   profile: DraftProfile,
   models: DiscoveredModelInfo[],
 ): ModelInfo[] {
-  const previewProfile = withoutManualCapabilityOverrides(profile);
-  return models.map((model) => ({
-    id: model.id,
-    displayName: model.displayName,
-    capabilities: resolveModelCapabilities(
-      { ...previewProfile, model: model.id },
+  const source = draftCapabilitySource(profile);
+  return models.map((model) => {
+    const resolved = resolveModelCapabilitiesWithEvidence(
+      withoutManualCapabilityOverrides({
+        ...source,
+        model: { ...source.model, model: model.id },
+      }),
       model.capabilities,
-    ),
-  }));
+    );
+    return {
+      id: model.id,
+      displayName: model.displayName,
+      capabilities: resolved.capabilities,
+      capabilityEvidence: resolved.capabilityEvidence,
+    };
+  });
 }
 
 function withoutManualCapabilityOverrides(
-  profile: DraftProfile,
-): DraftProfile {
-  const { capabilityOverrides: _ignored, ...advanced } = profile.advanced;
-  return { ...profile, advanced };
+  source: ModelCapabilitySource,
+): ModelCapabilitySource {
+  const { capabilityOverrides: _ignored, ...advanced } = source.model.advanced;
+  return {
+    ...source,
+    model: { ...source.model, advanced },
+  };
+}
+
+function draftCapabilitySource(profile: DraftProfile): ModelCapabilitySource {
+  const configured = profile.models.find(
+    (model) => model.model === profile.defaultModel,
+  ) ?? profile.models[0] ?? emptyDraftModelConfig(profile.defaultModel);
+  return {
+    profile: {
+      id: profile.id,
+      name: profile.name,
+      connection: profile.connection,
+    },
+    model: configured,
+  };
+}
+
+function emptyDraftModelConfig(model: string): DraftModelConfig {
+  return {
+    model,
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  };
+}
+
+function requireConfiguredModel<Model extends SavedModelConfig>(
+  models: readonly Model[],
+  selectedModel: string,
+): Model {
+  const configured = models.find((model) => model.model === selectedModel);
+  if (configured) return configured;
+  throw new Error(`Model ${selectedModel} is not configured in this Profile.`);
+}
+
+function effectiveModelConfig<Model extends SavedModelConfig>(
+  configured: Model,
+  reasoningEffort: ReasoningEffort | null | undefined,
+): Model {
+  const model = cloneJsonValue(configured);
+  if (reasoningEffort === undefined || reasoningEffort === null) return model;
+  model.parameters.reasoning = {
+    mode: "enabled",
+    effort: reasoningEffort,
+  };
+  return model;
 }

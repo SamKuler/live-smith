@@ -251,6 +251,119 @@ test("approvalMode persists as a per-Session authorization", async () => {
   assert.equal((await listSessions(dir))[0]?.approvalMode, "everything");
 });
 
+test("modelSelection persists per Session and is cloned across storage boundaries", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const selection = {
+    profileId: "studio-profile",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high" as const,
+  };
+  const session = await createSession(dir, {
+    title: "Model-specific conversation",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    modelSelection: selection,
+  });
+  selection.model = "mutated-after-create";
+
+  assert.deepEqual(session.modelSelection, {
+    profileId: "studio-profile",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+  });
+  const [loaded] = await listSessions(dir);
+  assert(loaded?.modelSelection);
+  loaded.modelSelection.model = "mutated-after-read";
+  assert.equal(
+    (await listSessions(dir))[0]?.modelSelection?.model,
+    "gpt-5.6-sol",
+  );
+
+  await updateSession(dir, session.id, {
+    modelSelection: {
+      profileId: "studio-profile",
+      model: "claude-sonnet-4-6",
+    },
+  });
+  const restored = await restoreSession(dir, session.id, {
+    projectKey: "set-002",
+    scope: { kind: "selection", identity: "selection-2", label: "Live Set" },
+  });
+  assert.deepEqual(restored.modelSelection, {
+    profileId: "studio-profile",
+    model: "claude-sonnet-4-6",
+  });
+});
+
+test("modelSelection rejects invalid created and updated values", async () => {
+  const invalidValues: unknown[] = [
+    null,
+    "gpt-5.6-sol",
+    { model: "gpt-5.6-sol" },
+    { profileId: "../profile", model: "gpt-5.6-sol" },
+    { profileId: "studio-profile", model: "" },
+    { profileId: "studio-profile", model: " gpt-5.6-sol" },
+    { profileId: "studio-profile", model: "bad\u0000model" },
+    {
+      profileId: "studio-profile",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "future-effort",
+    },
+    {
+      profileId: "studio-profile",
+      model: "gpt-5.6-sol",
+      unexpected: true,
+    },
+  ];
+  for (const modelSelection of invalidValues) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+    await assert.rejects(
+      createSession(dir, {
+        title: "Invalid model selection",
+        projectKey: "set-001",
+        scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+        modelSelection,
+      } as never),
+      /Model selection is invalid/,
+    );
+    const session = await createSession(dir, {
+      title: "Valid Session",
+      projectKey: "set-001",
+      scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    });
+    await assert.rejects(
+      updateSession(dir, session.id, { modelSelection } as never),
+      /Model selection is invalid/,
+    );
+  }
+});
+
+test("invalid persisted modelSelection makes Session storage corrupt without rewriting it", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  const target = path.join(dir, "live-smith-sessions.json");
+  const now = new Date().toISOString();
+  const original = JSON.stringify([{
+    id: "session-invalid-model",
+    title: "Invalid model",
+    projectKey: "set-001",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    modelSelection: {
+      profileId: "studio-profile",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "future-effort",
+    },
+    createdAt: now,
+    updatedAt: now,
+  }]);
+  await fs.writeFile(target, original);
+
+  await assert.rejects(
+    listSessions(dir),
+    (error: unknown) => error instanceof SessionStorageCorruptionError,
+  );
+  assert.equal(await fs.readFile(target, "utf8"), original);
+});
+
 test("approvalMode validation rejects invalid created, updated, and persisted values", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
   await assert.rejects(

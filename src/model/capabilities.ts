@@ -1,16 +1,16 @@
 import type {
   InputCapabilities,
   InputCapabilityEvidence,
+  ModelCapabilitySource,
+  ModelCapabilityEvidence,
   ModelCapabilities,
   ModelCapabilityHints,
   ReasoningCapabilities,
+  RuntimeModelSource,
 } from "./provider.js";
+import { isDirectRuntimeModelSource } from "./provider.js";
 import {
-  isDirectApiProfile,
-  profileProvider,
   ProfileValidationError,
-  type DraftProfile,
-  type SavedProfile,
   type ModelCapabilityOverrides,
 } from "./profile.js";
 
@@ -21,6 +21,13 @@ const noReasoning: ReasoningCapabilities = {
   budgetTokens: false,
   strategy: "none",
 };
+
+const gpt56ContextWindowModels = new Set([
+  "gpt-5.6",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
 
 export function defaultModelCapabilities(): ModelCapabilities {
   return {
@@ -40,18 +47,29 @@ function codexSubscriptionFallbackCapabilities(): ModelCapabilities {
   };
 }
 
-function knownCapabilitiesForModel(
-  profile: DraftProfile | SavedProfile,
-): ModelCapabilityHints | undefined {
-  const model = profile.model.toLocaleLowerCase();
+function runtimeProvider(source: ModelCapabilitySource): "openai" | "anthropic" {
+  return source.profile.connection.kind === "direct-api"
+    ? source.profile.connection.apiFamily
+    : source.profile.connection.provider;
+}
 
-  if (profileProvider(profile) === "openai") {
+function knownCapabilitiesForModel(
+  source: ModelCapabilitySource,
+): ModelCapabilityHints | undefined {
+  const model = source.model.model.toLocaleLowerCase();
+
+  if (runtimeProvider(source) === "openai") {
     if (/^gpt-5\.6(?:-|$)/.test(model)) {
-      return reasoningPolicy(
-        ["low", "medium", "high", "xhigh", "max"],
-        true,
-        128_000,
-      );
+      return {
+        ...reasoningPolicy(
+          ["low", "medium", "high", "xhigh", "max"],
+          true,
+          128_000,
+        ),
+        ...(gpt56ContextWindowModels.has(model)
+          ? { contextWindowTokens: 1_050_000 }
+          : {}),
+      };
     }
     if (isBaseModelOrSnapshot(model, "gpt-5.5-pro")) {
       return {
@@ -167,48 +185,78 @@ function knownCapabilitiesForModel(
 }
 
 export function resolveModelCapabilities(
-  profile: DraftProfile | SavedProfile,
+  source: ModelCapabilitySource,
   discovered?: ModelCapabilityHints,
 ): ModelCapabilities {
-  return resolveModelCapabilitiesWithEvidence(profile, discovered).capabilities;
+  return resolveModelCapabilitiesWithEvidence(source, discovered).capabilities;
 }
 
 export function resolveModelCapabilitiesWithEvidence(
-  profile: DraftProfile | SavedProfile,
+  source: ModelCapabilitySource,
   discovered?: ModelCapabilityHints,
 ): {
   capabilities: ModelCapabilities;
-  inputCapabilityEvidence: InputCapabilityEvidence;
+  capabilityEvidence: ModelCapabilityEvidence;
 } {
-  const managedSubscription = profile.connection.kind === "codex-subscription";
+  const managedSubscription =
+    source.profile.connection.kind === "codex-subscription";
   const fallback = managedSubscription
     ? codexSubscriptionFallbackCapabilities()
     : defaultModelCapabilities();
-  const known = managedSubscription ? undefined : knownCapabilitiesForModel(profile);
+  const known = managedSubscription ? undefined : knownCapabilitiesForModel(source);
   const withKnown = mergeCapabilities(fallback, known);
-  const inputCapabilityEvidence = unverifiedInputCapabilityEvidence();
+  const capabilityEvidence = defaultModelCapabilityEvidence();
   const knownInputs = managedSubscription
     ? undefined
-    : knownInputCapabilitiesForModel(profile);
+    : knownInputCapabilitiesForModel(source);
   const withKnownInputs = mergeCapabilities(
     withKnown,
     knownInputs,
   );
-  applyInputCapabilityEvidence(inputCapabilityEvidence, knownInputs?.inputs);
+  applyCapabilityEvidence(capabilityEvidence, known);
+  applyCapabilityEvidence(capabilityEvidence, knownInputs);
   const withDiscovered = mergeCapabilities(withKnownInputs, discovered);
-  applyInputCapabilityEvidence(inputCapabilityEvidence, discovered?.inputs);
-  const overrides = profile.advanced.capabilityOverrides;
+  applyCapabilityEvidence(capabilityEvidence, discovered);
+  const overrides = source.model.advanced.capabilityOverrides;
   const capabilities = mergeCapabilityOverrides(withDiscovered, overrides);
-  applyInputCapabilityEvidence(inputCapabilityEvidence, overrides?.inputs);
-  return { capabilities, inputCapabilityEvidence };
+  applyCapabilityEvidence(capabilityEvidence, overrides);
+  return { capabilities, capabilityEvidence };
 }
 
-function unverifiedInputCapabilityEvidence(): InputCapabilityEvidence {
+export function defaultModelCapabilityEvidence(): ModelCapabilityEvidence {
   return {
-    image: "unverified",
-    audio: "unverified",
-    pdf: "unverified",
+    temperature: "unverified",
+    maxOutputTokens: "unverified",
+    contextWindowTokens: "unverified",
+    reasoning: "unverified",
+    inputs: {
+      image: "unverified",
+      audio: "unverified",
+      pdf: "unverified",
+    },
   };
+}
+
+function applyCapabilityEvidence(
+  evidence: ModelCapabilityEvidence,
+  values: ModelCapabilityHints | ModelCapabilityOverrides | undefined,
+): void {
+  if (!values) return;
+  if (values.temperature !== undefined) {
+    evidence.temperature = values.temperature;
+  }
+  if (values.maxOutputTokens !== undefined) {
+    evidence.maxOutputTokens = "verified";
+  }
+  if ("contextWindowTokens" in values && values.contextWindowTokens !== undefined) {
+    evidence.contextWindowTokens = "verified";
+  }
+  if (values.reasoning?.supported !== undefined) {
+    evidence.reasoning = values.reasoning.supported
+      ? "supported"
+      : "unsupported";
+  }
+  applyInputCapabilityEvidence(evidence.inputs, values.inputs);
 }
 
 function applyInputCapabilityEvidence(
@@ -225,10 +273,10 @@ function applyInputCapabilityEvidence(
 }
 
 function knownInputCapabilitiesForModel(
-  profile: DraftProfile | SavedProfile,
+  source: ModelCapabilitySource,
 ): ModelCapabilityHints | undefined {
-  const model = profile.model.toLocaleLowerCase();
-  if (profileProvider(profile) === "openai") {
+  const model = source.model.model.toLocaleLowerCase();
+  if (runtimeProvider(source) === "openai") {
     const documentedImageModel = isExplicitAliasOrSnapshot(
       model,
       "gpt-5.6",
@@ -303,11 +351,11 @@ function isBaseModelOrSnapshot(model: string, base: string): boolean {
 }
 
 export function validateGenerationParameters(
-  profile: SavedProfile,
+  source: RuntimeModelSource,
   capabilities: ModelCapabilities,
 ): void {
-  const { parameters } = profile;
-  const maxOutputTokens = isDirectApiProfile(profile)
+  const { parameters } = source.model;
+  const maxOutputTokens = isDirectRuntimeModelSource(source)
     ? parameters.maxOutputTokens
     : undefined;
   if (

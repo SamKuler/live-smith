@@ -99,6 +99,8 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
         baseUrl: "https://example.test/v1",
         apiKey: "secret-key",
       },
+    },
+    model: {
       model: "runtime-model",
       parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
       advanced: { extraBody: { secret: true } },
@@ -118,7 +120,10 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
       connectionKind: "direct-api",
       apiFamily: "openai",
       apiMode: "responses",
+    },
+    selection: {
       model: "runtime-model",
+      reasoning: { mode: "default" },
     },
     capabilities,
     inputCapabilityEvidence: {
@@ -159,11 +164,24 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
       },
       inputs: { image: false, audio: false, pdf: false },
     },
+    capabilityEvidence: {
+      temperature: "unsupported",
+      maxOutputTokens: "unverified",
+      contextWindowTokens: "unverified",
+      reasoning: "unsupported",
+      inputs: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
+    },
     availableModels: [],
+    configuredModels: [],
+    configuredModelsReady: true,
     modelStateSource: null,
     runtimeProfile: null,
     settings: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       activeProfileId: null,
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",

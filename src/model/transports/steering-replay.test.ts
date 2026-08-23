@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveModelCapabilities } from "../capabilities.js";
+import { runtimeProfileForSavedProfile } from "../../app/model-request.js";
 import type { ModelConversationMessage } from "../contracts.js";
-import type { DirectApiConnection, SavedProfile } from "../profile.js";
+import type { DirectApiConnection, DirectApiProfile } from "../profile.js";
 import type { ModelTransport, TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
@@ -37,7 +37,7 @@ type DirectApiPair =
   | [apiFamily: "openai", apiMode: "responses" | "chat-completions"]
   | [apiFamily: "anthropic", apiMode: "messages"];
 
-function profile(...pair: DirectApiPair): SavedProfile {
+function profile(...pair: DirectApiPair): DirectApiProfile {
   const connection: DirectApiConnection = pair[0] === "openai"
     ? {
         kind: "direct-api",
@@ -57,26 +57,21 @@ function profile(...pair: DirectApiPair): SavedProfile {
     id: `${connection.apiFamily}-${connection.apiMode}`,
     name: `${connection.apiFamily} ${connection.apiMode}`,
     connection,
-    model: "test-model",
-    parameters: {
-      maxOutputTokens: 1024,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: "test-model",
+    models: [{
+      model: "test-model",
+      parameters: {
+        maxOutputTokens: 1024,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
   };
 }
 
-function request(savedProfile: SavedProfile): TransportRequest {
+function request(savedProfile: DirectApiProfile): TransportRequest {
   return {
-    runtimeProfile: {
-      profile: savedProfile,
-      capabilities: resolveModelCapabilities(savedProfile),
-      inputCapabilityEvidence: {
-        image: "unverified",
-        audio: "unverified",
-        pdf: "unverified",
-      },
-    },
+    runtimeProfile: runtimeProfileForSavedProfile(savedProfile),
     currentUserContent: [{ type: "text", text: "Inspect the current Set." }],
     systemInstructions: "Test system instructions",
     history: [],
@@ -187,7 +182,7 @@ function anthropicReplay(body: Record<string, unknown>): ReplayEntry[] {
 
 const cases: Array<{
   name: string;
-  savedProfile: SavedProfile;
+  savedProfile: DirectApiProfile;
   createTransport: (fetchImpl: typeof fetch) => ModelTransport;
   completedResponse: () => Response;
   replayFromBody: (body: Record<string, unknown>) => ReplayEntry[];

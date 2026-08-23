@@ -140,6 +140,46 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
         sessionId: "s2",
       }),
     });
+    const selectModelForActiveSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: correlatedJsonHeaders("command"),
+      body: JSON.stringify({
+        kind: "set_session_model_selection",
+        sessionId: "s1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: null,
+      }),
+    });
+    const selectModelForOtherSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: correlatedJsonHeaders("command"),
+      body: JSON.stringify({
+        kind: "set_session_model_selection",
+        sessionId: "s2",
+        profileId: "profile-1",
+        model: "model-b",
+        reasoningEffort: "high",
+      }),
+    });
+    const loadCapabilitiesForActiveSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: correlatedJsonHeaders("command"),
+      body: JSON.stringify({
+        kind: "load_session_model_capabilities",
+        sessionId: "s1",
+        profileId: "profile-1",
+      }),
+    });
+    const loadCapabilitiesForOtherSession = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: correlatedJsonHeaders("command"),
+      body: JSON.stringify({
+        kind: "load_session_model_capabilities",
+        sessionId: "s2",
+        profileId: "profile-1",
+      }),
+    });
     const profileCommand = await fetch(endpoint("/command"), {
       method: "POST",
       headers: correlatedJsonHeaders("command"),
@@ -163,11 +203,21 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
       error: "Stop this Session's active request before attaching its selected audio source.",
     });
     assert.equal(attachOtherSession.status, 200);
+    assert.equal(selectModelForActiveSession.status, 409);
+    assert.deepEqual(await selectModelForActiveSession.json(), {
+      error: "Wait for this Session's active request to finish before changing its model.",
+    });
+    assert.equal(selectModelForOtherSession.status, 200);
+    assert.equal(loadCapabilitiesForActiveSession.status, 409);
+    assert.deepEqual(await loadCapabilitiesForActiveSession.json(), {
+      error: "Wait for this Session's active request to finish before loading model capabilities.",
+    });
+    assert.equal(loadCapabilitiesForOtherSession.status, 200);
     assert.equal(profileCommand.status, 409);
     assert.deepEqual(await profileCommand.json(), {
       error: "Profile settings cannot change while an agent request is active.",
     });
-    assert.equal(commandCalls, 3);
+    assert.equal(commandCalls, 5);
   } finally {
     releaseSend();
     await firstSend;
@@ -643,6 +693,64 @@ test("event stream reconnect replays the latest approval patch per Session", asy
 
     assert.equal(replayed.sessionId, "s1");
     assert.equal(replayed.approvalMode, "manual");
+    assert.ok(
+      BigInt(replayed.bridgeStateRevision as string) >
+        BigInt(first.bridgeStateRevision as string),
+    );
+  } finally {
+    await initialEvents?.body?.cancel().catch(() => {});
+    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await bridge.close();
+  }
+});
+
+test("event stream publishes and replays the latest Session model selection", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  let initialEvents: Response | undefined;
+  let reconnectedEvents: Response | undefined;
+
+  try {
+    initialEvents = await fetch(endpoint("/events"));
+    const firstPatch = readSsePayload(
+      initialEvents,
+      "session_model_selection_changed",
+    );
+    bridge.publishSessionModelSelection("s1", {
+      profileId: "profile-a",
+      model: "model-a",
+      reasoningEffort: "high",
+    });
+    const first = await firstPatch;
+    assert.deepEqual(first.modelSelection, {
+      profileId: "profile-a",
+      model: "model-a",
+      reasoningEffort: "high",
+    });
+
+    bridge.publishSessionModelSelection("s1", {
+      profileId: "profile-a",
+      model: "model-b",
+    });
+    reconnectedEvents = await fetch(endpoint("/events"));
+    const replayed = await readSsePayload(
+      reconnectedEvents,
+      "session_model_selection_changed",
+    );
+
+    assert.equal(replayed.sessionId, "s1");
+    assert.deepEqual(replayed.modelSelection, {
+      profileId: "profile-a",
+      model: "model-b",
+    });
     assert.ok(
       BigInt(replayed.bridgeStateRevision as string) >
         BigInt(first.bridgeStateRevision as string),
@@ -1993,6 +2101,112 @@ test("Session approval commands require one Session and one valid mode", async (
       assert.equal(response.status, 400);
     }
     assert.equal(received.length, 3);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("Session model selection commands accept only a bounded identity and effort", async () => {
+  const state = {} as ChatDialogState;
+  const received: unknown[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      received.push(input);
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = `${chatUrl.origin}/command?token=${token}`;
+
+  try {
+    for (const reasoningEffort of [null, "low", "ultra"] as const) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: correlatedJsonHeaders("command"),
+        body: JSON.stringify({
+          kind: "set_session_model_selection",
+          sessionId: "session-1",
+          profileId: "profile-1",
+          model: "model-a",
+          reasoningEffort,
+        }),
+      });
+      assert.equal(response.status, 200);
+    }
+    const loadResponse = await fetch(endpoint, {
+      method: "POST",
+      headers: correlatedJsonHeaders("command"),
+      body: JSON.stringify({
+        kind: "load_session_model_capabilities",
+        sessionId: "session-1",
+        profileId: "profile-1",
+      }),
+    });
+    assert.equal(loadResponse.status, 200);
+    assert.deepEqual(received, [
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: null,
+      },
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: "low",
+      },
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: "ultra",
+      },
+      {
+        kind: "load_session_model_capabilities",
+        sessionId: "session-1",
+        profileId: "profile-1",
+      },
+    ]);
+
+    for (const body of [
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: "extreme",
+      },
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+      },
+      {
+        kind: "set_session_model_selection",
+        sessionId: "session-1",
+        profileId: "profile-1",
+        model: "model-a",
+        reasoningEffort: null,
+        parameters: {},
+      },
+    ]) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: correlatedJsonHeaders("command"),
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(received.length, 4);
   } finally {
     await bridge.close();
   }

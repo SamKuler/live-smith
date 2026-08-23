@@ -4,9 +4,9 @@ import { TextEncoder } from "node:util";
 import test from "node:test";
 
 import { createHostAbortController } from "../../runtime/host.js";
-import { resolveModelCapabilities } from "../capabilities.js";
+import { runtimeProfileForSavedProfile } from "../../app/model-request.js";
 import { ModelConnectionError } from "../connection-error.js";
-import type { SavedProfile } from "../profile.js";
+import type { DirectApiProfile } from "../profile.js";
 import type { ModelTransport, TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
 import { withTransportContext } from "./errors.js";
@@ -17,7 +17,7 @@ import { MAX_DIRECT_SSE_EVENT_BYTES } from "./server-sent-events.js";
 
 function openAIProfile(
   apiMode: "responses" | "chat-completions" = "responses",
-): SavedProfile {
+): DirectApiProfile {
   return {
     id: `openai-${apiMode}-connection-test`,
     name: `OpenAI ${apiMode} connection test`,
@@ -28,16 +28,19 @@ function openAIProfile(
       baseUrl: "https://example.test/v1?token=private-query-token",
       apiKey: "private-api-key",
     },
-    model: "test-model",
-    parameters: {
-      maxOutputTokens: 1024,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: "test-model",
+    models: [{
+      model: "test-model",
+      parameters: {
+        maxOutputTokens: 1024,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
   };
 }
 
-function anthropicProfile(): SavedProfile {
+function anthropicProfile(): DirectApiProfile {
   return {
     id: "anthropic-connection-test",
     name: "Anthropic connection test",
@@ -48,17 +51,20 @@ function anthropicProfile(): SavedProfile {
       baseUrl: "https://example.test?token=private-query-token",
       apiKey: "private-api-key",
     },
-    model: "claude-test",
-    parameters: {
-      maxOutputTokens: 1024,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: "claude-test",
+    models: [{
+      model: "claude-test",
+      parameters: {
+        maxOutputTokens: 1024,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
   };
 }
 
 function request(
-  profile: SavedProfile,
+  profile: DirectApiProfile,
   options: {
     signal?: AbortSignal;
     streaming?: boolean;
@@ -66,15 +72,7 @@ function request(
   } = {},
 ): TransportRequest {
   return {
-    runtimeProfile: {
-      profile,
-      capabilities: resolveModelCapabilities(profile),
-      inputCapabilityEvidence: {
-        image: "unverified",
-        audio: "unverified",
-        pdf: "unverified",
-      },
-    },
+    runtimeProfile: runtimeProfileForSavedProfile(profile),
     currentUserContent: [{ type: "text", text: "Inspect the selected clip." }],
     systemInstructions: "Test system instructions",
     history: [],
@@ -89,7 +87,7 @@ function request(
 
 function directCases(
   fetchImpl: typeof fetch,
-): Array<{ name: string; profile: SavedProfile; transport: ModelTransport }> {
+): Array<{ name: string; profile: DirectApiProfile; transport: ModelTransport }> {
   return [
     {
       name: "OpenAI Responses",
@@ -233,7 +231,7 @@ test("generation response reader rejection is typed for JSON and SSE", async (t)
 test("clean EOF before the required terminal is typed in every streaming mode", async () => {
   const fixtures: Array<{
     name: string;
-    profile: SavedProfile;
+    profile: DirectApiProfile;
     transport: ModelTransport;
   }> = [
     {
@@ -453,7 +451,7 @@ test("an explicit incompatible streaming Content-Type is ordinary in every Direc
 test("a missing streaming Content-Type remains compatible with valid SSE", async () => {
   const fixtures: Array<{
     name: string;
-    profile: SavedProfile;
+    profile: DirectApiProfile;
     payload: string;
     transport(fetchImpl: typeof fetch): ModelTransport;
   }> = [

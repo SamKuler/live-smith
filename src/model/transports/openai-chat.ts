@@ -1,12 +1,16 @@
-import type { ModelToolCall, ModelTurn } from "../contracts.js";
+import {
+  requireModelContextUsage,
+  type ModelToolCall,
+  type ModelTurn,
+} from "../contracts.js";
 import { ModelConnectionError } from "../connection-error.js";
 import { cloneJsonValue } from "../json-clone.js";
-import { isDirectApiProfile } from "../profile.js";
 import type {
   ModelTransport,
   TransportFactoryOptions,
   TransportRequest,
 } from "../provider.js";
+import { isDirectRuntimeModelSource } from "../provider.js";
 import {
   resolveFetchImplementation,
   throwIfAborted,
@@ -73,10 +77,27 @@ export function createOpenAIChatTransport(
         "OpenAI Chat Completions",
       );
       assertCompleteChatFinishReason(choice.finish_reason, turn.toolCalls.length);
-      return turn;
+      const contextUsage = openAIChatContextUsage(
+        completion,
+        request.runtimeProfile.capabilities.contextWindowTokens,
+      );
+      return {
+        ...turn,
+        ...(contextUsage ? { contextUsage } : {}),
+      };
       }, request.signal);
     },
   };
+}
+
+function openAIChatContextUsage(
+  value: unknown,
+  contextWindowTokens: number | undefined,
+): ModelTurn["contextUsage"] {
+  if (contextWindowTokens === undefined || !isRecord(value)) return undefined;
+  if (value.usage === undefined) return undefined;
+  const usage = isRecord(value.usage) ? value.usage : undefined;
+  return requireModelContextUsage(usage?.total_tokens, contextWindowTokens);
 }
 
 function assertNoHostedWebSearch(request: TransportRequest): void {
@@ -100,18 +121,19 @@ function assertNoPdfInput(request: TransportRequest): void {
 function buildChatBody(
   request: TransportRequest,
 ): Record<string, unknown> {
-  const { profile, capabilities } = request.runtimeProfile;
-  if (!isDirectApiProfile(profile)) {
+  const runtime = request.runtimeProfile;
+  if (!isDirectRuntimeModelSource(runtime)) {
     throw new Error("OpenAI Chat Completions requires a Direct API Profile.");
   }
-  const reasoning = profile.parameters.reasoning;
+  const { model, capabilities } = runtime;
+  const reasoning = model.parameters.reasoning;
   const generated: Record<string, unknown> = {
-    model: profile.model,
+    model: model.model,
     messages: buildOpenAIChatMessages(request),
-    max_completion_tokens: profile.parameters.maxOutputTokens,
-    ...(profile.parameters.temperature !== undefined &&
+    max_completion_tokens: model.parameters.maxOutputTokens,
+    ...(model.parameters.temperature !== undefined &&
     capabilities.temperature === "supported"
-      ? { temperature: profile.parameters.temperature }
+      ? { temperature: model.parameters.temperature }
       : {}),
     ...(request.tools.length && capabilities.tools
       ? {
@@ -127,7 +149,7 @@ function buildChatBody(
   };
   return mergeExtraBody(
     generated,
-    profile.advanced.extraBody,
+    model.advanced.extraBody,
     protectedFields,
   );
 }

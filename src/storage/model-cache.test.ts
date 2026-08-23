@@ -6,6 +6,8 @@ import test from "node:test";
 
 import type { DiscoveredModelInfo } from "../model/provider.js";
 import type {
+  DirectApiModelConfig,
+  DirectApiProfile,
   OpenAIDirectApiConnection,
   SavedProfile,
 } from "../model/profile.js";
@@ -30,14 +32,24 @@ const capabilities: DiscoveredModelInfo["capabilities"] = {
   },
 };
 
-type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
-  Partial<Omit<OpenAIDirectApiConnection, "kind" | "apiFamily">>;
+type ProfileOverrides = Partial<Pick<DirectApiProfile, "id" | "name">> &
+  Partial<Omit<OpenAIDirectApiConnection, "kind" | "apiFamily">> & {
+    model?: string;
+    parameters?: DirectApiModelConfig["parameters"];
+    advanced?: DirectApiModelConfig["advanced"];
+  };
 
-function profile(overrides: ProfileOverrides = {}): SavedProfile {
+function profile(overrides: ProfileOverrides = {}): DirectApiProfile {
   const {
     apiMode = "responses",
     baseUrl = "https://example.test/v1",
     apiKey = "secret-key",
+    model = "model-a",
+    parameters = {
+      maxOutputTokens: 4096,
+      reasoning: { mode: "default" },
+    },
+    advanced = {},
     ...fields
   } = overrides;
   return {
@@ -50,9 +62,8 @@ function profile(overrides: ProfileOverrides = {}): SavedProfile {
       baseUrl,
       apiKey,
     },
-    model: "model-a",
-    parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: model,
+    models: [{ model, parameters, advanced }],
     ...fields,
   };
 }
@@ -274,15 +285,26 @@ test("subscription fingerprints contain only non-secret connection identity", ()
     id: "codex-subscription",
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   };
 
   const fingerprint = connectionFingerprint(subscription);
   assert.equal(fingerprint.length, 64);
   assert.equal(fingerprint.includes("openai"), false);
-  assert.equal(fingerprint, connectionFingerprint({ ...subscription, model: "other" }));
+  assert.equal(fingerprint, connectionFingerprint({
+    ...subscription,
+    defaultModel: "other",
+    models: [{
+      model: "other",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+  }));
 });
 
 test("subscription model metadata is modal-scoped rather than persisted across accounts", async (t) => {
@@ -292,9 +314,12 @@ test("subscription model metadata is modal-scoped rather than persisted across a
     id: "managed-model-cache",
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   };
   const models: DiscoveredModelInfo[] = [{
     id: "gpt-5.6-sol",

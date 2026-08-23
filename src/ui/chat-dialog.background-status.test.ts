@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MAX_DISCOVERED_MODEL_COUNT } from "../model/catalog.js";
+import {
+  MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
+  MAX_DISCOVERED_MODEL_COUNT,
+} from "../model/catalog.js";
 
 import {
   cloneState,
+  capabilityEvidence,
   createDialogHarness,
   imageCapableState,
   imageFile,
@@ -2751,9 +2755,73 @@ test("a malformed authoritative state cannot mutate or settle its Send", async (
       {
         ...cloneState(state),
         availableModels: [{
+          id: "model-missing-evidence",
+          displayName: "Missing evidence",
+          capabilities: cloneState(state).capabilities,
+        }],
+      },
+      {
+        ...cloneState(state),
+        capabilityEvidence: {
+          ...capabilityEvidence(),
+          reasoning: "guessed",
+        },
+      },
+      {
+        ...cloneState(state),
+        capabilityEvidence: {
+          ...capabilityEvidence(),
+          inputs: {
+            ...capabilityEvidence().inputs,
+            image: "supported",
+          },
+        },
+      },
+      {
+        ...cloneState(state),
+        capabilityEvidence: {
+          ...capabilityEvidence(),
+          maxOutputTokens: "unverified",
+        },
+      },
+      {
+        ...cloneState(state),
+        capabilities: {
+          ...cloneState(state).capabilities,
+          contextWindowTokens: MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS + 1,
+        },
+      },
+      {
+        ...cloneState(state),
+        availableModels: [{
           id: " ",
           displayName: "Whitespace model",
           capabilities: cloneState(state).capabilities,
+          capabilityEvidence: capabilityEvidence(),
+        }],
+      },
+      {
+        ...cloneState(state),
+        availableModels: [{
+          id: "model-conflicting-evidence",
+          displayName: "Conflicting evidence",
+          capabilities: cloneState(state).capabilities,
+          capabilityEvidence: {
+            ...capabilityEvidence(),
+            temperature: "unsupported",
+          },
+        }],
+      },
+      {
+        ...cloneState(state),
+        availableModels: [{
+          id: "model-invalid-evidence",
+          displayName: "Invalid evidence",
+          capabilities: cloneState(state).capabilities,
+          capabilityEvidence: {
+            ...capabilityEvidence(),
+            contextWindowTokens: "supported",
+          },
         }],
       },
       {
@@ -2764,6 +2832,7 @@ test("a malformed authoritative state cannot mutate or settle its Send", async (
             id: `model-${index}`,
             displayName: `Model ${index}`,
             capabilities: cloneState(state).capabilities,
+            capabilityEvidence: capabilityEvidence(),
           }),
         ),
       },

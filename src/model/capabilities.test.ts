@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DirectApiConnection, SavedProfile } from "./profile.js";
+import type {
+  DirectApiConnection,
+  GenerationParameters,
+  ModelAdvancedSettings,
+} from "./profile.js";
+import type { RuntimeModelSource } from "./provider.js";
 import {
   defaultModelCapabilities,
   resolveModelCapabilities,
@@ -19,13 +24,19 @@ type DirectModeOverrides =
       apiMode: "messages";
     };
 
-type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+type ProfileOverrides = Partial<{
+  id: string;
+  name: string;
+  model: string;
+  parameters: GenerationParameters & { maxOutputTokens: number };
+  advanced: ModelAdvancedSettings;
+}> &
   DirectModeOverrides & {
     baseUrl?: string;
     apiKey?: string;
   };
 
-function profile(overrides: ProfileOverrides = {}): SavedProfile {
+function profile(overrides: ProfileOverrides = {}): RuntimeModelSource {
   const {
     apiFamily,
     apiMode,
@@ -49,30 +60,37 @@ function profile(overrides: ProfileOverrides = {}): SavedProfile {
         apiKey,
       };
   return {
-    id: "p1",
-    name: "Profile",
-    connection,
-    model: "unknown-model",
-    parameters: {
-      maxOutputTokens: 4096,
-      temperature: 0.3,
-      reasoning: { mode: "default" },
+    profile: {
+      id: fields.id ?? "p1",
+      name: fields.name ?? "Profile",
+      connection,
     },
-    advanced: {},
-    ...fields,
+    model: {
+      model: fields.model ?? "unknown-model",
+      parameters: fields.parameters ?? {
+        maxOutputTokens: 4096,
+        temperature: 0.3,
+        reasoning: { mode: "default" },
+      },
+      advanced: fields.advanced ?? {},
+    },
   };
 }
 
-function subscriptionProfile(): SavedProfile {
+function subscriptionProfile(): RuntimeModelSource {
   return {
-    id: "subscription",
-    name: "ChatGPT subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: {
-      reasoning: { mode: "default" },
+    profile: {
+      id: "subscription",
+      name: "ChatGPT subscription",
+      connection: { kind: "codex-subscription", provider: "openai" },
     },
-    advanced: {},
+    model: {
+      model: "gpt-5.6-sol",
+      parameters: {
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    },
   };
 }
 
@@ -82,11 +100,102 @@ test("unknown models use conservative mode capabilities", () => {
   assert.equal(capabilities.reasoning.supported, false);
   assert.equal(capabilities.temperature, "supported");
   assert.equal(capabilities.maxOutputTokens, undefined);
+  assert.equal(capabilities.contextWindowTokens, undefined);
   assert.deepEqual(capabilities.inputs, {
     image: false,
     audio: false,
     pdf: false,
   });
+});
+
+test("capability evidence distinguishes conservative fallback from explicit support", () => {
+  const fallback = resolveModelCapabilitiesWithEvidence(profile());
+  assert.deepEqual(fallback.capabilityEvidence, {
+    temperature: "unverified",
+    maxOutputTokens: "unverified",
+    contextWindowTokens: "unverified",
+    reasoning: "unverified",
+    inputs: {
+      image: "unverified",
+      audio: "unverified",
+      pdf: "unverified",
+    },
+  });
+
+  const discovered = resolveModelCapabilitiesWithEvidence(profile(), {
+    temperature: "unsupported",
+    maxOutputTokens: 32_000,
+    contextWindowTokens: 200_000,
+    reasoning: {
+      supported: false,
+    },
+    inputs: { image: true, audio: false },
+  });
+  assert.deepEqual(discovered.capabilityEvidence, {
+    temperature: "unsupported",
+    maxOutputTokens: "verified",
+    contextWindowTokens: "verified",
+    reasoning: "unsupported",
+    inputs: {
+      image: "supported",
+      audio: "unsupported",
+      pdf: "unverified",
+    },
+  });
+});
+
+test("manual overrides update capability evidence after discovery", () => {
+  const resolved = resolveModelCapabilitiesWithEvidence(profile({
+    advanced: {
+      capabilityOverrides: {
+        temperature: "supported",
+        maxOutputTokens: 64_000,
+        reasoning: { supported: true },
+        inputs: { image: false },
+      },
+    },
+  }), {
+    temperature: "unsupported",
+    maxOutputTokens: 32_000,
+    reasoning: { supported: false },
+    inputs: { image: true },
+  });
+
+  assert.deepEqual(resolved.capabilityEvidence, {
+    temperature: "supported",
+    maxOutputTokens: "verified",
+    contextWindowTokens: "unverified",
+    reasoning: "supported",
+    inputs: {
+      image: "unsupported",
+      audio: "unverified",
+      pdf: "unverified",
+    },
+  });
+});
+
+test("only the documented GPT-5.6 family receives a known context window", () => {
+  for (const model of [
+    "gpt-5.6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ]) {
+    const resolved = resolveModelCapabilitiesWithEvidence(profile({ model }));
+    assert.equal(resolved.capabilities.contextWindowTokens, 1_050_000, model);
+    assert.equal(resolved.capabilityEvidence.contextWindowTokens, "verified", model);
+  }
+
+  for (const model of [
+    "gpt-5.6-custom",
+    "gpt-5.5",
+    "gpt-5.4",
+    "unknown-model",
+  ]) {
+    const resolved = resolveModelCapabilitiesWithEvidence(profile({ model }));
+    assert.equal(resolved.capabilities.contextWindowTokens, undefined, model);
+    assert.equal(resolved.capabilityEvidence.contextWindowTokens, "unverified", model);
+  }
 });
 
 test("subscription capabilities come from App Server discovery, not model-name hints", () => {
@@ -95,7 +204,7 @@ test("subscription capabilities come from App Server discovery, not model-name h
   assert.equal(unresolved.capabilities.temperature, "unsupported");
   assert.equal(unresolved.capabilities.reasoning.supported, false);
   assert.equal(unresolved.capabilities.inputs.image, false);
-  assert.equal(unresolved.inputCapabilityEvidence.image, "unverified");
+  assert.equal(unresolved.capabilityEvidence.inputs.image, "unverified");
 
   const discovered = resolveModelCapabilitiesWithEvidence(
     subscriptionProfile(),
@@ -117,7 +226,7 @@ test("subscription capabilities come from App Server discovery, not model-name h
     audio: true,
     pdf: false,
   });
-  assert.equal(discovered.inputCapabilityEvidence.audio, "supported");
+  assert.equal(discovered.capabilityEvidence.inputs.audio, "supported");
 });
 
 test("input capabilities merge known policy, discovery, and partial overrides", () => {
@@ -145,20 +254,20 @@ test("input capabilities merge known policy, discovery, and partial overrides", 
 test("input capability evidence follows override, discovery, known policy, then unverified fallback", () => {
   const fallback = resolveModelCapabilitiesWithEvidence(profile());
   assert.equal(fallback.capabilities.inputs.image, false);
-  assert.equal(fallback.inputCapabilityEvidence.image, "unverified");
+  assert.equal(fallback.capabilityEvidence.inputs.image, "unverified");
 
   const known = resolveModelCapabilitiesWithEvidence(
     profile({ model: "gpt-5.6" }),
   );
   assert.equal(known.capabilities.inputs.image, true);
-  assert.equal(known.inputCapabilityEvidence.image, "supported");
+  assert.equal(known.capabilityEvidence.inputs.image, "supported");
 
   const discovered = resolveModelCapabilitiesWithEvidence(
     profile({ model: "gpt-5.6" }),
     { inputs: { image: false, pdf: true } },
   );
   assert.equal(discovered.capabilities.inputs.image, false);
-  assert.deepEqual(discovered.inputCapabilityEvidence, {
+  assert.deepEqual(discovered.capabilityEvidence.inputs, {
     image: "unsupported",
     audio: "unverified",
     pdf: "supported",
@@ -178,7 +287,7 @@ test("input capability evidence follows override, discovery, known policy, then 
     audio: false,
     pdf: false,
   });
-  assert.deepEqual(overridden.inputCapabilityEvidence, {
+  assert.deepEqual(overridden.capabilityEvidence.inputs, {
     image: "supported",
     audio: "unverified",
     pdf: "unsupported",
@@ -361,7 +470,7 @@ test("Claude Opus 4.5 supports budget thinking with low, medium, and high effort
 });
 
 test("Claude Haiku 4.5 validates manual thinking budgets", () => {
-  const haiku = (budgetTokens: number): SavedProfile => profile({
+  const haiku = (budgetTokens: number): RuntimeModelSource => profile({
     apiFamily: "anthropic",
     apiMode: "messages",
     model: "claude-haiku-4-5",
@@ -432,7 +541,7 @@ test("generation validation enforces explicit and default thinking budget space"
   const withReasoning = (
     maxOutputTokens: number,
     budgetTokens?: number,
-  ): SavedProfile => profile({
+  ): RuntimeModelSource => profile({
     apiFamily: "anthropic",
     apiMode: "messages",
     model: "claude-opus-4-5",

@@ -11,6 +11,7 @@ const capabilityKeys = new Set([
   "streaming",
   "temperature",
   "maxOutputTokens",
+  "contextWindowTokens",
   "reasoning",
   "inputs",
 ]);
@@ -28,6 +29,7 @@ export const MAX_DISCOVERED_MODEL_ID_CODE_POINTS = 256;
 export const MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS = 256;
 export const MAX_MODEL_DISCOVERY_PAGE_COUNT = 20;
 export const MAX_DISCOVERED_MODEL_OUTPUT_TOKENS = 1_000_000;
+export const MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS = 10_000_000;
 
 /** Decodes the one catalog shape shared by runtime selection, cache, and UI. */
 export function decodeDiscoveredModelCatalog(
@@ -76,6 +78,15 @@ function isModelCapabilityHints(value: unknown): boolean {
       !Number.isInteger(value.maxOutputTokens) ||
       value.maxOutputTokens <= 0 ||
       value.maxOutputTokens > MAX_DISCOVERED_MODEL_OUTPUT_TOKENS
+    )
+  ) return false;
+  if (
+    value.contextWindowTokens !== undefined &&
+    (
+      typeof value.contextWindowTokens !== "number" ||
+      !Number.isInteger(value.contextWindowTokens) ||
+      value.contextWindowTokens <= 0 ||
+      value.contextWindowTokens > MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS
     )
   ) return false;
   if (value.reasoning !== undefined && !isReasoningCapabilityHints(value.reasoning)) {

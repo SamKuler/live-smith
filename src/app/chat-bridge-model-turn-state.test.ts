@@ -120,7 +120,10 @@ test("chat bridge silently advances accepted turns and converges durable transie
     handleSend: async (_input, stream) => {
       await stream.assistantDelta("old");
       await stream.webSearchUpdate(searchUpdate("old-search"));
-      await stream.modelTurnAccepted();
+      await stream.modelTurnAccepted({
+        usedTokens: 321,
+        contextWindowTokens: 4_096,
+      });
       await stream.assistantDelta("durable assistant");
       await stream.webSearchUpdate(searchUpdate("durable-search"));
       await stream.sessionEvent(sessionEvent("assistant-1", "assistant"));
@@ -151,6 +154,7 @@ test("chat bridge silently advances accepted turns and converges durable transie
       [
         "assistant_delta",
         "web_search_update",
+        "context_usage_update",
         "assistant_delta",
         "web_search_update",
         "session_event",
@@ -163,9 +167,16 @@ test("chat bridge silently advances accepted turns and converges durable transie
       [0, 0],
     );
     assert.deepEqual(
-      publications.slice(2, 6).map((payload) => payload.modelTurnEpoch),
-      [1, 1, 1, 1],
+      publications.slice(2, 7).map((payload) => payload.modelTurnEpoch),
+      [1, 1, 1, 1, 1],
     );
+    assert.deepEqual(publications[2], {
+      type: "context_usage_update",
+      sendId: "accepted-send",
+      sessionId: "s1",
+      modelTurnEpoch: 1,
+      usage: { usedTokens: 321, contextWindowTokens: 4_096 },
+    });
     await published.promise;
     const reconnect = await fetch(endpoint("/events"));
     const [snapshot] = await readSsePayloads(reconnect, 1);
@@ -175,10 +186,67 @@ test("chat bridge silently advances accepted turns and converges durable transie
       sessionId: "s1",
       modelTurnEpoch: 1,
       assistantDraft: "",
+      contextUsage: { usedTokens: 321, contextWindowTokens: 4_096 },
       webSearchUpdates: [],
       progress: "Continuing",
       resolvedConfirmationGeneration: 0,
     });
+  } finally {
+    release.resolve();
+    await send;
+    await bridge.close();
+  }
+});
+
+test("chat bridge distinguishes send startup from an accepted turn without usage", {
+  timeout: 2_000,
+}, async () => {
+  const release = deferred();
+  const acceptedMissing = deferred();
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.modelTurnAccepted({
+        usedTokens: 250,
+        contextWindowTokens: 1_000,
+      });
+      await stream.modelTurnAccepted();
+      acceptedMissing.resolve();
+      await release.promise;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const events = await fetch(endpoint("/events"));
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: sendHeaders("tri-state-send"),
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  try {
+    const publications = await readSsePayloads(events, 2);
+    assert.deepEqual(publications, [{
+      type: "context_usage_update",
+      sendId: "tri-state-send",
+      sessionId: "s1",
+      modelTurnEpoch: 1,
+      usage: { usedTokens: 250, contextWindowTokens: 1_000 },
+    }, {
+      type: "context_usage_update",
+      sendId: "tri-state-send",
+      sessionId: "s1",
+      modelTurnEpoch: 2,
+      usage: null,
+    }]);
+    await acceptedMissing.promise;
+    const reconnect = await fetch(endpoint("/events"));
+    const [snapshot] = await readSsePayloads(reconnect, 1);
+    assert.equal(snapshot?.type, "model_turn_state");
+    assert.equal(snapshot?.contextUsage, null);
   } finally {
     release.resolve();
     await send;

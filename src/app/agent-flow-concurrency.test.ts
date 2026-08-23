@@ -16,7 +16,10 @@ import {
   type LiveInteractionContext,
 } from "../live/context.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
-import type { SavedProfile } from "../model/profile.js";
+import type {
+  DirectApiModelConfig,
+  SavedProfile,
+} from "../model/profile.js";
 import {
   MAX_PENDING_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_COUNT,
@@ -1055,8 +1058,8 @@ test("state revalidates events and pending attachments as one generation", async
       baseUrl: "https://provider.test/v1",
       apiKey: "key",
       model: "model-a",
+      advanced: { capabilityOverrides: { inputs: { image: true } } },
     });
-    imageProfile.advanced.capabilityOverrides = { inputs: { image: true } };
     await saveSavedProfile(fixture.directory, imageProfile);
     const attachment = await saveSessionAttachment(
       fixture.directory,
@@ -1432,20 +1435,18 @@ test("a selected source attachment and send share the same-Session fence", async
       },
     },
   });
-  await saveSavedProfile(fixture.directory, {
-    ...profile({
-      baseUrl: "https://provider.test/v1",
-      apiKey: "key",
-      apiMode: "chat-completions",
-      model: "audio-model",
-    }),
+  await saveSavedProfile(fixture.directory, profile({
+    baseUrl: "https://provider.test/v1",
+    apiKey: "key",
+    apiMode: "chat-completions",
+    model: "audio-model",
     advanced: {
       capabilityOverrides: {
         tools: true,
         inputs: { audio: true },
       },
     },
-  });
+  }));
 
   try {
     const attachment = fetch(fixture.first.endpoint("/command"), {
@@ -2198,7 +2199,15 @@ test("model discovery accepts a Draft with blank name and model without changing
       model: "draft-model",
     }),
     name: "",
-    model: "",
+    defaultModel: "",
+    models: [{
+      ...profile({
+        baseUrl: "https://draft.test/v1",
+        apiKey: "draft-key",
+        model: "draft-model",
+      }).models[0]!,
+      model: "",
+    }],
   };
   const discovered = [discoveredModel("draft-model", 4_096)];
 
@@ -2222,7 +2231,10 @@ test("model discovery accepts a Draft with blank name and model without changing
         assert.equal(state.modelStateSource?.model, "");
         assert.deepEqual(state.availableModels.map((model) => model.id), ["draft-model"]);
         assert.equal(state.runtimeProfile?.profile.name, active.name);
-        assert.equal(state.runtimeProfile?.profile.model, active.model);
+        assert.equal(
+          state.runtimeProfile?.selection.model,
+          active.defaultModel,
+        );
       },
     },
   };
@@ -2235,7 +2247,8 @@ test("model discovery accepts a Draft with blank name and model without changing
     renderHtml: () => "<html></html>",
     listModels: async (receivedDraft) => {
       assert.equal(receivedDraft.name, "");
-      assert.equal(receivedDraft.model, "");
+      assert.equal(receivedDraft.defaultModel, "");
+      assert.equal(receivedDraft.models[0]?.model, "");
       return discovered;
     },
   });
@@ -3572,6 +3585,7 @@ function profile(
     apiKey: string;
     apiMode?: "responses" | "chat-completions";
     model: string;
+    advanced?: DirectApiModelConfig["advanced"];
   },
 ): SavedProfile {
   return {
@@ -3584,12 +3598,15 @@ function profile(
       baseUrl: values.baseUrl,
       apiKey: values.apiKey,
     },
-    model: values.model,
-    parameters: {
-      maxOutputTokens: 1_000,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: values.model,
+    models: [{
+      model: values.model,
+      parameters: {
+        maxOutputTokens: 1_000,
+        reasoning: { mode: "default" },
+      },
+      advanced: values.advanced ?? {},
+    }],
   };
 }
 

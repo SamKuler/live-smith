@@ -9,7 +9,9 @@ import {
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DirectApiConnection,
+  type DraftModelConfig,
   type ReasoningEffort,
+  type SavedProfile,
 } from "./profile.js";
 
 test("Direct API connection types correlate every family with its supported modes", () => {
@@ -99,6 +101,14 @@ test("follow-up behavior revisions are canonical unbounded decimal strings", () 
 });
 
 function profile(baseUrl: string): Record<string, unknown> {
+  const model: DraftModelConfig = {
+    model: "deepseek-v4-flash",
+    parameters: {
+      maxOutputTokens: 8192,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  };
   return {
     id: "deepseek-anthropic",
     name: "DeepSeek Anthropic",
@@ -109,13 +119,29 @@ function profile(baseUrl: string): Record<string, unknown> {
       baseUrl,
       apiKey: "test-key",
     },
-    model: "deepseek-v4-flash",
-    parameters: {
-      maxOutputTokens: 8192,
-      reasoning: { mode: "default" },
-    },
-    advanced: {},
+    defaultModel: model.model,
+    models: [model],
   };
+}
+
+function withDefaultModel(
+  value: Record<string, unknown>,
+  update: Record<string, unknown>,
+): Record<string, unknown> {
+  const [model] = value.models as DraftModelConfig[];
+  assert(model);
+  return {
+    ...value,
+    models: [{ ...model, ...update }],
+  };
+}
+
+function configuredModel(profile: SavedProfile) {
+  const model = profile.models.find(
+    (entry) => entry.model === profile.defaultModel,
+  );
+  assert(model);
+  return model;
 }
 
 test("Profile validation does not depend on an ambient URL constructor", () => {
@@ -325,14 +351,15 @@ test("Profile validation rejects unsafe or overlong internal IDs", () => {
 });
 
 test("Draft discovery validation permits blank Profile name and model", () => {
-  const draft = validateDraftProfileForDiscovery({
+  const draft = validateDraftProfileForDiscovery(withDefaultModel({
     ...profile("https://example.test/v1"),
     name: "",
-    model: "",
-  });
+    defaultModel: "",
+  }, { model: "" }));
 
   assert.equal(draft.name, "");
-  assert.equal(draft.model, "");
+  assert.equal(draft.defaultModel, "");
+  assert.equal(draft.models[0]?.model, "");
   assert.equal(
     draft.connection.kind === "direct-api"
       ? draft.connection.baseUrl
@@ -343,11 +370,11 @@ test("Draft discovery validation permits blank Profile name and model", () => {
 
 test("Draft save validation still requires Profile name and model", () => {
   assert.throws(
-    () => validateDraftProfileForSave({
+    () => validateDraftProfileForSave(withDefaultModel({
       ...profile("https://example.test/v1"),
       name: "",
-      model: "",
-    }),
+      defaultModel: "",
+    }, { model: "" })),
     (error: unknown) =>
       error instanceof Error &&
       error.name === "ProfileValidationError" &&
@@ -355,11 +382,10 @@ test("Draft save validation still requires Profile name and model", () => {
   );
 
   assert.throws(
-    () => validateDraftProfileForSave({
+    () => validateDraftProfileForSave(withDefaultModel({
       ...profile("https://example.test/v1"),
       name: "Complete Profile",
-      model: "",
-    }),
+    }, { model: "" })),
     (error: unknown) =>
       error instanceof Error &&
       error.name === "ProfileValidationError" &&
@@ -367,16 +393,82 @@ test("Draft save validation still requires Profile name and model", () => {
   );
 });
 
+test("Profile validation preserves multiple model-specific configurations", () => {
+  const first = profile("https://example.test/v1");
+  const [firstModel] = first.models as DraftModelConfig[];
+  assert(firstModel);
+  const saved = validateDraftProfileForSave({
+    ...first,
+    defaultModel: "model-b",
+    models: [
+      firstModel,
+      {
+        model: "model-b",
+        parameters: {
+          maxOutputTokens: 32_768,
+          reasoning: { mode: "enabled", effort: "high" },
+        },
+        advanced: {
+          capabilityOverrides: {
+            temperature: "unsupported",
+            reasoning: {
+              supported: true,
+              efforts: ["high"],
+              strategy: "effort",
+            },
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(saved.defaultModel, "model-b");
+  assert.deepEqual(saved.models.map((model) => model.model), [
+    "deepseek-v4-flash",
+    "model-b",
+  ]);
+  assert.deepEqual(saved.models[1]?.parameters.reasoning, {
+    mode: "enabled",
+    effort: "high",
+  });
+});
+
+test("Profile validation requires a unique configured default model", () => {
+  const base = profile("https://example.test/v1");
+  const [model] = base.models as DraftModelConfig[];
+  assert(model);
+
+  assert.throws(
+    () => validateDraftProfileForSave({ ...base, models: [] }),
+    /at least one model/i,
+  );
+  assert.throws(
+    () => validateDraftProfileForSave({
+      ...base,
+      defaultModel: "missing-model",
+    }),
+    /Default model must reference a configured model/,
+  );
+  assert.throws(
+    () => validateDraftProfileForSave({
+      ...base,
+      models: [model, { ...model }],
+    }),
+    /appears more than once/,
+  );
+});
+
 test("image capability override is strictly validated and preserved", () => {
-  const validated = validateDraftProfileForSave({
-    ...profile("https://example.test/v1"),
+  const validated = validateDraftProfileForSave(withDefaultModel(
+    profile("https://example.test/v1"),
+    {
     advanced: {
       capabilityOverrides: {
         inputs: { image: true, audio: false },
       },
     },
-  });
-  assert.deepEqual(validated.advanced.capabilityOverrides?.inputs, {
+  }));
+  assert.deepEqual(configuredModel(validated).advanced.capabilityOverrides?.inputs, {
     image: true,
     audio: false,
   });
@@ -386,17 +478,18 @@ test("image capability override is strictly validated and preserved", () => {
     { image: true, video: true },
   ]) {
     assert.throws(
-      () => validateDraftProfileForSave({
-        ...profile("https://example.test/v1"),
+      () => validateDraftProfileForSave(withDefaultModel(
+        profile("https://example.test/v1"),
+        {
         advanced: { capabilityOverrides: { inputs } },
-      }),
+      })),
       /capabilityOverrides\.inputs/,
     );
   }
 });
 
 test("hosted Web Search is opt-in, normalized, and limited to supported protocols", () => {
-  const responses = validateDraftProfileForSave({
+  const responses = validateDraftProfileForSave(withDefaultModel({
     ...profile("https://example.test/v1"),
     connection: {
       kind: "direct-api",
@@ -405,18 +498,20 @@ test("hosted Web Search is opt-in, normalized, and limited to supported protocol
       baseUrl: "https://example.test/v1",
       apiKey: "test-key",
     },
+  }, {
     advanced: { hostedTools: { webSearch: true } },
-  });
-  assert.deepEqual(responses.advanced.hostedTools, { webSearch: true });
+  }));
+  assert.deepEqual(configuredModel(responses).advanced.hostedTools, { webSearch: true });
 
-  const disabled = validateDraftProfileForSave({
-    ...profile("https://example.test/v1"),
+  const disabled = validateDraftProfileForSave(withDefaultModel(
+    profile("https://example.test/v1"),
+    {
     advanced: { hostedTools: { webSearch: false } },
-  });
-  assert.equal(disabled.advanced.hostedTools, undefined);
+  }));
+  assert.equal(configuredModel(disabled).advanced.hostedTools, undefined);
 
   assert.throws(
-    () => validateDraftProfileForSave({
+    () => validateDraftProfileForSave(withDefaultModel({
       ...profile("https://example.test/v1"),
       connection: {
         kind: "direct-api",
@@ -425,8 +520,9 @@ test("hosted Web Search is opt-in, normalized, and limited to supported protocol
         baseUrl: "https://example.test/v1",
         apiKey: "test-key",
       },
+    }, {
       advanced: { hostedTools: { webSearch: true } },
-    }),
+    })),
     (error: unknown) =>
       error instanceof Error &&
       error.name === "ProfileValidationError" &&
@@ -438,21 +534,23 @@ test("hosted Web Search is opt-in, normalized, and limited to supported protocol
     { webSearch: true, shell: true },
   ]) {
     assert.throws(
-      () => validateDraftProfileForSave({
-        ...profile("https://example.test/v1"),
+      () => validateDraftProfileForSave(withDefaultModel(
+        profile("https://example.test/v1"),
+        {
         advanced: { hostedTools },
-      }),
+      })),
       /hostedTools/,
     );
   }
 });
 
 test("draft discovery preserves the hosted Web Search opt-in", () => {
-  const draft = validateDraftProfileForDiscovery({
-    ...profile("https://example.test/v1"),
+  const draft = validateDraftProfileForDiscovery(withDefaultModel(
+    profile("https://example.test/v1"),
+    {
     advanced: { hostedTools: { webSearch: true } },
-  });
-  assert.deepEqual(draft.advanced.hostedTools, { webSearch: true });
+  }));
+  assert.deepEqual(draft.models[0]?.advanced.hostedTools, { webSearch: true });
 });
 
 test("subscription Profiles persist no direct API credentials", () => {
@@ -460,9 +558,12 @@ test("subscription Profiles persist no direct API credentials", () => {
     id: "codex-subscription",
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   });
 
   assert.deepEqual(saved.connection, {
@@ -475,11 +576,12 @@ test("subscription Profiles persist no direct API credentials", () => {
 
 test("reasoning effort validation preserves ultra and rejects unknown values", () => {
   const direct = profile("https://example.test/v1");
+  const [directModel] = direct.models as DraftModelConfig[];
+  assert(directModel);
   const ultra: ReasoningEffort = "ultra";
-  const saved = validateDraftProfileForSave({
-    ...direct,
+  const saved = validateDraftProfileForSave(withDefaultModel(direct, {
     parameters: {
-      ...(direct.parameters as Record<string, unknown>),
+      ...directModel.parameters,
       reasoning: { mode: "enabled", effort: ultra },
     },
     advanced: {
@@ -491,12 +593,12 @@ test("reasoning effort validation preserves ultra and rejects unknown values", (
         },
       },
     },
-  });
-  assert.deepEqual(saved.parameters.reasoning, {
+  }));
+  assert.deepEqual(configuredModel(saved).parameters.reasoning, {
     mode: "enabled",
     effort: "ultra",
   });
-  assert.deepEqual(saved.advanced.capabilityOverrides?.reasoning?.efforts, [
+  assert.deepEqual(configuredModel(saved).advanced.capabilityOverrides?.reasoning?.efforts, [
     "high",
     "ultra",
   ]);
@@ -506,13 +608,12 @@ test("reasoning effort validation preserves ultra and rejects unknown values", (
     { mode: "enabled", effort: 7 },
   ]) {
     assert.throws(
-      () => validateDraftProfileForSave({
-        ...direct,
+      () => validateDraftProfileForSave(withDefaultModel(direct, {
         parameters: {
-          ...(direct.parameters as Record<string, unknown>),
+          ...directModel.parameters,
           reasoning,
         },
-      }),
+      })),
       /Reasoning effort is unsupported/i,
     );
   }
@@ -523,9 +624,12 @@ test("subscription Profiles reject direct credentials and unsupported request se
     id: "codex-subscription",
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   };
 
   for (const connection of [
@@ -539,27 +643,22 @@ test("subscription Profiles reject direct credentials and unsupported request se
     );
   }
 
-  for (const settings of [
-    { parameters: { ...base.parameters, maxOutputTokens: 8192 } },
-    {
-      parameters: {
-        ...base.parameters,
-        reasoning: { mode: "disabled" },
-      },
-    },
-    { parameters: { ...base.parameters, temperature: 0.2 } },
-    {
-      parameters: {
-        ...base.parameters,
-        reasoning: { mode: "enabled", budgetTokens: 4096 },
-      },
-    },
+  for (const modelSettings of [
+    { parameters: { reasoning: { mode: "default" }, maxOutputTokens: 8192 } },
+    { parameters: { reasoning: { mode: "disabled" } } },
+    { parameters: { reasoning: { mode: "default" }, temperature: 0.2 } },
+    { parameters: { reasoning: { mode: "enabled", budgetTokens: 4096 } } },
     { advanced: { capabilityOverrides: { tools: true } } },
     { advanced: { hostedTools: { webSearch: true } } },
     { advanced: { extraBody: {} } },
   ]) {
+    const [baseModel] = base.models;
+    assert(baseModel);
     assert.throws(
-      () => validateDraftProfileForSave({ ...base, ...settings }),
+      () => validateDraftProfileForSave({
+        ...base,
+        models: [{ ...baseModel, ...modelSettings }],
+      }),
       /does not support property|not supported by Codex subscription Profiles|cannot be disabled/,
     );
   }

@@ -56,9 +56,34 @@ export interface ModelHostedWebSearch {
   sources: ModelCitation[];
 }
 
+export interface ModelContextUsage {
+  usedTokens: number;
+  contextWindowTokens: number;
+}
+
+export function requireModelContextUsage(
+  usedTokens: unknown,
+  contextWindowTokens: unknown,
+): ModelContextUsage {
+  if (
+    !Number.isSafeInteger(usedTokens) ||
+    (usedTokens as number) < 0 ||
+    !Number.isSafeInteger(contextWindowTokens) ||
+    (contextWindowTokens as number) <= 0
+  ) {
+    throw new TypeError("Model context usage is invalid.");
+  }
+  return {
+    usedTokens: usedTokens as number,
+    contextWindowTokens: contextWindowTokens as number,
+  };
+}
+
 export interface ModelTurn {
   content: string | null;
   toolCalls: ModelToolCall[];
+  /** Exact provider usage for this turn when an authoritative context window is known. */
+  contextUsage?: ModelContextUsage;
   /** The provider returned replayable state but needs another model turn to finish. */
   continuation?: { reason: "output_limit" };
   citations?: ModelCitation[];

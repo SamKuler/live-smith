@@ -1,9 +1,10 @@
-import type {
-  ModelConversationMessage,
-  ModelHostedWebSearch,
-  ModelInputPart,
-  ModelToolCall,
-  ModelTurn,
+import {
+  requireModelContextUsage,
+  type ModelConversationMessage,
+  type ModelHostedWebSearch,
+  type ModelInputPart,
+  type ModelToolCall,
+  type ModelTurn,
 } from "../contracts.js";
 import { ModelConnectionError } from "../connection-error.js";
 import { normalizeModelCitations } from "../citations.js";
@@ -11,6 +12,7 @@ import {
   decodeDiscoveredModelCatalog,
   isDiscoveredModelId,
   MAX_DISCOVERED_MODEL_COUNT,
+  MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
   MAX_MODEL_DISCOVERY_PAGE_COUNT,
 } from "../catalog.js";
 import {
@@ -29,10 +31,8 @@ import type {
   TransportFactoryOptions,
   TransportRequest,
 } from "../provider.js";
-import {
-  isDirectApiProfile,
-  type DraftProfile,
-} from "../profile.js";
+import { isDirectRuntimeModelSource } from "../provider.js";
+import type { DraftProfile } from "../profile.js";
 import {
   resolveFetchImplementation,
   throwIfAborted,
@@ -173,7 +173,11 @@ async function anthropicTurnWithContinuations(
       await reportWebSearch(search);
     }
     if (response.stop_reason !== "pause_turn") {
-      const turn = turnFromAnthropicMessage(response, priorSearchCalls);
+      const turn = turnFromAnthropicMessage(
+        response,
+        priorSearchCalls,
+        request.runtimeProfile.capabilities.contextWindowTokens,
+      );
       if (!continuationContent.length) return turn;
       const priorCitations = continuationContent.flatMap(
         (content) => citationsFromAnthropicContent(content),
@@ -240,20 +244,21 @@ function bodyWithAnthropicContinuations(
 function buildAnthropicBody(
   request: TransportRequest,
 ): Record<string, unknown> {
-  const profile = request.runtimeProfile.profile;
-  if (!isDirectApiProfile(profile)) {
+  const runtime = request.runtimeProfile;
+  if (!isDirectRuntimeModelSource(runtime)) {
     throw new Error("Anthropic Messages requires a Direct API Profile.");
   }
-  const reasoning = profile.parameters.reasoning;
+  const model = runtime.model;
+  const reasoning = model.parameters.reasoning;
   const thinking = anthropicThinking(request);
   const tools = mappedAnthropicTools(request);
   const generated: Record<string, unknown> = {
-    model: profile.model,
-    max_tokens: profile.parameters.maxOutputTokens,
+    model: model.model,
+    max_tokens: model.parameters.maxOutputTokens,
     system: request.systemInstructions,
     messages: buildAnthropicMessages(request),
-    ...(profile.parameters.temperature !== undefined && !thinkingEnabled(thinking)
-      ? { temperature: profile.parameters.temperature }
+    ...(model.parameters.temperature !== undefined && !thinkingEnabled(thinking)
+      ? { temperature: model.parameters.temperature }
       : {}),
     ...(tools.length
       ? {
@@ -270,7 +275,7 @@ function buildAnthropicBody(
   };
   return mergeExtraBody(
     generated,
-    request.runtimeProfile.profile.advanced.extraBody,
+    model.advanced.extraBody,
     protectedFields,
   );
 }
@@ -460,6 +465,12 @@ function anthropicCapabilitiesFromMetadata(
   record: Record<string, unknown>,
 ): ModelCapabilityHints {
   const maxOutputTokens = firstNumber(record, ["max_tokens", "max_output_tokens"]);
+  const contextWindowTokens = Number.isSafeInteger(record.max_input_tokens) &&
+      (record.max_input_tokens as number) > 0 &&
+      (record.max_input_tokens as number) <=
+        MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS
+    ? record.max_input_tokens as number
+    : undefined;
   const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
   const inputs = anthropicInputCapabilities(record, capabilities);
   const thinking = capabilities && isRecord(capabilities.thinking)
@@ -514,6 +525,7 @@ function anthropicCapabilitiesFromMetadata(
 
   return {
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
     ...(hasReasoningHints ? { reasoning } : {}),
     ...(inputs === undefined ? {} : { inputs }),
   };
@@ -584,6 +596,8 @@ async function streamAnthropicMessage(
   const seenWebSearchResultIds = new Set<string>();
   let stopped = false;
   let stopReason: unknown;
+  let initialUsage: unknown;
+  let terminalUsage: unknown;
   for await (const event of streamAnthropicEvents(
     request.runtimeProfile.profile,
     fetchImpl,
@@ -592,6 +606,7 @@ async function streamAnthropicMessage(
   )) {
     throwIfAborted(request.signal);
     if (event.type === "message_start" && isRecord(event.message)) {
+      if (event.message.usage !== undefined) initialUsage = event.message.usage;
       const initial = event.message.content;
       if (Array.isArray(initial)) {
         initial.forEach((block, index) => {
@@ -670,6 +685,7 @@ async function streamAnthropicMessage(
       throw anthropicStreamError();
     }
     if (event.type === "message_delta" && isRecord(event.delta)) {
+      if (event.usage !== undefined) terminalUsage = event.usage;
       if (event.delta.stop_reason !== undefined) {
         stopReason = event.delta.stop_reason;
       }
@@ -689,18 +705,28 @@ async function streamAnthropicMessage(
   const content = [...contentBlocks.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, block]) => block);
-  return { content, stop_reason: stopReason };
+  const usage = mergedAnthropicStreamUsage(initialUsage, terminalUsage);
+  return {
+    content,
+    stop_reason: stopReason,
+    ...(usage === undefined ? {} : { usage }),
+  };
 }
 
 function turnFromAnthropicMessage(
   value: unknown,
   priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
+  contextWindowTokens?: number,
 ): ModelTurn {
   if (!isRecord(value) || !Array.isArray(value.content)) {
     throw new Error("Anthropic Messages returned no content blocks.");
   }
   const contentBlocks = value.content as Array<Record<string, unknown>>;
   const text = textFromAnthropicContent(contentBlocks);
+  const contextUsage = anthropicContextUsage(
+    value.usage,
+    contextWindowTokens,
+  );
   const seenToolCallIds = new Set<string>();
   const toolCalls = contentBlocks.flatMap((block): ModelToolCall[] => {
     if (block.type !== "tool_use") return [];
@@ -732,12 +758,44 @@ function turnFromAnthropicMessage(
     content: text || null,
     toolCalls,
     ...(citations.length ? { citations } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
     ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
     providerState: {
       kind: "anthropic-messages",
       content: cloneJsonValue(contentBlocks),
     },
   };
+}
+
+function mergedAnthropicStreamUsage(
+  initial: unknown,
+  terminal: unknown,
+): unknown {
+  if (initial === undefined) return terminal;
+  if (terminal === undefined) return initial;
+  if (!isRecord(initial) || !isRecord(terminal)) return null;
+  return { ...initial, ...terminal };
+}
+
+function anthropicContextUsage(
+  value: unknown,
+  contextWindowTokens: number | undefined,
+): ModelTurn["contextUsage"] {
+  if (value === undefined || contextWindowTokens === undefined) return undefined;
+  const usage = isRecord(value) ? value : undefined;
+  const tokenCount = (field: string, required: boolean): number => {
+    const raw = usage?.[field];
+    if (raw === undefined && !required) return 0;
+    if (!Number.isSafeInteger(raw) || (raw as number) < 0) {
+      throw new TypeError("Anthropic Messages context usage is invalid.");
+    }
+    return raw as number;
+  };
+  const usedTokens = tokenCount("input_tokens", true) +
+    tokenCount("cache_creation_input_tokens", false) +
+    tokenCount("cache_read_input_tokens", false) +
+    tokenCount("output_tokens", true);
+  return requireModelContextUsage(usedTokens, contextWindowTokens);
 }
 
 function completedAnthropicWebSearches(
@@ -909,17 +967,17 @@ function assertCompleteAnthropicStopReason(
 function anthropicThinking(
   request: TransportRequest,
 ): Record<string, unknown> | undefined {
-  const profile = request.runtimeProfile.profile;
-  if (!isDirectApiProfile(profile)) {
+  const runtime = request.runtimeProfile;
+  if (!isDirectRuntimeModelSource(runtime)) {
     throw new Error("Anthropic Messages requires a Direct API Profile.");
   }
-  const reasoning = profile.parameters.reasoning;
+  const reasoning = runtime.model.parameters.reasoning;
   if (reasoning.mode === "default") return undefined;
   if (reasoning.mode === "disabled") return { type: "disabled" };
   const strategy = request.runtimeProfile.capabilities.reasoning.strategy;
   if (strategy === "adaptive-thinking") return { type: "adaptive" };
   if (strategy === "budget-thinking") {
-    const max = profile.parameters.maxOutputTokens;
+    const max = runtime.model.parameters.maxOutputTokens;
     const budget = reasoning.budgetTokens ?? Math.floor(max / 2);
     if (budget < 1024 || budget >= max) {
       throw new Error("Thinking budget must be at least 1024 and below max output tokens.");
@@ -959,7 +1017,7 @@ function mapAnthropicTool(
   tool: TransportRequest["tools"][number],
 ): AnthropicTool | undefined {
   if (tool.type === "hosted_web_search") {
-    if (!request.runtimeProfile.profile.advanced.hostedTools?.webSearch) {
+    if (!request.runtimeProfile.model.advanced.hostedTools?.webSearch) {
       throw new Error("Anthropic Messages Web Search is not enabled in this Profile.");
     }
     if (!isHostedWebSearchRequestMaxUses(tool.maxUses)) {

@@ -23,7 +23,10 @@ import type {
   ModelHostedWebSearch,
 } from "../model/contracts.js";
 import type { ModelTool } from "../model/provider.js";
-import type { SavedProfile } from "../model/profile.js";
+import type {
+  DirectApiModelConfig,
+  DirectApiProfile,
+} from "../model/profile.js";
 import {
   AttachmentStorageCorruptionError,
   listPendingSessionAttachments,
@@ -73,6 +76,22 @@ function session(title: string, projectKey = "p1"): AgentSession {
     scope: { kind: "track", identity: `track-${title}`, label: "Lead" },
     createdAt: "2026-06-16T00:00:00.000Z",
     updatedAt: "2026-06-16T00:00:00.000Z",
+  };
+}
+
+type SingleModelDirectProfileInput = Pick<
+  DirectApiProfile,
+  "id" | "name" | "connection"
+> & DirectApiModelConfig;
+
+function savedProfile(
+  input: SingleModelDirectProfileInput,
+): DirectApiProfile {
+  const { model, parameters, advanced, ...profile } = input;
+  return {
+    ...profile,
+    defaultModel: model,
+    models: [{ model, parameters, advanced }],
   };
 }
 
@@ -137,7 +156,7 @@ function failedWebSearch(id = "search-failed"): ModelHostedWebSearch {
 }
 
 test("buildModelRequest carries a complete profile, capabilities, and agent messages", () => {
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "p1",
     name: "OpenAI",
     connection: {
@@ -154,7 +173,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
       reasoning: { mode: "enabled", effort: "medium" },
     },
     advanced: {},
-  };
+  });
   const runtimeProfile = runtimeProfileForSavedProfile(profile);
   const history: ConversationMessage[] = [
     { role: "user", content: [{ type: "text", text: "previous prompt" }] },
@@ -295,7 +314,7 @@ test("handleAgentRequest snapshots persistent and one-turn Skill guidance withou
     scope: { kind: "track", identity: "track-1", label: "Bass" },
     activeSkillIds: ["persistent-review"],
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-skill-snapshot",
     name: "Provider",
     connection: {
@@ -308,7 +327,7 @@ test("handleAgentRequest snapshots persistent and one-turn Skill guidance withou
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: {},
-  };
+  });
   const prompt = "  Preserve $mention-review exactly.  ";
   let modelCalls = 0;
 
@@ -377,7 +396,7 @@ test("handleAgentRequest adds hosted Web Search only for an opted-in Profile", a
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search",
     name: "Provider",
     connection: {
@@ -390,7 +409,7 @@ test("handleAgentRequest adds hosted Web Search only for an opted-in Profile", a
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   let capturedTools: ModelTool[] = [];
   const webSearchUpdates: ModelHostedWebSearch[] = [];
   const publishedEvents: SessionEvent[] = [];
@@ -482,7 +501,7 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-output-limit-continuation",
     name: "Provider",
     connection: {
@@ -495,7 +514,7 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: {},
-  };
+  });
   const modelInputs: ModelConversationMessage[][] = [];
   const progress: string[] = [];
 
@@ -577,7 +596,7 @@ test("conflicting terminal Web Search payloads with one ID fail without a duplic
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-conflicting-terminal",
     name: "Provider",
     connection: {
@@ -590,7 +609,7 @@ test("conflicting terminal Web Search payloads with one ID fail without a duplic
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const publishedEvents: SessionEvent[] = [];
   const first = completedWebSearch("search-conflicting-terminal");
   const conflicting: ModelHostedWebSearch = {
@@ -658,7 +677,7 @@ test("one agent send hides a twenty-first hosted Web Search and preserves the fi
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-send-limit",
     name: "Provider",
     connection: {
@@ -671,7 +690,7 @@ test("one agent send hides a twenty-first hosted Web Search and preserves the fi
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const updates: ModelHostedWebSearch[] = [];
 
   await handleAgentRequest(
@@ -754,7 +773,7 @@ test("later agent turns receive only the remaining defensive Web Search allowanc
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-remaining",
     name: "Provider",
     connection: {
@@ -767,7 +786,7 @@ test("later agent turns receive only the remaining defensive Web Search allowanc
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const requestLimits: number[] = [];
   let turn = 0;
 
@@ -831,7 +850,7 @@ test("completed hosted Web Search persists before a later provider failure", asy
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-failure",
     name: "Provider",
     connection: {
@@ -844,7 +863,7 @@ test("completed hosted Web Search persists before a later provider failure", asy
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const publishedEvents: SessionEvent[] = [];
 
   await assert.rejects(
@@ -900,7 +919,7 @@ test("failed hosted Web Search is durable-first and not a transient update", asy
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-terminal-failure",
     name: "Provider",
     connection: {
@@ -913,7 +932,7 @@ test("failed hosted Web Search is durable-first and not a transient update", asy
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const updates: ModelHostedWebSearch[] = [];
   const publishedEvents: SessionEvent[] = [];
 
@@ -971,7 +990,7 @@ test("completed hosted Web Search remains durable when cancellation arrives", as
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-cancel",
     name: "Provider",
     connection: {
@@ -984,7 +1003,7 @@ test("completed hosted Web Search remains durable when cancellation arrives", as
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const controller = new AbortController();
   const cancellation = new Error("stopped after completed search");
   const publishedEvents: SessionEvent[] = [];
@@ -1043,7 +1062,7 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-unknown",
     name: "Provider",
     connection: {
@@ -1056,7 +1075,7 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const commitError = new StorageCommitOutcomeUnknownError(
     Object.assign(new Error("directory sync failed"), { code: "EIO" }),
   );
@@ -1130,7 +1149,7 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
     projectKey: "project-a",
     scope: { kind: "track", identity: "track-1", label: "Bass" },
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-web-search-unknown-before-commit",
     name: "Provider",
     connection: {
@@ -1143,7 +1162,7 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
-  };
+  });
   const commitError = new StorageCommitOutcomeUnknownError(
     Object.assign(new Error("rename outcome unavailable"), { code: "EIO" }),
   );
@@ -1221,7 +1240,7 @@ test("missing selected Skill blocks model and event persistence", async () => {
     scope: { kind: "track", identity: "track-1", label: "Bass" },
     activeSkillIds: ["missing-review"],
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-missing-skill",
     name: "Provider",
     connection: {
@@ -1234,7 +1253,7 @@ test("missing selected Skill blocks model and event persistence", async () => {
     model: "custom-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: {},
-  };
+  });
   let modelCalls = 0;
 
   await assert.rejects(
@@ -1284,17 +1303,17 @@ test("removing a manual override re-resolves from raw discovery metadata", () =>
       maxOutputTokens: 4096,
       reasoning: { mode: "default" },
     },
-  } satisfies Omit<SavedProfile, "advanced">;
+  } satisfies Omit<SingleModelDirectProfileInput, "advanced">;
   const discovered = [{
     id: "gpt-5.2",
     displayName: "GPT-5.2",
     capabilities: { maxOutputTokens: 64000 },
   }];
-  const overridden: SavedProfile = {
+  const overridden = savedProfile({
     ...base,
     advanced: { capabilityOverrides: { temperature: "supported" } },
-  };
-  const withoutOverride: SavedProfile = { ...base, advanced: {} };
+  });
+  const withoutOverride = savedProfile({ ...base, advanced: {} });
 
   assert.equal(
     runtimeProfileForSavedProfile(overridden, discovered).capabilities.temperature,
@@ -1317,7 +1336,7 @@ test("removing a manual override re-resolves from raw discovery metadata", () =>
 });
 
 test("Runtime Profile carries input capability evidence without raw discovery metadata", () => {
-  const unknownProfile: SavedProfile = {
+  const unknownProfile = savedProfile({
     id: "p-input-evidence",
     name: "Custom model",
     connection: {
@@ -1333,7 +1352,7 @@ test("Runtime Profile carries input capability evidence without raw discovery me
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
 
   assert.equal(
     runtimeProfileForSavedProfile(unknownProfile).inputCapabilityEvidence.image,
@@ -1838,7 +1857,7 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
     kind: "apply_result",
     content: "Completed: Inserted Auto Filter. Failed: Inserted Delay.",
   });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-recovery",
     name: "Provider",
     connection: {
@@ -1854,7 +1873,7 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   let liveContext = "";
 
   const result = await handleAgentRequest(
@@ -1912,7 +1931,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
     fileName: "current.png",
     bytes: attachmentPng(2),
   }, { preSavePendingAttachmentRefs: [] });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-images",
     name: "Provider",
     connection: {
@@ -1925,7 +1944,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
     model: "custom-image-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { image: true } } },
-  };
+  });
   let captured: {
     history: ConversationMessage[];
     attachmentParts?: ModelInputPart[];
@@ -1991,7 +2010,7 @@ test("handleAgentRequest rejects audio without supported evidence before model o
     fileName: "source.wav",
     bytes: attachmentWav(),
   }, { preSavePendingAttachmentRefs: [] });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-audio-no-evidence",
     name: "Provider",
     connection: {
@@ -2004,7 +2023,7 @@ test("handleAgentRequest rejects audio without supported evidence before model o
     model: "custom-audio-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { audio: true } } },
-  };
+  });
   const runtimeProfile = runtimeProfileForSavedProfile(profile);
   runtimeProfile.inputCapabilityEvidence.audio = "unverified";
   let modelCalls = 0;
@@ -2081,7 +2100,7 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
     ),
     "{corrupt consumed metadata",
   );
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-consumed-corrupt",
     name: "Provider",
     connection: {
@@ -2094,7 +2113,7 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
     model: "custom-image-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { image: true } } },
-  };
+  });
   let captured: {
     history: ConversationMessage[];
     attachmentParts?: ModelInputPart[];
@@ -2161,7 +2180,7 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
     ),
     "{corrupt pending metadata",
   );
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-pending-corrupt",
     name: "Provider",
     connection: {
@@ -2174,7 +2193,7 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
     model: "custom-image-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { image: true } } },
-  };
+  });
   let modelCalls = 0;
 
   await assert.rejects(
@@ -2223,7 +2242,7 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
       fileName: "score.pdf",
       bytes: attachmentPdf(),
     }, { preSavePendingAttachmentRefs: [] });
-    const profile: SavedProfile = {
+    const profile = savedProfile({
       id: `provider-pdf-${compatible}`,
       name: "Provider",
       connection: {
@@ -2236,7 +2255,7 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
       model: "custom-pdf-model",
       parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
       advanced: { capabilityOverrides: { inputs: { pdf: true } } },
-    };
+    });
     let modelCalls = 0;
     const request = handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
@@ -2307,7 +2326,7 @@ test("attachment capability and prompt persistence failures leave images pending
       fileName: "pending.png",
       bytes: attachmentPng(1),
     }, { preSavePendingAttachmentRefs: [] });
-    const profile: SavedProfile = {
+    const profile = savedProfile({
       id: `provider-${failure}`,
       name: "Provider",
       connection: {
@@ -2322,7 +2341,7 @@ test("attachment capability and prompt persistence failures leave images pending
       advanced: failure === "capability"
         ? {}
         : { capabilityOverrides: { inputs: { image: true } } },
-    };
+    });
 
     await assert.rejects(
       handleAgentRequest(
@@ -2380,7 +2399,7 @@ test("provider failure keeps already persisted image refs consumed", async () =>
     fileName: "consumed.png",
     bytes: attachmentPng(1),
   }, { preSavePendingAttachmentRefs: [] });
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-image-failure",
     name: "Provider",
     connection: {
@@ -2393,7 +2412,7 @@ test("provider failure keeps already persisted image refs consumed", async () =>
     model: "custom-image-model",
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { image: true } } },
-  };
+  });
 
   await assert.rejects(
     handleAgentRequest(
@@ -2548,7 +2567,7 @@ test("Continue-here candidates require an unarchived matching scope kind", () =>
 
 test("the first real prompt names an untitled Session", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-session-title-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-session-title",
     name: "Provider",
     connection: {
@@ -2564,7 +2583,7 @@ test("the first real prompt names an untitled Session", async () => {
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const interaction = {
     summary: "Track: Bass",
     target: {},
@@ -2634,7 +2653,7 @@ test("the first real prompt names an untitled Session", async () => {
 
 test("a failed model request persists and publishes a redacted session error", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-error-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-error",
     name: "Failing provider",
     connection: {
@@ -2650,7 +2669,7 @@ test("a failed model request persists and publishes a redacted session error", a
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const publishedEvents: SessionEvent[] = [];
 
   await assert.rejects(
@@ -2698,7 +2717,7 @@ test("a failed model request persists and publishes a redacted session error", a
 
 test("an uncertain user-event commit becomes the bridge's typed unknown-persistence error", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-uncertain-user-event-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-uncertain",
     name: "Provider",
     connection: {
@@ -2714,7 +2733,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const commitError = new StorageCommitOutcomeUnknownError(
     Object.assign(new Error("directory sync failed"), { code: "EIO" }),
   );
@@ -2754,7 +2773,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
 
 test("a partial composite creation failure remains explicitly unfinished", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-partial-create-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-partial-create",
     name: "Provider",
     connection: {
@@ -2770,7 +2789,7 @@ test("a partial composite creation failure remains explicitly unfinished", async
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   let modelCalls = 0;
   let createCalls = 0;
   const createdTrack = Object.defineProperty({}, "name", {
@@ -2866,7 +2885,7 @@ test("a partial composite creation failure remains explicitly unfinished", async
 
 test("a tenth device rejection preserves nine completed actions and repairs in the same agent request", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-device-repair-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-device-repair",
     name: "Provider",
     connection: {
@@ -2882,7 +2901,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const devices: Array<{
     handle: { id: bigint };
     name: string;
@@ -3049,7 +3068,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
 
 test("completed action replay protection persists across sends and clears after repair", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-cross-send-ledger-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-cross-send-ledger",
     name: "Provider",
     connection: {
@@ -3065,7 +3084,7 @@ test("completed action replay protection persists across sends and clears after 
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const devices: Array<{
     handle: { id: bigint };
     name: string;
@@ -3270,7 +3289,7 @@ test("completed action replay protection persists across sends and clears after 
 
 test("a zero-mutation Apply failure does not poison the next user request", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-transient-failure-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-transient-failure",
     name: "Provider",
     connection: {
@@ -3286,7 +3305,7 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
     handle: { enumerable: true, value: { id: 313n } },
     name: { enumerable: true, value: "Lead", writable: true },
@@ -3389,7 +3408,7 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
 
 test("a created-track action cannot be repeated after a later rename fails", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-created-track-ledger-"));
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-created-track-ledger",
     name: "Provider",
     connection: {
@@ -3405,7 +3424,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const devices: Array<{ handle: { id: bigint }; name: string; parameters: never[] }> = [];
   let currentName = "3-MIDI";
   let renameAttempts = 0;
@@ -3565,7 +3584,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
 test("a stopped Live action publishes completed mutations before propagating cancellation", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-partial-cancel-"));
   const controller = new AbortController();
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-partial-cancel",
     name: "Provider",
     connection: {
@@ -3581,7 +3600,7 @@ test("a stopped Live action publishes completed mutations before propagating can
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   let createdScenes = 0;
   const publishedEvents: SessionEvent[] = [];
   const context = {
@@ -3665,7 +3684,7 @@ test("a stopped Live action publishes completed mutations before propagating can
 test("a concurrent Stop cannot turn a host action failure into a successful Apply result", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-stop-host-race-"));
   const controller = new AbortController();
-  const profile: SavedProfile = {
+  const profile = savedProfile({
     id: "provider-stop-host-race",
     name: "Provider",
     connection: {
@@ -3681,7 +3700,7 @@ test("a concurrent Stop cannot turn a host action failure into a successful Appl
       reasoning: { mode: "default" },
     },
     advanced: {},
-  };
+  });
   const devices: Array<{ name: string; parameters: never[] }> = [];
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
     handle: { enumerable: true, value: { id: 77n } },

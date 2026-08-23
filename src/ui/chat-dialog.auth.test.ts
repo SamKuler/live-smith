@@ -49,6 +49,10 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
       strategy: "budget-thinking",
     },
   };
+  state.capabilityEvidence = {
+    ...state.capabilityEvidence,
+    reasoning: "supported",
+  };
   const harness = await createDialogHarness(state);
   try {
     assert.equal(harness.document.querySelector<HTMLElement>("#directApiFields")?.hidden, false);
@@ -126,8 +130,8 @@ test("subscription model discovery and Save use only the managed connection cont
       kind: "codex-subscription",
       provider: "openai",
     });
-    assert.deepEqual(discovery.profile.advanced, {});
-    assert.deepEqual(discovery.profile.parameters, {
+    assert.deepEqual(discovery.profile.models[0]?.advanced, {});
+    assert.deepEqual(discovery.profile.models[0]?.parameters, {
       reasoning: { mode: "default" },
     });
     assert.equal("apiKey" in discovery.profile, false);
@@ -145,8 +149,8 @@ test("subscription model discovery and Save use only the managed connection cont
       kind: "codex-subscription",
       provider: "openai",
     });
-    assert.deepEqual(saved.profile.advanced, {});
-    assert.deepEqual(saved.profile.parameters, {
+    assert.deepEqual(saved.profile.models[0]?.advanced, {});
+    assert.deepEqual(saved.profile.models[0]?.parameters, {
       reasoning: { mode: "default" },
     });
     assert.deepEqual(harness.errors, []);
@@ -759,7 +763,7 @@ test("clean subscription Profiles enable Send for an eligible signed-in account"
     );
     const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
     assert.equal(send?.disabled, false);
-    assert.equal(send?.title, "");
+    assert.equal(send?.title, "Send (Cmd/Ctrl+Enter)");
     harness.input("#prompt", "Send through the eligible subscription");
     submitFromComposer(harness);
     await harness.settle();
@@ -809,7 +813,10 @@ test("verified subscription image and audio inputs are sendable while PDF stays 
       connectionKind: "codex-subscription",
       apiFamily: "openai",
       apiMode: null,
-      model: profile.model,
+    },
+    selection: {
+      model: profile.defaultModel,
+      reasoning: { mode: "default" },
     },
     capabilities: {
       ...capabilities(),

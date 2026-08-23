@@ -10,6 +10,9 @@ import {
   type ApprovalMode,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
+  type GenerationParameters,
+  type ModelAdvancedSettings,
+  type ModelConnection,
   type OpenAIDirectApiConnection,
   type SavedProfile,
 } from "../model/profile.js";
@@ -21,7 +24,17 @@ interface SharedAgentSettings<Profile> {
   profiles: Profile[];
 }
 
-type LegacyProfileFields = Omit<SavedProfile, "connection">;
+/** Frozen schema-v4 single-model shape. Do not derive historical shapes from current types. */
+interface SavedProfileV4 {
+  id: string;
+  name: string;
+  connection: ModelConnection;
+  model: string;
+  parameters: GenerationParameters;
+  advanced: ModelAdvancedSettings;
+}
+
+type LegacyProfileFields = Omit<SavedProfileV4, "connection">;
 
 type LegacySavedProfile = LegacyProfileFields & (
   | Omit<OpenAIDirectApiConnection, "kind">
@@ -38,7 +51,7 @@ interface AgentSettingsV2 extends SharedAgentSettings<LegacySavedProfile> {
   approvalMode: ApprovalMode;
 }
 
-interface SubscriptionAgentSettingsV3 extends SharedAgentSettings<SavedProfile> {
+interface SubscriptionAgentSettingsV3 extends SharedAgentSettings<SavedProfileV4> {
   schemaVersion: 3;
   approvalMode: ApprovalMode;
 }
@@ -50,12 +63,20 @@ interface MainAgentSettingsV3 extends SharedAgentSettings<LegacySavedProfile> {
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
 }
 
+interface AgentSettingsV4 extends SharedAgentSettings<SavedProfileV4> {
+  schemaVersion: 4;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
   [1, migrateSettingsV1ToV2],
   [2, migrateSettingsV2ToV3],
   [3, migrateSettingsV3ToV4],
+  [4, migrateSettingsV4ToV5],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -74,7 +95,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV4(migrated);
+  return validateSettingsV5(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -97,7 +118,7 @@ function migrateSettingsV2ToV3(value: unknown): SubscriptionAgentSettingsV3 {
   };
 }
 
-function migrateSettingsV3ToV4(value: unknown): AgentSettings {
+function migrateSettingsV3ToV4(value: unknown): AgentSettingsV4 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 3) throw unsupportedSchemaVersion();
 
@@ -137,6 +158,18 @@ function migrateSettingsV3ToV4(value: unknown): AgentSettings {
     approvalMode: settings.approvalMode,
     defaultFollowUpBehavior: "queue",
     defaultFollowUpBehaviorRevision: "0",
+  };
+}
+
+function migrateSettingsV4ToV5(value: unknown): AgentSettings {
+  const settings = validateSettingsV4(value);
+  return {
+    schemaVersion: 5,
+    activeProfileId: settings.activeProfileId,
+    profiles: settings.profiles.map(migrateProfileV4),
+    approvalMode: settings.approvalMode,
+    defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision: settings.defaultFollowUpBehaviorRevision,
   };
 }
 
@@ -189,7 +222,7 @@ function validateSubscriptionSettingsV3(
     ["schemaVersion", "activeProfileId", "profiles", "approvalMode"],
     "settings",
   );
-  const shared = validatedSharedSettings(record, true);
+  const shared = validatedV4SharedSettings(record, true);
   const approvalMode = approvalModeValue(record.approvalMode);
   return {
     schemaVersion: 3,
@@ -230,7 +263,7 @@ function validateMainSettingsV3(value: unknown): MainAgentSettingsV3 {
   };
 }
 
-function validateSettingsV4(value: unknown): AgentSettings {
+function validateSettingsV4(value: unknown): AgentSettingsV4 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 4) throw unsupportedSchemaVersion();
   assertOnlyKeys(
@@ -245,7 +278,7 @@ function validateSettingsV4(value: unknown): AgentSettings {
     ],
     "settings",
   );
-  const shared = validatedSharedSettings(record, true);
+  const shared = validatedV4SharedSettings(record, true);
   const approvalMode = approvalModeValue(record.approvalMode);
   const defaultFollowUpBehavior = followUpBehaviorValue(
     record.defaultFollowUpBehavior,
@@ -262,9 +295,40 @@ function validateSettingsV4(value: unknown): AgentSettings {
   };
 }
 
+function validateSettingsV5(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 5) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+    ],
+    "settings",
+  );
+  const shared = validatedSharedSettings(record);
+  const approvalMode = approvalModeValue(record.approvalMode);
+  const defaultFollowUpBehavior = followUpBehaviorValue(
+    record.defaultFollowUpBehavior,
+  );
+  const defaultFollowUpBehaviorRevision = followUpRevisionValue(
+    record.defaultFollowUpBehaviorRevision,
+  );
+  return {
+    schemaVersion: 5,
+    ...shared,
+    approvalMode,
+    defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision,
+  };
+}
+
 function validatedSharedSettings(
   record: Record<string, unknown>,
-  allowLegacySubscriptionMaxOutputTokens = false,
 ): SharedAgentSettings<SavedProfile> {
   if (!Array.isArray(record.profiles)) {
     throw new ProfileValidationError("profiles", "Profiles must be an array.");
@@ -272,7 +336,23 @@ function validatedSharedSettings(
 
   const profiles: SavedProfile[] = [];
   for (const entry of record.profiles) {
-    profiles.push(validateDraftProfileForSave(
+    profiles.push(validateDraftProfileForSave(entry, profiles));
+  }
+  const activeProfileId = validatedActiveProfileId(record, profiles);
+  return { activeProfileId, profiles };
+}
+
+function validatedV4SharedSettings(
+  record: Record<string, unknown>,
+  allowLegacySubscriptionMaxOutputTokens = false,
+): SharedAgentSettings<SavedProfileV4> {
+  if (!Array.isArray(record.profiles)) {
+    throw new ProfileValidationError("profiles", "Profiles must be an array.");
+  }
+
+  const profiles: SavedProfileV4[] = [];
+  for (const entry of record.profiles) {
+    profiles.push(validateProfileV4(
       allowLegacySubscriptionMaxOutputTokens
         ? withoutLegacySubscriptionMaxOutputTokens(entry)
         : entry,
@@ -281,6 +361,44 @@ function validatedSharedSettings(
   }
   const activeProfileId = validatedActiveProfileId(record, profiles);
   return { activeProfileId, profiles };
+}
+
+function validateProfileV4(
+  value: unknown,
+  existingProfiles: SavedProfileV4[] = [],
+): SavedProfileV4 {
+  const record = settingsRecord(value);
+  assertOnlyKeys(
+    record,
+    ["id", "name", "connection", "model", "parameters", "advanced"],
+    "profile",
+  );
+  const normalized = validateDraftProfileForSave({
+    id: record.id,
+    name: record.name,
+    connection: record.connection,
+    defaultModel: record.model,
+    models: [{
+      model: record.model,
+      parameters: record.parameters,
+      advanced: record.advanced,
+    }],
+  }, existingProfiles.map(migrateProfileV4));
+  const model = normalized.models[0];
+  if (!model) {
+    throw new ProfileValidationError(
+      "model",
+      "Historical Profile model is missing.",
+    );
+  }
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    connection: normalized.connection,
+    model: model.model,
+    parameters: model.parameters,
+    advanced: model.advanced,
+  };
 }
 
 function withoutLegacySubscriptionMaxOutputTokens(value: unknown): unknown {
@@ -342,7 +460,7 @@ function validateLegacyProfile(
     ],
     "profile",
   );
-  const profile = validateDraftProfileForSave({
+  const profile = validateProfileV4({
     id: record.id,
     name: record.name,
     connection: {
@@ -388,7 +506,7 @@ function validateLegacyProfile(
   };
 }
 
-function migrateLegacyProfile(profile: LegacySavedProfile): SavedProfile {
+function migrateLegacyProfile(profile: LegacySavedProfile): SavedProfileV4 {
   const fields: LegacyProfileFields = {
     id: profile.id,
     name: profile.name,
@@ -418,6 +536,20 @@ function migrateLegacyProfile(profile: LegacySavedProfile): SavedProfile {
       apiKey: profile.apiKey,
     },
   };
+}
+
+function migrateProfileV4(profile: SavedProfileV4): SavedProfile {
+  return validateDraftProfileForSave({
+    id: profile.id,
+    name: profile.name,
+    connection: profile.connection,
+    defaultModel: profile.model,
+    models: [{
+      model: profile.model,
+      parameters: profile.parameters,
+      advanced: profile.advanced,
+    }],
+  });
 }
 
 function validatedActiveProfileId<Profile extends { id: string }>(

@@ -17,7 +17,10 @@ import {
 import type { ConversationScope } from "../model/contracts.js";
 import {
   isApprovalMode,
+  isModelId,
+  isReasoningEffort,
   type ApprovalMode,
+  type ReasoningEffort,
 } from "../model/profile.js";
 import {
   isSafeSkillId,
@@ -33,17 +36,29 @@ export interface AgentSession {
   archivedAt?: string | undefined;
   activeSkillIds?: string[];
   approvalMode?: ApprovalMode;
+  modelSelection?: SessionModelSelection;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SessionModelSelection {
+  profileId: string;
+  model: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
 
 type CreateSessionInput = Pick<AgentSession, "title" | "projectKey" | "scope"> &
-  Partial<Pick<AgentSession, "activeSkillIds" | "approvalMode">>;
+  Partial<
+    Pick<AgentSession, "activeSkillIds" | "approvalMode" | "modelSelection">
+  >;
 type SessionUpdate = Partial<
-  Pick<AgentSession, "title" | "activeSkillIds" | "approvalMode">
+  Pick<
+    AgentSession,
+    "title" | "activeSkillIds" | "approvalMode" | "modelSelection"
+  >
 >;
 
 export class SessionStorageCorruptionError extends Error {
@@ -62,6 +77,7 @@ export async function createSession(
 ): Promise<AgentSession> {
   const activeSkillIds = normalizedOptionalActiveSkillIds(input);
   const approvalMode = normalizedOptionalApprovalMode(input);
+  const modelSelection = normalizedOptionalModelSelection(input);
   const now = new Date().toISOString();
   const session: AgentSession = {
     id: createStorageId("session"),
@@ -70,6 +86,7 @@ export async function createSession(
     scope: cloneConversationScope(input.scope),
     ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
     ...(approvalMode === undefined ? {} : { approvalMode }),
+    ...(modelSelection === undefined ? {} : { modelSelection }),
     createdAt: now,
     updatedAt: now,
   };
@@ -288,6 +305,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     "archivedAt",
     "activeSkillIds",
     "approvalMode",
+    "modelSelection",
     "createdAt",
     "updatedAt",
   ]);
@@ -303,6 +321,8 @@ function isAgentSession(value: unknown): value is AgentSession {
     (record.activeSkillIds === undefined ||
       isPersistedActiveSkillIds(record.activeSkillIds)) &&
     (record.approvalMode === undefined || isApprovalMode(record.approvalMode)) &&
+    (record.modelSelection === undefined ||
+      isPersistedModelSelection(record.modelSelection)) &&
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string"
   );
@@ -316,15 +336,21 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
   if (
     Object.keys(record).some(
       (key) =>
-        key !== "title" && key !== "activeSkillIds" && key !== "approvalMode",
+        key !== "title" && key !== "activeSkillIds" &&
+        key !== "approvalMode" && key !== "modelSelection",
     ) ||
     (Object.hasOwn(record, "title") && typeof record.title !== "string") ||
-    (Object.hasOwn(record, "approvalMode") && !isApprovalMode(record.approvalMode))
+    (Object.hasOwn(record, "approvalMode") &&
+      !isApprovalMode(record.approvalMode)) ||
+    (Object.hasOwn(record, "modelSelection") &&
+      !isPersistedModelSelection(record.modelSelection))
   ) {
     throw new Error(
       Object.hasOwn(record, "approvalMode")
         ? "Approval mode is invalid."
-        : "Session update is invalid.",
+        : Object.hasOwn(record, "modelSelection")
+          ? "Model selection is invalid."
+          : "Session update is invalid.",
     );
   }
 
@@ -335,6 +361,13 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
       : {}),
     ...(Object.hasOwn(record, "approvalMode")
       ? { approvalMode: record.approvalMode as ApprovalMode }
+      : {}),
+    ...(Object.hasOwn(record, "modelSelection")
+      ? {
+          modelSelection: cloneModelSelection(
+            record.modelSelection as SessionModelSelection,
+          ),
+        }
       : {}),
   };
 }
@@ -347,6 +380,16 @@ function normalizedOptionalApprovalMode(
     throw new Error("Approval mode is invalid.");
   }
   return value.approvalMode;
+}
+
+function normalizedOptionalModelSelection(
+  value: Pick<AgentSession, "modelSelection">,
+): SessionModelSelection | undefined {
+  if (!Object.hasOwn(value, "modelSelection")) return undefined;
+  if (!isPersistedModelSelection(value.modelSelection)) {
+    throw new Error("Model selection is invalid.");
+  }
+  return cloneModelSelection(value.modelSelection);
 }
 
 function normalizedOptionalActiveSkillIds(
@@ -375,6 +418,34 @@ function isPersistedActiveSkillIds(value: unknown): value is string[] {
     value.every(isSafeSkillId) &&
     value.every((skillId, index) => index === 0 || value[index - 1]! < skillId)
   );
+}
+
+function isPersistedModelSelection(
+  value: unknown,
+): value is SessionModelSelection {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).every(
+    (key) => key === "profileId" || key === "model" || key === "reasoningEffort",
+  ) &&
+    isSafeStorageId(record.profileId) &&
+    isModelId(record.model) &&
+    (record.reasoningEffort === undefined ||
+      isReasoningEffort(record.reasoningEffort));
+}
+
+function cloneModelSelection(
+  selection: SessionModelSelection,
+): SessionModelSelection {
+  return {
+    profileId: selection.profileId,
+    model: selection.model,
+    ...(selection.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: selection.reasoningEffort }),
+  };
 }
 
 function isConversationScope(value: unknown): value is ConversationScope {
@@ -413,6 +484,9 @@ function cloneSession(session: AgentSession): AgentSession {
     ...(session.approvalMode === undefined
       ? {}
       : { approvalMode: session.approvalMode }),
+    ...(session.modelSelection === undefined
+      ? {}
+      : { modelSelection: cloneModelSelection(session.modelSelection) }),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };

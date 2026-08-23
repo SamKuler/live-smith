@@ -3,7 +3,7 @@ import test from "node:test";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
 
 import type { TransportRequest } from "../provider.js";
-import type { SavedProfile } from "../profile.js";
+import type { CodexSubscriptionProfile } from "../profile.js";
 import {
   createCodexAppServerBackend,
   type CodexRpcConnection,
@@ -287,16 +287,19 @@ class FakeCodexRpc implements CodexRpcConnection {
   }
 }
 
-function profile(): SavedProfile {
+function profile(): CodexSubscriptionProfile {
   return {
     id: "codex-subscription",
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: {
-      reasoning: { mode: "enabled", effort: "high" },
-    },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: {
+        reasoning: { mode: "enabled", effort: "high" },
+      },
+      advanced: {},
+    }],
   };
 }
 
@@ -304,11 +307,20 @@ function request(
   rpc: FakeCodexRpc,
   overrides: Partial<TransportRequest> = {},
 ): { rpc: FakeCodexRpc; value: TransportRequest } {
+  const savedProfile = profile();
+  if (savedProfile.connection.kind !== "codex-subscription") {
+    throw new Error("Codex test Profile must use a subscription connection.");
+  }
   return {
     rpc,
     value: {
       runtimeProfile: {
-        profile: profile(),
+        profile: {
+          id: savedProfile.id,
+          name: savedProfile.name,
+          connection: savedProfile.connection,
+        },
+        model: savedProfile.models[0]!,
         capabilities: {
           tools: true,
           streaming: false,
@@ -739,11 +751,89 @@ test("Codex turns remain stateless, sandboxed, and normalized to client tool cal
   );
 });
 
+test("Codex attaches the latest exactly correlated turn usage", async () => {
+  const rpc = new FakeCodexRpc();
+  rpc.completeTurns = false;
+  const backend = createCodexAppServerBackend({ rpc });
+  const pending = backend.createToolTurn(request(rpc).value);
+  await waitForTurnStarts(rpc, 1);
+  await yieldImmediate();
+
+  rpc.emit("thread/tokenUsage/updated", tokenUsageNotification(
+    "other-thread",
+    "turn-other-thread",
+    999,
+    8_192,
+  ));
+  rpc.emit("thread/tokenUsage/updated", tokenUsageNotification(
+    "thread-1",
+    "turn-thread-1",
+    120,
+    4_096,
+  ));
+  rpc.emit("thread/tokenUsage/updated", tokenUsageNotification(
+    "thread-1",
+    "turn-thread-1",
+    180,
+    4_096,
+  ));
+  rpc.completeTurn("thread-1");
+
+  assert.deepEqual((await pending).contextUsage, {
+    usedTokens: 180,
+    contextWindowTokens: 4_096,
+  });
+});
+
+test("Codex fails closed on malformed or mismatched turn usage", async () => {
+  const invalidNotifications = [
+    tokenUsageNotification("thread-1", "turn-thread-1", 1.5, 4_096),
+    tokenUsageNotification("thread-1", "wrong-turn", 120, 4_096),
+  ];
+
+  for (const notification of invalidNotifications) {
+    const rpc = new FakeCodexRpc();
+    rpc.completeTurns = false;
+    const backend = createCodexAppServerBackend({ rpc });
+    const pending = backend.createToolTurn(request(rpc).value);
+    await waitForTurnStarts(rpc, 1);
+    await yieldImmediate();
+
+    rpc.emit("thread/tokenUsage/updated", notification);
+    rpc.completeTurn("thread-1");
+
+    await assert.rejects(pending, /invalid model turn notification/i);
+    assert.equal(rpc.closed, true);
+  }
+});
+
+test("Codex treats a correlated null context window as unavailable and remains reusable", async () => {
+  const rpc = new FakeCodexRpc();
+  rpc.completeTurns = false;
+  const backend = createCodexAppServerBackend({ rpc });
+  const first = backend.createToolTurn(request(rpc).value);
+  await waitForTurnStarts(rpc, 1);
+  await yieldImmediate();
+
+  rpc.emit("thread/tokenUsage/updated", tokenUsageNotification(
+    "thread-1",
+    "turn-thread-1",
+    120,
+    null,
+  ));
+  rpc.completeTurn("thread-1");
+
+  assert.equal((await first).contextUsage, undefined);
+  assert.equal(rpc.closed, false);
+  rpc.completeTurns = true;
+  assert.equal((await backend.createToolTurn(request(rpc).value)).content, "Ready");
+});
+
 test("Codex sends the exact ultra reasoning effort in turn/start", async () => {
   const rpc = new FakeCodexRpc();
   const backend = createCodexAppServerBackend({ rpc });
   const fixture = request(rpc);
-  fixture.value.runtimeProfile.profile.parameters.reasoning = {
+  fixture.value.runtimeProfile.model.parameters.reasoning = {
     mode: "enabled",
     effort: "ultra",
   };
@@ -1618,6 +1708,37 @@ async function waitForGate(
   } finally {
     if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
+}
+
+function tokenUsageNotification(
+  threadId: string,
+  turnId: string,
+  totalTokens: number,
+  modelContextWindow: number | null,
+): Record<string, unknown> {
+  return {
+    threadId,
+    turnId,
+    tokenUsage: {
+      total: {
+        totalTokens: 999_999,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+      last: {
+        totalTokens,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+      modelContextWindow,
+    },
+  };
 }
 
 async function promiseState(

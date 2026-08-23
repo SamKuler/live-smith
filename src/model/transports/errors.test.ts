@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SavedProfile } from "../profile.js";
+import type { RuntimeProfileIdentity } from "../provider.js";
 import { withTransportContext } from "./errors.js";
 
-const profile: SavedProfile = {
+const profile: RuntimeProfileIdentity = {
   id: "signed-proxy",
   name: "Signed proxy",
   connection: {
@@ -16,12 +16,6 @@ const profile: SavedProfile = {
       "#fragment-secret",
     apiKey: "api-secret",
   },
-  model: "model-a",
-  parameters: {
-    maxOutputTokens: 1024,
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
 };
 
 test("transport errors remove every URL query and fragment before propagation", async () => {
@@ -63,7 +57,7 @@ test("transport errors redact raw, decoded, repeated, plus, and malformed URL se
     "&malformed=broken-fragment%zz" +
     "&repeat=first-fragment&repeat=second-fragment" +
     "&literal=plus+fragment";
-  const encodedProfile: SavedProfile = {
+  const encodedProfile: RuntimeProfileIdentity = {
     ...profile,
     connection: {
       ...profile.connection,

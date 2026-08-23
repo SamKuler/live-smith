@@ -48,9 +48,15 @@ function directProfile(
     id: `direct-${apiFamily}-${apiMode}`,
     name: "Direct",
     connection,
-    model: "model-a",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "model-a",
+    models: [{
+      model: "model-a",
+      parameters: {
+        maxOutputTokens: 4096,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
   };
 }
 
@@ -59,9 +65,12 @@ function subscriptionProfile(id = "subscription"): SavedProfile {
     id,
     name: "Subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
-    model: "gpt-5.6-sol",
-    parameters: { reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "gpt-5.6-sol",
+    models: [{
+      model: "gpt-5.6-sol",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   };
 }
 

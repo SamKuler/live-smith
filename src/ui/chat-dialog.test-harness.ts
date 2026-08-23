@@ -8,6 +8,8 @@ import { JSDOM, VirtualConsole } from "jsdom";
 
 import {
   incrementDefaultFollowUpBehaviorRevision,
+  type ModelAdvancedSettings,
+  type GenerationParameters,
   type SavedProfile,
 } from "../model/profile.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
@@ -176,6 +178,34 @@ function capabilities(): ChatDialogState["capabilities"] {
   };
 }
 
+function capabilityEvidence(): ChatDialogState["capabilityEvidence"] {
+  return {
+    temperature: "supported",
+    maxOutputTokens: "verified",
+    contextWindowTokens: "unverified",
+    reasoning: "unsupported",
+    inputs: {
+      image: "unsupported",
+      audio: "unsupported",
+      pdf: "unsupported",
+    },
+  };
+}
+
+function unverifiedCapabilityEvidence(): ChatDialogState["capabilityEvidence"] {
+  return {
+    temperature: "unverified",
+    maxOutputTokens: "unverified",
+    contextWindowTokens: "unverified",
+    reasoning: "unverified",
+    inputs: {
+      image: "unverified",
+      audio: "unverified",
+      pdf: "unverified",
+    },
+  };
+}
+
 function inputCapabilityEvidence(
   image: "supported" | "unsupported" | "unverified" = "unverified",
   pdf: "supported" | "unsupported" | "unverified" = "unverified",
@@ -183,31 +213,53 @@ function inputCapabilityEvidence(
   return { image, audio: "unverified", pdf };
 }
 
-function profileFixture(
-  overrides: Partial<SavedProfile> = {},
-): SavedProfile {
-  return {
-    id: "profile-1",
-    name: "Studio",
-    connection: {
+interface ProfileFixtureOverrides {
+  id?: string;
+  name?: string;
+  connection?: SavedProfile["connection"];
+  defaultModel?: string;
+  models?: SavedProfile["models"];
+  model?: string;
+  parameters?: GenerationParameters;
+  advanced?: ModelAdvancedSettings;
+}
+
+function profileFixture(overrides: ProfileFixtureOverrides = {}): SavedProfile {
+  const connection = overrides.connection ?? {
       kind: "direct-api",
       apiFamily: "openai",
       apiMode: "chat-completions",
       apiKey: "test-key",
       baseUrl: "https://example.test/v1",
-    },
-    model: "model-a",
-    parameters: {
+    };
+  const model = overrides.model ?? overrides.defaultModel ?? "model-a";
+  const parameters = overrides.parameters ?? {
       maxOutputTokens: 8192,
       temperature: 0.4,
       reasoning: { mode: "default" },
-    },
-    advanced: {},
-    ...overrides,
-  };
+    };
+  const models = overrides.models ?? [{
+    model,
+    parameters: connection.kind === "codex-subscription"
+      ? { reasoning: parameters.reasoning }
+      : parameters as GenerationParameters & { maxOutputTokens: number },
+    advanced: connection.kind === "codex-subscription"
+      ? {}
+      : overrides.advanced ?? {},
+  }];
+  return {
+    id: overrides.id ?? "profile-1",
+    name: overrides.name ?? "Studio",
+    connection,
+    defaultModel: overrides.defaultModel ?? model,
+    models,
+  } as SavedProfile;
 }
 
 function modelStateSourceFixture(profile: SavedProfile) {
+  const model = profile.models.find(
+    (entry) => entry.model === profile.defaultModel,
+  )?.model ?? profile.models[0]?.model ?? profile.defaultModel;
   return {
     profileId: profile.id,
     connection: profile.connection.kind === "direct-api"
@@ -217,7 +269,7 @@ function modelStateSourceFixture(profile: SavedProfile) {
           apiKey: profile.connection.apiKey.trim(),
         }
       : { ...profile.connection },
-    model: profile.model,
+    model,
   };
 }
 
@@ -255,12 +307,15 @@ function stateFixture(): ChatBridgeState {
     availableSkills: [],
     activeSkillIds: [],
     capabilities: capabilities(),
+    capabilityEvidence: capabilityEvidence(),
     availableModels: [],
+    configuredModels: [{ model: "model-a", label: "model-a" }],
+    configuredModelsReady: true,
     modelStateSource: modelStateSourceFixture(profileFixture()),
     runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
     codexAuth: { status: "signed-out" },
     settings: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
@@ -299,7 +354,7 @@ function audioCapableState(): ChatBridgeState {
   return state;
 }
 
-function cloneState<T extends ChatDialogState>(state: T): T {
+function cloneState<T>(state: T): T {
   return JSON.parse(JSON.stringify(state)) as T;
 }
 
@@ -440,6 +495,41 @@ async function createDialogHarness(
     }
     serverState.approvalMode = active?.approvalMode ?? "manual";
     serverState.activeSkillIds = [...(active?.activeSkillIds ?? [])];
+    const profile = serverState.settings.profiles.find(
+      (entry) => entry.id === serverState.settings.activeProfileId,
+    );
+    if (!profile) {
+      serverState.runtimeProfile = null;
+      serverState.configuredModels = [];
+      serverState.configuredModelsReady = true;
+      return;
+    }
+    const selectedModel = active.modelSelection?.profileId === profile.id &&
+        profile.models.some((entry) => entry.model === active.modelSelection?.model)
+      ? active.modelSelection.model
+      : profile.defaultModel;
+    const discovered = serverState.availableModels.find(
+      (entry) => entry.id === selectedModel,
+    );
+    serverState.runtimeProfile = runtimeSummaryForHarnessProfile(
+      profile,
+      discovered?.capabilities ??
+        serverState.runtimeProfile?.capabilities ?? capabilities(),
+      discovered?.capabilityEvidence.inputs ??
+        serverState.runtimeProfile?.inputCapabilityEvidence ??
+        inputCapabilityEvidence(),
+      selectedModel,
+      active.modelSelection?.profileId === profile.id
+        ? active.modelSelection.reasoningEffort
+        : undefined,
+    );
+    serverState.configuredModels = profile.models.map((entry) => ({
+      model: entry.model,
+      label: entry.model,
+    }));
+    if (profile.connection.kind !== "codex-subscription") {
+      serverState.configuredModelsReady = true;
+    }
   };
   const pendingConfirmations = new Map<
     string,
@@ -558,6 +648,7 @@ async function createDialogHarness(
     "default_follow_up_behavior_changed",
     "progress",
     "session_event",
+    "session_model_selection_changed",
     "steer_accepted",
   ]);
 
@@ -581,6 +672,29 @@ async function createDialogHarness(
       if (serverState.activeSessionId === event.sessionId) {
         serverState.approvalMode = event.approvalMode as
           ChatDialogState["approvalMode"];
+      }
+      return;
+    }
+    if (
+      event.type === "session_model_selection_changed" &&
+      typeof event.sessionId === "string" &&
+      event.modelSelection &&
+      typeof event.modelSelection === "object" &&
+      !Array.isArray(event.modelSelection)
+    ) {
+      const selection = event.modelSelection as NonNullable<
+        ChatDialogState["sessions"][number]["modelSelection"]
+      >;
+      for (const sessions of [
+        serverState.sessions,
+        serverState.previousSessions,
+        serverState.archivedSessions,
+      ]) {
+        const session = sessions.find((entry) => entry.id === event.sessionId);
+        if (session) session.modelSelection = cloneState(selection);
+      }
+      if (serverState.activeSessionId === event.sessionId) {
+        synchronizeActiveSessionProjection();
       }
       return;
     }
@@ -1076,6 +1190,9 @@ async function createDialogHarness(
                 defaultFollowUpBehavior?: "queue" | "steer";
                 profile?: SavedProfile;
                 profileId?: string;
+                model?: string;
+                reasoningEffort?: "minimal" | "low" | "medium" | "high" |
+                  "xhigh" | "max" | "ultra" | null;
                 sessionId?: string;
                 skillIds?: string[];
                 title?: string;
@@ -1119,6 +1236,34 @@ async function createDialogHarness(
                 };
               } else if (command.kind === "logout_codex") {
                 serverState.codexAuth = { status: "signed-out" };
+              } else if (
+                command.kind === "set_session_model_selection" &&
+                command.sessionId &&
+                command.profileId &&
+                command.model
+              ) {
+                const session = serverState.sessions.find(
+                  (entry) => entry.id === command.sessionId,
+                );
+                if (session) {
+                  session.modelSelection = {
+                    profileId: command.profileId,
+                    model: command.model,
+                    ...(command.reasoningEffort === null ||
+                        command.reasoningEffort === undefined
+                      ? {}
+                      : { reasoningEffort: command.reasoningEffort }),
+                  };
+                  if (session.id === serverState.activeSessionId) {
+                    synchronizeActiveSessionProjection();
+                  }
+                }
+              } else if (
+                command.kind === "load_session_model_capabilities" &&
+                command.sessionId &&
+                command.profileId
+              ) {
+                serverState.configuredModelsReady = true;
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -1127,18 +1272,52 @@ async function createDialogHarness(
                 serverState.settings.profiles = profiles;
                 serverState.settings.activeProfileId = command.profile.id;
                 serverState.modelStateSource = modelStateSourceFixture(command.profile);
-                serverState.runtimeProfile = {
-                  ...runtimeSummaryForHarnessProfile(command.profile),
-                };
+                const selectedConfig = command.profile.models.find(
+                  (entry) => entry.model === command.profile?.defaultModel,
+                ) ?? command.profile.models[0]!;
+                const discovered = serverState.availableModels.find(
+                  (model) => model.id === selectedConfig.model,
+                );
+                serverState.capabilities = discovered
+                  ? cloneState(discovered.capabilities)
+                  : {
+                      tools: true,
+                      streaming: true,
+                      temperature: "supported",
+                      reasoning: {
+                        supported: false,
+                        canDisable: false,
+                        efforts: [],
+                        budgetTokens: false,
+                        strategy: "none",
+                      },
+                      inputs: { image: false, audio: false, pdf: false },
+                    };
+                serverState.capabilityEvidence = discovered
+                  ? cloneState(discovered.capabilityEvidence)
+                  : unverifiedCapabilityEvidence();
+                serverState.runtimeProfile = runtimeSummaryForHarnessProfile(
+                  command.profile,
+                  serverState.capabilities,
+                  serverState.capabilityEvidence.inputs,
+                );
+                serverState.configuredModels = command.profile.models.map((entry) => ({
+                  model: entry.model,
+                  label: entry.model,
+                }));
+                serverState.configuredModelsReady =
+                  command.profile.connection.kind !== "codex-subscription";
               } else if (command.kind === "discover_models") {
                 serverState.availableModels = [{
                   id: "model-discovered",
                   displayName: "Discovered model",
                   capabilities: capabilities(),
+                  capabilityEvidence: capabilityEvidence(),
                 }];
                 if (command.profile) {
                   serverState.modelStateSource = modelStateSourceFixture(command.profile);
                   serverState.capabilities = capabilities();
+                  serverState.capabilityEvidence = capabilityEvidence();
                 }
               } else if (command.kind === "activate_profile" && command.profileId) {
                 serverState.settings.activeProfileId = command.profileId;
@@ -1151,6 +1330,14 @@ async function createDialogHarness(
                 serverState.runtimeProfile = profile
                   ? runtimeSummaryForHarnessProfile(profile)
                   : null;
+                serverState.configuredModels = profile
+                  ? profile.models.map((entry) => ({
+                      model: entry.model,
+                      label: entry.model,
+                    }))
+                  : [];
+                serverState.configuredModelsReady =
+                  profile?.connection.kind !== "codex-subscription";
               } else if (command.kind === "delete_profile" && command.profileId) {
                 serverState.settings.profiles = serverState.settings.profiles.filter(
                   (entry) => entry.id !== command.profileId,
@@ -1168,6 +1355,14 @@ async function createDialogHarness(
                 serverState.runtimeProfile = profile
                   ? runtimeSummaryForHarnessProfile(profile)
                   : null;
+                serverState.configuredModels = profile
+                  ? profile.models.map((entry) => ({
+                      model: entry.model,
+                      label: entry.model,
+                    }))
+                  : [];
+                serverState.configuredModelsReady =
+                  profile?.connection.kind !== "codex-subscription";
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
                 const selected = serverState.sessions.find(
@@ -1182,6 +1377,7 @@ async function createDialogHarness(
                 serverState.pendingAttachments = pendingAttachmentsBySession.get(
                   command.sessionId,
                 ) ?? [];
+                synchronizeActiveSessionProjection();
               } else if (
                 command.kind === "attach_selected_audio_source" &&
                 command.sessionId
@@ -1982,10 +2178,19 @@ function attachmentMediaTypeForFile(
 
 function runtimeSummaryForHarnessProfile(
   profile: SavedProfile,
+  projectedCapabilities = capabilities(),
+  projectedInputEvidence = inputCapabilityEvidence(),
+  selectedModel = profile.defaultModel,
+  reasoningEffort?: NonNullable<
+    ChatDialogState["sessions"][number]["modelSelection"]
+  >["reasoningEffort"],
 ): NonNullable<ChatDialogState["runtimeProfile"]> {
-  const runtimeCapabilities = capabilities();
-  const evidence = inputCapabilityEvidence();
-  if (profile.model === "pdf-capable-model") {
+  const runtimeCapabilities = cloneState(projectedCapabilities);
+  const evidence = cloneState(projectedInputEvidence);
+  const selected = profile.models.find(
+    (entry) => entry.model === selectedModel,
+  ) ?? profile.models[0]!;
+  if (selected.model === "pdf-capable-model") {
     runtimeCapabilities.inputs.pdf = true;
     evidence.pdf = "supported";
   }
@@ -2000,7 +2205,15 @@ function runtimeSummaryForHarnessProfile(
       apiMode: profile.connection.kind === "direct-api"
         ? profile.connection.apiMode
         : null,
-      model: profile.model,
+    },
+    selection: {
+      model: selected.model,
+      reasoning: {
+        ...cloneState(selected.parameters.reasoning),
+        ...(reasoningEffort === undefined
+          ? {}
+          : { mode: "enabled" as const, effort: reasoningEffort }),
+      },
     },
     capabilities: runtimeCapabilities,
     inputCapabilityEvidence: evidence,
@@ -2067,6 +2280,7 @@ export {
   audioCapableState,
   audioFile,
   capabilities,
+  capabilityEvidence,
   cloneState,
   commandCalls,
   createDialogHarness,

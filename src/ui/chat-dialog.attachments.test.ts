@@ -1431,6 +1431,7 @@ test("a text-only runtime keeps attachment chips visible but blocks Send precise
   const state = stateFixture();
   state.pendingAttachments = [pendingImage("attachment-text-only", "score.png")];
   state.capabilities.inputs.image = true;
+  state.capabilityEvidence.inputs.image = "supported";
   state.runtimeProfile!.capabilities.inputs.image = false;
   state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
   const harness = await createDialogHarness(state);

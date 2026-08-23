@@ -12,6 +12,8 @@
         __MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS__;
       const maximumDiscoveredModelOutputTokens =
         __MAX_DISCOVERED_MODEL_OUTPUT_TOKENS__;
+      const maximumDiscoveredModelContextWindowTokens =
+        __MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS__;
       const hostedWebSearchMaxEventsPerSend =
         __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
       const maximumTransientAssistantDraftBytes =
@@ -53,6 +55,8 @@
 
       let eventSource = null;
       const assistantDraftsBySession = new Map();
+      const contextUsageBySession = new Map();
+      const runtimeSourceBySession = new Map();
       const webSearchUpdatesBySession = new Map();
       const webSearchEventIdsAtSendStartBySession = new Map();
       const assistantDraftRenderFramesBySession = new Map();
@@ -61,6 +65,7 @@
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
       const approvalModeProjectionsBySession = new Map();
+      const modelSelectionProjectionRevisionsBySession = new Map();
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
@@ -93,6 +98,11 @@
       let nextComposerDraftRevision = 1;
       const sseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
+
+      const initialRuntimeSource = runtimeSourceForState(getState());
+      if (initialRuntimeSource) {
+        runtimeSourceBySession.set(activeSessionId(), initialRuntimeSource);
+      }
 
       function isModelTurnEpoch(value) {
         return Number.isSafeInteger(value) && value >= 0;
@@ -425,7 +435,16 @@
           current.bridgeStateCoveredThroughRevision,
           baseline.bridgeStateCoveredThroughRevision,
         ) !== 0;
-        if (!currentChangedSinceBaseline) return state;
+        if (!currentChangedSinceBaseline) {
+          if (attempt.ownsGlobalState) return state;
+          return {
+            ...state,
+            capabilities: current.capabilities,
+            capabilityEvidence: current.capabilityEvidence,
+            availableModels: current.availableModels,
+            modelStateSource: current.modelStateSource,
+          };
+        }
         const protectedSessionIds = new Set(
           [
             ...sessionStateIds(baseline),
@@ -508,12 +527,23 @@
           merged.pendingAttachments = state.pendingAttachments;
           merged.contextSummary = state.contextSummary;
           merged.sessionContinueTarget = state.sessionContinueTarget;
+          merged.runtimeProfile = state.runtimeProfile;
+          merged.configuredModels = state.configuredModels;
+          merged.configuredModelsReady = state.configuredModelsReady;
         } else {
           merged.activeSessionId = current.activeSessionId;
           merged.events = current.events;
           merged.pendingAttachments = current.pendingAttachments;
           merged.contextSummary = current.contextSummary;
           merged.sessionContinueTarget = current.sessionContinueTarget;
+        }
+        if (
+          attempt.ownsActiveRuntimeProjection &&
+          state.activeSessionId === merged.activeSessionId
+        ) {
+          merged.runtimeProfile = state.runtimeProfile;
+          merged.configuredModels = state.configuredModels;
+          merged.configuredModelsReady = state.configuredModelsReady;
         }
         if (
           state.activeSessionId === merged.activeSessionId &&
@@ -661,6 +691,16 @@
             sessionId,
             state.bridgeStateCoveredThroughRevision,
           );
+          recordProjectionRevision(
+            modelSelectionProjectionRevisionsBySession,
+            sessionId,
+            state.bridgeStateCoveredThroughRevision,
+          );
+        }
+        for (const sessionId of modelSelectionProjectionRevisionsBySession.keys()) {
+          if (!coveredSessionIds.has(sessionId)) {
+            modelSelectionProjectionRevisionsBySession.delete(sessionId);
+          }
         }
       }
 
@@ -671,6 +711,11 @@
         );
         recordProjectionRevision(
           activityProjectionRevisionsBySession,
+          sessionId,
+          state.bridgeStateCoveredThroughRevision,
+        );
+        recordProjectionRevision(
+          modelSelectionProjectionRevisionsBySession,
           sessionId,
           state.bridgeStateCoveredThroughRevision,
         );
@@ -734,6 +779,16 @@
 
       function isWireRecord(value) {
         return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+      }
+
+      function isWireModelContextUsage(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["usedTokens", "contextWindowTokens"]) &&
+          Object.keys(value).length === 2 &&
+          Number.isSafeInteger(value.usedTokens) &&
+          value.usedTokens >= 0 &&
+          Number.isSafeInteger(value.contextWindowTokens) &&
+          value.contextWindowTokens > 0;
       }
 
       function hasOnlyWireKeys(value, allowedKeys) {
@@ -1111,6 +1166,7 @@
             "archivedAt",
             "activeSkillIds",
             "approvalMode",
+            "modelSelection",
             "createdAt",
             "updatedAt",
           ]) &&
@@ -1125,8 +1181,26 @@
             isWireSkillIds(value.activeSkillIds)) &&
           (value.approvalMode === undefined ||
             isWireApprovalMode(value.approvalMode)) &&
+          (value.modelSelection === undefined ||
+            isWireSessionModelSelection(value.modelSelection)) &&
           typeof value.createdAt === "string" &&
           typeof value.updatedAt === "string";
+      }
+
+      function isWireSessionModelSelection(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, [
+            "profileId",
+            "model",
+            "reasoningEffort",
+          ]) &&
+          isWireStorageId(value.profileId) &&
+          isWireModelDisplayString(
+            value.model,
+            maximumDiscoveredModelIdCodePoints,
+          ) &&
+          (value.reasoningEffort === undefined ||
+            isWireReasoningEffort(value.reasoningEffort));
       }
 
       function isWireReasoningEffort(value) {
@@ -1179,6 +1253,7 @@
             "streaming",
             "temperature",
             "maxOutputTokens",
+            "contextWindowTokens",
             "reasoning",
             "inputs",
           ]) &&
@@ -1189,6 +1264,11 @@
             Number.isInteger(value.maxOutputTokens) &&
               value.maxOutputTokens > 0 &&
               value.maxOutputTokens <= maximumDiscoveredModelOutputTokens) &&
+          (value.contextWindowTokens === undefined ||
+            Number.isInteger(value.contextWindowTokens) &&
+              value.contextWindowTokens > 0 &&
+              value.contextWindowTokens <=
+                maximumDiscoveredModelContextWindowTokens) &&
           isWireReasoningCapabilities(value.reasoning) &&
           isWireInputCapabilities(value.inputs);
       }
@@ -1200,6 +1280,55 @@
           allowed.includes(value.image) &&
           allowed.includes(value.audio) &&
           allowed.includes(value.pdf);
+      }
+
+      function isWireModelCapabilityEvidence(value, capabilities) {
+        const supportEvidence = ["supported", "unsupported", "unverified"];
+        const numericEvidence = ["verified", "unverified"];
+        if (
+          !isWireRecord(value) ||
+          !isWireModelCapabilities(capabilities) ||
+          !hasOnlyWireKeys(value, [
+            "temperature",
+            "maxOutputTokens",
+            "contextWindowTokens",
+            "reasoning",
+            "inputs",
+          ]) ||
+          !supportEvidence.includes(value.temperature) ||
+          !numericEvidence.includes(value.maxOutputTokens) ||
+          !numericEvidence.includes(value.contextWindowTokens) ||
+          !supportEvidence.includes(value.reasoning) ||
+          !isWireInputCapabilityEvidence(value.inputs)
+        ) return false;
+        return supportEvidenceMatches(value.temperature, capabilities.temperature) &&
+          numericEvidenceMatches(
+            value.maxOutputTokens,
+            capabilities.maxOutputTokens,
+          ) &&
+          numericEvidenceMatches(
+            value.contextWindowTokens,
+            capabilities.contextWindowTokens,
+          ) &&
+          supportEvidenceMatches(
+            value.reasoning,
+            capabilities.reasoning.supported,
+          ) &&
+          ["image", "audio", "pdf"].every((key) =>
+            supportEvidenceMatches(value.inputs[key], capabilities.inputs[key])
+          );
+      }
+
+      function supportEvidenceMatches(evidence, capability) {
+        if (evidence === "unverified") return true;
+        const expected = capability === true || capability === "supported"
+          ? "supported"
+          : "unsupported";
+        return evidence === expected;
+      }
+
+      function numericEvidenceMatches(evidence, capability) {
+        return (evidence === "verified") === (capability !== undefined);
       }
 
       function isWireCapabilityOverrides(value) {
@@ -1300,6 +1429,55 @@
           typeof value.apiKey === "string";
       }
 
+      function isWireModelAdvanced(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, [
+            "capabilityOverrides",
+            "hostedTools",
+            "extraBody",
+          ]) &&
+          (value.capabilityOverrides === undefined ||
+            isWireCapabilityOverrides(value.capabilityOverrides)) &&
+          (value.hostedTools === undefined ||
+            isWireRecord(value.hostedTools) &&
+              hasOnlyWireKeys(value.hostedTools, ["webSearch"]) &&
+              value.hostedTools.webSearch === true) &&
+          (value.extraBody === undefined || isWireRecord(value.extraBody));
+      }
+
+      function isWireSavedModelConfig(value, subscription) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["model", "parameters", "advanced"]) ||
+          !isWireModelDisplayString(
+            value.model,
+            maximumDiscoveredModelIdCodePoints,
+          ) ||
+          !isWireRecord(value.parameters) ||
+          !isWireProfileReasoning(value.parameters.reasoning) ||
+          !isWireRecord(value.advanced)
+        ) return false;
+        if (subscription) {
+          return hasOnlyWireKeys(value.parameters, ["reasoning"]) &&
+            value.parameters.reasoning.mode !== "disabled" &&
+            value.parameters.reasoning.budgetTokens === undefined &&
+            hasOnlyWireKeys(value.advanced, []);
+        }
+        return hasOnlyWireKeys(value.parameters, [
+            "maxOutputTokens",
+            "temperature",
+            "reasoning",
+          ]) &&
+          Number.isInteger(value.parameters.maxOutputTokens) &&
+          value.parameters.maxOutputTokens > 0 &&
+          value.parameters.maxOutputTokens <= maximumDiscoveredModelOutputTokens &&
+          (value.parameters.temperature === undefined ||
+            Number.isFinite(value.parameters.temperature) &&
+              value.parameters.temperature >= 0 &&
+              value.parameters.temperature <= 2) &&
+          isWireModelAdvanced(value.advanced);
+      }
+
       function isWireSavedProfile(value) {
         if (
           !isWireRecord(value) ||
@@ -1307,49 +1485,29 @@
             "id",
             "name",
             "connection",
-            "model",
-            "parameters",
-            "advanced",
+            "defaultModel",
+            "models",
           ]) ||
           !isWireStorageId(value.id) ||
           typeof value.name !== "string" ||
-          typeof value.model !== "string" ||
           !isWireModelConnection(value.connection) ||
-          !isWireRecord(value.parameters) ||
-          !isWireProfileReasoning(value.parameters.reasoning) ||
-          !isWireRecord(value.advanced)
+          !isWireModelDisplayString(
+            value.defaultModel,
+            maximumDiscoveredModelIdCodePoints,
+          ) ||
+          !Array.isArray(value.models) ||
+          value.models.length === 0 ||
+          value.models.length > maximumDiscoveredModelCount ||
+          !value.models.every((model) =>
+            isWireSavedModelConfig(
+              model,
+              value.connection.kind === "codex-subscription",
+            )
+          ) ||
+          new Set(value.models.map((model) => model.model)).size !==
+            value.models.length
         ) return false;
-        if (value.connection.kind === "codex-subscription") {
-          return hasOnlyWireKeys(value.parameters, ["reasoning"]) &&
-            hasOnlyWireKeys(value.advanced, []);
-        }
-        if (
-          !hasOnlyWireKeys(value.parameters, [
-            "maxOutputTokens",
-            "temperature",
-            "reasoning",
-          ]) ||
-          !Number.isInteger(value.parameters.maxOutputTokens) ||
-          value.parameters.maxOutputTokens <= 0 ||
-          value.parameters.maxOutputTokens > maximumDiscoveredModelOutputTokens ||
-          (value.parameters.temperature !== undefined &&
-            !Number.isFinite(value.parameters.temperature)) ||
-          !hasOnlyWireKeys(value.advanced, [
-            "capabilityOverrides",
-            "hostedTools",
-            "extraBody",
-          ]) ||
-          (value.advanced.capabilityOverrides !== undefined &&
-            !isWireCapabilityOverrides(value.advanced.capabilityOverrides)) ||
-          (value.advanced.hostedTools !== undefined && (
-            !isWireRecord(value.advanced.hostedTools) ||
-            !hasOnlyWireKeys(value.advanced.hostedTools, ["webSearch"]) ||
-            value.advanced.hostedTools.webSearch !== true
-          )) ||
-          (value.advanced.extraBody !== undefined &&
-            !isWireRecord(value.advanced.extraBody))
-        ) return false;
-        return true;
+        return value.models.some((model) => model.model === value.defaultModel);
       }
 
       function isWireAgentSettings(value) {
@@ -1363,7 +1521,7 @@
             "defaultFollowUpBehavior",
             "defaultFollowUpBehaviorRevision",
           ]) ||
-          value.schemaVersion !== 4 ||
+          value.schemaVersion !== 5 ||
           !Array.isArray(value.profiles) ||
           !value.profiles.every(isWireSavedProfile) ||
           new Set(value.profiles.map((profile) => profile.id)).size !==
@@ -1379,7 +1537,12 @@
 
       function isWireModelInfo(value) {
         return isWireRecord(value) &&
-          hasOnlyWireKeys(value, ["id", "displayName", "capabilities"]) &&
+          hasOnlyWireKeys(value, [
+            "id",
+            "displayName",
+            "capabilities",
+            "capabilityEvidence",
+          ]) &&
           isWireModelDisplayString(
             value.id,
             maximumDiscoveredModelIdCodePoints,
@@ -1388,7 +1551,11 @@
             value.displayName,
             maximumDiscoveredModelDisplayNameCodePoints,
           ) &&
-          isWireModelCapabilities(value.capabilities);
+          isWireModelCapabilities(value.capabilities) &&
+          isWireModelCapabilityEvidence(
+            value.capabilityEvidence,
+            value.capabilities,
+          );
       }
 
       function isWireModelDisplayString(value, maximumCodePoints) {
@@ -1423,6 +1590,7 @@
           !isWireRecord(value) ||
           !hasOnlyWireKeys(value, [
             "profile",
+            "selection",
             "capabilities",
             "inputCapabilityEvidence",
           ]) ||
@@ -1433,11 +1601,16 @@
             "connectionKind",
             "apiFamily",
             "apiMode",
-            "model",
           ]) ||
           !isWireStorageId(value.profile.id) ||
           typeof value.profile.name !== "string" ||
-          typeof value.profile.model !== "string" ||
+          !isWireRecord(value.selection) ||
+          !hasOnlyWireKeys(value.selection, ["model", "reasoning"]) ||
+          !isWireModelDisplayString(
+            value.selection.model,
+            maximumDiscoveredModelIdCodePoints,
+          ) ||
+          !isWireProfileReasoning(value.selection.reasoning) ||
           !isWireModelCapabilities(value.capabilities) ||
           !isWireInputCapabilityEvidence(value.inputCapabilityEvidence)
         ) return false;
@@ -1452,6 +1625,19 @@
                 value.profile.apiFamily === "anthropic" &&
                   value.profile.apiMode === "messages"
               );
+      }
+
+      function isWireConfiguredModel(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["model", "label"]) &&
+          isWireModelDisplayString(
+            value.model,
+            maximumDiscoveredModelIdCodePoints,
+          ) &&
+          isWireModelDisplayString(
+            value.label,
+            maximumDiscoveredModelDisplayNameCodePoints,
+          );
       }
 
       function isWireManagedAuth(value) {
@@ -1517,7 +1703,10 @@
             "availableSkills",
             "activeSkillIds",
             "capabilities",
+            "capabilityEvidence",
             "availableModels",
+            "configuredModels",
+            "configuredModelsReady",
             "modelStateSource",
             "runtimeProfile",
             "settings",
@@ -1563,9 +1752,17 @@
           ) ||
           !isWireSkillIds(value.activeSkillIds) ||
           !isWireModelCapabilities(value.capabilities) ||
+          !isWireModelCapabilityEvidence(
+            value.capabilityEvidence,
+            value.capabilities,
+          ) ||
           !Array.isArray(value.availableModels) ||
           value.availableModels.length > maximumDiscoveredModelCount ||
           !value.availableModels.every(isWireModelInfo) ||
+          !Array.isArray(value.configuredModels) ||
+          value.configuredModels.length > maximumDiscoveredModelCount ||
+          !value.configuredModels.every(isWireConfiguredModel) ||
+          typeof value.configuredModelsReady !== "boolean" ||
           !isWireModelStateSource(value.modelStateSource) ||
           !isWireRuntimeProfile(value.runtimeProfile) ||
           !isWireAgentSettings(value.settings) ||
@@ -1629,6 +1826,14 @@
         if (
           new Set(value.availableModels.map((model) => model.id)).size !==
             value.availableModels.length
+        ) return false;
+        if (
+          new Set(value.configuredModels.map((model) => model.model)).size !==
+            value.configuredModels.length ||
+          value.runtimeProfile &&
+            !value.configuredModels.some(
+              (model) => model.model === value.runtimeProfile.selection.model,
+            )
         ) return false;
 
         if (value.sessionActivities !== undefined) {
@@ -2230,6 +2435,8 @@
           "attach_selected_audio_source",
           "set_session_skills",
           "set_session_approval_mode",
+          "set_session_model_selection",
+          "load_session_model_capabilities",
         ].includes(kind);
         const allowedDuringSend = sessionCommand || kind === "save_global_settings";
         if (
@@ -2263,11 +2470,13 @@
             ? ["approvalMode", "updatedAt"]
             : kind === "set_session_skills"
               ? ["activeSkillIds", "updatedAt"]
-              : kind === "restore_session"
-                ? ["projectKey", "scope", "originScope", "updatedAt"]
-                : ["archive_session", "unarchive_session"].includes(kind)
-                  ? ["archivedAt", "updatedAt"]
-                  : [];
+              : kind === "set_session_model_selection"
+                ? ["modelSelection", "updatedAt"]
+                : kind === "restore_session"
+                  ? ["projectKey", "scope", "originScope", "updatedAt"]
+                  : ["archive_session", "unarchive_session"].includes(kind)
+                    ? ["archivedAt", "updatedAt"]
+                    : [];
         if (targetSessionId && fieldNames.length > 0) {
           ownedSessionFields.set(targetSessionId, new Set(fieldNames));
         }
@@ -2290,6 +2499,11 @@
             ["new_session", "select_session", "restore_session"].includes(kind) ||
             ["archive_session", "delete_session"].includes(kind) &&
               targetSessionId === activeSessionId(),
+          ownsActiveRuntimeProjection:
+            [
+              "set_session_model_selection",
+              "load_session_model_capabilities",
+            ].includes(kind) && targetSessionId === activeSessionId(),
           ownsAuthoritativeSessionAdditions: kind === "new_session",
           ownsGlobalState: !sessionCommand && kind !== "save_global_settings",
           causalStateSnapshot: captureCausalState(),
@@ -2507,6 +2721,39 @@
         return canceledFollowUpCount;
       }
 
+      function reconcileContextUsageWithState(state) {
+        const availableSessionIds = sessionStateIds(state);
+        for (const sessionId of contextUsageBySession.keys()) {
+          if (!availableSessionIds.has(sessionId)) {
+            contextUsageBySession.delete(sessionId);
+          }
+        }
+        for (const sessionId of runtimeSourceBySession.keys()) {
+          if (!availableSessionIds.has(sessionId)) {
+            runtimeSourceBySession.delete(sessionId);
+          }
+        }
+      }
+
+      function runtimeSourceForState(state) {
+        const runtime = state?.runtimeProfile;
+        return runtime
+          ? `${runtime.profile.id}\u0000${runtime.selection.model}`
+          : null;
+      }
+
+      function reconcileRuntimeSourceWithState(state) {
+        const sessionId = state?.activeSessionId;
+        if (typeof sessionId !== "string") return;
+        const previous = runtimeSourceBySession.get(sessionId);
+        const next = runtimeSourceForState(state);
+        if (previous !== undefined && previous !== next) {
+          contextUsageBySession.delete(sessionId);
+        }
+        if (next === null) runtimeSourceBySession.delete(sessionId);
+        else runtimeSourceBySession.set(sessionId, next);
+      }
+
       function retainCanceledFollowUps(count) {
         if (Number.isInteger(count) && count > 0) {
           retainedCanceledFollowUpCount += count;
@@ -2535,6 +2782,8 @@
             canceledFollowUpCount;
         }
         reconcileWebSearchUpdatesFromState(reconciledState);
+        reconcileContextUsageWithState(reconciledState);
+        reconcileRuntimeSourceWithState(reconciledState);
         adoptFollowUpBehaviorFromState(reconciledState);
         setState(reconciledState);
         recordFullStateProjectionCoverage(reconciledState);
@@ -2618,6 +2867,7 @@
         }
         if (visible) {
           reconcileWebSearchUpdatesFromState(reconciledState);
+          reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
           recordFullStateProjectionCoverage(reconciledState);
           requireView().syncModelStateSource(reconciledState.modelStateSource);
@@ -2701,6 +2951,7 @@
       function syncActiveSessionUi() {
         const attempt = activeSendAttempt();
         renderDefaultFollowUpBehavior();
+        requireView().renderContextUsage();
         syncOperationState();
         if (attempt?.progress) {
           showStatus(
@@ -3647,6 +3898,8 @@
             authoritative.session,
             ...current.archivedSessions,
           ];
+        } else {
+          contextUsageBySession.delete(sessionId);
         }
         current.sessionActivities = (current.sessionActivities || []).filter(
           (activity) => activity.sessionId !== sessionId,
@@ -4452,6 +4705,43 @@
         requireView().renderTimeline();
       }
 
+      function applySessionModelSelectionMetadata(sessionId, selection) {
+        const state = getState();
+        for (const sessions of [
+          state.sessions,
+          state.previousSessions,
+          state.archivedSessions,
+        ]) {
+          const session = sessions.find((entry) => entry.id === sessionId);
+          if (session) session.modelSelection = { ...selection };
+        }
+      }
+
+      function refreshActiveModelSelection(sessionId) {
+        const causalAttempt = {
+          kind: "session_model_selection_changed",
+          ownsActiveRuntimeProjection: true,
+          ownsGlobalState: false,
+          causalStateSnapshot: captureCausalState(),
+        };
+        void refreshState(
+          causalAttempt,
+          "session_model_selection_changed",
+        ).then((refreshed) => {
+          if (refreshed === true || activeSessionId() !== sessionId) return;
+          showStatus(
+            "The Session model changed, but its capabilities could not be refreshed. Retry the model selection or reopen Live Smith.",
+            true,
+          );
+        }, () => {
+          if (activeSessionId() !== sessionId) return;
+          showStatus(
+            "The Session model changed, but its capabilities could not be refreshed. Retry the model selection or reopen Live Smith.",
+            true,
+          );
+        });
+      }
+
       function startEventStream() {
         if (eventSource) return;
         eventSource = new EventSource(bridgeUrl("/events"));
@@ -4535,6 +4825,50 @@
             }
             return;
           }
+          if (payload.type === "session_model_selection_changed") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sessionId",
+                "modelSelection",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireStorageId(payload.sessionId) ||
+              !isWireSessionModelSelection(payload.modelSelection)
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            if (projectionRevisionIsCovered(
+              modelSelectionProjectionRevisionsBySession,
+              payload.sessionId,
+              received,
+            )) return;
+            recordProjectionRevision(
+              modelSelectionProjectionRevisionsBySession,
+              payload.sessionId,
+              received.revision,
+            );
+            applySessionModelSelectionMetadata(
+              payload.sessionId,
+              payload.modelSelection,
+            );
+            if (activeSessionId() === payload.sessionId) {
+              const previousSource = runtimeSourceBySession.get(payload.sessionId) ??
+                runtimeSourceForState(getState());
+              const nextSource = `${payload.modelSelection.profileId}\u0000${
+                payload.modelSelection.model
+              }`;
+              if (previousSource !== nextSource) {
+                contextUsageBySession.delete(payload.sessionId);
+                requireView().renderContextUsage();
+              }
+              runtimeSourceBySession.set(payload.sessionId, nextSource);
+              refreshActiveModelSelection(payload.sessionId);
+            } else {
+              requireView().renderSessions();
+            }
+            return;
+          }
           if (payload.type === "model_turn_state") {
             if (
               !hasOnlyWireKeys(payload, [
@@ -4544,9 +4878,13 @@
                 "modelTurnEpoch",
                 "assistantDraft",
                 "webSearchUpdates",
+                "contextUsage",
                 "progress",
                 "resolvedConfirmationGeneration",
               ]) ||
+              Object.prototype.hasOwnProperty.call(payload, "contextUsage") &&
+                payload.contextUsage !== null &&
+                !isWireModelContextUsage(payload.contextUsage) ||
               typeof payload.assistantDraft !== "string" ||
               wireUtf8ByteLength(payload.assistantDraft) >
                 maximumTransientAssistantDraftBytes ||
@@ -4571,6 +4909,16 @@
               attempt,
               payload.resolvedConfirmationGeneration,
             );
+            if (Object.prototype.hasOwnProperty.call(payload, "contextUsage")) {
+              if (payload.contextUsage === null) {
+                contextUsageBySession.delete(payload.sessionId);
+              } else {
+                contextUsageBySession.set(
+                  payload.sessionId,
+                  { ...payload.contextUsage },
+                );
+              }
+            }
             cancelAssistantDraftRender(payload.sessionId);
             assistantDraftsBySession.set(
               payload.sessionId,
@@ -4587,7 +4935,39 @@
             setAttemptStatus(attempt, payload.progress, false);
             if (activeSessionId() === payload.sessionId) {
               requireView().renderTimeline();
+              requireView().renderContextUsage();
               if (advanced.confirmationChanged || confirmationChanged) {
+                requireView().setConfirmationState(activeConfirmationIsLocked());
+              }
+            }
+            return;
+          }
+          if (payload.type === "context_usage_update") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "modelTurnEpoch",
+                "usage",
+              ]) ||
+              payload.usage !== null && !isWireModelContextUsage(payload.usage)
+            ) return;
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt) return;
+            const advanced = advanceModelTurnEpoch(
+              attempt,
+              payload.modelTurnEpoch,
+            );
+            if (payload.usage === null) {
+              contextUsageBySession.delete(payload.sessionId);
+            } else {
+              contextUsageBySession.set(payload.sessionId, { ...payload.usage });
+            }
+            if (activeSessionId() === payload.sessionId) {
+              if (advanced.advanced) requireView().renderTimeline();
+              requireView().renderContextUsage();
+              if (advanced.confirmationChanged) {
                 requireView().setConfirmationState(activeConfirmationIsLocked());
               }
             }
@@ -5059,6 +5439,10 @@
         deleteAttachment,
         deleteSkill,
         getAssistantDraft: activeAssistantDraft,
+        getContextUsage: () => {
+          const usage = contextUsageBySession.get(activeSessionId());
+          return usage ? { ...usage } : null;
+        },
         getQueuedFollowUps: () => [...activeQueuedFollowUps()],
         getQueuedFollowUpCount: queuedFollowUpCount,
         getWebSearchUpdates: activeWebSearchUpdates,

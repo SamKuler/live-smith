@@ -4,12 +4,11 @@ import {
   profileApiMode,
   profileProvider,
   profileSecrets,
-  type DraftProfile,
-  type SavedProfile,
+  type ModelConnectionOwner,
 } from "../profile.js";
 
 export async function withTransportContext<T>(
-  profile: DraftProfile | SavedProfile,
+  profile: ModelConnectionOwner,
   operation: "request" | "model discovery",
   run: () => Promise<T>,
   signal?: AbortSignal,

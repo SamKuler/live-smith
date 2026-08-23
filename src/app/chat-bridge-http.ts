@@ -12,9 +12,11 @@ import { requireSafeStorageId } from "../storage/id.js";
 import {
   isApprovalMode,
   isDefaultFollowUpBehavior,
+  isReasoningEffort,
   type ApprovalMode,
   type DefaultFollowUpBehavior,
   type DraftProfile,
+  type ReasoningEffort,
 } from "../model/profile.js";
 
 const maxRequestBodyBytes = 1024 * 1024;
@@ -92,6 +94,18 @@ export type ChatBridgeCommandInput =
       kind: "set_session_approval_mode";
       sessionId: string;
       approvalMode: ApprovalMode;
+    }
+  | {
+      kind: "set_session_model_selection";
+      sessionId: string;
+      profileId: string;
+      model: string;
+      reasoningEffort: ReasoningEffort | null;
+    }
+  | {
+      kind: "load_session_model_capabilities";
+      sessionId: string;
+      profileId: string;
     }
   | { kind: "new_session" }
   | { kind: "select_session"; sessionId: string }
@@ -790,6 +804,40 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       kind,
       sessionId: inputString(input, "sessionId"),
       approvalMode: input.approvalMode,
+    };
+  }
+  if (kind === "set_session_model_selection") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "profileId", "model", "reasoningEffort"],
+      `${kind} command`,
+    );
+    if (
+      input.reasoningEffort !== null &&
+      !isReasoningEffort(input.reasoningEffort)
+    ) {
+      throw new ChatBridgeRequestValidationError(
+        "reasoningEffort must be a supported effort or null.",
+      );
+    }
+    return {
+      kind,
+      sessionId: inputString(input, "sessionId"),
+      profileId: inputString(input, "profileId"),
+      model: inputString(input, "model"),
+      reasoningEffort: input.reasoningEffort,
+    };
+  }
+  if (kind === "load_session_model_capabilities") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "profileId"],
+      `${kind} command`,
+    );
+    return {
+      kind,
+      sessionId: inputString(input, "sessionId"),
+      profileId: inputString(input, "profileId"),
     };
   }
   if (kind === "new_session") {

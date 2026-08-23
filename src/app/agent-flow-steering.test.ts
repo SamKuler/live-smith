@@ -30,12 +30,15 @@ const profile: SavedProfile = {
     apiKey: "key",
     baseUrl: "https://example.test/v1",
   },
-  model: "custom-model",
-  parameters: {
-    maxOutputTokens: 1024,
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
+  defaultModel: "custom-model",
+  models: [{
+    model: "custom-model",
+    parameters: {
+      maxOutputTokens: 1024,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  }],
 };
 
 test("handleAgentRequest persists steering, discards the interrupted turn, and replans", async () => {

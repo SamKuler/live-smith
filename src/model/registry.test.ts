@@ -9,9 +9,12 @@ function profile(connection: DirectApiConnection): SavedProfile {
     id: `${connection.apiFamily}-${connection.apiMode}`,
     name: `${connection.apiFamily}-${connection.apiMode}`,
     connection,
-    model: "model",
-    parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
-    advanced: {},
+    defaultModel: "model",
+    models: [{
+      model: "model",
+      parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
+      advanced: {},
+    }],
   };
 }
 

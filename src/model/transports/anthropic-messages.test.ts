@@ -14,23 +14,36 @@ import {
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
   MAX_MODEL_DISCOVERY_PAGE_COUNT,
 } from "../catalog.js";
-import type { AnthropicDirectApiConnection, SavedProfile } from "../profile.js";
-import type { TransportRequest } from "../provider.js";
+import type {
+  AnthropicDirectApiConnection,
+  DirectApiModelConfig,
+  DirectApiProfile,
+} from "../profile.js";
+import type { RuntimeModelSource, TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
 import { MAX_DIRECT_JSON_RESPONSE_BYTES } from "./response-body.js";
 
-type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+type ProfileOverrides = Partial<DirectApiModelConfig> &
+  Partial<{ id: string; name: string }> &
   Partial<Pick<AnthropicDirectApiConnection, "baseUrl" | "apiKey">>;
 
-function profile(overrides: ProfileOverrides = {}): SavedProfile {
+function profile(overrides: ProfileOverrides = {}): DirectApiProfile {
   const {
     baseUrl = "https://example.test",
     apiKey = "secret",
-    ...fields
+    id = "anthropic",
+    name = "Anthropic",
+    model = "claude-sonnet-4-6",
+    parameters = {
+      maxOutputTokens: 6000,
+      temperature: 0.4,
+      reasoning: { mode: "enabled", effort: "high" },
+    },
+    advanced = {},
   } = overrides;
   return {
-    id: "anthropic",
-    name: "Anthropic",
+    id,
+    name,
     connection: {
       kind: "direct-api",
       apiFamily: "anthropic",
@@ -38,22 +51,28 @@ function profile(overrides: ProfileOverrides = {}): SavedProfile {
       baseUrl,
       apiKey,
     },
-    model: "claude-sonnet-4-6",
-    parameters: {
-      maxOutputTokens: 6000,
-      temperature: 0.4,
-      reasoning: { mode: "enabled", effort: "high" },
-    },
-    advanced: {},
-    ...fields,
+    defaultModel: model,
+    models: [{ model, parameters, advanced }],
   };
 }
 
-function request(p: SavedProfile): TransportRequest {
+function runtimeSource(profileValue: DirectApiProfile): RuntimeModelSource {
+  return {
+    profile: {
+      id: profileValue.id,
+      name: profileValue.name,
+      connection: profileValue.connection,
+    },
+    model: profileValue.models[0]!,
+  };
+}
+
+function request(p: DirectApiProfile): TransportRequest {
+  const source = runtimeSource(p);
   return {
     runtimeProfile: {
-      profile: p,
-      capabilities: resolveModelCapabilities(p),
+      ...source,
+      capabilities: resolveModelCapabilities(source),
       inputCapabilityEvidence: {
         image: "unverified",
         audio: "unverified",
@@ -166,6 +185,86 @@ test("Anthropic Messages maps adaptive thinking and preserves content blocks", a
   assert.equal("temperature" in body, false);
   assert.equal(turn.toolCalls[0]?.id, "tool-1");
   assert.equal((turn.providerState as { content: unknown[] }).content.length, 2);
+});
+
+test("Anthropic Messages attaches terminal usage including cached input tokens", async () => {
+  for (const streaming of [false, true]) {
+    const usage = {
+      input_tokens: 100,
+      cache_creation_input_tokens: 20,
+      cache_read_input_tokens: 30,
+      output_tokens: 10,
+    };
+    const payload = streaming
+      ? [
+          ["message_start", {
+            type: "message_start",
+            message: {
+              content: [],
+              usage: { ...usage, output_tokens: 0 },
+            },
+          }],
+          ["content_block_start", {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          }],
+          ["content_block_delta", {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Done" },
+          }],
+          ["content_block_stop", { type: "content_block_stop", index: 0 }],
+          ["message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn" },
+            usage: { output_tokens: usage.output_tokens },
+          }],
+          ["message_stop", { type: "message_stop" }],
+        ].map(([name, data]) =>
+          `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
+        ).join("")
+      : JSON.stringify({
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "Done" }],
+          usage,
+        });
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: {
+          "Content-Type": streaming ? "text/event-stream" : "application/json",
+        },
+      }),
+    });
+    const req = request(profile());
+    req.runtimeProfile.capabilities.contextWindowTokens = 2_000;
+    if (streaming) req.onDelta = () => {};
+
+    const turn = await transport.createToolTurn(req);
+
+    assert.deepEqual(turn.contextUsage, {
+      usedTokens: 160,
+      contextWindowTokens: 2_000,
+    });
+  }
+});
+
+test("Anthropic Messages rejects malformed terminal context usage", async () => {
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "Done" }],
+      usage: { input_tokens: 100, output_tokens: 0.5 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 2_000;
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /context usage/i,
+  );
 });
 
 test("Anthropic Messages omits authentication for a keyless loopback Profile", async () => {
@@ -2175,7 +2274,7 @@ test("Anthropic malformed input modality arrays provide no capability hint", asy
 
   assert.equal(model?.capabilities.inputs, undefined);
   assert.equal(resolveModelCapabilities(
-    profile({ model: "claude-opus-4-5" }),
+    runtimeSource(profile({ model: "claude-opus-4-5" })),
     model?.capabilities,
   ).inputs.image, true);
 });
@@ -2384,6 +2483,10 @@ test("Anthropic discovery normalizes adaptive, budget, effort, and unsupported r
   });
 
   const models = await transport.listModels(profile());
+  assert.deepEqual(
+    models.map((model) => model.capabilities.contextWindowTokens),
+    [200_000, 200_000, 100_000],
+  );
   assert.deepEqual(models[0]?.capabilities.reasoning, {
     supported: true,
     efforts: ["low", "medium", "high", "max"],
@@ -2403,6 +2506,28 @@ test("Anthropic discovery normalizes adaptive, budget, effort, and unsupported r
     budgetTokens: false,
     strategy: "none",
   });
+});
+
+test("Anthropic discovery ignores invalid context-window metadata", async () => {
+  const invalidValues = [0, -1, 1.5, 10_000_001, "200000"];
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: invalidValues.map((maxInputTokens, index) => ({
+        type: "model",
+        id: `invalid-context-${index}`,
+        display_name: `Invalid context ${index}`,
+        max_input_tokens: maxInputTokens,
+      })),
+      has_more: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const models = await transport.listModels(profile());
+  assert.equal(models.length, invalidValues.length);
+  assert.equal(
+    models.every((model) => model.capabilities.contextWindowTokens === undefined),
+    true,
+  );
 });
 
 test("Anthropic discovery leaves disable policy to known models and conservative fallback", async () => {
@@ -2437,7 +2562,7 @@ test("Anthropic discovery leaves disable policy to known models and conservative
 
   const models = await transport.listModels(profile());
   const resolved = models.map((model) => resolveModelCapabilities(
-    profile({ model: model.id }),
+    runtimeSource(profile({ model: model.id })),
     model.capabilities,
   ));
   assert.equal(resolved[0]?.reasoning.canDisable, true);
@@ -2497,7 +2622,7 @@ test("Anthropic discovery exposes effort-only custom endpoints without inventing
 
   const [model] = await transport.listModels(profile());
   const resolved = resolveModelCapabilities(
-    profile({ model: model?.id ?? "custom-effort-only" }),
+    runtimeSource(profile({ model: model?.id ?? "custom-effort-only" })),
     model?.capabilities,
   );
   assert.equal(resolved.reasoning.supported, true);
@@ -2535,7 +2660,7 @@ test("Anthropic discovery omits absent reasoning sub-capabilities instead of era
 
   const models = await transport.listModels(profile());
   const opus48 = resolveModelCapabilities(
-    profile({ model: "claude-opus-4-8" }),
+    runtimeSource(profile({ model: "claude-opus-4-8" })),
     models[0]?.capabilities,
   );
   assert.equal(opus48.reasoning.canDisable, true);
@@ -2544,7 +2669,7 @@ test("Anthropic discovery omits absent reasoning sub-capabilities instead of era
   assert.equal(opus48.reasoning.strategy, "adaptive-thinking");
 
   const opus45 = resolveModelCapabilities(
-    profile({ model: "claude-opus-4-5" }),
+    runtimeSource(profile({ model: "claude-opus-4-5" })),
     models[1]?.capabilities,
   );
   assert.equal(opus45.reasoning.canDisable, true);

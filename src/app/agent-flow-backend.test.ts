@@ -41,11 +41,12 @@ const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
   name: "ChatGPT subscription",
   connection: { kind: "codex-subscription", provider: "openai" },
-  model: "gpt-subscription-model",
-  parameters: {
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
+  defaultModel: "gpt-subscription-model",
+  models: [{
+    model: "gpt-subscription-model",
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  }],
 };
 
 const directProfile: SavedProfile = {
@@ -58,12 +59,15 @@ const directProfile: SavedProfile = {
     baseUrl: "https://example.test/v1",
     apiKey: "test-key",
   },
-  model: "test-model",
-  parameters: {
-    maxOutputTokens: 8192,
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
+  defaultModel: "test-model",
+  models: [{
+    model: "test-model",
+    parameters: {
+      maxOutputTokens: 8192,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  }],
 };
 
 function managedLifecycleDefaults(): Pick<
@@ -361,7 +365,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, directProfile);
   const cachedModels = [{
-    id: directProfile.model,
+    id: directProfile.defaultModel,
     displayName: "Cached direct model",
     capabilities: { tools: true, streaming: true },
   }];
@@ -383,7 +387,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
         ).json() as ChatDialogState;
         assert.deepEqual(
           initial.availableModels.map((model) => model.id),
-          [directProfile.model],
+          [directProfile.defaultModel],
         );
 
         const response = await fetch(bridgeEndpoint(url, "/command"), {
@@ -402,7 +406,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
         );
         assert.deepEqual(
           state.availableModels.map((model) => model.id),
-          [directProfile.model],
+          [directProfile.defaultModel],
         );
       },
     },
@@ -484,7 +488,7 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
             const discovered = await discoveryResponse.json() as ChatDialogState;
             assert.deepEqual(
               discovered.availableModels.map((model) => model.id),
-              [directProfile.model],
+              [directProfile.defaultModel],
             );
 
             const sendResponse = await fetch(bridgeEndpoint(url, "/send"), {
@@ -520,7 +524,7 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
           listModels: async (profile) => {
             assert.equal(profile.connection.kind, "direct-api");
             return [{
-              id: directProfile.model,
+              id: directProfile.defaultModel,
               displayName: "Direct model",
               capabilities: { tools: true, streaming: true },
             }];
@@ -619,7 +623,7 @@ test("a production Direct flow bypasses a failed shared managed shutdown", {
   await runAgentFlow(context as never, interaction, {
     renderHtml: () => "<html></html>",
     listModels: async () => [{
-      id: directProfile.model,
+      id: directProfile.defaultModel,
       displayName: "Direct model",
       capabilities: { tools: true, streaming: true },
     }],
@@ -870,7 +874,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     ...managedLifecycleDefaults(),
     async listModels() {
       return [{
-        id: subscriptionProfile.model,
+        id: subscriptionProfile.defaultModel,
         displayName: "Subscription model",
         capabilities: { tools: true, streaming: false },
       }];
@@ -1570,7 +1574,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
     async listModels() {
       if (owner === "peer") peerListCalls += 1;
       return [{
-        id: subscriptionProfile.model,
+        id: subscriptionProfile.defaultModel,
         displayName: "Subscription model",
         capabilities: { tools: true, streaming: true },
       }];
@@ -1748,13 +1752,18 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
         "catalog preflight must finish before the prompt is appended",
       );
       return [{
-        id: selectedModelAvailable ? subscriptionProfile.model : "other-model",
+        id: selectedModelAvailable
+          ? subscriptionProfile.defaultModel
+          : "other-model",
         displayName: "Subscription model",
         capabilities: { tools: true, streaming: true },
       }];
     },
     async createToolTurn(request) {
-      assert.equal(request.runtimeProfile.profile.model, subscriptionProfile.model);
+      assert.equal(
+        request.runtimeProfile.model.model,
+        subscriptionProfile.defaultModel,
+      );
       throw new Error("the injected turn function owns this test");
     },
     reserveToolTurn() {
@@ -1911,7 +1920,7 @@ test("threshold reservation cleanup preserves a pre-first-turn caller abort and 
     ...managedLifecycleDefaults(),
     async listModels() {
       return [{
-        id: subscriptionProfile.model,
+        id: subscriptionProfile.defaultModel,
         displayName: "Subscription model",
         capabilities: { tools: true, streaming: true },
       }];

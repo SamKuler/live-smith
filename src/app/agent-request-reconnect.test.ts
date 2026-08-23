@@ -24,12 +24,15 @@ const profile: SavedProfile = {
     baseUrl: "https://example.test/v1",
     apiKey: "test-key",
   },
-  model: "model-a",
-  parameters: {
-    maxOutputTokens: 1_024,
-    reasoning: { mode: "default" },
-  },
-  advanced: { hostedTools: { webSearch: true } },
+  defaultModel: "model-a",
+  models: [{
+    model: "model-a",
+    parameters: {
+      maxOutputTokens: 1_024,
+      reasoning: { mode: "default" },
+    },
+    advanced: { hostedTools: { webSearch: true } },
+  }],
 };
 
 test("agent request rebuilds only the current model turn while reconnecting", {
@@ -48,6 +51,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   const published: SessionEvent[] = [];
   const requestInputs: object[] = [];
   const hostedAllowances: number[] = [];
+  const acceptedUsage: unknown[] = [];
   let modelCalls = 0;
 
   const result = await handleAgentRequest(
@@ -70,6 +74,9 @@ test("agent request rebuilds only the current model turn while reconnecting", {
       onAssistantReset: () => {
         events.push("reset");
       },
+      onModelTurnAccepted: (usage) => {
+        acceptedUsage.push(usage);
+      },
       onProgress: (message) => {
         events.push(`progress:${message}`);
       },
@@ -91,7 +98,11 @@ test("agent request rebuilds only the current model turn while reconnecting", {
         throw new ModelConnectionError();
       }
       await input.onDelta("fresh");
-      return { content: "Recovered response.", toolCalls: [] };
+      return {
+        content: "Recovered response.",
+        toolCalls: [],
+        contextUsage: { usedTokens: 640, contextWindowTokens: 16_000 },
+      };
     },
   );
 
@@ -99,6 +110,9 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   assert.equal(modelCalls, 2);
   assert.notEqual(requestInputs[0], requestInputs[1]);
   assert.deepEqual(hostedAllowances, [20, 19]);
+  assert.deepEqual(acceptedUsage, [
+    { usedTokens: 640, contextWindowTokens: 16_000 },
+  ]);
   const resetIndex = events.indexOf("reset");
   const reconnectingIndex = events.indexOf(
     "progress:Model connection lost. Reconnecting (1/5)…",

@@ -208,12 +208,12 @@ Each shared Codex startup slot likewise owns a host cancellation controller.
 Canceling one caller stops only that caller's wait; retiring the slot or
 releasing its final owner aborts startup and waits for the child process and
 metadata firewall to close.
-Explicit Check, discovery, and send readiness reads
-request credential refresh, while ordinary signed-in or signed-out state
-hydration is passive. Before
+Explicit Check, Settings discovery, opening a composer model/reasoning selector,
+and send readiness reads request credential refresh, while ordinary signed-in
+or signed-out state hydration is passive. Before
 persisting a subscription prompt, the server confirms an eligible signed-in
 account, refreshes a generation-scoped catalog miss, and requires the saved
-model in it. Readiness failures are unpersisted, so Queue pauses its head
+Session-selected model in it. Readiness failures are unpersisted, so Queue pauses its head
 instead of draining. Live
 Smith's normalized subscription model projection
 stays only in the owning modal, is invalidated on every auth generation, is
@@ -227,7 +227,11 @@ process rather than leaving quota-consuming work orphaned.
 
 Both `thread/start` and `turn/start` send `serviceTier: null`; with exact 0.148's
 `fast_mode` disabled, Live Smith requires a null effective response tier before
-allowing the turn. Terminal turns call `thread/unsubscribe`. A backend
+allowing the turn. The backend also correlates
+`thread/tokenUsage/updated` to the exact owned ephemeral thread and turn. A
+valid `last.totalTokens` plus non-null `modelContextWindow` becomes the latest
+accepted-turn context meter; a valid null window means the meter remains
+unavailable. Terminal turns call `thread/unsubscribe`. A backend
 admits at most four concurrent turns and recycles after eight created threads
 once its active turns and first-turn reservations drain. Threshold recycling
 rejects new reservations while already-admitted continuations finish. At
@@ -295,42 +299,53 @@ policy](https://code.claude.com/docs/en/legal-and-compliance) and
 
 ## Named profiles
 
-Each Profile stores a complete connection:
+Each Profile stores one complete connection and one or more configured models:
 
-- name, model, and a discriminated `direct-api` or `codex-subscription`
-  connection;
+- a name and discriminated `direct-api` or `codex-subscription` connection;
+- a non-empty model configuration list plus one default model;
 - for Direct API, API family/mode and base URL, plus an API key unless the
   endpoint is local loopback;
-- connection- and capability-aware generation controls;
-- for Direct API, maximum output tokens, optional temperature, and
-  token-budget thinking;
-- for Direct API, optional provider-hosted Web Search, capability overrides,
-  and Extra Body JSON.
+- per-model, capability-aware generation controls;
+- for each Direct API model, maximum output tokens, optional temperature or
+  token-budget thinking, optional provider-hosted Web Search, capability
+  overrides, and Extra Body JSON.
 
 Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
 the entire draft and makes it active. Changing session or sending a message does
 not save the draft. Send remains disabled until the draft is saved or discarded.
-Switching a saved Profile switches the whole connection and parameter set.
+Switching a saved Profile switches the connection. The composer selects one of
+that Profile's configured models for the active Session; the selection persists
+only Profile ID, model ID, and an optional reasoning-effort override. It never
+copies connection fields, credentials, discovery metadata, or request JSON into
+the Session.
 
 The implementation keeps three Profile representations explicit:
 
-- `DraftProfile` is the editable, possibly incomplete form. **Connect & Load** checks
-  only its connection fields, so name and model may still be blank.
-- `SavedProfile` is the fully validated value persisted by Profile CRUD.
-- `RuntimeProfile` combines the active Saved Profile with resolved capabilities.
-  Model requests and the active header both read this same runtime value; an
-  unsaved Draft only changes the labelled Inspector preview. Connection routing
-  reads the discriminant and is never inferred from a model name.
+- `DraftProfile` is the editable, possibly incomplete connection and model
+  collection. **Connect & Load** checks only its connection fields, so the name
+  and model list may still be incomplete.
+- `SavedProfile` is the fully validated connection, default model, and model
+  configuration collection persisted by Profile CRUD.
+- `RuntimeProfile` contains only the active saved connection identity, the one
+  model configuration selected for the Session, and capabilities resolved for
+  that model. Transports never receive the persisted model collection.
+- The Settings discovery projection belongs only to the Draft editor. The
+  composer reads a separate projection built from the active Saved Profile and
+  active Session, so an unsaved Draft cannot change a conversation's runtime
+  model or reasoning label. Connection routing reads the discriminant and is
+  never inferred from a model name.
 
 The first run contains no Profiles. Schema-version-2 flat Profiles first
-migrate to the nested version-3 `direct-api` shape. Current schema version 4
+migrate to the nested version-3 `direct-api` shape. Current schema version 5
 also reads the other historical development-v3 shape containing flat Profiles
 plus Queue/Steer behavior and a canonical decimal-string revision. Version 3 is
 discriminated before validation: both follow-up fields mean the flat shape;
 neither means the nested subscription shape. Partial fields, mixed Profile
 shapes, and unknown fields fail closed. Migration preserves API family, mode,
-base URL, key, model, supported parameters, active identity, and any Queue/Steer revision;
-the nested v3 shape receives Queue at revision `"0"`. Reads do not rewrite.
+base URL, key, model, supported parameters, active identity, and any Queue/Steer
+revision; the nested v3 shape receives Queue at revision `"0"`. Version 4's
+single model, parameters, and Advanced settings become the sole model
+configuration and default model in version 5. Reads do not rewrite.
 Historical schema-v3/v4 subscription Profiles may contain the former fixed
 `maxOutputTokens` placeholder. Decoding removes that unconsumed field, and the
 next authorized settings write persists the connection-specific shape.
@@ -342,10 +357,10 @@ next authorized settings write persists the connection-specific shape.
 Queue and Steer are deliberately different lifecycles. Queue is the global
 default: the UI holds each pending item for its Session, waits for the current
 send to become terminal, and then starts a new ordinary send with a new
-correlation ID. That turn reloads the active saved Profile, auth generation,
-capabilities, Skills, attachments, Session history, recovery state, and
-Approval state. Queue text never enters the preceding provider request or its
-local replay state.
+correlation ID. That turn reloads the active saved Profile, the Session's model
+and reasoning selection, auth generation, capabilities, Skills, attachments,
+Session history, recovery state, and Approval state. Queue text never enters
+the preceding provider request or its local replay state.
 
 Steer targets the active send instead. The chosen default is read when each
 follow-up is submitted, so a settings change applies immediately to the next
@@ -388,8 +403,8 @@ closed with a real or explicit skipped result before steering is replayed:
 - Anthropic Messages places `tool_result` blocks first and steering text after
   them in the same user content block.
 
-Steering is text-only. It does not resnapshot the Profile, attachments, active
-Skills, capabilities, or Extra Body. Persistence and retry are also
+Steering is text-only. It does not resnapshot the Profile, selected model or
+reasoning, attachments, active Skills, capabilities, or Extra Body. Persistence and retry are also
 provider-neutral: each accepted steering user event has a storage receipt bound
 to the original send ID, steering ID, and prompt hash. The dialog projection
 removes that storage-only hash and exposes a correlation-only `steeringAck` on
@@ -642,15 +657,16 @@ Capabilities resolve in this order:
 3. Known model policy.
 4. Conservative API-mode fallback.
 
-Input capabilities also retain the evidence behind the resolved Boolean. A
-manual override wins over a valid discovery hint, which wins over documented
-known-model policy. An explicit `false` is unsupported; the conservative
-fallback value remains unknown/unverified in the UI rather than being presented
-as provider evidence. This distinction gates the corresponding image or native
-PDF input. Audio uses the stricter rule above and requires `supported` evidence
-in addition to an OpenAI Chat Completions connection or a subscription catalog
-that declares audio input. None of these gates ordinary text sends, local
-Office text extraction, or creation of a pending attachment.
+The UI projection retains evidence for temperature, output/context limits,
+reasoning, and every input modality. A manual override wins over a valid
+discovery hint, which wins over documented known-model policy. An explicit
+`false` is unsupported; a conservative fallback Boolean remains
+unknown/unverified rather than being presented as provider evidence. This
+distinction gates the corresponding image or native PDF input. Audio uses the
+stricter rule above and requires `supported` evidence in addition to an OpenAI
+Chat Completions connection or a subscription catalog that declares audio
+input. None of these gates ordinary text sends, local Office text extraction,
+or creation of a pending attachment.
 
 Anthropic discovery reads the official
 `capabilities.image_input.supported` and `capabilities.pdf_input.supported`
@@ -676,6 +692,22 @@ An absent output-token limit remains unknown. The 8192 value shown for a new
 Profile is only an initial requested value, not a model capability limit. Live
 Smith constrains and validates that field only when discovery metadata, known
 model policy, or a manual capability override provides an explicit limit.
+
+Context-window capacity is separate from the output-token limit. Anthropic's
+explicit `max_input_tokens` discovery field and the documented current
+GPT-5.6 aliases can supply that metadata; unknown/custom models remain
+unverified. Live Smith never uses `maxOutputTokens` as a context denominator.
+Terminal OpenAI Responses, non-streaming Chat Completions, and Anthropic
+Messages usage becomes a percentage only when that authoritative denominator
+is present. Chat Completions streaming is not changed merely to request usage.
+The value is scoped to the latest accepted model turn, not summed retries,
+continuations, agent-loop steps, or billed traffic, and remains window-local UI
+state rather than Session history. Starting a new send does not erase the
+Session's last accepted value, but once that send accepts a turn without both
+parts of the exact pair, the display returns to unavailable. Changing the
+effective Profile/model clears the old value immediately so a previous model's
+denominator is never displayed beside the new model; a reasoning-only change
+keeps it.
 
 Live Smith's persistent Direct API discovery cache stores only raw provider
 metadata.

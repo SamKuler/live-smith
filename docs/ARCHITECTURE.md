@@ -22,7 +22,8 @@ src/
       Strict correlation IDs, command/query decoding, bounded body reads, and
       safe request errors for the bridge transport boundary.
     model-request.ts
-      Builds provider-neutral transport requests and capability previews.
+      Materializes one Session-selected model from a saved multi-model Profile,
+      then builds provider-neutral requests and Draft capability previews.
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
@@ -81,10 +82,12 @@ src/
     contracts.ts
       Normalized conversation, tool-call, and model-turn contracts.
     profile.ts
-      Named profile schema and structural validation.
+      Named connection Profile, per-model configuration, and structural
+      validation contracts.
     provider.ts
-      Normalized model, capability, tool, transport, managed-auth, and backend
-      contracts.
+      Separates persisted Profile collections from the one effective runtime
+      model, and owns normalized capability/evidence, context-usage, tool,
+      transport, managed-auth, and backend contracts.
     capabilities.ts
       API-mode fallbacks, known model policies, and manual override resolution.
     backend-registry.ts
@@ -140,7 +143,8 @@ src/
       Live Smith's normalized subscription catalogs stay modal-only. Codex's
       separate isolated upstream cache is described below.
     events.ts, sessions.ts
-      Chat session metadata and the canonical event history.
+      Chat session metadata, narrow Profile/model/reasoning selections, and the
+      canonical event history.
     attachments.ts
       Private create-only attachment blobs, integrity metadata, ownership checks,
       quota policy, and durable Session-scoped cleanup.
@@ -150,7 +154,7 @@ src/
 
   ui/
     chat-state.ts
-      Safely serializes modal state and the authoritative source identity for
+      Safely serializes modal state plus the source identity and evidence for
       capability/model discovery results.
     chat-document.ts
       Composes the production and DOM-test chat document from one fragment map.
@@ -169,9 +173,11 @@ src/
    bytes never enter the send JSON body.
 2. `agent-flow.ts` loads the saved active profile; an unsaved UI draft can never
    enter a model request.
-3. `capabilities.ts` resolves effective model capabilities and validates the
-   saved generation parameters from manual overrides, raw discovery metadata,
-   known policy, and conservative fallback.
+3. `capabilities.ts` resolves effective model capabilities and their evidence,
+   then validates saved generation parameters from manual overrides, raw
+   discovery metadata, known policy, and conservative fallback. A fallback
+   Boolean can keep a protocol usable without being presented as verified
+   provider support.
 4. Before attachment reads or event append, `skill-context.ts` unions sorted
    persistent Session IDs with installed `$skill-id` mentions. It validates and
    copies only selected definitions inside one global storage transaction,
@@ -580,9 +586,13 @@ removal fails or has an unknown commit outcome, the session remains visible and
 retryable instead of leaving an unreachable conversation log.
 
 Capability previews and discovered model lists carry an explicit source identity
-in `ChatDialogState`. Both command HTTP responses and SSE state events use that
-identity, so an unsaved Profile draft cannot be confused with the active saved
-Profile when the two channels arrive in either order.
+in `ChatDialogState`, together with field-level evidence for temperature,
+output/context limits, reasoning, and input modalities. Both command HTTP
+responses and SSE state events use that identity, so an unsaved Profile draft
+cannot be confused with the active saved Profile when the two channels arrive
+in either order. Conservative fallback values remain `unverified`; only known
+policy, explicit discovery metadata, or a manual override may make the preview
+authoritative.
 
 Profile state has three deliberate boundaries: incomplete `DraftProfile` values
 enter through settings commands, only validated `SavedProfile` values reach
@@ -851,12 +861,30 @@ advances the epoch and clears the prior assistant draft and in-flight search
 projection. Every new `/events` connection receives one exact
 `model_turn_state` snapshot for each active, non-stopped send before any open
 confirmation is replayed. That snapshot carries the current draft, bounded
-search map, progress text, and highest resolved confirmation generation. The
+search map, progress text, and highest resolved confirmation generation. Its
+context-usage field is tri-state: absent before this send accepts a model turn,
+an exact pair after an accepted turn with authoritative usage, and `null` after
+an accepted turn without it. Absence preserves the Session's prior window-local
+value; `null` explicitly clears it. The
 reconnectable assistant draft is independently limited to 1 MiB of cumulative
 UTF-8 bytes. The client replaces same-epoch transient state atomically, rejects
 lower epochs, and uses the confirmation frontier plus each request's generation
 to prevent a resolved or steering-superseded decision from reopening.
 Background Sessions retain their own projection until selected.
+
+Context utilization is scoped to the latest accepted, non-continuation model
+turn. A transport attaches it only when both provider-reported used tokens and
+an authoritative context-window size are available. The managed Codex backend
+correlates `thread/tokenUsage/updated` to its owned ephemeral thread and turn;
+Direct transports normalize terminal protocol usage when their model metadata
+supplies the denominator. Output-limit continuations, reconnect attempts, and
+turns superseded by Steer do not advance the meter. The bridge keeps the value
+for active-send recovery, while the WebView retains the latest value per Session
+for that window. A newly started send preserves the prior value until its first
+accepted turn; an accepted turn without authoritative usage clears it and
+renders unavailable. It is not persisted in Session history and is not a
+traffic or billing accumulator. Missing evidence renders as unavailable rather
+than zero or an estimated percentage.
 
 `model_turn_state` is an ephemeral recovery snapshot: it neither advances the
 dialog-wide state cut nor claims durable Session history. The bridge does not
@@ -932,21 +960,24 @@ Steering detected at the first per-action guard has no completed action and is
 therefore a clean supersession, not a partial host failure; it closes the tool
 call and replans without opening a recovery ledger. A guard reached after any
 completed action retains the partial-recovery path.
-Current settings schema version 4 combines nested connection Profiles with the
-strict `defaultFollowUpBehavior` value `queue | steer` and a canonical
-nonnegative decimal-string revision. It still validates legacy `approvalMode`
-for compatibility, but runtime authorization never reads that field.
-Subscription Profiles persist reasoning mode and optional effort but no
-unconsumed output-token placeholder; the decoder removes that historical field
+Current settings schema version 5 combines connection Profiles, per-model
+configuration collections, the strict `defaultFollowUpBehavior` value
+`queue | steer`, and a canonical nonnegative decimal-string revision. It still
+validates legacy `approvalMode` for compatibility, but runtime authorization
+never reads that field. Subscription model configurations persist reasoning
+mode and optional effort but no unconsumed output-token placeholder; the
+decoder removes that historical field
 from older nested subscription Profiles without rewriting on read. Persisted
 settings use adjacent migrations: v1 maps `autoApprove` into v2, v2 wraps flat
 Profiles into the subscription branch's nested v3 shape, and v3 is
-shape-discriminated before migrating to v4. A v3 containing both follow-up
-fields must contain only flat Profiles and preserves its behavior/revision; a
-v3 containing neither must contain only nested Profiles and receives Queue at
+shape-discriminated before migrating to v4. Version 4's single model becomes
+the default entry in a version-5 model configuration list. A v3 containing
+both follow-up fields must contain only flat Profiles and preserves its
+behavior/revision; a v3 containing neither must contain only nested Profiles
+and receives Queue at
 revision `"0"`. Partial fields, mixed Profile shapes, and unknown fields fail
 closed. Reads never rewrite the file; the next authorized settings mutation
-persists version 4. A future version or incomplete adjacent migration chain is
+persists version 5. A future version or incomplete adjacent migration chain is
 reported as settings corruption.
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
 tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call

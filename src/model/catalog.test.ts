@@ -6,6 +6,7 @@ import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS,
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
+  MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
   MAX_DISCOVERED_MODEL_OUTPUT_TOKENS,
 } from "./catalog.js";
 
@@ -14,6 +15,7 @@ const validModel = {
   displayName: "Model A",
   capabilities: {
     maxOutputTokens: 32_000,
+    contextWindowTokens: 200_000,
     reasoning: {
       efforts: ["low", "high"],
     },
@@ -49,6 +51,16 @@ test("model catalog decoder rejects ambiguous or unusable model metadata", () =>
     [{
       ...validModel,
       capabilities: { maxOutputTokens: MAX_DISCOVERED_MODEL_OUTPUT_TOKENS + 1 },
+    }],
+    [{
+      ...validModel,
+      capabilities: { contextWindowTokens: 1.5 },
+    }],
+    [{
+      ...validModel,
+      capabilities: {
+        contextWindowTokens: MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS + 1,
+      },
     }],
     [{
       ...validModel,

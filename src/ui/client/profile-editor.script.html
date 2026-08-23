@@ -11,6 +11,7 @@
       let draftProfile = null;
       let savedProfileSnapshot = null;
       let draftDirty = false;
+      let selectedModelIndex = 0;
       let modelStateSource = null;
       let renderedModelOptionsMatchConnection = false;
       let renderedCodexAuthKey = null;
@@ -23,6 +24,11 @@
         "connection.apiMode": "apiMode",
         "connection.apiKey": "apiKey",
         "connection.baseUrl": "baseUrl",
+        defaultModel: "modelConfigSelector",
+        models: "modelConfigSelector",
+      };
+
+      const controlIdByModelField = {
         model: "model",
         "parameters.temperature": "temperature",
         "parameters.maxOutputTokens": "maxOutputTokens",
@@ -72,7 +78,14 @@
       }
 
       function showFieldError(field, message) {
-        const controlId = controlIdByProfileField[field];
+        const modelField = /^models\.(\d+)\.(.+)$/.exec(field);
+        if (modelField && draftProfile?.models?.[Number(modelField[1])]) {
+          selectedModelIndex = Number(modelField[1]);
+          renderSelectedModelConfig();
+        }
+        const controlId = modelField
+          ? controlIdByModelField[modelField[2]]
+          : controlIdByProfileField[field];
         const control = controlId ? document.getElementById(controlId) : null;
         const container = control?.closest(".field");
         if (!control || !container) return false;
@@ -126,11 +139,20 @@
             baseUrl: "",
             apiKey: "",
           },
+          defaultModel: "",
+          models: [blankModelConfig(false)],
+        };
+      }
+
+      function blankModelConfig(subscription = isCodexSubscription()) {
+        return {
           model: "",
-          parameters: {
-            maxOutputTokens: 8192,
-            reasoning: { mode: "default" },
-          },
+          parameters: subscription
+            ? { reasoning: { mode: "default" } }
+            : {
+                maxOutputTokens: 8192,
+                reasoning: { mode: "default" },
+              },
           advanced: {},
         };
       }
@@ -143,6 +165,9 @@
       function modelSourceFor(profile) {
         if (!profile) return null;
         const connection = profile.connection;
+        const model = profile.model ??
+          profile.models?.find((entry) => entry.model === profile.defaultModel)?.model ??
+          profile.models?.[0]?.model ?? "";
         return {
           profileId: profile.profileId || profile.id || "",
           connection: connection.kind === "direct-api"
@@ -154,7 +179,7 @@
                 apiKey: String(connection.apiKey || "").trim(),
               }
             : { kind: "codex-subscription", provider: "openai" },
-          model: String(profile.model || "").trim(),
+          model: String(model || "").trim(),
         };
       }
 
@@ -204,7 +229,20 @@
         return (getState().settings.profiles || []).find((profile) => profile.id === id) || null;
       }
 
-      function profileFromForm() {
+      function connectionFromForm() {
+        const subscription = isCodexSubscription();
+        return subscription
+          ? { kind: "codex-subscription", provider: "openai" }
+          : {
+              kind: "direct-api",
+              apiFamily: document.getElementById("apiFamily").value,
+              apiMode: document.getElementById("apiMode").value,
+              apiKey: document.getElementById("apiKey").value.trim(),
+              baseUrl: document.getElementById("baseUrl").value.trim(),
+            };
+      }
+
+      function modelConfigFromForm() {
         const subscription = isCodexSubscription();
         const temperatureControl = document.getElementById("temperature");
         const temperatureRaw = subscription || temperatureControl.disabled
@@ -244,17 +282,6 @@
         if (extraBody) advanced.extraBody = extraBody;
         const temperature = Number(temperatureRaw);
         return {
-          id: draftProfile?.id || createProfileId(),
-          name: document.getElementById("profileName").value.trim(),
-          connection: subscription
-            ? { kind: "codex-subscription", provider: "openai" }
-            : {
-                kind: "direct-api",
-                apiFamily: document.getElementById("apiFamily").value,
-                apiMode: document.getElementById("apiMode").value,
-                apiKey: document.getElementById("apiKey").value.trim(),
-                baseUrl: document.getElementById("baseUrl").value.trim(),
-              },
           model: document.getElementById("model").value.trim(),
           parameters: subscription
             ? { reasoning }
@@ -268,6 +295,44 @@
                 reasoning,
               },
           advanced,
+        };
+      }
+
+      function synchronizeCurrentModelConfig() {
+        if (!draftProfile) return null;
+        if (!Array.isArray(draftProfile.models) || draftProfile.models.length === 0) {
+          draftProfile.models = [blankModelConfig()];
+          selectedModelIndex = 0;
+        }
+        selectedModelIndex = Math.min(
+          Math.max(0, selectedModelIndex),
+          draftProfile.models.length - 1,
+        );
+        const previous = draftProfile.models[selectedModelIndex];
+        const next = modelConfigFromForm();
+        draftProfile.models[selectedModelIndex] = next;
+        if (
+          !draftProfile.defaultModel ||
+          draftProfile.defaultModel === previous?.model
+        ) {
+          draftProfile.defaultModel = next.model;
+        }
+        return next;
+      }
+
+      function profileFromForm() {
+        const current = synchronizeCurrentModelConfig();
+        const models = cloneValue(draftProfile?.models || []);
+        const defaultModel = draftProfile?.defaultModel ||
+          current?.model ||
+          models.find((entry) => entry.model)?.model ||
+          "";
+        return {
+          id: draftProfile?.id || createProfileId(),
+          name: document.getElementById("profileName").value.trim(),
+          connection: connectionFromForm(),
+          defaultModel,
+          models,
         };
       }
 
@@ -310,10 +375,161 @@
         if (value !== "inherit") target[key] = value === "true";
       }
 
+      function modelConfigLabel(entry, index) {
+        const model = String(entry?.model || "").trim();
+        return model || `Untitled model ${index + 1}`;
+      }
+
+      function renderModelConfigSelector() {
+        const selector = document.getElementById("modelConfigSelector");
+        if (!selector) return;
+        const models = draftProfile?.models || [];
+        selector.replaceChildren();
+        for (const [index, entry] of models.entries()) {
+          const isDefault = Boolean(entry.model) &&
+            entry.model === draftProfile.defaultModel;
+          selector.append(new Option(
+            `${modelConfigLabel(entry, index)}${isDefault ? " · Default" : ""}`,
+            String(index),
+          ));
+        }
+        selectedModelIndex = models.length
+          ? Math.min(Math.max(0, selectedModelIndex), models.length - 1)
+          : 0;
+        selector.value = String(selectedModelIndex);
+        const selected = models[selectedModelIndex];
+        const isDefault = Boolean(selected?.model) &&
+          selected.model === draftProfile?.defaultModel;
+        document.getElementById("modelConfigDefault").textContent = isDefault
+          ? "Default for new Sessions"
+          : "";
+        document.getElementById("removeModelConfigButton").disabled =
+          models.length <= 1;
+        document.getElementById("setDefaultModelButton").disabled =
+          !selected?.model || isDefault;
+      }
+
+      function renderSelectedModelConfig() {
+        const entry = draftProfile?.models?.[selectedModelIndex] ||
+          blankModelConfig();
+        document.getElementById("model").value = entry.model || "";
+        document.getElementById("temperature").value =
+          entry.parameters?.temperature ?? "";
+        document.getElementById("maxOutputTokens").value =
+          entry.parameters?.maxOutputTokens ?? "";
+        document.getElementById("reasoningBudgetTokens").value =
+          entry.parameters?.reasoning?.budgetTokens || "";
+        document.getElementById("reasoningMode").dataset.requestedValue =
+          entry.parameters?.reasoning?.mode || "default";
+        document.getElementById("reasoningEffort").dataset.requestedValue =
+          entry.parameters?.reasoning?.effort || "";
+        populateCapabilityOverrides(entry.advanced?.capabilityOverrides || {});
+        document.getElementById("webSearchEnabled").checked =
+          entry.advanced?.hostedTools?.webSearch === true;
+        document.getElementById("extraBody").value = entry.advanced?.extraBody
+          ? JSON.stringify(entry.advanced.extraBody, null, 2)
+          : "";
+        if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
+        renderModelConfigSelector();
+        renderModelOptions();
+        updateHostedToolControls();
+        updateCapabilityPreview();
+      }
+
+      function handleModelConfigSelection() {
+        const selector = document.getElementById("modelConfigSelector");
+        const nextIndex = Number(selector.value);
+        if (!Number.isInteger(nextIndex) || !draftProfile?.models?.[nextIndex]) {
+          renderModelConfigSelector();
+          return;
+        }
+        try {
+          synchronizeCurrentModelConfig();
+        } catch (error) {
+          selector.value = String(selectedModelIndex);
+          showProfileFormError(error);
+          return;
+        }
+        selectedModelIndex = nextIndex;
+        clearFieldErrors();
+        renderSelectedModelConfig();
+        updateDraftActions();
+      }
+
+      function addModelConfig() {
+        try {
+          synchronizeCurrentModelConfig();
+        } catch (error) {
+          showProfileFormError(error);
+          return;
+        }
+        draftProfile.models.push(blankModelConfig());
+        selectedModelIndex = draftProfile.models.length - 1;
+        draftDirty = true;
+        getState().status = undefined;
+        clearFieldErrors();
+        renderSelectedModelConfig();
+        updateDraftActions();
+        document.getElementById("model").focus({ preventScroll: true });
+      }
+
+      function removeModelConfig() {
+        if (!draftProfile?.models || draftProfile.models.length <= 1) return;
+        const removed = draftProfile.models[selectedModelIndex];
+        draftProfile.models.splice(selectedModelIndex, 1);
+        selectedModelIndex = Math.min(
+          selectedModelIndex,
+          draftProfile.models.length - 1,
+        );
+        if (removed?.model === draftProfile.defaultModel) {
+          draftProfile.defaultModel =
+            draftProfile.models[selectedModelIndex]?.model || "";
+        }
+        draftDirty = true;
+        getState().status = undefined;
+        clearFieldErrors();
+        renderSelectedModelConfig();
+        updateDraftActions();
+      }
+
+      function setDefaultModel() {
+        let entry;
+        try {
+          entry = synchronizeCurrentModelConfig();
+        } catch (error) {
+          showProfileFormError(error);
+          return;
+        }
+        if (!entry?.model) {
+          showFieldError(
+            `models.${selectedModelIndex}.model`,
+            "Enter a Model ID before setting the default.",
+          );
+          return;
+        }
+        draftProfile.defaultModel = entry.model;
+        draftDirty = true;
+        getState().status = undefined;
+        renderModelConfigSelector();
+        updateDraftActions();
+      }
+
       function markDraftDirty(control) {
         draftDirty = true;
         getState().status = undefined;
         clearFieldError(control);
+        if (control?.id === "model" && draftProfile?.models?.[selectedModelIndex]) {
+          const entry = draftProfile.models[selectedModelIndex];
+          const previousModel = entry.model;
+          entry.model = control.value.trim();
+          if (
+            !draftProfile.defaultModel ||
+            draftProfile.defaultModel === previousModel
+          ) {
+            draftProfile.defaultModel = entry.model;
+          }
+          renderModelConfigSelector();
+        }
         if (
           renderedModelOptionsMatchConnection !== modelStateMatchesCurrentConnection()
         ) {
@@ -341,6 +557,11 @@
       function handleConnectionKindChange() {
         const control = document.getElementById("connectionKind");
         if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
+        else if (!document.getElementById("maxOutputTokens").value) {
+          document.getElementById("maxOutputTokens").value = "8192";
+        }
+        synchronizeCurrentModelConfig();
+        normalizeDraftModelsForConnection();
         applyConnectionKindPresentation();
         markDraftDirty(control);
         updateHostedToolControls();
@@ -355,6 +576,34 @@
         populateCapabilityOverrides({});
         const reasoningMode = document.getElementById("reasoningMode");
         if (reasoningMode.value === "disabled") reasoningMode.value = "default";
+      }
+
+      function normalizeDraftModelsForConnection() {
+        if (!draftProfile?.models) return;
+        const subscription = isCodexSubscription();
+        draftProfile.models = draftProfile.models.map((entry) => {
+          const reasoning = cloneValue(entry.parameters?.reasoning) || {
+            mode: "default",
+          };
+          if (subscription && reasoning.mode === "disabled") {
+            reasoning.mode = "default";
+          }
+          if (subscription) delete reasoning.budgetTokens;
+          return {
+            model: entry.model || "",
+            parameters: subscription
+              ? { reasoning }
+              : {
+                  maxOutputTokens: entry.parameters?.maxOutputTokens || 8192,
+                  ...(entry.parameters?.temperature === undefined
+                    ? {}
+                    : { temperature: entry.parameters.temperature }),
+                  reasoning,
+                },
+            advanced: subscription ? {} : cloneValue(entry.advanced || {}),
+          };
+        });
+        renderSelectedModelConfig();
       }
 
       function applyConnectionKindPresentation(settingsLocked = false) {
@@ -395,6 +644,11 @@
         const webSearch = document.getElementById("webSearchEnabled");
         const webSearchWasEnabled = webSearch.checked;
         if (modeControl.value === "chat-completions") webSearch.checked = false;
+        if (modeControl.value === "chat-completions") {
+          for (const entry of draftProfile?.models || []) {
+            if (entry.advanced?.hostedTools) delete entry.advanced.hostedTools;
+          }
+        }
         markDraftDirty(modeControl);
         updateHostedToolControls(false, webSearchWasEnabled && !webSearch.checked);
       }
@@ -407,9 +661,11 @@
       function updateHostedToolControls(settingsLocked = false, wasTurnedOff = false) {
         const control = document.getElementById("webSearchEnabled");
         const hint = document.getElementById("webSearchHint");
+        const boundary = document.getElementById("webSearchBoundaryHint");
         const mode = document.getElementById("apiMode").value;
         const subscription = isCodexSubscription();
         const supported = !subscription && (mode === "responses" || mode === "messages");
+        if (boundary) boundary.hidden = !subscription;
         if (subscription) control.checked = false;
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
@@ -704,6 +960,8 @@
           showProfileFormError(error);
           return;
         }
+        profile.defaultModel = profile.models[selectedModelIndex]?.model ||
+          profile.defaultModel;
         await runCommand("discover_models", { profile });
       }
 
@@ -793,29 +1051,18 @@
         document.getElementById("apiKeyVisibilityButton").textContent = "Show";
         document.getElementById("apiKeyVisibilityButton").setAttribute("aria-pressed", "false");
         document.getElementById("baseUrl").value = directConnection?.baseUrl || "";
-        document.getElementById("model").value = profile.model || "";
-        document.getElementById("temperature").value = profile.parameters?.temperature ?? "";
-        document.getElementById("maxOutputTokens").value =
-          profile.parameters.maxOutputTokens ?? "";
-        document.getElementById("reasoningBudgetTokens").value = profile.parameters?.reasoning?.budgetTokens || "";
-        document.getElementById("reasoningMode").dataset.requestedValue =
-          profile.parameters?.reasoning?.mode || "default";
-        document.getElementById("reasoningEffort").dataset.requestedValue =
-          profile.parameters?.reasoning?.effort || "";
-        populateCapabilityOverrides(profile.advanced?.capabilityOverrides || {});
-        document.getElementById("webSearchEnabled").checked =
-          profile.advanced?.hostedTools?.webSearch === true;
-        document.getElementById("extraBody").value = profile.advanced?.extraBody
-          ? JSON.stringify(profile.advanced.extraBody, null, 2)
-          : "";
-        if (connection.kind === "codex-subscription") {
-          clearManagedSubscriptionIncompatibleSettings();
+        if (!Array.isArray(draftProfile.models) || draftProfile.models.length === 0) {
+          draftProfile.models = [blankModelConfig(connection.kind === "codex-subscription")];
         }
+        selectedModelIndex = Math.max(
+          0,
+          draftProfile.models.findIndex(
+            (entry) => entry.model === draftProfile.defaultModel,
+          ),
+        );
         updateAnthropicSubscriptionHint();
         applyConnectionKindPresentation();
-        renderModelOptions();
-        updateHostedToolControls();
-        updateCapabilityPreview();
+        renderSelectedModelConfig();
         updateDraftActions();
       }
 
@@ -1028,7 +1275,11 @@
         const stateCapabilities = modelStateMatchesCurrentProfile()
           ? state.capabilities
           : null;
+        const stateCapabilityEvidence = modelStateMatchesCurrentProfile()
+          ? state.capabilityEvidence
+          : null;
         const baseCapability = discovered?.capabilities || stateCapabilities;
+        const baseEvidence = discovered?.capabilityEvidence || stateCapabilityEvidence;
         const capability = cloneValue(baseCapability) || {
           tools: true,
           streaming: true,
@@ -1039,6 +1290,17 @@
             efforts: [],
             budgetTokens: false,
             strategy: "none",
+          },
+        };
+        const evidence = cloneValue(baseEvidence) || {
+          temperature: "unverified",
+          maxOutputTokens: "unverified",
+          contextWindowTokens: "unverified",
+          reasoning: "unverified",
+          inputs: {
+            image: "unverified",
+            audio: "unverified",
+            pdf: "unverified",
           },
         };
         let overrides = {};
@@ -1055,23 +1317,39 @@
         ]) {
           if (overrides[key] !== undefined) capability[key] = overrides[key];
         }
+        if (overrides.temperature !== undefined) {
+          evidence.temperature = overrides.temperature;
+        }
+        if (overrides.maxOutputTokens !== undefined) {
+          evidence.maxOutputTokens = "verified";
+        }
         capability.inputs = capability.inputs || {};
         Object.assign(capability.inputs, overrides.inputs || {});
+        evidence.inputs = evidence.inputs || {};
+        for (const key of ["image", "audio", "pdf"]) {
+          if (overrides.inputs?.[key] !== undefined) {
+            evidence.inputs[key] = overrides.inputs[key]
+              ? "supported"
+              : "unsupported";
+          }
+        }
         capability.reasoning = capability.reasoning || {};
         Object.assign(capability.reasoning, overrides.reasoning || {});
+        if (overrides.reasoning?.supported !== undefined) {
+          evidence.reasoning = overrides.reasoning.supported
+            ? "supported"
+            : "unsupported";
+        }
         return {
           capability,
+          evidence,
           authoritative: {
-            maxOutputTokens: Boolean(baseCapability) ||
-              overrides.maxOutputTokens !== undefined,
-            reasoning: Boolean(baseCapability) ||
-              overrides.reasoning?.supported !== undefined,
-            temperature: Boolean(baseCapability) ||
-              overrides.temperature !== undefined,
+            maxOutputTokens: evidence.maxOutputTokens === "verified",
+            reasoning: evidence.reasoning !== "unverified",
+            temperature: evidence.temperature !== "unverified",
             inputs: Object.fromEntries(["image", "audio", "pdf"].map((key) => [
               key,
-              typeof baseCapability?.inputs?.[key] === "boolean" ||
-                overrides.inputs?.[key] !== undefined,
+              evidence.inputs?.[key] !== "unverified",
             ])),
           },
         };
@@ -1166,6 +1444,15 @@
           settingsOperationInProgress || !hasSaved;
         document.getElementById("duplicateProfileButton").disabled =
           settingsOperationInProgress || !draftProfile;
+        const selected = draftProfile?.models?.[selectedModelIndex];
+        document.getElementById("addModelConfigButton").disabled =
+          settingsOperationInProgress || !draftProfile;
+        document.getElementById("removeModelConfigButton").disabled =
+          settingsOperationInProgress || !draftProfile ||
+          draftProfile.models.length <= 1;
+        document.getElementById("setDefaultModelButton").disabled =
+          settingsOperationInProgress || !selected?.model ||
+          selected.model === draftProfile?.defaultModel;
         const badge = document.getElementById("draftStatus");
         badge.textContent = draftDirty ? "Unsaved changes" : "Saved";
         badge.classList.toggle("dirty", draftDirty);
@@ -1176,6 +1463,7 @@
       }
 
       return {
+        addModelConfig,
         addProfile,
         clearFieldErrors,
         deleteProfile,
@@ -1190,6 +1478,7 @@
         handleApiFamilyChange,
         handleApiModeChange,
         handleConnectionKindChange,
+        handleModelConfigSelection,
         handleProfileSelection,
         handleWebSearchChange,
         markDraftDirty,
@@ -1201,10 +1490,12 @@
         renderModelOptions,
         renderApprovalMode,
         renderSettingsForm,
+        removeModelConfig,
         saveApprovalMode,
         saveProfile,
         showFieldError,
         startCodexLogin,
+        setDefaultModel,
         syncModelStateSource,
         toggleApiKeyVisibility,
         updateCapabilityPreview,

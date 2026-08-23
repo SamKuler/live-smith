@@ -15,16 +15,18 @@ import type {
   ModelBackendTerminalListener,
   ModelFunctionTool,
   ModelToolTurnReservation,
+  RuntimeProfileIdentity,
   TransportRequest,
 } from "../provider.js";
-import type {
-  ModelInputPart,
-  ModelTurn,
+import {
+  requireModelContextUsage,
+  type ModelContextUsage,
+  type ModelInputPart,
+  type ModelTurn,
 } from "../contracts.js";
 import {
   isReasoningEffort,
   type DraftProfile,
-  type SavedProfile,
 } from "../profile.js";
 import { MAX_CODEX_TURN_START_BYTES } from "./codex-limits.js";
 
@@ -452,15 +454,15 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
     const toolsByName = validatedTools(functionTools);
     const inputs = codexInputs(request);
     const outputSchema = toolTurnOutputSchema(functionTools);
-    const profile = request.runtimeProfile.profile;
+    const model = request.runtimeProfile.model;
     const turnStartPayload = {
       input: inputs,
       environments: [],
-      model: profile.model,
+      model: model.model,
       serviceTier: null,
-      ...(profile.parameters.reasoning.mode === "enabled" &&
-          profile.parameters.reasoning.effort
-        ? { effort: profile.parameters.reasoning.effort }
+      ...(model.parameters.reasoning.mode === "enabled" &&
+          model.parameters.reasoning.effort
+        ? { effort: model.parameters.reasoning.effort }
         : {}),
       outputSchema,
     };
@@ -473,7 +475,7 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
       const threadResponse = await this.rpc.request<unknown>(
         "thread/start",
         {
-          model: profile.model,
+          model: model.model,
           modelProvider: "openai",
           allowProviderModelFallback: false,
           serviceTier: null,
@@ -504,7 +506,7 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
         );
       }
       if (
-        threadRecord.model !== profile.model ||
+        threadRecord.model !== model.model ||
         threadRecord.modelProvider !== "openai" ||
         threadRecord.approvalPolicy !== "never" ||
         threadRecord.multiAgentMode !== "explicitRequestOnly" ||
@@ -576,6 +578,9 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
         toolsByName,
         threadId,
       );
+      if (completed.contextUsage) {
+        normalized = { ...normalized, contextUsage: completed.contextUsage };
+      }
       if (normalized.content && request.onDelta) {
         await request.onDelta(normalized.content);
       }
@@ -776,6 +781,7 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
     let expectedTurnId: string | undefined;
     let observedTurnId: string | undefined;
     let agentMessage: string | undefined;
+    let contextUsage: ModelContextUsage | undefined;
     let forbiddenItem = false;
     let terminalTurnId: string | undefined;
     let correlationError: Error | undefined;
@@ -857,6 +863,42 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
         markForbiddenItem();
       }
     };
+    const inspectTokenUsage = (params: unknown): void => {
+      const record = optionalRecord(params);
+      if (!record) {
+        failTurnCorrelation();
+        return;
+      }
+      if (record.threadId !== threadId) return;
+      const usageTurnId = matchingTurnId(record.threadId, record.turnId);
+      if (!usageTurnId) return;
+      if (terminalTurnId !== undefined) {
+        failTurnCorrelation();
+        return;
+      }
+      const tokenUsage = optionalRecord(record.tokenUsage);
+      const last = optionalRecord(tokenUsage?.last);
+      const totalTokens = last?.totalTokens;
+      if (
+        !Number.isSafeInteger(totalTokens) ||
+        (totalTokens as number) < 0
+      ) {
+        failTurnCorrelation();
+        return;
+      }
+      if (tokenUsage?.modelContextWindow === null) {
+        contextUsage = undefined;
+        return;
+      }
+      try {
+        contextUsage = requireModelContextUsage(
+          totalTokens,
+          tokenUsage?.modelContextWindow,
+        );
+      } catch {
+        failTurnCorrelation();
+      }
+    };
     const onCompleted = (params: unknown): void => {
       const record = optionalRecord(params);
       if (!record || record.threadId !== threadId) return;
@@ -886,12 +928,18 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
         return;
       }
       terminalTurnId = completedTurnId;
-      resolveCompletion({ status, agentMessage, forbiddenItem });
+      resolveCompletion({
+        status,
+        agentMessage,
+        forbiddenItem,
+        contextUsage,
+      });
     };
     const unsubscribers = [
       this.rpc.onConnectionFailure(rejectFailure),
       this.rpc.onNotification("item/started", inspectItem),
       this.rpc.onNotification("item/completed", inspectItem),
+      this.rpc.onNotification("thread/tokenUsage/updated", inspectTokenUsage),
       this.rpc.onNotification("turn/completed", onCompleted),
     ];
     const timeout = setTimeout(() => {
@@ -953,10 +1001,11 @@ interface CompletedCodexTurn {
   status: "completed" | "interrupted" | "failed";
   agentMessage: string | undefined;
   forbiddenItem: boolean;
+  contextUsage: ModelContextUsage | undefined;
 }
 
 function assertCodexProfile(
-  profile: DraftProfile | SavedProfile,
+  profile: DraftProfile | RuntimeProfileIdentity,
 ): void {
   if (
     profile.connection.kind !== "codex-subscription" ||

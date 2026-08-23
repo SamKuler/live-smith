@@ -18,23 +18,36 @@ import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
 } from "../catalog.js";
-import type { OpenAIDirectApiConnection, SavedProfile } from "../profile.js";
-import type { TransportRequest } from "../provider.js";
+import type {
+  DirectApiModelConfig,
+  DirectApiProfile,
+  OpenAIDirectApiConnection,
+} from "../profile.js";
+import type { RuntimeModelSource, TransportRequest } from "../provider.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
 import { MAX_DIRECT_JSON_RESPONSE_BYTES } from "./response-body.js";
 
-type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
+type ProfileOverrides = Partial<DirectApiModelConfig> &
+  Partial<{ id: string; name: string }> &
   Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
 
-function profile(overrides: ProfileOverrides = {}): SavedProfile {
+function profile(overrides: ProfileOverrides = {}): DirectApiProfile {
   const {
     baseUrl = "https://example.test/v1",
     apiKey = "secret",
-    ...fields
+    id = "p1",
+    name = "Compatible",
+    model = "custom-model",
+    parameters = {
+      maxOutputTokens: 4096,
+      temperature: 0.4,
+      reasoning: { mode: "default" },
+    },
+    advanced = {},
   } = overrides;
   return {
-    id: "p1",
-    name: "Compatible",
+    id,
+    name,
     connection: {
       kind: "direct-api",
       apiFamily: "openai",
@@ -42,25 +55,31 @@ function profile(overrides: ProfileOverrides = {}): SavedProfile {
       baseUrl,
       apiKey,
     },
-    model: "custom-model",
-    parameters: {
-      maxOutputTokens: 4096,
-      temperature: 0.4,
-      reasoning: { mode: "default" },
+    defaultModel: model,
+    models: [{ model, parameters, advanced }],
+  };
+}
+
+function runtimeSource(profileValue: DirectApiProfile): RuntimeModelSource {
+  return {
+    profile: {
+      id: profileValue.id,
+      name: profileValue.name,
+      connection: profileValue.connection,
     },
-    advanced: {},
-    ...fields,
+    model: profileValue.models[0]!,
   };
 }
 
 function request(
-  p: SavedProfile,
+  p: DirectApiProfile,
   agentMessages: ModelConversationMessage[] = [],
 ): TransportRequest {
+  const source = runtimeSource(p);
   return {
     runtimeProfile: {
-      profile: p,
-      capabilities: resolveModelCapabilities(p),
+      ...source,
+      capabilities: resolveModelCapabilities(source),
       inputCapabilityEvidence: {
         image: "unverified",
         audio: "unverified",
@@ -183,6 +202,46 @@ test("OpenAI Chat maps standard parameters and preserves raw assistant state", a
   assert.equal(
     (turn.providerState as { message: { reasoning_content: string } }).message.reasoning_content,
     "opaque reasoning",
+  );
+});
+
+test("OpenAI Chat attaches strict usage only to non-streaming turns", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: { role: "assistant", content: "Done" },
+      }],
+      usage: { prompt_tokens: 390, completion_tokens: 30, total_tokens: 420 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 8_192;
+
+  const turn = await transport.createToolTurn(req);
+
+  assert.deepEqual(turn.contextUsage, {
+    usedTokens: 420,
+    contextWindowTokens: 8_192,
+  });
+});
+
+test("OpenAI Chat rejects malformed non-streaming context usage", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: { role: "assistant", content: "Done" },
+      }],
+      usage: { total_tokens: 0.5 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 8_192;
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /context usage/i,
   );
 });
 
@@ -979,6 +1038,7 @@ test("OpenAI Chat requires tool calls to match their terminal reason and type", 
 test("OpenAI Chat streaming emits text and assembles fragmented tool calls", async () => {
   const deltas: string[] = [];
   let sentMessages: Array<Record<string, unknown>> = [];
+  let sentBody: Record<string, unknown> = {};
   const chunks = [
     {
       id: "chunk-1", object: "chat.completion.chunk", created: 1, model: "custom-model",
@@ -1001,6 +1061,7 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
       sentMessages = (JSON.parse(String(init?.body)) as {
         messages: Array<Record<string, unknown>>;
       }).messages;
+      sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response(sse, {
         status: 200,
         headers: { "Content-Type": "text/event-stream" },
@@ -1008,6 +1069,7 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
     },
   });
   const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 8_192;
   req.runtimeProfile.capabilities.inputs.audio = true;
   req.runtimeProfile.inputCapabilityEvidence = {
     image: "unverified",
@@ -1022,6 +1084,8 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
     deltas.push(delta);
   };
   const turn = await transport.createToolTurn(req);
+  assert.equal(turn.contextUsage, undefined);
+  assert.equal("stream_options" in sentBody, false);
   assert.deepEqual(sentMessages[1]?.content, [
     { type: "text", text: "Stream audio" },
     { type: "input_audio", input_audio: { data: "AAAA", format: "wav" } },
@@ -1330,7 +1394,7 @@ test("OpenAI malformed input modality arrays do not erase known policy", async (
 
   assert.equal(model?.capabilities.inputs, undefined);
   assert.equal(resolveModelCapabilities(
-    profile({ model: "gpt-5.6" }),
+    runtimeSource(profile({ model: "gpt-5.6" })),
     model?.capabilities,
   ).inputs.image, true);
 });

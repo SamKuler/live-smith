@@ -217,16 +217,16 @@ Example model action shape:
 ## Model Providers
 
 Open `Ask Live Smith`, switch to the Inspector's **Model** tab, and create a
-named profile. Each Profile saves one connection plus its model and generation
-configuration:
+named profile. Each Profile saves one connection plus one or more independent
+model configurations:
 
 - Connection: `Direct API` or **ChatGPT subscription (Experimental)**
 - For Direct API, an API family and mode: OpenAI `Responses`, OpenAI
   `Chat Completions`, or Anthropic `Messages`
 - For Direct API, a base URL plus an API key unless the endpoint is local
   loopback
-- Model
-- Connection- and capability-aware generation controls
+- A default model and any additional models available from the composer
+- Per-model, connection- and capability-aware generation controls
 - For Direct API, maximum output tokens and optional temperature or thinking
   budget
 - For Direct API, optional provider-hosted Web Search for Responses or Messages
@@ -235,7 +235,9 @@ configuration:
 Click **Save & Use** to persist and activate it. Add, Duplicate, Delete, and
 Discard operate on profile drafts; sending is blocked while the draft has
 unsaved changes. Model discovery can use the current draft without saving or
-activating it, even before Profile name or model has been entered.
+activating it, even before the Profile name or model list is complete. The
+composer then selects a configured model and supported reasoning effort for the
+active Session without reopening Settings.
 
 ### Connection backends
 
@@ -278,7 +280,7 @@ boundary instead of admitting a replacement process.
 
 Before persisting a subscription prompt, Live Smith refreshes account readiness,
 requires an eligible signed-in account, refreshes a generation-scoped catalog
-miss, and verifies that the saved model remains available. A failed readiness
+miss, and verifies that the Session-selected model remains available. A failed readiness
 check is reported as not persisted so Queue pauses at its head. Direct API
 temperature, output-token and reasoning-budget controls are unavailable for
 subscription Profiles; supported reasoning efforts and image/audio evidence
@@ -313,12 +315,15 @@ credentials unless Anthropic grants prior written approval; see the
 The UI keeps configuration in three explicit states:
 
 - `DraftProfile` is the editable preview and may be incomplete. Its connection
-  fields can be used by **Connect & Load** before the Profile name or model is filled.
-- `SavedProfile` is the fully validated value written by Profile CRUD.
-- `RuntimeProfile` combines the active Saved Profile with resolved capabilities;
-  model requests and the header summary use the same runtime value. Its
-  discriminated connection remains `direct-api` or `codex-subscription`;
-  neither connection is inferred from model names.
+  fields can be used by **Connect & Load** before the Profile name or model
+  collection is complete.
+- `SavedProfile` is the fully validated connection, default model, and model
+  configuration collection written by Profile CRUD.
+- `RuntimeProfile` contains the active saved connection identity, one
+  Session-selected model configuration, and that model's resolved capabilities.
+  Model requests and composer controls use this same runtime identity. Its
+  discriminated connection remains `direct-api` or `codex-subscription`; neither
+  connection is inferred from model names.
 
 Compatible Direct API services use a Profile for the protocol family they
 implement. OpenAI-family endpoints use `Chat Completions` or `Responses`;
@@ -346,12 +351,12 @@ Profile's Max Output Tokens or continue the Session.
 
 ### Hosted Web Search
 
-The compact **Web search** control below the Model field is a per-Profile,
-explicit opt-in. It uses the active provider connection and does not require a
+The compact **Web search** control below the Model field is a per-model
+configuration opt-in. It uses the Profile connection and does not require a
 second API key. Live Smith maps it to OpenAI Responses `web_search` or the
 Anthropic Messages `web_search_20250305` server tool. OpenAI Chat Completions is
-rejected locally before network I/O; Live Smith never silently changes a
-Profile's model or protocol.
+rejected locally before network I/O; Live Smith never silently changes the
+selected model configuration or protocol.
 
 Enabling the Profile control makes the tool available and gives the model a
 clear policy to search for explicit lookup requests and current or changing
@@ -505,7 +510,7 @@ body:
 ```markdown
 ---
 name: mix-review
-description: Review balance, space, and mix translation
+description: Use when a mix needs a structured balance and translation review.
 ---
 Your local workflow guidance goes here.
 ```
@@ -516,6 +521,11 @@ four; enabled Skill IDs persist with that Session. Typing `$mix-review` at a
 normal whitespace boundary adds an installed Skill for one request without
 changing the prompt. Mentions inside inline or fenced Markdown code, email/path
 tokens, currency-like numbers, and numeric-leading IDs are not activated.
+
+The repository includes three optional
+[arrangement Skill examples](examples/skills/README.md) covering section energy,
+instrument roles, and motif variation. They are examples only: Live Smith does
+not install or enable them until the user explicitly imports their `SKILL.md`.
 
 Skills are locally installed declarative workflow guidance. They cannot install
 or execute scripts, binaries, MCP servers, plugins, nested resources, or
@@ -628,19 +638,21 @@ npm start -- --storage-directory /absolute/path/to/live-smith-data
 ```
 
 These paths contain private persistent data, not SDK temporary files. Do not
-commit, share, or sync them. The current schema is version 4. Its registered
+commit, share, or sync them. The current schema is version 5. Its registered
 adjacent migrations map schema-version-1 `autoApprove` through the version-2
 compatibility field and then wrap version-2 flat API Profiles as version-3
 `direct-api` connections. The version-3-to-4 step deliberately recognizes both
 earlier development shapes: flat Queue/Steer settings preserve their canonical
 decimal-string revision, while nested subscription settings receive Queue at
-revision `"0"`. Partial follow-up fields, mixed Profile shapes, and unknown
-fields fail closed. Neither legacy Approval value seeds or overrides a
-Session's Approval mode. Reading never rewrites the file; the next authorized
-settings write persists schema version 4. Legacy nested subscription Profiles
+revision `"0"`. Version 4's single model and parameters become the default
+entry in a version-5 model configuration list. Partial follow-up fields, mixed
+Profile shapes, and unknown fields fail closed. Neither legacy Approval value
+seeds or overrides a Session's Approval mode. Reading never rewrites the file;
+the next authorized settings write persists schema version 5. Legacy nested
+subscription Profiles
 with the former fixed output-token placeholder are normalized on read and omit
-it on that next write. Future versions and historical
-schemas without a complete migration chain are rejected.
+it on that next write. Future versions and historical schemas without a
+complete migration chain are rejected.
 
 If you use `npm start` without passing `--live`, also create `.env` with
 `EXTENSION_HOST_PATH` as described in the SDK quick start.

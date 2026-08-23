@@ -5,6 +5,7 @@ import type { SavedProfile } from "../model/profile.js";
 import type { ChatDialogState } from "./chat-state.js";
 import {
   capabilities,
+  capabilityEvidence,
   cloneState,
   commandCalls,
   createDialogHarness,
@@ -58,7 +59,7 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
     const app = harness.document.querySelector(".app");
     const inspector = harness.document.querySelector<HTMLElement>("#inspectorPane");
     const profileControl = harness.document.querySelector<HTMLButtonElement>(
-      "#profileSummaryButton",
+      "#settingsButton",
     );
     assert.equal(harness.document.querySelector("#inspectorToggleButton"), null);
     assert.equal(app?.classList.contains("inspector-open"), false);
@@ -73,13 +74,9 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       true,
     );
     assert.equal(harness.document.activeElement?.id, "prompt");
-    assert.match(
-      harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
-      /Studio.*model-a/s,
-    );
     assert.equal(
-      harness.document.querySelector("#profileSummaryButton")?.getAttribute("aria-label"),
-      "Profile Studio, model model-a. Open settings.",
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-a",
     );
 
     profileControl?.click();
@@ -89,7 +86,7 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
     assert.equal(profileControl?.getAttribute("aria-expanded"), "true");
     assert.equal(
       profileControl?.getAttribute("aria-label"),
-      "Profile Studio, model model-a. Close settings.",
+      "Close Settings",
     );
     assert.equal(
       harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
@@ -170,21 +167,38 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
     );
     assert.equal(
       harness.document.querySelector("#apiMode")?.getAttribute("aria-describedby"),
-      "apiModeHint",
+      null,
     );
     assert.equal(
       harness.document.querySelector("#baseUrl")?.getAttribute("aria-describedby"),
-      "baseUrlHint",
+      null,
     );
-    assert.match(
-      harness.document.querySelector("#model")?.getAttribute("aria-describedby") ?? "",
-      /modelHint.*inputCapabilitiesPreview/,
+    assert.equal(
+      harness.document.querySelector("#model")?.getAttribute("aria-describedby"),
+      "inputCapabilitiesPreview",
     );
+    for (const id of [
+      "apiModeHelp",
+      "baseUrlHelp",
+      "discoverModelsHelp",
+      "modelHelp",
+      "followUpSettingsOwnerHelp",
+    ]) {
+      const help = harness.document.getElementById(id);
+      assert.equal(help?.tabIndex, 0);
+      assert.equal(help?.getAttribute("role"), "note");
+      assert.equal(help?.dataset.tooltip, help?.getAttribute("aria-label"));
+    }
+    harness.document.getElementById("modelHelp")?.focus();
+    assert.equal(harness.document.activeElement?.id, "modelHelp");
     for (const section of [
       "#profileSettingsSection",
       "#connectionSettingsSection",
+      "#modelSettingsSection",
+      "#capabilitySettingsSection",
       "#generationSettings",
       "#advancedSettings",
+      "#followUpSettingsSection",
     ]) assert.ok(harness.document.querySelector(section));
     const approvalMode = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
     assert.equal(approvalMode?.getAttribute("aria-label"), "Apply approval mode");
@@ -275,7 +289,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       "connectionSettingsSection",
     );
     assert.equal(
-      harness.document.querySelector("#connectionSettingsSection")?.contains(
+      harness.document.querySelector("#modelSettingsSection")?.contains(
         harness.document.querySelector("#model"),
       ),
       true,
@@ -339,9 +353,13 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
     const connectionHelp = [...harness.document.querySelectorAll<HTMLElement>(
       "#connectionSettingsSection .inline-help",
     )];
-    assert.equal(connectionHelp.length, 2);
-    assert.match(connectionHelp[0]?.getAttribute("aria-label") ?? "", /official and compatible endpoints/i);
-    assert.match(connectionHelp[1]?.getAttribute("aria-label") ?? "", /optional.*local.*loopback/i);
+    assert.equal(connectionHelp.length, 5);
+    assert.ok(connectionHelp.some((help) =>
+      /official and compatible endpoints/i.test(help.getAttribute("aria-label") ?? "")
+    ));
+    assert.ok(connectionHelp.some((help) =>
+      /optional.*local.*loopback/i.test(help.getAttribute("aria-label") ?? "")
+    ));
     assert.deepEqual(
       connectionHelp.map((help) => [help.textContent, help.tabIndex, help.dataset.tooltip]),
       connectionHelp.map((help) => ["?", 0, help.getAttribute("aria-label")]),
@@ -370,18 +388,18 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
   }
 });
 
-test("Response and Overrides expose clear disclosure rows", async () => {
+test("Capabilities and Generation expose clear disclosure rows", async () => {
   const harness = await createDialogHarness();
   try {
     assert.equal(harness.document.querySelector("#generationSettingsSection"), null);
-    const disclosures = ["#generationSettings", "#advancedSettings"].map(
+    const disclosures = ["#advancedSettings", "#generationSettings"].map(
       (selector) => harness.document.querySelector<HTMLDetailsElement>(selector)!,
     );
     assert.deepEqual(
       disclosures.map((details) =>
         details.querySelector(".settings-disclosure-title")?.textContent
       ),
-      ["Response", "Overrides"],
+      ["Advanced Overrides", "Generation"],
     );
     for (const details of disclosures) {
       assert.equal(details.classList.contains("top-level-settings"), true);
@@ -471,9 +489,9 @@ test("first-run setup connects, selects a discovered model, and saves it for use
     assert.equal(savedProfile.connection.apiKey, "");
     assert.equal(savedProfile.connection.baseUrl, "http://localhost:1234/v1");
 
-    assert.match(
-      harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
-      /Studio model.*model-discovered/s,
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-discovered",
     );
     assert.equal(
       harness.document.querySelector<HTMLElement>("#modelSetupGuide")?.hidden,
@@ -2644,8 +2662,8 @@ test("command IDs stay in headers and stale command SSE state cannot roll back n
     harness.select("#profileSelector", "profile-2");
     await harness.settle();
     assert.equal(
-      harness.document.querySelector("#activeProfileName")?.textContent,
-      "Mix review",
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
     );
 
     harness.emitServerEvent({
@@ -2655,8 +2673,8 @@ test("command IDs stay in headers and stale command SSE state cannot roll back n
     });
 
     assert.equal(
-      harness.document.querySelector("#activeProfileName")?.textContent,
-      "Mix review",
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3010,11 +3028,11 @@ test("Connect and Load permits a local keyless Draft with blank name and model",
     harness.input("#model", "");
 
     assert.equal(
-      harness.document.querySelector("#activeProfileName")?.textContent,
-      "Studio",
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.title,
+      "Studio · model-a",
     );
     assert.equal(
-      harness.document.querySelector("#activeProfileModel")?.textContent,
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
       "model-a",
     );
     assert.equal(
@@ -3031,14 +3049,14 @@ test("Connect and Load permits a local keyless Draft with blank name and model",
       profile: {
         name: string;
         connection: { apiKey: string; baseUrl: string };
-        model: string;
+        defaultModel: string;
       };
     };
     assert.equal(body.kind, "discover_models");
     assert.equal(body.profile.name, "");
     assert.equal(body.profile.connection.apiKey, "");
     assert.equal(body.profile.connection.baseUrl, "http://127.0.0.1:1234/v1");
-    assert.equal(body.profile.model, "");
+    assert.equal(body.profile.defaultModel, "");
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
       "",
@@ -3048,7 +3066,7 @@ test("Connect and Load permits a local keyless Draft with blank name and model",
       "",
     );
     assert.equal(
-      harness.document.querySelector("#activeProfileModel")?.textContent,
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
       "model-a",
     );
     assert.deepEqual(harness.errors, []);
@@ -3084,6 +3102,7 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
         id: "typed-model",
         displayName: "Typed model",
         capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
+        capabilityEvidence: capabilityEvidence(),
       }],
       capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
       modelStateSource: modelStateSourceFixture(draft),
@@ -3135,6 +3154,7 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
         id: "typed-model",
         displayName: "Typed model",
         capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
+        capabilityEvidence: capabilityEvidence(),
       }],
       capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
       modelStateSource: modelStateSourceFixture(draft),
@@ -3194,15 +3214,18 @@ test("Save and Use sends the complete current draft for its selected API mode", 
             apiKey: "anthropic-key",
             baseUrl: "https://anthropic.example/v1",
           },
-          model: "claude-test",
-          parameters: {
-            maxOutputTokens: 4096,
-            temperature: 0.7,
-            reasoning: { mode: "default" },
-          },
-          advanced: {
-            extraBody: { metadata: { source: "live" } },
-          },
+          defaultModel: "claude-test",
+          models: [{
+            model: "claude-test",
+            parameters: {
+              maxOutputTokens: 4096,
+              temperature: 0.7,
+              reasoning: { mode: "default" },
+            },
+            advanced: {
+              extraBody: { metadata: { source: "live" } },
+            },
+          }],
         },
       },
     }]);
@@ -3218,7 +3241,7 @@ test("initial state preserves arbitrary JSON keys through Profile save", async (
   const extraBody = JSON.parse(
     '{"__proto__":{"preserved":true},"nested":{"constructor":"data"}}',
   ) as Record<string, unknown>;
-  state.settings.profiles[0]!.advanced.extraBody = extraBody;
+  state.settings.profiles[0]!.models[0]!.advanced.extraBody = extraBody;
   const harness = await createDialogHarness(state);
   try {
     assert.match(
@@ -3232,7 +3255,7 @@ test("initial state preserves arbitrary JSON keys through Profile save", async (
     const save = commandCalls(harness)[0]?.body as {
       profile?: SavedProfile;
     };
-    const savedExtraBody = save.profile?.advanced.extraBody;
+    const savedExtraBody = save.profile?.models[0]?.advanced.extraBody;
     assert.ok(savedExtraBody);
     assert.equal(
       Object.prototype.hasOwnProperty.call(savedExtraBody, "__proto__"),
@@ -3275,7 +3298,7 @@ test("Web Search is a single automatic Profile capability", async () => {
     const saved = (commandCalls(harness).at(-1)?.body as {
       profile?: SavedProfile;
     }).profile;
-    assert.deepEqual(saved?.advanced.hostedTools, { webSearch: true });
+    assert.deepEqual(saved?.models[0]?.advanced.hostedTools, { webSearch: true });
     assert.equal(control.checked, true);
 
     assert.equal(harness.document.querySelector("#webSearchMenuButton"), null);
@@ -3350,6 +3373,10 @@ test("unsupported discovered parameters become an explicit repair draft before S
         strategy: "none",
       },
     },
+    capabilityEvidence: {
+      ...capabilityEvidence(),
+      temperature: "unsupported",
+    },
   }];
   const harness = await createDialogHarness(state);
   try {
@@ -3376,7 +3403,7 @@ test("unsupported discovered parameters become an explicit repair draft before S
     const save = commandCalls(harness).at(-1);
     assert.equal((save?.body as { kind?: string }).kind, "save_profile");
     assert.deepEqual(
-      (save?.body as { profile: SavedProfile }).profile.parameters,
+      (save?.body as { profile: SavedProfile }).profile.models[0]?.parameters,
       { maxOutputTokens: 8192, reasoning: { mode: "default" } },
     );
     assert.deepEqual(harness.errors, []);
@@ -3404,7 +3431,7 @@ test("input capability overrides round-trip through the Profile form", async () 
     const profile = (commandCalls(harness).at(-1)?.body as {
       profile?: SavedProfile;
     }).profile;
-    assert.deepEqual(profile?.advanced.capabilityOverrides?.inputs, {
+    assert.deepEqual(profile?.models[0]?.advanced.capabilityOverrides?.inputs, {
       image: true,
       audio: false,
       pdf: true,
@@ -3614,8 +3641,8 @@ test("unknown model output limits allow values above the 8192 profile default", 
     const savedProfile = (save?.body as {
       profile?: SavedProfile;
     }).profile;
-    assert.equal(savedProfile?.model, "custom-unknown-model");
-    assert.equal(savedProfile?.parameters.maxOutputTokens, 64_000);
+    assert.equal(savedProfile?.defaultModel, "custom-unknown-model");
+    assert.equal(savedProfile?.models[0]?.parameters.maxOutputTokens, 64_000);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3628,6 +3655,7 @@ test("discovered model output limits still constrain the Profile input", async (
     id: "discovered-24k",
     displayName: "Discovered 24K",
     capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
+    capabilityEvidence: capabilityEvidence(),
   }];
   const harness = await createDialogHarness(state);
   try {
@@ -3658,6 +3686,10 @@ test("capability cleanup clears stale field errors from values it removes or cla
       strategy: "effort",
     },
   };
+  state.capabilityEvidence = {
+    ...state.capabilityEvidence,
+    reasoning: "supported",
+  };
   state.settings.profiles[0] = profileFixture({
     parameters: {
       maxOutputTokens: 8192,
@@ -3668,7 +3700,10 @@ test("capability cleanup clears stale field errors from values it removes or cla
   const harness = await createDialogHarness(state);
   try {
     harness.input("#profileName", "Needs capability repair");
-    harness.failNextCommand("Temperature is invalid.", "parameters.temperature");
+    harness.failNextCommand(
+      "Temperature is invalid.",
+      "models.0.parameters.temperature",
+    );
     harness.click("#saveProfileButton");
     await harness.settle();
     const temperature = harness.document.querySelector<HTMLInputElement>("#temperature");
@@ -3680,7 +3715,10 @@ test("capability cleanup clears stale field errors from values it removes or cla
     assert.equal(temperature?.hasAttribute("aria-invalid"), false);
     assert.equal(harness.document.querySelector("#temperatureError"), null);
 
-    harness.failNextCommand("Output limit is invalid.", "parameters.maxOutputTokens");
+    harness.failNextCommand(
+      "Output limit is invalid.",
+      "models.0.parameters.maxOutputTokens",
+    );
     harness.click("#saveProfileButton");
     await harness.settle();
     const output = harness.document.querySelector<HTMLInputElement>("#maxOutputTokens");
@@ -3728,6 +3766,7 @@ for (const [field, value, label] of [
       id: "model-a",
       displayName: "Model A",
       capabilities: { ...capabilities(), maxOutputTokens: 8192 },
+      capabilityEvidence: capabilityEvidence(),
     }];
     const harness = await createDialogHarness(state);
     try {
@@ -3789,6 +3828,10 @@ for (const [field, value, label] of [
         strategy: "budget-thinking",
       },
     };
+    state.capabilityEvidence = {
+      ...state.capabilityEvidence,
+      reasoning: "supported",
+    };
     const harness = await createDialogHarness(state);
     try {
       harness.input(field, value);
@@ -3813,7 +3856,7 @@ for (const [field, value, label] of [
         profile?: SavedProfile;
       };
       assert.equal(saved.kind, "save_profile");
-      assert.deepEqual(saved.profile?.parameters.reasoning, {
+      assert.deepEqual(saved.profile?.models[0]?.parameters.reasoning, {
         mode: "enabled",
         effort: "high",
         budgetTokens: 4096,

@@ -1,9 +1,10 @@
-import type {
-  ModelHostedWebSearch,
-  ModelHostedWebSearchAction,
-  ModelInputPart,
-  ModelToolCall,
-  ModelTurn,
+import {
+  requireModelContextUsage,
+  type ModelHostedWebSearch,
+  type ModelHostedWebSearchAction,
+  type ModelInputPart,
+  type ModelToolCall,
+  type ModelTurn,
 } from "../contracts.js";
 import { ModelConnectionError } from "../connection-error.js";
 import { normalizeModelCitations } from "../citations.js";
@@ -16,12 +17,12 @@ import {
   safeModelWebSearchId,
 } from "../web-search.js";
 import { cloneJsonValue } from "../json-clone.js";
-import { isDirectApiProfile } from "../profile.js";
 import type {
   ModelTransport,
   TransportFactoryOptions,
   TransportRequest,
 } from "../provider.js";
+import { isDirectRuntimeModelSource } from "../provider.js";
 import {
   resolveFetchImplementation,
   throwIfAborted,
@@ -94,7 +95,12 @@ export function createOpenAIResponsesTransport(
       for (const search of hostedWebSearches) {
         await request.onHostedWebSearch?.(search);
       }
-      return turnFromResponse(response, "OpenAI Responses", hostedWebSearches);
+      return turnFromResponse(
+        response,
+        "OpenAI Responses",
+        hostedWebSearches,
+        request.runtimeProfile.capabilities.contextWindowTokens,
+      );
       }, request.signal);
     },
   };
@@ -103,25 +109,26 @@ export function createOpenAIResponsesTransport(
 function buildResponsesBody(
   request: TransportRequest,
 ): Record<string, unknown> {
-  const { profile, capabilities } = request.runtimeProfile;
-  if (!isDirectApiProfile(profile)) {
+  const runtime = request.runtimeProfile;
+  if (!isDirectRuntimeModelSource(runtime)) {
     throw new Error("OpenAI Responses requires a Direct API Profile.");
   }
-  const reasoning = profile.parameters.reasoning;
+  const { model, capabilities } = runtime;
+  const reasoning = model.parameters.reasoning;
   const tools = mappedResponsesTools(request);
   const hostedWebSearchMaxUses = request.tools.find(
     (tool) => tool.type === "hosted_web_search",
   )?.maxUses;
   const generated: Record<string, unknown> = {
-    model: profile.model,
+    model: model.model,
     instructions: request.systemInstructions,
     input: buildResponsesInput(request),
     store: false,
     include: [encryptedReasoningInclude],
-    max_output_tokens: profile.parameters.maxOutputTokens,
-    ...(profile.parameters.temperature !== undefined &&
+    max_output_tokens: model.parameters.maxOutputTokens,
+    ...(model.parameters.temperature !== undefined &&
     capabilities.temperature === "supported"
-      ? { temperature: profile.parameters.temperature }
+      ? { temperature: model.parameters.temperature }
       : {}),
     ...(tools.length
       ? {
@@ -140,7 +147,7 @@ function buildResponsesBody(
   };
   const body = mergeExtraBody(
     generated,
-    profile.advanced.extraBody,
+    model.advanced.extraBody,
     protectedFields,
   );
   const include = body.include;
@@ -178,7 +185,7 @@ function mappedResponsesTools(
       });
       continue;
     }
-    if (!request.runtimeProfile.profile.advanced.hostedTools?.webSearch) {
+    if (!request.runtimeProfile.model.advanced.hostedTools?.webSearch) {
       throw new Error("OpenAI Responses Web Search is not enabled in this Profile.");
     }
     if (!isHostedWebSearchRequestMaxUses(tool.maxUses)) {
@@ -317,6 +324,7 @@ async function streamResponsesTurn(
         event.response,
         "OpenAI Responses",
         hostedWebSearches,
+        request.runtimeProfile.capabilities.contextWindowTokens,
       );
     } else if (event.type === "response.failed") {
       if (isRecord(event.response) && Array.isArray(event.response.output)) {
@@ -368,6 +376,7 @@ function turnFromResponse(
   value: unknown,
   label: string,
   hostedWebSearches?: ModelHostedWebSearch[],
+  contextWindowTokens?: number,
 ): ModelTurn {
   if (!isRecord(value) || !Array.isArray(value.output)) {
     throw new Error(`${label} returned no output items.`);
@@ -377,6 +386,7 @@ function turnFromResponse(
     ? value.output_text
     : textFromOutput(output);
   const citations = citationsFromResponsesOutput(output);
+  const contextUsage = openAIContextUsage(value.usage, contextWindowTokens);
   const terminalWebSearches = hostedWebSearches ?? webSearchesFromResponsesOutput(output);
   const functionCalls = output.filter((item) =>
     isRecord(item) && item.type === "function_call"
@@ -405,6 +415,7 @@ function turnFromResponse(
         toolCalls: [],
         continuation: { reason: "output_limit" },
         ...(citations.length ? { citations } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
         ...(terminalWebSearches.length ? { hostedWebSearches: terminalWebSearches } : {}),
         providerState: {
           kind: "openai-responses",
@@ -437,12 +448,22 @@ function turnFromResponse(
     content: content || null,
     toolCalls,
     ...(citations.length ? { citations } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
     ...(terminalWebSearches.length ? { hostedWebSearches: terminalWebSearches } : {}),
     providerState: {
       kind: "openai-responses",
       output: cloneJsonValue(output),
     },
   };
+}
+
+function openAIContextUsage(
+  value: unknown,
+  contextWindowTokens: number | undefined,
+): ModelTurn["contextUsage"] {
+  if (value === undefined || contextWindowTokens === undefined) return undefined;
+  const usage = isRecord(value) ? value : undefined;
+  return requireModelContextUsage(usage?.total_tokens, contextWindowTokens);
 }
 
 function terminalWebSearchesFromResponse(

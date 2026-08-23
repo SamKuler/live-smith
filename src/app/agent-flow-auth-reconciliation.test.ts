@@ -31,11 +31,12 @@ const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
   name: "ChatGPT subscription",
   connection: { kind: "codex-subscription", provider: "openai" },
-  model: "gpt-subscription-model",
-  parameters: {
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
+  defaultModel: "gpt-subscription-model",
+  models: [{
+    model: "gpt-subscription-model",
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  }],
 };
 
 test("a peer state or Check reconciles completed device login ownership", {
@@ -67,7 +68,7 @@ test("a peer state or Check reconciles completed device login ownership", {
     kind: "codex-subscription",
     async listModels() {
       return [{
-        id: subscriptionProfile.model,
+        id: subscriptionProfile.defaultModel,
         displayName: "Subscription model",
         capabilities: { tools: true, streaming: true },
       }];

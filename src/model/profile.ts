@@ -51,24 +51,34 @@ export interface HostedToolSettings {
   webSearch?: true;
 }
 
+export interface ReasoningSettings {
+  mode: "default" | "disabled" | "enabled";
+  effort?: ReasoningEffort;
+  budgetTokens?: number;
+}
+
+export interface GenerationParameters {
+  maxOutputTokens?: number;
+  temperature?: number;
+  reasoning: ReasoningSettings;
+}
+
+export interface ModelAdvancedSettings {
+  capabilityOverrides?: ModelCapabilityOverrides;
+  hostedTools?: HostedToolSettings;
+  extraBody?: Record<string, unknown>;
+}
+
+interface ModelConfigFields {
+  model: string;
+  parameters: GenerationParameters;
+  advanced: ModelAdvancedSettings;
+}
+
 interface ProfileFields {
   id: string;
   name: string;
-  model: string;
-  parameters: {
-    maxOutputTokens?: number;
-    temperature?: number;
-    reasoning: {
-      mode: "default" | "disabled" | "enabled";
-      effort?: ReasoningEffort;
-      budgetTokens?: number;
-    };
-  };
-  advanced: {
-    capabilityOverrides?: ModelCapabilityOverrides;
-    hostedTools?: HostedToolSettings;
-    extraBody?: Record<string, unknown>;
-  };
+  defaultModel: string;
 }
 
 interface DirectApiConnectionFields {
@@ -102,14 +112,18 @@ export interface CodexSubscriptionConnection {
 
 export type ModelConnection = DirectApiConnection | CodexSubscriptionConnection;
 
-export type DirectApiProfile = ProfileFields & {
-  connection: DirectApiConnection;
-  parameters: ProfileFields["parameters"] & { maxOutputTokens: number };
+export interface ModelConnectionOwner {
+  connection: ModelConnection;
+}
+
+export type DraftModelConfig = ModelConfigFields;
+
+export type DirectApiModelConfig = ModelConfigFields & {
+  parameters: GenerationParameters & { maxOutputTokens: number };
 };
 
-export type CodexSubscriptionProfile = ProfileFields & {
-  connection: CodexSubscriptionConnection;
-  parameters: Omit<ProfileFields["parameters"], "maxOutputTokens" | "temperature"> & {
+export type CodexSubscriptionModelConfig = ModelConfigFields & {
+  parameters: Omit<GenerationParameters, "maxOutputTokens" | "temperature"> & {
     maxOutputTokens?: never;
     temperature?: never;
   };
@@ -120,17 +134,34 @@ export type CodexSubscriptionProfile = ProfileFields & {
   };
 };
 
-/** Editable form state. Name and model may intentionally be blank. */
-export type DraftProfile = ProfileFields & { connection: ModelConnection };
+export type SavedModelConfig =
+  | DirectApiModelConfig
+  | CodexSubscriptionModelConfig;
+
+export type DirectApiProfile = ProfileFields & {
+  connection: DirectApiConnection;
+  models: DirectApiModelConfig[];
+};
+
+export type CodexSubscriptionProfile = ProfileFields & {
+  connection: CodexSubscriptionConnection;
+  models: CodexSubscriptionModelConfig[];
+};
+
+/** Editable form state. Name and individual model fields may be blank. */
+export type DraftProfile = ProfileFields & {
+  connection: ModelConnection;
+  models: DraftModelConfig[];
+};
 
 /** Complete, normalized configuration that is safe to persist and activate. */
-export type SavedProfile = ProfileFields & { connection: ModelConnection };
+export type SavedProfile = DirectApiProfile | CodexSubscriptionProfile;
 
 export type ApprovalMode = "manual" | "low-risk" | "everything";
 export type DefaultFollowUpBehavior = "queue" | "steer";
 export type DefaultFollowUpBehaviorRevision = string;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 4 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 5 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
@@ -214,13 +245,19 @@ export function isValidApiModePair(
 }
 
 export function isDirectApiProfile(
-  profile: DraftProfile | SavedProfile,
-): profile is DirectApiProfile {
+  profile: SavedProfile,
+): profile is DirectApiProfile;
+export function isDirectApiProfile<Profile extends ModelConnectionOwner>(
+  profile: Profile,
+): profile is Profile & { connection: DirectApiConnection };
+export function isDirectApiProfile(
+  profile: ModelConnectionOwner,
+): boolean {
   return profile.connection.kind === "direct-api";
 }
 
 export function profileProvider(
-  profile: DraftProfile | SavedProfile,
+  profile: ModelConnectionOwner,
 ): ApiFamily {
   return profile.connection.kind === "direct-api"
     ? profile.connection.apiFamily
@@ -228,7 +265,7 @@ export function profileProvider(
 }
 
 export function profileApiMode(
-  profile: DraftProfile | SavedProfile,
+  profile: ModelConnectionOwner,
 ): ApiMode | null {
   return profile.connection.kind === "direct-api"
     ? profile.connection.apiMode
@@ -236,14 +273,14 @@ export function profileApiMode(
 }
 
 export function requireDirectApiConnection(
-  profile: DraftProfile | SavedProfile,
+  profile: ModelConnectionOwner,
 ): DirectApiConnection {
   if (profile.connection.kind === "direct-api") return profile.connection;
   throw new Error("The selected Profile does not use a direct API connection.");
 }
 
 export function profileSecrets(
-  profile: DraftProfile | SavedProfile,
+  profile: ModelConnectionOwner,
 ): string[] {
   if (profile.connection.kind !== "direct-api") return [];
   const secrets = [profile.connection.apiKey];
@@ -304,24 +341,13 @@ export function validateDraftProfileForDiscovery(value: unknown): DraftProfile {
   assertOnlyProfileKeys(record);
   const id = profileIdValue(record.id);
   const connection = connectionValue(record.connection);
-  const identity = {
+  return {
     id,
     name: draftString(record.name, "name"),
-    model: draftString(record.model, "model"),
+    connection,
+    defaultModel: draftString(record.defaultModel, "defaultModel"),
+    models: draftModelConfigs(record.models, connection),
   };
-  return connection.kind === "codex-subscription"
-    ? {
-        ...identity,
-        connection,
-        parameters: draftCodexSubscriptionParameters(record.parameters),
-        advanced: {},
-      }
-    : {
-        ...identity,
-        connection,
-        parameters: draftDirectApiParameters(record.parameters),
-        advanced: draftAdvanced(record.advanced),
-      };
 }
 
 export function validateDraftProfileForSave(
@@ -345,81 +371,32 @@ export function validateDraftProfileForSave(
     throw new ProfileValidationError("name", `Profile name ${name} already exists.`);
   }
 
-  const parameters = requiredRecord(
-    record.parameters,
-    "parameters",
-    "Profile parameters are required.",
+  const defaultModel = requiredString(
+    record.defaultModel,
+    "defaultModel",
+    "Default model is required.",
   );
-  const reasoning = requiredRecord(
-    parameters.reasoning,
-    "parameters.reasoning",
-    "Reasoning settings are required.",
-  );
-  assertOnlyKeys(
-    parameters,
-    connection.kind === "codex-subscription"
-      ? ["reasoning"]
-      : ["maxOutputTokens", "temperature", "reasoning"],
-    "parameters",
-  );
-  assertOnlyKeys(
-    reasoning,
-    ["mode", "effort", "budgetTokens"],
-    "parameters.reasoning",
-  );
-  const advanced = record.advanced === undefined
-    ? {}
-    : requiredRecord(record.advanced, "advanced", "Advanced settings must be an object.");
   if (connection.kind === "codex-subscription") {
-    validateCodexSubscriptionSettings(reasoning, advanced);
+    const models = savedModelConfigs(record.models, connection);
+    validateDefaultModel(defaultModel, models);
     return {
       id,
       name,
       connection,
-      model: requiredString(record.model, "model", "Model is required."),
-      parameters: { reasoning: reasoningSettings(reasoning) },
-      advanced: {},
+      defaultModel,
+      models,
     };
   }
 
-  const normalized: DirectApiProfile = {
+  const models = savedModelConfigs(record.models, connection);
+  validateDefaultModel(defaultModel, models);
+  return {
     id,
     name,
     connection,
-    model: requiredString(record.model, "model", "Model is required."),
-    parameters: {
-      maxOutputTokens: positiveInteger(
-        parameters.maxOutputTokens,
-        "parameters.maxOutputTokens",
-        1_000_000,
-      ),
-      ...(parameters.temperature === undefined
-        ? {}
-        : {
-            temperature: boundedNumber(
-              parameters.temperature,
-              "parameters.temperature",
-              0,
-              2,
-            ),
-          }),
-      reasoning: reasoningSettings(reasoning),
-    },
-    advanced: advancedSettings(advanced),
+    defaultModel,
+    models,
   };
-
-  if (
-    normalized.advanced.hostedTools?.webSearch &&
-    profileApiMode(normalized) === "chat-completions"
-  ) {
-    throw new ProfileValidationError(
-      "advanced.hostedTools.webSearch",
-      "Web search requires OpenAI Responses or Anthropic Messages.",
-    );
-  }
-
-  assertJsonCompatible(normalized.advanced.extraBody, "advanced.extraBody");
-  return normalized;
 }
 
 export function activeSavedProfile(
@@ -440,8 +417,174 @@ export function cloneAgentSettings(settings: AgentSettings): AgentSettings {
 function assertOnlyProfileKeys(record: Record<string, unknown>): void {
   assertOnlyKeys(
     record,
-    ["id", "name", "connection", "model", "parameters", "advanced"],
+    ["id", "name", "connection", "defaultModel", "models"],
     "profile",
+  );
+}
+
+function draftModelConfigs(
+  value: unknown,
+  connection: ModelConnection,
+): DraftModelConfig[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const record = isRecord(entry) ? entry : {};
+    return connection.kind === "codex-subscription"
+      ? {
+          model: draftString(record.model, "model"),
+          parameters: draftCodexSubscriptionParameters(record.parameters),
+          advanced: {},
+        }
+      : {
+          model: draftString(record.model, "model"),
+          parameters: draftDirectApiParameters(record.parameters),
+          advanced: draftAdvanced(record.advanced),
+        };
+  });
+}
+
+function savedModelConfigs(
+  value: unknown,
+  connection: CodexSubscriptionConnection,
+): CodexSubscriptionModelConfig[];
+function savedModelConfigs(
+  value: unknown,
+  connection: DirectApiConnection,
+): DirectApiModelConfig[];
+function savedModelConfigs(
+  value: unknown,
+  connection: ModelConnection,
+): SavedModelConfig[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ProfileValidationError(
+      "models",
+      "A Profile must contain at least one model.",
+    );
+  }
+  const models = value.map((entry, index) =>
+    savedModelConfig(entry, connection, index)
+  );
+  const seen = new Set<string>();
+  for (const model of models) {
+    if (seen.has(model.model)) {
+      throw new ProfileValidationError(
+        "models",
+        `Model ${model.model} appears more than once in this Profile.`,
+      );
+    }
+    seen.add(model.model);
+  }
+  return models;
+}
+
+function savedModelConfig(
+  value: unknown,
+  connection: ModelConnection,
+  index: number,
+): SavedModelConfig {
+  const field = `models.${index}`;
+  const record = requiredRecord(
+    value,
+    field,
+    `${field} must be an object.`,
+  );
+  assertOnlyKeys(record, ["model", "parameters", "advanced"], field);
+  const model = modelIdValue(record.model, `${field}.model`);
+  const parametersField = `${field}.parameters`;
+  const reasoningField = `${parametersField}.reasoning`;
+  const advancedField = `${field}.advanced`;
+  const parameters = requiredRecord(
+    record.parameters,
+    parametersField,
+    "Model parameters are required.",
+  );
+  const reasoning = requiredRecord(
+    parameters.reasoning,
+    reasoningField,
+    "Reasoning settings are required.",
+  );
+  assertOnlyKeys(
+    parameters,
+    connection.kind === "codex-subscription"
+      ? ["reasoning"]
+      : ["maxOutputTokens", "temperature", "reasoning"],
+    parametersField,
+  );
+  assertOnlyKeys(
+    reasoning,
+    ["mode", "effort", "budgetTokens"],
+    reasoningField,
+  );
+  const advanced = record.advanced === undefined
+    ? {}
+    : requiredRecord(
+        record.advanced,
+        advancedField,
+        "Advanced model settings must be an object.",
+      );
+
+  if (connection.kind === "codex-subscription") {
+    validateCodexSubscriptionSettings(
+      reasoning,
+      advanced,
+      reasoningField,
+      advancedField,
+    );
+    return {
+      model,
+      parameters: {
+        reasoning: reasoningSettings(reasoning, reasoningField),
+      },
+      advanced: {},
+    };
+  }
+
+  const normalized: DirectApiModelConfig = {
+    model,
+    parameters: {
+      maxOutputTokens: positiveInteger(
+        parameters.maxOutputTokens,
+        `${parametersField}.maxOutputTokens`,
+        1_000_000,
+      ),
+      ...(parameters.temperature === undefined
+        ? {}
+        : {
+            temperature: boundedNumber(
+              parameters.temperature,
+              `${parametersField}.temperature`,
+              0,
+              2,
+            ),
+          }),
+      reasoning: reasoningSettings(reasoning, reasoningField),
+    },
+    advanced: advancedSettings(advanced, advancedField),
+  };
+  if (
+    normalized.advanced.hostedTools?.webSearch &&
+    connection.apiMode === "chat-completions"
+  ) {
+    throw new ProfileValidationError(
+      `${advancedField}.hostedTools.webSearch`,
+      "Web search requires OpenAI Responses or Anthropic Messages.",
+    );
+  }
+  assertJsonCompatible(
+    normalized.advanced.extraBody,
+    `${advancedField}.extraBody`,
+  );
+  return normalized;
+}
+
+function validateDefaultModel(
+  defaultModel: string,
+  models: readonly SavedModelConfig[],
+): void {
+  if (models.some((entry) => entry.model === defaultModel)) return;
+  throw new ProfileValidationError(
+    "defaultModel",
+    "Default model must reference a configured model.",
   );
 }
 
@@ -516,34 +659,36 @@ function directApiPairValue(
 function validateCodexSubscriptionSettings(
   reasoning: Record<string, unknown>,
   advanced: Record<string, unknown>,
+  reasoningField: string,
+  advancedField: string,
 ): void {
   if (reasoning.mode === "disabled") {
     throw new ProfileValidationError(
-      "parameters.reasoning.mode",
+      `${reasoningField}.mode`,
       "Reasoning cannot be disabled for Codex subscription Profiles.",
     );
   }
   if (reasoning.budgetTokens !== undefined) {
     throw new ProfileValidationError(
-      "parameters.reasoning.budgetTokens",
+      `${reasoningField}.budgetTokens`,
       "Reasoning token budgets are not supported by Codex subscription Profiles.",
     );
   }
   if (advanced.hostedTools !== undefined) {
     throw new ProfileValidationError(
-      "advanced.hostedTools",
+      `${advancedField}.hostedTools`,
       "Provider-hosted tools are not supported by Codex subscription Profiles.",
     );
   }
   if (advanced.capabilityOverrides !== undefined) {
     throw new ProfileValidationError(
-      "advanced.capabilityOverrides",
+      `${advancedField}.capabilityOverrides`,
       "Capability overrides are not supported by Codex subscription Profiles.",
     );
   }
   if (advanced.extraBody !== undefined) {
     throw new ProfileValidationError(
-      "advanced.extraBody",
+      `${advancedField}.extraBody`,
       "Extra Body is not supported by Codex subscription Profiles.",
     );
   }
@@ -551,34 +696,38 @@ function validateCodexSubscriptionSettings(
 
 function advancedSettings(
   record: Record<string, unknown>,
-): DirectApiProfile["advanced"] {
+  field: string,
+): DirectApiModelConfig["advanced"] {
   assertOnlyKeys(
     record,
     ["capabilityOverrides", "hostedTools", "extraBody"],
-    "advanced",
+    field,
   );
-  const result: DirectApiProfile["advanced"] = {};
+  const result: DirectApiModelConfig["advanced"] = {};
   if (record.capabilityOverrides !== undefined) {
-    result.capabilityOverrides = capabilityOverrides(record.capabilityOverrides);
+    result.capabilityOverrides = capabilityOverrides(
+      record.capabilityOverrides,
+      `${field}.capabilityOverrides`,
+    );
   }
   if (record.extraBody !== undefined) {
     result.extraBody = requiredRecord(
       record.extraBody,
-      "advanced.extraBody",
+      `${field}.extraBody`,
       "Extra Body must be a JSON object.",
     );
   }
   if (record.hostedTools !== undefined) {
     const hostedTools = requiredRecord(
       record.hostedTools,
-      "advanced.hostedTools",
+      `${field}.hostedTools`,
       "Hosted tools must be an object.",
     );
-    assertOnlyKeys(hostedTools, ["webSearch"], "advanced.hostedTools");
+    assertOnlyKeys(hostedTools, ["webSearch"], `${field}.hostedTools`);
     if (hostedTools.webSearch !== undefined) {
       const enabled = booleanValue(
         hostedTools.webSearch,
-        "advanced.hostedTools.webSearch",
+        `${field}.hostedTools.webSearch`,
       );
       if (enabled) result.hostedTools = { webSearch: true };
     }
@@ -596,7 +745,7 @@ function draftString(value: unknown, field: string): string {
 
 function draftDirectApiParameters(
   value: unknown,
-): DirectApiProfile["parameters"] {
+): DirectApiModelConfig["parameters"] {
   if (!isRecord(value)) {
     return {
       maxOutputTokens: 16_384,
@@ -630,7 +779,7 @@ function draftDirectApiParameters(
 
 function draftCodexSubscriptionParameters(
   value: unknown,
-): CodexSubscriptionProfile["parameters"] {
+): CodexSubscriptionModelConfig["parameters"] {
   const rawReasoning = isRecord(value) && isRecord(value.reasoning)
     ? value.reasoning
     : {};
@@ -644,9 +793,9 @@ function draftCodexSubscriptionParameters(
   };
 }
 
-function draftAdvanced(value: unknown): DirectApiProfile["advanced"] {
+function draftAdvanced(value: unknown): DirectApiModelConfig["advanced"] {
   if (!isRecord(value)) return {};
-  const advanced: DirectApiProfile["advanced"] = {};
+  const advanced: DirectApiModelConfig["advanced"] = {};
   if (isRecord(value.capabilityOverrides)) {
     advanced.capabilityOverrides = cloneJsonValue(
       value.capabilityOverrides,
@@ -661,10 +810,13 @@ function draftAdvanced(value: unknown): DirectApiProfile["advanced"] {
   return advanced;
 }
 
-function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
+function capabilityOverrides(
+  value: unknown,
+  field: string,
+): ModelCapabilityOverrides {
   const record = requiredRecord(
     value,
-    "advanced.capabilityOverrides",
+    field,
     "Capability overrides must be an object.",
   );
   assertOnlyKeys(record, [
@@ -674,21 +826,21 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
     "maxOutputTokens",
     "reasoning",
     "inputs",
-  ], "advanced.capabilityOverrides");
+  ], field);
   const result: ModelCapabilityOverrides = {};
   if (record.tools !== undefined) {
-    result.tools = booleanValue(record.tools, "advanced.capabilityOverrides.tools");
+    result.tools = booleanValue(record.tools, `${field}.tools`);
   }
   if (record.streaming !== undefined) {
     result.streaming = booleanValue(
       record.streaming,
-      "advanced.capabilityOverrides.streaming",
+      `${field}.streaming`,
     );
   }
   if (record.temperature !== undefined) {
     if (record.temperature !== "supported" && record.temperature !== "unsupported") {
       throw new ProfileValidationError(
-        "advanced.capabilityOverrides.temperature",
+        `${field}.temperature`,
         "Temperature capability must be supported or unsupported.",
       );
     }
@@ -697,14 +849,15 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
   if (record.maxOutputTokens !== undefined) {
     result.maxOutputTokens = positiveInteger(
       record.maxOutputTokens,
-      "advanced.capabilityOverrides.maxOutputTokens",
+      `${field}.maxOutputTokens`,
       1_000_000,
     );
   }
   if (record.reasoning !== undefined) {
+    const reasoningField = `${field}.reasoning`;
     const reasoning = requiredRecord(
       record.reasoning,
-      "advanced.capabilityOverrides.reasoning",
+      reasoningField,
       "Reasoning override must be an object.",
     );
     const normalized: NonNullable<ModelCapabilityOverrides["reasoning"]> = {};
@@ -714,23 +867,23 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
       "efforts",
       "budgetTokens",
       "strategy",
-    ], "advanced.capabilityOverrides.reasoning");
+    ], reasoningField);
     if (reasoning.supported !== undefined) {
       normalized.supported = booleanValue(
         reasoning.supported,
-        "advanced.capabilityOverrides.reasoning.supported",
+        `${reasoningField}.supported`,
       );
     }
     if (reasoning.canDisable !== undefined) {
       normalized.canDisable = booleanValue(
         reasoning.canDisable,
-        "advanced.capabilityOverrides.reasoning.canDisable",
+        `${reasoningField}.canDisable`,
       );
     }
     if (reasoning.budgetTokens !== undefined) {
       normalized.budgetTokens = booleanValue(
         reasoning.budgetTokens,
-        "advanced.capabilityOverrides.reasoning.budgetTokens",
+        `${reasoningField}.budgetTokens`,
       );
     }
     if (reasoning.efforts !== undefined) {
@@ -739,7 +892,7 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
         !reasoning.efforts.every(isReasoningEffort)
       ) {
         throw new ProfileValidationError(
-          "advanced.capabilityOverrides.reasoning.efforts",
+          `${reasoningField}.efforts`,
           "Reasoning efforts contain an unsupported value.",
         );
       }
@@ -748,7 +901,7 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
     if (reasoning.strategy !== undefined) {
       if (!isReasoningStrategy(reasoning.strategy)) {
         throw new ProfileValidationError(
-          "advanced.capabilityOverrides.reasoning.strategy",
+          `${reasoningField}.strategy`,
           "Reasoning strategy is unsupported.",
         );
       }
@@ -757,22 +910,23 @@ function capabilityOverrides(value: unknown): ModelCapabilityOverrides {
     result.reasoning = normalized;
   }
   if (record.inputs !== undefined) {
+    const inputsField = `${field}.inputs`;
     const inputs = requiredRecord(
       record.inputs,
-      "advanced.capabilityOverrides.inputs",
+      inputsField,
       "Input capability override must be an object.",
     );
     assertOnlyKeys(
       inputs,
       ["image", "audio", "pdf"],
-      "advanced.capabilityOverrides.inputs",
+      inputsField,
     );
     const normalized: NonNullable<ModelCapabilityOverrides["inputs"]> = {};
     for (const name of ["image", "audio", "pdf"] as const) {
       if (inputs[name] !== undefined) {
         normalized[name] = booleanValue(
           inputs[name],
-          `advanced.capabilityOverrides.inputs.${name}`,
+          `${inputsField}.${name}`,
         );
       }
     }
@@ -798,24 +952,25 @@ function assertOnlyKeys(
 
 function reasoningSettings(
   record: Record<string, unknown>,
-): SavedProfile["parameters"]["reasoning"] {
+  field: string,
+): ReasoningSettings {
   if (
     record.mode !== "default" &&
     record.mode !== "disabled" &&
     record.mode !== "enabled"
   ) {
     throw new ProfileValidationError(
-      "parameters.reasoning.mode",
+      `${field}.mode`,
       "Reasoning mode must be default, disabled, or enabled.",
     );
   }
-  const result: SavedProfile["parameters"]["reasoning"] = {
+  const result: ReasoningSettings = {
     mode: record.mode,
   };
   if (record.effort !== undefined) {
     if (!isReasoningEffort(record.effort)) {
       throw new ProfileValidationError(
-        "parameters.reasoning.effort",
+        `${field}.effort`,
         "Reasoning effort is unsupported.",
       );
     }
@@ -824,7 +979,7 @@ function reasoningSettings(
   if (record.budgetTokens !== undefined) {
     result.budgetTokens = positiveInteger(
       record.budgetTokens,
-      "parameters.reasoning.budgetTokens",
+      `${field}.budgetTokens`,
       1_000_000,
     );
   }
@@ -910,6 +1065,14 @@ export function isReasoningStrategy(value: unknown): value is ReasoningStrategy 
   return (reasoningStrategies as readonly unknown[]).includes(value);
 }
 
+export function isModelId(value: unknown): value is string {
+  return typeof value === "string" &&
+    Boolean(value) &&
+    value === value.trim() &&
+    [...value].length <= 256 &&
+    !/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(value);
+}
+
 function requiredRecord(
   value: unknown,
   field: string,
@@ -930,6 +1093,17 @@ function requiredString(value: unknown, field: string, message: string): string 
     throw new ProfileValidationError(field, message);
   }
   return value.trim();
+}
+
+function modelIdValue(value: unknown, field: string): string {
+  const model = requiredString(value, field, "Model is required.");
+  if (!isModelId(model)) {
+    throw new ProfileValidationError(
+      field,
+      "Model must be at most 256 visible characters without control or bidirectional formatting characters.",
+    );
+  }
+  return model;
 }
 
 function profileIdValue(value: unknown): string {

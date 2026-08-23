@@ -96,6 +96,7 @@ test("runAgentLoop discards a completed obsolete tool turn before any tool can r
   let confirmationCount = 0;
   let executionCount = 0;
   const modelInputs: AgentLoopModelInput[] = [];
+  const acceptedUsage: unknown[] = [];
 
   const result = await runAgentLoop({
     maxConsecutiveFailures: 2,
@@ -105,6 +106,7 @@ test("runAgentLoop discards a completed obsolete tool turn before any tool can r
         steeringAvailable = true;
         return {
           content: "I will delete the old clip.",
+          contextUsage: { usedTokens: 111, contextWindowTokens: 1_000 },
           toolCalls: [{
             id: "obsolete-apply",
             name: "apply_live_actions",
@@ -115,7 +117,11 @@ test("runAgentLoop discards a completed obsolete tool turn before any tool can r
           }],
         };
       }
-      return { content: "I kept the clip and changed direction.", toolCalls: [] };
+      return {
+        content: "I kept the clip and changed direction.",
+        toolCalls: [],
+        contextUsage: { usedTokens: 222, contextWindowTokens: 1_000 },
+      };
     },
     consumeSteering: async () => {
       if (!steeringAvailable || steeringConsumed) return [];
@@ -136,12 +142,18 @@ test("runAgentLoop discards a completed obsolete tool turn before any tool can r
       executionCount += 1;
       return { results: [], mutationCount: 0 };
     },
+    onModelTurnAccepted: (usage) => {
+      acceptedUsage.push(usage);
+    },
   });
 
   assert.equal(result.message, "I kept the clip and changed direction.");
   assert.equal(preflightCount, 0);
   assert.equal(confirmationCount, 0);
   assert.equal(executionCount, 0);
+  assert.deepEqual(acceptedUsage, [
+    { usedTokens: 222, contextWindowTokens: 1_000 },
+  ]);
   assert.deepEqual(modelInputs[1]?.messages, [{
     role: "user",
     content: "Do not delete anything; keep the clip and inspect it instead.",

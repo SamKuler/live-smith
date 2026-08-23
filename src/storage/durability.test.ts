@@ -29,12 +29,15 @@ test(
         baseUrl: "https://example.test/v1",
         apiKey: "secret",
       },
-      model: "model-a",
-      parameters: {
-        maxOutputTokens: 8192,
-        reasoning: { mode: "default" },
-      },
-      advanced: {},
+      defaultModel: "model-a",
+      models: [{
+        model: "model-a",
+        parameters: {
+          maxOutputTokens: 8192,
+          reasoning: { mode: "default" },
+        },
+        advanced: {},
+      }],
     };
 
     await saveSavedProfile(directory, profile);
@@ -98,12 +101,15 @@ test(
         baseUrl: "https://example.test/v1",
         apiKey: "secret",
       },
-      model: "model-a",
-      parameters: {
-        maxOutputTokens: 8192,
-        reasoning: { mode: "default" },
-      },
-      advanced: {},
+      defaultModel: "model-a",
+      models: [{
+        model: "model-a",
+        parameters: {
+          maxOutputTokens: 8192,
+          reasoning: { mode: "default" },
+        },
+        advanced: {},
+      }],
     });
     await appendSessionEvent(directory, "session-1", {
       kind: "user",

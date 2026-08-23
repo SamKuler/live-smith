@@ -8,8 +8,13 @@ import type {
 import type {
   ApiFamily,
   ApiMode,
+  CodexSubscriptionModelConfig,
+  CodexSubscriptionProfile,
+  DirectApiModelConfig,
+  DirectApiProfile,
+  DraftModelConfig,
   DraftProfile,
-  SavedProfile,
+  ModelConnection,
   ReasoningEffort,
   ReasoningStrategy,
 } from "./profile.js";
@@ -28,20 +33,33 @@ export interface InputCapabilities {
   pdf: boolean;
 }
 
-export type InputCapabilityEvidenceValue =
+export type CapabilitySupportEvidenceValue =
   | "supported"
   | "unsupported"
   | "unverified";
 
+export type InputCapabilityEvidenceValue = CapabilitySupportEvidenceValue;
+
 export type InputCapabilityEvidence = {
   [Kind in keyof InputCapabilities]: InputCapabilityEvidenceValue;
 };
+
+export type NumericCapabilityEvidenceValue = "verified" | "unverified";
+
+export interface ModelCapabilityEvidence {
+  temperature: CapabilitySupportEvidenceValue;
+  maxOutputTokens: NumericCapabilityEvidenceValue;
+  contextWindowTokens: NumericCapabilityEvidenceValue;
+  reasoning: CapabilitySupportEvidenceValue;
+  inputs: InputCapabilityEvidence;
+}
 
 export interface ModelCapabilities {
   tools: boolean;
   streaming: boolean;
   temperature: "supported" | "unsupported";
   maxOutputTokens?: number;
+  contextWindowTokens?: number;
   reasoning: ReasoningCapabilities;
   inputs: InputCapabilities;
 }
@@ -58,13 +76,53 @@ export interface ModelInfo {
   id: string;
   displayName: string;
   capabilities: ModelCapabilities;
+  capabilityEvidence: ModelCapabilityEvidence;
 }
 
-/** The only Profile representation accepted by model generation. */
-export interface RuntimeProfile {
-  profile: SavedProfile;
+/** Credential-bearing connection identity without the persisted model collection. */
+export interface RuntimeProfileIdentity {
+  id: string;
+  name: string;
+  connection: ModelConnection;
+}
+
+/** Minimum single-model view needed to resolve capabilities for a draft. */
+export interface ModelCapabilitySource {
+  profile: RuntimeProfileIdentity;
+  model: DraftModelConfig;
+}
+
+/** The one configured model selected for a model request or capability decision. */
+export type RuntimeModelSource =
+  | {
+      profile: Pick<DirectApiProfile, "id" | "name" | "connection">;
+      model: DirectApiModelConfig;
+    }
+  | {
+      profile: Pick<CodexSubscriptionProfile, "id" | "name" | "connection">;
+      model: CodexSubscriptionModelConfig;
+    };
+
+interface ResolvedRuntimeModelFields {
   capabilities: ModelCapabilities;
   inputCapabilityEvidence: InputCapabilityEvidence;
+}
+
+/** The only Profile/model representation accepted by model generation. */
+export type RuntimeProfile =
+  | (Extract<RuntimeModelSource, {
+      profile: { connection: { kind: "direct-api" } };
+    }> & ResolvedRuntimeModelFields)
+  | (Extract<RuntimeModelSource, {
+      profile: { connection: { kind: "codex-subscription" } };
+    }> & ResolvedRuntimeModelFields);
+
+export function isDirectRuntimeModelSource(
+  value: RuntimeModelSource | RuntimeProfile,
+): value is Extract<RuntimeModelSource, {
+  profile: { connection: { kind: "direct-api" } };
+}> & Partial<ResolvedRuntimeModelFields> {
+  return value.profile.connection.kind === "direct-api";
 }
 
 /** Raw provider metadata. Resolve it with policy and manual overrides at use time. */

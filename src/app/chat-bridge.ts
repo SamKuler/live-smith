@@ -9,8 +9,12 @@ import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 
 import type { SessionEvent } from "../storage/events.js";
+import type { SessionModelSelection } from "../storage/sessions.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
-import type { ModelHostedWebSearch } from "../model/contracts.js";
+import type {
+  ModelContextUsage,
+  ModelHostedWebSearch,
+} from "../model/contracts.js";
 import {
   compareDefaultFollowUpBehaviorRevisions,
   isDefaultFollowUpBehavior,
@@ -216,7 +220,7 @@ export interface ChatBridgeConfirmationRequest {
 export interface ChatBridgeStream {
   assistantDelta(delta: string): Promise<void>;
   assistantReset(): Promise<void>;
-  modelTurnAccepted(): Promise<void>;
+  modelTurnAccepted(usage?: ModelContextUsage): Promise<void>;
   webSearchUpdate(update: ModelHostedWebSearch): Promise<void>;
   sessionEvent(event: SessionEvent): Promise<void>;
   progress(message: string): Promise<void>;
@@ -226,6 +230,10 @@ export interface ChatBridgeStream {
 export interface ChatBridge {
   url: string;
   publishSessionApprovalMode(sessionId: string, approvalMode: ApprovalMode): void;
+  publishSessionModelSelection(
+    sessionId: string,
+    modelSelection: SessionModelSelection,
+  ): void;
   publishDefaultFollowUpBehavior(change: GlobalSettingsChange): void;
   close(): Promise<void>;
 }
@@ -306,6 +314,7 @@ interface ActiveSend {
   assistantDraft: string;
   assistantDraftBytes: number;
   searchMap: Map<string, ModelHostedWebSearch>;
+  contextUsage?: ModelContextUsage | null;
 }
 
 interface PendingSendAdmission {
@@ -361,6 +370,11 @@ type StateChangeSsePayloadBase =
       approvalMode: ApprovalMode;
     }
   | {
+      type: "session_model_selection_changed";
+      sessionId: string;
+      modelSelection: SessionModelSelection;
+    }
+  | {
       type: "default_follow_up_behavior_changed";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
@@ -374,6 +388,11 @@ type StateChangeSsePayload = StateChangeSsePayloadBase & {
 type ApprovalModeChangedSsePayload = Extract<
   StateChangeSsePayload,
   { type: "approval_mode_changed" }
+>;
+
+type SessionModelSelectionChangedSsePayload = Extract<
+  StateChangeSsePayload,
+  { type: "session_model_selection_changed" }
 >;
 
 interface StateChangeActivity {
@@ -403,12 +422,20 @@ type SsePayload =
       update: ModelHostedWebSearch;
     }
   | {
+      type: "context_usage_update";
+      sendId: string;
+      sessionId: string;
+      modelTurnEpoch: number;
+      usage: ModelContextUsage | null;
+    }
+  | {
       type: "model_turn_state";
       sendId: string;
       sessionId: string;
       modelTurnEpoch: number;
       assistantDraft: string;
       webSearchUpdates: ModelHostedWebSearch[];
+      contextUsage?: ModelContextUsage | null;
       progress: string;
       resolvedConfirmationGeneration: number;
     }
@@ -448,6 +475,10 @@ export async function createChatBridge(
   const latestApprovalModeChanges = new Map<
     string,
     ApprovalModeChangedSsePayload
+  >();
+  const latestSessionModelSelectionChanges = new Map<
+    string,
+    SessionModelSelectionChangedSsePayload
   >();
   const sendStopTombstones = new Map<string, PromptPersistence>();
   const activeAttachmentTerminals = new Map<string, Promise<void>>();
@@ -796,9 +827,18 @@ export async function createChatBridge(
           modelTurnEpoch: activeSend.modelTurnEpoch,
         });
       },
-      modelTurnAccepted: async () => {
+      modelTurnAccepted: async (usage) => {
         if (!acceptsTransientUpdates()) return;
         advanceModelTurn();
+        const acceptedUsage = usage ?? null;
+        activeSend.contextUsage = acceptedUsage;
+        broadcast({
+          type: "context_usage_update",
+          sendId,
+          sessionId,
+          modelTurnEpoch: activeSend.modelTurnEpoch,
+          usage: acceptedUsage,
+        });
       },
       webSearchUpdate: async (update) => {
         if (!acceptsTransientUpdates()) return;
@@ -1001,6 +1041,9 @@ export async function createChatBridge(
         for (const published of latestApprovalModeChanges.values()) {
           writeSse(response, published);
         }
+        for (const published of latestSessionModelSelectionChanges.values()) {
+          writeSse(response, published);
+        }
         for (const activeSend of activeSendsById.values()) {
           if (activeSend.stopRequested) continue;
           const pendingConfirmation = [...pendingConfirmations.values()].find(
@@ -1013,6 +1056,9 @@ export async function createChatBridge(
             modelTurnEpoch: activeSend.modelTurnEpoch,
             assistantDraft: activeSend.assistantDraft,
             webSearchUpdates: [...activeSend.searchMap.values()],
+            ...(activeSend.contextUsage === undefined
+              ? {}
+              : { contextUsage: activeSend.contextUsage }),
             progress: sessionActivities.get(activeSend.sessionId)?.message ?? "",
             resolvedConfirmationGeneration: pendingConfirmation
               ? pendingConfirmation.confirmationGeneration - 1
@@ -1229,13 +1275,19 @@ export async function createChatBridge(
           (
             input.kind === "delete_session" ||
             input.kind === "archive_session" ||
-            input.kind === "attach_selected_audio_source"
+            input.kind === "attach_selected_audio_source" ||
+            input.kind === "set_session_model_selection" ||
+            input.kind === "load_session_model_capabilities"
           ) &&
           activeSendsBySession.has(input.sessionId)
         ) {
           sendJson(response, {
             error: input.kind === "attach_selected_audio_source"
               ? "Stop this Session's active request before attaching its selected audio source."
+              : input.kind === "set_session_model_selection"
+              ? "Wait for this Session's active request to finish before changing its model."
+              : input.kind === "load_session_model_capabilities"
+              ? "Wait for this Session's active request to finish before loading model capabilities."
               : `Stop this Session's active request before ${
                 input.kind === "delete_session" ? "deleting" : "archiving"
               } it.`,
@@ -1798,6 +1850,22 @@ export async function createChatBridge(
         latestApprovalModeChanges.set(sessionId, published);
       }
     },
+    publishSessionModelSelection: (sessionId, modelSelection) => {
+      const published = broadcastStateChange({
+        type: "session_model_selection_changed",
+        sessionId,
+        modelSelection: {
+          profileId: modelSelection.profileId,
+          model: modelSelection.model,
+          ...(modelSelection.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: modelSelection.reasoningEffort }),
+        },
+      });
+      if (published?.type === "session_model_selection_changed") {
+        latestSessionModelSelectionChanges.set(sessionId, published);
+      }
+    },
     publishDefaultFollowUpBehavior: (change) => {
       if (latestGlobalSettingsChange !== undefined) {
         const revisionOrder = compareDefaultFollowUpBehaviorRevisions(
@@ -1961,6 +2029,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "unarchive_session" ||
     input.kind === "attach_selected_audio_source" ||
     input.kind === "set_session_approval_mode" ||
+    input.kind === "set_session_model_selection" ||
+    input.kind === "load_session_model_capabilities" ||
     input.kind === "set_session_skills";
 }
 

@@ -1,7 +1,9 @@
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { ConversationScope } from "../model/contracts.js";
 import type {
+  DiscoveredModelInfo,
   InputCapabilityEvidence,
+  ModelCapabilityEvidence,
   ModelCapabilities,
   ModelInfo,
   ManagedAuthState,
@@ -14,6 +16,7 @@ import {
   type ApiMode,
   type DraftProfile,
   type ModelConnection,
+  type ReasoningSettings,
   type SavedProfile,
 } from "../model/profile.js";
 import { cloneJsonValue } from "../model/json-clone.js";
@@ -42,7 +45,10 @@ export interface ChatDialogState {
   availableSkills: SkillSummary[];
   activeSkillIds: string[];
   capabilities: ModelCapabilities;
+  capabilityEvidence: ModelCapabilityEvidence;
   availableModels: ModelInfo[];
+  configuredModels: ChatConfiguredModel[];
+  configuredModelsReady: boolean;
   modelStateSource: ChatModelStateSource | null;
   runtimeProfile: ChatRuntimeSummary | null;
   settings: AgentSettings;
@@ -125,10 +131,18 @@ export interface ChatRuntimeSummary {
     connectionKind: ModelConnection["kind"];
     apiFamily: ApiFamily;
     apiMode: ApiMode | null;
+  };
+  selection: {
     model: string;
+    reasoning: ReasoningSettings;
   };
   capabilities: ModelCapabilities;
   inputCapabilityEvidence: InputCapabilityEvidence;
+}
+
+export interface ChatConfiguredModel {
+  model: string;
+  label: string;
 }
 
 export type ChatSessionActivityStatus =
@@ -154,6 +168,9 @@ export interface ChatModelStateSource {
 export function modelStateSourceForProfile(
   profile: DraftProfile | SavedProfile,
 ): ChatModelStateSource {
+  const previewModel = profile.models.find(
+    (model) => model.model === profile.defaultModel,
+  ) ?? profile.models[0];
   return {
     profileId: profile.id,
     connection: profile.connection.kind === "direct-api"
@@ -163,8 +180,21 @@ export function modelStateSourceForProfile(
           apiKey: profile.connection.apiKey.trim(),
         }
       : cloneJsonValue(profile.connection),
-    model: profile.model.trim(),
+    model: previewModel?.model.trim() ?? profile.defaultModel.trim(),
   };
+}
+
+export function chatConfiguredModels(
+  profile: SavedProfile,
+  discoveredModels: DiscoveredModelInfo[],
+): ChatConfiguredModel[] {
+  const labels = new Map(
+    discoveredModels.map((model) => [model.id, model.displayName] as const),
+  );
+  return profile.models.map((model) => ({
+    model: model.model,
+    label: labels.get(model.model) || model.model,
+  }));
 }
 
 export function chatRuntimeSummary(
@@ -178,7 +208,10 @@ export function chatRuntimeSummary(
       connectionKind: profile.connection.kind,
       apiFamily: profileProvider(profile),
       apiMode: profileApiMode(profile),
-      model: profile.model,
+    },
+    selection: {
+      model: runtimeProfile.model.model,
+      reasoning: cloneJsonValue(runtimeProfile.model.parameters.reasoning),
     },
     capabilities,
     inputCapabilityEvidence: runtimeProfile.inputCapabilityEvidence,

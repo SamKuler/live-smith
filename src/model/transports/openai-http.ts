@@ -6,8 +6,8 @@ import {
   requireDirectApiConnection,
   type DirectApiConnection,
   type DraftProfile,
-  type SavedProfile,
 } from "../profile.js";
+import type { RuntimeProfileIdentity } from "../provider.js";
 import {
   assertServerSentEventResponse,
   parseServerSentEventData,
@@ -24,7 +24,7 @@ interface OpenAIRequestOptions {
 }
 
 export async function requestOpenAIJson(
-  profile: SavedProfile,
+  profile: RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   resource: Exclude<OpenAIResource, "/models">,
   options: OpenAIRequestOptions,
@@ -44,7 +44,7 @@ export async function discoverOpenAIModels(
 }
 
 async function requestOpenAIResource(
-  profile: DraftProfile | SavedProfile,
+  profile: DraftProfile | RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   resource: OpenAIResource,
   options: OpenAIRequestOptions,
@@ -66,7 +66,7 @@ async function requestOpenAIResource(
 }
 
 export async function* streamOpenAIEvents(
-  profile: SavedProfile,
+  profile: RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   resource: "/chat/completions" | "/responses",
   body: Record<string, unknown>,

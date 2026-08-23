@@ -4,8 +4,8 @@ import {
   requireDirectApiConnection,
   type DirectApiConnection,
   type DraftProfile,
-  type SavedProfile,
 } from "../profile.js";
+import type { RuntimeProfileIdentity } from "../provider.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { ModelConnectionError } from "../connection-error.js";
 import {
@@ -25,7 +25,7 @@ interface AnthropicRequestOptions {
 }
 
 export async function requestAnthropicJson(
-  profile: SavedProfile,
+  profile: RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   resource: "/messages",
   options: AnthropicRequestOptions,
@@ -47,7 +47,7 @@ export async function requestAnthropicModelPage(
 }
 
 async function requestAnthropicResource(
-  profile: DraftProfile | SavedProfile,
+  profile: DraftProfile | RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   resource: "/messages" | "/models",
   options: AnthropicRequestOptions,
@@ -69,7 +69,7 @@ async function requestAnthropicResource(
 }
 
 export async function* streamAnthropicEvents(
-  profile: SavedProfile,
+  profile: RuntimeProfileIdentity,
   fetchImpl: typeof fetch,
   body: Record<string, unknown>,
   signal?: AbortSignal,

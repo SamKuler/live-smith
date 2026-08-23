@@ -1,26 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SavedProfile } from "./profile.js";
+import type { RuntimeModelSource } from "./provider.js";
 import {
   HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
   modelToolsForProfile,
 } from "./tools.js";
 
-function profile(enabled: boolean): SavedProfile {
+function profile(enabled: boolean): RuntimeModelSource {
   return {
-    id: "profile",
-    name: "Profile",
-    connection: {
-      kind: "direct-api",
-      apiFamily: "openai",
-      apiMode: "responses",
-      baseUrl: "https://example.test/v1",
-      apiKey: "secret",
+    profile: {
+      id: "profile",
+      name: "Profile",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "responses",
+        baseUrl: "https://example.test/v1",
+        apiKey: "secret",
+      },
     },
-    model: "model",
-    parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
-    advanced: enabled ? { hostedTools: { webSearch: true } } : {},
+    model: {
+      model: "model",
+      parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } },
+      advanced: enabled ? { hostedTools: { webSearch: true } } : {},
+    },
   };
 }
 

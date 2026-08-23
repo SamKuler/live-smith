@@ -9,7 +9,7 @@ import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
 
 import { defaultModelCapabilities } from "../model/capabilities.js";
-import type { DirectApiConnection } from "../model/profile.js";
+import type { DirectApiConnection, SavedProfile } from "../model/profile.js";
 import type { ModelCapabilities, RuntimeProfile } from "../model/provider.js";
 import {
   saveSessionAttachment,
@@ -21,7 +21,10 @@ import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
 } from "./attachment-context.js";
-import { buildModelRequest } from "./model-request.js";
+import {
+  buildModelRequest,
+  runtimeProfileForSavedProfile,
+} from "./model-request.js";
 
 function imageCapabilities(): ModelCapabilities {
   return {
@@ -65,19 +68,34 @@ function runtimeProfile(input: {
       apiKey: "key",
     };
   }
+  const savedProfile: SavedProfile = input.subscription
+    ? {
+        id: "profile-attachments",
+        name: "Attachments",
+        connection: { kind: "codex-subscription", provider: "openai" },
+        defaultModel: "test-model",
+        models: [{
+          model: "test-model",
+          parameters: { reasoning: { mode: "default" } },
+          advanced: {},
+        }],
+      }
+    : {
+        id: "profile-attachments",
+        name: "Attachments",
+        connection: directConnection,
+        defaultModel: "test-model",
+        models: [{
+          model: "test-model",
+          parameters: {
+            maxOutputTokens: 1024,
+            reasoning: { mode: "default" },
+          },
+          advanced: {},
+        }],
+      };
   return {
-    profile: {
-      id: "profile-attachments",
-      name: "Attachments",
-      connection: input.subscription
-        ? { kind: "codex-subscription", provider: "openai" }
-        : directConnection,
-      model: "test-model",
-      parameters: input.subscription
-        ? { reasoning: { mode: "default" } }
-        : { maxOutputTokens: 1024, reasoning: { mode: "default" } },
-      advanced: {},
-    },
+    ...runtimeProfileForSavedProfile(savedProfile),
     capabilities: {
       ...defaultModelCapabilities(),
       inputs: {
@@ -180,20 +198,7 @@ test("attachment context resolves current images after labelled request text", a
     history: [],
     agentMessages: [],
     runtimeProfile: {
-      profile: {
-        id: "profile-1",
-        name: "Profile",
-        connection: {
-          kind: "direct-api",
-          apiFamily: "openai",
-          apiMode: "responses",
-          baseUrl: "https://example.test/v1",
-          apiKey: "key",
-        },
-        model: "gpt-5.6",
-        parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
-        advanced: {},
-      },
+      ...runtimeProfile({ image: true }),
       capabilities: imageCapabilities(),
       inputCapabilityEvidence: {
         image: "supported",

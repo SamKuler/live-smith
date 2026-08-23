@@ -3,7 +3,7 @@ import { ReadableStream } from "node:stream/web";
 import test from "node:test";
 
 import { createHostAbortController } from "../../runtime/host.js";
-import type { SavedProfile } from "../profile.js";
+import type { RuntimeProfileIdentity } from "../provider.js";
 import {
   requestAnthropicJson,
   streamAnthropicEvents,
@@ -15,7 +15,7 @@ import {
 import { readBoundedJsonResponse } from "./response-body.js";
 import { parseServerSentEventData } from "./server-sent-events.js";
 
-const openAIProfile: SavedProfile = {
+const openAIProfile: RuntimeProfileIdentity = {
   id: "openai-direct",
   name: "OpenAI Direct",
   connection: {
@@ -25,15 +25,9 @@ const openAIProfile: SavedProfile = {
     baseUrl: "https://example.test/v1",
     apiKey: "test-key",
   },
-  model: "model-a",
-  parameters: {
-    maxOutputTokens: 1024,
-    reasoning: { mode: "default" },
-  },
-  advanced: {},
 };
 
-const anthropicProfile: SavedProfile = {
+const anthropicProfile: RuntimeProfileIdentity = {
   ...openAIProfile,
   id: "anthropic-direct",
   name: "Anthropic Direct",
