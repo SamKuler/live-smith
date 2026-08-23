@@ -14,6 +14,8 @@
         __MAX_DISCOVERED_MODEL_OUTPUT_TOKENS__;
       const hostedWebSearchMaxEventsPerSend =
         __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
+      const maximumTransientAssistantDraftBytes =
+        __MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES__;
       if (!isWireChatBridgeState(getState())) {
         throw new Error("Initial Live Smith state is invalid.");
       }
@@ -4505,6 +4507,8 @@
                 "resolvedConfirmationGeneration",
               ]) ||
               typeof payload.assistantDraft !== "string" ||
+              wireUtf8ByteLength(payload.assistantDraft) >
+                maximumTransientAssistantDraftBytes ||
               !Array.isArray(payload.webSearchUpdates) ||
               payload.webSearchUpdates.length > hostedWebSearchMaxEventsPerSend ||
               !payload.webSearchUpdates.every((update) =>

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import {
   createServer,
@@ -30,6 +31,7 @@ import {
 import type { GlobalSettingsChange } from "./global-settings-events.js";
 import type { ActionDiffGroup } from "../ui/action-diff.js";
 import {
+  MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
   chatDialogStateForWire,
   chatSessionEvent,
   type ChatSessionEvent,
@@ -302,6 +304,7 @@ interface ActiveSend {
   nextConfirmationGeneration: number;
   modelTurnEpoch: number;
   assistantDraft: string;
+  assistantDraftBytes: number;
   searchMap: Map<string, ModelHostedWebSearch>;
 }
 
@@ -758,12 +761,23 @@ export async function createChatBridge(
     const advanceModelTurn = (): void => {
       activeSend.modelTurnEpoch += 1;
       activeSend.assistantDraft = "";
+      activeSend.assistantDraftBytes = 0;
       activeSend.searchMap.clear();
     };
     return {
       assistantDelta: async (delta) => {
         if (!acceptsTransientUpdates()) return;
+        const deltaBytes = Buffer.byteLength(delta, "utf8");
+        if (
+          deltaBytes >
+            MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES - activeSend.assistantDraftBytes
+        ) {
+          throw new Error(
+            `Transient assistant draft exceeded the ${MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES}-byte reconnect limit.`,
+          );
+        }
         activeSend.assistantDraft += delta;
+        activeSend.assistantDraftBytes += deltaBytes;
         broadcast({
           type: "assistant_delta",
           sendId,
@@ -803,6 +817,7 @@ export async function createChatBridge(
         if (activeSendsById.get(sendId) !== activeSend) return;
         if (event.kind === "assistant") {
           activeSend.assistantDraft = "";
+          activeSend.assistantDraftBytes = 0;
         } else if (
           event.kind === "web_search" &&
           event.webSearch &&
@@ -1342,6 +1357,7 @@ export async function createChatBridge(
           nextConfirmationGeneration: 1,
           modelTurnEpoch: 0,
           assistantDraft: "",
+          assistantDraftBytes: 0,
           searchMap: new Map(),
         };
         pendingSendAdmissions.delete(sendId);

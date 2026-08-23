@@ -24,6 +24,8 @@ import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 import type { SkillSummary } from "../skills/format.js";
 
+export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
+
 export interface ChatDialogState {
   contextSummary: string;
   sessionContinueTarget: {

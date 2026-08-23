@@ -1,4 +1,5 @@
 import {
+  MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
   serializeChatStateForHtml,
   type ChatBridgeState,
 } from "./chat-state.js";
@@ -103,7 +104,7 @@ function injectSkillContract(script: string): string {
     );
 }
 
-function injectModelCatalogContract(script: string): string {
+function injectModelContract(script: string): string {
   return script
     .replaceAll(
       "__MAX_DISCOVERED_MODEL_COUNT__",
@@ -124,6 +125,10 @@ function injectModelCatalogContract(script: string): string {
     .replaceAll(
       "__HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__",
       String(HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND),
+    )
+    .replaceAll(
+      "__MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES__",
+      String(MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES),
     );
 }
 
@@ -134,7 +139,7 @@ export function composeChatDocument(
   scripts: ChatClientScripts,
 ): string {
   const attachmentsScript = injectAttachmentContract(scripts.attachments);
-  const bridgeClientScript = injectModelCatalogContract(injectSkillContract(
+  const bridgeClientScript = injectModelContract(injectSkillContract(
     injectAttachmentContract(scripts.bridgeClient),
   ));
   const skillManagerScript = injectSkillContract(scripts.skillManager);

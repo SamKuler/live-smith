@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
 
-import type { ChatDialogState } from "../ui/chat-state.js";
+import { ModelConnectionError } from "../model/connection-error.js";
+import {
+  MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
+  type ChatDialogState,
+} from "../ui/chat-state.js";
 import { createChatBridge } from "./chat-bridge.js";
 
 const state = {} as ChatDialogState;
@@ -234,6 +238,76 @@ test("chat bridge reconnect omits stopped sends while retaining another Session'
   } finally {
     release.resolve();
     await Promise.all([firstSend, backgroundSend]);
+    await bridge.close();
+  }
+});
+
+test("chat bridge bounds the UTF-8 transient draft atomically and clears its byte count", {
+  timeout: 5_000,
+}, async () => {
+  const overflowChecked = deferred();
+  const continueAfterSnapshot = deferred();
+  const release = deferred();
+  const exactDraft = "é".repeat(MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES / 2);
+  let overflowError: unknown;
+  assert.equal(
+    NodeBuffer.byteLength(exactDraft, "utf8"),
+    MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
+  );
+
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.assistantDelta(exactDraft);
+      try {
+        await stream.assistantDelta("a");
+      } catch (error) {
+        overflowError = error;
+      }
+      overflowChecked.resolve();
+      await continueAfterSnapshot.promise;
+
+      await stream.assistantReset();
+      await stream.assistantDelta(exactDraft);
+      await stream.modelTurnAccepted();
+      await stream.assistantDelta(exactDraft);
+      await stream.sessionEvent(sessionEvent("terminal-assistant", "assistant"));
+      await stream.assistantDelta(exactDraft);
+      await release.promise;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: sendHeaders("bounded-draft-send"),
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  try {
+    await overflowChecked.promise;
+    assert.ok(overflowError instanceof Error);
+    assert.equal(overflowError instanceof ModelConnectionError, false);
+    assert.match(
+      overflowError.message,
+      new RegExp(String(MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES)),
+    );
+
+    const reconnect = await fetch(endpoint("/events"));
+    const [snapshot] = await readSsePayloads(reconnect, 1);
+    assert.equal(snapshot?.type, "model_turn_state");
+    assert.equal(snapshot?.assistantDraft === exactDraft, true);
+
+    continueAfterSnapshot.resolve();
+    release.resolve();
+    assert.equal((await send).status, 200);
+  } finally {
+    continueAfterSnapshot.resolve();
+    release.resolve();
+    await send.catch(() => undefined);
     await bridge.close();
   }
 });

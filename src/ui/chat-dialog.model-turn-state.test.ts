@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
 
 import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
+import { MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES } from "./chat-state.js";
 import {
   cloneState,
   createDialogHarness,
@@ -541,6 +543,57 @@ test("a background reconnect snapshot is restored when its Session becomes activ
     assert.equal(
       harness.document.querySelector("#status")?.textContent,
       "Background recovered progress",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("model-turn snapshots enforce the shared UTF-8 transient draft limit atomically", {
+  timeout: 5_000,
+}, async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const exactDraft = "é".repeat(MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES / 2);
+  const renderedDraft = () => harness.document.querySelector(
+    ".timeline-item.assistant.streaming .timeline-content",
+  )?.textContent ?? "";
+  assert.equal(
+    NodeBuffer.byteLength(exactDraft, "utf8"),
+    MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
+  );
+  try {
+    const sendId = await startHeldSend(harness);
+    harness.emitRawServerEvent(modelTurnState(sendId, {
+      assistantDraft: exactDraft,
+      webSearchUpdates: [],
+      progress: "Exact UTF-8 boundary accepted",
+    }));
+    harness.flushAnimationFrames();
+    assert.equal(renderedDraft() === exactDraft, true);
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Exact UTF-8 boundary accepted",
+    );
+
+    harness.emitRawServerEvent(modelTurnState(sendId, {
+      assistantDraft: `${exactDraft}a`,
+      webSearchUpdates: [webSearch("poisoned-over-limit-search")],
+      progress: "Poisoned one-byte-over snapshot",
+    }));
+    harness.flushAnimationFrames();
+    assert.equal(renderedDraft() === exactDraft, true);
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Exact UTF-8 boundary accepted",
+    );
+    assert.equal(
+      harness.document.querySelectorAll(".timeline-item.web_search.live").length,
+      0,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
