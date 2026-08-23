@@ -42,6 +42,34 @@ Stream cancellation is best-effort and nonblocking: Live Smith requests it once
 but never waits on a provider- or host-controlled cancellation Promise before
 propagating the original abort, size, read, or protocol result.
 
+Direct model generation classifies only a rejected Fetch call, a rejected
+response-body read, or a clean streaming EOF before the mode's required
+terminal event as a typed connection loss. Abort is checked first and retains
+its exact reason. HTTP status failures, explicit provider error events,
+malformed or contradictory protocol data, early `[DONE]`, oversized data, and
+consumer callback failures remain ordinary failures and are not reconnected.
+For streaming compatibility, an absent `Content-Type` is accepted when the
+body is valid SSE; an explicitly incompatible media type is a non-retryable
+protocol error.
+
+The agent may rebuild only the current unaccepted Direct API `askModel`
+logical response. After the initial outer attempt it makes at most five outer
+reconnect attempts, with cancellable waits of 0.5, 1, 2, 4, and 8 seconds. A
+transport may still use multiple HTTP exchanges inside one outer attempt, such
+as Anthropic `pause_turn` continuation; those exchanges do not consume separate
+reconnect attempts. The agent does not restart `/send`, append the prompt again,
+replay durable Session events, or re-execute an accepted client tool or Live
+mutation. An OpenAI Responses output-limit continuation chain remains one
+unfinished logical response until the loop accepts its final non-continuation
+turn. ChatGPT subscription failures never enter this retry path; the managed
+process, reservation, and quota lifecycle continue to fail closed.
+
+Provider-hosted Web Search remains durable-first and read-only. Search IDs
+observed before a connection loss continue to consume the send's 20-action
+budget, so each rebuilt request receives only the remaining allowance. A
+provider may perform a new search under a new ID after reconnection, but that
+cannot authorize or replay a client tool or Live mutation.
+
 ## Connection backends
 
 ### Direct API

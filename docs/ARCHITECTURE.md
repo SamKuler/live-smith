@@ -271,6 +271,35 @@ logged, or persisted; transport errors retain only family/mode context plus the
 HTTP status and a fixed local failure description. Remote HTTP reason phrases
 are never propagated.
 
+Direct API connection recovery sits inside one provider-neutral `askModel`
+step. Direct transports give a private typed identity only to Fetch rejection,
+response-reader rejection, and premature streaming EOF without the required
+protocol terminal. The step may rebuild that same still-unaccepted logical
+response after cancellable waits of 0.5, 1, 2, 4, and 8 seconds. Abort wins at
+every boundary, so Stop and Steer terminate the active request or backoff with
+their original reason. HTTP, explicit provider or protocol, size, decoding,
+and callback failures are not retried. Managed Codex errors never receive the
+Direct marker and remain governed by process retirement, reservation, and
+poison rules.
+
+Those waits permit one initial plus five outer `askModel` attempts. A transport
+may make several HTTP exchanges, including Anthropic `pause_turn`
+continuations, inside one outer attempt without consuming another reconnect
+slot.
+
+This recovery never re-enters `/send` or its one-time request-start
+preparation. Each retry rebuilds the provider request from the same prompt,
+Profile, capabilities, Skills, attachments, and history snapshot; the user
+event remains appended exactly once, and the remaining hosted-search allowance
+is recalculated for the rebuilt body. The loop has not accepted the returned
+assistant turn, persisted its ordinary trace, executed a client tool, opened
+approval, or entered the Live mutation queue when a retry is allowed.
+Consequently no accepted tool result or Live mutation can be replayed.
+Terminal hosted-search events keep their existing durable-first semantics;
+every observed search ID reduces the allowance exposed to the rebuilt request.
+Output-limit continuations remain one unfinished logical response and do not
+advance the accepted-turn boundary until their final non-continuation turn.
+
 ## Model connection boundary
 
 `ModelConnection` is a closed discriminated union:
@@ -815,6 +844,28 @@ the replay guard uses constant space. Queue entries have a separate logical
 `queueId`; every actual `/send` invocation allocates a fresh transport
 correlation ID, so a delayed terminal from a failed attempt cannot match its
 retry.
+
+Transient model output uses a separate per-send `modelTurnEpoch`, not the
+bridge publication revision. A connection-loss reset or accepted complete turn
+advances the epoch and clears the prior assistant draft and in-flight search
+projection. Every new `/events` connection receives one exact
+`model_turn_state` snapshot for each active, non-stopped send before any open
+confirmation is replayed. That snapshot carries the current draft, bounded
+search map, progress text, and highest resolved confirmation generation. The
+reconnectable assistant draft is independently limited to 1 MiB of cumulative
+UTF-8 bytes. The client replaces same-epoch transient state atomically, rejects
+lower epochs, and uses the confirmation frontier plus each request's generation
+to prevent a resolved or steering-superseded decision from reopening.
+Background Sessions retain their own projection until selected.
+
+`model_turn_state` is an ephemeral recovery snapshot: it neither advances the
+dialog-wide state cut nor claims durable Session history. The bridge does not
+retain an SSE event log, accept a durable cursor, or replay arbitrary missed
+frames. Durable events and command outcomes still converge through their
+existing Session/state reconciliation paths. The EventSource connection error
+is only a status overlay; opening the replacement stream reveals the latest
+underlying state, Profile gate, command, Queue, Stop, or restored per-send
+progress instead of overwriting it.
 
 Send, command, attachment, and Skill attempts capture a
 causal baseline for all Session records, the active Session identity and its
