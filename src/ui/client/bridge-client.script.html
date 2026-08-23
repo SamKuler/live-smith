@@ -12,6 +12,8 @@
         __MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS__;
       const maximumDiscoveredModelOutputTokens =
         __MAX_DISCOVERED_MODEL_OUTPUT_TOKENS__;
+      const hostedWebSearchMaxEventsPerSend =
+        __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
       if (!isWireChatBridgeState(getState())) {
         throw new Error("Initial Live Smith state is invalid.");
       }
@@ -36,11 +38,15 @@
         return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       }
 
-      function isActiveSendPayload(payload) {
+      function activeSendAttemptForPayload(payload) {
         const attempt = payload.sessionId
           ? sendAttemptsBySession.get(payload.sessionId)
           : null;
-        return Boolean(attempt && payload.sendId === attempt.id);
+        return attempt && payload.sendId === attempt.id ? attempt : null;
+      }
+
+      function isActiveSendPayload(payload) {
+        return Boolean(activeSendAttemptForPayload(payload));
       }
 
       let eventSource = null;
@@ -85,6 +91,83 @@
       let nextComposerDraftRevision = 1;
       const sseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
+
+      function isModelTurnEpoch(value) {
+        return Number.isSafeInteger(value) && value >= 0;
+      }
+
+      function transientModelTurnAttempt(payload) {
+        const attempt = activeSendAttemptForPayload(payload);
+        if (
+          !attempt ||
+          attempt.failureHandled ||
+          attempt.awaitingStopTerminal ||
+          !isModelTurnEpoch(payload.modelTurnEpoch) ||
+          payload.modelTurnEpoch < attempt.modelTurnEpoch
+        ) return null;
+        return attempt;
+      }
+
+      function advanceModelTurnEpoch(attempt, modelTurnEpoch) {
+        if (modelTurnEpoch <= attempt.modelTurnEpoch) {
+          return { advanced: false, confirmationChanged: false };
+        }
+        let confirmationChanged = false;
+        const pending = pendingConfirmationsBySession.get(attempt.sessionId);
+        if (
+          pending?.sendId === attempt.id &&
+          pending.modelTurnEpoch < modelTurnEpoch
+        ) {
+          attempt.resolvedConfirmationGeneration = Math.max(
+            attempt.resolvedConfirmationGeneration,
+            pending.confirmationGeneration,
+          );
+          pendingConfirmationsBySession.delete(attempt.sessionId);
+          confirmationChanged = true;
+        }
+        const resolution = confirmationResolutionsBySession.get(attempt.sessionId);
+        if (
+          resolution?.sendId === attempt.id &&
+          resolution.modelTurnEpoch < modelTurnEpoch
+        ) {
+          attempt.resolvedConfirmationGeneration = Math.max(
+            attempt.resolvedConfirmationGeneration,
+            resolution.confirmationGeneration,
+          );
+          clearConfirmationResolution(attempt.sessionId);
+          confirmationChanged = true;
+        }
+        attempt.modelTurnEpoch = modelTurnEpoch;
+        clearTransientResponseForSession(attempt.sessionId);
+        return { advanced: true, confirmationChanged };
+      }
+
+      function applyResolvedConfirmationFrontier(attempt, frontier) {
+        attempt.resolvedConfirmationGeneration = Math.max(
+          attempt.resolvedConfirmationGeneration,
+          frontier,
+        );
+        let confirmationChanged = false;
+        const pending = pendingConfirmationsBySession.get(attempt.sessionId);
+        if (
+          pending?.sendId === attempt.id &&
+          pending.confirmationGeneration <= attempt.resolvedConfirmationGeneration
+        ) {
+          pendingConfirmationsBySession.delete(attempt.sessionId);
+          confirmationChanged = true;
+        }
+        const resolution = confirmationResolutionsBySession.get(attempt.sessionId);
+        if (
+          resolution?.sendId === attempt.id &&
+          resolution.confirmationGeneration <=
+            attempt.resolvedConfirmationGeneration
+        ) {
+          resolution.authoritativeResolutionObserved = true;
+          clearConfirmationResolution(attempt.sessionId);
+          confirmationChanged = true;
+        }
+        return confirmationChanged;
+      }
 
       function activeSendAttempt() {
         return sendAttemptsBySession.get(activeSessionId()) || null;
@@ -2707,6 +2790,7 @@
             ),
           ),
           ownedActiveContextSessionId: sessionId,
+          modelTurnEpoch: 0,
           resolvedConfirmationGeneration: 0,
           payload,
           queueId,
@@ -4112,14 +4196,19 @@
         ) return;
         const canceledFollowUpCount =
           options?.canceledFollowUpCount ?? retainedCanceledFollowUpCount;
-        presentStatus({
+        const statusWasPresented = presentStatus({
           canceledFollowUpCount,
           isError: Boolean(isError),
           message: String(message || ""),
           source: "bridge",
+          stopPhase: options?.stopPhase === true,
           trailingMessage: options?.trailingMessage || "",
         });
-        if (retainedCanceledFollowUpCount && !visibleAttempt) {
+        if (
+          statusWasPresented &&
+          retainedCanceledFollowUpCount &&
+          !visibleAttempt
+        ) {
           retainedCanceledFollowUpCount = 0;
         }
       }
@@ -4225,6 +4314,7 @@
           sendId: attempt.id,
           confirmationId: id,
           confirmationGeneration: confirmation.confirmationGeneration,
+          modelTurnEpoch: confirmation.modelTurnEpoch,
           authoritativeResolutionObserved: false,
           outcomeSignal,
           resolveOutcomeWait,
@@ -4290,12 +4380,19 @@
         }
       }
 
-      function appendSessionEvent(sessionId, event) {
-        if (event.kind === "assistant") {
-          cancelAssistantDraftRender(sessionId);
-          assistantDraftsBySession.set(sessionId, "");
+      function appendSessionEvent(sessionId, event, reconcileTransient) {
+        if (event.kind === "assistant" && reconcileTransient) {
+          const draft = assistantDraftsBySession.get(sessionId) || "";
+          if (draft.trim() && draft.trim() === event.content.trim()) {
+            cancelAssistantDraftRender(sessionId);
+            assistantDraftsBySession.set(sessionId, "");
+          }
         }
-        if (event.kind === "web_search" && event.webSearch?.id) {
+        if (
+          event.kind === "web_search" &&
+          event.webSearch?.id &&
+          reconcileTransient
+        ) {
           const updates = webSearchUpdatesBySession.get(sessionId);
           updates?.delete(event.webSearch.id);
           if (updates?.size === 0) webSearchUpdatesBySession.delete(sessionId);
@@ -4316,6 +4413,16 @@
       function startEventStream() {
         if (eventSource) return;
         eventSource = new EventSource(bridgeUrl("/events"));
+        eventSource.onopen = () => {
+          const statusWasPresented = presentStatus({ source: "event-stream" });
+          if (
+            statusWasPresented &&
+            retainedCanceledFollowUpCount &&
+            !activeSendAttempt()
+          ) {
+            retainedCanceledFollowUpCount = 0;
+          }
+        };
         eventSource.onmessage = (message) => {
           let payload;
           try {
@@ -4385,30 +4492,99 @@
             }
             return;
           }
+          if (payload.type === "model_turn_state") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "modelTurnEpoch",
+                "assistantDraft",
+                "webSearchUpdates",
+                "progress",
+                "resolvedConfirmationGeneration",
+              ]) ||
+              typeof payload.assistantDraft !== "string" ||
+              !Array.isArray(payload.webSearchUpdates) ||
+              payload.webSearchUpdates.length > hostedWebSearchMaxEventsPerSend ||
+              !payload.webSearchUpdates.every((update) =>
+                isWireWebSearch(update, true)
+              ) ||
+              new Set(payload.webSearchUpdates.map((update) => update.id)).size !==
+                payload.webSearchUpdates.length ||
+              typeof payload.progress !== "string" ||
+              !Number.isSafeInteger(payload.resolvedConfirmationGeneration) ||
+              payload.resolvedConfirmationGeneration < 0
+            ) return;
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt) return;
+            const advanced = advanceModelTurnEpoch(
+              attempt,
+              payload.modelTurnEpoch,
+            );
+            const confirmationChanged = applyResolvedConfirmationFrontier(
+              attempt,
+              payload.resolvedConfirmationGeneration,
+            );
+            cancelAssistantDraftRender(payload.sessionId);
+            assistantDraftsBySession.set(
+              payload.sessionId,
+              payload.assistantDraft,
+            );
+            const searches = new Map(
+              payload.webSearchUpdates.map((update) => [update.id, update]),
+            );
+            if (searches.size) {
+              webSearchUpdatesBySession.set(payload.sessionId, searches);
+            } else {
+              webSearchUpdatesBySession.delete(payload.sessionId);
+            }
+            setAttemptStatus(attempt, payload.progress, false);
+            if (activeSessionId() === payload.sessionId) {
+              requireView().renderTimeline();
+              if (advanced.confirmationChanged || confirmationChanged) {
+                requireView().setConfirmationState(activeConfirmationIsLocked());
+              }
+            }
+            return;
+          }
           if (payload.type === "assistant_delta") {
             if (
               !hasOnlyWireKeys(payload, [
                 "type",
                 "sendId",
                 "sessionId",
+                "modelTurnEpoch",
                 "delta",
               ]) ||
-              !isActiveSendPayload(payload) ||
               typeof payload.delta !== "string"
             ) return;
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt) return;
+            const advanced = advanceModelTurnEpoch(
+              attempt,
+              payload.modelTurnEpoch,
+            );
             const draft = (assistantDraftsBySession.get(payload.sessionId) || "") + payload.delta;
             assistantDraftsBySession.set(payload.sessionId, draft);
             if (activeSessionId() === payload.sessionId) {
-              scheduleAssistantDraftRender(payload.sessionId);
+              if (advanced.advanced) requireView().renderTimeline();
+              else scheduleAssistantDraftRender(payload.sessionId);
             }
             return;
           }
           if (payload.type === "assistant_reset") {
             if (
-              !hasOnlyWireKeys(payload, ["type", "sendId", "sessionId"]) ||
-              !isActiveSendPayload(payload)
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "modelTurnEpoch",
+              ])
             ) return;
-            clearTransientResponseForSession(payload.sessionId);
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt || payload.modelTurnEpoch <= attempt.modelTurnEpoch) return;
+            advanceModelTurnEpoch(attempt, payload.modelTurnEpoch);
             if (activeSessionId() === payload.sessionId) {
               requireView().renderTimeline();
             }
@@ -4438,12 +4614,15 @@
                 "type",
                 "sendId",
                 "sessionId",
+                "modelTurnEpoch",
                 "update",
-              ]) ||
-              !isActiveSendPayload(payload)
+              ])
             ) return;
             const update = payload.update;
             if (!isWireWebSearch(update, true)) return;
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt) return;
+            advanceModelTurnEpoch(attempt, payload.modelTurnEpoch);
             const updates = webSearchUpdatesBySession.get(payload.sessionId) || new Map();
             updates.set(update.id, update);
             webSearchUpdatesBySession.set(payload.sessionId, updates);
@@ -4458,11 +4637,13 @@
                 "type",
                 "sendId",
                 "sessionId",
+                "modelTurnEpoch",
                 "event",
                 "activity",
                 "bridgeStateRevision",
               ]) ||
               !isActiveSendPayload(payload) ||
+              !isModelTurnEpoch(payload.modelTurnEpoch) ||
               !isWireSessionEvent(payload.event) ||
               payload.event.steeringAck !== undefined &&
                 payload.event.steeringAck.sendId !== payload.sendId ||
@@ -4493,6 +4674,7 @@
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
+            advanceModelTurnEpoch(attempt, payload.modelTurnEpoch);
             const steeringAcknowledged = acknowledgeIncrementalSteeringEvent(
               attempt,
               payload.event,
@@ -4518,7 +4700,11 @@
                 }
               }
             }
-            appendSessionEvent(payload.sessionId, payload.event);
+            appendSessionEvent(
+              payload.sessionId,
+              payload.event,
+              payload.modelTurnEpoch === attempt.modelTurnEpoch,
+            );
             return;
           }
           if (payload.type === "progress") {
@@ -4563,6 +4749,7 @@
                 "type",
                 "sendId",
                 "sessionId",
+                "modelTurnEpoch",
                 "id",
                 "confirmationGeneration",
                 "message",
@@ -4571,6 +4758,7 @@
                 "bridgeStateRevision",
               ]) ||
               !isActiveSendPayload(payload) ||
+              !isModelTurnEpoch(payload.modelTurnEpoch) ||
               !isWireCorrelationId(payload.id) ||
               !Number.isSafeInteger(payload.confirmationGeneration) ||
               payload.confirmationGeneration <= 0 ||
@@ -4584,27 +4772,41 @@
               activity.status !== "waiting_confirmation" ||
               activity.message !== "Waiting for confirmation"
             ) return;
-            const attempt = sendAttemptsBySession.get(payload.sessionId);
-            if (
-              payload.confirmationGeneration <=
-                attempt.resolvedConfirmationGeneration
-            ) return;
+            const attempt = transientModelTurnAttempt(payload);
+            if (!attempt) return;
+            const epochAdvances = payload.modelTurnEpoch > attempt.modelTurnEpoch;
             const pending = pendingConfirmationsBySession.get(payload.sessionId);
             const pendingBelongsToAttempt = pending?.sendId === payload.sendId;
+            const pendingSurvivesEpoch = pendingBelongsToAttempt &&
+              pending.modelTurnEpoch >= payload.modelTurnEpoch;
             const priorResolution = confirmationResolutionsBySession.get(
               payload.sessionId,
             );
             const resolutionBelongsToAttempt =
               priorResolution?.sendId === payload.sendId;
-            const currentGeneration = Math.max(
+            const resolutionSurvivesEpoch = resolutionBelongsToAttempt &&
+              priorResolution.modelTurnEpoch >= payload.modelTurnEpoch;
+            const effectiveResolvedGeneration = Math.max(
               attempt.resolvedConfirmationGeneration,
-              pendingBelongsToAttempt ? pending.confirmationGeneration : 0,
-              resolutionBelongsToAttempt
+              epochAdvances && pendingBelongsToAttempt
+                ? pending.confirmationGeneration
+                : 0,
+              epochAdvances && resolutionBelongsToAttempt
+                ? priorResolution.confirmationGeneration
+                : 0,
+            );
+            if (
+              payload.confirmationGeneration <= effectiveResolvedGeneration
+            ) return;
+            const currentGeneration = Math.max(
+              effectiveResolvedGeneration,
+              pendingSurvivesEpoch ? pending.confirmationGeneration : 0,
+              resolutionSurvivesEpoch
                 ? priorResolution.confirmationGeneration
                 : 0,
             );
             const isPendingReplay =
-              pendingBelongsToAttempt &&
+              pendingSurvivesEpoch &&
               payload.confirmationGeneration === pending.confirmationGeneration;
             if (isPendingReplay && (
               payload.id !== pending.id ||
@@ -4617,7 +4819,12 @@
             ) return;
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
+            const advanced = advanceModelTurnEpoch(
+              attempt,
+              payload.modelTurnEpoch,
+            );
             if (
+              !advanced.advanced &&
               pendingBelongsToAttempt &&
               payload.confirmationGeneration > pending.confirmationGeneration
             ) {
@@ -4627,6 +4834,7 @@
               );
             }
             if (
+              !advanced.advanced &&
               resolutionBelongsToAttempt &&
               payload.confirmationGeneration >
                 priorResolution.confirmationGeneration
@@ -4642,6 +4850,7 @@
               sendId: payload.sendId,
               id: payload.id,
               confirmationGeneration: payload.confirmationGeneration,
+              modelTurnEpoch: payload.modelTurnEpoch,
               message: payload.message,
               groups: payload.groups || [],
             });
@@ -4791,10 +5000,11 @@
           }
         };
         eventSource.onerror = () => {
-          const attempt = activeSendAttempt();
-          if (attempt) {
-            setAttemptStatus(attempt, "Lost connection to Live Smith bridge.", true);
-          }
+          presentStatus({
+            isError: true,
+            message: "Lost connection to Live Smith bridge.",
+            source: "event-stream",
+          });
           activeCommandAttempt?.resolveSseUnavailable();
         };
       }

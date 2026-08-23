@@ -962,6 +962,7 @@ test("background cancellation preserves foreground progress then surfaces its co
     const foregroundSendId = harness.sendIds[1];
     assert.ok(foregroundSendId);
 
+    harness.emitServerEventError();
     harness.emitServerEvent({
       type: "error",
       sendId: backgroundSendId,
@@ -973,7 +974,22 @@ test("background cancellation preserves foreground progress then surfaces its co
     await harness.settle();
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /Starting Live Smith/,
+      /Lost connection/,
+    );
+    harness.emitServerEvent({
+      type: "progress",
+      sendId: foregroundSendId,
+      sessionId: "session-1",
+      message: "Foreground still working after cancellation",
+    });
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Lost connection/,
+    );
+    harness.emitServerEventOpen();
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Foreground still working after cancellation/i,
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",

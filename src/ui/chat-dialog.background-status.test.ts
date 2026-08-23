@@ -2217,6 +2217,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       type: "confirm_request",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
       message: "Apply the valid change?",
@@ -2232,6 +2233,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       type: "confirm_request",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
       message: "Apply the valid change?",
@@ -2248,6 +2250,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       type: "confirm_request",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
       message: "Apply the valid change?",
@@ -2281,6 +2284,7 @@ test("a malformed Session event is ignored before timeline mutation", async () =
       type: "session_event",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 0,
       event: null,
       bridgeStateRevision: "2",
     }));
@@ -2293,6 +2297,7 @@ test("a malformed Session event is ignored before timeline mutation", async () =
       type: "session_event",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 0,
       event: {
         id: "valid-wire-event",
         createdAt: "2026-08-23T00:00:00.000Z",
@@ -2682,6 +2687,7 @@ test("command response-loss rejects a malformed state refresh", async () => {
     harness.emitServerEventError();
     assert.equal(await command, false);
     await harness.settle();
+    harness.emitServerEventOpen();
 
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>(

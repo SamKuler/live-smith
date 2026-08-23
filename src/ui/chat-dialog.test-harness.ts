@@ -41,6 +41,7 @@ interface DialogHarness {
   emitServerEvent(payload: unknown): void;
   emitRawServerEvent(payload: unknown): void;
   emitServerEventError(): void;
+  emitServerEventOpen(): void;
   errors: unknown[];
   eventSourceUrls: string[];
   failNextCommand(
@@ -331,6 +332,7 @@ async function createDialogHarness(
   const eventSources: Array<{
     onmessage: ((event: { data: string }) => void) | null;
     onerror: (() => void) | null;
+    onopen: (() => void) | null;
   }> = [];
   const hostMessages: unknown[] = [];
   const animationFrames = new Map<number, FrameRequestCallback>();
@@ -448,6 +450,7 @@ async function createDialogHarness(
     { confirmationGeneration: number; sendId: string }
   >();
   const nextConfirmationGenerationBySend = new Map<string, number>();
+  const modelTurnEpochsBySend = new Map<string, number>();
   const confirmationResolutionPublications = new Map<
     string,
     Record<string, unknown>
@@ -641,7 +644,35 @@ async function createDialogHarness(
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return payload;
     }
-    const event = payload as Record<string, unknown>;
+    const event = { ...(payload as Record<string, unknown>) };
+    const sendId = typeof event.sendId === "string" ? event.sendId : undefined;
+    if (
+      sendId &&
+      [
+        "assistant_delta",
+        "assistant_reset",
+        "confirm_request",
+        "model_turn_state",
+        "session_event",
+        "web_search_update",
+      ].includes(String(event.type))
+    ) {
+      const currentEpoch = modelTurnEpochsBySend.get(sendId) ?? 0;
+      if (event.modelTurnEpoch === undefined) {
+        event.modelTurnEpoch = event.type === "assistant_reset"
+          ? currentEpoch + 1
+          : currentEpoch;
+      }
+      if (
+        Number.isSafeInteger(event.modelTurnEpoch) &&
+        (event.modelTurnEpoch as number) >= 0
+      ) {
+        modelTurnEpochsBySend.set(
+          sendId,
+          Math.max(currentEpoch, event.modelTurnEpoch as number),
+        );
+      }
+    }
     if (event.type === "confirm_resolved" && typeof event.id === "string") {
       const existing = confirmationResolutionPublications.get(event.id);
       if (existing) return existing;
@@ -737,7 +768,7 @@ async function createDialogHarness(
         ),
       };
     }
-    return payload;
+    return event;
   };
 
   const dom = new JSDOM(
@@ -806,6 +837,7 @@ async function createDialogHarness(
           value: class {
             onmessage: ((event: { data: string }) => void) | null = null;
             onerror: (() => void) | null = null;
+            onopen: (() => void) | null = null;
             constructor(url: string | URL) {
               eventSourceUrls.push(String(url));
               eventSources.push(this);
@@ -1551,6 +1583,11 @@ async function createDialogHarness(
       const source = eventSources.at(-1);
       assert.ok(source?.onerror, "Expected the EventSource to be connected");
       source.onerror();
+    },
+    emitServerEventOpen() {
+      const source = eventSources.at(-1);
+      assert.ok(source?.onopen, "Expected the EventSource to be connected");
+      source.onopen();
     },
     errors,
     eventSourceUrls,

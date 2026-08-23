@@ -15,7 +15,15 @@
         };
         let activeAppConfirmation = null;
         let profileSettingsLocked = false;
-        let currentStatusSource = "state";
+        let statusUnderlay = {
+          canceledFollowUpCount: 0,
+          isError: false,
+          message: "",
+          source: "state",
+          stopPhase: false,
+          trailingMessage: "",
+        };
+        let eventStreamOverlay = null;
         let composerOperationState = {
           attachmentInProgress: false,
           commandKind: null,
@@ -28,18 +36,34 @@
           isError = false,
           message = "",
           source = "bridge",
+          stopPhase = false,
           trailingMessage = "",
         } = {}) {
-          currentStatusSource = source;
-          const cancellation = canceledFollowUpCount > 0
-            ? `${canceledFollowUpCount} queued follow-up${
-                canceledFollowUpCount === 1 ? "" : "s"
+          const presentation = {
+            canceledFollowUpCount,
+            isError: Boolean(isError),
+            message: String(message || ""),
+            source,
+            stopPhase: Boolean(stopPhase),
+            trailingMessage: String(trailingMessage || ""),
+          };
+          if (source === "event-stream") {
+            eventStreamOverlay = presentation.message ? presentation : null;
+          } else {
+            statusUnderlay = presentation;
+          }
+          const visible = statusUnderlay.stopPhase
+            ? statusUnderlay
+            : eventStreamOverlay || statusUnderlay;
+          const cancellation = visible.canceledFollowUpCount > 0
+            ? `${visible.canceledFollowUpCount} queued follow-up${
+                visible.canceledFollowUpCount === 1 ? "" : "s"
               } canceled because the target Session is no longer available.`
             : "";
           const renderedMessage = [
-            String(message || ""),
+            visible.message,
             cancellation,
-            String(trailingMessage || ""),
+            visible.trailingMessage,
           ]
             .filter(Boolean)
             .join(" ");
@@ -49,19 +73,20 @@
           status.hidden = !renderedMessage;
           status.classList.toggle(
             "error",
-            Boolean(isError) || canceledFollowUpCount > 0,
+            visible.isError || visible.canceledFollowUpCount > 0,
           );
+          return visible === statusUnderlay;
         }
 
         function presentProfileGate(message) {
           if (message) {
             if (
               !getState().status ||
-              currentStatusSource === "profile-gate"
+              statusUnderlay.source === "profile-gate"
             ) {
               presentStatus({ message, source: "profile-gate" });
             }
-          } else if (currentStatusSource === "profile-gate") {
+          } else if (statusUnderlay.source === "profile-gate") {
             presentStatus({
               message: getState().status || "",
               source: "state",

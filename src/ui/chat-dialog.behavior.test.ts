@@ -1581,6 +1581,7 @@ test("a background assistant event resets only that Session's streaming draft", 
       type: "session_event",
       sendId: bassSendId,
       sessionId: "session-1",
+      modelTurnEpoch: 1,
       event: {
         id: "bass-assistant-turn-1",
         kind: "assistant",
@@ -1640,6 +1641,7 @@ test("a background persisted Web Search event clears its transient update before
       type: "session_event",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 1,
       event: {
         id: "event-background-search",
         createdAt: "2026-08-06T00:00:00.000Z",
@@ -2473,6 +2475,7 @@ test("assistant delta bursts coalesce without rebuilding existing timeline items
       type: "session_event",
       sendId,
       sessionId: "session-1",
+      modelTurnEpoch: 1,
       event: {
         id: "event-2",
         kind: "assistant",
@@ -2744,6 +2747,7 @@ test("a command network error reconciles through state after the event stream di
 
     harness.emitServerEventError();
     await harness.settle();
+    harness.emitServerEventOpen();
 
     assert.equal(
       harness.calls.filter((call) => call.path === "/state").length,
@@ -2780,6 +2784,7 @@ test("a committed command with truncated JSON reconciles through authoritative s
 
     harness.emitServerEventError();
     await harness.settle();
+    harness.emitServerEventOpen();
 
     assert.equal(
       harness.calls.filter((call) => call.path === "/state").length,
@@ -2924,6 +2929,7 @@ test("a command network error blocks mutations when stream and state reconciliat
 
     harness.emitServerEventError();
     await harness.settle();
+    harness.emitServerEventOpen();
 
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,

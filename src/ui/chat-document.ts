@@ -26,6 +26,7 @@ import {
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
   MAX_DISCOVERED_MODEL_OUTPUT_TOKENS,
 } from "../model/catalog.js";
+import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 
 export interface ChatClientScripts {
   attachments: string;
@@ -119,6 +120,10 @@ function injectModelCatalogContract(script: string): string {
     .replaceAll(
       "__MAX_DISCOVERED_MODEL_OUTPUT_TOKENS__",
       String(MAX_DISCOVERED_MODEL_OUTPUT_TOKENS),
+    )
+    .replaceAll(
+      "__HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__",
+      String(HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND),
     );
 }
 
