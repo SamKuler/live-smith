@@ -50,6 +50,7 @@ import {
 import {
   saveGlobalSettings,
   saveSavedProfile,
+  savedProfileRevision,
 } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
@@ -326,6 +327,70 @@ test("global follow-up behavior changes publish to every open bridge for the sam
     )).json() as ChatDialogState;
     assert.equal(secondState.settings.defaultFollowUpBehavior, "steer");
     assert.equal(secondState.settings.defaultFollowUpBehaviorRevision, "1");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("Profile changes notify every open bridge without publishing credentials", async () => {
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-profile-notification-",
+    firstDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+    secondDependencies: {
+      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+    },
+  });
+
+  try {
+    const initial = await (await fetch(
+      fixture.first.endpoint("/state"),
+    )).json() as ChatDialogState;
+    const current = initial.settings.profiles[0]!;
+    assert.equal(current.connection.kind, "direct-api");
+    if (current.connection.kind !== "direct-api") return;
+    const updated: SavedProfile = {
+      id: current.id,
+      name: "Updated Provider",
+      connection: current.connection,
+      defaultModel: "model-b",
+      models: [{
+        model: "model-b",
+        parameters: {
+          maxOutputTokens: 1_000,
+          reasoning: { mode: "default" },
+        },
+        advanced: {},
+      }],
+    };
+    const events = await fetch(fixture.second.endpoint("/events"));
+    const notification = readSsePayload(events, "profile_settings_changed");
+    const response = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "profile-settings-success",
+      },
+      body: JSON.stringify({
+        kind: "save_profile",
+        profile: updated,
+        expectedProfileRevision: savedProfileRevision(current),
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(notification, "Profile settings notification"),
+    ), {
+      type: "profile_settings_changed",
+      commandId: "profile-settings-success",
+    });
+    const secondState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.equal(secondState.settings.profiles[0]?.name, "Updated Provider");
+    assert.equal(secondState.runtimeProfile?.selection.model, "model-b");
   } finally {
     await fixture.close();
   }

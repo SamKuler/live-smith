@@ -635,6 +635,7 @@ test("connection overlay reveals the latest state, profile gate, command, Queue,
     const profileState = cloneState(stateFixture());
     profileState.openSettingsOnLoad = false;
     profileState.settings.activeProfileId = null;
+    profileState.activeProfileRevision = null;
     profileState.runtimeProfile = null;
     profileState.modelStateSource = null;
     const profileHarness = await createDialogHarness(profileState);

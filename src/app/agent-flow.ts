@@ -104,8 +104,10 @@ import {
   deleteSavedProfile,
   loadAgentSettings,
   requireActiveSavedProfile,
+  SavedProfileConflictError,
   saveGlobalSettings,
   saveSavedProfile,
+  savedProfileRevision,
   type AgentSettings,
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
@@ -156,6 +158,10 @@ import {
   publishGlobalSettingsChange,
   subscribeGlobalSettingsChanges,
 } from "./global-settings-events.js";
+import {
+  publishProfileSettingsChange,
+  subscribeProfileSettingsChanges,
+} from "./profile-settings-events.js";
 import {
   capabilityPreviewForProfile,
   requestModelTurn,
@@ -240,6 +246,8 @@ export interface AgentFlowDependencies {
   attachmentBodyReadOptions?: RawAttachmentBodyReadOptions;
   /** Test-only Skill body-reader instrumentation. */
   skillBodyReadOptions?: RawSkillBodyReadOptions;
+  /** Test-only synchronization point for a concurrent Profile save. */
+  beforeSessionModelSelectionCommit?(): Promise<void> | void;
 }
 
 export async function runAgentFlow(
@@ -835,6 +843,9 @@ export async function runAgentFlow(
         runtimeProfile: runtimeProfile
           ? chatRuntimeSummary(runtimeProfile)
           : null,
+        activeProfileRevision: activeProfile === null
+          ? null
+          : savedProfileRevision(activeProfile),
         settings,
         ...(codexAuth === undefined ? {} : { codexAuth }),
         status,
@@ -901,6 +912,23 @@ export async function runAgentFlow(
     commandContext: ChatBridgeCommandContext,
   ) => {
     throwIfAborted(signal);
+    const runProfileSettingsMutation = async (
+      operation: () => Promise<unknown>,
+    ): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        if (isStorageCommitOutcomeUnknownError(error)) {
+          publishProfileSettingsChange(storageDirectory, {
+            commandId: commandContext.commandId,
+          });
+        }
+        throw error;
+      }
+      publishProfileSettingsChange(storageDirectory, {
+        commandId: commandContext.commandId,
+      });
+    };
     if (commandInput.kind === "save_profile") {
       const settings = await loadAgentSettings(storageDirectory);
       const otherProfiles = settings.profiles.filter(
@@ -955,7 +983,19 @@ export async function runAgentFlow(
           );
         }
         throwIfAborted(signal);
-        await saveSavedProfile(storageDirectory, profile);
+        try {
+          await runProfileSettingsMutation(() =>
+            saveSavedProfile(storageDirectory, profile, {
+              expectedCurrentProfileRevision:
+                commandInput.expectedProfileRevision,
+            })
+          );
+        } catch (error) {
+          if (error instanceof SavedProfileConflictError) {
+            throw new ChatBridgeConflictError(error.message);
+          }
+          throw error;
+        }
         if (profile.connection.kind === "direct-api") {
           // Direct API catalogs are durable and are reloaded from storage after
           // Save. Subscription catalogs are modal-only and remain valid until
@@ -993,9 +1033,11 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "delete_profile") {
       throwIfAborted(signal);
-      await deleteSavedProfile(
-        storageDirectory,
-        commandInput.profileId,
+      await runProfileSettingsMutation(() =>
+        deleteSavedProfile(
+          storageDirectory,
+          commandInput.profileId,
+        )
       );
       modelsByConnection.clear();
       status = "Profile deleted.";
@@ -1005,9 +1047,11 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "activate_profile") {
       throwIfAborted(signal);
-      await activateSavedProfile(
-        storageDirectory,
-        commandInput.profileId,
+      await runProfileSettingsMutation(() =>
+        activateSavedProfile(
+          storageDirectory,
+          commandInput.profileId,
+        )
       );
       modelsByConnection.clear();
       status = undefined;
@@ -1185,135 +1229,137 @@ export async function runAgentFlow(
         );
       }
       return withSessionMutation(commandInput.sessionId, signal, async () => {
-        throwIfAborted(signal);
-        const initialSettings = await loadAgentSettings(storageDirectory);
-        const initialProfile = requireActiveSavedProfile(initialSettings);
-        if (initialProfile.id !== commandInput.profileId) {
-          throw new ChatBridgeConflictError(
-            "The active Profile changed. Choose the model again.",
-          );
-        }
-        if (
-          !initialProfile.models.some(
-            (model) => model.model === commandInput.model,
-          )
-        ) {
-          throw new ChatBridgeConflictError(
-            "That model is no longer configured in the active Profile.",
-          );
-        }
-
-        const models = await modelsForProfile(initialProfile, signal);
-        const discoveredModel = models.find(
-          (model) => model.id === commandInput.model,
-        );
-        if (
-          initialProfile.connection.kind === "codex-subscription" &&
-          models.length > 0 &&
-          !discoveredModel
-        ) {
-          throw new ChatBridgeConflictError(
-            "That model is not available for the signed-in ChatGPT account.",
-          );
-        }
-        if (
-          initialProfile.connection.kind === "codex-subscription" &&
-          commandInput.reasoningEffort !== null &&
-          !discoveredModel
-        ) {
-          throw new ChatBridgeConflictError(
-            "Load the current ChatGPT model catalog before changing reasoning effort.",
-          );
-        }
-
-        const runtimeProfile = runtimeProfileForSavedProfile(
-          initialProfile,
-          models,
-          {
-            model: commandInput.model,
-            reasoningEffort: commandInput.reasoningEffort,
-          },
-        );
-        if (
-          commandInput.reasoningEffort !== null &&
-          !runtimeProfile.capabilities.reasoning.efforts.includes(
-            commandInput.reasoningEffort,
-          )
-        ) {
-          throw new ChatBridgeConflictError(
-            `Reasoning effort ${commandInput.reasoningEffort} is not supported by this model.`,
-          );
-        }
-        if (
-          initialProfile.connection.kind === "direct-api" ||
-          discoveredModel
-        ) {
-          validateGenerationParameters(
-            runtimeProfile,
-            runtimeProfile.capabilities,
-          );
-        }
-
-        const savedSelection = {
-          profileId: initialProfile.id,
-          model: commandInput.model,
-          ...(commandInput.reasoningEffort === null
-            ? {}
-            : { reasoningEffort: commandInput.reasoningEffort }),
-        };
-
-        await withStorageTransaction(
-          storageDirectory,
-          async (transaction) => {
-            throwIfAborted(signal);
-            const settings = await loadAgentSettings(storageDirectory);
-            const profile = requireActiveSavedProfile(settings);
-            if (
-              profile.id !== initialProfile.id ||
-              connectionFingerprint(profile) !==
-                connectionFingerprint(initialProfile) ||
-              !profile.models.some(
-                (model) => model.model === commandInput.model,
-              )
-            ) {
+        let releaseManagedSelection: (() => void) | undefined;
+        try {
+          throwIfAborted(signal);
+          const initialSettings = await loadAgentSettings(storageDirectory);
+          const initialProfile = requireActiveSavedProfile(initialSettings);
+          if (initialProfile.id !== commandInput.profileId) {
+            throw new ChatBridgeConflictError(
+              "The active Profile changed. Choose the model again.",
+            );
+          }
+          let managedGeneration: number | undefined;
+          if (initialProfile.connection.kind === "codex-subscription") {
+            releaseManagedSelection = await modelAuthSendFence.enterManagedUse(
+              signal,
+            ) ?? undefined;
+            if (!releaseManagedSelection) {
               throw new ChatBridgeConflictError(
-                "The active Profile changed. Choose the model again.",
+                "Wait for the ChatGPT sign-in operation to finish before changing this Session's model.",
               );
             }
-            const session = (await listSessionsInTransaction(
-              transaction,
-              storageDirectory,
-              projectKey,
-            )).find(
-              (candidate) =>
-                candidate.id === commandInput.sessionId &&
-                !candidate.archivedAt,
+            managedGeneration = await synchronizeAuthGeneration(signal);
+          }
+
+          const models = await modelsForProfile(initialProfile, signal);
+          if (
+            initialProfile.connection.kind === "codex-subscription" &&
+            !models.some((model) => model.id === commandInput.model)
+          ) {
+            throw new ChatBridgeConflictError(
+              models.length === 0
+                ? "Load the current ChatGPT model catalog before changing this Session's model."
+                : "That model is not available for the signed-in ChatGPT account.",
             );
-            if (!session) {
-              throw new ChatBridgeResourceNotFoundError(
-                "That Session is not available in this Live Set.",
+          }
+          const savedSelection = {
+            profileId: initialProfile.id,
+            model: commandInput.model,
+            ...(commandInput.reasoningEffort === null
+              ? {}
+              : { reasoningEffort: commandInput.reasoningEffort }),
+          };
+
+          if (dependencies.beforeSessionModelSelectionCommit) {
+            await dependencies.beforeSessionModelSelectionCommit();
+          }
+
+          await withStorageTransaction(
+            storageDirectory,
+            async (transaction) => {
+              throwIfAborted(signal);
+              if (
+                managedGeneration !== undefined &&
+                modelAuthSendFence.authGeneration() !== managedGeneration
+              ) {
+                throw new ChatBridgeConflictError(
+                  "ChatGPT sign-in changed. Choose the model again.",
+                );
+              }
+              const settings = await loadAgentSettings(storageDirectory);
+              const profile = requireActiveSavedProfile(settings);
+              if (
+                profile.id !== initialProfile.id ||
+                connectionFingerprint(profile) !==
+                  connectionFingerprint(initialProfile) ||
+                !profile.models.some(
+                  (model) => model.model === commandInput.model,
+                )
+              ) {
+                throw new ChatBridgeConflictError(
+                  "The active Profile changed. Choose the model again.",
+                );
+              }
+              const runtimeProfile = runtimeProfileForSavedProfile(
+                profile,
+                models,
+                {
+                  model: commandInput.model,
+                  reasoningEffort: commandInput.reasoningEffort,
+                },
               );
-            }
-            await updateSessionInTransaction(
-              transaction,
-              storageDirectory,
-              session.id,
-              {
-                modelSelection: savedSelection,
-              },
-            );
-          },
-        );
-        publishSessionModelSelectionChange(storageDirectory, {
-          sessionId: commandInput.sessionId,
-          modelSelection: savedSelection,
-        });
-        status = undefined;
-        openSettingsOnLoad = false;
-        return buildStateAfterCommandMutation(undefined, {
-          heldSessionId: commandInput.sessionId,
-          sessionMutationHeld: true,
-        });
+              if (
+                commandInput.reasoningEffort !== null &&
+                !runtimeProfile.capabilities.reasoning.efforts.includes(
+                  commandInput.reasoningEffort,
+                )
+              ) {
+                throw new ChatBridgeConflictError(
+                  `Reasoning effort ${commandInput.reasoningEffort} is not supported by this model.`,
+                );
+              }
+              validateGenerationParameters(
+                runtimeProfile,
+                runtimeProfile.capabilities,
+              );
+              const session = (await listSessionsInTransaction(
+                transaction,
+                storageDirectory,
+                projectKey,
+              )).find(
+                (candidate) =>
+                  candidate.id === commandInput.sessionId &&
+                  !candidate.archivedAt,
+              );
+              if (!session) {
+                throw new ChatBridgeResourceNotFoundError(
+                  "That Session is not available in this Live Set.",
+                );
+              }
+              await updateSessionInTransaction(
+                transaction,
+                storageDirectory,
+                session.id,
+                {
+                  modelSelection: savedSelection,
+                },
+              );
+            },
+          );
+          publishSessionModelSelectionChange(storageDirectory, {
+            sessionId: commandInput.sessionId,
+            modelSelection: savedSelection,
+          });
+          status = undefined;
+          openSettingsOnLoad = false;
+          return buildStateAfterCommandMutation(undefined, {
+            heldSessionId: commandInput.sessionId,
+            sessionMutationHeld: true,
+          });
+        } finally {
+          releaseManagedSelection?.();
+        }
       });
     }
 
@@ -2198,19 +2244,12 @@ export async function runAgentFlow(
           const generation = await synchronizeAuthGeneration(signal);
           const lease = await modelBackendManager.codexLease(signal);
           requestBackend = lease.backend;
-          models = codexCatalogGenerationByConnection.get(fingerprint) === generation
-            ? modelsByConnection.get(fingerprint)
-            : undefined;
           let auth: ManagedAuthState;
           try {
-            if (models === undefined) {
-              models = requireDiscoveredModelCatalog(
-                await requestBackend.listModels(profile, signal),
-              );
-              auth = await requestBackend.readAuthState(signal);
-            } else {
-              auth = await requestBackend.readAuthState(signal, { readiness: true });
-            }
+            models = requireDiscoveredModelCatalog(
+              await requestBackend.listModels(profile, signal),
+            );
+            auth = await requestBackend.readAuthState(signal);
           } catch (error) {
             throwIfAborted(signal);
             auth = unavailableCodexAuth();
@@ -2229,12 +2268,8 @@ export async function runAgentFlow(
               "ChatGPT sign-in changed before the subscription request could start.",
             );
           }
-          if (
-            codexCatalogGenerationByConnection.get(fingerprint) !== generation
-          ) {
-            modelsByConnection.set(fingerprint, models);
-            codexCatalogGenerationByConnection.set(fingerprint, generation);
-          }
+          modelsByConnection.set(fingerprint, models);
+          codexCatalogGenerationByConnection.set(fingerprint, generation);
         } else {
           models = modelsByConnection.get(fingerprint);
           if (models === undefined) {
@@ -2399,6 +2434,7 @@ export async function runAgentFlow(
   let unsubscribeApprovalModes: (() => void) | undefined;
   let unsubscribeModelSelections: (() => void) | undefined;
   let unsubscribeGlobalSettings: (() => void) | undefined;
+  let unsubscribeProfileSettings: (() => void) | undefined;
   try {
     await reconcileStartupSessionOrphans();
     bridge = await createChatBridge({
@@ -2440,11 +2476,18 @@ export async function runAgentFlow(
         bridge?.publishDefaultFollowUpBehavior(change);
       },
     );
+    unsubscribeProfileSettings = subscribeProfileSettingsChanges(
+      storageDirectory,
+      (change) => {
+        bridge?.publishProfileSettingsChange(change);
+      },
+    );
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
     unsubscribeApprovalModes?.();
     unsubscribeModelSelections?.();
     unsubscribeGlobalSettings?.();
+    unsubscribeProfileSettings?.();
     managedBackendLeaseClosing = true;
     sharedBackendManagerAcquisitionController?.abort(
       managedBackendAcquisitionClosedError,

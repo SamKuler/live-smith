@@ -64,6 +64,7 @@ test("each Session resolves its own configured model and reasoning at send admis
   await saveSavedProfile(directory, profile);
 
   const requestedRuntimes: RuntimeProfile[] = [];
+  let invalidateNextSelection = false;
   const interaction: LiveInteractionContext = {
     summary: "Track: Lead",
     target: {},
@@ -153,6 +154,20 @@ test("each Session resolves its own configured model and reasoning at send admis
           }),
         });
         assert.equal(send.status, 200, await send.text());
+
+        invalidateNextSelection = true;
+        const staleSelection = await fetch(endpoint("/command"), {
+          method: "POST",
+          headers: commandHeaders(),
+          body: JSON.stringify({
+            kind: "set_session_model_selection",
+            sessionId: firstSessionId,
+            profileId: profile.id,
+            model: "gpt-5.4",
+            reasoningEffort: "high",
+          }),
+        });
+        assert.equal(staleSelection.status, 409, await staleSelection.text());
       },
     },
   };
@@ -178,6 +193,31 @@ test("each Session resolves its own configured model and reasoning at send admis
     requestModelTurn: async (input) => {
       requestedRuntimes.push(input.runtimeProfile);
       return { content: "The track is ready.", toolCalls: [] };
+    },
+    beforeSessionModelSelectionCommit: async () => {
+      if (!invalidateNextSelection) return;
+      invalidateNextSelection = false;
+      await saveSavedProfile(directory, {
+        ...profile,
+        models: profile.models.map((model) =>
+          model.model === "gpt-5.4"
+            ? {
+                ...model,
+                advanced: {
+                  capabilityOverrides: {
+                    reasoning: {
+                      supported: false,
+                      canDisable: false,
+                      efforts: [],
+                      budgetTokens: false,
+                      strategy: "none",
+                    },
+                  },
+                },
+              }
+            : model
+        ),
+      });
     },
   });
 
@@ -276,6 +316,7 @@ test("subscription model capabilities load explicitly and remain auth-generation
   };
   const fence = modelAuthSendFenceForStorage(directory);
   const peerAuthOwner = Symbol("peer auth generation");
+  let authMutationEnteredDuringSelection: boolean | undefined;
   const interaction: LiveInteractionContext = {
     summary: "Track: Lead",
     target: {},
@@ -297,20 +338,22 @@ test("subscription model capabilities load explicitly and remain auth-generation
           assert.equal(response.status, 200);
           return response.json() as Promise<ChatDialogState>;
         };
-        const load = async (): Promise<ChatDialogState> => {
+        const postCommand = async (body: unknown): Promise<ChatDialogState> => {
           const response = await fetch(endpoint("/command"), {
             method: "POST",
             headers: commandHeaders(),
-            body: JSON.stringify({
-              kind: "load_session_model_capabilities",
-              sessionId: (await state()).activeSessionId,
-              profileId: profile.id,
-            }),
+            body: JSON.stringify(body),
           });
-          const body = await response.text();
-          assert.equal(response.status, 200, body);
-          return JSON.parse(body) as ChatDialogState;
+          const responseBody = await response.text();
+          assert.equal(response.status, 200, responseBody);
+          return JSON.parse(responseBody) as ChatDialogState;
         };
+        const load = async (): Promise<ChatDialogState> =>
+          postCommand({
+            kind: "load_session_model_capabilities",
+            sessionId: (await state()).activeSessionId,
+            profileId: profile.id,
+          });
 
         const initial = await state();
         assert.equal(initial.configuredModelsReady, false);
@@ -329,6 +372,23 @@ test("subscription model capabilities load explicitly and remain auth-generation
         });
         assert.equal(listModelsCalls, 1);
         assert.equal(readinessReads, 1);
+
+        const selected = await postCommand({
+          kind: "set_session_model_selection",
+          sessionId: first.activeSessionId,
+          profileId: profile.id,
+          model: "gpt-capable",
+          reasoningEffort: "high",
+        });
+        assert.equal(
+          authMutationEnteredDuringSelection,
+          false,
+          "subscription Session selection must exclude an auth mutation",
+        );
+        assert.equal(
+          selected.runtimeProfile?.selection.reasoning.effort,
+          "high",
+        );
 
         const repeated = await load();
         assert.equal(repeated.configuredModelsReady, true);
@@ -351,6 +411,11 @@ test("subscription model capabilities load explicitly and remain auth-generation
     renderHtml: () => "<html></html>",
     modelBackendManager,
     modelAuthSendFence: fence,
+    beforeSessionModelSelectionCommit: async () => {
+      const releaseAuth = await fence.enterAuth(peerAuthOwner);
+      authMutationEnteredDuringSelection = releaseAuth !== null;
+      releaseAuth?.();
+    },
   });
 
   assert.ok(passiveReads > 0);

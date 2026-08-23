@@ -53,6 +53,7 @@ interface DialogHarness {
       commandOutcome?: "unknown";
       reconciliationRequired?: boolean;
       state?: ChatBridgeState;
+      status?: number;
     },
   ): void;
   failNextConfirmation(error: string): void;
@@ -273,6 +274,12 @@ function modelStateSourceFixture(profile: SavedProfile) {
   };
 }
 
+export function profileRevisionFixture(profile: SavedProfile): string {
+  return createHash("sha256")
+    .update(JSON.stringify(profile))
+    .digest("hex");
+}
+
 function stateFixture(): ChatBridgeState {
   return {
     bridgeStateRevision: "1",
@@ -313,6 +320,7 @@ function stateFixture(): ChatBridgeState {
     configuredModelsReady: true,
     modelStateSource: modelStateSourceFixture(profileFixture()),
     runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
+    activeProfileRevision: profileRevisionFixture(profileFixture()),
     codexAuth: { status: "signed-out" },
     settings: {
       schemaVersion: 5,
@@ -403,6 +411,7 @@ async function createDialogHarness(
     commandOutcome?: "unknown";
     reconciliationRequired?: boolean;
     state?: ChatBridgeState;
+    status?: number;
   } | null = null;
   let nextConfirmationError: { error: string } | null = null;
   let nextConfirmationResponseRejection: Error | null = null;
@@ -623,8 +632,20 @@ async function createDialogHarness(
     const bridgeStateRevision = override?.bridgeStateRevision ??
       allocateBridgeStateRevision();
     if (override) observeBridgeStateRevision(bridgeStateRevision);
+    const projected = cloneState(state);
+    if (
+      projected?.settings &&
+      Array.isArray(projected.settings.profiles)
+    ) {
+      const activeProfile = projected.settings.profiles.find(
+        (profile) => profile.id === projected.settings.activeProfileId,
+      );
+      projected.activeProfileRevision = activeProfile
+        ? profileRevisionFixture(activeProfile)
+        : null;
+    }
     return {
-      ...cloneState(state),
+      ...projected,
       bridgeStateRevision,
       bridgeStateCoveredThroughRevision:
         override?.bridgeStateCoveredThroughRevision ?? requestCutRevision,
@@ -647,6 +668,7 @@ async function createDialogHarness(
     "confirm_resolved",
     "default_follow_up_behavior_changed",
     "progress",
+    "profile_settings_changed",
     "session_event",
     "session_model_selection_changed",
     "steer_accepted",
@@ -1172,16 +1194,17 @@ async function createDialogHarness(
               if (nextCommandError) {
                 const error = nextCommandError;
                 nextCommandError = null;
+                const { status = 400, ...publishedError } = error;
                 const commandId = new Headers(init?.headers)
                   .get("X-Live-Smith-Command-Id") ?? "";
                 const errorEnvelope = omitNextCommandIdResponse
-                  ? error
-                  : { ...error, commandId };
+                  ? publishedError
+                  : { ...publishedError, commandId };
                 omitNextCommandIdResponse = false;
                 return failedResponse(
                   publishErrorState(errorEnvelope, stateSnapshotCutRevision),
-                  400,
-                  "Bad Request",
+                  status,
+                  status === 409 ? "Conflict" : "Bad Request",
                 );
               }
               const command = body as {

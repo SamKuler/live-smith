@@ -237,7 +237,9 @@ Discard operate on profile drafts; sending is blocked while the draft has
 unsaved changes. Model discovery can use the current draft without saving or
 activating it, even before the Profile name or model list is complete. The
 composer then selects a configured model and supported reasoning effort for the
-active Session without reopening Settings.
+active Session without reopening Settings. If the same saved Profile changes in
+another Live Smith window while its Draft is open, Save asks you to reload
+instead of overwriting the newer model collection.
 
 ### Connection backends
 
@@ -604,8 +606,8 @@ The directory contains:
   Subscription credentials are not stored in this file, and the legacy
   Approval field no longer affects Apply authorization.
 - `live-smith-sessions.json` — Session titles, Live object scopes, and
-  timestamps, plus each Session's Approval mode and optional sorted active Skill
-  IDs.
+  timestamps, plus each Session's Approval mode, optional sorted active Skill
+  IDs, and optional Profile/model/reasoning selection.
 - `live-smith-events/<session-id>.json` — conversation messages, tool calls,
   tool results, confirmations, and errors for each Session.
 - `live-smith-attachments/<session-id>/` — private attachment blobs and integrity

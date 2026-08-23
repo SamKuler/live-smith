@@ -260,6 +260,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
   const state = stateFixture();
   state.settings.profiles = [];
   state.settings.activeProfileId = null;
+  state.activeProfileRevision = null;
   state.runtimeProfile = null;
   state.modelStateSource = null;
   state.availableModels = [];
@@ -461,6 +462,7 @@ test("first-run setup connects, selects a discovered model, and saves it for use
   const state = stateFixture();
   state.settings.profiles = [];
   state.settings.activeProfileId = null;
+  state.activeProfileRevision = null;
   state.runtimeProfile = null;
   state.modelStateSource = null;
   state.availableModels = [];
@@ -3182,7 +3184,9 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
 });
 
 test("Save and Use sends the complete current draft for its selected API mode", async () => {
-  const harness = await createDialogHarness();
+  const state = stateFixture();
+  const expectedProfileRevision = state.activeProfileRevision;
+  const harness = await createDialogHarness(state);
   try {
     harness.input("#profileName", "Anthropic studio");
     harness.select("#apiFamily", "anthropic");
@@ -3204,6 +3208,7 @@ test("Save and Use sends the complete current draft for its selected API mode", 
       path: "/command",
       body: {
         kind: "save_profile",
+        expectedProfileRevision,
         profile: {
           id: "profile-1",
           name: "Anthropic studio",

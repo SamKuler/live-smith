@@ -762,6 +762,82 @@ test("event stream publishes and replays the latest Session model selection", as
   }
 });
 
+test("event stream publishes and replays the latest credential-free Profile change", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  let initialEvents: Response | undefined;
+  let reconnectedEvents: Response | undefined;
+
+  try {
+    initialEvents = await fetch(endpoint("/events"));
+    const firstPatch = readSsePayload(initialEvents, "profile_settings_changed");
+    bridge.publishProfileSettingsChange({ commandId: "profile-command-a" });
+    const first = await firstPatch;
+    assert.equal(first.commandId, "profile-command-a");
+    assert.equal(Object.hasOwn(first, "profile"), false);
+
+    bridge.publishProfileSettingsChange({ commandId: "profile-command-b" });
+    reconnectedEvents = await fetch(endpoint("/events"));
+    const replayed = await readSsePayload(
+      reconnectedEvents,
+      "profile_settings_changed",
+    );
+    assert.equal(replayed.commandId, "profile-command-b");
+    assert.ok(
+      BigInt(replayed.bridgeStateRevision as string) >
+        BigInt(first.bridgeStateRevision as string),
+    );
+  } finally {
+    await initialEvents?.body?.cancel().catch(() => {});
+    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await bridge.close();
+  }
+});
+
+test("the originating Profile command relies on its correlated state instead of self-refreshing", async () => {
+  const state = {} as ChatDialogState;
+  let bridge: Awaited<ReturnType<typeof createChatBridge>>;
+  bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (_input, _signal, context) => {
+      bridge.publishProfileSettingsChange({ commandId: context.commandId });
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const events = await fetch(endpoint("/events"));
+
+  try {
+    const nextPayload = readNextSsePayload(events);
+    const response = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "origin-profile-command",
+      },
+      body: JSON.stringify({ kind: "new_session" }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await nextPayload;
+    assert.equal(payload.type, "state");
+    assert.equal(payload.commandId, "origin-profile-command");
+  } finally {
+    await bridge.close();
+  }
+});
+
 test("chat bridge reports commit-uncertain prompt persistence without downgrading a published user event", async () => {
   for (const userEventPublished of [false, true]) {
     const state = {} as ChatDialogState;
@@ -1977,6 +2053,32 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
       assert.equal(commandInput, undefined);
     }
 
+    for (const body of [
+      { kind: "save_profile", profile: {} },
+      {
+        kind: "save_profile",
+        profile: {},
+        expectedProfileRevision: "stale",
+      },
+      {
+        kind: "save_profile",
+        profile: {},
+        expectedProfileRevision: "A".repeat(64),
+      },
+    ]) {
+      const profileCommand = await fetch(endpoint("/command"), {
+        method: "POST",
+        headers: correlatedJsonHeaders("command"),
+        body: JSON.stringify(body),
+      });
+      assert.equal(profileCommand.status, 400);
+      assert.match(
+        (await profileCommand.json() as { error: string }).error,
+        /expectedProfileRevision/i,
+      );
+      assert.equal(commandInput, undefined);
+    }
+
     const restore = await fetch(endpoint("/command"), {
       method: "POST",
       headers: correlatedJsonHeaders("command"),
@@ -2046,6 +2148,72 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
         /does not support property/i,
       );
       assert.equal(commandInput, undefined);
+    }
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("Profile revision tokens keep large create and update commands below the body limit", async () => {
+  const state = {} as ChatDialogState;
+  const received: unknown[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => {
+      received.push(input);
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = `${chatUrl.origin}/command?token=${token}`;
+  const extraBodyValue = "x".repeat(600_000);
+  const profile = {
+    id: "large-profile",
+    name: "Large Profile",
+    connection: {
+      kind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+      baseUrl: "https://example.test/v1",
+      apiKey: "test-key",
+    },
+    defaultModel: "model-a",
+    models: [{
+      model: "model-a",
+      parameters: {
+        maxOutputTokens: 8192,
+        reasoning: { mode: "default" },
+      },
+      advanced: { extraBody: { value: extraBodyValue } },
+    }],
+  };
+  const payloads = [
+    { kind: "save_profile", profile, expectedProfileRevision: null },
+    {
+      kind: "save_profile",
+      profile: { ...profile, name: "Large Profile Updated" },
+      expectedProfileRevision: "a".repeat(64),
+    },
+  ];
+
+  try {
+    for (const payload of payloads) {
+      const body = JSON.stringify(payload);
+      assert.ok(NodeBuffer.byteLength(body) < 1024 * 1024);
+      assert.equal(body.split(extraBodyValue).length - 1, 1);
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: correlatedJsonHeaders("command"),
+        body,
+      });
+      assert.equal(response.status, 200, await response.text());
+    }
+    assert.equal(received.length, 2);
+    for (const input of received as Array<Record<string, unknown>>) {
+      assert.equal(Object.hasOwn(input, "expectedProfile"), false);
     }
   } finally {
     await bridge.close();

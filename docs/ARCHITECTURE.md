@@ -360,8 +360,9 @@ The last managed lease closes the process, and an unconfirmed exit poisons
 subscription use for that storage directory rather than starting overlapping
 work.
 
-Before prompt persistence, the flow refreshes managed readiness, validates the
-current account/catalog/model and reserves first-turn capacity. Subsequent
+Before prompt persistence, every new subscription send refreshes managed
+readiness and the App Server model catalog, validates the current
+account/catalog/model, and reserves first-turn capacity. Subsequent
 agent-loop turns use the same explicit backend boundary. Ephemeral-thread
 recycling, continuation FIFO, terminal correlation and fail-closed tool
 inspection remain inside the Codex backend rather than leaking into the
@@ -547,6 +548,22 @@ changes to every open dialog for the same storage directory. Sending,
 discovering models, and creating/selecting/renaming/deleting sessions do not
 write configuration. Old flattened provider settings and environment variables
 are not configuration sources.
+
+Profile edits use optimistic concurrency without adding a second persistent
+revision: the Save command carries a fixed-length SHA-256 revision of the
+normalized Saved Profile that opened the Draft, and the settings transaction
+recomputes it from the current same-ID record before replacement. The dialog
+state projects only the active Profile's revision, so unrelated Profile saves do
+not conflict. A mismatch is recoverable, and one window cannot silently erase
+models or parameters saved by another.
+
+Every committed Profile Save, activation, or deletion publishes a
+credential-free `profile_settings_changed` invalidation to the other modal
+bridges for the same storage directory. The originating bridge suppresses its
+own correlated notification because its command response already carries the
+new state. A peer immediately gates Send, reloads authoritative state, and
+keeps the gate closed if that reload fails; each bridge reconnect-replays its
+latest invalidation so an SSE gap cannot leave a stale model label usable.
 
 Each follow-up-setting write increments a persisted canonical nonnegative
 decimal-string revision (`"0"` or a positive value without leading zeroes) under

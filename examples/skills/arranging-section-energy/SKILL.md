@@ -26,7 +26,7 @@ Provide:
 - a bar-aligned table with state, active/resting roles, and purpose;
 - the setup and payoff relationship for each major transition;
 - a reversible execution order using only supported, observed operations;
-- one conditional branch when the following section's role is unknown.
+- when the following section's role is unknown, one conditional branch for that boundary.
 
 ## Common Mistakes
 

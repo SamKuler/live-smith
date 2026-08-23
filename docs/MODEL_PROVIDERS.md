@@ -208,12 +208,12 @@ Each shared Codex startup slot likewise owns a host cancellation controller.
 Canceling one caller stops only that caller's wait; retiring the slot or
 releasing its final owner aborts startup and waits for the child process and
 metadata firewall to close.
-Explicit Check, Settings discovery, opening a composer model/reasoning selector,
-and send readiness reads request credential refresh, while ordinary signed-in
-or signed-out state hydration is passive. Before
-persisting a subscription prompt, the server confirms an eligible signed-in
-account, refreshes a generation-scoped catalog miss, and requires the saved
-Session-selected model in it. Readiness failures are unpersisted, so Queue pauses its head
+Explicit Check, Settings discovery, loading a missing composer model/reasoning
+projection, and send readiness request credential refresh, while ordinary
+signed-in or signed-out state hydration is passive. Before persisting every new
+subscription prompt, the server confirms an eligible signed-in account, reads
+the current App Server model catalog, and requires the saved Session-selected
+model in it. Readiness failures are unpersisted, so Queue pauses its head
 instead of draining. Live
 Smith's normalized subscription model projection
 stays only in the owning modal, is invalidated on every auth generation, is
@@ -313,11 +313,22 @@ Each Profile stores one complete connection and one or more configured models:
 Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
 the entire draft and makes it active. Changing session or sending a message does
 not save the draft. Send remains disabled until the draft is saved or discarded.
+An edit carries a fixed-length SHA-256 revision of the normalized Saved Profile
+from which its Draft started. The storage transaction recomputes that same
+Profile's revision and rejects a mismatch, instead of silently replacing a newer
+model collection. Only the active Profile revision is projected to the dialog;
+edits to a different Profile do not create false conflicts.
+Profile Save, activation, and deletion also publish a credential-free
+invalidation to peer dialogs. A peer disables Send until a full authoritative
+state refresh has replaced its runtime label and Settings projection; a failed
+refresh remains blocked rather than sending through a different saved Profile.
 Switching a saved Profile switches the connection. The composer selects one of
 that Profile's configured models for the active Session; the selection persists
 only Profile ID, model ID, and an optional reasoning-effort override. It never
 copies connection fields, credentials, discovery metadata, or request JSON into
-the Session.
+the Session. Subscription selections hold the managed-auth fence through their
+commit, and every selection is re-materialized and validated from the current
+saved model configuration inside the final storage transaction.
 
 The implementation keeps three Profile representations explicit:
 

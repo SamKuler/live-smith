@@ -6,7 +6,9 @@ import {
   commandCalls,
   createDialogHarness,
   profileFixture,
+  profileRevisionFixture,
   stateFixture,
+  waitForCondition,
 } from "./chat-dialog.test-harness.js";
 
 test("composer model and reasoning selectors use Session runtime without touching the Profile Draft", async () => {
@@ -33,6 +35,7 @@ test("composer model and reasoning selectors use Session runtime without touchin
     ],
   });
   state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
   state.configuredModels = [
     { model: "model-a", label: "Model A" },
     { model: "model-b", label: "Model B" },
@@ -194,6 +197,7 @@ test("subscription composer loads model capabilities only when its selector is o
   });
   state.settings.profiles[0] = profile;
   state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
   state.runtimeProfile = {
     profile: {
       id: profile.id,
@@ -284,6 +288,7 @@ test("an external Session model event refreshes authoritative runtime without us
     ],
   });
   state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
   state.configuredModels = [
     { model: "model-a", label: "Model A" },
     { model: "model-b", label: "Model B" },
@@ -291,6 +296,50 @@ test("an external Session model event refreshes authoritative runtime without us
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
   try {
+    harness.holdNextState();
+    harness.emitServerEvent({
+      type: "session_model_selection_changed",
+      sessionId: "session-1",
+      modelSelection: { profileId: "profile-1", model: "model-b" },
+    });
+    await Promise.resolve();
+    const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-a",
+    );
+    assert.equal(send?.disabled, true);
+    harness.input("#prompt", "Must wait for the authoritative model");
+    harness.click("#sendButton");
+    assert.equal(
+      harness.calls.filter((call) => new URL(call.url).pathname === "/send").length,
+      0,
+    );
+
+    harness.releaseHeldState();
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
+    );
+    assert.equal(send?.disabled, false);
+    assert.equal(
+      harness.calls.filter((call) => new URL(call.url).pathname === "/state").length,
+      1,
+    );
+    assert.equal(state.runtimeProfile?.selection.model, "model-a");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a failed external model refresh keeps Send blocked against the stale runtime label", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.failNextState("State unavailable");
     harness.emitServerEvent({
       type: "session_model_selection_changed",
       sessionId: "session-1",
@@ -299,13 +348,453 @@ test("an external Session model event refreshes authoritative runtime without us
     await harness.settle();
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-a",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      true,
+    );
+    harness.input("#prompt", "Do not send with the stale model label");
+    harness.click("#sendButton");
+    assert.equal(
+      harness.calls.filter((call) => new URL(call.url).pathname === "/send").length,
+      0,
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /close and reopen/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+for (const commandKind of ["rename_session", "discover_models"] as const) {
+test(`a delayed ${commandKind} command cannot roll back a refreshed Session model runtime`, async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    defaultModel: "model-a",
+    models: [
+      {
+        model: "model-a",
+        parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+        advanced: {},
+      },
+      {
+        model: "model-b",
+        parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+        advanced: {},
+      },
+    ],
+  });
+  state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.configuredModels = [
+    { model: "model-a", label: "Model A" },
+    { model: "model-b", label: "Model B" },
+  ];
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const ui = (harness.window as unknown as {
+    LiveSmithUI: {
+      runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+    };
+  }).LiveSmithUI;
+  try {
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand(
+      commandKind,
+      commandKind === "rename_session"
+        ? { sessionId: "session-2", title: "Renamed peer" }
+        : { profile },
+    );
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === commandKind
+      ),
+      "Expected the peer command to wait for its response.",
+    );
+
+    const refreshed = JSON.parse(JSON.stringify(state)) as typeof state;
+    refreshed.sessions[0]!.modelSelection = {
+      profileId: "profile-1",
+      model: "model-b",
+    };
+    refreshed.runtimeProfile!.selection.model = "model-b";
+    harness.setServerState(refreshed);
+    harness.emitServerEvent({
+      type: "session_model_selection_changed",
+      sessionId: "session-1",
+      modelSelection: { profileId: "profile-1", model: "model-b" },
+    });
+    await waitForCondition(
+      () => harness.calls.some((call) => new URL(call.url).pathname === "/state"),
+      "Expected the external model event to refresh state.",
+    );
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
       "model-b",
+    );
+
+    const delayed = JSON.parse(JSON.stringify(state)) as typeof state;
+    if (commandKind === "rename_session") {
+      delayed.sessions[1]!.title = "Renamed peer";
+    } else {
+      delayed.availableModels = [{
+        id: "model-discovered",
+        displayName: "Discovered model",
+        capabilities: delayed.capabilities,
+        capabilityEvidence: delayed.capabilityEvidence,
+      }];
+    }
+    harness.setServerState(delayed);
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+}
+
+test("a delayed local model command cannot overwrite a newer peer selection", async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    defaultModel: "model-a",
+    models: ["model-a", "model-b", "model-c"].map((model) => ({
+      model,
+      parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" as const } },
+      advanced: {},
+    })),
+  });
+  state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.configuredModels = profile.models.map((entry) => ({
+    model: entry.model,
+    label: entry.model,
+  }));
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const ui = (harness.window as unknown as {
+    LiveSmithUI: {
+      runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+    };
+  }).LiveSmithUI;
+  try {
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("set_session_model_selection", {
+      sessionId: "session-1",
+      profileId: "profile-1",
+      model: "model-b",
+      reasoningEffort: null,
+    });
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind ===
+          "set_session_model_selection"
+      ),
+      "Expected the local model command to wait for its response.",
+    );
+
+    const peer = JSON.parse(JSON.stringify(state)) as typeof state;
+    peer.sessions[0]!.modelSelection = {
+      profileId: "profile-1",
+      model: "model-c",
+    };
+    peer.runtimeProfile!.selection.model = "model-c";
+    harness.setServerState(peer);
+    harness.emitServerEvent({
+      type: "session_model_selection_changed",
+      sessionId: "session-1",
+      modelSelection: { profileId: "profile-1", model: "model-c" },
+    });
+    await waitForCondition(
+      () => harness.calls.some((call) => new URL(call.url).pathname === "/state"),
+      "Expected the peer model selection to refresh state.",
+    );
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-c",
+    );
+
+    const delayed = JSON.parse(JSON.stringify(state)) as typeof state;
+    delayed.sessions[0]!.modelSelection = {
+      profileId: "profile-1",
+      model: "model-b",
+    };
+    delayed.runtimeProfile!.selection.model = "model-b";
+    harness.setServerState(delayed);
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-c",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("composer reasoning represents a disabled Profile default as Off", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.runtimeProfile!.selection.reasoning = { mode: "disabled" };
+  state.runtimeProfile!.capabilities.reasoning = {
+    supported: true,
+    canDisable: true,
+    efforts: ["low", "high"],
+    budgetTokens: false,
+    strategy: "effort",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    assert.equal(reasoning?.value, "");
+    assert.equal(reasoning?.selectedOptions[0]?.textContent, "Off");
+    assert.equal(reasoning?.title, "Reasoning · Off");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("authoritative Profile changes refresh a clean Settings form and preserve a dirty Draft visibly", async () => {
+  const state = stateFixture();
+  const profileA = profileFixture({
+    id: "profile-1",
+    name: "Profile 1",
+    defaultModel: "model-a",
+  });
+  const profileB = profileFixture({
+    id: "profile-2",
+    name: "Profile 2",
+    defaultModel: "model-b",
+    models: [{
+      model: "model-b",
+      parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+  });
+  state.settings.profiles = [profileA, profileB];
+  state.settings.activeProfileId = profileA.id;
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const ui = (harness.window as unknown as {
+    LiveSmithUI: {
+      runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+    };
+  }).LiveSmithUI;
+
+  function authoritativeState(profile: typeof profileA): typeof state {
+    const next = JSON.parse(JSON.stringify(state)) as typeof state;
+    next.settings.activeProfileId = profile.id;
+    next.runtimeProfile!.profile = {
+      id: profile.id,
+      name: profile.name,
+      connectionKind: "direct-api",
+      apiFamily: "openai",
+      apiMode: "responses",
+    };
+    next.runtimeProfile!.selection = {
+      model: profile.defaultModel,
+      reasoning: { mode: "default" },
+    };
+    next.configuredModels = profile.models.map((entry) => ({
+      model: entry.model,
+      label: entry.model,
+    }));
+    next.modelStateSource = {
+      profileId: profile.id,
+      connection: JSON.parse(JSON.stringify(profile.connection)),
+      model: profile.defaultModel,
+    };
+    return next;
+  }
+
+  try {
+    harness.setServerState(authoritativeState(profileB));
+    assert.equal(
+      await ui.runCommand("set_session_approval_mode", {
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Profile 2",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#profileSelector")?.value,
+      "profile-2",
+    );
+    assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+
+    harness.input("#profileName", "Local unsaved Profile 2");
+    harness.setServerState(authoritativeState(profileA));
+    assert.equal(
+      await ui.runCommand("set_session_approval_mode", {
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Local unsaved Profile 2",
+    );
+    assert.match(
+      harness.document.querySelector("#draftStatus")?.textContent ?? "",
+      /changed elsewhere/i,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-a",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an unrelated newer SSE does not hide Profile settings from a Session command state", async () => {
+  const state = stateFixture();
+  const profileB = state.settings.profiles.find(
+    (profile) => profile.id === "profile-2",
+  );
+  assert.ok(profileB);
+  assert.equal(profileB.connection.kind, "direct-api");
+  if (profileB.connection.kind !== "direct-api") return;
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const ui = (harness.window as unknown as {
+    LiveSmithUI: {
+      runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+    };
+  }).LiveSmithUI;
+  try {
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("select_session", { sessionId: "session-2" });
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "select_session"
+      ),
+      "Expected the Session command to wait for its response.",
+    );
+
+    const external = JSON.parse(JSON.stringify(state)) as typeof state;
+    external.activeSessionId = "session-2";
+    external.approvalMode = "low-risk";
+    external.activeSkillIds = [];
+    external.settings.activeProfileId = profileB.id;
+    external.runtimeProfile!.profile = {
+      id: profileB.id,
+      name: profileB.name,
+      connectionKind: profileB.connection.kind,
+      apiFamily: profileB.connection.apiFamily,
+      apiMode: profileB.connection.apiMode,
+    };
+    external.runtimeProfile!.selection = {
+      model: profileB.defaultModel,
+      reasoning: { mode: "default" },
+    };
+    external.configuredModels = profileB.models.map((entry) => ({
+      model: entry.model,
+      label: entry.model,
+    }));
+    external.modelStateSource = {
+      profileId: profileB.id,
+      connection: JSON.parse(JSON.stringify(profileB.connection)),
+      model: profileB.defaultModel,
+    };
+    harness.setServerState(external);
+    harness.emitServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-1",
+      approvalMode: "everything",
+      bridgeStateRevision: "3",
+    });
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      profileB.defaultModel,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      profileB.name,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#profileSelector")?.value,
+      profileB.id,
+    );
+    assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a stale Profile save keeps the Draft and refreshes the latest discard target", async () => {
+  const state = stateFixture();
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#profileName", "Local edit");
+    const latest = JSON.parse(JSON.stringify(state)) as typeof state;
+    latest.settings.profiles[0]!.name = "External edit";
+    latest.runtimeProfile!.profile.name = "External edit";
+    harness.setServerState(latest);
+    harness.failNextCommand(
+      "This Profile changed in another Live Smith window.",
+      undefined,
+      { status: 409 },
+    );
+
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Local edit",
+    );
+    assert.match(
+      harness.document.querySelector("#draftStatus")?.textContent ?? "",
+      /changed elsewhere/i,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#saveProfileButton")
+        ?.disabled,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#deleteProfileButton")
+        ?.disabled,
+      true,
     );
     assert.equal(
       harness.calls.filter((call) => new URL(call.url).pathname === "/state").length,
       1,
     );
-    assert.equal(state.runtimeProfile?.selection.model, "model-a");
+
+    harness.click("#discardProfileButton");
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "External edit",
+    );
+    assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -336,6 +825,7 @@ test("the context ring distinguishes unavailable and exact latest-turn usage", a
     ],
   });
   state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
   state.configuredModels = [
     { model: "model-a", label: "Model A" },
     { model: "model-b", label: "Model B" },

@@ -51,6 +51,8 @@ export interface ChatDialogState {
   configuredModelsReady: boolean;
   modelStateSource: ChatModelStateSource | null;
   runtimeProfile: ChatRuntimeSummary | null;
+  /** SHA-256 of the normalized active Saved Profile, or null with no active Profile. */
+  activeProfileRevision: string | null;
   settings: AgentSettings;
   /** Credential-free state from the isolated official Codex runtime. */
   codexAuth?: ManagedAuthState;

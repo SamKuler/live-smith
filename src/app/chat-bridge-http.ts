@@ -80,7 +80,11 @@ export interface RawSkillBodyReadOptions {
 }
 
 export type ChatBridgeCommandInput =
-  | { kind: "save_profile"; profile: DraftProfile }
+  | {
+      kind: "save_profile";
+      profile: DraftProfile;
+      expectedProfileRevision: string | null;
+    }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
   | { kind: "start_codex_login" }
@@ -778,7 +782,33 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       defaultFollowUpBehavior: input.defaultFollowUpBehavior,
     };
   }
-  if (kind === "save_profile" || kind === "discover_models") {
+  if (kind === "save_profile") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "profile", "expectedProfileRevision"],
+      `${kind} command`,
+    );
+    if (!isRecord(input.profile)) {
+      throw new ChatBridgeRequestValidationError("profile must be an object.");
+    }
+    if (
+      input.expectedProfileRevision !== null &&
+      (
+        typeof input.expectedProfileRevision !== "string" ||
+        !/^[a-f0-9]{64}$/.test(input.expectedProfileRevision)
+      )
+    ) {
+      throw new ChatBridgeRequestValidationError(
+        "expectedProfileRevision must be a lowercase SHA-256 digest or null.",
+      );
+    }
+    return {
+      kind,
+      profile: input.profile as unknown as DraftProfile,
+      expectedProfileRevision: input.expectedProfileRevision,
+    };
+  }
+  if (kind === "discover_models") {
     assertOnlyInputKeys(input, ["kind", "profile"], `${kind} command`);
     if (!isRecord(input.profile)) {
       throw new ChatBridgeRequestValidationError("profile must be an object.");

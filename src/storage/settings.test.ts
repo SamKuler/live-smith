@@ -20,7 +20,9 @@ import {
   activateSavedProfile,
   deleteSavedProfile,
   loadAgentSettings,
+  SavedProfileConflictError,
   saveSavedProfile,
+  savedProfileRevision,
   saveGlobalSettings,
 } from "./settings.js";
 
@@ -823,6 +825,70 @@ test("concurrent profile saves neither fail nor lose profiles", async () => {
   assert.deepEqual(
     saved.profiles.map((entry) => entry.id).sort(),
     profiles.map((entry) => entry.id).sort(),
+  );
+});
+
+test("a stale same-ID Profile baseline cannot overwrite a newer model collection", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
+  const original = profile({ id: "shared-profile", name: "Shared Profile" });
+  await saveSavedProfile(directory, original);
+  const baseline = (await loadAgentSettings(directory)).profiles[0]!;
+  assert.equal(baseline.connection.kind, "direct-api");
+  const directBaseline = baseline as DirectApiProfile;
+  const withAddedModel: DirectApiProfile = {
+    ...directBaseline,
+    models: [
+      ...directBaseline.models,
+      {
+        model: "model-b",
+        parameters: {
+          maxOutputTokens: 4096,
+          reasoning: { mode: "default" },
+        },
+        advanced: {},
+      },
+    ],
+  };
+
+  await saveSavedProfile(directory, withAddedModel, {
+    expectedCurrentProfileRevision: savedProfileRevision(baseline),
+  });
+  await assert.rejects(
+    saveSavedProfile(directory, { ...baseline, name: "Stale rename" }, {
+      expectedCurrentProfileRevision: savedProfileRevision(baseline),
+    }),
+    SavedProfileConflictError,
+  );
+
+  const saved = (await loadAgentSettings(directory)).profiles[0]!;
+  assert.equal(saved.name, "Shared Profile");
+  assert.deepEqual(saved.models.map((model) => model.model), ["model-a", "model-b"]);
+});
+
+test("per-Profile revisions allow different existing Profiles to save concurrently", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
+  const first = profile({ id: "profile-a", name: "Profile A" });
+  const second = profile({ id: "profile-b", name: "Profile B" });
+  await saveSavedProfile(directory, first);
+  await saveSavedProfile(directory, second);
+  const baselines = await loadAgentSettings(directory);
+  const firstBaseline = baselines.profiles.find((entry) => entry.id === first.id)!;
+  const secondBaseline = baselines.profiles.find((entry) => entry.id === second.id)!;
+
+  const results = await Promise.allSettled([
+    saveSavedProfile(directory, { ...firstBaseline, name: "Profile A updated" }, {
+      expectedCurrentProfileRevision: savedProfileRevision(firstBaseline),
+    }),
+    saveSavedProfile(directory, { ...secondBaseline, name: "Profile B updated" }, {
+      expectedCurrentProfileRevision: savedProfileRevision(secondBaseline),
+    }),
+  ]);
+
+  assert.equal(results.every((result) => result.status === "fulfilled"), true);
+  const saved = await loadAgentSettings(directory);
+  assert.deepEqual(
+    saved.profiles.map((entry) => entry.name).sort(),
+    ["Profile A updated", "Profile B updated"],
   );
 });
 

@@ -33,6 +33,7 @@ import {
   SteeringPersistenceOutcomeUnknownError,
 } from "./steering.js";
 import type { GlobalSettingsChange } from "./global-settings-events.js";
+import type { ProfileSettingsChange } from "./profile-settings-events.js";
 import type { ActionDiffGroup } from "../ui/action-diff.js";
 import {
   MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
@@ -235,6 +236,7 @@ export interface ChatBridge {
     modelSelection: SessionModelSelection,
   ): void;
   publishDefaultFollowUpBehavior(change: GlobalSettingsChange): void;
+  publishProfileSettingsChange(change: ProfileSettingsChange): void;
   close(): Promise<void>;
 }
 
@@ -379,6 +381,10 @@ type StateChangeSsePayloadBase =
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
       commandId: string;
+    }
+  | {
+      type: "profile_settings_changed";
+      commandId: string;
     };
 
 type StateChangeSsePayload = StateChangeSsePayloadBase & {
@@ -393,6 +399,11 @@ type ApprovalModeChangedSsePayload = Extract<
 type SessionModelSelectionChangedSsePayload = Extract<
   StateChangeSsePayload,
   { type: "session_model_selection_changed" }
+>;
+
+type ProfileSettingsChangedSsePayload = Extract<
+  StateChangeSsePayload,
+  { type: "profile_settings_changed" }
 >;
 
 interface StateChangeActivity {
@@ -480,11 +491,13 @@ export async function createChatBridge(
     string,
     SessionModelSelectionChangedSsePayload
   >();
+  let latestProfileSettingsChange: ProfileSettingsChangedSsePayload | undefined;
   const sendStopTombstones = new Map<string, PromptPersistence>();
   const activeAttachmentTerminals = new Map<string, Promise<void>>();
   const activeAttachmentControllers = new Map<string, AbortController>();
   const sessionActivities = new Map<string, ChatSessionActivity>();
   let activeCommandAbort: AbortController | null = null;
+  let activeCommandId: string | null = null;
   let activeCommandTerminal: Promise<void> | null = null;
   let latestGlobalSettingsChange: GlobalSettingsChange | undefined;
   let latestGlobalSettingsFromState = false;
@@ -1044,6 +1057,9 @@ export async function createChatBridge(
         for (const published of latestSessionModelSelectionChanges.values()) {
           writeSse(response, published);
         }
+        if (latestProfileSettingsChange) {
+          writeSse(response, latestProfileSettingsChange);
+        }
         for (const activeSend of activeSendsById.values()) {
           if (activeSend.stopRequested) continue;
           const pendingConfirmation = [...pendingConfirmations.values()].find(
@@ -1296,6 +1312,7 @@ export async function createChatBridge(
         }
         const controller = createHostAbortController();
         activeCommandAbort = controller;
+        activeCommandId = commandId;
         try {
           const commandState = await options.handleCommand(
             input,
@@ -1319,6 +1336,7 @@ export async function createChatBridge(
           sendJson(response, state);
         } finally {
           if (activeCommandAbort === controller) activeCommandAbort = null;
+          if (activeCommandId === commandId) activeCommandId = null;
         }
         return;
       }
@@ -1890,6 +1908,16 @@ export async function createChatBridge(
         type: "default_follow_up_behavior_changed",
         ...change,
       });
+    },
+    publishProfileSettingsChange: (change) => {
+      if (change.commandId === activeCommandId) return;
+      const published = broadcastStateChange({
+        type: "profile_settings_changed",
+        commandId: change.commandId,
+      });
+      if (published?.type === "profile_settings_changed") {
+        latestProfileSettingsChange = published;
+      }
     },
     close: () => {
       if (closePromise) return closePromise;

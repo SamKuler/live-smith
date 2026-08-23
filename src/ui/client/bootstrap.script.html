@@ -452,7 +452,10 @@
           if (subscriptionCatalogPending) {
             reasoningSelect.append(new Option("Load capabilities…", ""));
           } else if (efforts.length) {
-            reasoningSelect.append(new Option("Default", ""));
+            reasoningSelect.append(new Option(
+              reasoning?.effort ? "Profile default" : reasoningLabel(reasoning),
+              "",
+            ));
             for (const effort of efforts) {
               reasoningSelect.append(new Option(
                 effort === "xhigh"
@@ -489,10 +492,18 @@
           reasoningSelect.disabled = busy || !runtime ||
             subscriptionCatalogPending || efforts.length === 0;
           modelSelect.setAttribute("aria-busy", String(
-            composerOperationState.commandKind === "set_session_model_selection",
+            [
+              "set_session_model_selection",
+              "session_model_selection_refresh",
+              "profile_settings_refresh",
+            ].includes(composerOperationState.commandKind),
           ));
           reasoningSelect.setAttribute("aria-busy", String(
-            composerOperationState.commandKind === "set_session_model_selection",
+            [
+              "set_session_model_selection",
+              "session_model_selection_refresh",
+              "profile_settings_refresh",
+            ].includes(composerOperationState.commandKind),
           ));
           const selectedLabel = configuredModels.find(
             (configured) => configured.model === selectedModel,
@@ -680,6 +691,12 @@
             busyAriaLabel: "Saving Session model selection…",
             status: "Saving Session model selection…",
           },
+          session_model_selection_refresh: {
+            status: "Refreshing the Session model after an external change…",
+          },
+          profile_settings_refresh: {
+            status: "Refreshing Profiles after an external change…",
+          },
           load_session_model_capabilities: {
             busyAriaLabel: "Loading model capabilities…",
             status: "Loading model capabilities…",
@@ -848,6 +865,7 @@
           renderSessions: sessionTimeline.renderSessions,
           renderModelOptions: profileEditor.renderModelOptions,
           renderApprovalMode: profileEditor.renderApprovalMode,
+          reconcileSettingsForm: profileEditor.reconcileSettingsForm,
           renderSettingsForm: profileEditor.renderSettingsForm,
           renderTimeline: sessionTimeline.renderTimeline,
           setOperationState,

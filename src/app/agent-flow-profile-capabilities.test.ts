@@ -9,7 +9,16 @@ import type {
   DiscoveredModelInfo,
   ManagedAuthState,
 } from "../model/provider.js";
-import type { DraftProfile, SavedProfile } from "../model/profile.js";
+import {
+  isDirectApiProfile,
+  type DraftProfile,
+  type SavedProfile,
+} from "../model/profile.js";
+import {
+  loadAgentSettings,
+  saveSavedProfile,
+  savedProfileRevision,
+} from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
 import { runAgentFlow } from "./agent-flow.js";
@@ -110,9 +119,44 @@ test("Direct discovery evidence survives Save and a reopened modal", async (t) =
         const saved = await command(endpoint, "direct-save", {
           kind: "save_profile",
           profile,
+          expectedProfileRevision: null,
         });
         assert.equal(saved.response.status, 200);
         savedState = saved.body as unknown as ChatDialogState;
+
+        const currentProfile = (await loadAgentSettings(directory)).profiles[0]!;
+        if (!isDirectApiProfile(currentProfile)) {
+          throw new Error("Expected the saved Direct API Profile.");
+        }
+        await saveSavedProfile(directory, {
+          ...currentProfile,
+          models: [
+            ...currentProfile.models,
+            {
+              model: "model-added-elsewhere",
+              parameters: {
+                maxOutputTokens: 4096,
+                reasoning: { mode: "default" },
+              },
+              advanced: {},
+            },
+          ],
+        }, {
+          expectedCurrentProfileRevision: savedProfileRevision(currentProfile),
+        });
+        const staleSave = await command(endpoint, "direct-stale-save", {
+          kind: "save_profile",
+          profile: { ...profile, name: "Stale rename" },
+          expectedProfileRevision: savedProfileRevision(profile),
+        });
+        assert.equal(staleSave.response.status, 409);
+        assert.match(String(staleSave.body.error), /changed in another/i);
+        assert.deepEqual(
+          (await loadAgentSettings(directory)).profiles[0]?.models.map(
+            (model) => model.model,
+          ),
+          ["model-capable", "model-added-elsewhere"],
+        );
       },
     },
   } as never, interaction, {
@@ -131,6 +175,7 @@ test("Direct discovery evidence survives Save and a reopened modal", async (t) =
       pdf: "supported",
     },
   });
+  assert.equal(savedState?.activeProfileRevision, savedProfileRevision(profile));
 
   let reopenedState: ChatDialogState | undefined;
   await runAgentFlow({
@@ -153,6 +198,11 @@ test("Direct discovery evidence survives Save and a reopened modal", async (t) =
   assert.deepEqual(
     reopenedState?.runtimeProfile?.inputCapabilityEvidence,
     savedState?.capabilityEvidence.inputs,
+  );
+  const reopenedProfile = (await loadAgentSettings(directory)).profiles[0]!;
+  assert.equal(
+    reopenedState?.activeProfileRevision,
+    savedProfileRevision(reopenedProfile),
   );
 });
 
@@ -260,6 +310,7 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
           "subscription-stale-reasoning-save",
           {
             kind: "save_profile",
+            expectedProfileRevision: null,
             profile: {
               ...baseProfile,
               models: baseProfile.models.map((model) => ({
@@ -288,6 +339,7 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
           "subscription-current-save",
           {
             kind: "save_profile",
+            expectedProfileRevision: null,
             profile: {
               ...baseProfile,
               models: baseProfile.models.map((model) => ({

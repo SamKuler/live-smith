@@ -66,6 +66,7 @@
       const confirmationResolutionsBySession = new Map();
       const approvalModeProjectionsBySession = new Map();
       const modelSelectionProjectionRevisionsBySession = new Map();
+      const modelSelectionRefreshesBySession = new Map();
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
@@ -90,6 +91,7 @@
       let optimisticDefaultFollowUpBehavior = null;
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
+      let profileSettingsRefresh = null;
       let attachmentOperationInProgress = false;
       let skillOperationInProgress = false;
       let closeDecisionPending = false;
@@ -230,6 +232,11 @@
           contextSummary: state.contextSummary,
           sessionContinueTarget: state.sessionContinueTarget,
           sessionActivities: state.sessionActivities,
+          profileSettings: {
+            activeProfileId: state.settings.activeProfileId,
+            profiles: state.settings.profiles,
+          },
+          activeProfileRevision: state.activeProfileRevision,
           status: state.status,
         }));
       }
@@ -404,7 +411,16 @@
             current.session[key],
             baseline?.session?.[key],
           );
-          const useAuthoritative = approvalPatchOrder !== null
+          const modelSelectionPatchOrder = key === "modelSelection"
+            ? compareDecimalRevisions(
+                modelSelectionProjectionRevisionsBySession.get(sessionId) || "0",
+                incomingCoveredThroughRevision,
+              )
+            : null;
+          const useAuthoritative = modelSelectionPatchOrder !== null
+            ? modelSelectionPatchOrder <= 0 &&
+              (authoritativeOwnedFields?.has(key) || !currentFieldChanged)
+            : approvalPatchOrder !== null
             ? approvalProjection?.approvalMode !== undefined
               ? approvalPatchOrder <= 0
               : authoritativeOwnedFields?.has(key)
@@ -419,6 +435,23 @@
           }
         }
         return { collection: selected.collection, session };
+      }
+
+      function adoptProfileProjection(target, source, includeEditorPreview) {
+        target.settings = {
+          ...target.settings,
+          activeProfileId: source.settings.activeProfileId,
+          profiles: source.settings.profiles,
+        };
+        target.activeProfileRevision = source.activeProfileRevision;
+        if (includeEditorPreview) {
+          target.capabilities = source.capabilities;
+          target.capabilityEvidence = source.capabilityEvidence;
+          target.availableModels = source.availableModels;
+          target.modelStateSource = source.modelStateSource;
+        }
+        if (source.codexAuth === undefined) delete target.codexAuth;
+        else target.codexAuth = source.codexAuth;
       }
 
       function preserveNewerCausalState(state, attempt) {
@@ -455,6 +488,29 @@
         const merged = !attempt.ownsGlobalState
           ? { ...current }
           : { ...state };
+        const currentProfileSettingsChanged = !sameJsonValue(
+          {
+            activeProfileId: current.settings.activeProfileId,
+            profiles: current.settings.profiles,
+          },
+          baseline.profileSettings,
+        ) || current.activeProfileRevision !== baseline.activeProfileRevision;
+        const incomingProfileSettingsChanged =
+          current.settings.activeProfileId !== state.settings.activeProfileId ||
+          !sameJsonValue(current.settings.profiles, state.settings.profiles) ||
+          current.activeProfileRevision !== state.activeProfileRevision;
+        const useAuthoritativeProfileProjection =
+          !currentProfileSettingsChanged ||
+          compareDecimalRevisions(
+            state.bridgeStateCoveredThroughRevision,
+            current.bridgeStateCoveredThroughRevision,
+          ) > 0;
+        adoptProfileProjection(
+          merged,
+          useAuthoritativeProfileProjection ? state : current,
+          !useAuthoritativeProfileProjection || attempt.ownsGlobalState ||
+            incomingProfileSettingsChanged,
+        );
         if (attempt.ownsAvailableSkills) {
           merged.availableSkills = state.availableSkills;
         }
@@ -527,9 +583,6 @@
           merged.pendingAttachments = state.pendingAttachments;
           merged.contextSummary = state.contextSummary;
           merged.sessionContinueTarget = state.sessionContinueTarget;
-          merged.runtimeProfile = state.runtimeProfile;
-          merged.configuredModels = state.configuredModels;
-          merged.configuredModelsReady = state.configuredModelsReady;
         } else {
           merged.activeSessionId = current.activeSessionId;
           merged.events = current.events;
@@ -537,14 +590,26 @@
           merged.contextSummary = current.contextSummary;
           merged.sessionContinueTarget = current.sessionContinueTarget;
         }
-        if (
-          attempt.ownsActiveRuntimeProjection &&
-          state.activeSessionId === merged.activeSessionId
-        ) {
-          merged.runtimeProfile = state.runtimeProfile;
-          merged.configuredModels = state.configuredModels;
-          merged.configuredModelsReady = state.configuredModelsReady;
-        }
+        const authoritativeRuntimeOwned = incomingProfileSettingsChanged ||
+          authoritativeOwnsSelection ||
+          attempt.ownsActiveRuntimeProjection ||
+          attempt.ownsRuntimeCatalogProjection;
+        const stateCoversActiveModelSelection = compareDecimalRevisions(
+          modelSelectionProjectionRevisionsBySession.get(
+            merged.activeSessionId,
+          ) || "0",
+          state.bridgeStateCoveredThroughRevision,
+        ) <= 0;
+        const runtimeProjection =
+          useAuthoritativeProfileProjection &&
+            authoritativeRuntimeOwned &&
+            stateCoversActiveModelSelection &&
+            state.activeSessionId === merged.activeSessionId
+            ? state
+            : current;
+        merged.runtimeProfile = runtimeProjection.runtimeProfile;
+        merged.configuredModels = runtimeProjection.configuredModels;
+        merged.configuredModelsReady = runtimeProjection.configuredModelsReady;
         if (
           state.activeSessionId === merged.activeSessionId &&
           current.activeSessionId === merged.activeSessionId
@@ -1710,6 +1775,7 @@
             "modelStateSource",
             "runtimeProfile",
             "settings",
+            "activeProfileRevision",
             "codexAuth",
             "openSettingsOnLoad",
             "status",
@@ -1766,6 +1832,13 @@
           !isWireModelStateSource(value.modelStateSource) ||
           !isWireRuntimeProfile(value.runtimeProfile) ||
           !isWireAgentSettings(value.settings) ||
+          !(
+            value.activeProfileRevision === null &&
+              value.settings.activeProfileId === null ||
+            typeof value.activeProfileRevision === "string" &&
+              /^[a-f0-9]{64}$/.test(value.activeProfileRevision) &&
+              value.settings.activeProfileId !== null
+          ) ||
           (value.codexAuth !== undefined && !isWireManagedAuth(value.codexAuth)) ||
           typeof value.openSettingsOnLoad !== "boolean" ||
           (value.status !== undefined && typeof value.status !== "string") ||
@@ -2395,13 +2468,27 @@
       function isOperationInProgress() {
         return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
           commandReconciliationBlocked || attachmentOperationInProgress ||
-          skillOperationInProgress;
+          skillOperationInProgress ||
+          profileSettingsRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId());
       }
 
       function syncOperationState() {
         const activeAttempt = activeSendAttempt();
+        const modelSelectionReconciliation =
+          modelSelectionRefreshesBySession.get(activeSessionId());
         requireView().setOperationState({
           commandKind: commandInProgress ||
+            (profileSettingsRefresh
+              ? profileSettingsRefresh.failed
+                ? "reconciliation_required"
+                : "profile_settings_refresh"
+              : null) ||
+            (modelSelectionReconciliation
+              ? modelSelectionReconciliation.failed
+                ? "reconciliation_required"
+                : "session_model_selection_refresh"
+              : null) ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
           anySendInProgress: sendAttemptsBySession.size > 0 ||
             runnableQueuedFollowUpCount() > 0,
@@ -2504,6 +2591,12 @@
               "set_session_model_selection",
               "load_session_model_capabilities",
             ].includes(kind) && targetSessionId === activeSessionId(),
+          ownsRuntimeCatalogProjection: [
+            "discover_models",
+            "start_codex_login",
+            "refresh_codex_account",
+            "logout_codex",
+          ].includes(kind),
           ownsAuthoritativeSessionAdditions: kind === "new_session",
           ownsGlobalState: !sessionCommand && kind !== "save_global_settings",
           causalStateSnapshot: captureCausalState(),
@@ -2591,6 +2684,16 @@
             commandSucceeded = true;
           } else {
             commandError = outcome.error;
+            if (
+              kind === "save_profile" &&
+              outcome.error.httpStatus === 409
+            ) {
+              try {
+                await refreshState(attempt, "save_profile_conflict");
+              } catch {
+                // The conflict remains explicit; reopening Settings can refresh it.
+              }
+            }
             if (outcome.error.reconciliationRequired) {
               commandReconciliationBlocked = true;
             }
@@ -2735,10 +2838,36 @@
         }
       }
 
+      function runtimeSourceForSelection(state, selection) {
+        if (!selection) return null;
+        const profile = state?.settings?.profiles?.find(
+          (entry) => entry.id === selection.profileId,
+        );
+        const connection = profile?.connection;
+        const connectionSource = connection?.kind === "direct-api"
+          ? {
+              kind: connection.kind,
+              apiFamily: connection.apiFamily,
+              apiMode: connection.apiMode,
+              baseUrl: connection.baseUrl.replace(/\/+$/, ""),
+            }
+          : connection?.kind === "codex-subscription"
+            ? { kind: connection.kind, provider: connection.provider }
+            : null;
+        return JSON.stringify({
+          profileId: selection.profileId,
+          connection: connectionSource,
+          model: selection.model,
+        });
+      }
+
       function runtimeSourceForState(state) {
         const runtime = state?.runtimeProfile;
         return runtime
-          ? `${runtime.profile.id}\u0000${runtime.selection.model}`
+          ? runtimeSourceForSelection(state, {
+              profileId: runtime.profile.id,
+              model: runtime.selection.model,
+            })
           : null;
       }
 
@@ -2760,13 +2889,33 @@
         }
       }
 
+      function reconcileProfileSettingsRefreshWithState(state) {
+        if (
+          !profileSettingsRefresh ||
+          compareDecimalRevisions(
+            state.bridgeStateCoveredThroughRevision,
+            profileSettingsRefresh.requiredRevision,
+          ) < 0
+        ) return;
+        profileSettingsRefresh = null;
+        syncOperationState();
+      }
+
       function applyCommandState(kind, state, causalAttempt) {
         if (!isWireChatBridgeState(state)) return false;
+        const previousSettings = getState().settings;
         captureOwnedPendingAttachmentAdditions(causalAttempt, state);
         adoptFollowUpBehaviorFromState(state);
         const reconciledState = causalAttempt
           ? preserveNewerCausalState(state, causalAttempt)
           : state;
+        const profileSettingsChanged =
+          previousSettings.activeProfileId !==
+            reconciledState.settings.activeProfileId ||
+          !sameJsonValue(
+            previousSettings.profiles,
+            reconciledState.settings.profiles,
+          );
         const previousSessionId = activeSessionId();
         const prompt = document.getElementById("prompt");
         if (prompt) composerDraftsBySession.set(previousSessionId, prompt.value);
@@ -2787,11 +2936,14 @@
         adoptFollowUpBehaviorFromState(reconciledState);
         setState(reconciledState);
         recordFullStateProjectionCoverage(reconciledState);
+        reconcileProfileSettingsRefreshWithState(reconciledState);
         recordAttemptOwnedActivityRevisions(causalAttempt, state);
         reconcileAttemptProgressFromActivities(reconciledState);
         requireView().syncModelStateSource(reconciledState.modelStateSource);
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
           requireView().renderSettingsForm();
+        } else if (profileSettingsChanged) {
+          requireView().reconcileSettingsForm();
         } else if (kind === "set_session_approval_mode") {
           requireView().renderApprovalMode();
         } else if (kind === "discover_models") {
@@ -2843,6 +2995,7 @@
 
       function applyAuthoritativeSendState(attempt, state) {
         if (!attempt || !isWireChatBridgeState(state)) return false;
+        const previousSettings = getState().settings;
         // Global behavior has its own monotonic revision; Session ownership below
         // remains scoped to this send so an older terminal cannot prune peers.
         adoptFollowUpBehaviorFromState(state);
@@ -2850,6 +3003,13 @@
           attempt.sessionId === activeSessionId() &&
           state.activeSessionId === activeSessionId();
         const reconciledState = preserveNewerCausalState(state, attempt);
+        const profileSettingsChanged =
+          previousSettings.activeProfileId !==
+            reconciledState.settings.activeProfileId ||
+          !sameJsonValue(
+            previousSettings.profiles,
+            reconciledState.settings.profiles,
+          );
         attempt.targetSessionUnavailableState =
           !reconciledState.sessions.some(
             (session) => session.id === attempt.sessionId,
@@ -2870,7 +3030,11 @@
           reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
           recordFullStateProjectionCoverage(reconciledState);
+          reconcileProfileSettingsRefreshWithState(reconciledState);
           requireView().syncModelStateSource(reconciledState.modelStateSource);
+          if (profileSettingsChanged) {
+            requireView().reconcileSettingsForm();
+          }
           requireView().renderModelOptions();
           requireView().updateCapabilityPreview();
         } else {
@@ -4717,7 +4881,46 @@
         }
       }
 
+      function refreshProfileSettings(requiredRevision) {
+        const refresh = {
+          failed: false,
+          requiredRevision,
+        };
+        profileSettingsRefresh = refresh;
+        syncOperationState();
+        const causalAttempt = {
+          kind: "profile_settings_changed",
+          ownsGlobalState: true,
+          causalStateSnapshot: captureCausalState(),
+        };
+        const markFailed = () => {
+          if (profileSettingsRefresh !== refresh) return;
+          refresh.failed = true;
+          syncOperationState();
+          showStatus(
+            "Profiles changed in another Live Smith window, but current settings could not be refreshed. Close and reopen Live Smith before sending.",
+            true,
+          );
+        };
+        void refreshState(causalAttempt, "profile_settings_changed").then(
+          (refreshed) => {
+            if (profileSettingsRefresh !== refresh) return;
+            if (refreshed !== true) {
+              markFailed();
+              return;
+            }
+            // A successful refresh normally clears through its coverage check.
+            // Staying pending means the snapshot predates this notification.
+            markFailed();
+          },
+          markFailed,
+        );
+      }
+
       function refreshActiveModelSelection(sessionId) {
+        const refresh = { failed: false };
+        modelSelectionRefreshesBySession.set(sessionId, refresh);
+        syncOperationState();
         const causalAttempt = {
           kind: "session_model_selection_changed",
           ownsActiveRuntimeProjection: true,
@@ -4728,17 +4931,30 @@
           causalAttempt,
           "session_model_selection_changed",
         ).then((refreshed) => {
-          if (refreshed === true || activeSessionId() !== sessionId) return;
-          showStatus(
-            "The Session model changed, but its capabilities could not be refreshed. Retry the model selection or reopen Live Smith.",
-            true,
-          );
+          if (modelSelectionRefreshesBySession.get(sessionId) !== refresh) return;
+          if (refreshed === true) {
+            modelSelectionRefreshesBySession.delete(sessionId);
+            syncOperationState();
+            return;
+          }
+          refresh.failed = true;
+          syncOperationState();
+          if (activeSessionId() === sessionId) {
+            showStatus(
+              "The Session model changed, but its capabilities could not be refreshed. Close and reopen Live Smith before sending.",
+              true,
+            );
+          }
         }, () => {
-          if (activeSessionId() !== sessionId) return;
-          showStatus(
-            "The Session model changed, but its capabilities could not be refreshed. Retry the model selection or reopen Live Smith.",
-            true,
-          );
+          if (modelSelectionRefreshesBySession.get(sessionId) !== refresh) return;
+          refresh.failed = true;
+          syncOperationState();
+          if (activeSessionId() === sessionId) {
+            showStatus(
+              "The Session model changed, but its capabilities could not be refreshed. Close and reopen Live Smith before sending.",
+              true,
+            );
+          }
         });
       }
 
@@ -4763,6 +4979,32 @@
             return;
           }
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
+          if (payload.type === "profile_settings_changed") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "commandId",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireCorrelationId(payload.commandId)
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            if (received.covered) {
+              reconcileProfileSettingsRefreshWithState(getState());
+              return;
+            }
+            if (profileSettingsRefresh) {
+              const pendingOrder = compareDecimalRevisions(
+                profileSettingsRefresh.requiredRevision,
+                received.revision,
+              );
+              if (pendingOrder > 0 || pendingOrder === 0 &&
+                !profileSettingsRefresh.failed) return;
+            }
+            refreshProfileSettings(received.revision);
+            return;
+          }
           if (payload.type === "default_follow_up_behavior_changed") {
             if (
               !hasOnlyWireKeys(payload, [
@@ -4855,9 +5097,10 @@
             if (activeSessionId() === payload.sessionId) {
               const previousSource = runtimeSourceBySession.get(payload.sessionId) ??
                 runtimeSourceForState(getState());
-              const nextSource = `${payload.modelSelection.profileId}\u0000${
-                payload.modelSelection.model
-              }`;
+              const nextSource = runtimeSourceForSelection(
+                getState(),
+                payload.modelSelection,
+              );
               if (previousSource !== nextSource) {
                 contextUsageBySession.delete(payload.sessionId);
                 requireView().renderContextUsage();
@@ -5456,7 +5699,10 @@
         hasRunnableSendWork: () => sendAttemptsBySession.size > 0 ||
           runnableQueuedFollowUpCount() > 0,
         isOperationInProgress,
-        isCommandInProgress: () => Boolean(commandInProgress) || commandReconciliationBlocked,
+        isCommandInProgress: () => Boolean(commandInProgress) ||
+          commandReconciliationBlocked ||
+          profileSettingsRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId()),
         isConfirmationLocked: activeConfirmationIsLocked,
         resolveConfirm,
         renderDefaultFollowUpBehavior,

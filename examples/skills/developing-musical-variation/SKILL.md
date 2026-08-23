@@ -20,7 +20,7 @@ From observed notes, state the motif's fingerprint:
 
 Choose at least two properties as **invariants** and one as the current **variable**. When harmony is unknown, keep pitches and onsets invariant; do not invent chord tones, passing notes, countermelodies, or harmonic labels.
 
-Confirm that each target repetition is independently editable. A looped or linked source must be duplicated, split, or consolidated through a supported reversible path before one repetition changes. Preserve an untouched original.
+Confirm that each target repetition is independently editable. Change one repetition only when the current action schema offers a reversible way to create an independent instance; otherwise stop and report the missing capability. Preserve an untouched original.
 
 ## Variation Ladder
 

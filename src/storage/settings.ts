@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   activeSavedProfile,
@@ -36,6 +37,24 @@ export class AgentSettingsCorruptionError extends Error {
   }
 }
 
+export class SavedProfileConflictError extends Error {
+  constructor() {
+    super(
+      "This Profile changed in another Live Smith window. Reload it before saving your changes.",
+    );
+    this.name = "SavedProfileConflictError";
+  }
+}
+
+export interface SaveSavedProfileOptions {
+  /** Revision of the normalized Profile snapshot from which editing started. */
+  expectedCurrentProfileRevision?: string | null;
+}
+
+export function savedProfileRevision(profile: SavedProfile): string {
+  return createHash("sha256").update(JSON.stringify(profile), "utf8").digest("hex");
+}
+
 export async function loadAgentSettings(
   storageDirectory: string | undefined,
 ): Promise<AgentSettings> {
@@ -64,9 +83,22 @@ async function loadAgentSettingsUnlocked(
 export async function saveSavedProfile(
   storageDirectory: string | undefined,
   input: SavedProfile,
+  options: SaveSavedProfileOptions = {},
 ): Promise<AgentSettings> {
   return withStorageTransaction(storageDirectory, async () => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
+    const currentProfile = settings.profiles.find(
+      (profile) => profile.id === input.id,
+    );
+    if (
+      options.expectedCurrentProfileRevision !== undefined &&
+      (currentProfile === undefined
+        ? null
+        : savedProfileRevision(currentProfile)) !==
+        options.expectedCurrentProfileRevision
+    ) {
+      throw new SavedProfileConflictError();
+    }
     const otherProfiles = settings.profiles.filter((profile) => profile.id !== input.id);
     const profile = validateDraftProfileForSave(input, otherProfiles);
     const existingIndex = settings.profiles.findIndex((entry) => entry.id === profile.id);

@@ -10,7 +10,11 @@
       }) {
       let draftProfile = null;
       let savedProfileSnapshot = null;
+      let savedProfileRevisionSnapshot = null;
+      let savedActiveProfileIdSnapshot = null;
       let draftDirty = false;
+      let draftProfileChangedElsewhere = false;
+      let draftProfileBaselineChanged = false;
       let selectedModelIndex = 0;
       let modelStateSource = null;
       let renderedModelOptionsMatchConnection = false;
@@ -53,6 +57,10 @@
 
       function cloneValue(value) {
         return value == null ? value : JSON.parse(JSON.stringify(value));
+      }
+
+      function sameProfileSnapshot(left, right) {
+        return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
       }
 
       function clearFieldError(control) {
@@ -901,7 +909,7 @@
           message: "Create a new Profile and discard the current unsaved changes?",
           acceptLabel: "Discard & Add",
         }))) return;
-        setDraftProfile(blankProfile(), null, true);
+        setDraftProfile(blankProfile(), null, true, null);
       }
 
       async function duplicateProfile() {
@@ -918,15 +926,20 @@
           showProfileFormError(error);
           return;
         }
-        setDraftProfile(blankProfile(current), null, true);
+        setDraftProfile(blankProfile(current), null, true, null);
       }
 
       function discardProfileChanges() {
-        const target = savedProfileSnapshot || activeSavedProfile();
+        const target = draftProfileChangedElsewhere
+          ? activeSavedProfile()
+          : savedProfileSnapshot || activeSavedProfile();
+        const targetRevision = draftProfileChangedElsewhere
+          ? getState().activeProfileRevision
+          : savedProfileRevisionSnapshot;
         if (target) {
-          setDraftProfile(target, target, false);
+          setDraftProfile(target, target, false, targetRevision);
         } else {
-          setDraftProfile(blankProfile(), null, true);
+          setDraftProfile(blankProfile(), null, true, null);
         }
       }
 
@@ -938,7 +951,10 @@
           showProfileFormError(error);
           return;
         }
-        await runCommand("save_profile", { profile });
+        await runCommand("save_profile", {
+          profile,
+          expectedProfileRevision: savedProfileRevisionSnapshot,
+        });
       }
 
       async function deleteProfile() {
@@ -1011,35 +1027,69 @@
       function renderSettingsForm() {
         const state = getState();
         renderApprovalMode();
-        const profiles = state.settings.profiles || [];
+        const active = activeSavedProfile();
+        document.getElementById("modelSetupGuide").hidden = Boolean(active);
+        syncModelStateSource(state.modelStateSource);
+        setDraftProfile(
+          active || blankProfile(),
+          active,
+          !active,
+          active ? state.activeProfileRevision : null,
+        );
+      }
+
+      function reconcileSettingsForm() {
+        if (!draftDirty) {
+          renderSettingsForm();
+          return;
+        }
+        const state = getState();
+        const currentSavedProfile = (state.settings.profiles || []).find(
+          (profile) => profile.id === draftProfile?.id,
+        ) || null;
+        const baselineChanged = !sameProfileSnapshot(
+          currentSavedProfile,
+          savedProfileSnapshot,
+        );
+        const activeProfileChanged = state.settings.activeProfileId !==
+          savedActiveProfileIdSnapshot;
+        renderProfileSelector(draftProfile?.id || "");
+        document.getElementById("modelSetupGuide").hidden = Boolean(
+          activeSavedProfile(),
+        );
+        draftProfileChangedElsewhere = baselineChanged || activeProfileChanged;
+        draftProfileBaselineChanged = baselineChanged;
+        updateDraftActions();
+      }
+
+      function renderProfileSelector(selectedProfileId) {
+        const profiles = getState().settings.profiles || [];
         const selector = document.getElementById("profileSelector");
         selector.replaceChildren();
         for (const profile of profiles) {
           selector.append(new Option(profile.name, profile.id));
         }
-        document.getElementById("savedProfileControls").hidden = profiles.length === 0;
-        const active = activeSavedProfile();
-        document.getElementById("modelSetupGuide").hidden = Boolean(active);
-        syncModelStateSource(state.modelStateSource);
-        setDraftProfile(active || blankProfile(), active, !active);
+        document.getElementById("savedProfileControls").hidden =
+          profiles.length === 0;
+        if (
+          selectedProfileId &&
+          !profiles.some((profile) => profile.id === selectedProfileId)
+        ) {
+          selector.append(new Option("Unsaved profile", selectedProfileId));
+        }
+        selector.value = selectedProfileId;
       }
 
-      function setDraftProfile(profile, saved, isNew) {
+      function setDraftProfile(profile, saved, isNew, savedRevision) {
         clearFieldErrors();
         draftProfile = cloneValue(profile);
         savedProfileSnapshot = cloneValue(saved);
+        savedProfileRevisionSnapshot = saved ? savedRevision : null;
+        savedActiveProfileIdSnapshot = getState().settings.activeProfileId;
         draftDirty = isNew;
-        const selector = document.getElementById("profileSelector");
-        const savedIds = new Set(
-          (getState().settings.profiles || []).map((entry) => entry.id),
-        );
-        for (const option of [...selector.options]) {
-          if (!savedIds.has(option.value)) option.remove();
-        }
-        if (isNew && ![...selector.options].some((option) => option.value === profile.id)) {
-          selector.append(new Option("Unsaved profile", profile.id));
-        }
-        selector.value = profile.id;
+        draftProfileChangedElsewhere = false;
+        draftProfileBaselineChanged = false;
+        renderProfileSelector(profile.id);
         document.getElementById("profileName").value = profile.name || "";
         const connection = profile.connection;
         document.getElementById("connectionKind").value = connection.kind;
@@ -1437,11 +1487,13 @@
           hasAnySendInProgress();
         const hasSaved = Boolean(savedProfileSnapshot);
         document.getElementById("saveProfileButton").disabled =
-          settingsOperationInProgress || !draftProfile || !draftDirty;
+          settingsOperationInProgress || !draftProfile || !draftDirty ||
+          draftProfileBaselineChanged;
         document.getElementById("discardProfileButton").disabled =
           settingsOperationInProgress || !draftDirty;
         document.getElementById("deleteProfileButton").disabled =
-          settingsOperationInProgress || !hasSaved;
+          settingsOperationInProgress || !hasSaved ||
+          draftProfileBaselineChanged;
         document.getElementById("duplicateProfileButton").disabled =
           settingsOperationInProgress || !draftProfile;
         const selected = draftProfile?.models?.[selectedModelIndex];
@@ -1454,11 +1506,28 @@
           settingsOperationInProgress || !selected?.model ||
           selected.model === draftProfile?.defaultModel;
         const badge = document.getElementById("draftStatus");
-        badge.textContent = draftDirty ? "Unsaved changes" : "Saved";
+        badge.textContent = draftProfileBaselineChanged
+          ? "Draft blocked · Profile changed elsewhere"
+          : draftProfileChangedElsewhere
+            ? "Draft kept · Active Profile changed elsewhere"
+            : draftDirty
+              ? "Unsaved changes"
+              : "Saved";
         badge.classList.toggle("dirty", draftDirty);
+        badge.title = draftProfileBaselineChanged
+          ? "This saved Profile changed in another Live Smith window. Your local Draft was preserved; discard it to load the latest version before editing again."
+          : draftProfileChangedElsewhere
+            ? "The active Profile changed in another Live Smith window. Your local Draft was preserved and can still be saved."
+            : "";
         const previewBadge = document.getElementById("draftPreviewLabel");
         previewBadge.hidden = !draftDirty;
-        previewBadge.textContent = draftDirty ? "Unsaved Draft preview" : "";
+        previewBadge.textContent = draftProfileBaselineChanged
+          ? "Outdated saved Profile · local Draft preview"
+          : draftProfileChangedElsewhere
+            ? "External active Profile change · local Draft preview"
+            : draftDirty
+              ? "Unsaved Draft preview"
+              : "";
         requestComposerPresentation();
       }
 
@@ -1489,6 +1558,7 @@
         updateHostedToolControls,
         renderModelOptions,
         renderApprovalMode,
+        reconcileSettingsForm,
         renderSettingsForm,
         removeModelConfig,
         saveApprovalMode,

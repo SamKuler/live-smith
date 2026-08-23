@@ -202,3 +202,40 @@ test("authoritative Session removal clears retained context usage", async () => 
     harness.close();
   }
 });
+
+test("changing the active Profile endpoint clears context usage for the same model id", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(harness, "Usage before endpoint change");
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 1, 250));
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(usageValue(harness), "25%");
+
+    const changed = JSON.parse(JSON.stringify(state)) as typeof state;
+    const connection = changed.settings.profiles[0]?.connection;
+    assert.equal(connection?.kind, "direct-api");
+    if (connection?.kind === "direct-api") {
+      connection.baseUrl = "https://replacement.example/v1";
+    }
+    harness.setServerState(changed);
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    assert.equal(
+      await ui.runCommand("set_session_approval_mode", {
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
+      true,
+    );
+    assert.equal(usageValue(harness), "?");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});

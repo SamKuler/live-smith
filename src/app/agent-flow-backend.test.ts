@@ -17,7 +17,10 @@ import { acquireSharedModelBackendManager } from "../model/shared-backend-manage
 import { createOpenAIResponsesTransport } from "../model/transports/openai-responses.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { loadModelCache, saveModelCache } from "../storage/model-cache.js";
-import { saveSavedProfile } from "../storage/settings.js";
+import {
+  saveSavedProfile,
+  savedProfileRevision,
+} from "../storage/settings.js";
 import { canonicalStorageDirectory } from "../storage/scope.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
@@ -223,6 +226,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         const saved = await command({
           kind: "save_profile",
           profile: subscriptionProfile,
+          expectedProfileRevision: savedProfileRevision(subscriptionProfile),
         });
         assert.deepEqual(
           saved.availableModels.map((model) => model.id),
@@ -1714,7 +1718,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   }
 });
 
-test("subscription sends refresh catalogs, hand off later turns, and reject a missing model before persistence", async (t) => {
+test("every subscription send refreshes its catalog and rejects a missing model before persistence", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-codex-send-catalog-"),
   );
@@ -1841,12 +1845,6 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
         const response = await sendRequest;
         assert.equal(response.status, 200, await response.text());
 
-        const refresh = await fetch(bridgeEndpoint(url, "/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({ kind: "refresh_codex_account" }),
-        });
-        assert.equal(refresh.status, 200, await refresh.text());
         selectedModelAvailable = false;
         const unavailable = await fetch(bridgeEndpoint(url, "/send"), {
           method: "POST",
@@ -1900,7 +1898,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
   assert.equal(managerProfileCalls, 1);
   assert.deepEqual(turnExecutors, [firstTurnReservation, replacementBackend]);
   assert.equal(reservationReleaseCalls, 1);
-  assert.deepEqual(authReadiness, [false, false, true, false]);
+  assert.deepEqual(authReadiness, [false, false, false]);
 });
 
 test("threshold reservation cleanup preserves a pre-first-turn caller abort and poisons reuse", async (t) => {

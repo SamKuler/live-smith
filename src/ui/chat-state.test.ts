@@ -180,6 +180,7 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     configuredModelsReady: true,
     modelStateSource: null,
     runtimeProfile: null,
+    activeProfileRevision: null,
     settings: {
       schemaVersion: 5,
       activeProfileId: null,
