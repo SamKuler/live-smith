@@ -15,7 +15,7 @@ export function assertServerSentEventResponse(
   label: string,
   signal?: AbortSignal,
 ): void {
-  const contentType = response.headers.get("content-type");
+  const contentType = response.headers?.get("content-type") ?? null;
   if (contentType === null) return;
   const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType === "text/event-stream") return;

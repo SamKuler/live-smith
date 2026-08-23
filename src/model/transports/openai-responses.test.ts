@@ -1385,7 +1385,10 @@ test("OpenAI Responses streaming errors expose only fixed safe context", async (
     message: sentinel,
   })}\n\n`;
   const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(sse, { status: 200 }),
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
   });
   const req = request(profile());
   req.onDelta = () => {};
@@ -1419,7 +1422,10 @@ test("OpenAI Responses failed events do not expose provider error details", asyn
     },
   })}\n\n`;
   const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(sse, { status: 200 }),
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
   });
   const req = request(profile({ advanced: { hostedTools: { webSearch: true } } }));
   req.tools.push({ type: "hosted_web_search", maxUses: 5 });
@@ -1456,7 +1462,10 @@ test("OpenAI Responses failed events with malformed output still use a fixed err
     response: { error: { code: sentinel, message: sentinel } },
   })}\n\n`;
   const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(sse, { status: 200 }),
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
   });
   const req = request(profile());
   req.onDelta = () => {};
@@ -1492,7 +1501,10 @@ test("OpenAI Responses preserves incomplete terminal output", async () => {
     response,
   })}\n\ndata: [DONE]\n\n`;
   const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(sse, { status: 200 }),
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
   });
   const req = request(profile());
   req.onDelta = () => {};
@@ -1800,7 +1812,10 @@ test("OpenAI Responses does not blindly retry an incomplete response without rep
     },
   })}\n\ndata: [DONE]\n\n`;
   const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(sse, { status: 200 }),
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
   });
   const req = request(profile());
   req.onDelta = () => {};

@@ -1259,7 +1259,10 @@ test("OpenAI Chat streaming errors expose only fixed safe context", async () => 
       choices: [{ delta: { content: "partial" } }],
     })}\n\ndata: ${JSON.stringify(errorPayload)}\n\n`;
     const transport = createOpenAIChatTransport({
-      fetchImpl: async () => new Response(sse, { status: 200 }),
+      fetchImpl: async () => new Response(sse, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
     });
     const req = request(profile());
     req.onDelta = () => {};
