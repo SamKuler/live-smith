@@ -1993,6 +1993,12 @@
         assistantDraftRenderFramesBySession.delete(sessionId);
       }
 
+      function clearTransientResponseForSession(sessionId) {
+        cancelAssistantDraftRender(sessionId);
+        assistantDraftsBySession.set(sessionId, "");
+        webSearchUpdatesBySession.delete(sessionId);
+      }
+
       function attemptIsCurrent(attempt) {
         return Boolean(
           attempt && sendAttemptsBySession.get(attempt.sessionId) === attempt,
@@ -3334,10 +3340,8 @@
         if (!attemptIsCurrent(attempt)) return false;
         cancelSendRecovery(attempt);
         resolveSendOutcome(attempt);
-        cancelAssistantDraftRender(attempt.sessionId);
         attempt.failureHandled = true;
-        assistantDraftsBySession.set(attempt.sessionId, "");
-        webSearchUpdatesBySession.delete(attempt.sessionId);
+        clearTransientResponseForSession(attempt.sessionId);
         webSearchEventIdsAtSendStartBySession.delete(attempt.sessionId);
         pendingConfirmationsBySession.delete(attempt.sessionId);
         clearConfirmationResolution(attempt.sessionId);
@@ -4298,9 +4302,12 @@
         }
         if (activeSessionId() !== sessionId) return;
         const state = getState();
-        state.events = (state.events || []).filter((item) => item.id !== event.id);
-        state.events.push(event);
-        if (event.kind === "assistant") {
+        const events = state.events || [];
+        const existingIndex = events.findIndex((item) => item.id === event.id);
+        state.events = existingIndex < 0
+          ? [...events, event]
+          : events.map((item, index) => index === existingIndex ? event : item);
+        if (event.kind === "assistant" && existingIndex < 0) {
           requireView().announceAssistantMessage(event.content);
         }
         requireView().renderTimeline();
@@ -4401,10 +4408,9 @@
               !hasOnlyWireKeys(payload, ["type", "sendId", "sessionId"]) ||
               !isActiveSendPayload(payload)
             ) return;
-            cancelAssistantDraftRender(payload.sessionId);
-            assistantDraftsBySession.set(payload.sessionId, "");
+            clearTransientResponseForSession(payload.sessionId);
             if (activeSessionId() === payload.sessionId) {
-              requireView().renderAssistantDraft();
+              requireView().renderTimeline();
             }
             return;
           }
