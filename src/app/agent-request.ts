@@ -67,6 +67,10 @@ import {
   type ModelTurnRequestInput,
 } from "./model-request.js";
 import {
+  requestModelWithReconnect,
+  type ModelReconnectWait,
+} from "./model-reconnect.js";
+import {
   activeRecoveryLedgerFromEvents,
   getOrCreateDefaultSession,
   recoveryContextFromEvents,
@@ -94,6 +98,7 @@ export async function handleAgentRequest(
   appendUserEvent: typeof appendSessionEvent = appendSessionEvent,
   appendTraceEvent: typeof appendSessionEvent = appendSessionEvent,
   loadEventsForSearchReconciliation: typeof loadSessionEvents = loadSessionEvents,
+  waitForReconnectDelay?: ModelReconnectWait,
 ): Promise<string> {
   const { profile } = runtimeProfile;
   const session = sessionId === undefined
@@ -307,49 +312,67 @@ export async function handleAgentRequest(
         : {}),
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
-        const remainingWebSearchEvents = Math.max(
-          0,
-          HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
-        );
         const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
+        const turnSignal = modelTurn?.signal ?? callbacks.signal;
         let turn: ModelTurn;
+        let reconnected = false;
         try {
-          turn = await requestTurn({
-            prompt,
-            liveContext: requestLiveContext,
-            runtimeProfile,
-            history: prepared.history,
-            attachmentParts: prepared.attachmentParts,
-            skillContext: prepared.skillContext,
-            agentMessages: input.messages,
-            tools: modelToolsForProfile(
-              profile,
-              liveSmithTools(),
-              Math.min(
-                HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
-                remainingWebSearchEvents,
-              ),
-            ),
-            signal: modelTurn?.signal ?? callbacks.signal,
-            onDelta: callbacks.onDelta,
-            onHostedWebSearch: async (update) => {
-              if (update.status !== "searching") {
-                const persisted = await ensureTerminalWebSearchEvent(update);
-                if (persisted?.first) {
-                  await callbacks.onSessionEvent(persisted.event);
-                }
-              } else {
-                if (!observeWebSearchId(update)) return;
-                if (persistedWebSearches.has(update.id)) {
-                  throw new TypeError(
-                    "Hosted Web Search reported in-flight activity after its terminal event.",
-                  );
-                }
-                await callbacks.onWebSearchUpdate?.(update);
-              }
-              await callbacks.onProgress(webSearchProgressMessage(update));
+          const result = await requestModelWithReconnect({
+            signal: turnSignal,
+            resetTransient: () => callbacks.onAssistantReset?.(),
+            onProgress: callbacks.onProgress,
+            ...(waitForReconnectDelay
+              ? { waitForDelay: waitForReconnectDelay }
+              : {}),
+            request: async ({ markResponseStarted }) => {
+              const remainingWebSearchEvents = Math.max(
+                0,
+                HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
+              );
+              return requestTurn({
+                prompt,
+                liveContext: requestLiveContext,
+                runtimeProfile,
+                history: prepared.history,
+                attachmentParts: prepared.attachmentParts,
+                skillContext: prepared.skillContext,
+                agentMessages: input.messages,
+                tools: modelToolsForProfile(
+                  profile,
+                  liveSmithTools(),
+                  Math.min(
+                    HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
+                    remainingWebSearchEvents,
+                  ),
+                ),
+                signal: turnSignal,
+                onDelta: async (delta) => {
+                  await markResponseStarted();
+                  await callbacks.onDelta(delta);
+                },
+                onHostedWebSearch: async (update) => {
+                  await markResponseStarted();
+                  if (update.status !== "searching") {
+                    const persisted = await ensureTerminalWebSearchEvent(update);
+                    if (persisted?.first) {
+                      await callbacks.onSessionEvent(persisted.event);
+                    }
+                  } else {
+                    if (!observeWebSearchId(update)) return;
+                    if (persistedWebSearches.has(update.id)) {
+                      throw new TypeError(
+                        "Hosted Web Search reported in-flight activity after its terminal event.",
+                      );
+                    }
+                    await callbacks.onWebSearchUpdate?.(update);
+                  }
+                  await callbacks.onProgress(webSearchProgressMessage(update));
+                },
+              });
             },
           });
+          turn = result.value;
+          reconnected = result.reconnected;
         } catch (error) {
           throwIfAborted(callbacks.signal);
           if (modelTurn?.wasInterrupted()) {
@@ -363,7 +386,9 @@ export async function handleAgentRequest(
         if (modelTurn?.wasInterrupted()) {
           throw new AgentSteeringInterruptError();
         }
-        await callbacks.onProgress("Reading model response");
+        if (!reconnected) {
+          await callbacks.onProgress("Reading model response");
+        }
         return turn;
       },
       observe: async (request) => {
