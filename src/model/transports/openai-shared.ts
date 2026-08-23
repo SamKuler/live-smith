@@ -1,4 +1,9 @@
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
+import {
+  decodeDiscoveredModelCatalog,
+  isDiscoveredModelId,
+  MAX_DISCOVERED_MODEL_COUNT,
+} from "../catalog.js";
 import { cloneJsonValue } from "../json-clone.js";
 import type {
   DiscoveredModelInfo,
@@ -31,14 +36,29 @@ export async function listOpenAIModels(
     if (!isRecord(response) || !Array.isArray(response.data)) {
       throw new Error("OpenAI-compatible model discovery returned no model list.");
     }
-    return response.data.flatMap((model): DiscoveredModelInfo[] => {
-      if (!isRecord(model) || typeof model.id !== "string" || !model.id) return [];
-      return [{
+    if (response.data.length > MAX_DISCOVERED_MODEL_COUNT) {
+      throw new Error("OpenAI-compatible model discovery returned too many models.");
+    }
+    const models: DiscoveredModelInfo[] = [];
+    for (const model of response.data) {
+      if (!isRecord(model) || !isDiscoveredModelId(model.id)) {
+        throw new Error(
+          "OpenAI-compatible model discovery returned an invalid model entry.",
+        );
+      }
+      models.push({
         id: model.id,
         displayName: stringMetadata(model, ["display_name", "displayName", "name"]) ?? model.id,
         capabilities: capabilitiesFromMetadata(model) ?? {},
-      }];
-    });
+      });
+    }
+    const catalog = decodeDiscoveredModelCatalog(models);
+    if (!catalog) {
+      throw new Error(
+        "OpenAI-compatible model discovery returned an invalid or oversized catalog.",
+      );
+    }
+    return catalog;
   });
 }
 

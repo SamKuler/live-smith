@@ -49,6 +49,11 @@ function request(p: SavedProfile): TransportRequest {
     runtimeProfile: {
       profile: p,
       capabilities: resolveModelCapabilities(p),
+      inputCapabilityEvidence: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     currentUserContent: [{
       type: "text",
@@ -2070,7 +2075,7 @@ test("OpenAI Responses errors never expose an echoed request body", async () => 
     fetchImpl: async (_input, init) =>
       new Response(`proxy echoed request: ${String(init?.body)}`, {
         status: 400,
-        statusText: "Bad Request",
+        statusText: sentinels[0]!,
       }),
   });
 
@@ -2080,7 +2085,7 @@ test("OpenAI Responses errors never expose an echoed request body", async () => 
       const message = String(error);
       assert.match(
         message,
-        /openai\/responses request failed: OpenAI-compatible HTTP 400: Bad Request/,
+        /openai\/responses request failed: OpenAI-compatible HTTP 400: request failed/,
       );
       for (const sentinel of sentinels) assert.doesNotMatch(message, new RegExp(sentinel));
       assert.doesNotMatch(message, /data:image/i);

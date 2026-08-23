@@ -7,6 +7,12 @@ import type {
 } from "../contracts.js";
 import { normalizeModelCitations } from "../citations.js";
 import {
+  decodeDiscoveredModelCatalog,
+  isDiscoveredModelId,
+  MAX_DISCOVERED_MODEL_COUNT,
+  MAX_MODEL_DISCOVERY_PAGE_COUNT,
+} from "../catalog.js";
+import {
   HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
   isHostedWebSearchRequestMaxUses,
 } from "../tools.js";
@@ -22,7 +28,10 @@ import type {
   TransportFactoryOptions,
   TransportRequest,
 } from "../provider.js";
-import type { DraftProfile } from "../profile.js";
+import {
+  isDirectApiProfile,
+  type DraftProfile,
+} from "../profile.js";
 import {
   resolveFetchImplementation,
   throwIfAborted,
@@ -229,16 +238,20 @@ function bodyWithAnthropicContinuations(
 function buildAnthropicBody(
   request: TransportRequest,
 ): Record<string, unknown> {
-  const reasoning = request.runtimeProfile.profile.parameters.reasoning;
+  const profile = request.runtimeProfile.profile;
+  if (!isDirectApiProfile(profile)) {
+    throw new Error("Anthropic Messages requires a Direct API Profile.");
+  }
+  const reasoning = profile.parameters.reasoning;
   const thinking = anthropicThinking(request);
   const tools = mappedAnthropicTools(request);
   const generated: Record<string, unknown> = {
-    model: request.runtimeProfile.profile.model,
-    max_tokens: request.runtimeProfile.profile.parameters.maxOutputTokens,
+    model: profile.model,
+    max_tokens: profile.parameters.maxOutputTokens,
     system: request.systemInstructions,
     messages: buildAnthropicMessages(request),
-    ...(request.runtimeProfile.profile.parameters.temperature !== undefined && !thinkingEnabled(thinking)
-      ? { temperature: request.runtimeProfile.profile.parameters.temperature }
+    ...(profile.parameters.temperature !== undefined && !thinkingEnabled(thinking)
+      ? { temperature: profile.parameters.temperature }
       : {}),
     ...(tools.length
       ? {
@@ -383,8 +396,9 @@ async function listAnthropicModels(
 ): Promise<DiscoveredModelInfo[]> {
   const models: DiscoveredModelInfo[] = [];
   const seenCursors = new Set<string>();
+  let discoveredEntries = 0;
   let afterId: string | undefined;
-  while (true) {
+  for (let page = 0; page < MAX_MODEL_DISCOVERY_PAGE_COUNT; page += 1) {
     const response = await requestAnthropicModelPage(
       profile,
       fetchImpl,
@@ -397,17 +411,35 @@ async function listAnthropicModels(
     if (!isRecord(response) || !Array.isArray(response.data)) {
       throw new Error("Anthropic model discovery returned no model list.");
     }
-    models.push(...response.data.flatMap((model) => {
-      if (!isRecord(model) || typeof model.id !== "string") return [];
-      return {
+    discoveredEntries += response.data.length;
+    if (discoveredEntries > MAX_DISCOVERED_MODEL_COUNT) {
+      throw new Error("Anthropic model discovery returned too many models.");
+    }
+    const pageModels: DiscoveredModelInfo[] = [];
+    for (const model of response.data) {
+      if (!isRecord(model) || !isDiscoveredModelId(model.id)) {
+        throw new Error(
+          "Anthropic model discovery returned an invalid model entry.",
+        );
+      }
+      pageModels.push({
         id: model.id,
         displayName: typeof model.display_name === "string"
           ? model.display_name
           : model.id,
         capabilities: anthropicCapabilitiesFromMetadata(model),
-      };
-    }));
-    if (response.has_more !== true) return models;
+      });
+    }
+    models.push(...pageModels);
+    if (response.has_more !== true) {
+      const catalog = decodeDiscoveredModelCatalog(models);
+      if (!catalog) {
+        throw new Error(
+          "Anthropic model discovery returned an invalid or oversized catalog.",
+        );
+      }
+      return catalog;
+    }
     const nextCursor = response.last_id;
     if (
       typeof nextCursor !== "string" ||
@@ -419,6 +451,7 @@ async function listAnthropicModels(
     seenCursors.add(nextCursor);
     afterId = nextCursor;
   }
+  throw new Error("Anthropic model discovery exceeded its page limit.");
 }
 
 function anthropicCapabilitiesFromMetadata(
@@ -874,13 +907,17 @@ function assertCompleteAnthropicStopReason(
 function anthropicThinking(
   request: TransportRequest,
 ): Record<string, unknown> | undefined {
-  const reasoning = request.runtimeProfile.profile.parameters.reasoning;
+  const profile = request.runtimeProfile.profile;
+  if (!isDirectApiProfile(profile)) {
+    throw new Error("Anthropic Messages requires a Direct API Profile.");
+  }
+  const reasoning = profile.parameters.reasoning;
   if (reasoning.mode === "default") return undefined;
   if (reasoning.mode === "disabled") return { type: "disabled" };
   const strategy = request.runtimeProfile.capabilities.reasoning.strategy;
   if (strategy === "adaptive-thinking") return { type: "adaptive" };
   if (strategy === "budget-thinking") {
-    const max = request.runtimeProfile.profile.parameters.maxOutputTokens;
+    const max = profile.parameters.maxOutputTokens;
     const budget = reasoning.budgetTokens ?? Math.floor(max / 2);
     if (budget < 1024 || budget >= max) {
       throw new Error("Thinking budget must be at least 1024 and below max output tokens.");

@@ -70,3 +70,31 @@ test("separate background Queue cancellations aggregate while foreground progres
     harness.close();
   }
 });
+
+test("Queue cancellation notices do not infer local counts from unrelated status copy", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.status = "Audit note: 1 queued follow-up canceled manually.";
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click('[data-session-id="session-2"] .session-row');
+    await harness.settle();
+    await pauseRecovery(harness, "Background recovery");
+
+    harness.click('[data-session-id="session-1"] .session-row');
+    await harness.settle();
+    harness.click('[data-session-menu-button="session-2"]');
+    harness.click('[data-session-id="session-2"] [data-session-action="archive"]');
+    await harness.settle();
+
+    const status = harness.document.querySelector("#status")?.textContent ?? "";
+    assert.match(status, /Audit note: 1 queued follow-up canceled manually\./i);
+    assert.match(
+      status,
+      /1 queued follow-up canceled because the target Session is no longer available\./i,
+    );
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});

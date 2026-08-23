@@ -5,13 +5,19 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { TextDecoder } from "node:util";
 
 import packageMetadata from "../../../package.json" with { type: "json" };
-import { throwIfAborted } from "../../runtime/host.js";
+import {
+  throwIfAborted,
+  waitForPromiseWithSignal,
+} from "../../runtime/host.js";
 import { ModelBackendShutdownError } from "../provider.js";
 import {
   type CodexChildProcess,
   type CodexSpawnImplementation,
   spawnCodexAppServer,
 } from "../../runtime/process-host.js";
+import type {
+  CodexExecutableResolutionImplementation,
+} from "../../runtime/codex-executable.js";
 import { MAX_CODEX_RPC_LINE_BYTES } from "./codex-limits.js";
 
 const maximumLineBytes = MAX_CODEX_RPC_LINE_BYTES;
@@ -28,8 +34,10 @@ const clientClosedMessage = "Codex App Server client is closed.";
 
 export interface CodexRpcOptions {
   storageDirectory: string;
+  signal?: AbortSignal;
   spawnImpl?: CodexSpawnImplementation;
-  requestTimeoutMs?: number;
+  resolveExecutableImpl?: CodexExecutableResolutionImplementation;
+  realpathImpl?: (target: string) => Promise<string>;
 }
 
 export interface CodexRpcRequestOptions {
@@ -53,7 +61,6 @@ export class CodexRpcClient {
   private readonly ignoredResponseIds = new Set<number>();
   private readonly ignoredResponseIdOrder: number[] = [];
   private readonly exitPromise: Promise<void>;
-  private readonly defaultTimeoutMs: number;
   private pendingLineChunks: Buffer[] = [];
   private pendingLineBytes = 0;
   private nextRequestId = 1;
@@ -65,14 +72,18 @@ export class CodexRpcClient {
   private closePromise: Promise<void> | undefined;
 
   static async start(options: CodexRpcOptions): Promise<CodexRpcClient> {
-    const defaultTimeoutMs = validTimeout(
-      options.requestTimeoutMs ?? defaultRequestTimeoutMs,
+    throwIfAborted(options.signal);
+    const realpathImpl = options.realpathImpl ??
+      ((target: string) => fs.realpath(target));
+    const child = await spawnCodexAppServer(
+      options.storageDirectory,
+      options.spawnImpl,
+      options.resolveExecutableImpl,
+      options.signal,
     );
-    const child = options.spawnImpl === undefined
-      ? await spawnCodexAppServer(options.storageDirectory)
-      : await spawnCodexAppServer(options.storageDirectory, options.spawnImpl);
-    const client = new CodexRpcClient(child, defaultTimeoutMs);
+    const client = new CodexRpcClient(child);
     try {
+      throwIfAborted(options.signal);
       const response = await client.request<unknown>("initialize", {
         clientInfo: {
           name: "live-smith",
@@ -83,7 +94,8 @@ export class CodexRpcClient {
           experimentalApi: true,
           requestAttestation: false,
         },
-      });
+      }, options.signal ? { signal: options.signal } : undefined);
+      throwIfAborted(options.signal);
       if (!isSupportedInitializeResponse(response)) {
         throw new Error(
           "Live Smith requires Codex CLI version 0.148.x.",
@@ -92,22 +104,30 @@ export class CodexRpcClient {
       let codexHomeMatches = false;
       if (typeof response.codexHome === "string") {
         try {
-          const expectedCodexHome = await fs.realpath(path.join(
-            path.resolve(options.storageDirectory),
-            "codex-subscription",
-          ));
-          codexHomeMatches = await fs.realpath(response.codexHome) ===
-            expectedCodexHome;
+          const expectedCodexHome = await waitForPromiseWithSignal(
+            realpathImpl(path.join(
+              path.resolve(options.storageDirectory),
+              "codex-subscription",
+            )),
+            options.signal,
+          );
+          throwIfAborted(options.signal);
+          codexHomeMatches = await waitForPromiseWithSignal(
+            realpathImpl(response.codexHome),
+            options.signal,
+          ) === expectedCodexHome;
         } catch {
           codexHomeMatches = false;
         }
       }
+      throwIfAborted(options.signal);
       if (!codexHomeMatches) {
         throw new Error(
           "Codex App Server did not use Live Smith's isolated credential directory.",
         );
       }
       client.writeMessage({ method: "initialized" });
+      throwIfAborted(options.signal);
       return client;
     } catch (error) {
       await client.close();
@@ -115,11 +135,7 @@ export class CodexRpcClient {
     }
   }
 
-  private constructor(
-    private readonly child: CodexChildProcess,
-    defaultTimeoutMs: number,
-  ) {
-    this.defaultTimeoutMs = defaultTimeoutMs;
+  private constructor(private readonly child: CodexChildProcess) {
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
@@ -168,7 +184,7 @@ export class CodexRpcClient {
 
     let timeoutMs: number;
     try {
-      timeoutMs = validTimeout(options.timeoutMs ?? this.defaultTimeoutMs);
+      timeoutMs = validTimeout(options.timeoutMs ?? defaultRequestTimeoutMs);
     } catch (error) {
       return Promise.reject(error);
     }

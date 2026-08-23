@@ -25,13 +25,13 @@ test("simultaneous auth entrants reserve the shared fence atomically", async () 
   releaseSecond?.();
 });
 
-test("a simultaneous auth mutation excludes reads and sends", async () => {
-  for (const kind of ["read", "send"] as const) {
+test("a simultaneous auth mutation excludes reads and managed subscription uses", async () => {
+  for (const kind of ["read", "managed-use"] as const) {
     const fence = modelAuthSendFenceForStorage(undefined);
     const auth = fence.enterAuth(Symbol("auth"));
     const pending = kind === "read"
       ? fence.enterRead()
-      : fence.enterSend();
+      : fence.enterManagedUse();
     const releaseAuth = await auth;
     assert.equal(typeof releaseAuth, "function");
     let settled = false;
@@ -53,7 +53,7 @@ test("an aborted fence waiter preserves the caller reason", async () => {
   const releaseAuth = await fence.enterAuth(Symbol("auth"));
   const controller = createHostAbortController();
   const reason = new Error("stop waiting for shared auth");
-  const pending = fence.enterSend(controller.signal);
+  const pending = fence.enterManagedUse(controller.signal);
 
   controller.abort(reason);
   await assert.rejects(pending, (error: unknown) => error === reason);
@@ -66,12 +66,12 @@ test("a definitive failed-login check clears the pending owner", async () => {
   const releaseLogin = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "pending");
   releaseLogin?.();
-  assert.equal(await fence.enterSend(), null);
+  assert.equal(await fence.enterManagedUse(), null);
 
   const releaseCheck = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "unavailable", true);
   releaseCheck?.();
-  const releaseSend = await fence.enterSend();
+  const releaseSend = await fence.enterManagedUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
 });
@@ -130,7 +130,7 @@ test("an authoritative peer read clears a stale terminal pending owner once", as
 
     assert.equal(fence.hasPendingLogin(), false);
     assert.equal(fence.authGeneration(), generation + 1);
-    const releaseSend = await fence.enterSend();
+    const releaseSend = await fence.enterManagedUse();
     assert.equal(typeof releaseSend, "function");
     releaseSend?.();
   }
@@ -158,7 +158,7 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
 
     assert.equal(fence.hasPendingLogin(), true);
     assert.equal(fence.authGeneration(), generation);
-    assert.equal(await fence.enterSend(), null);
+    assert.equal(await fence.enterManagedUse(), null);
     fence.releaseOwner(owner);
   }
 });
@@ -194,16 +194,55 @@ test("pending reconciliation isolates waiter cancellation from its single flight
   controller.abort(reason);
   await assert.rejects(leader, (error: unknown) => error === reason);
   assert.equal(readCalls, 1);
-  assert.equal(await fence.enterSend(), null);
+  assert.equal(await fence.enterManagedUse(), null);
 
   finishRead();
   assert.equal(await follower, auth);
   releaseFirstRead();
   releaseSecondRead();
   assert.equal(fence.authGeneration(), generation + 1);
-  const releaseSend = await fence.enterSend();
+  const releaseSend = await fence.enterManagedUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
+});
+
+test("pending owner cleanup aborts the shared reconciliation before waiting for reads", {
+  timeout: 2_000,
+}, async () => {
+  const fence = modelAuthSendFenceForStorage(undefined);
+  const owner = Symbol("pending owner");
+  const releaseLogin = await fence.enterAuth(owner);
+  fence.updateAuthState(owner, "pending");
+  releaseLogin?.();
+  const releaseRead = await fence.enterRead();
+  let operationSignal: AbortSignal | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const reconciliation = fence.reconcilePendingAuthState(async (signal) => {
+    operationSignal = signal;
+    markStarted();
+    await new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+    return { status: "signed-out" };
+  });
+
+  await started;
+  const cleanup = fence.enterPendingOwnerCleanup(owner);
+  await assert.rejects(
+    reconciliation,
+    /ChatGPT sign-in owner closed/,
+  );
+  assert.equal(operationSignal?.aborted, true);
+  releaseRead();
+  const releaseCleanup = await cleanup;
+  assert.equal(typeof releaseCleanup, "function");
+  releaseCleanup?.();
+  fence.releaseOwner(owner);
 });
 
 function managedAuthState(

@@ -4,8 +4,8 @@ import { platform } from "node:process";
 
 import { createStorageId } from "./id.js";
 import { isMissingFileError } from "./errors.js";
+import { storageScopeKey } from "./scope.js";
 
-const memoryStorageKey = Symbol("memory-storage");
 const transactionTails = new Map<string | symbol, Promise<void>>();
 const supportsPosixPermissions = platform !== "win32";
 declare const storageTransactionContextBrand: unique symbol;
@@ -118,9 +118,7 @@ export function trackStorageTransactionOperation<T>(
 function storageTransactionKey(
   storageDirectory: string | undefined,
 ): string | symbol {
-  return storageDirectory === undefined
-    ? memoryStorageKey
-    : path.resolve(storageDirectory);
+  return storageScopeKey(storageDirectory);
 }
 
 export async function writeJsonAtomically(

@@ -6,15 +6,26 @@ import test from "node:test";
 
 import type { LiveInteractionContext } from "../live/context.js";
 import type {
+  CodexSubscriptionBackend,
   ManagedAuthState,
-  ModelBackend,
 } from "../model/provider.js";
-import { canonicalModelStorageKey } from "../model/shared-backend-manager.js";
+import { canonicalStorageDirectory } from "../storage/scope.js";
 import type { SavedProfile } from "../model/profile.js";
 import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
+
+let bridgeRequestSequence = 0;
+
+function bridgeJsonHeaders(): Record<string, string> {
+  bridgeRequestSequence += 1;
+  return {
+    "Content-Type": "application/json",
+    "X-Live-Smith-Command-Id": `auth-command-${bridgeRequestSequence}`,
+    "X-Live-Smith-Send-Id": `auth-send-${bridgeRequestSequence}`,
+  };
+}
 
 const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
@@ -22,7 +33,6 @@ const subscriptionProfile: SavedProfile = {
   connection: { kind: "codex-subscription", provider: "openai" },
   model: "gpt-subscription-model",
   parameters: {
-    maxOutputTokens: 8192,
     reasoning: { mode: "default" },
   },
   advanced: {},
@@ -35,8 +45,11 @@ test("a peer state or Check reconciles completed device login ownership", {
     path.join(os.tmpdir(), "live-smith-auth-reconcile-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const aliasDirectory = `${directory}-alias`;
+  await fs.symlink(directory, aliasDirectory, "dir");
+  t.after(() => fs.unlink(aliasDirectory).catch(() => undefined));
   await saveSavedProfile(directory, subscriptionProfile);
-  const storageKey = await canonicalModelStorageKey(directory);
+  const storageKey = await canonicalStorageDirectory(directory);
 
   let auth: ManagedAuthState = { status: "signed-out" };
   const signedIn = (): ManagedAuthState => ({
@@ -50,7 +63,7 @@ test("a peer state or Check reconciles completed device login ownership", {
   let concurrentReadinessCalls = 0;
   const concurrentReadinessStarted = deferred<void>();
   const releaseConcurrentReadiness = deferred<void>();
-  const backend: ModelBackend = {
+  const backend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
     async listModels() {
       return [{
@@ -62,6 +75,9 @@ test("a peer state or Check reconciles completed device login ownership", {
     async createToolTurn() {
       throw new Error("the injected model turn owns this test");
     },
+    onTerminal() {
+      return () => undefined;
+    },
     reserveToolTurn() {
       return {
         async createToolTurn() {
@@ -72,10 +88,9 @@ test("a peer state or Check reconciles completed device login ownership", {
     },
     async readAuthState(signal, options) {
       if (blockConcurrentReadiness && options?.readiness === true) {
-        assert.equal(
+        assert.ok(
           signal,
-          undefined,
-          "a shared pending-login refresh must not inherit its leader's signal",
+          "a shared pending-login refresh must own a fence-scoped signal",
         );
         concurrentReadinessCalls += 1;
         concurrentReadinessStarted.resolve();
@@ -91,6 +106,10 @@ test("a peer state or Check reconciles completed device login ownership", {
       };
       auth = completeDuringStart ? signedIn() : pending;
       return pending;
+    },
+    async logout() {
+      auth = { status: "signed-out" };
+      return auth;
     },
     async close() {},
   };
@@ -108,7 +127,6 @@ test("a peer state or Check reconciles completed device login ownership", {
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -117,9 +135,10 @@ test("a peer state or Check reconciles completed device login ownership", {
   const contextFor = (
     ready: ReturnType<typeof deferred<string>>,
     close: ReturnType<typeof deferred<void>>,
+    storageDirectory: string,
   ) => ({
     application: { song: { handle: { id: 1n } } },
-    environment: { storageDirectory: directory },
+    environment: { storageDirectory },
     ui: {
       showModalDialog: async (url: string) => {
         ready.resolve(url);
@@ -133,12 +152,12 @@ test("a peer state or Check reconciles completed device login ownership", {
     requestModelTurn: async () => ({ content: "Ready", toolCalls: [] }),
   };
   const ownerFlow = runAgentFlow(
-    contextFor(ownerUrl, closeOwner) as never,
+    contextFor(ownerUrl, closeOwner, directory) as never,
     interaction,
     dependencies,
   );
   const peerFlow = runAgentFlow(
-    contextFor(peerUrl, closePeer) as never,
+    contextFor(peerUrl, closePeer, aliasDirectory) as never,
     interaction,
     dependencies,
   );
@@ -297,6 +316,174 @@ test("a peer state or Check reconciles completed device login ownership", {
   }
 });
 
+test("closing a pending-login owner aborts its state read before peer auth resumes", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-auth-owner-close-read-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+
+  let auth: ManagedAuthState = { status: "signed-out" };
+  let blockOwnerRead = false;
+  let invalidations = 0;
+  const blockedReadStarted = deferred<void>();
+  const blockedReadAborted = deferred<void>();
+  const forceReleaseRead = deferred<void>();
+  const backend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    onTerminal() { return () => undefined; },
+    reserveToolTurn() {
+      return {
+        async createToolTurn() { return { content: null, toolCalls: [] }; },
+        async release() {},
+      };
+    },
+    async readAuthState(signal, options) {
+      if (blockOwnerRead && options?.readiness === true) {
+        assert.ok(signal, "pending reconciliation must own a cancellation signal");
+        blockedReadStarted.resolve();
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            signal.removeEventListener("abort", onAbort);
+            blockOwnerRead = false;
+            blockedReadAborted.resolve();
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          forceReleaseRead.promise.then(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+          });
+        });
+      }
+      return auth;
+    },
+    async beginLogin() {
+      auth = {
+        status: "pending",
+        verificationUrl: "https://auth.openai.com/codex/device",
+        userCode: "ABCD-EFGH",
+      };
+      return auth;
+    },
+    async logout() {
+      auth = { status: "signed-out" };
+      return auth;
+    },
+    async close() {},
+  };
+  const manager = {
+    async codex() { return backend; },
+    async codexLease() {
+      return { backend, async retire() { return true; } };
+    },
+    async forProfile() { return backend; },
+    async invalidateCodex() {
+      invalidations += 1;
+      auth = { status: "signed-out" };
+    },
+    async close() {},
+  };
+  const ownerUrl = deferred<string>();
+  const peerUrl = deferred<string>();
+  const closeOwner = deferred<void>();
+  const closePeer = deferred<void>();
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const contextFor = (
+    ready: ReturnType<typeof deferred<string>>,
+    close: ReturnType<typeof deferred<void>>,
+  ) => ({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        ready.resolve(url);
+        await close.promise;
+      },
+    },
+  });
+  const dependencies = {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+  };
+  const ownerFlow = runAgentFlow(
+    contextFor(ownerUrl, closeOwner) as never,
+    interaction,
+    dependencies,
+  );
+  const peerFlow = runAgentFlow(
+    contextFor(peerUrl, closePeer) as never,
+    interaction,
+    dependencies,
+  );
+  let stateRead: Promise<"response" | "error"> | undefined;
+
+  try {
+    const [ownerDialogUrl, peerDialogUrl] = await resolvesWithin(
+      Promise.all([ownerUrl.promise, peerUrl.promise]),
+      "modal bridge startup",
+    );
+    await resolvesWithin(
+      Promise.all([getState(ownerDialogUrl), getState(peerDialogUrl)]),
+      "initial modal states",
+    );
+    const login = await resolvesWithin(
+      command(ownerDialogUrl, { kind: "start_codex_login" }),
+      "pending login command",
+    );
+    assert.equal(login.status, 200, await login.clone().text());
+
+    blockOwnerRead = true;
+    stateRead = fetch(endpoint(ownerDialogUrl, "/state")).then(
+      () => "response" as const,
+      () => "error" as const,
+    );
+    await resolvesWithin(blockedReadStarted.promise, "blocked managed state read");
+    closeOwner.resolve();
+
+    await resolvesWithin(ownerFlow, "pending-login owner close");
+    await resolvesWithin(blockedReadAborted.promise, "managed state read abort");
+    assert.equal(
+      await resolvesWithin(stateRead, "closed managed state response"),
+      "error",
+    );
+    assert.ok(invalidations > 0, "owner close must retire its pending backend");
+
+    const peerRefresh = await resolvesWithin(
+      command(peerDialogUrl, { kind: "refresh_codex_account" }),
+      "peer auth refresh after owner close",
+    );
+    assert.equal(peerRefresh.status, 200, await peerRefresh.clone().text());
+    assert.equal(
+      (await peerRefresh.json() as ChatDialogState).codexAuth?.status,
+      "signed-out",
+    );
+  } finally {
+    forceReleaseRead.resolve();
+    closeOwner.resolve();
+    closePeer.resolve();
+    if (stateRead) {
+      await resolvesWithin(
+        stateRead.catch(() => "error" as const),
+        "managed state response cleanup",
+      );
+    }
+    await resolvesWithin(
+      Promise.allSettled([ownerFlow, peerFlow]),
+      "modal flow cleanup",
+    );
+  }
+});
+
 function endpoint(dialogUrl: string, pathname: string): string {
   const url = new URL(dialogUrl);
   return `${url.origin}${pathname}?token=${url.searchParams.get("token")}`;
@@ -311,7 +498,7 @@ async function getState(dialogUrl: string): Promise<ChatDialogState> {
 function command(dialogUrl: string, body: unknown): Promise<Response> {
   return fetch(endpoint(dialogUrl, "/command"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: bridgeJsonHeaders(),
     body: JSON.stringify(body),
   });
 }
@@ -340,4 +527,25 @@ function deferred<T>(): {
     resolve = complete;
   });
   return { promise, resolve };
+}
+
+async function resolvesWithin<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = 1_000,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${label} did not settle within ${timeoutMs} ms.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

@@ -187,6 +187,21 @@ test("model cache rejects every structurally invalid derived cache shape", async
     {
       schemaVersion: 1,
       fingerprint,
+      models: [{ ...validModel, capabilities: { maxOutputTokens: 1.5 } }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
+      models: [{ ...validModel, id: "" }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
+      models: [validModel, { ...validModel }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
       models: [{ ...validModel, capabilities: { unknown: true } }],
     },
     {
@@ -207,6 +222,14 @@ test("model cache rejects every structurally invalid derived cache shape", async
       fingerprint,
       models: [{
         ...validModel,
+        capabilities: { reasoning: { efforts: ["high", "high"] } },
+      }],
+    },
+    {
+      schemaVersion: 1,
+      fingerprint,
+      models: [{
+        ...validModel,
         capabilities: { reasoning: { strategy: "unknown" } },
       }],
     },
@@ -216,6 +239,20 @@ test("model cache rejects every structurally invalid derived cache shape", async
     await fs.writeFile(path.join(directory, file), JSON.stringify(entry));
     assert.deepEqual(await loadModelCache(directory, active), []);
   }
+});
+
+test("model cache refuses to persist a noncanonical catalog", async () => {
+  const active = profile({ id: `invalid-catalog-${Date.now()}` });
+  const duplicateModels: DiscoveredModelInfo[] = [
+    { id: "model-a", displayName: "A", capabilities: {} },
+    { id: "model-a", displayName: "Duplicate", capabilities: {} },
+  ];
+
+  await assert.rejects(
+    saveModelCache(undefined, active, duplicateModels),
+    /Model catalog is invalid/,
+  );
+  assert.deepEqual(await loadModelCache(undefined, active), []);
 });
 
 test("model cache supports isolated in-memory entries", async () => {
@@ -238,7 +275,7 @@ test("subscription fingerprints contain only non-secret connection identity", ()
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   };
 
@@ -256,7 +293,7 @@ test("subscription model metadata is modal-scoped rather than persisted across a
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   };
   const models: DiscoveredModelInfo[] = [{

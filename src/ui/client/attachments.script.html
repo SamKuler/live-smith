@@ -167,9 +167,6 @@
 
       function setBusy(value) {
         busy = Boolean(value);
-        syncAttachAvailability();
-        document.getElementById("pendingAttachments")
-          ?.setAttribute("aria-busy", String(busy));
         renderPending();
       }
 

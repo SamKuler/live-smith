@@ -28,11 +28,20 @@ export async function withTransportContext<T>(
 
 function redactTransportMessage(message: string, secrets: string[]): string {
   let redacted = message.replace(
-    /\b(https?:\/\/)[^/\s@]+@/gi,
-    "$1[redacted]@",
+    /\bhttps?:\/\/[^\s]+/gi,
+    redactTransportUrl,
   );
   for (const secret of secrets) {
     if (secret) redacted = redacted.replaceAll(secret, "[redacted]");
   }
   return redacted.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
+}
+
+function redactTransportUrl(value: string): string {
+  const privateSuffix = value.search(/[?#]/);
+  const publicUrl = privateSuffix < 0 ? value : value.slice(0, privateSuffix);
+  return publicUrl.replace(
+    /^(https?:\/\/)[^/\s@]+@/i,
+    "$1[redacted]@",
+  );
 }

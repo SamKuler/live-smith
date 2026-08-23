@@ -86,6 +86,11 @@ function request(profileValue: SavedProfile): TransportRequest {
     runtimeProfile: {
       profile: profileValue,
       capabilities: resolveModelCapabilities(profileValue),
+      inputCapabilityEvidence: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     currentUserContent: [{ type: "text", text: "test" }],
     systemInstructions: "test instructions",
@@ -119,12 +124,24 @@ const hostSafeFetch = (async (input: string | URL | Request) => {
 }) as typeof fetch;
 
 function jsonResponse(value: unknown): Response {
+  const bytes = NodeBuffer.from(JSON.stringify(value), "utf8");
+  let sent = false;
   return {
-    json: async () => value,
+    body: {
+      getReader: () => ({
+        cancel: async () => {},
+        read: async () => {
+          if (sent) return { done: true, value: undefined };
+          sent = true;
+          return { done: false, value: bytes };
+        },
+        releaseLock: () => {},
+      }),
+    },
     ok: true,
     status: 200,
     statusText: "OK",
-  } as Response;
+  } as unknown as Response;
 }
 
 function eventStreamResponse(events: Record<string, unknown>[]): Response {

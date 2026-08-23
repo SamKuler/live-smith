@@ -294,7 +294,6 @@ function profile(): SavedProfile {
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
     parameters: {
-      maxOutputTokens: 8192,
       reasoning: { mode: "enabled", effort: "high" },
     },
     advanced: {},

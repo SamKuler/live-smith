@@ -189,7 +189,7 @@ function validateSubscriptionSettingsV3(
     ["schemaVersion", "activeProfileId", "profiles", "approvalMode"],
     "settings",
   );
-  const shared = validatedSharedSettings(record);
+  const shared = validatedSharedSettings(record, true);
   const approvalMode = approvalModeValue(record.approvalMode);
   return {
     schemaVersion: 3,
@@ -245,7 +245,7 @@ function validateSettingsV4(value: unknown): AgentSettings {
     ],
     "settings",
   );
-  const shared = validatedSharedSettings(record);
+  const shared = validatedSharedSettings(record, true);
   const approvalMode = approvalModeValue(record.approvalMode);
   const defaultFollowUpBehavior = followUpBehaviorValue(
     record.defaultFollowUpBehavior,
@@ -264,6 +264,7 @@ function validateSettingsV4(value: unknown): AgentSettings {
 
 function validatedSharedSettings(
   record: Record<string, unknown>,
+  allowLegacySubscriptionMaxOutputTokens = false,
 ): SharedAgentSettings<SavedProfile> {
   if (!Array.isArray(record.profiles)) {
     throw new ProfileValidationError("profiles", "Profiles must be an array.");
@@ -271,10 +272,39 @@ function validatedSharedSettings(
 
   const profiles: SavedProfile[] = [];
   for (const entry of record.profiles) {
-    profiles.push(validateDraftProfileForSave(entry, profiles));
+    profiles.push(validateDraftProfileForSave(
+      allowLegacySubscriptionMaxOutputTokens
+        ? withoutLegacySubscriptionMaxOutputTokens(entry)
+        : entry,
+      profiles,
+    ));
   }
   const activeProfileId = validatedActiveProfileId(record, profiles);
   return { activeProfileId, profiles };
+}
+
+function withoutLegacySubscriptionMaxOutputTokens(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const profile = value as Record<string, unknown>;
+  const connection = profile.connection;
+  const parameters = profile.parameters;
+  if (
+    typeof connection !== "object" ||
+    connection === null ||
+    Array.isArray(connection) ||
+    (connection as Record<string, unknown>).kind !== "codex-subscription" ||
+    typeof parameters !== "object" ||
+    parameters === null ||
+    Array.isArray(parameters) ||
+    !Object.prototype.hasOwnProperty.call(parameters, "maxOutputTokens")
+  ) return value;
+  const {
+    maxOutputTokens: _legacySubscriptionMaxOutputTokens,
+    ...supportedParameters
+  } = parameters as Record<string, unknown>;
+  return { ...profile, parameters: supportedParameters };
 }
 
 function validatedLegacySharedSettings(

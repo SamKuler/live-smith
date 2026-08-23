@@ -63,6 +63,7 @@ test("an attachment blocker wakes the central queue pump after a background term
     const terminalState = imageCapableState();
     terminalState.openSettingsOnLoad = false;
     terminalState.activeSessionId = "session-2";
+    terminalState.approvalMode = "low-risk";
     harness.emitServerEvent({
       type: "done",
       sendId: harness.sendIds[0],
@@ -144,6 +145,47 @@ test("a not_persisted original send preserves a newer composer draft", async () 
     harness.releaseHeldSend();
     await harness.settle();
     assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a recovered prompt starts with a fresh Send correlation ID", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.failNextSend("The first request was not persisted.", "not_persisted");
+    harness.input("#prompt", "Retry with a fresh identity");
+    harness.click("#sendButton");
+    await harness.settle();
+
+    const failedSendId = harness.sendIds[0];
+    assert.ok(failedSendId);
+    harness.holdNextSend();
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const retrySendId = harness.sendIds[1];
+    assert.ok(retrySendId);
+    assert.notEqual(retrySendId, failedSendId);
+
+    harness.emitRawServerEvent({
+      type: "error",
+      sendId: failedSendId,
+      sessionId: "session-1",
+      message: "Delayed terminal from the failed request",
+      promptPersistence: "not_persisted",
+    });
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+    assert.deepEqual(sentPrompts(harness), [
+      "Retry with a fresh identity",
+      "Retry with a fresh identity",
+    ]);
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
@@ -419,6 +461,7 @@ test("session_unavailable cancels the shifted queued head and its full tail", as
       (session) => session.id !== "session-1",
     );
     unavailableState.activeSessionId = "session-2";
+    unavailableState.approvalMode = "low-risk";
     harness.failNextSend(
       "That Session is not available in this Live Set.",
       "not_persisted",

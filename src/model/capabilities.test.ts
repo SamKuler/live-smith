@@ -70,7 +70,6 @@ function subscriptionProfile(): SavedProfile {
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
     parameters: {
-      maxOutputTokens: 16_384,
       reasoning: { mode: "default" },
     },
     advanced: {},

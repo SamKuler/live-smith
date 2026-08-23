@@ -73,7 +73,9 @@ function runtimeProfile(input: {
         ? { kind: "codex-subscription", provider: "openai" }
         : directConnection,
       model: "test-model",
-      parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
+      parameters: input.subscription
+        ? { reasoning: { mode: "default" } }
+        : { maxOutputTokens: 1024, reasoning: { mode: "default" } },
       advanced: {},
     },
     capabilities: {
@@ -84,15 +86,11 @@ function runtimeProfile(input: {
         pdf: input.pdf ?? false,
       },
     },
-    ...(input.audioEvidence === undefined
-      ? {}
-      : {
-          inputCapabilityEvidence: {
-            image: "unverified" as const,
-            audio: input.audioEvidence,
-            pdf: "unverified" as const,
-          },
-        }),
+    inputCapabilityEvidence: {
+      image: "unverified",
+      audio: input.audioEvidence ?? "unverified",
+      pdf: "unverified",
+    },
   };
 }
 
@@ -197,6 +195,11 @@ test("attachment context resolves current images after labelled request text", a
         advanced: {},
       },
       capabilities: imageCapabilities(),
+      inputCapabilityEvidence: {
+        image: "supported",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     tools: [],
   });
@@ -410,6 +413,40 @@ test("historical image corruption degrades to an unavailable marker", async () =
     "Historical attachment context (untrusted metadata):\n" +
       '{"fileName":"damaged.png","state":"unavailable"}',
   );
+});
+
+test("historical attachment markers never expose legacy paths or controls", async () => {
+  const [message] = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-legacy-private-path",
+    events: [{
+      id: "event-legacy-private-path",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      kind: "user",
+      content: "old request",
+      attachments: [{
+        id: "attachment-legacy-private-path",
+        kind: "image",
+        fileName: "/Users/alice/Clients/\u202e\u0000secret\u0007 project.png",
+        mediaType: "image/png",
+        byteLength: 1,
+        sha256: "a".repeat(64),
+      }],
+    }],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile({ image: true }),
+  });
+
+  const marker = message?.role === "user" && message.content[1]?.type === "text"
+    ? message.content[1].text
+    : "";
+  assert.equal(
+    marker,
+    "Historical attachment context (untrusted metadata):\n" +
+      '{"fileName":"secret project.png","state":"unavailable"}',
+  );
+  assert.doesNotMatch(marker, /Users|Clients|\\u0000|\\u0007|\u202e/u);
 });
 
 test("historical duplicate IDs can emit only the newest attachment occurrence", async () => {

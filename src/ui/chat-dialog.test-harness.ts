@@ -11,7 +11,7 @@ import {
   type SavedProfile,
 } from "../model/profile.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
-import type { ChatDialogState } from "./chat-state.js";
+import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 
 interface BridgeCall {
@@ -37,7 +37,9 @@ interface DialogHarness {
   close(): void;
   cancelAppConfirmation(): Promise<void>;
   document: Document;
+  deferServerEvent(payload: unknown): unknown;
   emitServerEvent(payload: unknown): void;
+  emitRawServerEvent(payload: unknown): void;
   emitServerEventError(): void;
   errors: unknown[];
   eventSourceUrls: string[];
@@ -47,7 +49,7 @@ interface DialogHarness {
     details?: {
       commandOutcome?: "unknown";
       reconciliationRequired?: boolean;
-      state?: ChatDialogState;
+      state?: ChatBridgeState;
     },
   ): void;
   failNextConfirmation(error: string): void;
@@ -56,11 +58,12 @@ interface DialogHarness {
     promptPersistence?: string,
     details?: {
       sendFailureKind?: "session_unavailable";
-      state?: ChatDialogState;
+      state?: ChatBridgeState;
     },
   ): void;
   failNextSteer(error: string, steeringOutcome?: "unknown"): void;
   rejectNextSteerResponseAfterCommit(error: string): void;
+  rejectNextConfirmationResponseAfterCommit(error: string): void;
   failNextState(error: string): void;
   failNextAttachmentUnknown(
     error: string,
@@ -77,8 +80,10 @@ interface DialogHarness {
   truncateNextSkillResponseAfterCommit(): void;
   flushAnimationFrames(): number;
   rejectNextSend(error: string): void;
+  omitNextSendState(): void;
   rejectNextCommand(error: string): void;
   rejectNextCommandResponse(error: string): void;
+  omitNextCommandId(): void;
   truncateNextCommandResponseAfterCommit(): void;
   rejectNextState(error: string): void;
   holdNextCommand(): void;
@@ -102,10 +107,15 @@ interface DialogHarness {
     ...values: Array<{
       terminal: boolean;
       promptPersistence?: "persisted" | "not_persisted" | "unknown";
+      sendId?: string;
     }>
   ): void;
   sendIds: string[];
-  setServerState(state: ChatDialogState): void;
+  queueNextStatePublication(
+    bridgeStateRevision: string,
+    bridgeStateCoveredThroughRevision: string,
+  ): void;
+  setServerState(state: ChatBridgeState): void;
   stopIds: string[];
   select(selector: string, value: string): void;
   dispatchPaste(files?: File[], text?: string): boolean;
@@ -127,7 +137,6 @@ const clientScripts = {
   attachments: readClientScript("attachments"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
-  capabilityPreview: readClientScript("capability-preview"),
   hostAdapter: readClientScript("host-adapter"),
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
@@ -136,7 +145,7 @@ const clientScripts = {
 };
 
 function renderChatHtml(
-  state: ChatDialogState,
+  state: ChatBridgeState,
   bridge: { baseUrl: string; token: string },
 ): string {
   return composeChatDocument(chatTemplate, state, bridge, clientScripts);
@@ -211,9 +220,10 @@ function modelStateSourceFixture(profile: SavedProfile) {
   };
 }
 
-function stateFixture(): ChatDialogState {
+function stateFixture(): ChatBridgeState {
   return {
-    defaultPrompt: "Make a bassline",
+    bridgeStateRevision: "1",
+    bridgeStateCoveredThroughRevision: "0",
     contextSummary: "Selected track: Bass",
     sessionContinueTarget: { kind: "track", label: "Drums" },
     sessions: [
@@ -274,22 +284,22 @@ function stateFixture(): ChatDialogState {
   };
 }
 
-function imageCapableState(): ChatDialogState {
+function imageCapableState(): ChatBridgeState {
   const state = stateFixture();
   state.runtimeProfile!.capabilities.inputs.image = true;
   state.runtimeProfile!.inputCapabilityEvidence.image = "supported";
   return state;
 }
 
-function audioCapableState(): ChatDialogState {
+function audioCapableState(): ChatBridgeState {
   const state = stateFixture();
   state.runtimeProfile!.capabilities.inputs.audio = true;
   state.runtimeProfile!.inputCapabilityEvidence.audio = "supported";
   return state;
 }
 
-function cloneState(state: ChatDialogState): ChatDialogState {
-  return JSON.parse(JSON.stringify(state)) as ChatDialogState;
+function cloneState<T extends ChatDialogState>(state: T): T {
+  return JSON.parse(JSON.stringify(state)) as T;
 }
 
 async function waitForCondition(
@@ -304,7 +314,7 @@ async function waitForCondition(
 }
 
 async function createDialogHarness(
-  initialState: ChatDialogState = stateFixture(),
+  initialState: ChatBridgeState = stateFixture(),
   bridge = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
     webCryptoAvailable?: boolean;
@@ -325,19 +335,25 @@ async function createDialogHarness(
   const hostMessages: unknown[] = [];
   const animationFrames = new Map<number, FrameRequestCallback>();
   let nextAnimationFrameId = 1;
+  let nextBridgeStateRevision = BigInt(initialState.bridgeStateRevision) + 1n;
+  const queuedStatePublications: Array<{
+    bridgeStateRevision: string;
+    bridgeStateCoveredThroughRevision: string;
+  }> = [];
   let nextCommandError: {
     error: string;
     field?: string;
     commandOutcome?: "unknown";
     reconciliationRequired?: boolean;
-    state?: ChatDialogState;
+    state?: ChatBridgeState;
   } | null = null;
   let nextConfirmationError: { error: string } | null = null;
+  let nextConfirmationResponseRejection: Error | null = null;
   let nextSendError: {
     error: string;
     promptPersistence?: string;
     sendFailureKind?: "session_unavailable";
-    state?: ChatDialogState;
+    state?: ChatBridgeState;
   } | null = null;
   let nextSteerError: {
     error: string;
@@ -346,8 +362,10 @@ async function createDialogHarness(
   let nextSteerResponseRejection: Error | null = null;
   let nextStateError: { error: string } | null = null;
   let nextSendRejection: Error | null = null;
+  let omitNextSendStateResponse = false;
   let nextCommandRejection: Error | null = null;
   let nextCommandResponseRejection: Error | null = null;
+  let omitNextCommandIdResponse = false;
   let truncatedCommandResponses = 0;
   let nextStateRejection: Error | null = null;
   let nextAttachmentRejection: Error | null = null;
@@ -384,13 +402,343 @@ async function createDialogHarness(
   const stopOutcomes: Array<{
     terminal: boolean;
     promptPersistence?: "persisted" | "not_persisted" | "unknown";
+    sendId?: string;
   }> = [];
   let serverState = cloneState(initialState);
+  let fallbackSessionSequence = 0;
+  const synchronizeActiveSessionProjection = (): void => {
+    let active = serverState.sessions.find(
+      (session) => session.id === serverState.activeSessionId,
+    );
+    if (!active && serverState.sessions.length === 0) {
+      const template = initialState.sessions[0];
+      assert.ok(template);
+      fallbackSessionSequence += 1;
+      active = {
+        ...template,
+        scope: { ...template.scope },
+        ...(template.originScope === undefined
+          ? {}
+          : { originScope: { ...template.originScope } }),
+        ...(template.activeSkillIds === undefined
+          ? {}
+          : { activeSkillIds: [...template.activeSkillIds] }),
+        id: `session-fallback-${fallbackSessionSequence}`,
+        title: "New session",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        updatedAt: "2026-08-23T00:00:00.000Z",
+      };
+      delete active.archivedAt;
+      serverState.sessions = [active];
+    }
+    if (!active) active = serverState.sessions[0];
+    if (!active) throw new Error("The harness requires an active Session.");
+    if (active && serverState.activeSessionId !== active.id) {
+      serverState.activeSessionId = active.id;
+    }
+    serverState.approvalMode = active?.approvalMode ?? "manual";
+    serverState.activeSkillIds = [...(active?.activeSkillIds ?? [])];
+  };
+  const pendingConfirmations = new Map<
+    string,
+    { confirmationGeneration: number; sendId: string; sessionId: string }
+  >();
+  const confirmationGenerations = new Map<
+    string,
+    { confirmationGeneration: number; sendId: string }
+  >();
+  const nextConfirmationGenerationBySend = new Map<string, number>();
+  const confirmationResolutionPublications = new Map<
+    string,
+    Record<string, unknown>
+  >();
+  const acceptedSteeringIds = new Set<string>();
+  const activeSteeringRequests = new Map<
+    string,
+    { publication?: Record<string, unknown>; sseDelivered: boolean }
+  >();
+  const pendingSteeringSsePublications = new Map<
+    string,
+    Array<Record<string, unknown>>
+  >();
   const pendingAttachmentsBySession = new Map([
     [serverState.activeSessionId, cloneState(serverState).pendingAttachments],
   ]);
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error));
+
+  const latestBridgeStateRevision = (): string =>
+    String(nextBridgeStateRevision - 1n);
+
+  const observeBridgeStateRevision = (revision: string): void => {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(revision)) return;
+    const observed = BigInt(revision);
+    if (observed >= nextBridgeStateRevision) {
+      nextBridgeStateRevision = observed + 1n;
+    }
+  };
+
+  const allocateBridgeStateRevision = (): string =>
+    String(nextBridgeStateRevision++);
+
+  const confirmationGenerationForEvent = (
+    event: Record<string, unknown>,
+  ): number | undefined => {
+    if (
+      event.type !== "confirm_request" &&
+      event.type !== "confirm_resolved"
+    ) return undefined;
+    if (
+      Number.isSafeInteger(event.confirmationGeneration) &&
+      (event.confirmationGeneration as number) > 0
+    ) {
+      const explicit = event.confirmationGeneration as number;
+      if (typeof event.id === "string" && typeof event.sendId === "string") {
+        confirmationGenerations.set(event.id, {
+          confirmationGeneration: explicit,
+          sendId: event.sendId,
+        });
+        nextConfirmationGenerationBySend.set(
+          event.sendId,
+          Math.max(
+            nextConfirmationGenerationBySend.get(event.sendId) ?? 1,
+            explicit + 1,
+          ),
+        );
+      }
+      return explicit;
+    }
+    if (typeof event.id !== "string" || typeof event.sendId !== "string") {
+      return undefined;
+    }
+    const known = confirmationGenerations.get(event.id);
+    if (known?.sendId === event.sendId) return known.confirmationGeneration;
+    const next = nextConfirmationGenerationBySend.get(event.sendId) ?? 1;
+    nextConfirmationGenerationBySend.set(event.sendId, next + 1);
+    confirmationGenerations.set(event.id, {
+      confirmationGeneration: next,
+      sendId: event.sendId,
+    });
+    return next;
+  };
+
+  const publishBridgeState = (
+    state: ChatBridgeState,
+    requestCutRevision: string,
+  ): ChatBridgeState => {
+    const override = queuedStatePublications.shift();
+    const bridgeStateRevision = override?.bridgeStateRevision ??
+      allocateBridgeStateRevision();
+    if (override) observeBridgeStateRevision(bridgeStateRevision);
+    return {
+      ...cloneState(state),
+      bridgeStateRevision,
+      bridgeStateCoveredThroughRevision:
+        override?.bridgeStateCoveredThroughRevision ?? requestCutRevision,
+    };
+  };
+
+  const publishErrorState = <T extends { state?: ChatBridgeState }>(
+    error: T,
+    requestCutRevision: string,
+  ): T => error.state
+    ? {
+        ...error,
+        state: publishBridgeState(error.state, requestCutRevision),
+      }
+    : error;
+
+  const stateChangeEventTypes = new Set([
+    "approval_mode_changed",
+    "confirm_request",
+    "confirm_resolved",
+    "default_follow_up_behavior_changed",
+    "progress",
+    "session_event",
+    "steer_accepted",
+  ]);
+
+  const applyServerProjectionPatch = (event: Record<string, unknown>): void => {
+    if (
+      event.type === "approval_mode_changed" &&
+      typeof event.sessionId === "string" &&
+      ["manual", "low-risk", "everything"].includes(String(event.approvalMode))
+    ) {
+      for (const sessions of [
+        serverState.sessions,
+        serverState.previousSessions,
+        serverState.archivedSessions,
+      ]) {
+        const session = sessions.find((entry) => entry.id === event.sessionId);
+        if (session) {
+          session.approvalMode = event.approvalMode as
+            ChatDialogState["approvalMode"];
+        }
+      }
+      if (serverState.activeSessionId === event.sessionId) {
+        serverState.approvalMode = event.approvalMode as
+          ChatDialogState["approvalMode"];
+      }
+      return;
+    }
+    const activity = event.activity;
+    if (
+      typeof event.sessionId === "string" &&
+      activity &&
+      typeof activity === "object" &&
+      !Array.isArray(activity) &&
+      typeof (activity as { status?: unknown }).status === "string" &&
+      typeof (activity as { message?: unknown }).message === "string"
+    ) {
+      const projected = activity as {
+        status: NonNullable<ChatDialogState["sessionActivities"]>[number]["status"];
+        message: string;
+      };
+      const current = serverState.sessionActivities?.find(
+        (entry) => entry.sessionId === event.sessionId,
+      );
+      serverState.sessionActivities = [
+        ...(serverState.sessionActivities || []).filter(
+          (entry) => entry.sessionId !== event.sessionId,
+        ),
+        {
+          ...(current || {}),
+          sessionId: event.sessionId,
+          status: projected.status,
+          message: projected.message,
+          unread: current?.unread || false,
+        },
+      ];
+      if (event.type !== "session_event") return;
+    }
+    if (
+      event.type === "session_event" &&
+      event.sessionId === serverState.activeSessionId &&
+      event.event &&
+      typeof event.event === "object" &&
+      !Array.isArray(event.event)
+    ) {
+      const sessionEvent = event.event as ChatDialogState["events"][number];
+      serverState.events = [
+        ...serverState.events.filter((entry) => entry.id !== sessionEvent.id),
+        sessionEvent,
+      ];
+      return;
+    }
+    if (
+      event.type === "default_follow_up_behavior_changed" &&
+      ["queue", "steer"].includes(String(event.defaultFollowUpBehavior)) &&
+      typeof event.defaultFollowUpBehaviorRevision === "string"
+    ) {
+      serverState.settings.defaultFollowUpBehavior =
+        event.defaultFollowUpBehavior as "queue" | "steer";
+      serverState.settings.defaultFollowUpBehaviorRevision =
+        event.defaultFollowUpBehaviorRevision;
+    }
+  };
+
+  const publishServerEvent = (payload: unknown): unknown => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return payload;
+    }
+    const event = payload as Record<string, unknown>;
+    if (event.type === "confirm_resolved" && typeof event.id === "string") {
+      const existing = confirmationResolutionPublications.get(event.id);
+      if (existing) return existing;
+    }
+    if (event.type === "steer_accepted" && typeof event.steerId === "string") {
+      const queued = pendingSteeringSsePublications.get(event.steerId);
+      const existing = queued?.shift();
+      if (queued?.length === 0) {
+        pendingSteeringSsePublications.delete(event.steerId);
+      }
+      if (existing) return existing;
+      const activeRequest = activeSteeringRequests.get(event.steerId);
+      if (activeRequest?.publication) return activeRequest.publication;
+    }
+    if (
+      typeof event.type === "string" &&
+      stateChangeEventTypes.has(event.type)
+    ) {
+      const bridgeStateRevision = typeof event.bridgeStateRevision === "string"
+        ? event.bridgeStateRevision
+        : allocateBridgeStateRevision();
+      observeBridgeStateRevision(bridgeStateRevision);
+      const activity = event.activity ?? (
+        event.type === "progress"
+          ? { status: "running", message: String(event.message || "") }
+          : event.type === "confirm_request"
+            ? {
+                status: "waiting_confirmation",
+                message: "Waiting for confirmation",
+              }
+            : event.type === "steer_accepted"
+              ? { status: "running", message: "Guidance applied" }
+              : event.type === "session_event" &&
+                  event.event &&
+                  typeof event.event === "object" &&
+                  !Array.isArray(event.event) &&
+                  "steeringAck" in event.event
+                ? { status: "running", message: "Guidance applied" }
+              : undefined
+      );
+      const confirmationGeneration = confirmationGenerationForEvent(event);
+      const published: Record<string, unknown> = {
+        ...event,
+        ...(activity === undefined ? {} : { activity }),
+        ...(confirmationGeneration === undefined
+          ? {}
+          : { confirmationGeneration }),
+        bridgeStateRevision,
+      };
+      if (
+        published.type === "confirm_request" &&
+        typeof published.id === "string" &&
+        typeof published.sendId === "string" &&
+        typeof published.sessionId === "string"
+      ) {
+        pendingConfirmations.set(published.id, {
+          confirmationGeneration: published.confirmationGeneration as number,
+          sendId: published.sendId,
+          sessionId: published.sessionId,
+        });
+        confirmationResolutionPublications.delete(published.id);
+      } else if (
+        published.type === "confirm_resolved" &&
+        typeof published.id === "string"
+      ) {
+        pendingConfirmations.delete(published.id);
+        confirmationResolutionPublications.set(published.id, published);
+      } else if (
+        published.type === "steer_accepted" &&
+        typeof published.steerId === "string"
+      ) {
+        const activeRequest = activeSteeringRequests.get(published.steerId);
+        if (activeRequest) {
+          activeRequest.publication = published;
+          activeRequest.sseDelivered = true;
+        }
+        acceptedSteeringIds.add(published.steerId);
+      }
+      applyServerProjectionPatch(published);
+      return published;
+    }
+    if (
+      ["done", "state", "error"].includes(String(event.type)) &&
+      event.state &&
+      typeof event.state === "object" &&
+      !Array.isArray(event.state)
+    ) {
+      return {
+        ...event,
+        state: publishBridgeState(
+          event.state as ChatBridgeState,
+          latestBridgeStateRevision(),
+        ),
+      };
+    }
+    return payload;
+  };
 
   const dom = new JSDOM(
     renderChatHtml(cloneState(initialState), bridge),
@@ -469,6 +817,7 @@ async function createDialogHarness(
           configurable: true,
           value: async (input: string | URL, init?: RequestInit) => {
             const url = new URL(String(input));
+            const stateSnapshotCutRevision = latestBridgeStateRevision();
             const body = typeof init?.body === "string"
               ? JSON.parse(init.body) as unknown
               : undefined;
@@ -564,17 +913,20 @@ async function createDialogHarness(
               if (nextAttachmentUnknown) {
                 const error = nextAttachmentUnknown;
                 nextAttachmentUnknown = null;
-                return failedResponse({
+                return failedResponse(publishErrorState({
                   error: error.error,
                   commandOutcome: "unknown",
                   state: cloneState(serverState),
-                }, 500, "Internal Server Error");
+                }, stateSnapshotCutRevision), 500, "Internal Server Error");
               }
               if (truncatedAttachmentResponses > 0) {
                 truncatedAttachmentResponses -= 1;
                 return truncatedJsonResponse();
               }
-              return response(cloneState(serverState));
+              return response(publishBridgeState(
+                serverState,
+                stateSnapshotCutRevision,
+              ));
             }
 
             if (url.pathname.startsWith("/attachments/") && init?.method === "DELETE") {
@@ -589,7 +941,10 @@ async function createDialogHarness(
               if (serverState.activeSessionId === sessionId) {
                 serverState.pendingAttachments = next;
               }
-              return response(cloneState(serverState));
+              return response(publishBridgeState(
+                serverState,
+                stateSnapshotCutRevision,
+              ));
             }
 
             if (url.pathname === "/skills" && init?.method === "POST") {
@@ -619,7 +974,10 @@ async function createDialogHarness(
                 return truncatedJsonResponse();
               }
               return response({
-                state: cloneState(serverState),
+                state: publishBridgeState(
+                  serverState,
+                  stateSnapshotCutRevision,
+                ),
                 receipt: {
                   id,
                   sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -648,7 +1006,10 @@ async function createDialogHarness(
                 truncatedSkillResponses -= 1;
                 return truncatedJsonResponse();
               }
-              return response(cloneState(serverState));
+              return response(publishBridgeState(
+                serverState,
+                stateSnapshotCutRevision,
+              ));
             }
 
             if (url.pathname === "/command") {
@@ -665,7 +1026,17 @@ async function createDialogHarness(
               if (nextCommandError) {
                 const error = nextCommandError;
                 nextCommandError = null;
-                return failedResponse(error, 400, "Bad Request");
+                const commandId = new Headers(init?.headers)
+                  .get("X-Live-Smith-Command-Id") ?? "";
+                const errorEnvelope = omitNextCommandIdResponse
+                  ? error
+                  : { ...error, commandId };
+                omitNextCommandIdResponse = false;
+                return failedResponse(
+                  publishErrorState(errorEnvelope, stateSnapshotCutRevision),
+                  400,
+                  "Bad Request",
+                );
               }
               const command = body as {
                 kind?: string;
@@ -770,7 +1141,12 @@ async function createDialogHarness(
                 const selected = serverState.sessions.find(
                   (entry) => entry.id === command.sessionId,
                 );
+                const activity = serverState.sessionActivities?.find(
+                  (entry) => entry.sessionId === command.sessionId,
+                );
+                if (activity) activity.unread = false;
                 serverState.approvalMode = selected?.approvalMode ?? "manual";
+                serverState.activeSkillIds = [...(selected?.activeSkillIds ?? [])];
                 serverState.pendingAttachments = pendingAttachmentsBySession.get(
                   command.sessionId,
                 ) ?? [];
@@ -821,6 +1197,7 @@ async function createDialogHarness(
                   };
                   serverState.sessions = [restored, ...serverState.sessions];
                   serverState.activeSessionId = restored.id;
+                  synchronizeActiveSessionProjection();
                 }
               } else if (
                 command.kind === "rename_session" &&
@@ -847,6 +1224,7 @@ async function createDialogHarness(
                   serverState.archivedSessions = [session, ...serverState.archivedSessions];
                   if (serverState.activeSessionId === command.sessionId) {
                     serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
+                    synchronizeActiveSessionProjection();
                   }
                 }
               } else if (command.kind === "unarchive_session" && command.sessionId) {
@@ -876,7 +1254,7 @@ async function createDialogHarness(
                   (entry) => entry.id !== command.sessionId,
                 );
                 serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
-                serverState.approvalMode = serverState.sessions[0]?.approvalMode ?? "manual";
+                synchronizeActiveSessionProjection();
               }
               if (heldCommandResponse) {
                 const wait = heldCommandResponse;
@@ -892,7 +1270,10 @@ async function createDialogHarness(
                 truncatedCommandResponses -= 1;
                 return truncatedJsonResponse();
               }
-              return response(cloneState(serverState));
+              return response(publishBridgeState(
+                serverState,
+                stateSnapshotCutRevision,
+              ));
             }
 
             if (url.pathname === "/state") {
@@ -911,7 +1292,10 @@ async function createDialogHarness(
                 heldState = null;
                 await wait;
               }
-              return response(cloneState(serverState));
+              return response(publishBridgeState(
+                serverState,
+                stateSnapshotCutRevision,
+              ));
             }
             if (url.pathname === "/send") {
               const wait = heldSends.shift();
@@ -919,56 +1303,171 @@ async function createDialogHarness(
               if (nextSendError) {
                 const error = nextSendError;
                 nextSendError = null;
-                return failedResponse(error, 500, "Internal Server Error");
+                return failedResponse(
+                  publishErrorState(error, stateSnapshotCutRevision),
+                  500,
+                  "Internal Server Error",
+                );
               }
               if (nextSendRejection) {
                 const error = nextSendRejection;
                 nextSendRejection = null;
                 throw error;
               }
-              return response({ ok: true });
+              if (omitNextSendStateResponse) {
+                omitNextSendStateResponse = false;
+                return response({ ok: true });
+              }
+              return response({
+                ok: true,
+                state: publishBridgeState(
+                  serverState,
+                  stateSnapshotCutRevision,
+                ),
+              });
             }
             if (url.pathname === "/steer") {
-              if (heldSteer) {
-                const wait = heldSteer;
-                heldSteer = null;
-                await wait;
+              const headers = new Headers(init?.headers);
+              const sendId = headers.get("X-Live-Smith-Send-Id") || "";
+              const steerId = headers.get("X-Live-Smith-Steer-Id") || "";
+              const sessionId = (body as { sessionId?: string } | undefined)
+                ?.sessionId ?? serverState.activeSessionId;
+              const steeringRequest: {
+                publication?: Record<string, unknown>;
+                sseDelivered: boolean;
+              } = { sseDelivered: false };
+              activeSteeringRequests.set(steerId, steeringRequest);
+              const injectedError = nextSteerError;
+              nextSteerError = null;
+              if (!injectedError && !acceptedSteeringIds.has(steerId)) {
+                for (const [id, confirmation] of pendingConfirmations) {
+                  if (confirmation.sendId === sendId) pendingConfirmations.delete(id);
+                }
               }
-              if (nextSteerError) {
-                const error = nextSteerError;
-                nextSteerError = null;
-                return failedResponse(
-                  error,
-                  error.steeringOutcome === "unknown" ? 503 : 409,
-                  error.steeringOutcome === "unknown"
-                    ? "Service Unavailable"
-                    : "Conflict",
-                );
+              try {
+                if (heldSteer) {
+                  const wait = heldSteer;
+                  heldSteer = null;
+                  await wait;
+                }
+                if (injectedError) {
+                  return failedResponse(
+                    injectedError,
+                    injectedError.steeringOutcome === "unknown" ? 503 : 409,
+                    injectedError.steeringOutcome === "unknown"
+                      ? "Service Unavailable"
+                      : "Conflict",
+                  );
+                }
+                let published = steeringRequest.publication;
+                if (!published) {
+                  const newerConfirmationPending = [...pendingConfirmations.values()]
+                    .some((confirmation) => confirmation.sendId === sendId);
+                  const activity = newerConfirmationPending
+                    ? undefined
+                    : { status: "running" as const, message: "Guidance applied" };
+                  published = {
+                    type: "steer_accepted",
+                    sendId,
+                    sessionId,
+                    steerId,
+                    ...(activity ? { activity } : {}),
+                    bridgeStateRevision: allocateBridgeStateRevision(),
+                  };
+                  steeringRequest.publication = published;
+                  acceptedSteeringIds.add(steerId);
+                  applyServerProjectionPatch(published);
+                }
+                if (!steeringRequest.sseDelivered) {
+                  const queued = pendingSteeringSsePublications.get(steerId) || [];
+                  queued.push(published);
+                  pendingSteeringSsePublications.set(steerId, queued);
+                }
+                if (nextSteerResponseRejection) {
+                  const error = nextSteerResponseRejection;
+                  nextSteerResponseRejection = null;
+                  throw error;
+                }
+                return response({
+                  ok: true,
+                  bridgeStateRevision: published.bridgeStateRevision,
+                  ...(published.activity ? { activity: published.activity } : {}),
+                });
+              } finally {
+                if (activeSteeringRequests.get(steerId) === steeringRequest) {
+                  activeSteeringRequests.delete(steerId);
+                }
               }
-              if (nextSteerResponseRejection) {
-                const error = nextSteerResponseRejection;
-                nextSteerResponseRejection = null;
-                throw error;
-              }
-              return response({ ok: true });
             }
             if (url.pathname === "/confirm") {
+              const confirmation = body as {
+                id?: string;
+                apply?: boolean;
+              } | undefined;
+              const confirmationId = confirmation?.id;
+              const injectedError = nextConfirmationError;
+              nextConfirmationError = null;
+              let published: Record<string, unknown> | undefined;
+              if (!injectedError && typeof confirmationId === "string") {
+                const owner = pendingConfirmations.get(confirmationId);
+                if (owner) {
+                  const activity = {
+                    status: "running" as const,
+                    message: confirmation?.apply === true
+                      ? "Applying confirmed changes"
+                      : "Continuing after cancellation",
+                  };
+                  published = publishServerEvent({
+                    type: "confirm_resolved",
+                    sendId: owner.sendId,
+                    sessionId: owner.sessionId,
+                    id: confirmationId,
+                    confirmationGeneration: owner.confirmationGeneration,
+                    activity,
+                  }) as Record<string, unknown>;
+                }
+              }
               if (heldConfirmation) {
                 const wait = heldConfirmation;
                 heldConfirmation = null;
                 await wait;
               }
-              if (nextConfirmationError) {
-                const error = nextConfirmationError;
-                nextConfirmationError = null;
-                return failedResponse(error, 503, "Service Unavailable");
+              if (injectedError) {
+                return failedResponse(injectedError, 503, "Service Unavailable");
               }
+              if (nextConfirmationResponseRejection) {
+                const error = nextConfirmationResponseRejection;
+                nextConfirmationResponseRejection = null;
+                throw error;
+              }
+              return response({
+                ok: true,
+                ...(published
+                  ? {
+                      bridgeStateRevision: published.bridgeStateRevision,
+                      confirmationGeneration:
+                        published.confirmationGeneration,
+                      ...(published.activity ? { activity: published.activity } : {}),
+                    }
+                  : {}),
+              });
             }
             if (url.pathname === "/stop") {
               const outcome = stopOutcomes.shift();
+              const headers = new Headers(init?.headers);
+              const terminal = outcome?.terminal ?? stopTerminals.shift() ?? true;
+              const sendId = outcome?.sendId ??
+                headers.get("X-Live-Smith-Send-Id") ?? "";
               return response({
                 ok: true,
-                ...(outcome || { terminal: stopTerminals.shift() ?? true }),
+                terminal,
+                sendId,
+                ...(terminal
+                  ? {
+                      promptPersistence:
+                        outcome?.promptPersistence ?? "persisted",
+                    }
+                  : {}),
               });
             }
             return response({ ok: true });
@@ -1022,8 +1521,28 @@ async function createDialogHarness(
     close() {
       window.close();
     },
+    deferServerEvent(payload) {
+      return publishServerEvent(payload);
+    },
     document: window.document,
     emitServerEvent(payload) {
+      const source = eventSources.at(-1);
+      assert.ok(source?.onmessage, "Expected the EventSource to be connected");
+      const published = publishServerEvent(payload);
+      if (
+        published &&
+        typeof published === "object" &&
+        !Array.isArray(published) &&
+        (published as Record<string, unknown>).type === "confirm_resolved" &&
+        typeof (published as Record<string, unknown>).id === "string"
+      ) {
+        confirmationResolutionPublications.delete(
+          (published as Record<string, unknown>).id as string,
+        );
+      }
+      source.onmessage({ data: JSON.stringify(published) });
+    },
+    emitRawServerEvent(payload) {
       const source = eventSources.at(-1);
       assert.ok(source?.onmessage, "Expected the EventSource to be connected");
       source.onmessage({ data: JSON.stringify(payload) });
@@ -1061,6 +1580,9 @@ async function createDialogHarness(
     rejectNextSteerResponseAfterCommit(error) {
       nextSteerResponseRejection = new Error(error);
     },
+    rejectNextConfirmationResponseAfterCommit(error) {
+      nextConfirmationResponseRejection = new Error(error);
+    },
     failNextState(error) {
       nextStateError = { error };
     },
@@ -1094,11 +1616,17 @@ async function createDialogHarness(
     rejectNextSend(error) {
       nextSendRejection = new Error(error);
     },
+    omitNextSendState() {
+      omitNextSendStateResponse = true;
+    },
     rejectNextCommand(error) {
       nextCommandRejection = new Error(error);
     },
     rejectNextCommandResponse(error) {
       nextCommandResponseRejection = new Error(error);
+    },
+    omitNextCommandId() {
+      omitNextCommandIdResponse = true;
     },
     truncateNextCommandResponseAfterCommit() {
       truncatedCommandResponses += 1;
@@ -1195,6 +1723,15 @@ async function createDialogHarness(
       stopOutcomes.push(...values);
     },
     sendIds,
+    queueNextStatePublication(
+      bridgeStateRevision,
+      bridgeStateCoveredThroughRevision,
+    ) {
+      queuedStatePublications.push({
+        bridgeStateRevision,
+        bridgeStateCoveredThroughRevision,
+      });
+    },
     setServerState(state) {
       serverState = cloneState(state);
     },

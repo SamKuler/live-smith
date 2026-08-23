@@ -120,6 +120,48 @@ test("terminal Stop uses not_persisted classification before a delayed send resp
   }
 });
 
+test("Stop ignores a terminal envelope correlated to a different Send", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Keep this request stopped");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "persisted",
+      sendId: "different-send",
+    });
+
+    harness.click("#sendButton");
+    await harness.settle();
+
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /could not be confirmed/i,
+    );
+
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "not_persisted",
+    });
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
 test("a delayed done event cannot cross the terminal Stop classification barrier", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
@@ -175,6 +217,7 @@ test("a delayed state refresh cannot cross the terminal Stop classification barr
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
   try {
+    harness.omitNextSendState();
     harness.holdNextState();
     harness.input("#prompt", "Original awaiting state");
     harness.click("#sendButton");
@@ -204,6 +247,293 @@ test("a delayed state refresh cannot cross the terminal Stop classification barr
     );
     assert.equal(harness.errors.length, 0);
   } finally {
+    harness.close();
+  }
+});
+
+test("terminal Stop preserves a deferred Session-unavailable classification", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Request in a deleted Session");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    queuePrompt(harness, "Queued tail must be canceled");
+    harness.failNextSend("The target Session is unavailable.", "unknown", {
+      sendFailureKind: "session_unavailable",
+    });
+    harness.queueStopOutcomes(
+      { terminal: false },
+      { terminal: true, promptPersistence: "unknown" },
+    );
+
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.stopIds.length, 1);
+
+    harness.releaseHeldSend();
+    await new Promise<void>((resolve) => harness.window.setTimeout(resolve, 300));
+    await harness.settle();
+
+    assert.equal(harness.stopIds.length, 2);
+    assert.equal(harness.document.querySelector(".queued-follow-up"), null);
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Session.*unavailable/i,
+    );
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Stop remains monotonic across delayed full state, SSE loss, and steering input", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.settings.defaultFollowUpBehavior = "steer";
+  state.sessionActivities = [{
+    sessionId: "session-1",
+    status: "running",
+    message: "Pre-Stop activity",
+    unread: false,
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the request to stop");
+    harness.click("#sendButton");
+    await harness.settle();
+
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(
+          kind: string,
+          extra?: Record<string, unknown>,
+        ): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const delayedCommand = ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Delayed rename",
+    });
+    await harness.settle();
+
+    harness.queueStopOutcomes({ terminal: false });
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Stop requested|Stopping/i,
+    );
+
+    harness.releaseHeldCommandResponse();
+    await delayedCommand;
+    harness.failNextCommand("Late command failure after Stop");
+    assert.equal(await ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Rejected rename",
+    }), false);
+    harness.emitServerEventError();
+    harness.input("#prompt", "Guidance after Stop");
+    submitFromComposer(harness);
+    await harness.settle();
+
+    assert.equal(jsonCalls(harness, "/steer").length, 0);
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Stop requested|Stopping/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Pre-Stop activity|Late command failure|Lost connection|Applying guidance/i,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("terminal unknown waits for a delayed not-persisted Send before restoring its prompt", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.failNextSend("Stopped before Send admission.", "not_persisted");
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "unknown",
+    });
+    harness.input("#prompt", "Prompt that never reached Send admission");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Prompt that never reached Send admission",
+    );
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("terminal unknown inserts a delayed not-persisted original ahead of its Queue", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.failNextSend("Stopped before Send admission.", "not_persisted");
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "unknown",
+    });
+    harness.input("#prompt", "Original before admission");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    queuePrompt(harness, "Queued tail");
+
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll(".queued-follow-up .timeline-content")]
+        .map((item) => item.textContent),
+      ["Original before admission", "Queued tail"],
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Original before admission",
+    );
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+for (const latePersistence of ["persisted", "unknown"] as const) {
+  test(`terminal unknown waits for a delayed ${latePersistence} Send outcome`, async () => {
+    const state = stateFixture();
+    state.openSettingsOnLoad = false;
+    const harness = await createDialogHarness(state);
+    try {
+      harness.holdNextSend();
+      harness.failNextSend("Delayed definitive Send failure.", latePersistence);
+      harness.queueStopOutcomes({
+        terminal: true,
+        promptPersistence: "unknown",
+      });
+      harness.input("#prompt", `Late ${latePersistence} prompt`);
+      harness.click("#sendButton");
+      await Promise.resolve();
+
+      harness.click("#sendButton");
+      await harness.settle();
+      assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+
+      harness.releaseHeldSend();
+      await harness.settle();
+      assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+      assert.equal(
+        harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+        "",
+      );
+      assert.match(
+        harness.document.querySelector("#status")?.textContent ?? "",
+        latePersistence === "persisted" ? /stopped|timeline/i : /unknown/i,
+      );
+      if (latePersistence === "persisted") {
+        assert.doesNotMatch(
+          harness.document.querySelector("#status")?.textContent ?? "",
+          /unknown/i,
+        );
+      }
+      assert.equal(harness.errors.length, 0);
+    } finally {
+      harness.close();
+    }
+  });
+}
+
+test("terminal unknown wakes promptly when closing the bridge rejects Send", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.rejectNextSend("Bridge closed before the Send response.");
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "unknown",
+    });
+    harness.input("#prompt", "Outcome interrupted by close");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /unknown/i,
+    );
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
+test("terminal unknown times out instead of waiting forever for Send", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.queueStopOutcomes({
+      terminal: true,
+      promptPersistence: "unknown",
+    });
+    harness.input("#prompt", "Send response never arrives");
+    harness.click("#sendButton");
+    await Promise.resolve();
+
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+
+    await new Promise<void>((resolve) => harness.window.setTimeout(resolve, 5_100));
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /unknown/i,
+    );
+    assert.equal(harness.errors.length, 0);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
     harness.close();
   }
 });

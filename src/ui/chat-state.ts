@@ -1,3 +1,4 @@
+import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { ConversationScope } from "../model/contracts.js";
 import type {
   InputCapabilityEvidence,
@@ -24,7 +25,6 @@ import type { AgentSettings } from "../storage/settings.js";
 import type { SkillSummary } from "../skills/format.js";
 
 export interface ChatDialogState {
-  defaultPrompt: string;
   contextSummary: string;
   sessionContinueTarget: {
     kind: ConversationScope["kind"];
@@ -35,7 +35,7 @@ export interface ChatDialogState {
   archivedSessions: AgentSession[];
   activeSessionId: string;
   approvalMode: ApprovalMode;
-  events: SessionEvent[];
+  events: ChatSessionEvent[];
   pendingAttachments: SessionAttachmentRef[];
   availableSkills: SkillSummary[];
   activeSkillIds: string[];
@@ -49,6 +49,70 @@ export interface ChatDialogState {
   openSettingsOnLoad: boolean;
   status?: string | undefined;
   sessionActivities?: ChatSessionActivity[];
+}
+
+export interface ChatSessionEvent extends Omit<SessionEvent, "steeringReceipt"> {
+  /** Durable steering correlation projected without storage-only content hashes. */
+  steeringAck?: {
+    sendId: string;
+    steerId: string;
+  };
+}
+
+export function chatSessionEvent(
+  event: SessionEvent | ChatSessionEvent,
+): ChatSessionEvent {
+  const { steeringReceipt, attachments, ...projected } = event as SessionEvent;
+  return {
+    ...projected,
+    ...(attachments === undefined
+      ? {}
+      : {
+          attachments: attachments.map(attachmentForDisplay),
+        }),
+    ...(steeringReceipt === undefined
+      ? {}
+      : {
+          steeringAck: {
+            sendId: steeringReceipt.sendId,
+            steerId: steeringReceipt.id,
+          },
+        }),
+  };
+}
+
+/** Converts storage-backed attachment names into the complete browser wire view. */
+export function chatDialogStateForWire<State extends ChatDialogState>(
+  state: State,
+): State {
+  return {
+    ...state,
+    ...(Array.isArray(state.events)
+      ? { events: state.events.map(chatSessionEvent) }
+      : {}),
+    ...(Array.isArray(state.pendingAttachments)
+      ? {
+          pendingAttachments: state.pendingAttachments.map(attachmentForDisplay),
+        }
+      : {}),
+  } as State;
+}
+
+function attachmentForDisplay<Attachment extends { fileName: string }>(
+  attachment: Attachment,
+): Attachment {
+  return {
+    ...attachment,
+    fileName: safeAttachmentDisplayFileName(attachment.fileName),
+  };
+}
+
+/** Wire projection ordered only within one modal bridge. */
+export interface ChatBridgeState extends ChatDialogState {
+  /** Publication identity; it does not imply that the snapshot is fresh. */
+  bridgeStateRevision: string;
+  /** Latest projection patch that this snapshot is guaranteed to include. */
+  bridgeStateCoveredThroughRevision: string;
 }
 
 /** Credential-free projection used only to render the active runtime header. */
@@ -74,7 +138,6 @@ export type ChatSessionActivityStatus =
 
 export interface ChatSessionActivity {
   sessionId: string;
-  sendId: string;
   status: ChatSessionActivityStatus;
   message?: string;
   unread: boolean;
@@ -116,15 +179,11 @@ export function chatRuntimeSummary(
       model: profile.model,
     },
     capabilities,
-    inputCapabilityEvidence: runtimeProfile.inputCapabilityEvidence ?? {
-      image: "unverified",
-      audio: "unverified",
-      pdf: "unverified",
-    },
+    inputCapabilityEvidence: runtimeProfile.inputCapabilityEvidence,
   };
 }
 
-export function serializeChatStateForHtml(state: ChatDialogState): string {
+export function serializeChatStateForHtml(state: ChatBridgeState): string {
   return JSON.stringify(state)
     .replaceAll("<", "\\u003C")
     .replaceAll(">", "\\u003E")

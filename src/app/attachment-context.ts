@@ -6,6 +6,7 @@ import {
   AttachmentProcessingError,
   type DocumentAttachmentMediaType,
   MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
+  safeAttachmentDisplayFileName,
 } from "../attachments/contracts.js";
 import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import { MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS } from "../attachments/document-text.js";
@@ -416,7 +417,7 @@ function historicalMarker(
     type: "text",
     text: [
       "Historical attachment context (untrusted metadata):",
-      JSON.stringify({ fileName, state }),
+      JSON.stringify({ fileName: safeAttachmentDisplayFileName(fileName), state }),
     ].join("\n"),
   };
 }
@@ -519,7 +520,7 @@ function audioProfileCompatible(runtimeProfile: RuntimeProfile): boolean {
       profileApiMode(profile) === "chat-completions");
   return backendSupportsAudio &&
     runtimeProfile.capabilities.inputs.audio &&
-    runtimeProfile.inputCapabilityEvidence?.audio === "supported";
+    runtimeProfile.inputCapabilityEvidence.audio === "supported";
 }
 
 function audioProfileIncompatibleError(): AttachmentProcessingError {

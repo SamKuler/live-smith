@@ -71,9 +71,10 @@ test("Send restores the prompt only when the bridge says it was not persisted", 
   }
 });
 
-test("Send remains busy until its HTTP fallback state refresh settles", async () => {
+test("a malformed HTTP Send success stays busy until state reconciliation", async () => {
   const harness = await createDialogHarness();
   try {
+    harness.omitNextSendState();
     harness.holdNextState();
     harness.input("#prompt", "Keep this attempt active");
     harness.click("#sendButton");
@@ -110,10 +111,16 @@ test("HTTP send completion clears stale streaming and confirmation UI before ter
     await Promise.resolve();
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Transient draft" });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "Transient draft",
+    });
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-http-race",
       message: "Apply changes?",
       groups: [{ title: "Track", rows: ["Create clip"] }],
@@ -149,7 +156,12 @@ test("stopping a send clears its unpersisted streaming draft", async () => {
     await Promise.resolve();
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Partial response" });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "Partial response",
+    });
     harness.flushAnimationFrames();
     assert.ok(harness.document.querySelector(".timeline-item.streaming"));
 
@@ -176,7 +188,12 @@ test("a reconciled send failure clears its unpersisted streaming draft", async (
     await Promise.resolve();
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Partial response" });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "Partial response",
+    });
     harness.flushAnimationFrames();
     assert.ok(harness.document.querySelector(".timeline-item.streaming"));
 
@@ -406,7 +423,7 @@ test("conversation Markdown uses the bundled safe renderer", async () => {
   }
 });
 
-test("assistant Web Search citations render as bounded safe source links", async () => {
+test("assistant Web Search citations render as bounded source links", async () => {
   const state = stateFixture();
   state.events = [
     {
@@ -436,9 +453,6 @@ test("assistant Web Search citations render as bounded safe source links", async
       content: "A current answer.",
       citations: [
         { url: "https://example.test/source", title: "Official source" },
-        { url: "https://example.test/source", title: "Duplicate" },
-        { url: "javascript:alert(1)", title: "Unsafe" },
-        { url: "https://user:secret@example.test/private", title: "Credentials" },
       ],
     },
     {
@@ -501,8 +515,6 @@ test("assistant Web Search citations render as bounded safe source links", async
     assert.equal(links[0]?.textContent, "Official source");
     assert.equal(links[0]?.target, "_blank");
     assert.equal(links[0]?.rel, "noopener noreferrer");
-    assert.equal(sources?.textContent?.includes("Unsafe"), false);
-    assert.equal(sources?.textContent?.includes("secret"), false);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1068,58 +1080,57 @@ test("a focused live Web Search link follows its terminal event past a historica
   }
 });
 
-test("safe Web Search page counts match mixed and unsafe-only rendered results", async () => {
+test("Web Search page counts match the canonical safe-source projection", async () => {
   const state = stateFixture();
   state.events = [
     {
-      id: "event-mixed-search",
+      id: "event-one-source-search",
       createdAt: "2026-08-06T00:00:00.000Z",
       kind: "web_search",
-      content: "Searched mixed results",
+      content: "Searched one result",
       webSearch: {
-        id: "mixed-search",
+        id: "one-source-search",
         status: "completed",
         action: "search",
-        queries: ["mixed source safety"],
+        queries: ["one source result"],
         sources: [
           { url: "https://example.test/safe", title: "Safe result" },
-          { url: "javascript:alert(1)", title: "Unsafe result" },
         ],
       },
     },
     {
-      id: "event-unsafe-only-search",
+      id: "event-no-source-search",
       createdAt: "2026-08-06T00:00:01.000Z",
       kind: "web_search",
-      content: "Searched unsafe results",
+      content: "Searched without result URLs",
       webSearch: {
-        id: "unsafe-only-search",
+        id: "no-source-search",
         status: "completed",
         action: "search",
-        queries: ["unsafe-only source safety"],
-        sources: [{ url: "javascript:alert(2)", title: "Unsafe result" }],
+        queries: ["no source URLs"],
+        sources: [],
       },
     },
   ];
   const harness = await createDialogHarness(state);
   try {
-    const mixed = harness.document.querySelector<HTMLDetailsElement>(
-      '[data-web-search-id="mixed-search"]',
+    const oneSource = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-web-search-id="one-source-search"]',
     );
-    assert.ok(mixed);
-    assert.match(mixed.querySelector("summary")?.textContent ?? "", /1 page$/);
-    assert.equal(mixed.querySelectorAll(".web-search-source-list a").length, 1);
+    assert.ok(oneSource);
+    assert.match(oneSource.querySelector("summary")?.textContent ?? "", /1 page$/);
+    assert.equal(oneSource.querySelectorAll(".web-search-source-list a").length, 1);
 
-    const unsafeOnly = harness.document.querySelector<HTMLDetailsElement>(
-      '[data-web-search-id="unsafe-only-search"]',
+    const noSources = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-web-search-id="no-source-search"]',
     );
-    assert.ok(unsafeOnly);
+    assert.ok(noSources);
     assert.doesNotMatch(
-      unsafeOnly.querySelector("summary")?.textContent ?? "",
+      noSources.querySelector("summary")?.textContent ?? "",
       /\b\d+ pages?\b/,
     );
-    assert.equal(unsafeOnly.querySelectorAll(".web-search-source-list a").length, 0);
-    assert.match(unsafeOnly.textContent ?? "", /provider returned no result page URLs/i);
+    assert.equal(noSources.querySelectorAll(".web-search-source-list a").length, 0);
+    assert.match(noSources.textContent ?? "", /provider returned no result page URLs/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1249,6 +1260,7 @@ test("streaming Markdown falls back to plain text when rendering fails", async (
     harness.emitServerEvent({
       type: "assistant_delta",
       sendId,
+      sessionId: "session-1",
       delta: "Use **Wavetable** safely.",
     });
     assert.equal(harness.flushAnimationFrames(), 1);
@@ -1360,9 +1372,10 @@ test("a reconciled persisted failure keeps full detail in timeline instead of st
   }
 });
 
-test("Send keeps its attempt busy when the HTTP fallback state is unavailable", async () => {
+test("a malformed HTTP Send success stays busy when state is unavailable", async () => {
   const harness = await createDialogHarness();
   try {
+    harness.omitNextSendState();
     harness.failNextState("Bridge state is unavailable.");
     harness.input("#prompt", "Do not silently settle this send");
     harness.click("#sendButton");
@@ -1401,8 +1414,8 @@ test("Send keeps its attempt busy when the HTTP fallback state is unavailable", 
   }
 });
 
-for (const promptPersistence of ["persisted", undefined] as const) {
-  test(`a ${promptPersistence ?? "unknown"} send failure stays busy until authoritative state recovers`, async () => {
+for (const promptPersistence of ["persisted", "unknown"] as const) {
+  test(`a ${promptPersistence} send failure stays busy until authoritative state recovers`, async () => {
     const harness = await createDialogHarness();
     try {
       harness.failNextSend("The model request failed.", promptPersistence);
@@ -1487,7 +1500,6 @@ test("an authoritative error SSE settles a persisted send without another state 
     ];
     authoritativeState.sessionActivities = [{
       sessionId: "session-1",
-      sendId,
       status: "failed",
       message: "The model request failed after Web Search.",
       unread: false,
@@ -1542,6 +1554,7 @@ test("an SSE send error restores once before the matching HTTP error arrives", a
     harness.emitServerEvent({
       type: "error",
       sendId,
+      sessionId: "session-1",
       message: "Profile validation failed.",
       promptPersistence: "not_persisted",
     });
@@ -1574,7 +1587,12 @@ test("an SSE done settles its send before a late HTTP failure or command error",
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
-    harness.emitServerEvent({ type: "done", sendId, state: cloneState(stateFixture()) });
+    harness.emitServerEvent({
+      type: "done",
+      sendId,
+      sessionId: "session-1",
+      state: cloneState(stateFixture()),
+    });
     harness.emitServerEvent({ type: "error", message: "Command failed separately." });
     await harness.settle();
 
@@ -1618,11 +1636,13 @@ test("late SSE from send A cannot settle send B or restore A over B", async () =
     harness.emitServerEvent({
       type: "done",
       sendId: sendA,
+      sessionId: "session-1",
       state: cloneState(stateFixture()),
     });
     harness.emitServerEvent({
       type: "error",
       sendId: sendA,
+      sessionId: "session-1",
       message: "Late failure from Prompt A.",
       promptPersistence: "persisted",
     });

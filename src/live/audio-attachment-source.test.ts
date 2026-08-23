@@ -169,19 +169,21 @@ test("path replacement during a bounded copy cannot produce an accepted attachme
     waveBytes({ dataBytes: 16 * 1024 * 1024 }),
   );
 
-  const copying = copySource(fakeSample(sourcePath));
-  const replacement = new Promise<void>((resolve) => {
-    setImmediate(async () => {
-      try {
-        await fs.rename(sourcePath, path.join(directory, "original.wav"));
-        await fs.rename(replacementPath, sourcePath);
-      } finally {
-        resolve();
+  let cancellationChecks = 0;
+  const replacementSignal = {
+    get aborted() {
+      cancellationChecks += 1;
+      // The fourth check is the first bounded-read check after opening the source.
+      if (cancellationChecks === 4) {
+        fsSync.renameSync(sourcePath, path.join(directory, "original.wav"));
+        fsSync.renameSync(replacementPath, sourcePath);
       }
-    });
-  });
+      return false;
+    },
+  } as AbortSignal;
+  const copying = copySource(fakeSample(sourcePath), replacementSignal);
   await assert.rejects(copying, attachmentError("invalid_audio", undefined, directory));
-  await replacement;
+  assert.ok(cancellationChecks >= 4);
 });
 
 test("a regular source replaced by a FIFO around open fails promptly", async () => {

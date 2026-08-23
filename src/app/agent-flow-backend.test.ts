@@ -6,17 +6,36 @@ import test from "node:test";
 
 import type { LiveInteractionContext } from "../live/context.js";
 import type {
+  CodexSubscriptionBackend,
   ManagedAuthState,
-  ModelBackend,
+  ModelTurnExecutor,
   TransportRequest,
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
 import { ModelBackendManager } from "../model/backend-registry.js";
+import { acquireSharedModelBackendManager } from "../model/shared-backend-manager.js";
+import { createOpenAIResponsesTransport } from "../model/transports/openai-responses.js";
 import { loadSessionEvents } from "../storage/events.js";
+import { loadModelCache, saveModelCache } from "../storage/model-cache.js";
 import { saveSavedProfile } from "../storage/settings.js";
+import { canonicalStorageDirectory } from "../storage/scope.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
-import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
+import {
+  modelAuthSendFenceForStorage,
+  type ModelAuthSendFence,
+} from "./model-auth-send-fence.js";
+
+let bridgeRequestSequence = 0;
+
+function bridgeJsonHeaders(): Record<string, string> {
+  bridgeRequestSequence += 1;
+  return {
+    "Content-Type": "application/json",
+    "X-Live-Smith-Command-Id": `backend-command-${bridgeRequestSequence}`,
+    "X-Live-Smith-Send-Id": `backend-send-${bridgeRequestSequence}`,
+  };
+}
 
 const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
@@ -24,7 +43,6 @@ const subscriptionProfile: SavedProfile = {
   connection: { kind: "codex-subscription", provider: "openai" },
   model: "gpt-subscription-model",
   parameters: {
-    maxOutputTokens: 8192,
     reasoning: { mode: "default" },
   },
   advanced: {},
@@ -48,6 +66,34 @@ const directProfile: SavedProfile = {
   advanced: {},
 };
 
+function managedLifecycleDefaults(): Pick<
+  CodexSubscriptionBackend,
+  "onTerminal" | "reserveToolTurn" | "readAuthState" | "beginLogin" | "logout"
+> {
+  return {
+    onTerminal() {
+      return () => undefined;
+    },
+    reserveToolTurn() {
+      return {
+        async createToolTurn() {
+          return { content: null, toolCalls: [] };
+        },
+        async release() {},
+      };
+    },
+    async readAuthState() {
+      return { status: "signed-out" };
+    },
+    async beginLogin() {
+      return { status: "signed-out" };
+    },
+    async logout() {
+      return { status: "signed-out" };
+    },
+  };
+}
+
 test("agent flow shares one Codex backend across auth and discovery, then closes it", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-codex-flow-"),
@@ -60,8 +106,9 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
   let managerProfileCalls = 0;
   let managerCloseCalls = 0;
   const authReadiness: boolean[] = [];
-  const backend: ModelBackend = {
+  const backend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels(profile: DraftProfile) {
       assert.equal(profile.connection.kind, "codex-subscription");
       return [{
@@ -128,7 +175,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         const command = async (body: unknown) => {
           const response = await fetch(endpoint("/command"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify(body),
           });
           assert.equal(response.status, 200);
@@ -169,6 +216,16 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
           ["gpt-subscription-model"],
         );
 
+        const saved = await command({
+          kind: "save_profile",
+          profile: subscriptionProfile,
+        });
+        assert.deepEqual(
+          saved.availableModels.map((model) => model.id),
+          ["gpt-subscription-model"],
+        );
+        assert.equal(saved.runtimeProfile?.capabilities.inputs.image, true);
+
         const signedOut = await command({ kind: "logout_codex" });
         assert.deepEqual(signedOut.codexAuth, { status: "signed-out" });
         assert.deepEqual(signedOut.availableModels, []);
@@ -176,7 +233,6 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
     },
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -194,14 +250,607 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
   assert.deepEqual(authReadiness, [false, true, true]);
 });
 
-test("two dialogs block ChatGPT auth while either dialog has an active send", {
+test("a Direct API send does not enter the managed ChatGPT auth fence", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-direct-auth-boundary-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+
+  let enterReadCalls = 0;
+  let enterManagedUseCalls = 0;
+  let authGenerationCalls = 0;
+  const authFence: ModelAuthSendFence = {
+    async enterRead() {
+      enterReadCalls += 1;
+      return () => undefined;
+    },
+    async enterManagedUse() {
+      enterManagedUseCalls += 1;
+      return null;
+    },
+    async enterAuth() {
+      return null;
+    },
+    async enterPendingOwnerCleanup() {
+      return null;
+    },
+    hasPendingLogin() {
+      return true;
+    },
+    async reconcilePendingAuthState() {
+      return undefined;
+    },
+    updateAuthState() {},
+    authGeneration() {
+      authGenerationCalls += 1;
+      return 0;
+    },
+    poison() {},
+    releaseOwner() {},
+  };
+  const directBackend = {
+    kind: "direct-api" as const,
+    async listModels() {
+      return [];
+    },
+    async createToolTurn() {
+      throw new Error("The injected model requester owns this test turn.");
+    },
+    async close() {},
+  };
+  const manager = {
+    async forProfile() {
+      return directBackend;
+    },
+    async codex() {
+      throw new Error("Direct API send must not start Codex.");
+    },
+    async codexLease() {
+      throw new Error("Direct API send must not lease Codex.");
+    },
+    async invalidateCodex() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const initial = await (
+          await fetch(bridgeEndpoint(url, "/state"))
+        ).json() as ChatDialogState;
+        const response = await fetch(bridgeEndpoint(url, "/send"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "direct-send-with-pending-chatgpt-login",
+          },
+          body: JSON.stringify({
+            prompt: "Answer without using the managed backend",
+            sessionId: initial.activeSessionId,
+          }),
+        });
+        assert.equal(response.status, 200, await response.text());
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+    modelAuthSendFence: authFence,
+    requestModelTurn: async () => ({ content: "Done", toolCalls: [] }),
+  });
+
+  assert.equal(enterReadCalls, 0);
+  assert.equal(enterManagedUseCalls, 0);
+  assert.equal(authGenerationCalls, 0);
+});
+
+test("a malformed provider catalog preserves the prior Direct API cache", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-invalid-direct-catalog-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  const cachedModels = [{
+    id: directProfile.model,
+    displayName: "Cached direct model",
+    capabilities: { tools: true, streaming: true },
+  }];
+  await saveModelCache(directory, directProfile, cachedModels);
+
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const initial = await (
+          await fetch(bridgeEndpoint(url, "/state"))
+        ).json() as ChatDialogState;
+        assert.deepEqual(
+          initial.availableModels.map((model) => model.id),
+          [directProfile.model],
+        );
+
+        const response = await fetch(bridgeEndpoint(url, "/command"), {
+          method: "POST",
+          headers: bridgeJsonHeaders(),
+          body: JSON.stringify({
+            kind: "discover_models",
+            profile: directProfile,
+          }),
+        });
+        assert.equal(response.status, 200, await response.clone().text());
+        const state = await response.json() as ChatDialogState;
+        assert.match(
+          state.status ?? "",
+          /model discovery failed: .*invalid model entry/,
+        );
+        assert.deepEqual(
+          state.availableModels.map((model) => model.id),
+          [directProfile.model],
+        );
+      },
+    },
+  };
+
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{ id: "fresh-valid-model" }, {}],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    listModels: (profile, signal) => transport.listModels(profile, signal),
+  });
+
+  assert.deepEqual(
+    await loadModelCache(directory, directProfile),
+    cachedModels,
+  );
+});
+
+test("Direct API state, discovery, and send survive managed poison or concurrent auth", {
+  timeout: 5_000,
+}, async (t) => {
+  for (const mode of ["poisoned", "auth-active"] as const) {
+    await t.test(mode, async (t) => {
+      const directory = await fs.mkdtemp(
+        path.join(os.tmpdir(), `live-smith-direct-${mode}-`),
+      );
+      t.after(() => fs.rm(directory, { recursive: true, force: true }));
+      await saveSavedProfile(directory, directProfile);
+      const storageKey = await canonicalStorageDirectory(directory);
+      const fence = modelAuthSendFenceForStorage(storageKey);
+      let releasePeerAuth: (() => void) | undefined;
+      if (mode === "poisoned") {
+        fence.poison(new Error("injected managed shutdown failure"));
+      } else {
+        releasePeerAuth = await fence.enterAuth(Symbol("peer auth owner")) ??
+          undefined;
+        assert.ok(releasePeerAuth);
+      }
+
+      const interaction: LiveInteractionContext = {
+        summary: "Track: Lead",
+        target: {},
+        scope: { kind: "track", identity: "track-1", label: "Lead" },
+      };
+      interaction.selectionContext = { refresh: () => interaction };
+      const context = {
+        application: { song: { handle: { id: 1n } } },
+        environment: { storageDirectory: directory },
+        ui: {
+          showModalDialog: async (url: string) => {
+            const initialResponse = await fetch(bridgeEndpoint(url, "/state"));
+            assert.equal(
+              initialResponse.status,
+              200,
+              await initialResponse.clone().text(),
+            );
+            const initial = await initialResponse.json() as ChatDialogState;
+
+            const discoveryResponse = await fetch(
+              bridgeEndpoint(url, "/command"),
+              {
+                method: "POST",
+                headers: bridgeJsonHeaders(),
+                body: JSON.stringify({
+                  kind: "discover_models",
+                  profile: directProfile,
+                }),
+              },
+            );
+            assert.equal(
+              discoveryResponse.status,
+              200,
+              await discoveryResponse.clone().text(),
+            );
+            const discovered = await discoveryResponse.json() as ChatDialogState;
+            assert.deepEqual(
+              discovered.availableModels.map((model) => model.id),
+              [directProfile.model],
+            );
+
+            const sendResponse = await fetch(bridgeEndpoint(url, "/send"), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Live-Smith-Send-Id": `direct-${mode}-send`,
+              },
+              body: JSON.stringify({
+                prompt: "Answer through Direct API",
+                sessionId: initial.activeSessionId,
+              }),
+            });
+            assert.equal(
+              sendResponse.status,
+              200,
+              await sendResponse.clone().text(),
+            );
+            const sendBody = await sendResponse.json() as {
+              state: ChatDialogState;
+            };
+            assert.equal(
+              sendBody.state.events.some((event) => event.kind === "assistant"),
+              true,
+            );
+          },
+        },
+      };
+
+      try {
+        await runAgentFlow(context as never, interaction, {
+          renderHtml: () => "<html></html>",
+          listModels: async (profile) => {
+            assert.equal(profile.connection.kind, "direct-api");
+            return [{
+              id: directProfile.model,
+              displayName: "Direct model",
+              capabilities: { tools: true, streaming: true },
+            }];
+          },
+          requestModelTurn: async () => ({ content: "Done", toolCalls: [] }),
+        });
+      } finally {
+        releasePeerAuth?.();
+      }
+    });
+  }
+});
+
+test("a production Direct flow bypasses a failed shared managed shutdown", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-direct-shared-poison-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  const storageKey = await canonicalStorageDirectory(directory);
+  const fence = modelAuthSendFenceForStorage(storageKey);
+  const shutdownError = new Error("managed shutdown was not confirmed");
+  const managedBackend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() { throw shutdownError; },
+  };
+  const poisonedLease = await acquireSharedModelBackendManager(directory, {
+    startCodexBackend: async () => managedBackend,
+    onPoison: (error) => fence.poison(error),
+  });
+  assert.equal(await poisonedLease.manager.codex(), managedBackend);
+  await assert.rejects(
+    poisonedLease.release(),
+    (error: unknown) => error === shutdownError,
+  );
+
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  let modelTurns = 0;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const initialResponse = await fetch(bridgeEndpoint(url, "/state"));
+        assert.equal(
+          initialResponse.status,
+          200,
+          await initialResponse.clone().text(),
+        );
+        const initial = await initialResponse.json() as ChatDialogState;
+
+        const discoveryResponse = await fetch(bridgeEndpoint(url, "/command"), {
+          method: "POST",
+          headers: bridgeJsonHeaders(),
+          body: JSON.stringify({
+            kind: "discover_models",
+            profile: directProfile,
+          }),
+        });
+        assert.equal(
+          discoveryResponse.status,
+          200,
+          await discoveryResponse.clone().text(),
+        );
+
+        const sendResponse = await fetch(bridgeEndpoint(url, "/send"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "direct-production-poison-send",
+          },
+          body: JSON.stringify({
+            prompt: "Use Direct API after managed shutdown failure",
+            sessionId: initial.activeSessionId,
+          }),
+        });
+        assert.equal(
+          sendResponse.status,
+          200,
+          await sendResponse.clone().text(),
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    listModels: async () => [{
+      id: directProfile.model,
+      displayName: "Direct model",
+      capabilities: { tools: true, streaming: true },
+    }],
+    requestModelTurn: async () => {
+      modelTurns += 1;
+      return { content: "Done", toolCalls: [] };
+    },
+  });
+
+  assert.equal(modelTurns, 1);
+  await assert.rejects(
+    acquireSharedModelBackendManager(storageKey),
+    (error: unknown) => error === shutdownError,
+  );
+});
+
+test("production subscription flows lazily share and release one managed lease", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-lazy-managed-lease-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+  let backendStarts = 0;
+  let backendCloseCalls = 0;
+  const managedBackend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() { backendCloseCalls += 1; },
+  };
+  const seedLease = await acquireSharedModelBackendManager(directory, {
+    startCodexBackend: async () => {
+      backendStarts += 1;
+      return managedBackend;
+    },
+  });
+  t.after(() => seedLease.release().catch(() => undefined));
+  const firstUrl = deferred<string>();
+  const secondUrl = deferred<string>();
+  const closeFirst = deferred<void>();
+  const closeSecond = deferred<void>();
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const contextFor = (
+    ready: ReturnType<typeof deferred<string>>,
+    close: ReturnType<typeof deferred<void>>,
+  ) => ({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        ready.resolve(url);
+        await close.promise;
+      },
+    },
+  });
+  const firstFlow = runAgentFlow(
+    contextFor(firstUrl, closeFirst) as never,
+    interaction,
+    { renderHtml: () => "<html></html>" },
+  );
+  const secondFlow = runAgentFlow(
+    contextFor(secondUrl, closeSecond) as never,
+    interaction,
+    { renderHtml: () => "<html></html>" },
+  );
+
+  try {
+    const urls = await Promise.all([firstUrl.promise, secondUrl.promise]);
+    const states = await Promise.all(urls.map((url) =>
+      fetch(bridgeEndpoint(url, "/state"))
+    ));
+    assert.deepEqual(states.map((response) => response.status), [200, 200]);
+    assert.equal(backendStarts, 1);
+    assert.equal(backendCloseCalls, 0);
+  } finally {
+    closeFirst.resolve();
+    closeSecond.resolve();
+    await Promise.all([firstFlow, secondFlow]);
+  }
+  assert.equal(backendCloseCalls, 0);
+  await seedLease.release();
+  assert.equal(backendCloseCalls, 1);
+});
+
+test("closing a modal aborts its first subscription state backend acquisition", {
+  timeout: 2_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-codex-startup-close-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+  const startupStarted = deferred<void>();
+  const startupAborted = deferred<void>();
+  let managerCloseCalls = 0;
+  const manager = {
+    async codex(signal?: AbortSignal): Promise<CodexSubscriptionBackend> {
+      assert.ok(signal, "subscription state acquisition requires its read signal");
+      startupStarted.resolve();
+      return await new Promise<CodexSubscriptionBackend>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          startupAborted.resolve();
+          reject(signal.reason);
+        }, { once: true });
+      });
+    },
+    async codexLease() { throw new Error("unused"); },
+    async forProfile() { throw new Error("unused"); },
+    async invalidateCodex() {},
+    async close() { managerCloseCalls += 1; },
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  let stateRequest: Promise<"response" | "error"> | undefined;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        stateRequest = fetch(bridgeEndpoint(url, "/state")).then(
+          () => "response" as const,
+          () => "error" as const,
+        );
+        await startupStarted.promise;
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+  });
+
+  await startupAborted.promise;
+  assert.equal(await stateRequest, "error");
+  assert.equal(managerCloseCalls, 1);
+});
+
+test("closing a modal cancels a state read waiting for a prior shared close", {
+  timeout: 2_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-shared-close-read-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+  const closeStarted = deferred<void>();
+  const releaseClose = deferred<void>();
+  const oldBackend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() {
+      closeStarted.resolve();
+      await releaseClose.promise;
+    },
+  };
+  const oldLease = await acquireSharedModelBackendManager(directory, {
+    startCodexBackend: async () => oldBackend,
+  });
+  await oldLease.manager.codex();
+  const oldClosing = oldLease.release();
+  await closeStarted.promise;
+
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const stateReadStarted = deferred<void>();
+  let stateRequest: Promise<"response" | "error"> | undefined;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        stateRequest = fetch(bridgeEndpoint(url, "/state")).then(
+          () => "response" as const,
+          () => "error" as const,
+        );
+        stateReadStarted.resolve();
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      },
+    },
+  };
+  const flow = runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+  });
+
+  try {
+    await stateReadStarted.promise;
+    const closeOutcome = await Promise.race([
+      flow.then(() => "closed" as const),
+      new Promise<"waiting">((resolve) => {
+        setTimeout(() => resolve("waiting"), 100);
+      }),
+    ]);
+    assert.equal(
+      closeOutcome,
+      "closed",
+      "modal close must not wait for another modal's shared backend close",
+    );
+    assert.equal(await stateRequest, "error");
+  } finally {
+    releaseClose.resolve();
+    await Promise.allSettled([oldClosing, flow]);
+  }
+});
+
+test("two dialogs exclude ChatGPT auth while either dialog has an active subscription send", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-codex-fence-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await saveSavedProfile(directory, directProfile);
+  await saveSavedProfile(directory, subscriptionProfile);
 
   const firstDialogUrl = deferred<string>();
   const secondDialogUrl = deferred<string>();
@@ -210,25 +859,41 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
   const modelStarted = deferred<void>();
   let beginLoginCalls = 0;
   let logoutCalls = 0;
-  const authBackend: ModelBackend = {
+  let authState: ManagedAuthState = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const authBackend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() {
-      return [];
+      return [{
+        id: subscriptionProfile.model,
+        displayName: "Subscription model",
+        capabilities: { tools: true, streaming: false },
+      }];
     },
     async createToolTurn() {
       return { content: null, toolCalls: [] };
     },
+    async readAuthState() {
+      return authState;
+    },
     async beginLogin() {
       beginLoginCalls += 1;
-      return {
+      authState = {
         status: "pending",
         verificationUrl: "https://auth.openai.com/codex/device",
         userCode: "ABCD-EFGH",
       };
+      return authState;
     },
     async logout() {
       logoutCalls += 1;
-      return { status: "signed-out" };
+      authState = { status: "signed-out" };
+      return authState;
     },
     async close() {},
   };
@@ -240,13 +905,12 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
       return { backend: authBackend, async retire() { return true; } };
     },
     async forProfile() {
-      throw new Error("The direct request stub owns this test turn.");
+      return authBackend;
     },
     async invalidateCodex() {},
     async close() {},
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -328,7 +992,7 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
 
     const blockedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "start_codex_login" }),
     });
     assert.equal(blockedAuth.status, 409);
@@ -351,7 +1015,7 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
 
     const allowedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "start_codex_login" }),
     });
     assert.equal(allowedAuth.status, 200);
@@ -359,7 +1023,7 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
 
     const otherModalAuth = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "start_codex_login" }),
     });
     assert.equal(otherModalAuth.status, 409);
@@ -381,7 +1045,7 @@ test("two dialogs block ChatGPT auth while either dialog has an active send", {
 
     const logout = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "logout_codex" }),
     });
     assert.equal(logout.status, 200);
@@ -419,6 +1083,7 @@ test("an auth change closes another dialog's cached Codex process before state r
         records[owner].push(record);
         return {
           kind: "codex-subscription" as const,
+          ...managedLifecycleDefaults(),
           async listModels() {
             return [];
           },
@@ -455,7 +1120,6 @@ test("an auth change closes another dialog's cached Codex process before state r
   const closeFirstDialog = deferred<void>();
   const closeSecondDialog = deferred<void>();
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -504,7 +1168,7 @@ test("an auth change closes another dialog's cached Codex process before state r
 
     const logout = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "logout_codex" }),
     });
     assert.equal(logout.status, 200);
@@ -555,6 +1219,7 @@ test("closing a modal during initial Codex login retires before peers reuse auth
         const index = records[owner].push(record) - 1;
         return {
           kind: "codex-subscription" as const,
+          ...managedLifecycleDefaults(),
           async listModels() {
             return [];
           },
@@ -599,7 +1264,6 @@ test("closing a modal during initial Codex login retires before peers reuse auth
   const closeFirstDialog = deferred<void>();
   const closeSecondDialog = deferred<void>();
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -643,7 +1307,7 @@ test("closing a modal during initial Codex login retires before peers reuse auth
 
     loginRequest = fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "start_codex_login" }),
     });
     await loginStarted.promise;
@@ -700,8 +1364,9 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     planType: "pro",
     subscriptionEligible: true,
   });
-  const ownerBackend: ModelBackend = {
+  const ownerBackend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
     async readAuthState() { return signedIn(); },
@@ -710,8 +1375,9 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     },
     async close() {},
   };
-  const peerBackend: ModelBackend = {
+  const peerBackend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() {
       peerModelCalls += 1;
@@ -767,7 +1433,6 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -822,7 +1487,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
 
     const logout = await fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "logout_codex" }),
     });
     assert.equal(logout.status, 500);
@@ -832,7 +1497,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     assert.equal(stateResponse.status, 500);
     const authResponse = await fetch(bridgeEndpoint(peerDialogUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "refresh_codex_account" }),
     });
     assert.equal(authResponse.status, 500);
@@ -840,7 +1505,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
       bridgeEndpoint(peerDialogUrl, "/command"),
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: bridgeJsonHeaders(),
         body: JSON.stringify({
           kind: "discover_models",
           profile: subscriptionProfile,
@@ -899,8 +1564,9 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   const releaseLogout = deferred<void>();
   let peerListCalls = 0;
   let peerModelCalls = 0;
-  const backendFor = (owner: "owner" | "peer"): ModelBackend => ({
+  const backendFor = (owner: "owner" | "peer"): CodexSubscriptionBackend => ({
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() {
       if (owner === "peer") peerListCalls += 1;
       return [{
@@ -939,7 +1605,6 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -997,7 +1662,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
 
     const logoutRequest = fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "logout_codex" }),
     });
     await logoutStarted.promise;
@@ -1057,8 +1722,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
   let modelCalls = 0;
   let managerProfileCalls = 0;
   let selectedModelAvailable = true;
-  const turnBackends: Array<ModelBackend | undefined> = [];
-  const turnReservations: unknown[] = [];
+  const turnExecutors: ModelTurnExecutor[] = [];
   const authReadiness: boolean[] = [];
   const continuationStarted = deferred<void>();
   const releaseContinuation = deferred<void>();
@@ -1071,8 +1735,9 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
       reservationReleaseCalls += 1;
     },
   };
-  const backend: ModelBackend = {
+  const backend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() {
       listCalls += 1;
       assert.equal(
@@ -1106,7 +1771,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
     },
     async close() {},
   };
-  const replacementBackend: ModelBackend = {
+  const replacementBackend: CodexSubscriptionBackend = {
     ...backend,
     async close() {},
   };
@@ -1123,7 +1788,6 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
     async close() {},
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1170,7 +1834,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
 
         const refresh = await fetch(bridgeEndpoint(url, "/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "refresh_codex_account" }),
         });
         assert.equal(refresh.status, 200, await refresh.text());
@@ -1208,8 +1872,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
     modelBackendManager: manager,
     requestModelTurn: async (input) => {
       modelCalls += 1;
-      turnBackends.push(input.backend);
-      turnReservations.push(input.turnReservation);
+      turnExecutors.push(input.turnExecutor);
       if (modelCalls === 1) {
         return {
           content: "Catalog ",
@@ -1226,8 +1889,7 @@ test("subscription sends refresh catalogs, hand off later turns, and reject a mi
   assert.equal(listCalls, 2);
   assert.equal(modelCalls, 2);
   assert.equal(managerProfileCalls, 1);
-  assert.deepEqual(turnBackends, [backend, replacementBackend]);
-  assert.deepEqual(turnReservations, [firstTurnReservation, undefined]);
+  assert.deepEqual(turnExecutors, [firstTurnReservation, replacementBackend]);
   assert.equal(reservationReleaseCalls, 1);
   assert.deepEqual(authReadiness, [false, false, true, false]);
 });
@@ -1237,14 +1899,16 @@ test("threshold reservation cleanup preserves a pre-first-turn caller abort and 
     path.join(os.tmpdir(), "live-smith-codex-reservation-abort-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const storageKey = await canonicalStorageDirectory(directory);
   await saveSavedProfile(directory, subscriptionProfile);
 
   const modelStarted = deferred<void>();
   const releaseError = new Error("threshold recycle close failed");
   let reservationCreateCalls = 0;
   let reservationReleaseCalls = 0;
-  const backend: ModelBackend = {
+  const backend: CodexSubscriptionBackend = {
     kind: "codex-subscription",
+    ...managedLifecycleDefaults(),
     async listModels() {
       return [{
         id: subscriptionProfile.model,
@@ -1287,7 +1951,6 @@ test("threshold reservation cleanup preserves a pre-first-turn caller abort and 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1329,10 +1992,6 @@ test("threshold reservation cleanup preserves a pre-first-turn caller abort and 
         assert.notEqual(response.status, 200);
         assert.match(body, /Stopped by user/i);
         assert.doesNotMatch(body, /threshold recycle close failed/i);
-        await assert.rejects(
-          modelAuthSendFenceForStorage(directory).enterRead(),
-          /could not be shut down safely/i,
-        );
       },
     },
   };
@@ -1353,11 +2012,15 @@ test("threshold reservation cleanup preserves a pre-first-turn caller abort and 
     }),
     /could not be shut down safely/i,
   );
+  await assert.rejects(
+    modelAuthSendFenceForStorage(storageKey).enterRead(),
+    /could not be shut down safely/i,
+  );
   assert.equal(reservationCreateCalls, 0);
   assert.equal(reservationReleaseCalls, 1);
 });
 
-test("a modal close failure poisons the shared fence before its owner is released", {
+test("managed poison from a modal close leaves a Direct API peer operational", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
@@ -1371,6 +2034,14 @@ test("a modal close failure poisons the shared fence before its owner is release
   const closeFirst = deferred<void>();
   const closePeer = deferred<void>();
   let peerManagerCalls = 0;
+  const peerDirectBackend = {
+    kind: "direct-api" as const,
+    async listModels() { return []; },
+    async createToolTurn() {
+      throw new Error("The injected model requester owns this test turn.");
+    },
+    async close() {},
+  };
   const firstManager = {
     async codex() { throw new Error("unused"); },
     async codexLease() { throw new Error("unused"); },
@@ -1389,9 +2060,10 @@ test("a modal close failure poisons the shared fence before its owner is release
       peerManagerCalls += 1;
       throw new Error("must not start after poison");
     },
-    async forProfile() {
+    async forProfile(profile: DraftProfile) {
       peerManagerCalls += 1;
-      throw new Error("must not start after poison");
+      assert.equal(profile.connection.kind, "direct-api");
+      return peerDirectBackend;
     },
     async invalidateCodex() {
       peerManagerCalls += 1;
@@ -1399,7 +2071,6 @@ test("a modal close failure poisons the shared fence before its owner is release
     async close() {},
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1426,7 +2097,11 @@ test("a modal close failure poisons the shared fence before its owner is release
   const peerFlow = runAgentFlow(
     contextFor(peerUrl, closePeer) as never,
     interaction,
-    { renderHtml: () => "<html></html>", modelBackendManager: peerManager },
+    {
+      renderHtml: () => "<html></html>",
+      modelBackendManager: peerManager,
+      requestModelTurn: async () => ({ content: "Done", toolCalls: [] }),
+    },
   );
 
   try {
@@ -1434,11 +2109,13 @@ test("a modal close failure poisons the shared fence before its owner is release
       firstUrl.promise,
       peerUrl.promise,
     ]);
-    assert.equal((await fetch(bridgeEndpoint(peerDialogUrl, "/state"))).status, 200);
+    const initialResponse = await fetch(bridgeEndpoint(peerDialogUrl, "/state"));
+    assert.equal(initialResponse.status, 200);
+    const initial = await initialResponse.json() as ChatDialogState;
     closeFirst.resolve();
     await assert.rejects(firstFlow, /shutdown could not be confirmed/i);
 
-    assert.equal((await fetch(bridgeEndpoint(peerDialogUrl, "/state"))).status, 500);
+    assert.equal((await fetch(bridgeEndpoint(peerDialogUrl, "/state"))).status, 200);
     const send = await fetch(bridgeEndpoint(peerDialogUrl, "/send"), {
       method: "POST",
       headers: {
@@ -1446,16 +2123,12 @@ test("a modal close failure poisons the shared fence before its owner is release
         "X-Live-Smith-Send-Id": "send-after-modal-close-poison",
       },
       body: JSON.stringify({
-        prompt: "Must not start",
-        sessionId: "session-does-not-matter",
+        prompt: "Continue through Direct API",
+        sessionId: initial.activeSessionId,
       }),
     });
-    assert.equal(send.status, 500);
-    assert.equal(
-      ((await send.json()) as { promptPersistence?: string }).promptPersistence,
-      "not_persisted",
-    );
-    assert.equal(peerManagerCalls, 0);
+    assert.equal(send.status, 200, await send.clone().text());
+    assert.equal(peerManagerCalls, 1);
   } finally {
     closeFirst.resolve();
     closePeer.resolve();

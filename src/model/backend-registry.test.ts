@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 
 import {
   ModelBackendShutdownError,
+  type CodexSubscriptionBackend,
   type ManagedAuthState,
-  type ModelBackend,
   type TransportRequest,
 } from "./provider.js";
 import type { DraftProfile, SavedProfile } from "./profile.js";
 import {
   ModelBackendManager,
-  createModelBackend,
+  createDirectApiBackend,
 } from "./backend-registry.js";
+import { createHostAbortController } from "../runtime/host.js";
+import { spawnCodexAppServer } from "../runtime/process-host.js";
 
 function directProfile(
   apiFamily: "openai" | "anthropic" = "openai",
@@ -43,7 +49,7 @@ function directProfile(
     name: "Direct",
     connection,
     model: "model-a",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   };
 }
@@ -54,12 +60,12 @@ function subscriptionProfile(id = "subscription"): SavedProfile {
     name: "Subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   };
 }
 
-function fakeManagedBackend(): ModelBackend & {
+function fakeManagedBackend(): CodexSubscriptionBackend & {
   closeCalls: number;
   emitTerminal(error?: Error): void;
   replayTerminal(error?: Error): void;
@@ -78,6 +84,18 @@ function fakeManagedBackend(): ModelBackend & {
     },
     async readAuthState(): Promise<ManagedAuthState> {
       return { status: "signed-out" };
+    },
+    async beginLogin(): Promise<ManagedAuthState> {
+      return { status: "signed-out" };
+    },
+    async logout(): Promise<ManagedAuthState> {
+      return { status: "signed-out" };
+    },
+    reserveToolTurn() {
+      return {
+        createToolTurn: (request) => this.createToolTurn(request),
+        async release() {},
+      };
     },
     onTerminal(listener) {
       if (terminalError) listener(terminalError);
@@ -100,13 +118,13 @@ function fakeManagedBackend(): ModelBackend & {
   };
 }
 
-test("createModelBackend keeps all three direct wire protocols explicit", async () => {
+test("createDirectApiBackend keeps all three direct wire protocols explicit", async () => {
   for (const [family, mode] of [
     ["openai", "responses"],
     ["openai", "chat-completions"],
     ["anthropic", "messages"],
   ] as const) {
-    const backend = await createModelBackend(directProfile(family, mode), {
+    const backend = await createDirectApiBackend(directProfile(family, mode), {
       fetchImpl: async () => new Response("not used"),
     });
     assert.equal(backend.kind, "direct-api");
@@ -154,6 +172,139 @@ test("ModelBackendManager invalidation closes and replaces the managed process",
 
   await manager.close();
   assert.equal(backends[1]?.closeCalls, 1);
+});
+
+test("canceling one managed startup waiter does not abort its peer", async () => {
+  const managed = fakeManagedBackend();
+  const waiterController = createHostAbortController();
+  const waiterReason = new Error("state request closed");
+  let startupSignal: AbortSignal | undefined;
+  let startupAbortCount = 0;
+  let markStarted!: () => void;
+  let finishStartup!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const startupGate = new Promise<void>((resolve) => {
+    finishStartup = resolve;
+  });
+  const manager = new ModelBackendManager("/private/live-smith", {
+    startCodexBackend: async (_storageDirectory, signal) => {
+      startupSignal = signal;
+      signal.addEventListener("abort", () => {
+        startupAbortCount += 1;
+      });
+      markStarted();
+      await startupGate;
+      return managed;
+    },
+  });
+  const canceledWaiter = manager.codex(waiterController.signal);
+  const peerWaiter = manager.codex();
+
+  await started;
+  waiterController.abort(waiterReason);
+  await assert.rejects(canceledWaiter, (error: unknown) => error === waiterReason);
+  assert.equal(startupSignal?.aborted, false);
+  assert.equal(startupAbortCount, 0);
+
+  finishStartup();
+  assert.equal(await peerWaiter, managed);
+  await manager.close();
+  assert.equal(startupAbortCount, 1);
+  assert.equal(managed.closeCalls, 1);
+});
+
+test("closing the final manager owner aborts one pending startup and waits for it", async () => {
+  let startupAbortCount = 0;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const manager = new ModelBackendManager("/private/live-smith", {
+    startCodexBackend: async (_storageDirectory, signal) => {
+      markStarted();
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          startupAbortCount += 1;
+          reject(signal.reason);
+        }, { once: true });
+      });
+      return fakeManagedBackend();
+    },
+  });
+  const pending = manager.codex();
+
+  await started;
+  await manager.close();
+  await assert.rejects(pending, /backend startup was canceled/);
+  await manager.close();
+  assert.equal(startupAbortCount, 1);
+});
+
+test("final owner close cancels delayed pre-spawn work without a late child launch", {
+  timeout: 2_000,
+}, async (t) => {
+  const storageDirectory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-manager-pre-spawn-"),
+  );
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  let markResolutionStarted!: () => void;
+  const resolutionStarted = new Promise<void>((resolve) => {
+    markResolutionStarted = resolve;
+  });
+  let finishResolution!: (executable: string) => void;
+  const resolutionGate = new Promise<string>((resolve) => {
+    finishResolution = resolve;
+  });
+  let spawnCalls = 0;
+  const manager = new ModelBackendManager(storageDirectory, {
+    startCodexBackend: async (directory, signal) => {
+      await spawnCodexAppServer(
+        directory,
+        (() => {
+          spawnCalls += 1;
+          throw new Error("a canceled startup launched a late child");
+        }) as unknown as typeof spawn,
+        async () => {
+          markResolutionStarted();
+          return resolutionGate;
+        },
+        signal,
+      );
+      throw new Error("the canceled startup unexpectedly completed");
+    },
+  });
+  const startup = manager.codex();
+  const observedStartup = startup.then(
+    () => ({ status: "fulfilled" as const }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+
+  await resolutionStarted;
+  const closing = manager.close();
+  const observedClose = closing.then(
+    () => ({ status: "fulfilled" as const }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+  const closeOutcome = await Promise.race([
+    observedClose,
+    new Promise<{ status: "pending" }>((resolve) => {
+      setTimeout(() => resolve({ status: "pending" }), 50);
+    }),
+  ]);
+  finishResolution("/live-smith/test-native-codex");
+
+  assert.deepEqual(closeOutcome, { status: "fulfilled" });
+  const startupOutcome = await observedStartup;
+  assert.equal(startupOutcome.status, "rejected");
+  assert.match(
+    String(startupOutcome.status === "rejected" ? startupOutcome.error : ""),
+    /backend startup was canceled/i,
+  );
+  await observedClose;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(spawnCalls, 0);
 });
 
 test("ModelBackendManager waits for terminal backend shutdown before replacement", async () => {

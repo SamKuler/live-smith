@@ -2,11 +2,9 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { cloneJsonValue } from "../model/json-clone.js";
+import { decodeDiscoveredModelCatalog } from "../model/catalog.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
 import {
-  isReasoningEffort,
-  isReasoningStrategy,
   type DraftProfile,
   type SavedProfile,
 } from "../model/profile.js";
@@ -21,23 +19,6 @@ interface ModelCacheEntry {
 
 const memoryCache = new Map<string, ModelCacheEntry>();
 const modelCacheEntryKeys = new Set(["schemaVersion", "fingerprint", "models"]);
-const discoveredModelKeys = new Set(["id", "displayName", "capabilities"]);
-const capabilityKeys = new Set([
-  "tools",
-  "streaming",
-  "temperature",
-  "maxOutputTokens",
-  "reasoning",
-  "inputs",
-]);
-const inputKeys = new Set(["image", "audio", "pdf"]);
-const reasoningKeys = new Set([
-  "supported",
-  "canDisable",
-  "efforts",
-  "budgetTokens",
-  "strategy",
-]);
 const maximumCacheIdSlugLength = 80;
 
 export function connectionFingerprint(profile: DraftProfile | SavedProfile): string {
@@ -71,13 +52,15 @@ export async function loadModelCache(
   const expected = connectionFingerprint(profile);
   if (!storageDirectory) {
     const entry = memoryCache.get(profile.id);
-    return entry?.fingerprint === expected ? cloneJsonValue(entry.models) : [];
+    return entry?.fingerprint === expected
+      ? decodeDiscoveredModelCatalog(entry.models) ?? []
+      : [];
   }
 
   try {
     const raw = await fs.readFile(cachePath(storageDirectory, profile.id), "utf8");
     const entry = JSON.parse(raw) as unknown;
-    return isModelCacheEntry(entry, expected) ? entry.models : [];
+    return decodeModelCacheEntry(entry, expected) ?? [];
   } catch (error) {
     if (isMissingFileError(error) || error instanceof SyntaxError) return [];
     throw error;
@@ -93,10 +76,12 @@ export async function saveModelCache(
     memoryCache.delete(profile.id);
     return;
   }
+  const canonicalModels = decodeDiscoveredModelCatalog(models);
+  if (!canonicalModels) throw new TypeError("Model catalog is invalid.");
   const entry: ModelCacheEntry = {
     schemaVersion: 1,
     fingerprint: connectionFingerprint(profile),
-    models: cloneJsonValue(models),
+    models: canonicalModels,
   };
   if (!storageDirectory) {
     memoryCache.set(profile.id, entry);
@@ -114,76 +99,16 @@ function cachePath(storageDirectory: string, profileId: string): string {
   return path.join(storageDirectory, `live-smith-models-${safeId}-${idHash}.json`);
 }
 
-function isModelCacheEntry(
+function decodeModelCacheEntry(
   value: unknown,
   expectedFingerprint: string,
-): value is ModelCacheEntry {
-  if (!isRecordWithOnlyKeys(value, modelCacheEntryKeys)) return false;
-  return value.schemaVersion === 1 &&
-    value.fingerprint === expectedFingerprint &&
-    Array.isArray(value.models) &&
-    value.models.every(isDiscoveredModelInfo);
-}
-
-function isDiscoveredModelInfo(value: unknown): value is DiscoveredModelInfo {
-  if (!isRecordWithOnlyKeys(value, discoveredModelKeys)) return false;
-  return typeof value.id === "string" &&
-    typeof value.displayName === "string" &&
-    isModelCapabilityHints(value.capabilities);
-}
-
-function isModelCapabilityHints(value: unknown): boolean {
-  if (!isRecordWithOnlyKeys(value, capabilityKeys)) return false;
-  if (value.tools !== undefined && typeof value.tools !== "boolean") return false;
-  if (value.streaming !== undefined && typeof value.streaming !== "boolean") return false;
+): DiscoveredModelInfo[] | undefined {
+  if (!isRecordWithOnlyKeys(value, modelCacheEntryKeys)) return undefined;
   if (
-    value.temperature !== undefined &&
-    value.temperature !== "supported" &&
-    value.temperature !== "unsupported"
-  ) {
-    return false;
-  }
-  if (
-    value.maxOutputTokens !== undefined &&
-    (
-      typeof value.maxOutputTokens !== "number" ||
-      !Number.isFinite(value.maxOutputTokens) ||
-      value.maxOutputTokens <= 0
-    )
-  ) {
-    return false;
-  }
-  if (value.reasoning !== undefined && !isReasoningCapabilityHints(value.reasoning)) {
-    return false;
-  }
-  return value.inputs === undefined || isInputCapabilityHints(value.inputs);
-}
-
-function isInputCapabilityHints(value: unknown): boolean {
-  if (!isRecordWithOnlyKeys(value, inputKeys)) return false;
-  return ["image", "audio", "pdf"].every((key) =>
-    value[key] === undefined || typeof value[key] === "boolean"
-  );
-}
-
-function isReasoningCapabilityHints(value: unknown): boolean {
-  if (!isRecordWithOnlyKeys(value, reasoningKeys)) return false;
-  if (value.supported !== undefined && typeof value.supported !== "boolean") return false;
-  if (value.canDisable !== undefined && typeof value.canDisable !== "boolean") return false;
-  if (value.budgetTokens !== undefined && typeof value.budgetTokens !== "boolean") {
-    return false;
-  }
-  if (
-    value.efforts !== undefined &&
-    (
-      !Array.isArray(value.efforts) ||
-      !value.efforts.every(isReasoningEffort)
-    )
-  ) {
-    return false;
-  }
-  return value.strategy === undefined ||
-    isReasoningStrategy(value.strategy);
+    value.schemaVersion !== 1 ||
+    value.fingerprint !== expectedFingerprint
+  ) return undefined;
+  return decodeDiscoveredModelCatalog(value.models);
 }
 
 function isRecordWithOnlyKeys(

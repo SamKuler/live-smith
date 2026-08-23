@@ -3,11 +3,20 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import process from "node:process";
 
+import {
+  throwIfAborted,
+  waitForPromiseWithSignal,
+} from "./host.js";
 import { ensurePrivateDirectory } from "../storage/persistence.js";
 import {
   type CodexMetadataFirewall,
   startCodexMetadataFirewall,
 } from "./codex-metadata-firewall.js";
+import {
+  CodexExecutableUnavailableError,
+  type CodexExecutableResolutionImplementation,
+  resolveCodexExecutable,
+} from "./codex-executable.js";
 
 export type CodexSpawnImplementation = typeof spawn;
 
@@ -125,32 +134,47 @@ export interface CodexChildProcess {
 export async function spawnCodexAppServer(
   storageDirectory: string,
   spawnImpl: CodexSpawnImplementation = spawn,
+  resolveExecutableImpl: CodexExecutableResolutionImplementation =
+    resolveCodexExecutable,
+  signal?: AbortSignal,
 ): Promise<CodexChildProcess> {
   let metadataFirewall: CodexMetadataFirewall | undefined;
   try {
+    throwIfAborted(signal);
     const storageRoot = path.resolve(storageDirectory);
     const codexHome = path.join(storageRoot, "codex-subscription");
     const runtimeWorkspace = path.join(codexHome, "runtime-workspace");
-    await ensurePrivateDirectory(storageRoot);
-    await ensurePrivateChildDirectory(codexHome);
-    await ensurePrivateChildDirectory(runtimeWorkspace);
-    await assertNoCodexUserConfig(codexHome);
-    await assertPrivateCodexAuthFile(codexHome);
-    if ((await fs.readdir(runtimeWorkspace)).length !== 0) {
+    await waitForPromiseWithSignal(ensurePrivateDirectory(storageRoot), signal);
+    await ensurePrivateChildDirectory(codexHome, signal);
+    await ensurePrivateChildDirectory(runtimeWorkspace, signal);
+    await assertNoCodexUserConfig(codexHome, signal);
+    await assertPrivateCodexAuthFile(codexHome, signal);
+    throwIfAborted(signal);
+    if (
+      (await waitForPromiseWithSignal(fs.readdir(runtimeWorkspace), signal))
+        .length !== 0
+    ) {
       throw new Error("runtime workspace is not empty");
     }
 
-    metadataFirewall = await startCodexMetadataFirewall();
+    const environment = isolatedEnvironment(codexHome);
+    throwIfAborted(signal);
+    const codexExecutable = await waitForPromiseWithSignal(
+      resolveExecutableImpl(environment, runtimeWorkspace),
+      signal,
+    );
+    metadataFirewall = await startCodexMetadataFirewall(signal);
+    throwIfAborted(signal);
     const args = [
       "app-server",
       ...forcedCodexConfiguration(metadataFirewall.chatgptBaseUrl)
         .flatMap((value) => ["--config", value]),
       ...disabledCodexFeatures.flatMap((feature) => ["--disable", feature]),
     ];
-    const child = spawnImpl("codex", args, {
+    const child = spawnImpl(codexExecutable, args, {
       cwd: runtimeWorkspace,
       detached: false,
-      env: isolatedEnvironment(codexHome),
+      env: environment,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -181,28 +205,49 @@ export async function spawnCodexAppServer(
       closeAuxiliaryResources,
     };
     return managedChild;
-  } catch {
+  } catch (error) {
     await metadataFirewall?.close().catch(() => undefined);
+    try {
+      throwIfAborted(signal);
+    } catch (abortError) {
+      throw abortError;
+    }
+    if (error instanceof CodexExecutableUnavailableError) throw error;
     throw new Error("Codex App Server could not be started.");
   }
 }
 
-async function ensurePrivateChildDirectory(directory: string): Promise<void> {
+async function ensurePrivateChildDirectory(
+  directory: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   try {
-    await fs.mkdir(directory, { mode: 0o700 });
+    await waitForPromiseWithSignal(fs.mkdir(directory, { mode: 0o700 }), signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  const metadata = await fs.lstat(directory);
+  throwIfAborted(signal);
+  const metadata = await waitForPromiseWithSignal(fs.lstat(directory), signal);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new Error("private runtime path is not a directory");
   }
-  if (process.platform !== "win32") await fs.chmod(directory, 0o700);
+  if (process.platform !== "win32") {
+    throwIfAborted(signal);
+    await waitForPromiseWithSignal(fs.chmod(directory, 0o700), signal);
+  }
 }
 
-async function assertNoCodexUserConfig(codexHome: string): Promise<void> {
+async function assertNoCodexUserConfig(
+  codexHome: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   try {
-    await fs.lstat(path.join(codexHome, "config.toml"));
+    await waitForPromiseWithSignal(
+      fs.lstat(path.join(codexHome, "config.toml")),
+      signal,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
@@ -210,11 +255,15 @@ async function assertNoCodexUserConfig(codexHome: string): Promise<void> {
   throw new Error("unexpected Codex configuration");
 }
 
-async function assertPrivateCodexAuthFile(codexHome: string): Promise<void> {
+async function assertPrivateCodexAuthFile(
+  codexHome: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   const authFile = path.join(codexHome, "auth.json");
   let metadata: Awaited<ReturnType<typeof fs.lstat>>;
   try {
-    metadata = await fs.lstat(authFile);
+    metadata = await waitForPromiseWithSignal(fs.lstat(authFile), signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
@@ -226,7 +275,10 @@ async function assertPrivateCodexAuthFile(codexHome: string): Promise<void> {
   ) {
     throw new Error("managed credential path is not an isolated file");
   }
-  if (process.platform !== "win32") await fs.chmod(authFile, 0o600);
+  if (process.platform !== "win32") {
+    throwIfAborted(signal);
+    await waitForPromiseWithSignal(fs.chmod(authFile, 0o600), signal);
+  }
 }
 
 function isolatedEnvironment(codexHome: string): NodeJS.ProcessEnv {

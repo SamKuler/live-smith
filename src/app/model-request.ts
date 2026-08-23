@@ -11,15 +11,13 @@ import {
 import type {
   DiscoveredModelInfo,
   ModelCapabilities,
-  ModelBackend,
   ModelInfo,
   ModelTool,
-  ModelToolTurnReservation,
+  ModelTurnExecutor,
   RuntimeProfile,
   TransportRequest,
 } from "../model/provider.js";
 import type { DraftProfile, SavedProfile } from "../model/profile.js";
-import { createModelBackend } from "../model/backend-registry.js";
 import {
   agentSystemInstructionsForSkills,
 } from "../agent/system-instructions.js";
@@ -43,7 +41,7 @@ const unavailableWebSearchInstructions = [
   "Do not promise to search or browse, and never claim that a search occurred.",
 ].join(" ");
 
-export async function requestModelTurn(input: {
+export interface ModelTurnRequestInput {
   prompt: string;
   liveContext: string;
   runtimeProfile: RuntimeProfile;
@@ -57,24 +55,12 @@ export async function requestModelTurn(input: {
   onHostedWebSearch?(
     update: ModelHostedWebSearch,
   ): Promise<void> | void;
-  /** Modal-lifetime managed backend. Omitted only by direct transport tests. */
-  backend?: ModelBackend;
-  /** One-shot managed capacity reserved before the prompt is persisted. */
-  turnReservation?: ModelToolTurnReservation;
-}) {
-  const ownedBackend = input.backend === undefined
-    ? await createModelBackend(input.runtimeProfile.profile)
-    : undefined;
-  const backend = input.backend ?? ownedBackend;
-  if (!backend) throw new Error("A model backend is required.");
-  try {
-    const request = buildModelRequest(input);
-    return await (input.turnReservation
-      ? input.turnReservation.createToolTurn(request)
-      : backend.createToolTurn(request));
-  } finally {
-    await ownedBackend?.close();
-  }
+  turnExecutor: ModelTurnExecutor;
+}
+
+export async function requestModelTurn(input: ModelTurnRequestInput) {
+  const request = buildModelRequest(input);
+  return input.turnExecutor.createToolTurn(request);
 }
 
 export function buildModelRequest(input: {

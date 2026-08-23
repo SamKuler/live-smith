@@ -25,6 +25,43 @@ export function throwIfAborted(signal?: AbortSignal): void {
   throw new Error("Operation aborted.");
 }
 
+/** Cancels only this caller's wait; ownership of the operation stays unchanged. */
+export function waitForPromiseWithSignal<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    try {
+      throwIfAborted(signal);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function yieldToHost(signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   await yieldImmediate();

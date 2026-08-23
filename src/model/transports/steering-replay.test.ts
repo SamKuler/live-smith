@@ -71,6 +71,11 @@ function request(savedProfile: SavedProfile): TransportRequest {
     runtimeProfile: {
       profile: savedProfile,
       capabilities: resolveModelCapabilities(savedProfile),
+      inputCapabilityEvidence: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     currentUserContent: [{ type: "text", text: "Inspect the current Set." }],
     systemInstructions: "Test system instructions",

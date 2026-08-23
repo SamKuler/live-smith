@@ -807,7 +807,6 @@
       function buildQueuedFollowUpItem(followUp) {
         const item = document.createElement("article");
         item.className = "timeline-item user queued-follow-up";
-        item.dataset.queuedFollowUpId = followUp.id;
         const label = document.createElement("div");
         label.className = "timeline-label";
         label.textContent = "You / Up next";

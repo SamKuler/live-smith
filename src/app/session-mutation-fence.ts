@@ -1,6 +1,5 @@
-import * as path from "node:path";
-
 import { throwIfAborted } from "../runtime/host.js";
+import { storageScopeKey } from "../storage/scope.js";
 
 interface PendingSessionMutation {
   kind: string | undefined;
@@ -124,7 +123,7 @@ export function sessionMutationFenceKey(
   sessionId: string,
 ): string {
   return JSON.stringify([
-    storageDirectory === undefined ? null : path.resolve(storageDirectory),
+    storageDirectory === undefined ? null : storageScopeKey(storageDirectory),
     sessionId,
   ]);
 }

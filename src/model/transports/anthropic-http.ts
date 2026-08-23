@@ -8,6 +8,8 @@ import {
 } from "../profile.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { parseServerSentEventData } from "./server-sent-events.js";
+import { readBoundedJsonResponse } from "./response-body.js";
+import { cancelStreamBestEffort } from "./stream-cancel.js";
 
 const anthropicApiVersion = "2023-06-01";
 
@@ -47,20 +49,17 @@ async function requestAnthropicResource(
   options: AnthropicRequestOptions,
 ): Promise<unknown> {
   const connection = requireDirectApiConnection(profile);
-  const response = await fetchImpl(
+  const response = await fetchAnthropicResponse(
+    fetchImpl,
     anthropicEndpoint(connection.baseUrl, resource, options.query),
     anthropicRequestInit(connection, options),
+    options.signal,
   );
   await assertAnthropicResponse(response, options.signal);
-  try {
-    return await response.json() as unknown;
-  } catch (cause) {
-    throwIfAborted(options.signal);
-    if (cause instanceof SyntaxError) {
-      throw new Error(`Anthropic returned invalid JSON (HTTP ${response.status}).`);
-    }
-    throw cause;
-  }
+  return readBoundedJsonResponse(response, {
+    label: "Anthropic",
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
 }
 
 export async function* streamAnthropicEvents(
@@ -70,16 +69,19 @@ export async function* streamAnthropicEvents(
   signal?: AbortSignal,
 ): AsyncGenerator<Record<string, unknown>> {
   const connection = requireDirectApiConnection(profile);
-  const response = await fetchImpl(
+  const response = await fetchAnthropicResponse(
+    fetchImpl,
     anthropicEndpoint(connection.baseUrl, "/messages"),
     anthropicRequestInit(connection, {
       method: "POST",
       body: { ...body, stream: true },
       ...(signal ? { signal } : {}),
     }),
+    signal,
   );
   await assertAnthropicResponse(response, signal);
   if (!response.body) {
+    throwIfAborted(signal);
     throw new Error("Anthropic returned a streaming response without a body.");
   }
 
@@ -96,6 +98,20 @@ export async function* streamAnthropicEvents(
       throw new Error("Anthropic returned a non-object event in its event stream.");
     }
     yield event;
+  }
+}
+
+async function fetchAnthropicResponse(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, init);
+  } catch (cause) {
+    throwIfAborted(signal);
+    throw cause;
   }
 }
 
@@ -139,11 +155,9 @@ async function assertAnthropicResponse(
   signal?: AbortSignal,
 ): Promise<void> {
   if (response.ok) return;
+  cancelStreamBestEffort(response.body, signal?.reason);
   throwIfAborted(signal);
-  const detail = response.statusText || "request failed";
-  await response.body?.cancel().catch(() => undefined);
-  throwIfAborted(signal);
-  throw new Error(`Anthropic HTTP ${response.status}: ${detail}`);
+  throw new Error(`Anthropic HTTP ${response.status}: request failed`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

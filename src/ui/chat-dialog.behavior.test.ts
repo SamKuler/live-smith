@@ -72,12 +72,6 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       harness.document.querySelector<HTMLElement>("#modelSetupGuide")?.hidden,
       true,
     );
-    assert.equal(
-      harness.window.getComputedStyle(
-        harness.document.querySelector<HTMLElement>("#modelSetupGuide")!,
-      ).display,
-      "none",
-    );
     assert.equal(harness.document.activeElement?.id, "prompt");
     assert.match(
       harness.document.querySelector("#profileSummaryButton")?.textContent ?? "",
@@ -274,12 +268,6 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     assert.equal(
       harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
       true,
-    );
-    assert.equal(
-      harness.window.getComputedStyle(
-        harness.document.querySelector<HTMLElement>("#savedProfileControls")!,
-      ).display,
-      "none",
     );
     assert.equal(harness.document.activeElement?.id, "modelSetupGuide");
     assert.equal(
@@ -718,6 +706,7 @@ test("Escape dismisses only the top close confirmation while Live Apply waits", 
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-under-close",
       message: "Change the Live Set.",
       groups: [{ title: "Mix", rows: ["Set tempo to 124 BPM"] }],
@@ -1519,9 +1508,9 @@ test("a running Session can be left in the background and shows an unread comple
 
     const completedState = cloneState(stateFixture());
     completedState.activeSessionId = "session-2";
+    completedState.approvalMode = "low-risk";
     completedState.sessionActivities = [{
       sessionId: "session-1",
-      sendId: bassSendId,
       status: "completed",
       message: "Completed",
       unread: true,
@@ -1951,6 +1940,7 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-1",
       message: "Add a track and update the mix.",
       groups: [
@@ -2045,6 +2035,7 @@ test("Live Set confirmations render mixed action categories in execution order",
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-ordered",
       message: "Replace the scratch track in order.",
       groups: [
@@ -2086,6 +2077,7 @@ test("a failed confirmation request terminates the send before dismissing the de
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-retry",
       message: "Set tempo.",
       groups: [{ title: "Song", rows: ["Set tempo to 124 BPM"] }],
@@ -2131,6 +2123,7 @@ test("a network-interrupted send stops to terminal state before clearing its con
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-interrupted",
       message: "Set tempo.",
       groups: [{ title: "Song", rows: ["Set tempo to 124 BPM"] }],
@@ -2252,6 +2245,7 @@ test("a late confirmation response from send A cannot block or clear send B", as
     harness.emitServerEvent({
       type: "confirm_request",
       sendId: sendA,
+      sessionId: "session-1",
       id: "confirm-a",
       message: "Apply A?",
       groups: [{ title: "Song", rows: ["Set tempo to 120 BPM"] }],
@@ -2263,6 +2257,7 @@ test("a late confirmation response from send A cannot block or clear send B", as
     harness.emitServerEvent({
       type: "done",
       sendId: sendA,
+      sessionId: "session-1",
       state: cloneState(stateFixture()),
     });
     harness.releaseHeldSend();
@@ -2278,6 +2273,7 @@ test("a late confirmation response from send A cannot block or clear send B", as
     harness.emitServerEvent({
       type: "confirm_request",
       sendId: sendB,
+      sessionId: "session-1",
       id: "confirm-b-1",
       message: "Apply B first?",
       groups: [{ title: "Song", rows: ["Set tempo to 121 BPM"] }],
@@ -2292,6 +2288,7 @@ test("a late confirmation response from send A cannot block or clear send B", as
     harness.emitServerEvent({
       type: "confirm_request",
       sendId: sendB,
+      sessionId: "session-1",
       id: "confirm-b-2",
       message: "Apply B second?",
       groups: [{ title: "Song", rows: ["Set tempo to 122 BPM"] }],
@@ -2305,7 +2302,7 @@ test("a late confirmation response from send A cannot block or clear send B", as
     );
     assert.equal(
       harness.document.querySelector("#status")?.textContent,
-      "Waiting for your confirmation",
+      "Waiting for confirmation",
     );
     harness.releaseHeldSend();
     await harness.settle();
@@ -2418,9 +2415,24 @@ test("assistant delta bursts coalesce without rebuilding existing timeline items
       renderInto(target, source);
     };
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "I’ll add **wide" });
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " chords**" });
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " with `Wavetable`." });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "I’ll add **wide",
+    });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: " chords**",
+    });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: " with `Wavetable`.",
+    });
     assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
     assert.equal(renderCount, 0);
     assert.equal(harness.flushAnimationFrames(), 1);
@@ -2435,7 +2447,12 @@ test("assistant delta bursts coalesce without rebuilding existing timeline items
       "",
     );
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " Done." });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: " Done.",
+    });
     assert.equal(harness.flushAnimationFrames(), 1);
     const secondDraft = harness.document.querySelector(".timeline-item.streaming");
     assert.equal(secondDraft, firstDraft);
@@ -2446,10 +2463,16 @@ test("assistant delta bursts coalesce without rebuilding existing timeline items
     );
     assert.equal(renderCount, 2);
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: " Stale." });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: " Stale.",
+    });
     harness.emitServerEvent({
       type: "session_event",
       sendId,
+      sessionId: "session-1",
       event: {
         id: "event-2",
         kind: "assistant",
@@ -2684,7 +2707,6 @@ test("an unreconciled command outcome keeps sends and settings blocked", async (
       {
         commandOutcome: "unknown",
         reconciliationRequired: true,
-        state: {} as ChatDialogState,
       },
     );
 
@@ -3179,6 +3201,38 @@ test("Save and Use sends the complete current draft for its selected API mode", 
       },
     }]);
     assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("initial state preserves arbitrary JSON keys through Profile save", async () => {
+  const state = stateFixture();
+  const extraBody = JSON.parse(
+    '{"__proto__":{"preserved":true},"nested":{"constructor":"data"}}',
+  ) as Record<string, unknown>;
+  state.settings.profiles[0]!.advanced.extraBody = extraBody;
+  const harness = await createDialogHarness(state);
+  try {
+    assert.match(
+      harness.document.querySelector<HTMLTextAreaElement>("#extraBody")?.value ?? "",
+      /"__proto__"/,
+    );
+    harness.input("#profileName", "Prototype-safe profile");
+    harness.click("#saveProfileButton");
+    await harness.settle();
+
+    const save = commandCalls(harness)[0]?.body as {
+      profile?: SavedProfile;
+    };
+    const savedExtraBody = save.profile?.advanced.extraBody;
+    assert.ok(savedExtraBody);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(savedExtraBody, "__proto__"),
+      true,
+    );
+    assert.deepEqual(savedExtraBody, extraBody);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

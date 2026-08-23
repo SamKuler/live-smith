@@ -2,27 +2,18 @@
       window.LiveSmithFactories.createProfileEditor = function createProfileEditor({
         confirmAction,
         getState,
+        hasAnySendInProgress,
+        isOperationInProgress,
+        requestComposerPresentation,
         runCommand,
         showStatus,
       }) {
-      let capabilityView = null;
-
-      function connectCapabilityView(view) {
-        capabilityView = view;
-      }
-
-      function requireCapabilityView() {
-        if (!capabilityView) throw new Error("Profile editor is not connected to capability controls.");
-        return capabilityView;
-      }
-
       let draftProfile = null;
       let savedProfileSnapshot = null;
       let draftDirty = false;
       let modelStateSource = null;
       let renderedModelOptionsMatchConnection = false;
       let renderedCodexAuthKey = null;
-      const codexSubscriptionStoredMaxOutputTokens = 8192;
       const controlIdByProfileField = {
         name: "profileName",
         connection: "connectionKind",
@@ -265,13 +256,17 @@
                 baseUrl: document.getElementById("baseUrl").value.trim(),
               },
           model: document.getElementById("model").value.trim(),
-          parameters: {
-            maxOutputTokens: subscription
-              ? codexSubscriptionStoredMaxOutputTokens
-              : Number(document.getElementById("maxOutputTokens").value),
-            ...(temperatureRaw && Number.isFinite(temperature) ? { temperature } : {}),
-            reasoning,
-          },
+          parameters: subscription
+            ? { reasoning }
+            : {
+                maxOutputTokens: Number(
+                  document.getElementById("maxOutputTokens").value,
+                ),
+                ...(temperatureRaw && Number.isFinite(temperature)
+                  ? { temperature }
+                  : {}),
+                reasoning,
+              },
           advanced,
         };
       }
@@ -324,14 +319,14 @@
         ) {
           renderModelOptions();
         }
-        requireCapabilityView().updateDraftActions();
-        requireCapabilityView().updateCapabilityPreview();
+        updateDraftActions();
+        updateCapabilityPreview();
       }
 
       function markDraftDirtyForCapabilityAdjustment() {
         draftDirty = true;
         getState().status = undefined;
-        requireCapabilityView().updateDraftActions();
+        updateDraftActions();
       }
 
       function toggleApiKeyVisibility() {
@@ -353,8 +348,7 @@
 
       function clearManagedSubscriptionIncompatibleSettings() {
         document.getElementById("temperature").value = "";
-        document.getElementById("maxOutputTokens").value =
-          String(codexSubscriptionStoredMaxOutputTokens);
+        document.getElementById("maxOutputTokens").value = "";
         document.getElementById("reasoningBudgetTokens").value = "";
         document.getElementById("webSearchEnabled").checked = false;
         document.getElementById("extraBody").value = "";
@@ -461,13 +455,24 @@
           };
         }
         if (auth.status === "unavailable") {
+          const retryableSignIn = auth.definitive === true;
           return {
             state: "unavailable",
             badge: "Unavailable",
-            title: "ChatGPT subscription unavailable",
+            title: retryableSignIn
+              ? "ChatGPT sign-in did not complete"
+              : "ChatGPT subscription unavailable",
             detail: `${auth.message} Fix the issue, then check again.`,
-            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
-            check: { label: "Check again", hidden: false, tone: "primary" },
+            signIn: {
+              label: retryableSignIn ? "Try sign-in again" : "Sign in to ChatGPT",
+              hidden: !retryableSignIn,
+              tone: "primary",
+            },
+            check: {
+              label: "Check again",
+              hidden: false,
+              tone: retryableSignIn ? "secondary" : "primary",
+            },
             logout: { label: "Sign out", hidden: true, tone: "quiet" },
           };
         }
@@ -790,7 +795,8 @@
         document.getElementById("baseUrl").value = directConnection?.baseUrl || "";
         document.getElementById("model").value = profile.model || "";
         document.getElementById("temperature").value = profile.parameters?.temperature ?? "";
-        document.getElementById("maxOutputTokens").value = profile.parameters.maxOutputTokens;
+        document.getElementById("maxOutputTokens").value =
+          profile.parameters.maxOutputTokens ?? "";
         document.getElementById("reasoningBudgetTokens").value = profile.parameters?.reasoning?.budgetTokens || "";
         document.getElementById("reasoningMode").dataset.requestedValue =
           profile.parameters?.reasoning?.mode || "default";
@@ -809,8 +815,8 @@
         applyConnectionKindPresentation();
         renderModelOptions();
         updateHostedToolControls();
-        requireCapabilityView().updateCapabilityPreview();
-        requireCapabilityView().updateDraftActions();
+        updateCapabilityPreview();
+        updateDraftActions();
       }
 
       function renderApiModes(family, selected) {
@@ -862,13 +868,316 @@
         }
       }
 
+      function updateReasoningVisibility() {
+        const settingsLocked = isOperationInProgress() || hasAnySendInProgress();
+        const selection = selectedModelCapabilities();
+        const capability = selection.capability;
+        const reasoning = capability && capability.reasoning;
+        const supported = Boolean(reasoning && reasoning.supported);
+        const subscription = isCodexSubscription();
+        const budgetSupported = !subscription && Boolean(
+          reasoning && reasoning.budgetTokens,
+        );
+        const modeSelect = document.getElementById("reasoningMode");
+        const effortSelect = document.getElementById("reasoningEffort");
+        const effortRow = document.getElementById("reasoningEffortRow");
+        const budgetRow = document.getElementById("reasoningBudgetRow");
+        const hint = document.getElementById("reasoningHint");
+        if (hint) {
+          hint.hidden = supported && selection.authoritative.reasoning;
+          hint.textContent = selection.authoritative.reasoning
+            ? "Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced."
+            : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.";
+        }
+        let adjusted = false;
+        const rawRequestedMode = modeSelect.dataset.requestedValue ??
+          modeSelect.value ?? "default";
+        const requestedMode = subscription && rawRequestedMode === "disabled"
+          ? "default"
+          : rawRequestedMode;
+        if (requestedMode !== rawRequestedMode) adjusted = true;
+        delete modeSelect.dataset.requestedValue;
+        const requestedEffort = effortSelect.dataset.requestedValue ??
+          effortSelect.value;
+        delete effortSelect.dataset.requestedValue;
+        const budgetInput = document.getElementById("reasoningBudgetTokens");
+        if (subscription) {
+          for (const option of [...modeSelect.options]) {
+            if (option.value === "disabled") option.remove();
+          }
+        }
+        if (selection.authoritative.reasoning) {
+          modeSelect.replaceChildren(new Option("Provider default", "default"));
+          if (supported && reasoning.canDisable && !subscription) {
+            modeSelect.append(new Option("Disabled", "disabled"));
+          }
+          if (supported) modeSelect.append(new Option("Enabled", "enabled"));
+          modeSelect.value = [...modeSelect.options].some(
+            (option) => option.value === requestedMode,
+          )
+            ? requestedMode
+            : "default";
+          if (modeSelect.value !== requestedMode) {
+            clearFieldError(modeSelect);
+            adjusted = true;
+          } else if (!supported) {
+            clearFieldError(modeSelect);
+          }
+
+          const efforts = supported && Array.isArray(reasoning.efforts)
+            ? reasoning.efforts
+            : [];
+          effortSelect.replaceChildren(new Option("Provider default", ""));
+          for (const effort of efforts) {
+            effortSelect.append(new Option(
+              effort[0].toUpperCase() + effort.slice(1),
+              effort,
+            ));
+          }
+          effortSelect.value = modeSelect.value === "enabled" &&
+              efforts.includes(requestedEffort)
+            ? requestedEffort
+            : "";
+          if (effortSelect.value !== requestedEffort) {
+            clearFieldError(effortSelect);
+            adjusted = true;
+          }
+          effortRow.hidden = modeSelect.value !== "enabled" || !efforts.length;
+          if (effortRow.hidden) clearFieldError(effortSelect);
+          budgetRow.hidden = modeSelect.value !== "enabled" || !budgetSupported;
+          if (budgetRow.hidden && budgetInput.value) {
+            budgetInput.value = "";
+            clearFieldError(budgetInput);
+            adjusted = true;
+          }
+          if (budgetRow.hidden) clearFieldError(budgetInput);
+          budgetInput.disabled = settingsLocked || budgetRow.hidden;
+        } else {
+          preserveUnknownReasoningControls({
+            budgetInput,
+            budgetRow,
+            effortRow,
+            effortSelect,
+            modeSelect,
+            requestedEffort,
+            requestedMode,
+            settingsLocked,
+          });
+        }
+        const temperatureInput = document.getElementById("temperature");
+        const temperatureUnsupported = subscription || (
+          selection.authoritative.temperature &&
+          capability.temperature === "unsupported"
+        );
+        if (temperatureUnsupported && temperatureInput.value) {
+          temperatureInput.value = "";
+          clearFieldError(temperatureInput);
+          adjusted = true;
+        }
+        if (temperatureUnsupported) clearFieldError(temperatureInput);
+        temperatureInput.disabled = settingsLocked || temperatureUnsupported;
+        if (adjusted) markDraftDirtyForCapabilityAdjustment();
+      }
+
+      function preserveUnknownReasoningControls({
+        budgetInput,
+        budgetRow,
+        effortRow,
+        effortSelect,
+        modeSelect,
+        requestedEffort,
+        requestedMode,
+        settingsLocked,
+      }) {
+        if (![...modeSelect.options].some((option) => option.value === "default")) {
+          modeSelect.prepend(new Option("Provider default", "default"));
+        }
+        if (
+          requestedMode !== "default" &&
+          ![...modeSelect.options].some((option) => option.value === requestedMode)
+        ) {
+          modeSelect.append(new Option(
+            requestedMode === "enabled" ? "Enabled" : "Disabled",
+            requestedMode,
+          ));
+        }
+        modeSelect.value = requestedMode;
+        if (
+          requestedEffort &&
+          ![...effortSelect.options].some(
+            (option) => option.value === requestedEffort,
+          )
+        ) {
+          effortSelect.append(new Option(
+            requestedEffort[0].toUpperCase() + requestedEffort.slice(1),
+            requestedEffort,
+          ));
+        }
+        effortSelect.value = requestedEffort;
+        effortRow.hidden = modeSelect.value !== "enabled" || !requestedEffort;
+        budgetRow.hidden = modeSelect.value !== "enabled" || !budgetInput.value;
+        budgetInput.disabled = settingsLocked || budgetRow.hidden;
+      }
+
+      function selectedModelCapabilities() {
+        const state = getState();
+        const modelId = document.getElementById("model")?.value.trim() || "";
+        const discovered = modelStateMatchesCurrentConnection()
+          ? (state.availableModels || []).find((model) => model.id === modelId)
+          : null;
+        const stateCapabilities = modelStateMatchesCurrentProfile()
+          ? state.capabilities
+          : null;
+        const baseCapability = discovered?.capabilities || stateCapabilities;
+        const capability = cloneValue(baseCapability) || {
+          tools: true,
+          streaming: true,
+          temperature: "supported",
+          reasoning: {
+            supported: false,
+            canDisable: false,
+            efforts: [],
+            budgetTokens: false,
+            strategy: "none",
+          },
+        };
+        let overrides = {};
+        if (!isCodexSubscription()) {
+          try {
+            overrides = capabilityOverridesFromForm();
+          } catch {}
+        }
+        for (const key of [
+          "tools",
+          "streaming",
+          "temperature",
+          "maxOutputTokens",
+        ]) {
+          if (overrides[key] !== undefined) capability[key] = overrides[key];
+        }
+        capability.inputs = capability.inputs || {};
+        Object.assign(capability.inputs, overrides.inputs || {});
+        capability.reasoning = capability.reasoning || {};
+        Object.assign(capability.reasoning, overrides.reasoning || {});
+        return {
+          capability,
+          authoritative: {
+            maxOutputTokens: Boolean(baseCapability) ||
+              overrides.maxOutputTokens !== undefined,
+            reasoning: Boolean(baseCapability) ||
+              overrides.reasoning?.supported !== undefined,
+            temperature: Boolean(baseCapability) ||
+              overrides.temperature !== undefined,
+            inputs: Object.fromEntries(["image", "audio", "pdf"].map((key) => [
+              key,
+              typeof baseCapability?.inputs?.[key] === "boolean" ||
+                overrides.inputs?.[key] !== undefined,
+            ])),
+          },
+        };
+      }
+
+      function updateCapabilityPreview() {
+        updateReasoningVisibility();
+        const settingsLocked = isOperationInProgress() || hasAnySendInProgress();
+        const selection = selectedModelCapabilities();
+        const capability = selection.capability;
+        const modelLimit = capability.maxOutputTokens;
+        const inputPreview = document.getElementById("inputCapabilitiesPreview");
+        if (inputPreview) {
+          const inputs = capability.inputs || {};
+          const statuses = [
+            inputCapabilityStatus(
+              "Images",
+              "image",
+              inputs,
+              selection.authoritative.inputs,
+            ),
+            inputCapabilityStatus(
+              "Audio",
+              "audio",
+              inputs,
+              selection.authoritative.inputs,
+            ),
+            inputCapabilityStatus(
+              "PDF",
+              "pdf",
+              inputs,
+              selection.authoritative.inputs,
+            ),
+          ];
+          inputPreview.replaceChildren(...statuses.map((status) => {
+            const item = document.createElement("span");
+            item.className = "capability-status";
+            item.dataset.capabilityState = status.state;
+            item.textContent = `${status.label} · ${status.value}`;
+            return item;
+          }));
+          inputPreview.setAttribute(
+            "aria-label",
+            statuses.map((status) => `${status.label}: ${status.value}`).join(". "),
+          );
+        }
+        const outputTokensInput = document.getElementById("maxOutputTokens");
+        const subscription = isCodexSubscription();
+        const trustedModelLimit = selection.authoritative.maxOutputTokens
+          ? modelLimit
+          : undefined;
+        outputTokensInput.disabled = settingsLocked || subscription;
+        outputTokensInput.max = String(
+          subscription ? 1000000 : trustedModelLimit ?? 1000000,
+        );
+        const requestedOutputTokens = Number(outputTokensInput.value);
+        if (
+          !subscription &&
+          trustedModelLimit !== undefined &&
+          Number.isFinite(requestedOutputTokens) &&
+          requestedOutputTokens > trustedModelLimit
+        ) {
+          outputTokensInput.value = String(trustedModelLimit);
+          clearFieldError(outputTokensInput);
+          markDraftDirtyForCapabilityAdjustment();
+        }
+        document.getElementById("maxOutputTokensHint").textContent = subscription
+          ? "Codex App Server owns the output limit for subscription requests."
+          : trustedModelLimit === undefined
+            ? "Model output limit is unknown; the provider validates this request."
+            : `Model output limit: ${trustedModelLimit}.`;
+      }
+
+      function inputCapabilityStatus(label, key, inputs, authoritative) {
+        if (!authoritative[key]) {
+          return { label, state: "unverified", value: "Unverified" };
+        }
+        return inputs[key]
+          ? { label, state: "supported", value: "Supported" }
+          : { label, state: "unsupported", value: "Unsupported" };
+      }
+
+      function updateDraftActions() {
+        const settingsOperationInProgress = isOperationInProgress() ||
+          hasAnySendInProgress();
+        const hasSaved = Boolean(savedProfileSnapshot);
+        document.getElementById("saveProfileButton").disabled =
+          settingsOperationInProgress || !draftProfile || !draftDirty;
+        document.getElementById("discardProfileButton").disabled =
+          settingsOperationInProgress || !draftDirty;
+        document.getElementById("deleteProfileButton").disabled =
+          settingsOperationInProgress || !hasSaved;
+        document.getElementById("duplicateProfileButton").disabled =
+          settingsOperationInProgress || !draftProfile;
+        const badge = document.getElementById("draftStatus");
+        badge.textContent = draftDirty ? "Unsaved changes" : "Saved";
+        badge.classList.toggle("dirty", draftDirty);
+        const previewBadge = document.getElementById("draftPreviewLabel");
+        previewBadge.hidden = !draftDirty;
+        previewBadge.textContent = draftDirty ? "Unsaved Draft preview" : "";
+        requestComposerPresentation();
+      }
+
       return {
         addProfile,
-        capabilityOverridesFromForm,
-        clearFieldError,
         clearFieldErrors,
-        cloneValue,
-        connectCapabilityView,
         deleteProfile,
         discardProfileChanges,
         discoverModels,
@@ -884,10 +1193,6 @@
         handleProfileSelection,
         handleWebSearchChange,
         markDraftDirty,
-        markDraftDirtyForCapabilityAdjustment,
-        modelStateMatchesCurrentConnection,
-        modelStateMatchesCurrentProfile,
-        isCodexSubscription,
         logoutCodex,
         refreshCodexAccount,
         renderCodexAuthState,
@@ -902,5 +1207,8 @@
         startCodexLogin,
         syncModelStateSource,
         toggleApiKeyVisibility,
+        updateCapabilityPreview,
+        updateDraftActions,
+        updateReasoningVisibility,
       };
       };

@@ -56,7 +56,7 @@ interface ProfileFields {
   name: string;
   model: string;
   parameters: {
-    maxOutputTokens: number;
+    maxOutputTokens?: number;
     temperature?: number;
     reasoning: {
       mode: "default" | "disabled" | "enabled";
@@ -101,6 +101,24 @@ export interface CodexSubscriptionConnection {
 }
 
 export type ModelConnection = DirectApiConnection | CodexSubscriptionConnection;
+
+export type DirectApiProfile = ProfileFields & {
+  connection: DirectApiConnection;
+  parameters: ProfileFields["parameters"] & { maxOutputTokens: number };
+};
+
+export type CodexSubscriptionProfile = ProfileFields & {
+  connection: CodexSubscriptionConnection;
+  parameters: Omit<ProfileFields["parameters"], "maxOutputTokens" | "temperature"> & {
+    maxOutputTokens?: never;
+    temperature?: never;
+  };
+  advanced: {
+    capabilityOverrides?: never;
+    hostedTools?: never;
+    extraBody?: never;
+  };
+};
 
 /** Editable form state. Name and model may intentionally be blank. */
 export type DraftProfile = ProfileFields & { connection: ModelConnection };
@@ -197,9 +215,7 @@ export function isValidApiModePair(
 
 export function isDirectApiProfile(
   profile: DraftProfile | SavedProfile,
-): profile is (DraftProfile | SavedProfile) & {
-  connection: DirectApiConnection;
-} {
+): profile is DirectApiProfile {
   return profile.connection.kind === "direct-api";
 }
 
@@ -229,9 +245,44 @@ export function requireDirectApiConnection(
 export function profileSecrets(
   profile: DraftProfile | SavedProfile,
 ): string[] {
-  return profile.connection.kind === "direct-api" && profile.connection.apiKey
-    ? [profile.connection.apiKey]
-    : [];
+  if (profile.connection.kind !== "direct-api") return [];
+  const secrets = [profile.connection.apiKey];
+  try {
+    const baseUrl = new URL(profile.connection.baseUrl);
+    secrets.push(...baseUrl.searchParams.values());
+    addQuerySecretForms(secrets, baseUrl.search.slice(1));
+    addQuerySecretForms(secrets, baseUrl.searchParams.toString());
+    addUrlSecretForms(secrets, baseUrl.hash.slice(1), false);
+  } catch {
+    // Profile validation owns invalid Base URLs; retain API-key redaction here.
+  }
+  return [...new Set(secrets.filter(Boolean))]
+    .sort((left, right) => right.length - left.length);
+}
+
+function addQuerySecretForms(secrets: string[], search: string): void {
+  for (const component of search.split("&")) {
+    const separator = component.indexOf("=");
+    if (separator < 0) continue;
+    addUrlSecretForms(secrets, component.slice(separator + 1), true);
+  }
+}
+
+function addUrlSecretForms(
+  secrets: string[],
+  raw: string,
+  formEncoded: boolean,
+): void {
+  if (!raw) return;
+  secrets.push(raw);
+  try {
+    const decoded = decodeURIComponent(
+      formEncoded ? raw.replaceAll("+", " ") : raw,
+    );
+    if (decoded) secrets.push(decoded);
+  } catch {
+    // Keep the raw form; URLSearchParams above also retains query's forgiving decode.
+  }
 }
 
 /**
@@ -243,14 +294,25 @@ export function validateDraftProfileForDiscovery(value: unknown): DraftProfile {
   const record = requiredRecord(value, "profile", "Profile must be an object.");
   assertOnlyProfileKeys(record);
   const id = profileIdValue(record.id);
-  return {
+  const connection = connectionValue(record.connection);
+  const identity = {
     id,
     name: draftString(record.name, "name"),
-    connection: connectionValue(record.connection),
     model: draftString(record.model, "model"),
-    parameters: draftParameters(record.parameters),
-    advanced: draftAdvanced(record.advanced),
   };
+  return connection.kind === "codex-subscription"
+    ? {
+        ...identity,
+        connection,
+        parameters: draftCodexSubscriptionParameters(record.parameters),
+        advanced: {},
+      }
+    : {
+        ...identity,
+        connection,
+        parameters: draftDirectApiParameters(record.parameters),
+        advanced: draftAdvanced(record.advanced),
+      };
 }
 
 export function validateDraftProfileForSave(
@@ -286,7 +348,9 @@ export function validateDraftProfileForSave(
   );
   assertOnlyKeys(
     parameters,
-    ["maxOutputTokens", "temperature", "reasoning"],
+    connection.kind === "codex-subscription"
+      ? ["reasoning"]
+      : ["maxOutputTokens", "temperature", "reasoning"],
     "parameters",
   );
   assertOnlyKeys(
@@ -298,10 +362,18 @@ export function validateDraftProfileForSave(
     ? {}
     : requiredRecord(record.advanced, "advanced", "Advanced settings must be an object.");
   if (connection.kind === "codex-subscription") {
-    validateCodexSubscriptionSettings(parameters, reasoning, advanced);
+    validateCodexSubscriptionSettings(reasoning, advanced);
+    return {
+      id,
+      name,
+      connection,
+      model: requiredString(record.model, "model", "Model is required."),
+      parameters: { reasoning: reasoningSettings(reasoning) },
+      advanced: {},
+    };
   }
 
-  const normalized: SavedProfile = {
+  const normalized: DirectApiProfile = {
     id,
     name,
     connection,
@@ -433,7 +505,6 @@ function directApiPairValue(
 }
 
 function validateCodexSubscriptionSettings(
-  parameters: Record<string, unknown>,
   reasoning: Record<string, unknown>,
   advanced: Record<string, unknown>,
 ): void {
@@ -441,12 +512,6 @@ function validateCodexSubscriptionSettings(
     throw new ProfileValidationError(
       "parameters.reasoning.mode",
       "Reasoning cannot be disabled for Codex subscription Profiles.",
-    );
-  }
-  if (parameters.temperature !== undefined) {
-    throw new ProfileValidationError(
-      "parameters.temperature",
-      "Temperature is not supported by Codex subscription Profiles.",
     );
   }
   if (reasoning.budgetTokens !== undefined) {
@@ -475,13 +540,15 @@ function validateCodexSubscriptionSettings(
   }
 }
 
-function advancedSettings(record: Record<string, unknown>): SavedProfile["advanced"] {
+function advancedSettings(
+  record: Record<string, unknown>,
+): DirectApiProfile["advanced"] {
   assertOnlyKeys(
     record,
     ["capabilityOverrides", "hostedTools", "extraBody"],
     "advanced",
   );
-  const result: SavedProfile["advanced"] = {};
+  const result: DirectApiProfile["advanced"] = {};
   if (record.capabilityOverrides !== undefined) {
     result.capabilityOverrides = capabilityOverrides(record.capabilityOverrides);
   }
@@ -518,7 +585,9 @@ function draftString(value: unknown, field: string): string {
   return value.trim();
 }
 
-function draftParameters(value: unknown): SavedProfile["parameters"] {
+function draftDirectApiParameters(
+  value: unknown,
+): DirectApiProfile["parameters"] {
   if (!isRecord(value)) {
     return {
       maxOutputTokens: 16_384,
@@ -550,9 +619,25 @@ function draftParameters(value: unknown): SavedProfile["parameters"] {
   };
 }
 
-function draftAdvanced(value: unknown): SavedProfile["advanced"] {
+function draftCodexSubscriptionParameters(
+  value: unknown,
+): CodexSubscriptionProfile["parameters"] {
+  const rawReasoning = isRecord(value) && isRecord(value.reasoning)
+    ? value.reasoning
+    : {};
+  return {
+    reasoning: {
+      mode: rawReasoning.mode === "enabled" ? "enabled" : "default",
+      ...(isReasoningEffort(rawReasoning.effort)
+        ? { effort: rawReasoning.effort }
+        : {}),
+    },
+  };
+}
+
+function draftAdvanced(value: unknown): DirectApiProfile["advanced"] {
   if (!isRecord(value)) return {};
-  const advanced: SavedProfile["advanced"] = {};
+  const advanced: DirectApiProfile["advanced"] = {};
   if (isRecord(value.capabilityOverrides)) {
     advanced.capabilityOverrides = cloneJsonValue(
       value.capabilityOverrides,

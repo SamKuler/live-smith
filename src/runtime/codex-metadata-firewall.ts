@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
+import { throwIfAborted } from "./host.js";
+
 export interface CodexMetadataFirewall {
   readonly chatgptBaseUrl: string;
   close(): Promise<void>;
@@ -8,7 +10,10 @@ export interface CodexMetadataFirewall {
 
 const loopbackAddress = "127.0.0.1";
 
-export async function startCodexMetadataFirewall(): Promise<CodexMetadataFirewall> {
+export async function startCodexMetadataFirewall(
+  signal?: AbortSignal,
+): Promise<CodexMetadataFirewall> {
+  throwIfAborted(signal);
   const routePrefix = `/${randomBytes(32).toString("hex")}/backend-api/`;
   const responses = new Map<string, string>([
     [
@@ -42,8 +47,15 @@ export async function startCodexMetadataFirewall(): Promise<CodexMetadataFirewal
   server.on("clientError", (_error, socket) => socket.destroy());
 
   try {
-    await listenOnLoopback(server);
-  } catch {
+    await listenOnLoopback(server, signal);
+    throwIfAborted(signal);
+  } catch (error) {
+    await closeServer(server).catch(() => undefined);
+    try {
+      throwIfAborted(signal);
+    } catch (abortError) {
+      throw abortError;
+    }
     throw new Error("Codex metadata firewall could not be started.");
   }
   const address = server.address();
@@ -71,21 +83,69 @@ export async function startCodexMetadataFirewall(): Promise<CodexMetadataFirewal
   };
 }
 
-async function listenOnLoopback(server: Server): Promise<void> {
+async function listenOnLoopback(
+  server: Server,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once("error", onError);
-    server.listen(0, loopbackAddress, () => {
+    let settled = false;
+    const cleanup = (): void => {
       server.off("error", onError);
-      resolve();
-    });
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onError = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      let reason: unknown = new Error("Operation aborted.");
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reason = error;
+      }
+      void closeServer(server).then(
+        () => {
+          cleanup();
+          reject(reason);
+        },
+        () => {
+          cleanup();
+          reject(reason);
+        },
+      );
+    };
+    server.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    try {
+      server.listen(0, loopbackAddress, () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      });
+    } catch (error) {
+      onError(error as Error);
+    }
   });
 }
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
-      if (error) reject(error);
+      if (
+        error &&
+        (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
+      ) reject(error);
       else resolve();
     });
     server.closeAllConnections();

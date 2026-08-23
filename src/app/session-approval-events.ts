@@ -1,6 +1,5 @@
-import * as path from "node:path";
-
 import type { ApprovalMode } from "../model/profile.js";
+import { storageScopeKey } from "../storage/scope.js";
 
 export interface SessionApprovalModeChange {
   sessionId: string;
@@ -9,23 +8,16 @@ export interface SessionApprovalModeChange {
 
 type SessionApprovalModeListener = (change: SessionApprovalModeChange) => void;
 
-const memoryStorageKey = Symbol("live-smith-memory-storage");
 const listenersByStorage = new Map<
   string | symbol,
   Set<SessionApprovalModeListener>
 >();
 
-function storageKey(storageDirectory: string | undefined): string | symbol {
-  return storageDirectory === undefined
-    ? memoryStorageKey
-    : path.resolve(storageDirectory);
-}
-
 export function subscribeSessionApprovalModeChanges(
   storageDirectory: string | undefined,
   listener: SessionApprovalModeListener,
 ): () => void {
-  const key = storageKey(storageDirectory);
+  const key = storageScopeKey(storageDirectory);
   const listeners = listenersByStorage.get(key) ?? new Set();
   listeners.add(listener);
   listenersByStorage.set(key, listeners);
@@ -39,7 +31,7 @@ export function publishSessionApprovalModeChange(
   storageDirectory: string | undefined,
   change: SessionApprovalModeChange,
 ): void {
-  const listeners = listenersByStorage.get(storageKey(storageDirectory));
+  const listeners = listenersByStorage.get(storageScopeKey(storageDirectory));
   if (!listeners) return;
   for (const listener of [...listeners]) {
     try {

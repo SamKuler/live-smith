@@ -4,11 +4,10 @@ import hostAdapterScript from "./client/host-adapter.script.html";
 import profileEditorScript from "./client/profile-editor.script.html";
 import attachmentsScript from "./client/attachments.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
-import capabilityPreviewScript from "./client/capability-preview.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
 import skillManagerScript from "./client/skill-manager.script.html";
 import bootstrapScript from "./client/bootstrap.script.html";
-import type { ChatDialogState } from "./chat-state.js";
+import type { ChatBridgeState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 
 declare const __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: string;
@@ -23,14 +22,13 @@ export function resultUrl(title: string, body: string): string {
 }
 
 export function chatHtml(
-  state: ChatDialogState,
+  state: ChatBridgeState,
   bridge: { baseUrl: string; token: string },
 ): string {
   return composeChatDocument(chatDialog, state, bridge, {
     attachments: attachmentsScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,
-    capabilityPreview: capabilityPreviewScript,
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     profileEditor: profileEditorScript,

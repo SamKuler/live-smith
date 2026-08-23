@@ -6,14 +6,13 @@
     <meta name="theme-color" content="#262626" />
     <title>Live Smith</title>
     <script>
-      window.__LIVE_SMITH_STATE__ = __STATE__;
+      window.__LIVE_SMITH_STATE__ = JSON.parse(__STATE__);
       window.__LIVE_SMITH_BRIDGE__ = __BRIDGE__;
       __HOST_ADAPTER_SCRIPT__
       __PROFILE_EDITOR_SCRIPT__
       __ATTACHMENTS_SCRIPT__
       __SKILL_MANAGER_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
-      __CAPABILITY_PREVIEW_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
       __BOOTSTRAP_SCRIPT__

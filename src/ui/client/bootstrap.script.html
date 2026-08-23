@@ -15,6 +15,59 @@
         };
         let activeAppConfirmation = null;
         let profileSettingsLocked = false;
+        let currentStatusSource = "state";
+        let composerOperationState = {
+          attachmentInProgress: false,
+          commandKind: null,
+          sendInProgress: false,
+          skillInProgress: false,
+        };
+
+        function presentStatus({
+          canceledFollowUpCount = 0,
+          isError = false,
+          message = "",
+          source = "bridge",
+          trailingMessage = "",
+        } = {}) {
+          currentStatusSource = source;
+          const cancellation = canceledFollowUpCount > 0
+            ? `${canceledFollowUpCount} queued follow-up${
+                canceledFollowUpCount === 1 ? "" : "s"
+              } canceled because the target Session is no longer available.`
+            : "";
+          const renderedMessage = [
+            String(message || ""),
+            cancellation,
+            String(trailingMessage || ""),
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const status = document.getElementById("status");
+          if (!status) return;
+          status.textContent = renderedMessage;
+          status.hidden = !renderedMessage;
+          status.classList.toggle(
+            "error",
+            Boolean(isError) || canceledFollowUpCount > 0,
+          );
+        }
+
+        function presentProfileGate(message) {
+          if (message) {
+            if (
+              !getState().status ||
+              currentStatusSource === "profile-gate"
+            ) {
+              presentStatus({ message, source: "profile-gate" });
+            }
+          } else if (currentStatusSource === "profile-gate") {
+            presentStatus({
+              message: getState().status || "",
+              source: "state",
+            });
+          }
+        }
 
         function finishAppConfirmation(accepted) {
           const confirmation = activeAppConfirmation;
@@ -87,12 +140,26 @@
           }, true);
         }
 
-        const bridgeClient = factories.createBridgeClient({
-          bridgeConfig,
-          getState,
-          hostAdapter,
-          setState,
-        });
+        let bridgeClient;
+        try {
+          bridgeClient = factories.createBridgeClient({
+            bridgeConfig,
+            getState,
+            presentStatus,
+            setState,
+          });
+        } catch {
+          delete window.LiveSmithFactories;
+          window.addEventListener("DOMContentLoaded", () => {
+            document.querySelector(".app")?.setAttribute("inert", "");
+            presentStatus({
+              isError: true,
+              message: "Live Smith received invalid initial state. Close and reopen the window before continuing.",
+              source: "initial-state",
+            });
+          });
+          return;
+        }
 
         const attachments = factories.createAttachments({
           deleteAttachment: bridgeClient.deleteAttachment,
@@ -114,18 +181,11 @@
         const profileEditor = factories.createProfileEditor({
           confirmAction,
           getState,
+          hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
+          isOperationInProgress: bridgeClient.isOperationInProgress,
+          requestComposerPresentation: renderComposerPresentation,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
-        });
-
-        const capabilityPreview = factories.createCapabilityPreview({
-          getState,
-          getSubscriptionSendGateMessage:
-            bridgeClient.getSubscriptionSendGateMessage,
-          hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
-          profileEditor,
-          isOperationInProgress: bridgeClient.isOperationInProgress,
-          isSendInProgress: bridgeClient.isSendInProgress,
         });
 
         const sessionTimeline = factories.createSessionTimeline({
@@ -142,12 +202,49 @@
 
         function renderStatusAndContext() {
           const state = getState();
-          const status = document.getElementById("status");
-          status.textContent = state.status || "";
-          status.hidden = !state.status;
-          delete status.dataset.profileGate;
-          status.classList.remove("error");
+          presentStatus({
+            message: state.status || "",
+            source: "state",
+          });
           renderContextSummary(state.contextSummary || "");
+        }
+
+        function renderComposerPresentation() {
+          const button = document.getElementById("sendButton");
+          if (!button) return;
+          const running = composerOperationState.sendInProgress;
+          button.textContent = running ? "Stop" : "Send";
+          button.classList.toggle("stop", running);
+          if (running) {
+            button.disabled = false;
+            button.setAttribute("aria-label", "Stop current response");
+            button.setAttribute("title", "Stop current response");
+            button.removeAttribute("aria-keyshortcuts");
+            presentProfileGate("");
+            return;
+          }
+
+          button.setAttribute("aria-label", "Send message");
+          button.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+          const draft = profileEditor.getDraftState();
+          const noActiveProfile = !getState().settings.activeProfileId;
+          const subscriptionGate = bridgeClient.getSubscriptionSendGateMessage();
+          const profileGate = noActiveProfile
+            ? "Create and save a model profile before sending."
+            : draft.dirty
+              ? "Save or discard profile changes before sending."
+              : subscriptionGate;
+          const composerBlocked = Boolean(composerOperationState.commandKind) &&
+              composerOperationState.commandKind !== "save_global_settings" ||
+            composerOperationState.attachmentInProgress ||
+            composerOperationState.skillInProgress;
+          button.disabled = composerBlocked || Boolean(profileGate);
+          button.title = draft.dirty
+            ? "Save or discard profile changes before sending."
+            : noActiveProfile
+              ? "Create and save a profile before sending."
+              : subscriptionGate;
+          presentProfileGate(composerBlocked ? "" : profileGate);
         }
 
         function renderContextSummary(summary) {
@@ -307,7 +404,7 @@
             }
             if (!accepted) return;
           }
-          bridgeClient.closeWithResult({ kind: "close" });
+          hostAdapter.closeWithResult({ kind: "close" });
         }
 
         function renderApplication() {
@@ -320,8 +417,8 @@
           attachments.renderPending();
           skillManager.render();
           profileEditor.renderCodexAuthState(profileSettingsLocked);
-          capabilityPreview.updateReasoningVisibility();
-          capabilityPreview.updateDraftActions();
+          profileEditor.updateReasoningVisibility();
+          profileEditor.updateDraftActions();
         }
 
         const commandFeedback = {
@@ -447,8 +544,13 @@
           commandKind,
           sendInProgress,
           skillInProgress,
-          steerInProgress,
         }) {
+          composerOperationState = {
+            attachmentInProgress,
+            commandKind,
+            sendInProgress,
+            skillInProgress,
+          };
           const composerBlockingCommand = Boolean(commandKind) &&
             commandKind !== "save_global_settings";
           const operationBusy = Boolean(commandKind) || sendInProgress ||
@@ -488,19 +590,17 @@
             skillInProgress;
           document.getElementById("defaultFollowUpBehavior").disabled =
             Boolean(commandKind) || attachmentInProgress || skillInProgress;
-          document.getElementById("sendButton").disabled = sendInProgress
-            ? false
-            : composerBlockingCommand || attachmentInProgress || skillInProgress;
           attachments.setBusy(operationBusy);
           skillManager.setBusy(settingsBusy);
 
           if (!operationBusy) {
-            capabilityPreview.updateReasoningVisibility();
-            capabilityPreview.updateDraftActions();
+            profileEditor.updateReasoningVisibility();
+            profileEditor.updateDraftActions();
+          } else {
+            renderComposerPresentation();
           }
         }
 
-        profileEditor.connectCapabilityView(capabilityPreview);
         bridgeClient.connectView({
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
           clearFieldErrors: profileEditor.clearFieldErrors,
@@ -519,9 +619,7 @@
             return profileEditor.showFieldError(field, message);
           },
           syncModelStateSource: profileEditor.syncModelStateSource,
-          updateCapabilityPreview: capabilityPreview.updateCapabilityPreview,
-          updateDraftActions: capabilityPreview.updateDraftActions,
-          updateReasoningVisibility: capabilityPreview.updateReasoningVisibility,
+          updateCapabilityPreview: profileEditor.updateCapabilityPreview,
           validateAttachmentsForSend: attachments.validateSend,
         });
         delete window.LiveSmithFactories;

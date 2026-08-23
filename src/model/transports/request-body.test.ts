@@ -43,3 +43,28 @@ test("mergeExtraBody rejects protected structural fields before mutation", () =>
     assert.deepEqual(generated, before);
   }
 });
+
+test("mergeExtraBody preserves __proto__ as JSON data without changing prototypes", () => {
+  const generated = {
+    model: "model-a",
+    metadata: { generated: true },
+  };
+  const extraBody = JSON.parse(
+    '{"__proto__":{"root":true},"metadata":{"__proto__":{"nested":true}}}',
+  ) as Record<string, unknown>;
+
+  const merged = mergeExtraBody(generated, extraBody, ["model"]);
+  const metadata = merged.metadata;
+
+  assert.equal(Object.getPrototypeOf(merged), Object.prototype);
+  assert.ok(typeof metadata === "object" && metadata !== null);
+  assert.equal(Object.getPrototypeOf(metadata), Object.prototype);
+  assert.equal(Object.hasOwn(merged, "__proto__"), true);
+  assert.equal(Object.hasOwn(metadata, "__proto__"), true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(merged)),
+    JSON.parse(
+      '{"model":"model-a","metadata":{"generated":true,"__proto__":{"nested":true}},"__proto__":{"root":true}}',
+    ),
+  );
+});

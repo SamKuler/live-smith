@@ -176,7 +176,7 @@ export function assertAudioInputEnabled(request: TransportRequest): void {
       "Audio input is disabled by the active model Profile capability.",
     );
   }
-  if (request.runtimeProfile.inputCapabilityEvidence?.audio !== "supported") {
+  if (request.runtimeProfile.inputCapabilityEvidence.audio !== "supported") {
     throw new Error(
       "Audio input requires supported capability evidence from the active model Profile.",
     );

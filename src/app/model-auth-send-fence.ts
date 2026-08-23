@@ -1,13 +1,20 @@
-import * as path from "node:path";
-
 import type { ManagedAuthState } from "../model/provider.js";
-import { throwIfAborted } from "../runtime/host.js";
+import {
+  createHostAbortController,
+  throwIfAborted,
+  waitForPromiseWithSignal,
+} from "../runtime/host.js";
+import {
+  storageScopeKey,
+  type StorageScopeKey,
+} from "../storage/scope.js";
 
 type ManagedAuthStatus = "unavailable" | "signed-out" | "pending" | "signed-in";
 
 export interface ModelAuthSendFence {
   enterRead(signal?: AbortSignal): Promise<() => void>;
-  enterSend(signal?: AbortSignal): Promise<(() => void) | null>;
+  /** Admit one managed subscription discovery or send; Direct API bypasses it. */
+  enterManagedUse(signal?: AbortSignal): Promise<(() => void) | null>;
   enterAuth(owner: symbol, signal?: AbortSignal): Promise<(() => void) | null>;
   enterPendingOwnerCleanup(
     owner: symbol,
@@ -15,7 +22,7 @@ export interface ModelAuthSendFence {
   ): Promise<(() => void) | null>;
   hasPendingLogin(): boolean;
   reconcilePendingAuthState(
-    readAuthState: () => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
     signal?: AbortSignal,
   ): Promise<ManagedAuthState | undefined>;
   updateAuthState(
@@ -34,11 +41,16 @@ interface ActiveAuthMutation {
   settle(): void;
 }
 
+interface PendingAuthReconciliation {
+  readonly controller: ReturnType<typeof createHostAbortController>;
+  readonly settled: Promise<ManagedAuthState>;
+}
+
 class ProcessModelAuthSendFence implements ModelAuthSendFence {
   private activeOperations = 0;
   private authMutation: ActiveAuthMutation | null = null;
   private pendingLoginOwner: symbol | null = null;
-  private pendingAuthReconciliation: Promise<ManagedAuthState> | null = null;
+  private pendingAuthReconciliation: PendingAuthReconciliation | null = null;
   private generation = 0;
   private poisonError: Error | undefined;
   private readonly stateChangeWaiters = new Set<() => void>();
@@ -49,7 +61,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       this.assertHealthy();
       const mutation = this.authMutation;
       if (mutation) {
-        await waitWithSignal(mutation.settled, signal);
+        await waitForPromiseWithSignal(mutation.settled, signal);
         continue;
       }
       this.activeOperations += 1;
@@ -60,13 +72,13 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
     }
   }
 
-  async enterSend(signal?: AbortSignal): Promise<(() => void) | null> {
+  async enterManagedUse(signal?: AbortSignal): Promise<(() => void) | null> {
     for (;;) {
       throwIfAborted(signal);
       this.assertHealthy();
       const mutation = this.authMutation;
       if (mutation) {
-        await waitWithSignal(mutation.settled, signal);
+        await waitForPromiseWithSignal(mutation.settled, signal);
         continue;
       }
       if (this.pendingLoginOwner || this.pendingAuthReconciliation) return null;
@@ -87,7 +99,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       this.assertHealthy();
       const activeMutation = this.authMutation;
       if (activeMutation) {
-        await waitWithSignal(activeMutation.settled, signal);
+        await waitForPromiseWithSignal(activeMutation.settled, signal);
         continue;
       }
       if (this.pendingAuthReconciliation) {
@@ -124,10 +136,13 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       if (this.pendingLoginOwner !== owner) return null;
       const activeMutation = this.authMutation;
       if (activeMutation) {
-        await waitWithSignal(activeMutation.settled, signal);
+        await waitForPromiseWithSignal(activeMutation.settled, signal);
         continue;
       }
       if (this.pendingAuthReconciliation) {
+        this.pendingAuthReconciliation.controller.abort(
+          new Error("The ChatGPT sign-in owner closed."),
+        );
         await this.waitForStateChange(signal);
         continue;
       }
@@ -156,7 +171,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 
   async reconcilePendingAuthState(
-    readAuthState: () => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
     signal?: AbortSignal,
   ): Promise<ManagedAuthState | undefined> {
     throwIfAborted(signal);
@@ -167,16 +182,29 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
         "Pending ChatGPT sign-in reconciliation requires a shared auth read.",
       );
     }
-    this.pendingAuthReconciliation ??=
-      this.performPendingAuthReconciliation(readAuthState);
-    return waitWithSignal(this.pendingAuthReconciliation, signal);
+    if (this.pendingAuthReconciliation === null) {
+      const controller = createHostAbortController();
+      this.pendingAuthReconciliation = {
+        controller,
+        settled: this.performPendingAuthReconciliation(
+          readAuthState,
+          controller.signal,
+        ),
+      };
+    }
+    return waitForPromiseWithSignal(
+      this.pendingAuthReconciliation.settled,
+      signal,
+    );
   }
 
   private async performPendingAuthReconciliation(
-    readAuthState: () => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
+    signal: AbortSignal,
   ): Promise<ManagedAuthState> {
     try {
-      const auth = await readAuthState();
+      const auth = await readAuthState(signal);
+      throwIfAborted(signal);
       this.assertHealthy();
       if (
         this.pendingLoginOwner !== null &&
@@ -220,6 +248,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       "The shared ChatGPT subscription runtime could not be shut down safely. Restart the Live Smith extension before continuing.",
       { cause },
     );
+    this.pendingAuthReconciliation?.controller.abort(this.poisonError);
     this.authMutation?.settle();
     this.signalStateChange();
   }
@@ -231,6 +260,9 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       mutation.settle();
     }
     if (this.pendingLoginOwner === owner) {
+      this.pendingAuthReconciliation?.controller.abort(
+        new Error("The ChatGPT sign-in owner closed."),
+      );
       this.pendingLoginOwner = null;
       this.generation += 1;
     }
@@ -270,55 +302,19 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 }
 
-const fencesByStorageDirectory = new Map<string, ModelAuthSendFence>();
+const fencesByStorageDirectory = new Map<StorageScopeKey, ModelAuthSendFence>();
 
 export function modelAuthSendFenceForStorage(
   storageDirectory: string | undefined,
 ): ModelAuthSendFence {
   if (storageDirectory === undefined) return new ProcessModelAuthSendFence();
-  const key = path.resolve(storageDirectory);
+  const key = storageScopeKey(storageDirectory);
   let fence = fencesByStorageDirectory.get(key);
   if (!fence) {
     fence = new ProcessModelAuthSendFence();
     fencesByStorageDirectory.set(key, fence);
   }
   return fence;
-}
-
-function waitWithSignal<T>(
-  operation: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) {
-    try {
-      throwIfAborted(signal);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      try {
-        throwIfAborted(signal);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
 }
 
 function once(release: () => void): () => void {

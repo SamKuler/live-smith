@@ -555,6 +555,76 @@ test("schema-v4 rejects unknown top-level and Profile fields", () => {
   );
 });
 
+test("nested schema-v3/v4 settings drop the legacy subscription output limit", () => {
+  for (const schemaVersion of [3, 4] as const) {
+    const decoded = decodeAgentSettings({
+      schemaVersion,
+      activeProfileId: "subscription",
+      profiles: [{
+        id: "subscription",
+        name: "ChatGPT subscription",
+        connection: { kind: "codex-subscription", provider: "openai" },
+        model: "gpt-5.6-sol",
+        parameters: {
+          maxOutputTokens: 8192,
+          reasoning: { mode: "default" },
+        },
+        advanced: {},
+      }],
+      approvalMode: "manual",
+      ...(schemaVersion === 4
+        ? {
+            defaultFollowUpBehavior: "queue",
+            defaultFollowUpBehaviorRevision: "0",
+          }
+        : {}),
+    });
+
+    assert.deepEqual(decoded.profiles[0]?.parameters, {
+      reasoning: { mode: "default" },
+    });
+  }
+});
+
+test("the next authorized settings write omits a legacy subscription output limit", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-settings-subscription-shape-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const target = path.join(directory, "live-smith-settings.json");
+  const stored = {
+    schemaVersion: 4,
+    activeProfileId: "subscription",
+    profiles: [{
+      id: "subscription",
+      name: "ChatGPT subscription",
+      connection: { kind: "codex-subscription", provider: "openai" },
+      model: "gpt-5.6-sol",
+      parameters: {
+        maxOutputTokens: 8192,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+  } as const;
+  const original = JSON.stringify(stored, null, 2);
+  await fs.writeFile(target, original);
+
+  assert.equal((await loadAgentSettings(directory)).profiles[0]?.parameters.maxOutputTokens, undefined);
+  assert.equal(await fs.readFile(target, "utf8"), original);
+
+  await saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" });
+  const persisted = JSON.parse(await fs.readFile(target, "utf8")) as {
+    profiles: Array<{ parameters: Record<string, unknown> }>;
+  };
+  assert.deepEqual(persisted.profiles[0]?.parameters, {
+    reasoning: { mode: "default" },
+  });
+});
+
 test("settings mutations preserve the original bytes when one stored Profile is invalid", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   const settingsPath = path.join(directory, "live-smith-settings.json");

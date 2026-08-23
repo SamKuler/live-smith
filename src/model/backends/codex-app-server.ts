@@ -3,11 +3,15 @@ import { URL } from "node:url";
 import { clearTimeout, setTimeout } from "node:timers";
 
 import { throwIfAborted } from "../../runtime/host.js";
+import {
+  MAX_DISCOVERED_MODEL_COUNT,
+  MAX_MODEL_DISCOVERY_PAGE_COUNT,
+} from "../catalog.js";
 import type {
   DiscoveredModelInfo,
+  CodexSubscriptionBackend,
   ManagedAuthReadOptions,
   ManagedAuthState,
-  ModelBackend,
   ModelBackendTerminalListener,
   ModelFunctionTool,
   ModelToolTurnReservation,
@@ -24,8 +28,6 @@ import {
 } from "../profile.js";
 import { MAX_CODEX_TURN_START_BYTES } from "./codex-limits.js";
 
-const maximumModelPages = 20;
-const maximumModels = 1_000;
 const maximumOutputCharacters = 1_000_000;
 const maximumToolCalls = 32;
 const maximumConcurrentToolTurns = 4;
@@ -76,17 +78,7 @@ export interface CodexRpcConnection {
   close(): Promise<void>;
 }
 
-export interface CodexAppServerBackend extends ModelBackend {
-  readonly kind: "codex-subscription";
-  onTerminal(listener: ModelBackendTerminalListener): () => void;
-  reserveToolTurn(): ModelToolTurnReservation;
-  readAuthState(
-    signal?: AbortSignal,
-    options?: ManagedAuthReadOptions,
-  ): Promise<ManagedAuthState>;
-  beginLogin(signal?: AbortSignal): Promise<ManagedAuthState>;
-  logout(signal?: AbortSignal): Promise<ManagedAuthState>;
-}
+export type CodexAppServerBackend = CodexSubscriptionBackend;
 
 export function createCodexAppServerBackend(input: {
   rpc: CodexRpcConnection;
@@ -96,9 +88,14 @@ export function createCodexAppServerBackend(input: {
 
 export async function startCodexAppServerBackend(
   storageDirectory: string,
+  signal?: AbortSignal,
 ): Promise<CodexAppServerBackend> {
   const { CodexRpcClient } = await import("./codex-rpc.js");
-  const rpc = await CodexRpcClient.start({ storageDirectory });
+  throwIfAborted(signal);
+  const rpc = await CodexRpcClient.start({
+    storageDirectory,
+    ...(signal === undefined ? {} : { signal }),
+  });
   return createCodexAppServerBackend({ rpc });
 }
 
@@ -283,7 +280,7 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
     const models = new Map<string, DiscoveredModelInfo>();
     const seenCursors = new Set<string>();
     let cursor: string | null = null;
-    for (let page = 0; page < maximumModelPages; page += 1) {
+    for (let page = 0; page < MAX_MODEL_DISCOVERY_PAGE_COUNT; page += 1) {
       throwIfAborted(signal);
       const response = await this.rpc.request<unknown>(
         "model/list",
@@ -302,7 +299,7 @@ class CodexAppServerBackendImpl implements CodexAppServerBackend {
           throw new Error("Codex returned conflicting model metadata.");
         }
         models.set(model.id, model);
-        if (models.size > maximumModels) {
+        if (models.size > MAX_DISCOVERED_MODEL_COUNT) {
           throw new Error("Codex returned too many models.");
         }
       }
@@ -1050,7 +1047,7 @@ function codexInputs(request: TransportRequest): unknown[] {
     if (part.type === "document") {
       throw new Error("The Codex subscription backend does not accept PDF input.");
     }
-    const evidence = request.runtimeProfile.inputCapabilityEvidence?.[part.type];
+    const evidence = request.runtimeProfile.inputCapabilityEvidence[part.type];
     if (
       !request.runtimeProfile.capabilities.inputs[part.type] ||
       evidence !== "supported"

@@ -239,192 +239,74 @@ activating it, even before Profile name or model has been entered.
 
 ### Connection backends
 
-`direct-api` is the direct HTTP/SSE connection. Live Smith owns the wire
-request and uses the saved Profile's base URL and API key. It is also the
-explicit fallback when the experimental subscription connection is unsuitable:
-Live Smith never silently switches connections, inherits an environment API
-key, or turns a subscription failure into separately billed API usage.
+`direct-api` sends the selected OpenAI or Anthropic protocol directly over
+HTTP/SSE using the saved Profile connection. It is the explicit alternative
+when the experimental subscription backend is unsuitable. Live Smith never
+inherits an environment API key, silently changes connections, or converts a
+subscription failure into separately billed API usage.
 
 `codex-subscription` appears as **ChatGPT subscription (Experimental)**. It
-requires the official Codex CLI `0.148.x` on `PATH` and starts `codex
-app-server` over local stdio. App Server owns ChatGPT device-code login and
-requests consume the signed-in account's applicable Codex subscription limits;
-Live Smith does not extract an OAuth token and send it to `/v1/responses`. Its
-`CODEX_HOME` is fixed to the private
-`<storageDirectory>/codex-subscription` directory, forces the CLI's file
-credential store, and verifies the initialized server reports that canonical
-home. It neither reads nor overwrites the user's normal `~/.codex/auth.json` or
-uses the normal Codex Keychain entry.
+requires the official `@openai/codex@0.148.x` installed globally with npm and
+its `codex` launcher on `PATH`. Live Smith resolves the matching native
+payload and delegates device-code authentication, account-aware model discovery,
+and model turns to `codex app-server`; usage is charged against the signed-in
+account's applicable Codex subscription limits.
 
-The managed process is not a second tool-running agent. Coding, shell/code
-mode, browser/computer use, MCP, apps, plugins, Codex Skills and workspace
-dependencies, image generation, multi-agent behavior, hooks, and Web Search
-are disabled. Memory use/generation, notifications, request-user-input,
-planning/goals, automatic/bundled Codex Skill instructions, and provider-hosted
-search are also forced off. Codex's permission, apps, collaboration-mode, and
-environment prompt blocks plus its separate Skill/MCP orchestrators are
-disabled. Project instruction bytes are capped at zero and project-root
-markers are empty, preventing ancestor `AGENTS.md` and `.codex/config.toml`
-discovery. CLI history persistence, analytics, feedback, update checks, OTEL
-export, remote plugins/sharing, in-app updates, and remote compaction v2 are
-disabled as well. Launch-time overrides clear configured MCP servers and custom
-model providers, require ChatGPT login, pin the official OpenAI model endpoint,
-and each thread pins the built-in OpenAI provider. The separate process-level
-ChatGPT product-metadata base is forced to a randomized private loopback policy
-responder owned by the same backend. It answers only Codex 0.148's attribution
-settings request with attribution disabled and its cloud-config request with an
-empty bundle; every other route is rejected. This prevents those upstream
-extensions from making external requests or adding Git-attribution developer
-instructions. The child receives only an allowlist of executable lookup,
-operating-system, temporary-directory, and locale variables plus Live Smith's
-controlled `CODEX_HOME`. Ambient proxy variables, custom-CA settings, provider
-credentials, and arbitrary parent-process variables are not inherited, so an
-untrusted host proxy cannot intercept either the private loopback responder or
-Codex's official device-login and token refresh/revoke routes. Enterprise proxy
-support would require an explicit trusted configuration; it is not inferred
-from the Extension Host environment. An unexpected
-persistent `config.toml`, symlinked private directory, linked/non-regular
-`auth.json`, or mismatched initialized Codex home fails before use. An existing
-isolated auth file is tightened to `0600` on POSIX.
-App Server starts only after its private runtime workspace is confirmed empty;
-each model call then uses an ephemeral thread with no runtime workspace roots
-or environments, empty developer instructions, and a read-only sandbox. Codex
-returns a schema-constrained JSON description of text and requested Live Smith
-tool calls; unexpected App Server tool activity or an unknown tool name fails
-closed. Only Live Smith's provider-neutral outer loop executes the bounded
-Live observation and action tools, preserving its normal validation,
-confirmation, mutation queue, cancellation, and state-drift checks.
+The managed login is deliberately isolated from the user's normal Codex setup:
 
-Exact Codex 0.148 has one unavoidable metadata boundary: App Server starts an
-online model-catalog refresh when the process starts, repeats it every three
-minutes, and may write `models_cache.json` inside the isolated managed home.
-There is no supported switch that disables both that worker and disk cache while
-retaining account-aware dynamic model discovery. This is catalog metadata
-traffic, not a model turn, and Live Smith never copies that file into settings,
-Sessions, events, or its Direct API model cache. The upstream file is not keyed
-by ChatGPT account and can remain fresh for five minutes, so Live Smith clears
-its own modal catalog on every auth generation but does not claim the upstream
-catalog itself is account-scoped.
+- `CODEX_HOME` is fixed to
+  `<storageDirectory>/codex-subscription`.
+- Live Smith does not read or write `~/.codex/auth.json`, the normal Codex
+  Keychain entry, user `config.toml`, Skills, memories, history, or project
+  instructions.
+- The child receives a strict environment allowlist rather than ambient API
+  keys, proxy variables, custom CAs, or provider credentials.
+- Signing out clears only Live Smith's isolated login. Deleting a Profile does
+  not sign out the shared account.
+- Live Smith reads the global npm installation but never installs, updates, or
+  modifies it.
 
-Codex may cache the loopback responder's empty cloud-config result inside the
-isolated home. Live Smith does not treat that as authorization to bypass a
-managed workspace policy: every exact 0.148 workspace plan type, plus unknown
-plan types, is marked ineligible and fails before
-model discovery or thread creation. Check and Sign out remain available.
+The managed process is a model-only backend, not another tool-running agent.
+Shell/coding, browser/computer use, MCP, plugins, Codex Skills, hosted search,
+memory, project discovery, and other agent surfaces are disabled or rejected.
+Only Live Smith's provider-neutral outer loop may validate and execute Live
+tools. All subscription Profiles in one Ableton storage directory share one
+canonical storage identity, auth gate, and managed App Server; login/logout
+cannot race subscription sends from another modal, while Direct API sends stay
+independent of managed login. An unconfirmed shutdown poisons the subscription
+boundary instead of admitting a replacement process.
 
-ChatGPT auth mutations and every agent send share a process-wide gate for the
-same Ableton storage directory. Login/logout cannot race a send in another
-modal, and a pending device login blocks other modals and new sends until a
-Check observes signed-in, signed-out, or definitive failure, cancellation or
-sign-out succeeds, or its
-owner closes. Every modal also acquires one reference to the same canonical-
-storage-keyed backend manager and App Server. Canonicalization resolves the
-longest existing ancestor before appending any not-yet-created storage suffix,
-so a parent-directory symlink cannot split first-open and later-open modals into
-different process or fence owners. One `AuthManager`, refresh lock, model
-worker, and `models_cache.json` writer own the shared `auth.json`.
-The last modal closes the process; closing the owner of an unfinished device
-flow retires that shared runtime before releasing the pending-login gate.
+Before persisting a subscription prompt, Live Smith refreshes account readiness,
+requires an eligible signed-in account, refreshes a generation-scoped catalog
+miss, and verifies that the saved model remains available. A failed readiness
+check is reported as not persisted so Queue pauses at its head. Direct API
+temperature, output-token and reasoning-budget controls are unavailable for
+subscription Profiles; supported reasoning efforts and image/audio evidence
+come from the App Server catalog. Subscription Profiles therefore persist no
+placeholder output-token value that the App Server would ignore.
 
-Each definitive Check and every login/logout attempt advances an auth
-generation that invalidates every modal's credential-free auth/catalog
-projection. Each modal clears its projection before its next state, auth,
-discovery, or send operation. Successful mutations update the one shared App
-Server in place. If a
-login/logout outcome is unknown, the owner instead retires that exact shared
-backend to confirmed process exit before publishing the generation or
-releasing the storage-wide transition. State, auth, discovery, and send in
-other modals wait behind that transition. If exit cannot be
-confirmed, subscription use for that storage directory is poisoned until the
-extension process restarts. Device-login completion notifications clear the
-backend's finished or failed flow without exposing upstream error text. Any
-modal that subsequently observes an authoritative signed-in, signed-out, or
-definitive failed state reconciles the stale pending owner exactly once and
-publishes the new auth generation. Pending-login state and Check callers share
-one storage-wide readiness refresh, so concurrent modals cannot overlap refresh
-work or release the send gate before that read settles; pending and
-non-definitive results keep the owner locked. Closing one waiting modal cancels
-only that modal's wait; the shared read remains available to other waiters and
-is bounded by RPC timeout, terminal connection failure, or the last backend
-owner closing.
-
-Explicit Check and every subscription send readiness preflight ask App Server
-to refresh the managed credential. Ordinary signed-in or signed-out UI
-hydration remains passive; resolving a pending device flow uses the shared
-readiness refresh described above.
-Before persisting any subscription prompt, the server confirms an eligible
-signed-in account, refreshes a generation-scoped catalog miss through the same
-managed backend, and validates the selected runtime model. A permanent refresh
-failure, failed login, missing model, or other readiness failure remains
-unpersisted so a queued head pauses instead of draining the FIFO. Direct
-API temperature, output-token, and
-reasoning-budget controls do not apply, and reasoning cannot be set to
-Disabled; supported effort choices, including `ultra` when advertised, come
-from the App Server model catalog. Unknown catalog effort values fail closed
-instead of being silently dropped.
-Live Smith's subscription catalog projection is modal-scoped, invalidated
-whenever auth may change, cleared before that modal's next relevant operation,
-and never written to its own disk cache. Signing out requires
-an explicit confirmation. Image/audio data is rechecked against catalog
-evidence at the backend, and an oversized encoded subscription turn fails
-locally with guidance to shorten the Session or remove an attachment.
-
-Every thread and turn explicitly clears inherited service-tier configuration;
-with `fast_mode` disabled, Codex must report a null effective tier before a turn
-may start, so priority/flex/legacy fast routing cannot be selected. Terminal turns
-unsubscribe their ephemeral thread. One backend accepts at most four concurrent
-turns and recycles after eight created threads once all active turns and
-first-turn reservations drain. Threshold recycling rejects new sends while
-allowing already-admitted continuations to finish. When the four instantaneous
-turn slots are occupied, continuations from already-persisted sends wait in
-arrival order and take priority over new first-turn reservations instead of
-failing with a capacity error. The waiters share their owning send's abort
-lifetime and do not create independent model work. Unsafe cleanup and any
-forbidden App Server runtime item block further turns and retire the process
-after owned work drains.
-Terminal RPC failures conditionally evict only their exact backend; replacement
-waits for confirmed process exit, and an unconfirmed SIGKILL poisons the shared
-storage-directory subscription boundary instead of starting a second possibly
-overlapping process. Before the prompt is persisted, the backend reserves one
-first-turn capacity slot; threshold recycling waits for that reservation and
-the first model step consumes it on the preflighted backend. Later agent-loop
-steps reacquire the current manager slot, wait for fair admission on an
-eligible live backend when necessary, and otherwise hand off to a confirmed
-replacement. Child `error`, `exit`, and `close` share one terminal observation,
-so a missing executable's `error` followed by `close` is reported as unavailable
-without unnecessary shutdown escalation or storage poison.
-
-All subscription Profiles in one Ableton storage directory share this isolated
-ChatGPT login. Deleting a Profile does not sign out that shared account; use the
-explicit **Sign out** action. The `codex` executable is resolved from `PATH`, so
-users must install and trust the official binary. Live Smith verifies its
-reported `0.148.x` protocol line and isolated home, not binary provenance.
+The official Codex process may write its own account/model metadata caches
+inside the isolated managed home and performs official device-login, token and
+model-catalog network requests. Live Smith's local product-metadata responder
+blocks Codex 0.148's unrelated attribution/cloud-config requests. These files
+and requests are never copied into normal Codex state, Profile settings,
+Sessions, events, or the Direct API model cache.
 
 > [!WARNING]
-> This connection is experimental. OpenAI documents `codex app-server` as
-> experimental and unsupported for production workloads, and its protocol
-> schema is version-specific, so Live Smith accepts only the `0.148.x` line.
-> Node subprocess coverage does not establish compatibility with Ableton's real
-> Extension Host; that end-to-end subprocess smoke remains pending. Use a
-> Direct API Profile when this risk is unacceptable.
+> This backend is experimental and accepts only Codex `0.148.x`. Local npm
+> bins, standalone binaries, and opaque package-manager shims fail closed.
+> Ableton Extension Host subprocess compatibility still requires an end-to-end
+> host smoke. Use a Direct API Profile when that risk is unacceptable.
 
-OpenAI references: [Codex authentication](https://learn.chatgpt.com/docs/auth),
-[subscription and API-key billing](https://learn.chatgpt.com/docs/pricing),
-[App Server](https://learn.chatgpt.com/docs/app-server), and
-[official CLI releases](https://github.com/openai/codex/releases).
+The complete installation contract, process boundary, cache/network behavior,
+auth concurrency model, turn admission rules, and primary references live in
+[Model Profiles and Connection Backends](docs/MODEL_PROVIDERS.md#chatgpt-subscription-experimental).
 
-Claude/Anthropic subscription login is not implemented. Anthropic's published
-credential policy directs third-party products to Console API keys or supported
-cloud providers and does not permit offering Claude.ai login or routing user
-requests through consumer subscription credentials without approval. Live
-Smith therefore exposes no Claude subscription tier as a connection unless
-Anthropic first grants written approval. It does not launch Claude Code for
-inference, read `~/.claude` credentials, copy OAuth tokens, or call private
-Claude.ai endpoints. Anthropic remains available through the direct
-`Anthropic Messages` mode with a Claude Console API key; a paid Claude
-subscription is separate from API billing. See Anthropic's [authentication and
-credential-use policy](https://code.claude.com/docs/en/legal-and-compliance) and
-[subscription/API billing separation](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console).
+Claude/Anthropic subscription login is not implemented. Anthropic remains
+available through the Direct API `Anthropic Messages` mode with a Console API
+key. Live Smith will not offer Claude.ai login or route consumer subscription
+credentials unless Anthropic grants prior written approval; see the
+[Anthropic subscription boundary](docs/MODEL_PROVIDERS.md#anthropic-subscription-boundary).
 
 ### Profile lifecycle
 
@@ -516,9 +398,10 @@ that cannot work in the host. The composer's compact **+** menu also offers
 **Attach selected Live audio**, which copies the file backing the selected Live
 Audio Clip, Sample, or Simpler into the same pending Session state. This command
 accepts only the Session ID; the UI and model cannot provide an arbitrary path.
-Uploading or copying a supported file does not require the currently active
-Profile to support that input, so it can remain pending while you switch
-Profiles.
+Documents and audio can be uploaded or copied without a compatible active
+Profile. Image upload already requires verified image support from the active
+saved Runtime Profile. Every accepted attachment is checked again at Send, so
+it can remain pending while you switch Profiles.
 
 Image sends require the active saved Runtime Profile to resolve `inputs.image`
 to `true`. Native PDF sends require that saved Runtime Profile to resolve
@@ -754,7 +637,9 @@ decimal-string revision, while nested subscription settings receive Queue at
 revision `"0"`. Partial follow-up fields, mixed Profile shapes, and unknown
 fields fail closed. Neither legacy Approval value seeds or overrides a
 Session's Approval mode. Reading never rewrites the file; the next authorized
-settings write persists schema version 4. Future versions and historical
+settings write persists schema version 4. Legacy nested subscription Profiles
+with the former fixed output-token placeholder are normalized on read and omit
+it on that next write. Future versions and historical
 schemas without a complete migration chain are rejected.
 
 If you use `npm start` without passing `--live`, also create `.env` with
@@ -764,7 +649,7 @@ If you use `npm start` without passing `--live`, also create `.env` with
 
 Prerequisites:
 
-- Node.js 24.14.0 or newer.
+- Node.js 24.16.0 or newer.
 - A version of Ableton Live with Extensions support.
 - Authorized access to the Ableton Extensions SDK beta.
 

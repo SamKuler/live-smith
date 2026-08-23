@@ -2,9 +2,77 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chatDialogStateForWire,
+  chatSessionEvent,
   chatRuntimeSummary,
   serializeChatStateForHtml,
+  type ChatDialogState,
 } from "./chat-state.js";
+
+test("chatSessionEvent keeps storage hashes behind the UI projection", () => {
+  const projected = chatSessionEvent({
+    id: "event-1",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    kind: "user",
+    content: "Leave more headroom",
+    steeringReceipt: {
+      sendId: "send-1",
+      id: "steer-1",
+      sha256: "a".repeat(64),
+    },
+  });
+
+  assert.deepEqual(projected, {
+    id: "event-1",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    kind: "user",
+    content: "Leave more headroom",
+    steeringAck: { sendId: "send-1", steerId: "steer-1" },
+  });
+  assert.doesNotMatch(JSON.stringify(projected), /sha256|steeringReceipt/);
+});
+
+test("chatSessionEvent projects legacy attachment paths as safe display names", () => {
+  const projected = chatSessionEvent({
+    id: "event-legacy-path",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    kind: "user",
+    content: "Legacy attachment",
+    attachments: [{
+      id: "attachment-legacy-path",
+      kind: "audio",
+      fileName: "/Users/alice/Clients/\u202e\u0000secret\u0007 project.wav",
+      mediaType: "audio/wav",
+      byteLength: 1,
+      sha256: "a".repeat(64),
+    }],
+  });
+
+  assert.equal(projected.attachments?.[0]?.fileName, "secret project.wav");
+  assert.doesNotMatch(
+    JSON.stringify(projected),
+    /Users|Clients|[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u,
+  );
+});
+
+test("chatDialogStateForWire safely projects pending legacy attachment names", () => {
+  const state = {
+    events: [],
+    pendingAttachments: [{
+      id: "attachment-legacy-pending",
+      kind: "image",
+      fileName: "\u202e\u0085e\u0301.png",
+      mediaType: "image/png",
+      byteLength: 1,
+      sha256: "b".repeat(64),
+    }],
+  } as unknown as ChatDialogState;
+
+  const projected = chatDialogStateForWire(state);
+
+  assert.equal(projected.pendingAttachments[0]?.fileName, "é.png");
+  assert.equal(state.pendingAttachments[0]?.fileName, "\u202e\u0085e\u0301.png");
+});
 
 test("chatRuntimeSummary keeps Runtime display aligned without credentials", () => {
   const capabilities = {
@@ -65,8 +133,9 @@ test("chatRuntimeSummary keeps Runtime display aligned without credentials", () 
 
 test("serializeChatStateForHtml escapes script-breaking characters", () => {
   const serialized = serializeChatStateForHtml({
-    defaultPrompt: "<script>&\u2028\u2029",
-    contextSummary: "",
+    bridgeStateRevision: "1",
+    bridgeStateCoveredThroughRevision: "0",
+    contextSummary: "<script>&\u2028\u2029",
     sessionContinueTarget: { kind: "track", label: "Bass" },
     sessions: [],
     previousSessions: [],

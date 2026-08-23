@@ -30,10 +30,16 @@ function deepMerge(
 ): Record<string, unknown> {
   const result = cloneJsonValue(base);
   for (const [key, value] of Object.entries(override)) {
-    const previous = result[key];
-    result[key] = isRecord(previous) && isRecord(value)
+    const previous = Object.hasOwn(result, key) ? result[key] : undefined;
+    const merged = isRecord(previous) && isRecord(value)
       ? deepMerge(previous, value)
       : cloneJsonValue(value);
+    Object.defineProperty(result, key, {
+      configurable: true,
+      enumerable: true,
+      value: merged,
+      writable: true,
+    });
   }
   return result;
 }

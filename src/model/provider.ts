@@ -64,8 +64,7 @@ export interface ModelInfo {
 export interface RuntimeProfile {
   profile: SavedProfile;
   capabilities: ModelCapabilities;
-  /** Present on production Runtime Profiles; optional for narrow transport fixtures. */
-  inputCapabilityEvidence?: InputCapabilityEvidence;
+  inputCapabilityEvidence: InputCapabilityEvidence;
 }
 
 /** Raw provider metadata. Resolve it with policy and manual overrides at use time. */
@@ -149,8 +148,11 @@ export class ModelBackendShutdownError extends Error {
   }
 }
 
-export interface ModelToolTurnReservation {
+export interface ModelTurnExecutor {
   createToolTurn(request: TransportRequest): Promise<ModelTurn>;
+}
+
+export interface ModelToolTurnReservation extends ModelTurnExecutor {
   release(): Promise<void>;
 }
 
@@ -158,25 +160,33 @@ export interface ModelToolTurnReservation {
  * Provider-neutral execution boundary. Direct API transports are wrapped by
  * a short-lived backend; managed runtimes may retain process and auth state.
  */
-export interface ModelBackend {
-  readonly kind: "direct-api" | "codex-subscription";
-  /** Managed backends notify once when their runtime can no longer be reused. */
-  onTerminal?(listener: ModelBackendTerminalListener): () => void;
+interface ModelBackendBase extends ModelTurnExecutor {
   listModels(
     profile: DraftProfile,
     signal?: AbortSignal,
   ): Promise<DiscoveredModelInfo[]>;
+  close(): Promise<void>;
+}
+
+export interface DirectApiBackend extends ModelBackendBase {
+  readonly kind: "direct-api";
+}
+
+export interface CodexSubscriptionBackend extends ModelBackendBase {
+  readonly kind: "codex-subscription";
+  /** Managed backends notify once when their runtime can no longer be reused. */
+  onTerminal(listener: ModelBackendTerminalListener): () => void;
   /** Pins capacity for one future turn across pre-request preparation. */
-  reserveToolTurn?(): ModelToolTurnReservation;
-  createToolTurn(request: TransportRequest): Promise<ModelTurn>;
-  readAuthState?(
+  reserveToolTurn(): ModelToolTurnReservation;
+  readAuthState(
     signal?: AbortSignal,
     options?: ManagedAuthReadOptions,
   ): Promise<ManagedAuthState>;
-  beginLogin?(signal?: AbortSignal): Promise<ManagedAuthState>;
-  logout?(signal?: AbortSignal): Promise<ManagedAuthState>;
-  close(): Promise<void>;
+  beginLogin(signal?: AbortSignal): Promise<ManagedAuthState>;
+  logout(signal?: AbortSignal): Promise<ManagedAuthState>;
 }
+
+export type ModelBackend = DirectApiBackend | CodexSubscriptionBackend;
 
 export interface TransportFactoryOptions {
   fetchImpl?: typeof fetch;

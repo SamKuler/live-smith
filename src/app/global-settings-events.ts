@@ -1,9 +1,8 @@
-import * as path from "node:path";
-
 import type {
   DefaultFollowUpBehavior,
   DefaultFollowUpBehaviorRevision,
 } from "../model/profile.js";
+import { storageScopeKey } from "../storage/scope.js";
 
 export interface GlobalSettingsChange {
   defaultFollowUpBehavior: DefaultFollowUpBehavior;
@@ -13,23 +12,16 @@ export interface GlobalSettingsChange {
 
 type GlobalSettingsListener = (change: GlobalSettingsChange) => void;
 
-const memoryStorageKey = Symbol("live-smith-memory-storage");
 const listenersByStorage = new Map<
   string | symbol,
   Set<GlobalSettingsListener>
 >();
 
-function storageKey(storageDirectory: string | undefined): string | symbol {
-  return storageDirectory === undefined
-    ? memoryStorageKey
-    : path.resolve(storageDirectory);
-}
-
 export function subscribeGlobalSettingsChanges(
   storageDirectory: string | undefined,
   listener: GlobalSettingsListener,
 ): () => void {
-  const key = storageKey(storageDirectory);
+  const key = storageScopeKey(storageDirectory);
   const listeners = listenersByStorage.get(key) ?? new Set();
   listeners.add(listener);
   listenersByStorage.set(key, listeners);
@@ -43,7 +35,7 @@ export function publishGlobalSettingsChange(
   storageDirectory: string | undefined,
   change: GlobalSettingsChange,
 ): void {
-  const listeners = listenersByStorage.get(storageKey(storageDirectory));
+  const listeners = listenersByStorage.get(storageScopeKey(storageDirectory));
   if (!listeners) return;
   for (const listener of [...listeners]) {
     try {

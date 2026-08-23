@@ -9,6 +9,9 @@ import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
 
+import { CodexExecutableUnavailableError } from "../../runtime/codex-executable.js";
+import { createHostAbortController } from "../../runtime/host.js";
+import { ModelBackendManager } from "../backend-registry.js";
 import { MAX_CODEX_RPC_LINE_BYTES } from "./codex-limits.js";
 import { CodexRpcClient } from "./codex-rpc.js";
 
@@ -34,6 +37,203 @@ test("start performs the exact initialization handshake and accepts 0.148.x", as
   });
   assert.deepEqual(harness.outbound[1], { method: "initialized" });
   await harness.client.close();
+});
+
+test("aborting startup cancels initialize and confirms child shutdown", async (t) => {
+  const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-rpc-"));
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  const child = new FakeCodexProcess();
+  const controller = createHostAbortController();
+  const reason = new Error("last managed owner closed");
+  let launchArgs: readonly string[] | undefined;
+  let markInitializeStarted!: () => void;
+  const initializeStarted = new Promise<void>((resolve) => {
+    markInitializeStarted = resolve;
+  });
+  let pendingInput = "";
+  child.stdin.on("data", (chunk: Buffer) => {
+    pendingInput += chunk.toString("utf8");
+    if (pendingInput.includes("\n")) markInitializeStarted();
+  });
+  const spawnImpl = ((
+    _command: string,
+    args: readonly string[],
+  ) => {
+    launchArgs = args;
+    return child;
+  }) as unknown as typeof spawn;
+  const startup = CodexRpcClient.start({
+    storageDirectory,
+    signal: controller.signal,
+    spawnImpl,
+    resolveExecutableImpl: resolveTestExecutable,
+  });
+
+  await initializeStarted;
+  controller.abort(reason);
+  await assert.rejects(startup, (error: unknown) => error === reason);
+  assert.deepEqual(child.killSignals, []);
+  await assertMetadataUnavailable(metadataBaseUrlFromArgs(launchArgs));
+});
+
+test("aborting startup during executable resolution prevents a late child launch", async (t) => {
+  const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-rpc-"));
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  const controller = createHostAbortController();
+  const reason = new Error("final managed owner closed");
+  let markResolutionStarted!: () => void;
+  const resolutionStarted = new Promise<void>((resolve) => {
+    markResolutionStarted = resolve;
+  });
+  let finishResolution!: (executable: string) => void;
+  const resolutionGate = new Promise<string>((resolve) => {
+    finishResolution = resolve;
+  });
+  let spawnCalls = 0;
+  const startup = CodexRpcClient.start({
+    storageDirectory,
+    signal: controller.signal,
+    resolveExecutableImpl: async () => {
+      markResolutionStarted();
+      return resolutionGate;
+    },
+    spawnImpl: (() => {
+      spawnCalls += 1;
+      return new FakeCodexProcess();
+    }) as unknown as typeof spawn,
+  });
+  const observedStartup = startup.then(
+    () => ({ status: "fulfilled" as const }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+
+  await resolutionStarted;
+  controller.abort(reason);
+  let outcome: Awaited<typeof observedStartup> | { status: "pending" };
+  try {
+    outcome = await Promise.race([
+      observedStartup,
+      new Promise<{ status: "pending" }>((resolve) => {
+        setTimeout(() => resolve({ status: "pending" }), 50);
+      }),
+    ]);
+  } finally {
+    finishResolution("/live-smith/test-native-codex");
+  }
+
+  assert.deepEqual(outcome, { status: "rejected", error: reason });
+  assert.equal(spawnCalls, 0);
+  await observedStartup;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(spawnCalls, 0);
+});
+
+test("final owner close cancels post-initialize home verification and closes resources", {
+  timeout: 2_000,
+}, async (t) => {
+  const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-rpc-"));
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  const codexHome = path.join(storageDirectory, "codex-subscription");
+  const child = new FakeCodexProcess();
+  let launchArgs: readonly string[] | undefined;
+  let pendingInput = "";
+  child.stdin.on("data", (chunk: Buffer) => {
+    pendingInput += chunk.toString("utf8");
+    for (;;) {
+      const newline = pendingInput.indexOf("\n");
+      if (newline < 0) return;
+      const message = JSON.parse(pendingInput.slice(0, newline)) as RpcMessage;
+      pendingInput = pendingInput.slice(newline + 1);
+      if (message.method === "initialize") {
+        if (typeof message.id !== "number") {
+          throw new TypeError("Initialize request is missing its numeric id.");
+        }
+        child.send({
+          id: message.id,
+          result: {
+            userAgent: "codex_cli_rs/0.148.0",
+            codexHome,
+          },
+        });
+      }
+    }
+  });
+  const spawnImpl = ((
+    _command: string,
+    args: readonly string[],
+  ) => {
+    launchArgs = args;
+    return child;
+  }) as unknown as typeof spawn;
+  let markRealpathStarted!: () => void;
+  const realpathStarted = new Promise<void>((resolve) => {
+    markRealpathStarted = resolve;
+  });
+  let finishRealpath!: () => void;
+  const realpathGate = new Promise<void>((resolve) => {
+    finishRealpath = resolve;
+  });
+  let realpathCalls = 0;
+  const manager = new ModelBackendManager(storageDirectory, {
+    startCodexBackend: async (directory, signal) => {
+      let client: CodexRpcClient | undefined;
+      try {
+        client = await CodexRpcClient.start({
+          storageDirectory: directory,
+          signal,
+          spawnImpl,
+          resolveExecutableImpl: resolveTestExecutable,
+          realpathImpl: async () => {
+            realpathCalls += 1;
+            markRealpathStarted();
+            await realpathGate;
+            return codexHome;
+          },
+        });
+        throw new Error("the canceled startup unexpectedly completed");
+      } finally {
+        await client?.close();
+      }
+    },
+  });
+  const startup = manager.codex();
+  const observedStartup = startup.then(
+    () => ({ status: "fulfilled" as const }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+
+  await realpathStarted;
+  const closing = manager.close();
+  const observedClose = closing.then(
+    () => ({ status: "fulfilled" as const }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+  let closeOutcome: Awaited<typeof observedClose> | { status: "pending" };
+  try {
+    closeOutcome = await Promise.race([
+      observedClose,
+      new Promise<{ status: "pending" }>((resolve) => {
+        setTimeout(() => resolve({ status: "pending" }), 50);
+      }),
+    ]);
+  } finally {
+    finishRealpath();
+  }
+  const [eventualClose, startupOutcome] = await Promise.all([
+    observedClose,
+    observedStartup,
+  ]);
+
+  assert.deepEqual(closeOutcome, { status: "fulfilled" });
+  assert.deepEqual(eventualClose, { status: "fulfilled" });
+  assert.equal(startupOutcome.status, "rejected");
+  assert.match(
+    String(startupOutcome.status === "rejected" ? startupOutcome.error : ""),
+    /backend startup was canceled/i,
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(realpathCalls, 1);
+  await assertMetadataUnavailable(metadataBaseUrlFromArgs(launchArgs));
 });
 
 test("version parsing accepts the official Codex Desktop user agent", async (t) => {
@@ -72,7 +272,11 @@ test("actual missing executable error followed by close stays safe and needs no 
   }) as unknown as typeof spawn;
 
   await assert.rejects(
-    CodexRpcClient.start({ storageDirectory, spawnImpl }),
+    CodexRpcClient.start({
+      storageDirectory,
+      spawnImpl,
+      resolveExecutableImpl: resolveTestExecutable,
+    }),
     (error: unknown) => {
       assert.equal(
         error instanceof Error && error.message,
@@ -85,6 +289,29 @@ test("actual missing executable error followed by close stays safe and needs no 
   assert.deepEqual(lifecycleEvents, ["error", "close"]);
   assert.deepEqual(killSignals, []);
   await assertMetadataUnavailable(metadataBaseUrlFromArgs(launchArgs));
+});
+
+test("resolver failure preserves the safe executable-unavailable result", async (t) => {
+  const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-rpc-"));
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+
+  await assert.rejects(
+    CodexRpcClient.start({
+      storageDirectory,
+      resolveExecutableImpl: async () => {
+        throw new CodexExecutableUnavailableError();
+      },
+    }),
+    (error: unknown) => {
+      assert.equal(error instanceof CodexExecutableUnavailableError, true);
+      assert.equal(
+        error instanceof Error && error.message,
+        "Codex executable unavailable.",
+      );
+      assert.equal(String(error).includes(storageDirectory), false);
+      return true;
+    },
+  );
 });
 
 test("start rejects an App Server outside the isolated Codex home", async (t) => {
@@ -486,7 +713,11 @@ async function startHarness(
     launchCapture.args = args;
     return child;
   }) as unknown as typeof spawn;
-  const client = await CodexRpcClient.start({ storageDirectory, spawnImpl });
+  const client = await CodexRpcClient.start({
+    storageDirectory,
+    spawnImpl,
+    resolveExecutableImpl: resolveTestExecutable,
+  });
   return {
     child,
     client,
@@ -498,6 +729,10 @@ async function startHarness(
       return message as RpcMessage & { id: number };
     },
   };
+}
+
+async function resolveTestExecutable(): Promise<string> {
+  return "/live-smith/test-native-codex";
 }
 
 function metadataBaseUrlFromArgs(args: readonly string[] | undefined): string {

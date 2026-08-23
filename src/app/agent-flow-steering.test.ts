@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { resolveModelCapabilities } from "../model/capabilities.js";
 import type { SavedProfile } from "../model/profile.js";
 import {
   appendSessionEvent,
@@ -13,7 +12,8 @@ import {
 } from "../storage/events.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import { createSession } from "../storage/sessions.js";
-import { handleAgentRequest } from "./agent-flow.js";
+import { handleAgentRequest } from "./agent-request.js";
+import { runtimeProfileForSavedProfile } from "./model-request.js";
 import {
   SteeringChannel,
   SteeringClosedError,
@@ -51,16 +51,17 @@ test("handleAgentRequest persists steering, discards the interrupted turn, and r
   const steering = new SteeringChannel();
   const parent = new AbortController();
   const firstCallStarted = deferred<AbortSignal>();
-  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[7]>>[0][] = [];
+  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[8]>>[0][] = [];
   const publishedEvents: SessionEvent[] = [];
   let appendCount = 0;
   let assistantResetCount = 0;
 
   const request = handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     interaction(),
     "Make the Lead brighter.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -161,9 +162,10 @@ test("unknown steering commit survives a failed reconciliation read for same-ID 
 
   const request = handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     interaction(),
     "Inspect Lead.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -249,7 +251,7 @@ test("steering at action index 0 does not create partial recovery without a muta
     "steer-before-action-1",
     "Leave the tempo unchanged.",
   );
-  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[7]>>[0][] = [];
+  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[8]>>[0][] = [];
   let modelCallCount = 0;
   let tempo = 120;
   let tempoWrites = 0;
@@ -277,14 +279,14 @@ test("steering at action index 0 does not create partial recovery without a muta
       environment: { storageDirectory: directory },
       application: { song },
     } as never,
+    directory,
     {
-      defaultPrompt: "Test",
       summary: "Live Set",
       target: {},
       scope: session.scope,
     },
     "Set the tempo to 128 BPM.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -352,7 +354,7 @@ test("steering before action 2 preserves completed mutation recovery", async () 
     "steer-before-action-2",
     "Keep only the first tempo change.",
   );
-  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[7]>>[0][] = [];
+  const modelInputs: Parameters<NonNullable<Parameters<typeof handleAgentRequest>[8]>>[0][] = [];
   let modelCallCount = 0;
   let tempo = 120;
   let tempoWrites = 0;
@@ -380,14 +382,14 @@ test("steering before action 2 preserves completed mutation recovery", async () 
       environment: { storageDirectory: directory },
       application: { song },
     } as never,
+    directory,
     {
-      defaultPrompt: "Test",
       summary: "Live Set",
       target: {},
       scope: session.scope,
     },
     "Set the tempo twice.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -469,9 +471,10 @@ test("handleAgentRequest rejects an unpersisted steering submission", async () =
 
   const request = handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     interaction(),
     "Inspect Lead.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -533,9 +536,10 @@ test("Stop lets an in-flight steering persistence report its real commit outcome
 
   const request = handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     interaction(),
     "Inspect Lead.",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -587,7 +591,6 @@ test("Stop lets an in-flight steering persistence report its real commit outcome
 
 function interaction() {
   return {
-    defaultPrompt: "Inspect",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track" as const, identity: "track-1", label: "Lead" },

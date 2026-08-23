@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -196,6 +195,289 @@ test("response-lost steering retries the same idempotency ID", async () => {
   }
 });
 
+test("a durable incremental steering acknowledgement resolves response loss", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "confirmation-before-durable-ack",
+      message: "Apply the original plan?",
+      groups: [{ title: "Tracks", rows: ["Create track"] }],
+    });
+    assert.match(
+      harness.document.querySelector(
+        '.session-entry[data-session-id="session-1"]',
+      )?.textContent ?? "",
+      /Needs approval/,
+    );
+
+    harness.rejectNextSteerResponseAfterCommit("connection reset after commit");
+    harness.input("#prompt", "Leave more headroom");
+    submitSteering(harness);
+    await harness.settle();
+    const firstCall = harness.calls.find((call) => call.path === "/steer");
+    const firstSteerId = header(firstCall!, "X-Live-Smith-Steer-Id");
+    harness.emitRawServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: {
+        id: "mismatched-steering-ack",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        kind: "user",
+        content: "Different guidance",
+        steeringAck: { sendId, steerId: firstSteerId },
+      },
+      activity: { status: "running", message: "Guidance applied" },
+      bridgeStateRevision: "2",
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Leave more headroom",
+    );
+    assert.equal(
+      harness.document.querySelector('[data-event-id="mismatched-steering-ack"]'),
+      null,
+    );
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: {
+        id: "durable-steering-ack",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        kind: "user",
+        content: "Leave more headroom",
+        steeringAck: { sendId, steerId: firstSteerId },
+      },
+    });
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "",
+    );
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Guidance applied",
+    );
+    const targetSession = harness.document.querySelector(
+      '.session-entry[data-session-id="session-1"]',
+    );
+    assert.match(targetSession?.textContent ?? "", /Working/);
+    assert.doesNotMatch(targetSession?.textContent ?? "", /Needs approval/);
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCalls = harness.calls.filter((call) => call.path === "/steer");
+    assert.equal(steerCalls.length, 2);
+    assert.notEqual(
+      header(steerCalls[1]!, "X-Live-Smith-Steer-Id"),
+      firstSteerId,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Stop locks confirmation and ignores late activity until the send is terminal", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Prepare a change, then stop");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "confirmation-locked-by-stop",
+      message: "Apply the change?",
+      groups: [{ title: "Tracks", rows: ["Create track"] }],
+    });
+
+    harness.queueStopOutcomes({ terminal: false });
+    harness.click("#sendButton");
+    await harness.settle();
+    const apply = harness.document.querySelector<HTMLButtonElement>(
+      ".confirm-card button.primary",
+    );
+    assert.ok(apply);
+    assert.equal(apply.disabled, true);
+    apply.click();
+    await harness.settle();
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/confirm").length,
+      0,
+    );
+
+    harness.emitServerEvent({
+      type: "progress",
+      sendId,
+      sessionId: "session-1",
+      message: "Late progress after Stop",
+    });
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Stop requested|Stopping/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Late progress after Stop/,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a delayed steering A event cannot overwrite steering B progress", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Guidance A");
+    submitSteering(harness);
+    await harness.settle();
+    const firstCall = harness.calls.find((call) => call.path === "/steer");
+    const firstSteerId = header(firstCall!, "X-Live-Smith-Steer-Id");
+    const delayedFirstEvent = harness.deferServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: {
+        id: "delayed-guidance-a",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        kind: "user",
+        content: "Guidance A",
+        steeringAck: { sendId, steerId: firstSteerId },
+      },
+    });
+    harness.deferServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "hidden-confirmation-after-a",
+      message: "Apply the revised plan?",
+      groups: [{ title: "Tracks", rows: ["Rename track"] }],
+    });
+    harness.emitRawServerEvent({
+      type: "steer_accepted",
+      sendId,
+      sessionId: "session-1",
+      steerId: firstSteerId,
+      bridgeStateRevision: "4",
+    });
+    await harness.settle();
+    harness.releaseHeldSteer();
+    await harness.settle();
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Guidance B");
+    submitSteering(harness);
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Applying guidance/,
+    );
+    harness.emitRawServerEvent(delayedFirstEvent);
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Applying guidance/,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /^Guidance applied$/,
+    );
+
+    harness.releaseHeldSteer();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a same-ID steering retry publishes after a newer deferred confirmation", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.rejectNextSteerResponseAfterCommit("connection reset after commit");
+    harness.input("#prompt", "Leave more headroom");
+    submitSteering(harness);
+    await harness.settle();
+    const delayedConfirmation = harness.deferServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "confirmation-after-lost-steer-response",
+      message: "Apply the revised plan?",
+      groups: [{ title: "Tracks", rows: ["Rename track"] }],
+    });
+
+    submitSteering(harness);
+    await harness.settle();
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /Guidance applied/,
+    );
+    harness.emitRawServerEvent(delayedConfirmation);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Waiting for confirmation",
+    );
+    assert.match(
+      harness.document.querySelector(".confirm-card")?.textContent ?? "",
+      /Apply the revised plan/,
+    );
+
+    const steerCalls = harness.calls.filter((call) => call.path === "/steer");
+    assert.equal(steerCalls.length, 2);
+    assert.equal(
+      header(steerCalls[0]!, "X-Live-Smith-Steer-Id"),
+      header(steerCalls[1]!, "X-Live-Smith-Steer-Id"),
+    );
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("explicitly unknown steering persistence retries the same idempotency ID", async () => {
   const harness = await createSteeringDialogHarness();
   try {
@@ -333,10 +615,9 @@ test("terminal Session state acknowledges steering when HTTP and SSE receipts we
       createdAt: "2026-08-15T00:00:00.000Z",
       kind: "user",
       content: "Leave more headroom",
-      steeringReceipt: {
+      steeringAck: {
         sendId,
-        id: steerId,
-        sha256: createHash("sha256").update("Leave more headroom").digest("hex"),
+        steerId,
       },
     }];
 
@@ -355,6 +636,107 @@ test("terminal Session state acknowledges steering when HTTP and SSE receipts we
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
     assert.equal(jsonCalls(harness, "/send").length, 1);
 
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a background terminal reconciles steering against its authoritative target", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.rejectNextSteerResponseAfterCommit("connection reset after commit");
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCall = harness.calls.find((call) => call.path === "/steer");
+    const steerId = header(steerCall!, "X-Live-Smith-Steer-Id");
+
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await harness.settle();
+    const terminalState = stateFixture();
+    terminalState.openSettingsOnLoad = false;
+    terminalState.events = [{
+      id: "background-steering-receipt",
+      createdAt: "2026-08-15T00:00:00.000Z",
+      kind: "user",
+      content: "Keep the bass sparse",
+      steeringAck: {
+        sendId,
+        steerId,
+      },
+    }];
+    harness.emitServerEvent({
+      type: "done",
+      sendId,
+      sessionId: "session-1",
+      state: terminalState,
+    });
+    await harness.settle();
+
+    harness.click('.session-entry[data-session-id="session-1"] .session-row');
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "",
+    );
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /could not be reconciled/i,
+    );
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a background terminal without a receipt keeps steering retryable", async () => {
+  const harness = await createSteeringDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.rejectNextSteerResponseAfterCommit("connection reset before commit");
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await harness.settle();
+
+    const terminalState = stateFixture();
+    terminalState.openSettingsOnLoad = false;
+    harness.emitServerEvent({
+      type: "done",
+      sendId,
+      sessionId: "session-1",
+      state: terminalState,
+    });
+    await harness.settle();
+    harness.click('.session-entry[data-session-id="session-1"] .session-row');
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Keep the bass sparse",
+    );
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
     harness.releaseHeldSend();
     await harness.settle();
     assert.deepEqual(harness.errors, []);
@@ -399,6 +781,436 @@ test("terminal Session state without a steering receipt keeps the draft safely r
     harness.click("#sendButton");
     await harness.settle();
     assert.equal(jsonCalls(harness, "/send").length, 2);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a newer state clears a stale unavailable marker before Send settles", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.failNextSteer("Steering outcome unknown.", "unknown");
+    harness.input("#prompt", "Leave more headroom");
+    submitSteering(harness);
+    await harness.settle();
+
+    const missing = stateFixture();
+    missing.openSettingsOnLoad = false;
+    missing.sessions = missing.sessions.filter(
+      (session) => session.id !== "session-1",
+    );
+    missing.activeSessionId = "session-2";
+    missing.approvalMode = "low-risk";
+    harness.emitServerEvent({
+      type: "done",
+      sendId,
+      sessionId: "session-1",
+      state: missing,
+    });
+    await harness.settle();
+
+    const restored = stateFixture();
+    restored.openSettingsOnLoad = false;
+    harness.setServerState(restored);
+    harness.releaseHeldSend();
+    await harness.settle();
+
+    assert.ok(
+      harness.document.querySelector(
+        '.current-session-entry[data-session-id="session-1"]',
+      ),
+    );
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.doesNotMatch(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /target Session is no longer available/i,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a covered steering receipt still applies its correlation feedback", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCall = harness.calls.find((call) => call.path === "/steer");
+    const steerId = header(steerCall!, "X-Live-Smith-Steer-Id");
+    assert.ok(steerId);
+
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(
+          kind: string,
+          extra?: Record<string, unknown>,
+        ): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Renamed during steering",
+    });
+    await harness.settle();
+    const commandId = harness.commandIds[0];
+    assert.ok(commandId);
+
+    const covered = stateFixture();
+    covered.openSettingsOnLoad = false;
+    covered.sessions.find((session) => session.id === "session-2")!.title =
+      "Renamed during steering";
+    covered.sessionActivities = [{
+      sessionId: "session-1",
+      status: "running",
+      message: "Guidance applied",
+      unread: false,
+    }];
+    harness.queueNextStatePublication("3", "2");
+    harness.emitServerEvent({ type: "state", commandId, state: covered });
+    assert.equal(await command, true);
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Keep the bass sparse",
+    );
+
+    harness.emitServerEvent({
+      type: "steer_accepted",
+      sendId,
+      sessionId: "session-1",
+      steerId,
+      bridgeStateRevision: "2",
+    });
+    await harness.settle();
+
+    assert.match(
+      harness.document.querySelector("#status")?.textContent || "",
+      /Guidance applied/,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "",
+    );
+    harness.releaseHeldCommandResponse();
+    harness.releaseHeldSteer();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a later full state preserves the steering activity it claims to cover", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCall = harness.calls.find((call) => call.path === "/steer");
+    const steerId = header(steerCall!, "X-Live-Smith-Steer-Id");
+    harness.emitServerEvent({
+      type: "steer_accepted",
+      sendId,
+      sessionId: "session-1",
+      steerId,
+      bridgeStateRevision: "2",
+      activity: { status: "running", message: "Guidance applied" },
+    });
+
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(
+          kind: string,
+          extra?: Record<string, unknown>,
+        ): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Renamed after steering",
+    });
+    await harness.settle();
+    const commandId = harness.commandIds[0];
+    assert.ok(commandId);
+    const covered = stateFixture();
+    covered.openSettingsOnLoad = false;
+    covered.sessions.find((session) => session.id === "session-2")!.title =
+      "Renamed after steering";
+    covered.sessionActivities = [{
+      sessionId: "session-1",
+      status: "running",
+      message: "Guidance applied",
+      unread: false,
+    }];
+    harness.queueNextStatePublication("3", "2");
+    harness.emitServerEvent({ type: "state", commandId, state: covered });
+    assert.equal(await command, true);
+    await harness.settle();
+
+    assert.match(
+      harness.document.querySelector("#status")?.textContent || "",
+      /Guidance applied/,
+    );
+    harness.releaseHeldCommandResponse();
+    harness.releaseHeldSteer();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("steering acknowledgement keeps a confirmation created after its submission", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const steerCall = harness.calls.find((call) => call.path === "/steer");
+    const steerId = header(steerCall!, "X-Live-Smith-Steer-Id");
+
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "post-steer-confirmation",
+      message: "Apply the revised plan?",
+      groups: [{ title: "Tracks", rows: ["Rename track"] }],
+      bridgeStateRevision: "2",
+    });
+    harness.emitRawServerEvent({
+      type: "steer_accepted",
+      sendId,
+      sessionId: "session-1",
+      steerId,
+      bridgeStateRevision: "3",
+    });
+    await harness.settle();
+
+    assert.match(
+      harness.document.querySelector(".confirm-card")?.textContent || "",
+      /Apply the revised plan/,
+    );
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Waiting for confirmation",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "",
+    );
+    harness.releaseHeldSteer();
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a no-activity steering receipt preserves a newer canonical confirmation status", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Start the mix pass");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.holdNextSteer();
+    harness.input("#prompt", "Keep the bass sparse");
+    submitSteering(harness);
+    await harness.settle();
+    const delayedConfirmation = harness.deferServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "post-steer-delayed-confirmation",
+      message: "Apply the revised plan?",
+      groups: [{ title: "Tracks", rows: ["Rename track"] }],
+    });
+
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    assert.equal(await ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Renamed while confirmation was delayed",
+    }), true);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Waiting for confirmation",
+    );
+
+    harness.releaseHeldSteer();
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Waiting for confirmation",
+    );
+    harness.emitRawServerEvent(delayedConfirmation);
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector(".confirm-card")?.textContent ?? "",
+      /Apply the revised plan/,
+    );
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Waiting for confirmation",
+    );
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("the harness keeps a superseded confirmation out of later full state", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Prepare the original plan");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "superseded-confirmation",
+      message: "Apply the original plan?",
+      groups: [{ title: "Tracks", rows: ["Create track"] }],
+    });
+
+    harness.input("#prompt", "Use the selected track instead");
+    submitSteering(harness);
+    await harness.settle();
+    assert.equal(harness.document.querySelector(".confirm-card"), null);
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Guidance applied",
+    );
+
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    assert.equal(await ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Renamed after superseding confirmation",
+    }), true);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector("#status")?.textContent,
+      "Guidance applied",
+    );
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a delayed replay cannot restore the confirmation superseded by steering", async () => {
+  const state = steeringState();
+  state.openSettingsOnLoad = false;
+  const harness = await createSteeringDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Prepare the original plan");
+    harness.click("#sendButton");
+    await harness.settle();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "steer-superseded-confirmation",
+      message: "Apply the original plan?",
+      groups: [{ title: "Tracks", rows: ["Create track"] }],
+    });
+    const delayedReplay = harness.deferServerEvent({
+      type: "confirm_request",
+      sendId,
+      sessionId: "session-1",
+      id: "steer-superseded-confirmation",
+      message: "Apply the original plan?",
+      groups: [{ title: "Tracks", rows: ["Create track"] }],
+    });
+
+    harness.input("#prompt", "Use the selected track instead");
+    submitSteering(harness);
+    await harness.settle();
+    assert.equal(harness.document.querySelector(".confirm-card"), null);
+    harness.emitRawServerEvent(delayedReplay);
+    await harness.settle();
+
+    assert.equal(harness.document.querySelector(".confirm-card"), null);
+    assert.equal(
+      harness.calls.filter((call) => call.path === "/confirm").length,
+      0,
+    );
+    assert.deepEqual(harness.stopIds, []);
+    harness.releaseHeldSend();
+    await harness.settle();
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -483,14 +1295,23 @@ test("assistant reset removes only the obsolete streaming assistant bubble", asy
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
-    harness.emitServerEvent({ type: "assistant_delta", sendId, delta: "Obsolete draft" });
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "Obsolete draft",
+    });
     harness.flushAnimationFrames();
     assert.match(
       harness.document.querySelector(".timeline-item.assistant.streaming")?.textContent ?? "",
       /Obsolete draft/,
     );
 
-    harness.emitServerEvent({ type: "assistant_reset", sendId });
+    harness.emitServerEvent({
+      type: "assistant_reset",
+      sendId,
+      sessionId: "session-1",
+    });
     assert.equal(
       harness.document.querySelector(".timeline-item.assistant.streaming"),
       null,
@@ -517,6 +1338,7 @@ test("confirmation leaves the composer available but scopes steering to the prom
     harness.emitServerEvent({
       type: "confirm_request",
       sendId,
+      sessionId: "session-1",
       id: "confirm-before-steer",
       message: "Apply the proposed changes?",
       groups: [{ title: "Tracks", rows: ["Create track"] }],

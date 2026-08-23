@@ -24,11 +24,23 @@ parameters. The managed Codex connection is a backend boundary, not another API
 mode and not an OpenAI-compatible endpoint preset.
 
 For all three Direct API modes, a non-2xx HTTP response reports the API
-family/mode, status code, and status text only. Its response body is untrusted
+family/mode, status code, and a fixed local `request failed` description. Its
+remote status text and response body are untrusted
 and is never read or persisted, because a provider or proxy can echo prompts,
 Live context, replay state, or Extra Body fields in that body. Error events
 inside a successful SSE response likewise expose only fixed protocol context,
-never an arbitrary provider message.
+never an arbitrary provider message. Transport errors remove URL query and
+fragment data and redact the configured API key plus every Base URL query or
+fragment value, including when a cause echoes a value separately from its URL.
+
+Successful Direct API JSON responses are streamed through a 16 MiB byte
+budget, and an SSE event must reach a delimiter within 1 MiB. The shared model
+catalog contract accepts at most 1,000 unique, bounded model records; paginated
+discovery stops after 20 pages. Invalid, ambiguous, or oversized catalogs fail
+before they can replace a modal projection or persistent Direct API cache.
+Stream cancellation is best-effort and nonblocking: Live Smith requests it once
+but never waits on a provider- or host-controlled cancellation Promise before
+propagating the original abort, size, read, or protocol result.
 
 ## Connection backends
 
@@ -43,12 +55,19 @@ connection fallbacks.
 ### ChatGPT subscription (Experimental)
 
 The `codex-subscription` branch owns only the fixed provider identity `openai`;
-the official Codex CLI owns authentication. Live Smith requires Codex CLI
-`0.148.x` on `PATH`, launches `codex app-server` over stdio, and uses App
-Server's `chatgptDeviceCode` flow. This consumes the signed-in account's
-applicable Codex subscription limits. It does not convert ChatGPT OAuth into a
-Bearer token for `/v1/responses`, accept App Server's API-key login mode, or
-silently fall back to separately billed API usage. A user who wants API-key
+the official Codex CLI owns authentication. Live Smith requires
+`@openai/codex@0.148.x` installed globally with npm and its `codex` launcher on
+`PATH`. The resolver binds that launcher to the discovered global package,
+checks only its nested optional platform package, the same npm scope's hoisted
+package, then the base-package vendor fallback, and launches the resulting
+native `codex app-server` payload directly over stdio. It never executes the
+JavaScript or command shim, consults `NODE_PATH`, or accepts a platform package
+outside the discovered installation. App Server's
+`chatgptDeviceCode` flow
+consumes the signed-in account's applicable Codex subscription limits. It does
+not convert ChatGPT OAuth into a Bearer token for `/v1/responses`, accept App
+Server's API-key login mode, or silently fall back to separately billed API
+usage. A user who wants API-key
 billing must explicitly select a `direct-api` Profile.
 
 The child receives `CODEX_HOME=<storageDirectory>/codex-subscription` and starts
@@ -116,34 +135,52 @@ argument strings. The existing provider-neutral outer loop remains the
 authoritative action-schema validator and the only component that executes Live
 observation or mutation tools.
 
-All modals for one storage directory share a process-wide auth/send fence. An
-auth mutation cannot start during any send; a pending device flow remains owned
-by its modal and blocks other auth flows and sends until a Check observes
+All modals for one storage directory share a process-wide managed auth/send
+fence. An auth mutation cannot start during a ChatGPT subscription send; a
+pending device flow remains owned by its modal and blocks other auth flows and
+subscription sends until a Check observes
 signed-in, signed-out, or definitive failure, cancellation or sign-out
 succeeds, or the owner closes;
 signing out also requires an explicit UI confirmation.
-The same canonical storage key owns one reference-counted backend manager and
-App Server for every modal. This gives the shared `auth.json` one in-process
-refresh lock, in-memory credential owner, model worker, and cache writer. The
-canonicalizer resolves the longest existing ancestor before appending a missing
-storage suffix, so a symlinked parent cannot split first-open and later-open
-modals. The last modal closes it; a modal that owns an unfinished device flow
-retires it before releasing pending ownership.
+Direct-only state hydration, catalog access, and sends stay outside this fence
+and do not acquire the managed backend registry; they neither wait for managed
+auth mutations nor inspect managed poison or generation state.
+`storage/scope.ts` resolves the Ableton-provided Live Smith storage directory's
+longest existing ancestor before appending a missing suffix. That one canonical
+directory owns persistence transactions, Session mutation queues, cross-modal
+settings/approval events, the auth/send fence, one reference-counted backend
+manager, and one App Server. A real path and symlink alias therefore cannot
+share `auth.json` while splitting storage writes or notifications. The shared
+process has one refresh lock, in-memory credential owner, model worker, and
+cache writer. The last managed lease closes it; a modal that owns an unfinished
+device flow retires it before releasing pending ownership.
 
 Each definitive Check and every login/logout attempt advances the generation
-that invalidates modal-only auth/catalog projections. Each modal clears them
-before its next state, auth, discovery, or send operation. Successful mutations
+that invalidates modal-only managed auth/catalog projections. Each modal clears
+them before its next subscription state, auth, discovery, or send operation;
+Direct API catalogs remain independent. Successful mutations
 update the shared process; an unknown outcome retires its exact backend to confirmed
-exit before advancing the generation or releasing the transition. Peer state,
-auth, discovery, and send paths wait behind that storage-wide barrier; an
+exit before advancing the generation or releasing the transition. Peer managed
+auth, subscription discovery, and subscription-send paths wait behind that
+storage-wide barrier; an
 unconfirmed exit poisons subscription use until extension-process restart.
 Matching App Server login-completion notifications clear failed/expired backend
-flows with fixed safe text. Any modal's later authoritative signed-in,
+flows with fixed safe text, and a definitive failure exposes a new sign-in
+attempt without requiring the modal to close. Any modal's later authoritative signed-in,
 signed-out, or definitive-failure read reconciles global pending ownership once;
 pending and non-definitive results keep it locked. Pending-login state and Check
 callers share one storage-wide readiness refresh, and send/auth mutation remain
 blocked until it settles. Caller cancellation stops only that wait; RPC timeout,
-terminal failure, or last-owner backend close bounds the shared read. Explicit Check, discovery, and send readiness reads
+terminal failure, or last-owner backend close bounds the shared read. Modal
+`/chat` and `/state` builds own host-provided cancellation signals; disconnect
+or close aborts and awaits those reads. Closing the pending-login owner also
+aborts the fence-owned shared reconciliation before backend retirement, so a
+detached state read cannot delay cleanup or another modal's auth operation.
+Each shared Codex startup slot likewise owns a host cancellation controller.
+Canceling one caller stops only that caller's wait; retiring the slot or
+releasing its final owner aborts startup and waits for the child process and
+metadata firewall to close.
+Explicit Check, discovery, and send readiness reads
 request credential refresh, while ordinary signed-in or signed-out state
 hydration is passive. Before
 persisting a subscription prompt, the server confirms an eligible signed-in
@@ -182,9 +219,13 @@ shutdown escalation or storage poison.
 
 All subscription Profiles under one Ableton storage directory share this
 isolated ChatGPT login. Deleting a Profile does not sign out; use the explicit
-logout action. The `codex` executable is resolved from `PATH`. Live Smith
-validates its reported `0.148.x` protocol line and isolated home, not binary
-provenance, so users must install and trust the official binary.
+logout action. The `codex` entry on `PATH` must be the global npm launcher for
+the official `@openai/codex` 0.148 package and its matching native platform
+payload. Live Smith validates that package layout, the reported `0.148.x`
+protocol line, and the isolated home; it does not claim cryptographic binary
+provenance. Local npm bins, standalone binaries, and opaque package-manager
+shims are outside the supported installation contract and fail closed because
+the resolver cannot bind them to an owned native App Server payload.
 
 Codex subscription Profiles consequently do not support Direct API temperature
 or output-token controls, reasoning token budgets, provider-hosted tools,
@@ -192,7 +233,9 @@ capability overrides, or Extra Body. Reasoning cannot be set to Disabled. Model
 discovery and supported reasoning-effort choices, including `ultra` when
 advertised, come from the signed-in App Server catalog rather than the OpenAI
 `/v1/models` endpoint. Unknown effort values fail discovery instead of being
-silently discarded.
+silently discarded. Their persisted `parameters` contain only reasoning mode
+and optional effort; they do not carry a placeholder output-token value that the
+App Server would ignore.
 
 This connection remains experimental. OpenAI documents the App Server command
 as experimental and unsupported for production workloads, and its generated
@@ -258,8 +301,11 @@ plus Queue/Steer behavior and a canonical decimal-string revision. Version 3 is
 discriminated before validation: both follow-up fields mean the flat shape;
 neither means the nested subscription shape. Partial fields, mixed Profile
 shapes, and unknown fields fail closed. Migration preserves API family, mode,
-base URL, key, model, parameters, active identity, and any Queue/Steer revision;
+base URL, key, model, supported parameters, active identity, and any Queue/Steer revision;
 the nested v3 shape receives Queue at revision `"0"`. Reads do not rewrite.
+Historical schema-v3/v4 subscription Profiles may contain the former fixed
+`maxOutputTokens` placeholder. Decoding removes that unconsumed field, and the
+next authorized settings write persists the connection-specific shape.
 
 ## API behavior
 
@@ -316,8 +362,11 @@ closed with a real or explicit skipped result before steering is replayed:
 
 Steering is text-only. It does not resnapshot the Profile, attachments, active
 Skills, capabilities, or Extra Body. Persistence and retry are also
-provider-neutral: each accepted steering user event has a receipt bound to the
-original send ID, steering ID, and prompt hash. Exact retries are idempotent,
+provider-neutral: each accepted steering user event has a storage receipt bound
+to the original send ID, steering ID, and prompt hash. The dialog projection
+removes that storage-only hash and exposes a correlation-only `steeringAck` on
+the same event, so digest validation stays inside storage while incremental or
+full-state delivery can resolve the matching UI attempt. Exact retries are idempotent,
 including after the send has reached terminal state. An explicit unknown
 persistence outcome keeps the same client steering ID until authoritative
 Session state confirms presence or absence. While that receipt is unresolved,

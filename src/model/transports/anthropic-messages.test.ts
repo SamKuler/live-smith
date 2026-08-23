@@ -9,9 +9,15 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
+import {
+  MAX_DISCOVERED_MODEL_COUNT,
+  MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
+  MAX_MODEL_DISCOVERY_PAGE_COUNT,
+} from "../catalog.js";
 import type { AnthropicDirectApiConnection, SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
+import { MAX_DIRECT_JSON_RESPONSE_BYTES } from "./response-body.js";
 
 type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
   Partial<Pick<AnthropicDirectApiConnection, "baseUrl" | "apiKey">>;
@@ -48,6 +54,11 @@ function request(p: SavedProfile): TransportRequest {
     runtimeProfile: {
       profile: p,
       capabilities: resolveModelCapabilities(p),
+      inputCapabilityEvidence: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     currentUserContent: [{
       type: "text",
@@ -2060,7 +2071,7 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
     fetchImpl: async (_input, init) =>
       new Response(`proxy echoed request: ${String(init?.body)}`, {
         status: 400,
-        statusText: "Bad Request",
+        statusText: sentinels[0]!,
       }),
   });
 
@@ -2070,7 +2081,7 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
       const message = String(error);
       assert.match(
         message,
-        /anthropic\/messages request failed: Anthropic HTTP 400: Bad Request/,
+        /anthropic\/messages request failed: Anthropic HTTP 400: request failed/,
       );
       for (const sentinel of sentinels) assert.doesNotMatch(message, new RegExp(sentinel));
       assert.doesNotMatch(message, /data:image/i);
@@ -2080,12 +2091,19 @@ test("Anthropic Messages errors never expose an echoed request body", async () =
 });
 
 test("Anthropic HTTP errors do not consume the untrusted response body", async () => {
+  const reasonPhraseSentinel = "anthropic-reason-phrase-sentinel";
+  let cancellations = 0;
   let textReads = 0;
   const transport = createAnthropicMessagesTransport({
     fetchImpl: async () => ({
       ok: false,
       status: 401,
-      statusText: "Unauthorized",
+      statusText: reasonPhraseSentinel,
+      body: {
+        cancel: async () => {
+          cancellations += 1;
+        },
+      },
       text: async () => {
         textReads += 1;
         return "untrusted body";
@@ -2095,8 +2113,13 @@ test("Anthropic HTTP errors do not consume the untrusted response body", async (
 
   await assert.rejects(
     transport.createToolTurn(request(profile())),
-    /Anthropic HTTP 401: Unauthorized/,
+    (error: unknown) => {
+      assert.match(String(error), /Anthropic HTTP 401: request failed/);
+      assert.doesNotMatch(String(error), new RegExp(reasonPhraseSentinel));
+      return true;
+    },
   );
+  assert.equal(cancellations, 1);
   assert.equal(textReads, 0);
 });
 
@@ -2217,6 +2240,85 @@ test("Anthropic model discovery follows every results page", async () => {
   assert.deepEqual(models.map((model) => model.id), ["claude-first", "claude-second"]);
   assert.equal(new URL(urls[0]!).searchParams.get("limit"), "1000");
   assert.equal(new URL(urls[1]!).searchParams.get("after_id"), "claude-first");
+});
+
+test("Anthropic model discovery stops unique-cursor pagination at its page budget", async () => {
+  let requests = 0;
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => {
+      requests += 1;
+      return new Response(JSON.stringify({
+        data: [],
+        has_more: true,
+        last_id: `cursor-${requests}`,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /exceeded its page limit/,
+  );
+  assert.equal(requests, MAX_MODEL_DISCOVERY_PAGE_COUNT);
+});
+
+test("Anthropic model discovery rejects an oversized single-page catalog", async () => {
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: Array.from(
+        { length: MAX_DISCOVERED_MODEL_COUNT + 1 },
+        (_, index) => ({
+          type: "model",
+          id: `claude-${index}`,
+          display_name: `Claude ${index}`,
+        }),
+      ),
+      has_more: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /too many models/,
+  );
+});
+
+test("Anthropic model discovery rejects malformed model records instead of returning a subset", async () => {
+  for (const invalidEntry of [
+    null,
+    {},
+    { id: 42 },
+    { id: "   " },
+    { id: "x".repeat(MAX_DISCOVERED_MODEL_ID_CODE_POINTS + 1) },
+  ]) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        data: [{ id: "valid-model" }, invalidEntry],
+        has_more: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    await assert.rejects(
+      transport.listModels(profile()),
+      /invalid model entry/,
+    );
+  }
+});
+
+test("Anthropic model discovery rejects a response above its byte budget", async () => {
+  const transport = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response("{}", {
+      status: 200,
+      headers: {
+        "Content-Length": String(MAX_DIRECT_JSON_RESPONSE_BYTES + 1),
+      },
+    }),
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /JSON response larger than/,
+  );
 });
 
 test("Anthropic discovery normalizes adaptive, budget, effort, and unsupported reasoning metadata", async () => {

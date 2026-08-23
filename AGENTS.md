@@ -28,15 +28,19 @@ There are two API families and three supported modes:
 - OpenAI Chat Completions
 - Anthropic Messages
 
-A named Profile owns the complete connection and generation configuration:
-family, mode, base URL, API key, model, parameters, capability overrides, and
-Extra Body. Do not add endpoint or vendor presets. OpenAI-compatible services
-use an ordinary OpenAI Profile with the protocol they implement.
+A named Profile owns one complete connection plus its model and generation
+configuration. A `direct-api` connection owns family, mode, base URL, API key,
+parameters, capability overrides, and Extra Body. A `codex-subscription`
+connection owns only the fixed OpenAI managed-backend identity; its supported
+models, reasoning efforts, and input evidence come from the signed-in catalog.
+Do not add endpoint or vendor presets. OpenAI-compatible services use an
+ordinary Direct API OpenAI Profile with the protocol they implement.
 
-Keep provider-specific request mapping, streaming, tool-call replay, and opaque
-response state inside `src/model/transports/`. The agent loop and Live executor
-must remain provider-neutral. Resolve feature decisions from capabilities, not
-from model-name checks inside transports.
+Keep Direct API provider-specific request mapping, streaming, tool-call replay,
+and opaque response state inside `src/model/transports/`; keep managed runtime
+protocol and lifecycle mapping inside `src/model/backends/`. The agent loop and
+Live executor must remain provider-neutral. Resolve feature decisions from
+capabilities, not from model-name checks inside either boundary.
 
 ## Safety invariants
 
@@ -105,5 +109,5 @@ npm --cache /private/tmp/live-smith-npm-cache audit --json
 Also validate the composed dialog client after editing it:
 
 ```sh
-node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','capability-preview','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
+node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
 ```

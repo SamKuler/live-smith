@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { chatDialogStateForWire } from "./chat-state.js";
+
 import {
   audioCapableState,
   audioFile,
@@ -1233,7 +1235,7 @@ test("Session switching renders only the active Session attachment chips", async
   }
 });
 
-test("a user timeline attachment chip renders inert filename, type, and size metadata", async () => {
+test("a wire-projected timeline attachment chip renders inert filename metadata", async () => {
   const state = stateFixture();
   state.events = [{
     id: "event-image",
@@ -1242,22 +1244,23 @@ test("a user timeline attachment chip renders inert filename, type, and size met
     content: "Review this",
     attachments: [pendingImage(
       "attachment-event",
-      '<img src=x onerror="alert(1)">\r\nAuthorization: Bearer display-only\\private/path.png',
+      'C:\\private\\<img src=x onerror="alert(1)">.png',
       "image/png",
       1_536,
     )],
   }];
-  const harness = await createDialogHarness(state);
+  const harness = await createDialogHarness(chatDialogStateForWire(state));
   try {
     const chip = harness.document.querySelector<HTMLElement>(
       ".timeline-attachment-chip",
     );
     assert.equal(
       chip?.textContent,
-      '<img src=x onerror="alert(1)">\r\nAuthorization: Bearer display-only\\private/path.png · PNG · 1.5 KiB',
+      '<img src=x onerror="alert(1)">.png · PNG · 1.5 KiB',
     );
     assert.equal(chip?.querySelector("img"), null);
     assert.doesNotMatch(chip?.innerHTML ?? "", /base64|data:image/i);
+    assert.doesNotMatch(chip?.textContent ?? "", /C:|private/);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1494,7 +1497,6 @@ test("unverified attachment guidance separates subscription model reloads from D
     const subscriptionProfile = profileFixture({
       connection: { kind: "codex-subscription", provider: "openai" },
       parameters: {
-        maxOutputTokens: 8192,
         reasoning: { mode: "default" },
       },
       advanced: {},

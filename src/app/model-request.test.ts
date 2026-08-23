@@ -11,7 +11,7 @@ const runtimeProfile: RuntimeProfile = {
     name: "Subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   },
   capabilities: {
@@ -34,25 +34,14 @@ const runtimeProfile: RuntimeProfile = {
   },
 };
 
-test("requestModelTurn consumes a reserved turn instead of the raw backend", async () => {
-  let backendTurns = 0;
-  let reservedTurns = 0;
-  const backend: ModelBackend = {
-    kind: "codex-subscription",
-    async listModels() { return []; },
-    async createToolTurn() {
-      backendTurns += 1;
-      return { content: "wrong path", toolCalls: [] };
-    },
-    async close() {},
-  };
-  const reservation = {
+test("requestModelTurn dispatches through one explicit turn executor", async () => {
+  let executorTurns = 0;
+  const turnExecutor = {
     async createToolTurn(request: Parameters<ModelBackend["createToolTurn"]>[0]) {
-      reservedTurns += 1;
+      executorTurns += 1;
       assert.equal(request.runtimeProfile, runtimeProfile);
-      return { content: "reserved", toolCalls: [] };
+      return { content: "dispatched", toolCalls: [] };
     },
-    async release() {},
   };
 
   assert.deepEqual(await requestModelTurn({
@@ -64,9 +53,7 @@ test("requestModelTurn consumes a reserved turn instead of the raw backend", asy
     tools: [],
     signal: createHostAbortController().signal,
     onDelta: () => undefined,
-    backend,
-    turnReservation: reservation,
-  }), { content: "reserved", toolCalls: [] });
-  assert.equal(reservedTurns, 1);
-  assert.equal(backendTurns, 0);
+    turnExecutor,
+  }), { content: "dispatched", toolCalls: [] });
+  assert.equal(executorTurns, 1);
 });

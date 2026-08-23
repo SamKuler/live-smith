@@ -167,3 +167,27 @@ export function isLegacyAttachmentFileName(value: unknown): value is string {
     value === value.replaceAll("\\", "/").split("/").at(-1) &&
     !/[\u0000-\u001f\u007f]/u.test(value);
 }
+
+/** Safe, bounded display-only projection for current and legacy metadata. */
+export function safeAttachmentDisplayFileName(value: unknown): string {
+  if (typeof value !== "string") return "attachment";
+  const basename = value.replaceAll("\\", "/").split("/").at(-1) ?? "";
+  const cleaned = basename
+    .normalize("NFC")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+      "",
+    )
+    .trim();
+  if (!cleaned || cleaned === "." || cleaned === "..") return "attachment";
+
+  let displayName = "";
+  let byteLength = 0;
+  for (const character of cleaned) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (byteLength + characterBytes > MAX_ATTACHMENT_FILE_NAME_BYTES) break;
+    displayName += character;
+    byteLength += characterBytes;
+  }
+  return displayName || "attachment";
+}

@@ -1,10 +1,12 @@
-import { realpath } from "node:fs/promises";
-import * as path from "node:path";
-
 import {
   ModelBackendManager,
   type ModelBackendManagerOptions,
 } from "./backend-registry.js";
+import {
+  throwIfAborted,
+  waitForPromiseWithSignal,
+} from "../runtime/host.js";
+import { canonicalStorageDirectory } from "../storage/scope.js";
 
 export interface SharedModelBackendManagerLease {
   readonly manager: ModelBackendManager;
@@ -23,13 +25,19 @@ const managersByStorageDirectory = new Map<string, SharedManagerEntry>();
 export async function acquireSharedModelBackendManager(
   storageDirectory: string | undefined,
   options: ModelBackendManagerOptions = {},
+  signal?: AbortSignal,
 ): Promise<SharedModelBackendManagerLease> {
+  throwIfAborted(signal);
   if (storageDirectory === undefined) {
     return isolatedLease(new ModelBackendManager(undefined, options));
   }
 
-  const storageKey = await canonicalModelStorageKey(storageDirectory);
+  const storageKey = await waitForPromiseWithSignal(
+    canonicalStorageDirectory(storageDirectory),
+    signal,
+  );
   for (;;) {
+    throwIfAborted(signal);
     const existing = managersByStorageDirectory.get(storageKey);
     if (!existing) {
       const entry = createEntry(storageKey, options);
@@ -37,31 +45,12 @@ export async function acquireSharedModelBackendManager(
       return sharedLease(entry, storageKey);
     }
     if (existing.closePromise) {
-      await existing.closePromise;
+      await waitForPromiseWithSignal(existing.closePromise, signal);
       continue;
     }
     if (existing.poisonError) throw existing.poisonError;
     existing.refs += 1;
     return sharedLease(existing, storageKey);
-  }
-}
-
-export async function canonicalModelStorageKey(
-  storageDirectory: string,
-): Promise<string> {
-  let candidate = path.resolve(storageDirectory);
-  const missingSegments: string[] = [];
-  for (;;) {
-    try {
-      const canonicalAncestor = await realpath(candidate);
-      return path.join(canonicalAncestor, ...missingSegments);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = path.dirname(candidate);
-      if (parent === candidate) throw error;
-      missingSegments.unshift(path.basename(candidate));
-      candidate = parent;
-    }
   }
 }
 

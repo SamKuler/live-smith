@@ -1,5 +1,6 @@
 import type { ModelToolCall, ModelTurn } from "../contracts.js";
 import { cloneJsonValue } from "../json-clone.js";
+import { isDirectApiProfile } from "../profile.js";
 import type {
   ModelTransport,
   TransportFactoryOptions,
@@ -99,6 +100,9 @@ function buildChatBody(
   request: TransportRequest,
 ): Record<string, unknown> {
   const { profile, capabilities } = request.runtimeProfile;
+  if (!isDirectApiProfile(profile)) {
+    throw new Error("OpenAI Chat Completions requires a Direct API Profile.");
+  }
   const reasoning = profile.parameters.reasoning;
   const generated: Record<string, unknown> = {
     model: profile.model,

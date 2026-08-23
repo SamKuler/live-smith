@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import test from "node:test";
 
 import {
   attachmentQuotaIsWithinLimits,
   attachmentRequestQuotaIsWithinLimits,
+  MAX_ATTACHMENT_FILE_NAME_BYTES,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
@@ -20,6 +22,7 @@ import {
   MAX_REQUEST_BINARY_ATTACHMENT_COUNT,
   MAX_REQUEST_DOCUMENT_ATTACHMENT_BYTES,
   MAX_REQUEST_IMAGE_ATTACHMENT_BYTES,
+  safeAttachmentDisplayFileName,
 } from "./contracts.js";
 
 test("attachment byte, duration, count, and subtotal limits are explicit", () => {
@@ -92,4 +95,17 @@ test("model request quota uses its separately named policy boundary", () => {
     { kind: "audio", byteLength: 1 },
     { kind: "audio", byteLength: 1 },
   ]), false);
+});
+
+test("attachment display names remove legacy paths, controls, and unsafe emptiness", () => {
+  assert.equal(
+    safeAttachmentDisplayFileName(
+      "/Users/alice/Clients/\u202e\u0000secret\u0007 project.wav",
+    ),
+    "secret project.wav",
+  );
+  assert.equal(safeAttachmentDisplayFileName("../\u202e\u0000"), "attachment");
+
+  const bounded = safeAttachmentDisplayFileName(`${"界".repeat(100)}.wav`);
+  assert.ok(Buffer.byteLength(bounded, "utf8") <= MAX_ATTACHMENT_FILE_NAME_BYTES);
 });

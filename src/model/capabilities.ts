@@ -6,6 +6,7 @@ import type {
   ReasoningCapabilities,
 } from "./provider.js";
 import {
+  isDirectApiProfile,
   profileProvider,
   ProfileValidationError,
   type DraftProfile,
@@ -306,9 +307,13 @@ export function validateGenerationParameters(
   capabilities: ModelCapabilities,
 ): void {
   const { parameters } = profile;
+  const maxOutputTokens = isDirectApiProfile(profile)
+    ? parameters.maxOutputTokens
+    : undefined;
   if (
+    maxOutputTokens !== undefined &&
     capabilities.maxOutputTokens !== undefined &&
-    parameters.maxOutputTokens > capabilities.maxOutputTokens
+    maxOutputTokens > capabilities.maxOutputTokens
   ) {
     throw new ProfileValidationError(
       "parameters.maxOutputTokens",
@@ -363,8 +368,14 @@ export function validateGenerationParameters(
     requested.budgetTokens !== undefined ||
     capabilities.reasoning.strategy === "budget-thinking"
   ) {
+    if (maxOutputTokens === undefined) {
+      throw new ProfileValidationError(
+        "parameters.reasoning.budgetTokens",
+        "Thinking token budgets are not supported by this Profile connection.",
+      );
+    }
     const budget = requested.budgetTokens ??
-      Math.floor(parameters.maxOutputTokens / 2);
+      Math.floor(maxOutputTokens / 2);
     if (budget < 1024) {
       throw new ProfileValidationError(
         "parameters.reasoning.budgetTokens",
@@ -373,7 +384,7 @@ export function validateGenerationParameters(
           : "Thinking budget must be at least 1024.",
       );
     }
-    if (budget >= parameters.maxOutputTokens) {
+    if (budget >= maxOutputTokens) {
       throw new ProfileValidationError(
         "parameters.reasoning.budgetTokens",
         "Thinking budget must be below max output tokens.",

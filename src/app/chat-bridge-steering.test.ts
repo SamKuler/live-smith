@@ -165,17 +165,78 @@ test("steering requires a strict bounded body and exact active send target", asy
   }
 });
 
+test("a terminal steering receipt retry cannot rewrite a newer send activity", async () => {
+  const started = deferred();
+  const finish = deferred();
+  const state = {
+    activeSessionId: "session-1",
+    sessions: [{ id: "session-1" }],
+    events: [],
+    pendingAttachments: [],
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    lookupSteeringReceipt: async ({ sendId, steerId }) =>
+      sendId === "send-a" && steerId === "steer-a"
+        ? "accepted"
+        : "absent",
+    handleSend: async (_input, stream) => {
+      await stream.progress("Send B progress");
+      started.resolve();
+      await finish.promise;
+      return state;
+    },
+  });
+  const sendB = postJson(
+    bridgeEndpoint(bridge.url, "/send"),
+    { prompt: "Start B", sessionId: "session-1" },
+    { "X-Live-Smith-Send-Id": "send-b" },
+  );
+
+  try {
+    await started.promise;
+    const staleRetry = await steer(
+      bridge.url,
+      "send-a",
+      "steer-a",
+      "Guidance persisted for A",
+    );
+    assert.equal(staleRetry.status, 200);
+    const staleBody = await staleRetry.json() as Record<string, unknown>;
+    assert.equal(staleBody.activity, undefined);
+
+    const refreshed = await (
+      await fetch(bridgeEndpoint(bridge.url, "/state"))
+    ).json() as { sessionActivities?: unknown };
+    assert.deepEqual(refreshed.sessionActivities, [{
+      sessionId: "session-1",
+      status: "running",
+      message: "Send B progress",
+      unread: false,
+    }]);
+  } finally {
+    finish.resolve();
+    await sendB;
+    await bridge.close();
+  }
+});
+
 test("steering waits for owner persistence and emits prompt-free acceptance SSE", async () => {
   const started = deferred();
   const consume = deferred();
+  const startLaterConfirmation = deferred();
   const finish = deferred();
   let laterConfirmation: Promise<boolean> | undefined;
+  let activeSteering: SteeringChannel | undefined;
   const state = {} as ChatDialogState;
   const bridge = await createChatBridge({
     buildState: async () => state,
     renderHtml: () => "<html></html>",
     handleCommand: async () => state,
     handleSend: async (_input, stream, _signal, steering) => {
+      activeSteering = steering;
       started.resolve();
       await consume.promise;
       const [entry] = steering.takePending();
@@ -184,6 +245,7 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
       assert.equal(entry.prompt, "focus on drums");
       await stream.assistantReset();
       entry.accept();
+      await startLaterConfirmation.promise;
       laterConfirmation = stream.requestConfirmation({
         message: "Apply the steered plan?",
         groups: [{ title: "Track", rows: ["Rename Lead"] }],
@@ -208,12 +270,41 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
       "steer-1",
       "focus on drums",
     );
+    await waitUntil(() => activeSteering?.hasPending() === true);
     assert.equal(await remainsPending(steeringResponse), true);
     consume.resolve();
     const response = await steeringResponse;
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true });
+    const responseBody = await response.json() as Record<string, unknown>;
+    assert.equal(responseBody.ok, true);
+    assert.match(String(responseBody.bridgeStateRevision), /^[1-9][0-9]*$/);
+    assert.deepEqual(responseBody.activity, {
+      status: "running",
+      message: "Guidance applied",
+    });
 
+    const events = await readSseTypes(eventsResponse, [
+      "assistant_reset",
+      "steer_accepted",
+    ]);
+    const accepted = events.find((event) => event.type === "steer_accepted");
+    assert.ok(accepted);
+    assert.match(String(accepted.bridgeStateRevision), /^[1-9][0-9]*$/);
+    delete accepted.bridgeStateRevision;
+    assert.deepEqual(accepted, {
+      type: "steer_accepted",
+      sendId,
+      sessionId: "session-1",
+      steerId: "steer-1",
+      activity: {
+        status: "running",
+        message: "Guidance applied",
+      },
+    });
+    assert.equal(JSON.stringify(accepted).includes("focus on drums"), false);
+
+    startLaterConfirmation.resolve();
+    await waitUntil(() => laterConfirmation !== undefined);
     const idempotent = await steer(
       bridge.url,
       sendId,
@@ -230,20 +321,8 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
     );
     assert.equal(idempotent.status, 200);
     assert.equal(conflict.status, 409);
-
-    const events = await readSseTypes(eventsResponse, [
-      "assistant_reset",
-      "steer_accepted",
-    ]);
-    const accepted = events.find((event) => event.type === "steer_accepted");
-    assert.deepEqual(accepted, {
-      type: "steer_accepted",
-      sendId,
-      sessionId: "session-1",
-      steerId: "steer-1",
-    });
-    assert.equal(JSON.stringify(accepted).includes("focus on drums"), false);
   } finally {
+    startLaterConfirmation.resolve();
     finish.resolve();
     await bridge.close();
     await send.catch(() => undefined);
@@ -501,7 +580,13 @@ test("the steering route reports an explicit unknown persistence outcome", async
       "focus on drums",
     );
     assert.equal(retried.status, 200);
-    assert.deepEqual(await retried.json(), { ok: true });
+    const retriedBody = await retried.json() as Record<string, unknown>;
+    assert.equal(retriedBody.ok, true);
+    assert.match(String(retriedBody.bridgeStateRevision), /^[1-9][0-9]*$/);
+    assert.deepEqual(retriedBody.activity, {
+      status: "running",
+      message: "Guidance applied",
+    });
   } finally {
     finish.resolve();
     await send;
@@ -545,7 +630,10 @@ test("terminal steering retries reconcile only an exact durable receipt", async 
     );
 
     assert.equal(accepted.status, 200);
-    assert.deepEqual(await accepted.json(), { ok: true });
+    const acceptedBody = await accepted.json() as Record<string, unknown>;
+    assert.equal(acceptedBody.ok, true);
+    assert.match(String(acceptedBody.bridgeStateRevision), /^[1-9][0-9]*$/);
+    assert.equal("activity" in acceptedBody, false);
     assert.equal(conflict.status, 409);
     assert.equal(absent.status, 409);
   } finally {

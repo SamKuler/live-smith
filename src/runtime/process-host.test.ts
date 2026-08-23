@@ -14,6 +14,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { URL } from "node:url";
 
+import { CodexExecutableUnavailableError } from "./codex-executable.js";
 import { spawnCodexAppServer } from "./process-host.js";
 
 const disabledFeatures = [
@@ -96,12 +97,17 @@ function forcedConfiguration(chatgptBaseUrl: string): readonly string[] {
 test("Codex process launch is fixed and uses a strict environment allowlist", async (t) => {
   const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-process-"));
   t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  const codexHome = path.join(storageDirectory, "codex-subscription");
+  const runtimeWorkspace = path.join(codexHome, "runtime-workspace");
+  const resolvedExecutable = path.join(storageDirectory, "native-codex");
 
   const child = fakeChildProcess();
   const capture: {
     command?: string;
     args?: readonly string[];
     options?: SpawnOptions;
+    resolutionEnvironment?: NodeJS.ProcessEnv;
+    resolutionWorkingDirectory?: string;
   } = {};
   const spawnImpl = ((
     command: string,
@@ -113,6 +119,14 @@ test("Codex process launch is fixed and uses a strict environment allowlist", as
     capture.options = options;
     return child;
   }) as unknown as typeof spawn;
+  const resolveExecutable = async (
+    environment: NodeJS.ProcessEnv,
+    workingDirectory: string,
+  ): Promise<string> => {
+    capture.resolutionEnvironment = environment;
+    capture.resolutionWorkingDirectory = workingDirectory;
+    return resolvedExecutable;
+  };
 
   const blockedEnvironment = [
     "OPENAI_API_KEY",
@@ -138,6 +152,12 @@ test("Codex process launch is fixed and uses a strict environment allowlist", as
     "All_Proxy",
     "NO_PROXY",
     "no_proxy",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "XDG_CONFIG_HOME",
+    "NODE_PATH",
     "SSL_CERT_FILE",
     "node_extra_ca_certs",
     "GOOGLE_API_KEY",
@@ -182,12 +202,16 @@ test("Codex process launch is fixed and uses a strict environment allowlist", as
       else process.env[key] = value;
     }
   });
-  const launchedChild = await spawnCodexAppServer(storageDirectory, spawnImpl);
+  const launchedChild = await spawnCodexAppServer(
+    storageDirectory,
+    spawnImpl,
+    resolveExecutable,
+  );
   t.after(() => child.exit(0, null));
   assert.equal(launchedChild.stdin, child.stdin);
   assert.equal(launchedChild.stdout, child.stdout);
   assert.equal(launchedChild.stderr, child.stderr);
-  assert.equal(capture.command, "codex");
+  assert.equal(capture.command, resolvedExecutable);
   const metadataBaseUrl = metadataBaseUrlFromArgs(capture.args);
   assert.deepEqual(capture.args, [
     "app-server",
@@ -198,12 +222,18 @@ test("Codex process launch is fixed and uses a strict environment allowlist", as
   assert.deepEqual(capture.options?.stdio, ["pipe", "pipe", "pipe"]);
   assert.equal(capture.options?.windowsHide, true);
 
-  const codexHome = path.join(storageDirectory, "codex-subscription");
   assert.equal(capture.options?.env?.CODEX_HOME, codexHome);
-  assert.equal(capture.options?.cwd, path.join(codexHome, "runtime-workspace"));
+  assert.equal(capture.options?.cwd, runtimeWorkspace);
+  assert.equal(capture.resolutionEnvironment, capture.options?.env);
+  assert.equal(capture.resolutionWorkingDirectory, runtimeWorkspace);
   assert.deepEqual(await fs.readdir(capture.options.cwd as string), []);
   for (const key of blockedEnvironment) {
-    assert.equal(key in (capture.options?.env ?? {}), false, key);
+    assert.equal(
+      key in (capture.resolutionEnvironment ?? {}),
+      false,
+      `resolver: ${key}`,
+    );
+    assert.equal(key in (capture.options?.env ?? {}), false, `child: ${key}`);
   }
   assert.deepEqual(
     Object.fromEntries(
@@ -260,13 +290,17 @@ test("Codex process launch is fixed and uses a strict environment allowlist", as
 
   const secondChild = fakeChildProcess();
   let secondArgs: readonly string[] | undefined;
-  await spawnCodexAppServer(storageDirectory, ((
-    _command: string,
-    args: readonly string[],
-  ) => {
-    secondArgs = args;
-    return secondChild;
-  }) as unknown as typeof spawn);
+  await spawnCodexAppServer(
+    storageDirectory,
+    ((
+      _command: string,
+      args: readonly string[],
+    ) => {
+      secondArgs = args;
+      return secondChild;
+    }) as unknown as typeof spawn,
+    resolveExecutable,
+  );
   t.after(() => secondChild.exit(0, null));
   const secondMetadataBaseUrl = metadataBaseUrlFromArgs(secondArgs);
   assert.notEqual(secondMetadataBaseUrl, metadataBaseUrl);
@@ -287,7 +321,11 @@ test("process launch failures expose no raw spawn details", async (t) => {
   }) as unknown as typeof spawn;
 
   await assert.rejects(
-    spawnCodexAppServer(storageDirectory, spawnImpl),
+    spawnCodexAppServer(
+      storageDirectory,
+      spawnImpl,
+      async () => "/live-smith/test-native-codex",
+    ),
     (error: unknown) => {
       assert.equal(
         error instanceof Error && error.message,
@@ -297,6 +335,44 @@ test("process launch failures expose no raw spawn details", async (t) => {
     },
   );
   await assertMetadataUnavailable(metadataBaseUrlFromArgs(capturedArgs));
+});
+
+test("executable resolution preserves only its typed safe unavailable error", async (t) => {
+  const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-process-"));
+  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  let spawnCalls = 0;
+  const spawnImpl = (() => {
+    spawnCalls += 1;
+    return fakeChildProcess();
+  }) as unknown as typeof spawn;
+
+  await assert.rejects(
+    spawnCodexAppServer(storageDirectory, spawnImpl, async () => {
+      throw new CodexExecutableUnavailableError();
+    }),
+    (error: unknown) => {
+      assert.equal(error instanceof CodexExecutableUnavailableError, true);
+      assert.equal(
+        error instanceof Error && error.message,
+        "Codex executable unavailable.",
+      );
+      return true;
+    },
+  );
+  await assert.rejects(
+    spawnCodexAppServer(storageDirectory, spawnImpl, async () => {
+      throw new Error("raw resolver path /private/example-codex");
+    }),
+    (error: unknown) => {
+      assert.equal(
+        error instanceof Error && error.message,
+        "Codex App Server could not be started.",
+      );
+      assert.equal(String(error).includes("/private/example-codex"), false);
+      return true;
+    },
+  );
+  assert.equal(spawnCalls, 0);
 });
 
 test("Codex process launch rejects symlinked private runtime directories", async (t) => {

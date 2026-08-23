@@ -14,9 +14,14 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
+import {
+  MAX_DISCOVERED_MODEL_COUNT,
+  MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
+} from "../catalog.js";
 import type { OpenAIDirectApiConnection, SavedProfile } from "../profile.js";
 import type { TransportRequest } from "../provider.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
+import { MAX_DIRECT_JSON_RESPONSE_BYTES } from "./response-body.js";
 
 type ProfileOverrides = Partial<Omit<SavedProfile, "connection">> &
   Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
@@ -56,6 +61,11 @@ function request(
     runtimeProfile: {
       profile: p,
       capabilities: resolveModelCapabilities(p),
+      inputCapabilityEvidence: {
+        image: "unverified",
+        audio: "unverified",
+        pdf: "unverified",
+      },
     },
     currentUserContent: [{
       type: "text",
@@ -326,19 +336,14 @@ test("OpenAI Chat rejects disabled or unverified audio before HTTP", async () =>
     [false, "supported"],
     [true, "unsupported"],
     [true, "unverified"],
-    [true, undefined],
   ] as const) {
     const req = request(profile());
     req.runtimeProfile.capabilities.inputs.audio = enabled;
-    if (evidence === undefined) {
-      delete req.runtimeProfile.inputCapabilityEvidence;
-    } else {
-      req.runtimeProfile.inputCapabilityEvidence = {
-        image: "unverified",
-        audio: evidence,
-        pdf: "unverified",
-      };
-    }
+    req.runtimeProfile.inputCapabilityEvidence = {
+      image: "unverified",
+      audio: evidence,
+      pdf: "unverified",
+    };
     req.currentUserContent = [audioPart(3, "/private/audio-secret.wav")];
     await assert.rejects(
       transport.createToolTurn(req),
@@ -1327,6 +1332,59 @@ test("OpenAI malformed input modality arrays do not erase known policy", async (
   ).inputs.image, true);
 });
 
+test("OpenAI model discovery rejects oversized catalogs before returning them", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: Array.from(
+        { length: MAX_DISCOVERED_MODEL_COUNT + 1 },
+        (_, index) => ({ id: `model-${index}` }),
+      ),
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /too many models/,
+  );
+});
+
+test("OpenAI model discovery rejects malformed model records instead of returning a subset", async () => {
+  for (const invalidEntry of [
+    null,
+    {},
+    { id: 42 },
+    { id: "   " },
+    { id: "x".repeat(MAX_DISCOVERED_MODEL_ID_CODE_POINTS + 1) },
+  ]) {
+    const transport = createOpenAIChatTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        data: [{ id: "valid-model" }, invalidEntry],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    await assert.rejects(
+      transport.listModels(profile()),
+      /invalid model entry/,
+    );
+  }
+});
+
+test("OpenAI model discovery rejects a response above its byte budget", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response("{}", {
+      status: 200,
+      headers: {
+        "Content-Length": String(MAX_DIRECT_JSON_RESPONSE_BYTES + 1),
+      },
+    }),
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /JSON response larger than/,
+  );
+});
+
 test("OpenAI model discovery does not depend on ambient Web constructors", async () => {
   const names = ["URL", "Headers", "AbortController"] as const;
   const descriptors = new Map(
@@ -1344,12 +1402,26 @@ test("OpenAI model discovery does not depend on ambient Web constructors", async
     const transport = createOpenAIChatTransport({
       fetchImpl: async (input) => {
         url = String(input);
+        const bytes = new TextEncoder().encode(JSON.stringify({
+          data: [{ id: "host-safe-model" }],
+        }));
+        let sent = false;
         return {
-          json: async () => ({ data: [{ id: "host-safe-model" }] }),
+          body: {
+            getReader: () => ({
+              cancel: async () => {},
+              read: async () => {
+                if (sent) return { done: true, value: undefined };
+                sent = true;
+                return { done: false, value: bytes };
+              },
+              releaseLock: () => {},
+            }),
+          },
           ok: true,
           status: 200,
           statusText: "OK",
-        } as Response;
+        } as unknown as Response;
       },
     });
     const models = await transport.listModels(profile());
@@ -1462,7 +1534,7 @@ test("OpenAI Chat errors never expose an echoed request body", async () => {
     fetchImpl: async (_input, init) =>
       new Response(`proxy echoed request: ${String(init?.body)}`, {
         status: 400,
-        statusText: "Bad Request",
+        statusText: sentinels[0]!,
       }),
   });
 
@@ -1472,7 +1544,7 @@ test("OpenAI Chat errors never expose an echoed request body", async () => {
       const message = String(error);
       assert.match(
         message,
-        /openai\/chat-completions request failed: OpenAI-compatible HTTP 400: Bad Request/,
+        /openai\/chat-completions request failed: OpenAI-compatible HTTP 400: request failed/,
       );
       for (const sentinel of sentinels) assert.doesNotMatch(message, new RegExp(sentinel));
       assert.doesNotMatch(message, /data:image/i);

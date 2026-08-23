@@ -16,7 +16,6 @@ import {
   agentSystemInstructionsForSkills,
 } from "../agent/system-instructions.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
-import { resolveModelCapabilities } from "../model/capabilities.js";
 import type {
   ConversationMessage,
   ModelInputPart,
@@ -47,7 +46,7 @@ import {
 import {
   handleAgentRequest,
   preflightAgentPlan,
-} from "./agent-flow.js";
+} from "./agent-request.js";
 import {
   AttachmentInputCapabilityError,
 } from "./attachment-context.js";
@@ -156,7 +155,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     },
     advanced: {},
   };
-  const capabilities = resolveModelCapabilities(profile);
+  const runtimeProfile = runtimeProfileForSavedProfile(profile);
   const history: ConversationMessage[] = [
     { role: "user", content: [{ type: "text", text: "previous prompt" }] },
     { role: "assistant", content: "previous response" },
@@ -184,7 +183,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     liveContext: "Selected track: Bass",
     history,
     agentMessages,
-    runtimeProfile: { profile, capabilities },
+    runtimeProfile,
     tools,
   });
 
@@ -212,7 +211,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     history,
     agentMessages,
     tools,
-    runtimeProfile: { profile, capabilities },
+    runtimeProfile,
   });
 
   const skillContext = {
@@ -228,7 +227,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     liveContext: "Selected track: Bass",
     history,
     agentMessages,
-    runtimeProfile: { profile, capabilities },
+    runtimeProfile,
     skillContext,
     tools,
   });
@@ -258,7 +257,7 @@ test("buildModelRequest carries a complete profile, capabilities, and agent mess
     liveContext: "Selected track: Bass",
     history,
     agentMessages,
-    runtimeProfile: { profile, capabilities },
+    runtimeProfile,
     tools: searchTools,
   });
   assert.match(
@@ -315,14 +314,14 @@ test("handleAgentRequest snapshots persistent and one-turn Skill guidance withou
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Review",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     prompt,
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     {
@@ -398,14 +397,14 @@ test("handleAgentRequest adds hosted Web Search only for an opted-in Profile", a
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Research",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Find the current documentation",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -502,14 +501,14 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
 
   const result = await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Continue",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Inspect the current track",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -605,14 +604,14 @@ test("conflicting terminal Web Search payloads with one ID fail without a duplic
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: directory } } as never,
+      directory,
       {
-        defaultPrompt: "Research",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Find the current documentation",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -677,14 +676,14 @@ test("one agent send hides a twenty-first hosted Web Search and preserves the fi
 
   await handleAgentRequest(
       { environment: { storageDirectory: directory } } as never,
+      directory,
       {
-        defaultPrompt: "Research",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Search several current sources",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -774,14 +773,14 @@ test("later agent turns receive only the remaining defensive Web Search allowanc
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Research",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Search several current sources",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -851,14 +850,14 @@ test("completed hosted Web Search persists before a later provider failure", asy
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: directory } } as never,
+      directory,
       {
-        defaultPrompt: "Research",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Find the current documentation",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -920,14 +919,14 @@ test("failed hosted Web Search is durable-first and not a transient update", asy
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Research",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Find the current documentation",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -993,14 +992,14 @@ test("completed hosted Web Search remains durable when cancellation arrives", as
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: directory } } as never,
+      directory,
       {
-        defaultPrompt: "Research",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Find the current documentation",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -1067,14 +1066,14 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Research",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Find the current documentation",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -1154,14 +1153,14 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
 
   await handleAgentRequest(
     { environment: { storageDirectory: directory } } as never,
+    directory,
     {
-      defaultPrompt: "Research",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Find the current documentation",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -1241,14 +1240,14 @@ test("missing selected Skill blocks model and event persistence", async () => {
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: directory } } as never,
+      directory,
       {
-        defaultPrompt: "Review",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Review",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       session.id,
       {
@@ -1337,7 +1336,7 @@ test("Runtime Profile carries input capability evidence without raw discovery me
   };
 
   assert.equal(
-    runtimeProfileForSavedProfile(unknownProfile).inputCapabilityEvidence?.image,
+    runtimeProfileForSavedProfile(unknownProfile).inputCapabilityEvidence.image,
     "unverified",
   );
   assert.equal(
@@ -1345,7 +1344,7 @@ test("Runtime Profile carries input capability evidence without raw discovery me
       id: "custom-model",
       displayName: "Custom model",
       capabilities: { inputs: { image: false } },
-    }]).inputCapabilityEvidence?.image,
+    }]).inputCapabilityEvidence.image,
     "unsupported",
   );
 });
@@ -1860,14 +1859,14 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
 
   const result = await handleAgentRequest(
     { environment: { storageDirectory: dir } } as never,
+    dir,
     {
-      defaultPrompt: "Continue",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Continue the device chain",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -1934,14 +1933,14 @@ test("handleAgentRequest sends current and historical images then consumes curre
 
   await handleAgentRequest(
     { environment: { storageDirectory: dir } } as never,
+    dir,
     {
-      defaultPrompt: "Review",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Review the current image",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -2006,19 +2005,21 @@ test("handleAgentRequest rejects audio without supported evidence before model o
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { capabilityOverrides: { inputs: { audio: true } } },
   };
+  const runtimeProfile = runtimeProfileForSavedProfile(profile);
+  runtimeProfile.inputCapabilityEvidence.audio = "unverified";
   let modelCalls = 0;
 
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Review",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Describe the current audio",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfile,
       "project-a",
       existing.id,
       {
@@ -2101,14 +2102,14 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
 
   const result = await handleAgentRequest(
     { environment: { storageDirectory: dir } } as never,
+    dir,
     {
-      defaultPrompt: "Review",
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     },
     "Continue with the current image",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     existing.id,
     {
@@ -2179,14 +2180,14 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Review",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Continue",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -2239,14 +2240,14 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
     let modelCalls = 0;
     const request = handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Review",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Review the score",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -2326,14 +2327,14 @@ test("attachment capability and prompt persistence failures leave images pending
     await assert.rejects(
       handleAgentRequest(
         { environment: { storageDirectory: dir } } as never,
+        dir,
         {
-          defaultPrompt: "Review",
           summary: "Track: Bass",
           target: {},
           scope: { kind: "track", identity: "track-1", label: "Bass" },
         },
         "Review",
-        { profile, capabilities: resolveModelCapabilities(profile) },
+        runtimeProfileForSavedProfile(profile),
         "project-a",
         existing.id,
         {
@@ -2397,14 +2398,14 @@ test("provider failure keeps already persisted image refs consumed", async () =>
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Review",
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
       },
       "Review",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       existing.id,
       {
@@ -2447,7 +2448,6 @@ test("getOrCreateDefaultSession rejects a preferred session from another project
   const selected = await getOrCreateDefaultSession(
     dir,
     {
-      defaultPrompt: "Test",
       summary: "Selection",
       target: {},
       scope: { kind: "selection", identity: "local-selection", label: "Selection" },
@@ -2473,7 +2473,6 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
   const duplicateName = await getOrCreateDefaultSession(
     dir,
     {
-      defaultPrompt: "Test",
       summary: "Lead",
       target: {},
       scope: { kind: "track", identity: "track-2", label: "Lead" },
@@ -2485,7 +2484,6 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
   const renamedSameTrack = await getOrCreateDefaultSession(
     dir,
     {
-      defaultPrompt: "Test",
       summary: "Renamed Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Renamed Lead" },
@@ -2498,7 +2496,6 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
 test("an archived current-object Session is not reused as the active Session", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-archived-session-"));
   const interaction = {
-    defaultPrompt: "Test",
     summary: "Lead",
     target: {},
     scope: { kind: "track" as const, identity: "track-1", label: "Lead" },
@@ -2569,7 +2566,6 @@ test("the first real prompt names an untitled Session", async () => {
     advanced: {},
   };
   const interaction = {
-    defaultPrompt: "Suggest a practical production move for this Live object.",
     summary: "Track: Bass",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2584,9 +2580,10 @@ test("the first real prompt names an untitled Session", async () => {
 
   await handleAgentRequest(
     { environment: { storageDirectory: dir } } as never,
+    dir,
     interaction,
     "Design a warm bass patch",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     initial.id,
     {
@@ -2609,13 +2606,14 @@ test("the first real prompt names an untitled Session", async () => {
   });
   await handleAgentRequest(
     { environment: { storageDirectory: dir } } as never,
+    dir,
     {
       ...interaction,
       summary: "Track: Sub Bass",
       scope: { kind: "track", identity: "track-2", label: "Sub Bass" },
     },
     "Try a different envelope",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     manuallyNamed.id,
     {
@@ -2658,14 +2656,14 @@ test("a failed model request persists and publishes a redacted session error", a
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Test",
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
       },
       "Make a bassline",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       undefined,
       {
@@ -2724,14 +2722,14 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
   await assert.rejects(
     handleAgentRequest(
       { environment: { storageDirectory: dir } } as never,
+      dir,
       {
-        defaultPrompt: "Test",
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
       },
       "Make a bassline",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       undefined,
       {
@@ -2798,14 +2796,14 @@ test("a partial composite creation failure remains explicitly unfinished", async
 
   const result = await handleAgentRequest(
       context,
+      dir,
       {
-        defaultPrompt: "Test",
         summary: "Live Set",
         target: {},
         scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
       },
       "Create a bass track",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       undefined,
       {
@@ -2941,14 +2939,14 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
 
   const result = await handleAgentRequest(
     context,
+    dir,
     {
-      defaultPrompt: "Test",
       summary: 'MIDI track "Lead"\ndevices=none',
       target: { track },
       scope: { kind: "track", identity: "42", label: "Lead" },
     },
     "Add a delay",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     undefined,
     {
@@ -3105,7 +3103,6 @@ test("completed action replay protection persists across sends and clears after 
     application: { song: { handle: { id: 1n }, tracks: [track] } },
   } as never;
   const interaction = {
-    defaultPrompt: "Test",
     summary: 'MIDI track "Lead"\ndevices=none',
     target: { track },
     scope: { kind: "track", identity: "142", label: "Lead" },
@@ -3121,9 +3118,10 @@ test("completed action replay protection persists across sends and clears after 
   let firstCalls = 0;
   const firstResult = await handleAgentRequest(
     context,
+    dir,
     interaction,
     "Build the chain",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     undefined,
     callbacks,
@@ -3165,9 +3163,10 @@ test("completed action replay protection persists across sends and clears after 
   const secondInputs: ModelConversationMessage[][] = [];
   const secondResult = await handleAgentRequest(
     context,
+    dir,
     interaction,
     "Continue only the missing work",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     callbacks,
@@ -3226,9 +3225,10 @@ test("completed action replay protection persists across sends and clears after 
   let thirdCalls = 0;
   const thirdResult = await handleAgentRequest(
     context,
+    dir,
     interaction,
     "Add another Auto Filter intentionally",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     callbacks,
@@ -3308,7 +3308,6 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
     application: { song: { handle: { id: 1n }, tracks: [track] } },
   } as never;
   const interaction = {
-    defaultPrompt: "Test",
     summary: 'MIDI track "Lead"\ndevices=none',
     target: { track },
     scope: { kind: "track", identity: "313", label: "Lead" },
@@ -3324,9 +3323,10 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
   let firstModelCalls = 0;
   const firstResult = await handleAgentRequest(
     context,
+    dir,
     interaction,
     "Insert the requested device",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     undefined,
     callbacks,
@@ -3366,9 +3366,10 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
 
   const secondResult = await handleAgentRequest(
     context,
+    dir,
     interaction,
     "Answer a separate question",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     session.id,
     callbacks,
@@ -3461,14 +3462,14 @@ test("a created-track action cannot be repeated after a later rename fails", asy
 
   const result = await handleAgentRequest(
     context,
+    dir,
     {
-      defaultPrompt: "Test",
       summary: "Live Set has no tracks",
       target: {},
       scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
     },
     "Create the lead",
-    { profile, capabilities: resolveModelCapabilities(profile) },
+    runtimeProfileForSavedProfile(profile),
     "project-a",
     undefined,
     {
@@ -3608,14 +3609,14 @@ test("a stopped Live action publishes completed mutations before propagating can
   await assert.rejects(
     handleAgentRequest(
       context,
+      dir,
       {
-        defaultPrompt: "Test",
         summary: "Live Set",
         target: {},
         scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
       },
       "Create two scenes",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       undefined,
       {
@@ -3712,14 +3713,14 @@ test("a concurrent Stop cannot turn a host action failure into a successful Appl
   await assert.rejects(
     handleAgentRequest(
       context,
+      dir,
       {
-        defaultPrompt: "Test",
         summary: 'MIDI track "Lead"\ndevices=none',
         target: { track },
         scope: { kind: "track", identity: "77", label: "Lead" },
       },
       "Build the chain",
-      { profile, capabilities: resolveModelCapabilities(profile) },
+      runtimeProfileForSavedProfile(profile),
       "project-a",
       undefined,
       {

@@ -41,7 +41,7 @@ async function postStop(
   });
 }
 
-test("terminal Stop polling returns and consumes the correlated prompt persistence", async (t) => {
+test("terminal Stop polling retains the correlated prompt persistence", async (t) => {
   for (const expected of [
     "persisted",
     "not_persisted",
@@ -113,12 +113,12 @@ test("terminal Stop polling returns and consumes the correlated prompt persisten
           promptPersistence: expected,
         });
 
-        const consumedStop = await postStop(bridge.url, sendId);
-        assert.deepEqual(await consumedStop.json(), {
+        const repeatedStop = await postStop(bridge.url, sendId);
+        assert.deepEqual(await repeatedStop.json(), {
           ok: true,
           terminal: true,
           sendId,
-          promptPersistence: "unknown",
+          promptPersistence: expected,
         });
       } finally {
         finishCleanup.resolve();
@@ -129,7 +129,7 @@ test("terminal Stop polling returns and consumes the correlated prompt persisten
   }
 });
 
-test("Stop outcomes remain exact to their send ID and are invalidated by ID reuse", async () => {
+test("Stop outcomes remain exact to their send ID and forbid ID reuse", async () => {
   const state = {} as ChatDialogState;
   const starts = new Map<string, Deferred>();
   const bridge = await createChatBridge({
@@ -217,8 +217,6 @@ test("Stop outcomes remain exact to their send ID and are invalidated by ID reus
     );
 
     await stopAndCache("reused-send", "persist");
-    const reusedStarted = deferred();
-    starts.set("reused-send", reusedStarted);
     const reused = fetch(endpoint(bridge.url, "/send"), {
       method: "POST",
       headers: {
@@ -227,13 +225,61 @@ test("Stop outcomes remain exact to their send ID and are invalidated by ID reus
       },
       body: JSON.stringify({ prompt: "complete", sessionId: "session-1" }),
     });
-    await reusedStarted.promise;
-    assert.equal((await reused).status, 200);
+    assert.equal((await reused).status, 409);
     assert.deepEqual(await (await postStop(bridge.url, "reused-send")).json(), {
       ok: true,
       terminal: true,
       sendId: "reused-send",
-      promptPersistence: "unknown",
+      promptPersistence: "not_persisted",
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("Stop tombstones a send ID even when it arrives before Send headers", async () => {
+  const state = {} as ChatDialogState;
+  let sendCalls = 0;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {
+      sendCalls += 1;
+    },
+  });
+  const sendId = "stop-before-send-headers";
+
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      assert.deepEqual(await (await postStop(bridge.url, sendId)).json(), {
+        ok: true,
+        terminal: true,
+        sendId,
+        promptPersistence: "unknown",
+      });
+    }
+
+    const send = await fetch(endpoint(bridge.url, "/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": sendId,
+      },
+      body: JSON.stringify({ prompt: "must remain stopped", sessionId: "session-1" }),
+    });
+    assert.equal(send.status, 409);
+    assert.equal(
+      (await send.json() as { promptPersistence: PromptPersistence })
+        .promptPersistence,
+      "not_persisted",
+    );
+    assert.equal(sendCalls, 0);
+    assert.deepEqual(await (await postStop(bridge.url, sendId)).json(), {
+      ok: true,
+      terminal: true,
+      sendId,
+      promptPersistence: "not_persisted",
     });
   } finally {
     await bridge.close();
@@ -303,6 +349,15 @@ test("Stop terminal retention is bounded and does not cross bridge close", async
       }).promptPersistence,
       "unknown",
     );
+    const reusedAfterClose = await fetch(endpoint(replacement.url, "/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "bounded-stop-64",
+      },
+      body: JSON.stringify({ prompt: "new bridge", sessionId: "session-1" }),
+    });
+    assert.equal(reusedAfterClose.status, 200);
   } finally {
     await replacement.close();
   }

@@ -30,7 +30,6 @@ import type { ConversationScope } from "../model/contracts.js";
 type Api = ExtensionContext<"1.0.0">;
 
 export interface LiveInteractionContext {
-  defaultPrompt: string;
   summary: string;
   target: LiveTarget;
   scope: ConversationScope;
@@ -62,10 +61,6 @@ function interactionContextForObject(
   const clip = object instanceof Clip ? object : undefined;
   const track = findTrackAncestor(object);
   return {
-    defaultPrompt:
-      object instanceof Clip
-        ? "Suggest a musical variation or production move for this clip."
-        : "Suggest a practical production move for this Live object.",
     summary: summarizeObject(object),
     target: makeTarget(track, clip, object),
     scope: scopeForObject(object, track, clip),
@@ -138,8 +133,6 @@ export function arrangementSelectionInteractionContext(
   };
   const track = firstSelectedTrack(context, snapshot);
   return {
-    defaultPrompt:
-      "Analyze this arrangement selection and suggest the next useful production move.",
     summary: summarizeArrangementSelection(context, snapshot),
     target: makeTarget(track),
     selectionContext: {
@@ -189,8 +182,6 @@ export function clipSlotSelectionInteractionContext(
   const track = firstSelectedSlotTrack(context, snapshot);
 
   return {
-    defaultPrompt:
-      "Suggest a session-view arrangement or clip-launching idea for these slots.",
     summary: ["Session clip-slot selection:", ...slots].join("\n"),
     target: makeTarget(track, targetClip ?? undefined),
     selectionContext: {

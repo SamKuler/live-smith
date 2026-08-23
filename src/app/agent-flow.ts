@@ -2,61 +2,32 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { createHash } from "node:crypto";
 
 import {
-  AgentPartialCompletionError,
-  AgentSteeringBeforeApplyError,
-  AgentSteeringInterruptError,
-  runAgentLoop,
-  webSearchSummary,
-  type AgentActionExecutionOutcome,
-  type AgentActionPreflightGuard,
   type AgentConfirmationDecision,
-  type AgentLoopTraceEvent,
 } from "../agent/loop.js";
-import { throwIfAborted } from "../runtime/host.js";
 import {
-  observationRequestForAction,
-  requiresExplicitConfirmation,
-  type AgentPlan,
-} from "../agent/actions.js";
-import { liveSmithTools } from "../agent/tool-definitions.js";
-import {
-  HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
-  HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
-  modelToolsForProfile,
-} from "../model/tools.js";
-import type { ModelHostedWebSearch, ModelTurn } from "../model/contracts.js";
-import {
-  AgentPlanExecutionError,
-  executeAgentPlanWithProgress,
-} from "../live/executor.js";
+  createHostAbortController,
+  throwIfAborted,
+  waitForPromiseWithSignal,
+} from "../runtime/host.js";
+import { requiresExplicitConfirmation, type AgentPlan } from "../agent/actions.js";
 import {
   interactionContextForScope,
   type LiveInteractionContext,
 } from "../live/context.js";
-import { observeLive } from "../live/observer.js";
-import { captureLiveActionPreflightSnapshot } from "../live/preflight.js";
 import { copySelectedAudioAttachmentSource } from "../live/audio-attachment-source.js";
-import {
-  assertSameExistingPlanTargets,
-  bindAgentPlanTargets,
-  boundTrackForAction,
-  liveActionIdentityKeys,
-  type AgentPlanBindings,
-} from "../live/action-bindings.js";
 import {
   defaultModelCapabilities,
   resolveModelCapabilities,
   validateGenerationParameters,
 } from "../model/capabilities.js";
+import { decodeDiscoveredModelCatalog } from "../model/catalog.js";
 import type {
   DiscoveredModelInfo,
+  CodexSubscriptionBackend,
   ManagedAuthReadOptions,
   ManagedAuthState,
-  ModelBackend,
-  RuntimeProfile,
 } from "../model/provider.js";
 import {
-  profileSecrets,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DraftProfile,
@@ -72,11 +43,15 @@ import {
   parseSkillMarkdown,
   SkillFormatError,
 } from "../skills/format.js";
-import type { ModelBackendManager } from "../model/backend-registry.js";
+import {
+  createDirectApiBackend,
+  type ModelBackendManager,
+} from "../model/backend-registry.js";
 import {
   acquireSharedModelBackendManager,
-  canonicalModelStorageKey,
+  type SharedModelBackendManagerLease,
 } from "../model/shared-backend-manager.js";
+import { canonicalStorageDirectory } from "../storage/scope.js";
 import {
   connectionFingerprint,
   loadModelCache,
@@ -95,14 +70,9 @@ import {
   UnsupportedAttachmentError,
 } from "../storage/attachments.js";
 import {
-  appendSessionEvent,
   deleteSessionEvents,
   listSessionEventLogIds,
   loadSessionEvents,
-  SessionSteeringReceiptConflictError,
-  type SessionEvent,
-  type SessionEventInput,
-  type SessionSteeringReceipt,
 } from "../storage/events.js";
 import {
   isStorageCommitOutcomeUnknownError,
@@ -134,23 +104,21 @@ import {
   requireActiveSavedProfile,
   saveGlobalSettings,
   saveSavedProfile,
+  type AgentSettings,
 } from "../storage/settings.js";
 import { actionDiffGroups } from "../ui/action-diff.js";
 import {
   chatRuntimeSummary,
   modelStateSourceForProfile,
+  type ChatBridgeState,
   type ChatDialogState,
 } from "../ui/chat-state.js";
-import {
-  sessionErrorMessage,
-  shouldOpenSettingsForAgentError,
-} from "./error-routing.js";
+import { shouldOpenSettingsForAgentError } from "./error-routing.js";
 import {
   ChatBridgeCommandOutcomeUnknownError,
   ChatBridgeAttachmentValidationError,
   ChatBridgeConflictError,
   ChatBridgePayloadTooLargeError,
-  ChatBridgePromptPersistenceUnknownError,
   ChatBridgeResourceNotFoundError,
   ChatBridgeSendFailureError,
   ChatBridgeSkillValidationError,
@@ -168,9 +136,11 @@ import {
   type ChatBridgeSteeringReceiptLookupInput,
   type ChatBridgeSteeringReceiptLookupResult,
   type ChatBridgeStream,
-  type RawAttachmentBodyReadOptions,
-  type RawSkillBodyReadOptions,
 } from "./chat-bridge.js";
+import type {
+  RawAttachmentBodyReadOptions,
+  RawSkillBodyReadOptions,
+} from "./chat-bridge-http.js";
 import {
   publishSessionApprovalModeChange,
   subscribeSessionApprovalModeChanges,
@@ -180,42 +150,38 @@ import {
   subscribeGlobalSettingsChanges,
 } from "./global-settings-events.js";
 import {
-  resolveConversationHistory,
-  resolveCurrentAttachmentParts,
-} from "./attachment-context.js";
-import {
   capabilitiesForProfilePreview,
   requestModelTurn,
   resolveDiscoveredModels,
   runtimeProfileForSavedProfile,
 } from "./model-request.js";
 import {
-  activeRecoveryLedgerFromEvents,
   getOrCreateDefaultSession,
   previousSessionsForProject,
   projectKeyForContext,
-  recoveryContextFromEvents,
   continuableSessionsForScope,
-  sessionTitleForPrompt,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 import {
   SessionMutationFence,
   sessionMutationFenceKey,
 } from "./session-mutation-fence.js";
-import { resolveSkillContext } from "./skill-context.js";
 import {
   modelAuthSendFenceForStorage,
   type ModelAuthSendFence,
 } from "./model-auth-send-fence.js";
 import {
   SteeringClosedError,
-  SteeringPersistenceOutcomeUnknownError,
   type SteeringChannel,
 } from "./steering.js";
+import {
+  consumedAttachmentIds,
+  handleAgentRequest,
+  steeringReceiptFor,
+  type AgentModelTurnRequester,
+} from "./agent-request.js";
 
 type Api = ExtensionContext<"1.0.0">;
-const maxConsecutiveInvalidToolCalls = 3;
 const sessionMutationFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
 
@@ -230,7 +196,7 @@ export interface AgentFlowDependencies {
     profile: DraftProfile,
     signal: AbortSignal,
   ): Promise<DiscoveredModelInfo[]>;
-  /** Test-only modal-owned manager; production shares one per storage root. */
+  /** Test-only manager; production creates Direct backends per use and shares managed. */
   modelBackendManager?: Pick<
     ModelBackendManager,
     "forProfile" | "codex" | "codexLease" | "invalidateCodex" | "close"
@@ -238,7 +204,7 @@ export interface AgentFlowDependencies {
   /** Process-wide in production; injectable only for isolated tests. */
   modelAuthSendFence?: ModelAuthSendFence;
   renderHtml?(
-    state: ChatDialogState,
+    state: ChatBridgeState,
     bridge: { baseUrl: string; token: string },
   ): string;
   /** Shared by every dialog opened from one extension activation. */
@@ -259,20 +225,73 @@ export async function runAgentFlow(
   let activeSessionId: string | undefined;
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const codexCatalogGenerationByConnection = new Map<string, number>();
-  const managedStorageDirectory = context.environment.storageDirectory === undefined
+  const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
-    : await canonicalModelStorageKey(context.environment.storageDirectory);
+    : await canonicalStorageDirectory(context.environment.storageDirectory);
   const modelAuthSendFence = dependencies.modelAuthSendFence ??
-    modelAuthSendFenceForStorage(managedStorageDirectory);
-  const sharedBackendManagerLease = dependencies.modelBackendManager === undefined
-    ? await acquireSharedModelBackendManager(managedStorageDirectory, {
-      onPoison: (error) => modelAuthSendFence.poison(error),
-    })
-    : undefined;
-  const modelBackendManager = dependencies.modelBackendManager ??
-    sharedBackendManagerLease!.manager;
+    modelAuthSendFenceForStorage(storageDirectory);
+  let sharedBackendManagerLeasePromise:
+    | Promise<SharedModelBackendManagerLease>
+    | undefined;
+  let sharedBackendManagerLease: SharedModelBackendManagerLease | undefined;
+  let sharedBackendManagerAcquisitionController:
+    | ReturnType<typeof createHostAbortController>
+    | undefined;
+  const managedBackendAcquisitionClosedError = new Error(
+    "The managed model backend acquisition was closed.",
+  );
+  let managedBackendLeaseClosing = false;
+  const managedBackendManager = async (signal?: AbortSignal) => {
+    if (dependencies.modelBackendManager) return dependencies.modelBackendManager;
+    throwIfAborted(signal);
+    if (
+      sharedBackendManagerLeasePromise === undefined &&
+      managedBackendLeaseClosing
+    ) {
+      throw new Error("The managed model backend is closing.");
+    }
+    if (sharedBackendManagerLeasePromise === undefined) {
+      sharedBackendManagerAcquisitionController = createHostAbortController();
+      sharedBackendManagerLeasePromise = acquireSharedModelBackendManager(
+        storageDirectory,
+        { onPoison: (error) => modelAuthSendFence.poison(error) },
+        sharedBackendManagerAcquisitionController.signal,
+      ).then((lease) => {
+        sharedBackendManagerLease = lease;
+        return lease;
+      });
+    }
+    return (await waitForPromiseWithSignal(
+      sharedBackendManagerLeasePromise,
+      signal,
+    )).manager;
+  };
+  const modelBackendManager = {
+    async forProfile(
+      profile: DraftProfile | SavedProfile,
+      signal?: AbortSignal,
+    ) {
+      if (
+        profile.connection.kind === "direct-api" &&
+        dependencies.modelBackendManager === undefined
+      ) {
+        return createDirectApiBackend(profile);
+      }
+      return (await managedBackendManager(signal)).forProfile(profile, signal);
+    },
+    async codex(signal?: AbortSignal) {
+      return (await managedBackendManager(signal)).codex(signal);
+    },
+    async codexLease(signal?: AbortSignal) {
+      return (await managedBackendManager(signal)).codexLease(signal);
+    },
+    async invalidateCodex() {
+      return (await managedBackendManager()).invalidateCodex();
+    },
+  };
   const modelAuthOwner = Symbol("Live Smith modal auth owner");
-  let observedAuthGeneration = modelAuthSendFence.authGeneration();
+  let managedBoundaryUsed = false;
+  let observedAuthGeneration: number | undefined;
   let codexAuth: ManagedAuthState | undefined;
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
@@ -289,7 +308,7 @@ export async function runAgentFlow(
     signal: AbortSignal | undefined,
     operation: () => Promise<T>,
   ) => sessionMutationFence.run(
-    sessionMutationFenceKey(context.environment.storageDirectory, sessionId),
+    sessionMutationFenceKey(storageDirectory, sessionId),
     signal,
     operation,
   );
@@ -299,7 +318,7 @@ export async function runAgentFlow(
     signal: AbortSignal | undefined,
     operation: () => Promise<T>,
   ) => sessionMutationFence.runNamed(
-    sessionMutationFenceKey(context.environment.storageDirectory, sessionId),
+    sessionMutationFenceKey(storageDirectory, sessionId),
     kind,
     signal,
     operation,
@@ -333,17 +352,19 @@ export async function runAgentFlow(
     return interactionContextForScope(context, interaction.scope);
   };
 
-  const resolveActiveSession = async () => {
+  const resolveActiveSession = async (signal?: AbortSignal) => {
     for (;;) {
+      throwIfAborted(signal);
       const requestedSessionId = activeSessionId;
       const activeSession = await (
         dependencies.getOrCreateDefaultSession ?? getOrCreateDefaultSession
       )(
-        context.environment.storageDirectory,
+        storageDirectory,
         interaction,
         projectKey,
         requestedSessionId,
       );
+      throwIfAborted(signal);
       if (
         requestedSessionId === undefined &&
         bindInvocationSelectionToNextSession &&
@@ -358,41 +379,72 @@ export async function runAgentFlow(
     }
   };
 
-  const modelsForProfile = async (profile: DraftProfile | SavedProfile) => {
-    await synchronizeAuthGeneration();
+  const modelsForProfile = async (
+    profile: DraftProfile | SavedProfile,
+    signal?: AbortSignal,
+  ) => {
+    throwIfAborted(signal);
     const fingerprint = connectionFingerprint(profile);
     const cachedModels = modelsByConnection.get(fingerprint);
+    if (profile.connection.kind === "direct-api") {
+      if (cachedModels) return cachedModels;
+      const models = await loadModelCache(
+        storageDirectory,
+        profile,
+      );
+      throwIfAborted(signal);
+      modelsByConnection.set(fingerprint, models);
+      return models;
+    }
+    const generation = await synchronizeAuthGeneration(signal);
     if (
       cachedModels &&
-      (
-        profile.connection.kind === "direct-api" ||
-        codexCatalogGenerationByConnection.get(fingerprint) ===
-          observedAuthGeneration
-      )
+      codexCatalogGenerationByConnection.get(fingerprint) === generation
     ) return cachedModels;
-    if (profile.connection.kind === "codex-subscription") return [];
-    const models = await loadModelCache(
-      context.environment.storageDirectory,
-      profile,
-    );
-    modelsByConnection.set(fingerprint, models);
+    return [];
+  };
+
+  const requireDiscoveredModelCatalog = (
+    value: unknown,
+  ): DiscoveredModelInfo[] => {
+    const models = decodeDiscoveredModelCatalog(value);
+    if (!models) {
+      throw new Error(
+        "Model discovery returned an invalid or ambiguous catalog.",
+      );
+    }
     return models;
   };
 
-  async function synchronizeAuthGeneration(): Promise<void> {
+  const clearCodexCatalogs = (): void => {
+    for (const fingerprint of codexCatalogGenerationByConnection.keys()) {
+      modelsByConnection.delete(fingerprint);
+    }
+    codexCatalogGenerationByConnection.clear();
+  };
+
+  async function synchronizeAuthGeneration(
+    signal?: AbortSignal,
+  ): Promise<number> {
+    managedBoundaryUsed = true;
     for (;;) {
+      throwIfAborted(signal);
       const generation = modelAuthSendFence.authGeneration();
-      if (generation === observedAuthGeneration) return;
-      if (sharedBackendManagerLease === undefined) {
+      if (observedAuthGeneration === undefined) {
+        observedAuthGeneration = generation;
+        return generation;
+      }
+      if (generation === observedAuthGeneration) return generation;
+      if (dependencies.modelBackendManager !== undefined) {
         try {
           await modelBackendManager.invalidateCodex();
         } catch (error) {
           modelAuthSendFence.poison(error);
           throw error;
         }
+        throwIfAborted(signal);
       }
-      modelsByConnection.clear();
-      codexCatalogGenerationByConnection.clear();
+      clearCodexCatalogs();
       codexAuth = undefined;
       observedAuthGeneration = generation;
     }
@@ -405,16 +457,14 @@ export async function runAgentFlow(
       auth.status === "unavailable" && auth.definitive === true,
     );
     observedAuthGeneration = modelAuthSendFence.authGeneration();
-    modelsByConnection.clear();
-    codexCatalogGenerationByConnection.clear();
+    clearCodexCatalogs();
   }
 
   function recordOwnedAuthMutation(auth: ManagedAuthState): void {
     if (auth.status === "unavailable") codexAuth = undefined;
     modelAuthSendFence.updateAuthState(modelAuthOwner, auth.status, true);
     observedAuthGeneration = modelAuthSendFence.authGeneration();
-    modelsByConnection.clear();
-    codexCatalogGenerationByConnection.clear();
+    clearCodexCatalogs();
   }
 
   const unavailableCodexAuth = (): ManagedAuthState => ({
@@ -428,14 +478,12 @@ export async function runAgentFlow(
     options: ManagedAuthReadOptions = {},
   ): Promise<ManagedAuthState> => {
     for (;;) {
-      await synchronizeAuthGeneration();
-      const generation = observedAuthGeneration;
+      const generation = await synchronizeAuthGeneration(signal);
       let auth: ManagedAuthState;
       try {
-        const backend = await modelBackendManager.codex();
-        auth = backend.readAuthState
-          ? await backend.readAuthState(signal, options)
-          : unavailableCodexAuth();
+        const backend = await modelBackendManager.codex(signal);
+        throwIfAborted(signal);
+        auth = await backend.readAuthState(signal, options);
       } catch (error) {
         throwIfAborted(signal);
         auth = unavailableCodexAuth();
@@ -451,11 +499,12 @@ export async function runAgentFlow(
   ): Promise<ManagedAuthState | undefined> => {
     if (!modelAuthSendFence.hasPendingLogin()) return undefined;
     const auth = await modelAuthSendFence.reconcilePendingAuthState(
-      () => readCodexAuth(undefined, { readiness: true }),
+      (reconciliationSignal) =>
+        readCodexAuth(reconciliationSignal, { readiness: true }),
       signal,
     );
     if (auth === undefined) return undefined;
-    await synchronizeAuthGeneration();
+    await synchronizeAuthGeneration(signal);
     codexAuth = auth;
     return auth;
   };
@@ -494,15 +543,11 @@ export async function runAgentFlow(
       return retirementPromise;
     };
     try {
-      const lease = await modelBackendManager.codexLease();
+      const lease = await modelBackendManager.codexLease(signal);
       const backend = lease.backend;
       retireBackend = lease.retire;
-      const invoke = backend[operation];
-      if (!invoke) {
-        codexAuth = unavailableCodexAuth();
-        return codexAuth;
-      }
       mutationAttempted = true;
+      const invoke = backend[operation];
       const auth = await invoke.call(backend, signal);
       if (auth.status === "unavailable" && auth.definitive !== true) {
         await confirmUnknownMutationRetirement();
@@ -544,7 +589,7 @@ export async function runAgentFlow(
       );
     }
     try {
-      await synchronizeAuthGeneration();
+      await synchronizeAuthGeneration(signal);
       return await operation();
     } finally {
       release();
@@ -555,17 +600,39 @@ export async function runAgentFlow(
     heldSessionId?: string;
     sessionMutationHeld?: boolean;
     codexAuthAlreadyResolved?: boolean;
+    signal?: AbortSignal;
   };
 
-  const buildStateWithAuthReadHeld = async (
+  const prepareBuildStateSettings = async (
+    options: BuildStateOptions,
+  ): Promise<AgentSettings> => {
+    throwIfAborted(options.signal);
+    if (!options.sessionMutationHeld) {
+      await retryPendingSessionCleanup();
+      throwIfAborted(options.signal);
+    }
+    const settings = await loadAgentSettings(storageDirectory);
+    throwIfAborted(options.signal);
+    return settings;
+  };
+
+  const stateRequiresManagedProjection = (
+    previewProfile: DraftProfile | undefined,
+    settings: AgentSettings,
+  ): boolean =>
+    previewProfile?.connection.kind === "codex-subscription" ||
+    activeSavedProfile(settings)?.connection.kind === "codex-subscription";
+
+  const buildStateFromSettings = async (
+    settings: AgentSettings,
     previewProfile?: DraftProfile,
     options: BuildStateOptions = {},
   ) => {
-    await synchronizeAuthGeneration();
-    if (!options.sessionMutationHeld) {
-      await retryPendingSessionCleanup();
+    const signal = options.signal;
+    throwIfAborted(signal);
+    if (stateRequiresManagedProjection(previewProfile, settings)) {
+      await synchronizeAuthGeneration(signal);
     }
-    const settings = await loadAgentSettings(context.environment.storageDirectory);
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
     if (
@@ -573,19 +640,21 @@ export async function runAgentFlow(
       !options.codexAuthAlreadyResolved
     ) {
       if (modelAuthSendFence.hasPendingLogin()) {
-        await reconcilePendingCodexAuthWhileReading();
+        await reconcilePendingCodexAuthWhileReading(signal);
       } else if (codexAuth === undefined) {
-        await readCodexAuth();
+        await readCodexAuth(signal);
       }
     }
-    const models = modelProfile ? await modelsForProfile(modelProfile) : [];
+    const models = modelProfile
+      ? await modelsForProfile(modelProfile, signal)
+      : [];
     const runtimeProfile = activeProfile
       ? runtimeProfileForSavedProfile(
           activeProfile,
           modelProfile?.id === activeProfile.id &&
               connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile)
             ? models
-            : await modelsForProfile(activeProfile),
+            : await modelsForProfile(activeProfile, signal),
         )
       : null;
     const capabilities = modelProfile
@@ -594,27 +663,29 @@ export async function runAgentFlow(
     for (;;) {
       const heldSessionId = options.heldSessionId;
       const resolvedActiveSession = heldSessionId === undefined
-        ? await resolveActiveSession()
+        ? await resolveActiveSession(signal)
         : undefined;
       const stateSessionId = heldSessionId ?? resolvedActiveSession?.id;
       if (stateSessionId === undefined) {
         throw new Error("A Session is required to build state.");
       }
       const readSessionStateSnapshot = async () => {
+        throwIfAborted(signal);
         const storageSnapshot = await withStorageTransaction(
-          context.environment.storageDirectory,
+          storageDirectory,
           async (transaction) => {
             const allSessions = await listSessionsInTransaction(
               transaction,
-              context.environment.storageDirectory,
+              storageDirectory,
             );
             const availableSkills = (await listInstalledSkillsInTransaction(
               transaction,
-              context.environment.storageDirectory,
+              storageDirectory,
             )).map(({ id, description }) => ({ id, description }));
             return { allSessions, availableSkills };
           },
         );
+        throwIfAborted(signal);
         const activeSession = storageSnapshot.allSessions.find(
           (session) =>
             session.id === stateSessionId &&
@@ -627,14 +698,16 @@ export async function runAgentFlow(
         const events = await (
           dependencies.loadSessionEvents ?? loadSessionEvents
         )(
-          context.environment.storageDirectory,
+          storageDirectory,
           activeSession.id,
         );
+        throwIfAborted(signal);
         const pendingAttachments = (await listPendingSessionAttachments(
-          context.environment.storageDirectory,
+          storageDirectory,
           activeSession.id,
           consumedAttachmentIds(events),
         )).map(sessionAttachmentRefFromStored);
+        throwIfAborted(signal);
         return {
           kind: "available" as const,
           activeSession,
@@ -691,7 +764,6 @@ export async function runAgentFlow(
       ) continue;
       const activeInteraction = resolveSessionInteraction(activeSession);
       return {
-        defaultPrompt: activeInteraction?.defaultPrompt ?? "",
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
         sessionContinueTarget: {
@@ -725,13 +797,27 @@ export async function runAgentFlow(
     }
   };
 
+  const buildStateWithAuthReadHeld = async (
+    previewProfile?: DraftProfile,
+    options: BuildStateOptions = {},
+  ) => buildStateFromSettings(
+    await prepareBuildStateSettings(options),
+    previewProfile,
+    options,
+  );
+
   const buildState = async (
     previewProfile?: DraftProfile,
     options: BuildStateOptions = {},
   ) => {
-    const releaseAuthRead = await modelAuthSendFence.enterRead();
+    const signal = options.signal;
+    const settings = await prepareBuildStateSettings(options);
+    if (!stateRequiresManagedProjection(previewProfile, settings)) {
+      return buildStateFromSettings(settings, previewProfile, options);
+    }
+    const releaseAuthRead = await modelAuthSendFence.enterRead(signal);
     try {
-      return await buildStateWithAuthReadHeld(previewProfile, options);
+      return await buildStateFromSettings(settings, previewProfile, options);
     } finally {
       releaseAuthRead();
     }
@@ -770,7 +856,7 @@ export async function runAgentFlow(
   ) => {
     throwIfAborted(signal);
     if (commandInput.kind === "save_profile") {
-      const settings = await loadAgentSettings(context.environment.storageDirectory);
+      const settings = await loadAgentSettings(storageDirectory);
       const otherProfiles = settings.profiles.filter(
         (profile) => profile.id !== commandInput.profile.id,
       );
@@ -783,8 +869,13 @@ export async function runAgentFlow(
       );
       validateGenerationParameters(profile, capabilities);
       throwIfAborted(signal);
-      await saveSavedProfile(context.environment.storageDirectory, profile);
-      modelsByConnection.delete(profileFingerprint);
+      await saveSavedProfile(storageDirectory, profile);
+      if (profile.connection.kind === "direct-api") {
+        // Direct API catalogs are durable and are reloaded from storage after
+        // Save. Subscription catalogs are modal-only and remain valid until
+        // the shared auth generation changes.
+        modelsByConnection.delete(profileFingerprint);
+      }
       status = `Profile ${profile.name} saved.`;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation(profile);
@@ -793,7 +884,7 @@ export async function runAgentFlow(
     if (commandInput.kind === "delete_profile") {
       throwIfAborted(signal);
       await deleteSavedProfile(
-        context.environment.storageDirectory,
+        storageDirectory,
         commandInput.profileId,
       );
       modelsByConnection.clear();
@@ -805,7 +896,7 @@ export async function runAgentFlow(
     if (commandInput.kind === "activate_profile") {
       throwIfAborted(signal);
       await activateSavedProfile(
-        context.environment.storageDirectory,
+        storageDirectory,
         commandInput.profileId,
       );
       modelsByConnection.clear();
@@ -817,7 +908,7 @@ export async function runAgentFlow(
     if (commandInput.kind === "save_global_settings") {
       return globalSettingsMutationFence.run(
         sessionMutationFenceKey(
-          context.environment.storageDirectory,
+          storageDirectory,
           "global-settings",
         ),
         signal,
@@ -826,10 +917,10 @@ export async function runAgentFlow(
           try {
             const settings = await (
               dependencies.saveGlobalSettings ?? saveGlobalSettings
-            )(context.environment.storageDirectory, {
+            )(storageDirectory, {
               defaultFollowUpBehavior: commandInput.defaultFollowUpBehavior,
             });
-            publishGlobalSettingsChange(context.environment.storageDirectory, {
+            publishGlobalSettingsChange(storageDirectory, {
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
               defaultFollowUpBehaviorRevision:
                 settings.defaultFollowUpBehaviorRevision,
@@ -842,9 +933,9 @@ export async function runAgentFlow(
 
             try {
               const settings = await loadAgentSettings(
-                context.environment.storageDirectory,
+                storageDirectory,
               );
-              publishGlobalSettingsChange(context.environment.storageDirectory, {
+              publishGlobalSettingsChange(storageDirectory, {
                 defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
                 defaultFollowUpBehaviorRevision:
                   settings.defaultFollowUpBehaviorRevision,
@@ -870,12 +961,12 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "set_session_approval_mode") {
       await withStorageTransaction(
-        context.environment.storageDirectory,
+        storageDirectory,
         async (transaction) => {
           throwIfAborted(signal);
           const session = (await listSessionsInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
             projectKey,
           )).find(
             (candidate) =>
@@ -888,11 +979,11 @@ export async function runAgentFlow(
           }
           await updateSessionInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
             session.id,
             { approvalMode: commandInput.approvalMode },
           );
-          publishSessionApprovalModeChange(context.environment.storageDirectory, {
+          publishSessionApprovalModeChange(storageDirectory, {
             sessionId: commandInput.sessionId,
             approvalMode: commandInput.approvalMode,
           });
@@ -904,7 +995,7 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "new_session") {
       const sessions = await listSessions(
-        context.environment.storageDirectory,
+        storageDirectory,
         projectKey,
       );
       const activeSession = sessions.find((session) => session.id === activeSessionId);
@@ -912,7 +1003,7 @@ export async function runAgentFlow(
         ? resolveSessionInteraction(activeSession)
         : interaction;
       throwIfAborted(signal);
-      const session = await createSession(context.environment.storageDirectory, {
+      const session = await createSession(storageDirectory, {
         title: "",
         projectKey,
         scope: activeInteraction?.scope ?? interaction.scope,
@@ -948,14 +1039,14 @@ export async function runAgentFlow(
       }
       const restored = await withSessionMutation(commandInput.sessionId, signal, async () => {
         const candidate = continuableSessionsForScope(
-          await listSessions(context.environment.storageDirectory),
+          await listSessions(storageDirectory),
           projectKey,
           continueInteraction.scope,
         ).find((session) => session.id === commandInput.sessionId);
         if (!candidate) return null;
         throwIfAborted(signal);
         return restoreSession(
-          context.environment.storageDirectory,
+          storageDirectory,
           candidate.id,
           { projectKey, scope: continueInteraction.scope },
         );
@@ -984,7 +1075,7 @@ export async function runAgentFlow(
         if (existed) {
           try {
             await (dependencies.deleteSession ?? deleteSession)(
-              context.environment.storageDirectory,
+              storageDirectory,
               commandInput.sessionId,
             );
           } catch (cause) {
@@ -1002,11 +1093,11 @@ export async function runAgentFlow(
         }
         try {
           await deleteSessionEvents(
-            context.environment.storageDirectory,
+            storageDirectory,
             commandInput.sessionId,
           );
           await deleteSessionAttachments(
-            context.environment.storageDirectory,
+            storageDirectory,
             commandInput.sessionId,
           );
           pendingSessionCleanup.delete(commandInput.sessionId);
@@ -1032,7 +1123,7 @@ export async function runAgentFlow(
         if (!(await sessionExists(commandInput.sessionId))) return false;
         throwIfAborted(signal);
         await updateSession(
-          context.environment.storageDirectory,
+          storageDirectory,
           commandInput.sessionId,
           { title: commandInput.title },
         );
@@ -1056,7 +1147,7 @@ export async function runAgentFlow(
         if (!(await sessionExists(commandInput.sessionId))) return false;
         throwIfAborted(signal);
         await setSessionArchived(
-          context.environment.storageDirectory,
+          storageDirectory,
           commandInput.sessionId,
           archived,
         );
@@ -1086,11 +1177,11 @@ export async function runAgentFlow(
             );
           }
           const events = await loadSessionEvents(
-            context.environment.storageDirectory,
+            storageDirectory,
             commandInput.sessionId,
           );
           const pending = await listPendingSessionAttachments(
-            context.environment.storageDirectory,
+            storageDirectory,
             commandInput.sessionId,
             consumedAttachmentIds(events),
           );
@@ -1104,7 +1195,7 @@ export async function runAgentFlow(
           });
           throwIfAborted(signal);
           await saveSessionAttachment(
-            context.environment.storageDirectory,
+            storageDirectory,
             commandInput.sessionId,
             {
               fileName: source.fileName,
@@ -1155,7 +1246,7 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "set_session_skills") {
       const mutationKey = sessionMutationFenceKey(
-        context.environment.storageDirectory,
+        storageDirectory,
         commandInput.sessionId,
       );
       if (sessionMutationFence.hasQueuedOrActive(mutationKey, "send")) {
@@ -1171,12 +1262,12 @@ export async function runAgentFlow(
         async () => {
           try {
             await withStorageTransaction(
-              context.environment.storageDirectory,
+              storageDirectory,
               async (transaction) => {
                 throwIfAborted(signal);
                 const sessions = await listSessionsInTransaction(
                   transaction,
-                  context.environment.storageDirectory,
+                  storageDirectory,
                 );
                 const session = sessions.find(
                   (candidate) => candidate.id === commandInput.sessionId,
@@ -1188,7 +1279,7 @@ export async function runAgentFlow(
                 }
                 const installed = await listInstalledSkillsInTransaction(
                   transaction,
-                  context.environment.storageDirectory,
+                  storageDirectory,
                 );
                 const installedIds = new Set(installed.map((skill) => skill.id));
                 const unavailable = requestedSkillIds.find(
@@ -1216,7 +1307,7 @@ export async function runAgentFlow(
                 throwIfAborted(signal);
                 await updateSessionInTransaction(
                   transaction,
-                  context.environment.storageDirectory,
+                  storageDirectory,
                   session.id,
                   { activeSkillIds: requestedSkillIds },
                 );
@@ -1247,7 +1338,7 @@ export async function runAgentFlow(
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
       const releaseManagedDiscovery = profile.connection.kind === "codex-subscription"
-        ? await modelAuthSendFence.enterSend(signal)
+        ? await modelAuthSendFence.enterManagedUse(signal)
         : () => undefined;
       if (!releaseManagedDiscovery) {
         throw new ChatBridgeConflictError(
@@ -1256,18 +1347,27 @@ export async function runAgentFlow(
       }
       let cacheMutationCompleted = false;
       try {
-        await synchronizeAuthGeneration();
-        const discovered = await (
+        const managedGeneration = profile.connection.kind === "codex-subscription"
+          ? await synchronizeAuthGeneration(signal)
+          : undefined;
+        const discovered = requireDiscoveredModelCatalog(await (
           dependencies.listModels ??
           (async (targetProfile, targetSignal) => {
-            const backend = await modelBackendManager.forProfile(targetProfile);
-            return backend.listModels(targetProfile, targetSignal);
+            const backend = await modelBackendManager.forProfile(
+              targetProfile,
+              targetSignal,
+            );
+            try {
+              return await backend.listModels(targetProfile, targetSignal);
+            } finally {
+              if (backend.kind === "direct-api") await backend.close();
+            }
           })
-        )(profile, signal);
+        )(profile, signal));
         throwIfAborted(signal);
         if (profile.connection.kind === "direct-api") {
           await saveModelCache(
-            context.environment.storageDirectory,
+            storageDirectory,
             profile,
             discovered,
           );
@@ -1279,7 +1379,7 @@ export async function runAgentFlow(
         if (profile.connection.kind === "codex-subscription") {
           codexCatalogGenerationByConnection.set(
             fingerprint,
-            observedAuthGeneration,
+            managedGeneration!,
           );
         }
         status = discovered.length
@@ -1293,8 +1393,8 @@ export async function runAgentFlow(
       }
       openSettingsOnLoad = true;
       return cacheMutationCompleted
-        ? buildStateAfterCommandMutation(profile)
-        : buildState(profile);
+        ? buildStateAfterCommandMutation(profile, { signal })
+        : buildState(profile, { signal });
     }
 
     if (commandInput.kind === "start_codex_login") {
@@ -1303,7 +1403,7 @@ export async function runAgentFlow(
         status = codexAuthStatusMessage(auth);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation();
+      return buildStateAfterCommandMutation(undefined, { signal });
     }
 
     if (commandInput.kind === "refresh_codex_account") {
@@ -1315,6 +1415,7 @@ export async function runAgentFlow(
           return confirmCommandState(() =>
             buildStateWithAuthReadHeld(undefined, {
               codexAuthAlreadyResolved: true,
+              signal,
             })
           );
         },
@@ -1327,7 +1428,7 @@ export async function runAgentFlow(
         status = codexAuthStatusMessage(auth);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation();
+      return buildStateAfterCommandMutation(undefined, { signal });
     }
 
     if (commandInput.kind === "logout_codex") {
@@ -1336,19 +1437,19 @@ export async function runAgentFlow(
         status = codexAuthStatusMessage(auth);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation();
+      return buildStateAfterCommandMutation(undefined, { signal });
     }
 
     return assertNeverCommand(commandInput);
   };
 
   const sessionBelongsToProject = async (sessionId: string): Promise<boolean> =>
-    (await listSessions(context.environment.storageDirectory, projectKey)).some(
+    (await listSessions(storageDirectory, projectKey)).some(
       (session) => session.id === sessionId && !session.archivedAt,
     );
 
   const sessionExists = async (sessionId: string): Promise<boolean> =>
-    (await listSessions(context.environment.storageDirectory)).some(
+    (await listSessions(storageDirectory)).some(
       (session) => session.id === sessionId,
     );
 
@@ -1360,11 +1461,11 @@ export async function runAgentFlow(
           return;
         }
         await deleteSessionEvents(
-          context.environment.storageDirectory,
+          storageDirectory,
           sessionId,
         );
         await deleteSessionAttachments(
-          context.environment.storageDirectory,
+          storageDirectory,
           sessionId,
         );
         pendingSessionCleanup.delete(sessionId);
@@ -1374,16 +1475,16 @@ export async function runAgentFlow(
 
   async function reconcileStartupSessionOrphans(): Promise<void> {
     const existingSessionIds = new Set(
-      (await listSessions(context.environment.storageDirectory)).map(
+      (await listSessions(storageDirectory)).map(
         (session) => session.id,
       ),
     );
     const orphanCandidates = new Set([
       ...await listSessionAttachmentDirectoryIds(
-        context.environment.storageDirectory,
+        storageDirectory,
       ),
       ...await listSessionEventLogIds(
-        context.environment.storageDirectory,
+        storageDirectory,
       ),
     ]);
     for (const sessionId of [...orphanCandidates].sort()) {
@@ -1391,11 +1492,11 @@ export async function runAgentFlow(
       await withSessionMutation(sessionId, undefined, async () => {
         if (await sessionExists(sessionId)) return;
         await deleteSessionEvents(
-          context.environment.storageDirectory,
+          storageDirectory,
           sessionId,
         );
         await deleteSessionAttachments(
-          context.environment.storageDirectory,
+          storageDirectory,
           sessionId,
         );
       });
@@ -1404,7 +1505,7 @@ export async function runAgentFlow(
 
   const attachmentSession = async (sessionId: string) => {
     const session = (await listSessions(
-      context.environment.storageDirectory,
+      storageDirectory,
       projectKey,
     )).find((entry) => entry.id === sessionId && !entry.archivedAt);
     if (!session) {
@@ -1443,11 +1544,11 @@ export async function runAgentFlow(
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
       const events = await loadSessionEvents(
-        context.environment.storageDirectory,
+        storageDirectory,
         input.sessionId,
       );
       const pending = await listPendingSessionAttachments(
-        context.environment.storageDirectory,
+        storageDirectory,
         input.sessionId,
         consumedAttachmentIds(events),
       );
@@ -1466,7 +1567,7 @@ export async function runAgentFlow(
       throwIfAborted(signal);
       try {
         await saveSessionAttachment(
-          context.environment.storageDirectory,
+          storageDirectory,
           input.sessionId,
           {
             fileName: input.fileName,
@@ -1497,7 +1598,7 @@ export async function runAgentFlow(
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
       const events = await loadSessionEvents(
-        context.environment.storageDirectory,
+        storageDirectory,
         input.sessionId,
       );
       if (events.some((event) =>
@@ -1508,7 +1609,7 @@ export async function runAgentFlow(
         );
       }
       const exists = (await listPendingSessionAttachments(
-        context.environment.storageDirectory,
+        storageDirectory,
         input.sessionId,
         consumedAttachmentIds(events),
       )).some((attachment) => attachment.id === input.attachmentId);
@@ -1520,7 +1621,7 @@ export async function runAgentFlow(
       throwIfAborted(signal);
       try {
         await deleteSessionAttachment(
-          context.environment.storageDirectory,
+          storageDirectory,
           input.sessionId,
           input.attachmentId,
         );
@@ -1566,12 +1667,12 @@ export async function runAgentFlow(
     let installed: InstalledSkill | undefined;
     try {
       installed = await withStorageTransaction(
-        context.environment.storageDirectory,
+        storageDirectory,
         async (transaction) => {
           throwIfAborted(signal);
           const existing = (await listInstalledSkillsInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
           )).find((skill) => skill.id === definition.id);
           if (existing?.sha256 === expectedSha256) return existing;
           if (existing !== undefined && !input.replace) {
@@ -1582,7 +1683,7 @@ export async function runAgentFlow(
           throwIfAborted(signal);
           return installSkillInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
             bytes,
             { replace: input.replace },
           );
@@ -1592,7 +1693,7 @@ export async function runAgentFlow(
       if (isStorageCommitOutcomeUnknownError(error)) {
         try {
           installed = (await listInstalledSkills(
-            context.environment.storageDirectory,
+            storageDirectory,
           )).find((skill) =>
             skill.id === definition.id && skill.sha256 === expectedSha256
           );
@@ -1647,12 +1748,12 @@ export async function runAgentFlow(
     let deleted = false;
     try {
       await withStorageTransaction(
-        context.environment.storageDirectory,
+        storageDirectory,
         async (transaction) => {
           throwIfAborted(signal);
           const sessions = await listSessionsInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
           );
           if (sessions.some((session) =>
             session.activeSkillIds?.includes(input.skillId)
@@ -1663,13 +1764,13 @@ export async function runAgentFlow(
           }
           const existing = (await listInstalledSkillsInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
           )).some((skill) => skill.id === input.skillId);
           if (!existing) return;
           throwIfAborted(signal);
           await deleteInstalledSkillInTransaction(
             transaction,
-            context.environment.storageDirectory,
+            storageDirectory,
             input.skillId,
           );
           deleted = true;
@@ -1679,7 +1780,7 @@ export async function runAgentFlow(
       if (isStorageCommitOutcomeUnknownError(error)) {
         try {
           const stillInstalled = (await listInstalledSkills(
-            context.environment.storageDirectory,
+            storageDirectory,
           )).some((skill) => skill.id === input.skillId);
           if (!stillInstalled) deleted = true;
           else throw error;
@@ -1726,19 +1827,13 @@ export async function runAgentFlow(
     if (!prompt.trim()) {
       throw new Error("Prompt is empty.");
     }
-    const releaseModelAuthFence = await modelAuthSendFence.enterSend(signal);
-    if (!releaseModelAuthFence) {
-      throw new ChatBridgeConflictError(
-        "Wait for the ChatGPT sign-in operation to finish before sending.",
-      );
-    }
-    try {
-      return await withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
+    return withNamedSessionMutation(sendInput.sessionId, "send", signal, async () => {
       let sendFailureKind: ChatBridgeSendFailureKind | undefined;
+      let releaseModelAuthFence: (() => void) | undefined;
       try {
         throwIfAborted(signal);
         const session = (await listSessions(
-          context.environment.storageDirectory,
+          storageDirectory,
           projectKey,
         )).find((entry) =>
           entry.id === sendInput.sessionId && !entry.archivedAt
@@ -1755,16 +1850,22 @@ export async function runAgentFlow(
           );
         }
         const settingsForRequest = await loadAgentSettings(
-          context.environment.storageDirectory,
+          storageDirectory,
         );
-        await synchronizeAuthGeneration();
         const profile = requireActiveSavedProfile(settingsForRequest);
         const fingerprint = connectionFingerprint(profile);
-        let requestBackend: ModelBackend | undefined;
+        let requestBackend: CodexSubscriptionBackend | undefined;
         let models: DiscoveredModelInfo[] | undefined;
         if (profile.connection.kind === "codex-subscription") {
-          const generation = observedAuthGeneration;
-          const lease = await modelBackendManager.codexLease();
+          releaseModelAuthFence = await modelAuthSendFence.enterManagedUse(signal) ??
+            undefined;
+          if (!releaseModelAuthFence) {
+            throw new ChatBridgeConflictError(
+              "Wait for the ChatGPT sign-in operation to finish before sending.",
+            );
+          }
+          const generation = await synchronizeAuthGeneration(signal);
+          const lease = await modelBackendManager.codexLease(signal);
           requestBackend = lease.backend;
           models = codexCatalogGenerationByConnection.get(fingerprint) === generation
             ? modelsByConnection.get(fingerprint)
@@ -1772,14 +1873,12 @@ export async function runAgentFlow(
           let auth: ManagedAuthState;
           try {
             if (models === undefined) {
-              models = await requestBackend.listModels(profile, signal);
-              auth = requestBackend.readAuthState
-                ? await requestBackend.readAuthState(signal)
-                : unavailableCodexAuth();
+              models = requireDiscoveredModelCatalog(
+                await requestBackend.listModels(profile, signal),
+              );
+              auth = await requestBackend.readAuthState(signal);
             } else {
-              auth = requestBackend.readAuthState
-                ? await requestBackend.readAuthState(signal, { readiness: true })
-                : unavailableCodexAuth();
+              auth = await requestBackend.readAuthState(signal, { readiness: true });
             }
           } catch (error) {
             throwIfAborted(signal);
@@ -1809,7 +1908,7 @@ export async function runAgentFlow(
           models = modelsByConnection.get(fingerprint);
           if (models === undefined) {
             models = await loadModelCache(
-              context.environment.storageDirectory,
+              storageDirectory,
               profile,
             );
             modelsByConnection.set(fingerprint, models);
@@ -1834,37 +1933,31 @@ export async function runAgentFlow(
         const requestTurnImplementation = dependencies.requestModelTurn ??
           requestModelTurn;
         let preflightBackendForFirstTurn = requestBackend;
-        if (requestBackend && !requestBackend.reserveToolTurn) {
-          throw new ChatBridgeConflictError(
-            "The ChatGPT subscription backend cannot reserve the first model turn.",
-          );
-        }
-        const firstTurnReservation = requestBackend?.reserveToolTurn?.();
+        const firstTurnReservation = requestBackend?.reserveToolTurn();
         const requestTurn = async (
-          input: Parameters<typeof requestModelTurn>[0],
+          input: Parameters<AgentModelTurnRequester>[0],
         ) => {
           const turnReservation = preflightBackendForFirstTurn === undefined
             ? undefined
             : firstTurnReservation;
           const backend = preflightBackendForFirstTurn ??
-            (
-              profile.connection.kind === "codex-subscription" ||
-                dependencies.requestModelTurn === undefined
-                ? await modelBackendManager.forProfile(profile)
-                : undefined
-            );
+            await modelBackendManager.forProfile(profile, input.signal);
           preflightBackendForFirstTurn = undefined;
-          return requestTurnImplementation({
-            ...input,
-            ...(backend === undefined ? {} : { backend }),
-            ...(turnReservation === undefined ? {} : { turnReservation }),
-          });
+          try {
+            return await requestTurnImplementation({
+              ...input,
+              turnExecutor: turnReservation ?? backend,
+            });
+          } finally {
+            if (backend.kind === "direct-api") await backend.close();
+          }
         };
         let requestFailed = false;
         let requestError: unknown;
         try {
           await handleAgentRequest(
             context,
+            storageDirectory,
             sessionInteraction,
             prompt,
             runtimeProfile,
@@ -1882,7 +1975,7 @@ export async function runAgentFlow(
               withActionExecutionLock: (operation) =>
                 liveMutationQueue.run(signal, operation),
               confirmActions: (plan) => decidePlanApproval(
-                context.environment.storageDirectory,
+                storageDirectory,
                 session.id,
                 plan,
                 () => stream.requestConfirmation({
@@ -1928,18 +2021,17 @@ export async function runAgentFlow(
           authoritativeState,
           sendFailureKind,
         );
+      } finally {
+        releaseModelAuthFence?.();
       }
-      });
-    } finally {
-      releaseModelAuthFence();
-    }
+    });
   };
 
   const lookupSteeringReceipt = async (
     input: ChatBridgeSteeringReceiptLookupInput,
   ): Promise<ChatBridgeSteeringReceiptLookupResult> => {
     const session = (await listSessions(
-      context.environment.storageDirectory,
+      storageDirectory,
       projectKey,
     )).find((entry) =>
       entry.id === input.sessionId && entry.projectKey === projectKey
@@ -1947,7 +2039,7 @@ export async function runAgentFlow(
     if (!session) return "absent";
     const events = await (
       dependencies.loadSessionEvents ?? loadSessionEvents
-    )(context.environment.storageDirectory, session.id);
+    )(storageDirectory, session.id);
     const event = events.find((candidate) =>
       candidate.steeringReceipt?.sendId === input.sendId &&
       candidate.steeringReceipt.id === input.steerId
@@ -1973,7 +2065,10 @@ export async function runAgentFlow(
   try {
     await reconcileStartupSessionOrphans();
     bridge = await createChatBridge({
-      buildState,
+      buildState: (signal) => buildState(
+        undefined,
+        signal === undefined ? {} : { signal },
+      ),
       renderHtml,
       handleCommand,
       handleSend,
@@ -1991,13 +2086,13 @@ export async function runAgentFlow(
         : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
     });
     unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
-      context.environment.storageDirectory,
+      storageDirectory,
       ({ sessionId, approvalMode }) => {
         bridge?.publishSessionApprovalMode(sessionId, approvalMode);
       },
     );
     unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
-      context.environment.storageDirectory,
+      storageDirectory,
       (change) => {
         bridge?.publishDefaultFollowUpBehavior(change);
       },
@@ -2006,17 +2101,27 @@ export async function runAgentFlow(
   } finally {
     unsubscribeApprovalModes?.();
     unsubscribeGlobalSettings?.();
+    managedBackendLeaseClosing = true;
+    sharedBackendManagerAcquisitionController?.abort(
+      managedBackendAcquisitionClosedError,
+    );
     try {
       await bridge?.close();
     } finally {
       let backendCleanupError: unknown;
       try {
-        const releasePendingCleanup = await modelAuthSendFence
-          .enterPendingOwnerCleanup(modelAuthOwner);
-        if (releasePendingCleanup) try {
-          await modelBackendManager.invalidateCodex();
-        } finally {
-          releasePendingCleanup();
+        if (
+          managedBoundaryUsed &&
+          (dependencies.modelBackendManager !== undefined ||
+            sharedBackendManagerLease !== undefined)
+        ) {
+          const releasePendingCleanup = await modelAuthSendFence
+            .enterPendingOwnerCleanup(modelAuthOwner);
+          if (releasePendingCleanup) try {
+            await modelBackendManager.invalidateCodex();
+          } finally {
+            releasePendingCleanup();
+          }
         }
       } catch (error) {
         modelAuthSendFence.poison(error);
@@ -2024,8 +2129,16 @@ export async function runAgentFlow(
       }
       modelAuthSendFence.releaseOwner(modelAuthOwner);
       try {
-        if (sharedBackendManagerLease) await sharedBackendManagerLease.release();
-        else await modelBackendManager.close();
+        if (dependencies.modelBackendManager) {
+          await dependencies.modelBackendManager.close();
+        } else if (sharedBackendManagerLeasePromise) {
+          try {
+            await sharedBackendManagerLeasePromise;
+          } catch (error) {
+            if (error !== managedBackendAcquisitionClosedError) throw error;
+          }
+          await sharedBackendManagerLease?.release();
+        }
       } catch (error) {
         modelAuthSendFence.poison(error);
         backendCleanupError ??= error;
@@ -2103,584 +2216,6 @@ export async function decidePlanApproval(
   };
 }
 
-export async function handleAgentRequest(
-  context: Api,
-  interaction: LiveInteractionContext,
-  prompt: string,
-  runtimeProfile: RuntimeProfile,
-  projectKey: string,
-  sessionId: string | undefined,
-  callbacks: AgentRequestCallbacks,
-  requestTurn: typeof requestModelTurn = requestModelTurn,
-  appendUserEvent: typeof appendSessionEvent = appendSessionEvent,
-  appendTraceEvent: typeof appendSessionEvent = appendSessionEvent,
-  loadEventsForSearchReconciliation: typeof loadSessionEvents = loadSessionEvents,
-): Promise<string> {
-  const { profile } = runtimeProfile;
-  const session = sessionId === undefined
-    ? await getOrCreateDefaultSession(
-        context.environment.storageDirectory,
-        interaction,
-        projectKey,
-      )
-    : (await listSessions(context.environment.storageDirectory, projectKey)).find(
-        (entry) => entry.id === sessionId && !entry.archivedAt,
-      );
-  if (!session) {
-    throw new Error("That Session is not available in this Live Set.");
-  }
-  const prepareRequest = async () => {
-    const priorEvents = await loadSessionEvents(
-      context.environment.storageDirectory,
-      session.id,
-    );
-    const skillContext = await resolveSkillContext({
-      storageDirectory: context.environment.storageDirectory,
-      sessionSkillIds: session.activeSkillIds ?? [],
-      prompt,
-    });
-    const currentAttachments = await listPendingSessionAttachments(
-      context.environment.storageDirectory,
-      session.id,
-      consumedAttachmentIds(priorEvents),
-    );
-    const attachmentRefs = currentAttachments.map(sessionAttachmentRefFromStored);
-    const resolvedAttachments = await resolveCurrentAttachmentParts({
-      storageDirectory: context.environment.storageDirectory,
-      sessionId: session.id,
-      refs: attachmentRefs,
-      runtimeProfile,
-      signal: callbacks.signal,
-    });
-    const history = await resolveConversationHistory({
-      storageDirectory: context.environment.storageDirectory,
-      sessionId: session.id,
-      events: priorEvents,
-      currentAttachmentRefs: attachmentRefs,
-      currentDocumentTextCharacters:
-        resolvedAttachments.documentTextCharacters,
-      runtimeProfile,
-      signal: callbacks.signal,
-    });
-    let userEvent: SessionEvent;
-    try {
-      userEvent = await appendUserEvent(
-        context.environment.storageDirectory,
-        session.id,
-        {
-          kind: "user",
-          content: prompt,
-          ...(attachmentRefs.length ? { attachments: attachmentRefs } : {}),
-        },
-      );
-    } catch (error) {
-      if (isStorageCommitOutcomeUnknownError(error)) {
-        throw new ChatBridgePromptPersistenceUnknownError(
-          "Prompt storage commit could not be confirmed.",
-          { cause: error },
-        );
-      }
-      throw error;
-    }
-    return {
-      attachmentParts: resolvedAttachments.parts,
-      history,
-      initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
-      recoveryContext: recoveryContextFromEvents(priorEvents),
-      skillContext,
-      userEvent,
-      priorEventIds: priorEvents.map((event) => event.id),
-    };
-  };
-  const prepared = await prepareRequest();
-  const knownEventIds = new Set([
-    ...prepared.priorEventIds,
-    prepared.userEvent.id,
-  ]);
-  const observedWebSearchIds = new Set<string>();
-  const persistedWebSearches = new Map<string, Promise<SessionEvent>>();
-  const observeWebSearchId = (webSearch: ModelHostedWebSearch): boolean => {
-    if (observedWebSearchIds.has(webSearch.id)) return true;
-    if (observedWebSearchIds.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND) {
-      return false;
-    }
-    observedWebSearchIds.add(webSearch.id);
-    return true;
-  };
-  const ensureTerminalWebSearchEvent = async (
-    webSearch: ModelHostedWebSearch,
-    content = webSearchSummary(webSearch),
-  ): Promise<{ event: SessionEvent; first: boolean } | undefined> => {
-    if (!observeWebSearchId(webSearch)) return undefined;
-    const existing = persistedWebSearches.get(webSearch.id);
-    if (existing) {
-      const event = await existing;
-      if (
-        event.content !== content ||
-        event.webSearch === undefined ||
-        !sameHostedWebSearch(event.webSearch, webSearch)
-      ) {
-        throw new TypeError(
-          "Hosted Web Search ID has conflicting terminal activity.",
-        );
-      }
-      return { event, first: false };
-    }
-
-    const pending = appendTerminalWebSearchEvent(
-      context.environment.storageDirectory,
-      session.id,
-      { kind: "web_search", content, webSearch },
-      knownEventIds,
-      appendTraceEvent,
-      loadEventsForSearchReconciliation,
-    );
-    persistedWebSearches.set(webSearch.id, pending);
-    try {
-      const event = await pending;
-      knownEventIds.add(event.id);
-      return { event, first: true };
-    } catch (error) {
-      if (persistedWebSearches.get(webSearch.id) === pending) {
-        persistedWebSearches.delete(webSearch.id);
-      }
-      throw error;
-    }
-  };
-  await callbacks.onSessionEvent(prepared.userEvent);
-  if (!session.title.trim()) {
-    await updateSession(context.environment.storageDirectory, session.id, {
-      title: sessionTitleForPrompt(prompt, session.scope.label),
-    });
-  }
-  const requestLiveContext = prepared.recoveryContext
-    ? `${interaction.summary}\n\n${prepared.recoveryContext}`
-    : interaction.summary;
-  try {
-    await callbacks.onProgress("Starting agent loop");
-    const loopResult = await runAgentLoop({
-      maxConsecutiveFailures: maxConsecutiveInvalidToolCalls,
-      maxIterations: 12,
-      maxToolCallsPerTurn: 32,
-      maxModelContinuations: 2,
-      maxHostFailuresWithoutMutation: 6,
-      ...(prepared.initialRecoveryState
-        ? { initialRecoveryState: prepared.initialRecoveryState }
-        : {}),
-      signal: callbacks.signal,
-      ...(callbacks.steering
-        ? {
-          consumeSteering: async () => {
-            const entries = callbacks.steering?.takePending(1) ?? [];
-            const acceptedPrompts: string[] = [];
-            let acceptedCount = 0;
-            try {
-              for (const entry of entries) {
-                if (!callbacks.steeringSendId) {
-                  throw new Error(
-                    "The active send is missing its steering correlation ID.",
-                  );
-                }
-                const event = await appendSteeringUserEvent(
-                  context.environment.storageDirectory,
-                  session.id,
-                  callbacks.steeringSendId,
-                  entry.id,
-                  entry.prompt,
-                  appendUserEvent,
-                  loadEventsForSearchReconciliation,
-                );
-                knownEventIds.add(event.id);
-                entry.accept();
-                acceptedCount += 1;
-                acceptedPrompts.push(entry.prompt);
-                await callbacks.onSessionEvent(event);
-              }
-              return acceptedPrompts;
-            } catch (error) {
-              const rejection = error instanceof SteeringPersistenceOutcomeUnknownError
-                ? error
-                : new Error(
-                  "The steering message could not be persisted.",
-                  { cause: error },
-                );
-              for (const entry of entries.slice(acceptedCount)) {
-                try {
-                  entry.reject(rejection);
-                } catch {
-                  // Stop may have closed and rejected the entry concurrently.
-                }
-              }
-              throwIfAborted(callbacks.signal);
-              throw error;
-            }
-          },
-          hasPendingSteering: () => callbacks.steering?.hasPending() ?? false,
-          onSteeringApplied: async (messageCount: number) => {
-            await callbacks.onAssistantReset?.();
-            await callbacks.onProgress(
-              messageCount === 1
-                ? "Replanning with new guidance"
-                : `Replanning with ${messageCount} new guidance messages`,
-            );
-          },
-        }
-        : {}),
-      askModel: async (input) => {
-        await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
-        const remainingWebSearchEvents = Math.max(
-          0,
-          HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
-        );
-        const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
-        let turn: ModelTurn;
-        try {
-          turn = await requestTurn({
-            prompt,
-            liveContext: requestLiveContext,
-            runtimeProfile,
-            history: prepared.history,
-            attachmentParts: prepared.attachmentParts,
-            skillContext: prepared.skillContext,
-            agentMessages: input.messages,
-            tools: modelToolsForProfile(
-              profile,
-              liveSmithTools(),
-              Math.min(
-                HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
-                remainingWebSearchEvents,
-              ),
-            ),
-            signal: modelTurn?.signal ?? callbacks.signal,
-            onDelta: callbacks.onDelta,
-            onHostedWebSearch: async (update) => {
-              if (update.status !== "searching") {
-                const persisted = await ensureTerminalWebSearchEvent(update);
-                if (persisted?.first) {
-                  await callbacks.onSessionEvent(persisted.event);
-                }
-              } else {
-                if (!observeWebSearchId(update)) return;
-                if (persistedWebSearches.has(update.id)) {
-                  throw new TypeError(
-                    "Hosted Web Search reported in-flight activity after its terminal event.",
-                  );
-                }
-                await callbacks.onWebSearchUpdate?.(update);
-              }
-              await callbacks.onProgress(webSearchProgressMessage(update));
-            },
-          });
-        } catch (error) {
-          throwIfAborted(callbacks.signal);
-          if (modelTurn?.wasInterrupted()) {
-            throw new AgentSteeringInterruptError();
-          }
-          throw error;
-        } finally {
-          modelTurn?.dispose();
-        }
-        throwIfAborted(callbacks.signal);
-        if (modelTurn?.wasInterrupted()) {
-          throw new AgentSteeringInterruptError();
-        }
-        await callbacks.onProgress("Reading model response");
-        return turn;
-      },
-      observe: async (request) => {
-        const observation = await observeLive(
-          context,
-          request,
-          interaction.target,
-          callbacks.signal,
-        );
-        throwIfAborted(callbacks.signal);
-        return observation;
-      },
-      preflightActions: (plan) =>
-        preflightAgentPlan(context, interaction, plan, callbacks.signal),
-      confirmActions: callbacks.confirmActions,
-      executeActions: async (plan, rawBindings) => {
-        const bindings = rawBindings as AgentPlanBindings;
-        let outcome: AgentActionExecutionOutcome;
-        try {
-          outcome = await executeAgentPlanWithProgress(
-            context,
-            plan,
-            interaction.target,
-            callbacks.signal,
-            bindings,
-            () => {
-              if (callbacks.steering?.hasPending()) {
-                throw new AgentSteeringBeforeApplyError(
-                  "Newer user guidance arrived before the next Live action began. " +
-                    "The remaining actions in this plan were not executed.",
-                );
-              }
-            },
-          );
-        } catch (error) {
-          if (
-            error instanceof AgentPlanExecutionError &&
-            error.cause instanceof AgentSteeringBeforeApplyError &&
-            error.failedActionIndex === 0 &&
-            error.completedResults.length === 0 &&
-            error.completedMutationCount === 0
-          ) {
-            throwIfAborted(callbacks.signal);
-            throw error.cause;
-          }
-          if (
-            callbacks.signal.aborted &&
-            error instanceof AgentPlanExecutionError &&
-            error.completedResults.length &&
-            isAbortCause(error.cause, callbacks.signal)
-          ) {
-            outcome = {
-              results: error.completedResults,
-              mutationCount: error.completedMutationCount,
-              incompleteRecovery: {
-                completedActionKeys: error.completedActionKeys,
-                ...(error.failedActionIndex === undefined
-                  ? {}
-                  : { failedActionIndex: error.failedActionIndex }),
-                failureMessage:
-                  "The request was stopped before every confirmed Live action completed.",
-              },
-            };
-          } else if (error instanceof AgentPlanExecutionError) {
-            throw new AgentPartialCompletionError(
-              error.completedResults,
-              error.cause,
-              error.failedActionIndex,
-              error.failedAction,
-              error.failedTrackName,
-              error.completedActionKeys,
-              error.completedMutationCount,
-            );
-          } else {
-            throw error;
-          }
-        }
-        await callbacks.onProgress("Updating chat history");
-        return outcome;
-      },
-      ...(callbacks.withActionExecutionLock
-        ? { withActionExecutionLock: callbacks.withActionExecutionLock }
-        : {}),
-      onEvent: async (event) => {
-        if (event.kind === "web_search") {
-          const persisted = await ensureTerminalWebSearchEvent(
-            event.webSearch,
-            event.content,
-          );
-          if (persisted?.first) {
-            await callbacks.onSessionEvent(persisted.event);
-          }
-          return;
-        }
-        const sessionEvent = await appendAgentLoopTraceEvent(
-          context.environment.storageDirectory,
-          session.id,
-          event,
-          appendTraceEvent,
-        );
-        knownEventIds.add(sessionEvent.id);
-        await callbacks.onSessionEvent(sessionEvent);
-      },
-      onProgress: callbacks.onProgress,
-    });
-    return loopResult.message;
-  } catch (error) {
-    try {
-      const errorEvent = await appendSessionEvent(
-        context.environment.storageDirectory,
-        session.id,
-        {
-          kind: "error",
-          content: sessionErrorMessage(error, profileSecrets(profile)),
-        },
-      );
-      await callbacks.onSessionEvent(errorEvent);
-    } catch (persistenceError) {
-      console.error("Failed to persist the agent request error.", persistenceError);
-    }
-    throw error;
-  }
-}
-
-function isAbortCause(error: unknown, signal: AbortSignal): boolean {
-  if (!signal.aborted) return false;
-  if ("reason" in signal) return error === signal.reason;
-  return error instanceof Error && /abort/i.test(error.message);
-}
-
-export async function preflightAgentPlan(
-  context: Api,
-  interaction: LiveInteractionContext,
-  plan: AgentPlan,
-  signal: AbortSignal,
-  observer: typeof observeLive = observeLive,
-  snapshotter: (
-    context: Api,
-    action: AgentPlan["actions"][number],
-    target: LiveInteractionContext["target"],
-  ) => string | Promise<string> = captureLiveActionPreflightSnapshot,
-): Promise<AgentActionPreflightGuard<AgentPlanBindings>> {
-  const initialBindings = bindAgentPlanTargets(
-    context,
-    plan,
-    interaction.target,
-  );
-  const initialSnapshots = await captureAgentPlanPreflightSnapshots(
-    context,
-    interaction,
-    plan,
-    signal,
-    observer,
-    snapshotter,
-    initialBindings,
-  );
-
-  const guard: AgentActionPreflightGuard<AgentPlanBindings> = async () => {
-    const currentBindings = bindAgentPlanTargets(
-      context,
-      plan,
-      interaction.target,
-    );
-    assertSameExistingPlanTargets(initialBindings, currentBindings);
-    const currentSnapshots = await captureAgentPlanPreflightSnapshots(
-      context,
-      interaction,
-      plan,
-      signal,
-      observer,
-      snapshotter,
-      currentBindings,
-    );
-    const changedIndex = currentSnapshots.findIndex(
-      (snapshot, index) => snapshot !== initialSnapshots[index],
-    );
-    if (
-      changedIndex !== -1 ||
-      currentSnapshots.length !== initialSnapshots.length
-    ) {
-      const actionNumber = changedIndex === -1 ? 1 : changedIndex + 1;
-      throw new Error(
-        `Live target or relevant state changed for action ${actionNumber} while confirmation was open. Inspect the current Live state and try again.`,
-      );
-    }
-    return currentBindings;
-  };
-  Object.defineProperty(guard, "actionKeys", {
-    enumerable: true,
-    value: planActionIdentityKeys(plan, initialBindings),
-  });
-  return guard;
-}
-
-function planActionIdentityKeys(
-  plan: AgentPlan,
-  bindings: AgentPlanBindings,
-): string[][] {
-  const aliases = new Map(
-    Object.entries(plan.targets ?? {}).map(([ref, target]) => [ref, target.trackName]),
-  );
-  return plan.actions.map((action, actionIndex) => {
-    const boundTrack = boundTrackForAction(action, actionIndex, bindings);
-    const trackAliases: string[] = [];
-    if ("trackRef" in action && action.trackRef) {
-      const alias = aliases.get(action.trackRef);
-      if (alias) trackAliases.push(alias);
-    } else if ("trackName" in action && action.trackName) {
-      trackAliases.push(action.trackName);
-    }
-    const keys = liveActionIdentityKeys(action, boundTrack, trackAliases);
-    if (
-      (action.type === "create_midi_track" || action.type === "create_audio_track") &&
-      action.ref &&
-      action.name
-    ) {
-      aliases.set(action.ref, action.name);
-    }
-    if (action.type === "rename_track" && action.trackRef) {
-      aliases.set(action.trackRef, action.newName);
-    } else if (action.type === "rename_track" && action.trackName) {
-      for (const [ref, name] of aliases) {
-        if (normalizedIdentityText(name) === normalizedIdentityText(action.trackName)) {
-          aliases.set(ref, action.newName);
-        }
-      }
-    }
-    return keys;
-  });
-}
-
-function normalizedIdentityText(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-async function captureAgentPlanPreflightSnapshots(
-  context: Api,
-  interaction: LiveInteractionContext,
-  plan: AgentPlan,
-  signal: AbortSignal,
-  observer: typeof observeLive,
-  snapshotter: (
-    context: Api,
-    action: AgentPlan["actions"][number],
-    target: LiveInteractionContext["target"],
-  ) => string | Promise<string>,
-  bindings: AgentPlanBindings,
-): Promise<string[]> {
-  const snapshots: string[] = [];
-  for (const [actionIndex, action] of plan.actions.entries()) {
-    throwIfAborted(signal);
-    const boundTrack = boundTrackForAction(action, actionIndex, bindings);
-    if ("trackRef" in action && action.trackRef && !boundTrack) {
-      snapshots.push(`deferred:${action.type}:${action.trackRef}`);
-      continue;
-    }
-    const actionTarget = boundTrack
-      ? { ...interaction.target, track: boundTrack }
-      : interaction.target;
-    await observer(
-      context,
-      observationRequestForAction(action),
-      actionTarget,
-    );
-    throwIfAborted(signal);
-    snapshots.push(await snapshotter(context, action, actionTarget));
-    throwIfAborted(signal);
-  }
-  return snapshots;
-}
-
-interface AgentRequestCallbacks {
-  signal: AbortSignal;
-  steering?: SteeringChannel;
-  steeringSendId?: string;
-  onDelta(delta: string): Promise<void> | void;
-  onAssistantReset?(): Promise<void> | void;
-  onProgress(message: string): Promise<void> | void;
-  onWebSearchUpdate?(
-    update: ModelHostedWebSearch,
-  ): Promise<void> | void;
-  onSessionEvent(event: SessionEvent): Promise<void> | void;
-  confirmActions(
-    plan: AgentPlan,
-  ): Promise<boolean | AgentConfirmationDecision>;
-  withActionExecutionLock?(
-    operation: () => Promise<AgentActionExecutionOutcome>,
-  ): Promise<AgentActionExecutionOutcome>;
-}
-
-function consumedAttachmentIds(events: readonly SessionEvent[]): string[] {
-  return [...new Set(events.flatMap((event) =>
-    event.attachments?.map((attachment) => attachment.id) ?? []
-  ))];
-}
-
 function scopeKey(scope: LiveInteractionContext["scope"]): string {
   return `${scope.kind}:${scope.identity}`;
 }
@@ -2723,161 +2258,6 @@ function throwMappedSelectedAudioSourceError(error: unknown): never {
   throw new ChatBridgeAttachmentValidationError(
     "The selected Live audio source is unavailable or could not be attached.",
   );
-}
-
-async function appendAgentLoopTraceEvent(
-  storageDirectory: string | undefined,
-  sessionId: string,
-  event: AgentLoopTraceEvent,
-  appendEvent: typeof appendSessionEvent = appendSessionEvent,
-): Promise<SessionEvent> {
-  if ("name" in event) {
-    return appendEvent(storageDirectory, sessionId, {
-      kind: event.kind,
-      name: event.name,
-      content: event.content,
-    });
-  }
-
-  return appendEvent(storageDirectory, sessionId, {
-    kind: event.kind,
-    content: event.content,
-    ...(event.kind === "web_search" ? { webSearch: event.webSearch } : {}),
-    ...(event.kind === "assistant" && event.citations?.length
-      ? { citations: event.citations }
-      : {}),
-    ...(event.kind === "apply_result" && event.recovery
-      ? { recovery: event.recovery }
-      : {}),
-  });
-}
-
-async function appendTerminalWebSearchEvent(
-  storageDirectory: string | undefined,
-  sessionId: string,
-  input: SessionEventInput & {
-    kind: "web_search";
-    webSearch: ModelHostedWebSearch;
-  },
-  knownEventIds: ReadonlySet<string>,
-  appendEvent: typeof appendSessionEvent,
-  loadEvents: typeof loadSessionEvents,
-): Promise<SessionEvent> {
-  let reconciledUnknownOutcome = false;
-  for (;;) {
-    try {
-      return await appendEvent(storageDirectory, sessionId, input);
-    } catch (error) {
-      if (!isStorageCommitOutcomeUnknownError(error)) throw error;
-
-      const authoritativeEvents = await loadEvents(storageDirectory, sessionId);
-      const committed = authoritativeEvents.find((event) =>
-        !knownEventIds.has(event.id) &&
-        event.kind === "web_search" &&
-        event.content === input.content &&
-        event.webSearch !== undefined &&
-        sameHostedWebSearch(event.webSearch, input.webSearch)
-      );
-      if (committed) return committed;
-      if (reconciledUnknownOutcome) throw error;
-      reconciledUnknownOutcome = true;
-    }
-  }
-}
-
-async function appendSteeringUserEvent(
-  storageDirectory: string | undefined,
-  sessionId: string,
-  sendId: string,
-  steerId: string,
-  content: string,
-  appendEvent: typeof appendSessionEvent,
-  loadEvents: typeof loadSessionEvents,
-): Promise<SessionEvent> {
-  const steeringReceipt = steeringReceiptFor(sendId, steerId, content);
-  const input = {
-    kind: "user" as const,
-    content,
-    steeringReceipt,
-  };
-  let reconciledUnknownOutcome = false;
-  for (;;) {
-    try {
-      return await appendEvent(storageDirectory, sessionId, input);
-    } catch (error) {
-      if (!isStorageCommitOutcomeUnknownError(error)) throw error;
-
-      let authoritativeEvents: SessionEvent[];
-      try {
-        authoritativeEvents = await loadEvents(storageDirectory, sessionId);
-      } catch (cause) {
-        throw new SteeringPersistenceOutcomeUnknownError(sendId, steerId, {
-          cause,
-        });
-      }
-      const committed = authoritativeEvents.find((event) =>
-        event.steeringReceipt?.sendId === sendId &&
-        event.steeringReceipt.id === steerId
-      );
-      if (committed) {
-        if (
-          committed.kind !== "user" ||
-          committed.content !== content ||
-          committed.steeringReceipt?.sha256 !== steeringReceipt.sha256
-        ) {
-          throw new SessionSteeringReceiptConflictError(sendId, steerId);
-        }
-        return committed;
-      }
-      if (reconciledUnknownOutcome) {
-        throw new SteeringPersistenceOutcomeUnknownError(sendId, steerId, {
-          cause: error,
-        });
-      }
-      reconciledUnknownOutcome = true;
-    }
-  }
-}
-
-function steeringReceiptFor(
-  sendId: string,
-  steerId: string,
-  content: string,
-): SessionSteeringReceipt {
-  return {
-    sendId,
-    id: steerId,
-    sha256: createHash("sha256").update(content, "utf8").digest("hex"),
-  };
-}
-
-function sameHostedWebSearch(
-  left: ModelHostedWebSearch,
-  right: ModelHostedWebSearch,
-): boolean {
-  return left.id === right.id &&
-    left.status === right.status &&
-    left.action === right.action &&
-    left.queries.length === right.queries.length &&
-    left.queries.every((query, index) => query === right.queries[index]) &&
-    left.sources.length === right.sources.length &&
-    left.sources.every((source, index) =>
-      source.url === right.sources[index]?.url &&
-      source.title === right.sources[index]?.title
-    );
-}
-
-function webSearchProgressMessage(update: ModelHostedWebSearch): string {
-  if (update.status === "searching") {
-    return update.queries[0]
-      ? `Searching for “${update.queries[0]}”…`
-      : "Searching the web…";
-  }
-  if (update.status === "failed") return "Web Search failed.";
-  const pages = update.sources.length;
-  return pages > 0
-    ? `Reviewing ${pages} web ${pages === 1 ? "page" : "pages"}…`
-    : "Reading Web Search results…";
 }
 
 export function showAgentError(context: Api, error: unknown): void {

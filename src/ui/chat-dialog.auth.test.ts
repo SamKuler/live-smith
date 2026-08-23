@@ -18,7 +18,6 @@ function subscriptionProfile(): SavedProfile {
   return profileFixture({
     connection: { kind: "codex-subscription", provider: "openai" },
     parameters: {
-      maxOutputTokens: 8192,
       reasoning: { mode: "default" },
     },
     advanced: {},
@@ -81,7 +80,7 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     assert.equal(harness.document.querySelector<HTMLDetailsElement>("#advancedSettings")?.hidden, true);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#temperature")?.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#temperature")?.disabled, true);
-    assert.equal(harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.value, "8192");
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.disabled, true);
     assert.match(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
@@ -129,7 +128,6 @@ test("subscription model discovery and Save use only the managed connection cont
     });
     assert.deepEqual(discovery.profile.advanced, {});
     assert.deepEqual(discovery.profile.parameters, {
-      maxOutputTokens: 8192,
       reasoning: { mode: "default" },
     });
     assert.equal("apiKey" in discovery.profile, false);
@@ -149,7 +147,6 @@ test("subscription model discovery and Save use only the managed connection cont
     });
     assert.deepEqual(saved.profile.advanced, {});
     assert.deepEqual(saved.profile.parameters, {
-      maxOutputTokens: 8192,
       reasoning: { mode: "default" },
     });
     assert.deepEqual(harness.errors, []);
@@ -706,6 +703,38 @@ test("clean subscription Profiles disable Send until an eligible account is sign
     } finally {
       harness.close();
     }
+  }
+});
+
+test("a definitive sign-in failure offers a new ChatGPT sign-in attempt", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.codexAuth = {
+    status: "unavailable",
+    message: "ChatGPT sign-in did not complete. Start a new sign-in and try again.",
+    definitive: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const signIn = harness.document.querySelector<HTMLButtonElement>(
+      "#codexSignInButton",
+    );
+    assert.equal(signIn?.hidden, false);
+    assert.equal(signIn?.disabled, false);
+    assert.match(signIn?.textContent ?? "", /try sign-in again/i);
+
+    harness.click("#codexSignInButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "start_codex_login" },
+    });
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
   }
 });
 

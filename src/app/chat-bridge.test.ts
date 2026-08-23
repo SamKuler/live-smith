@@ -5,11 +5,12 @@ import { connect } from "node:net";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import type { ChatDialogState } from "../ui/chat-state.js";
+import type { ChatBridgeState, ChatDialogState } from "../ui/chat-state.js";
 import { ProfileValidationError } from "../model/profile.js";
 import { StorageCommitOutcomeUnknownError } from "../storage/persistence.js";
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
 import { MAX_SKILL_FILE_BYTES } from "../skills/format.js";
+import type { SessionEvent } from "../storage/events.js";
 import {
   ChatBridgeAttachmentValidationError,
   ChatBridgeCommandOutcomeUnknownError,
@@ -19,10 +20,12 @@ import {
   ChatBridgeResourceNotFoundError,
   ChatBridgeSendFailureError,
   createChatBridge,
+} from "./chat-bridge.js";
+import {
   readRawAttachmentBody,
   readRawSkillBody,
   readJsonBody,
-} from "./chat-bridge.js";
+} from "./chat-bridge-http.js";
 
 const attachmentPng = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -35,6 +38,23 @@ function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
+}
+
+let correlationSequence = 0;
+
+function correlatedJsonHeaders(
+  kind?: "command" | "send",
+): Record<string, string> {
+  correlationSequence += 1;
+  return {
+    "Content-Type": "application/json",
+    ...(kind === "command"
+      ? { "X-Live-Smith-Command-Id": `test-command-${correlationSequence}` }
+      : {}),
+    ...(kind === "send"
+      ? { "X-Live-Smith-Send-Id": `test-send-${correlationSequence}` }
+      : {}),
+  };
 }
 
 test("chat bridge isolates active sends by Session and keeps Session commands available", async () => {
@@ -69,7 +89,7 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
   const sendBody = JSON.stringify({ prompt: "test", sessionId: "s1" });
   const firstSend = fetch(endpoint("/send"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("send"),
     body: sendBody,
   });
 
@@ -77,22 +97,22 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     await started;
     const secondSend = await fetch(endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: sendBody,
     });
     const otherSessionSend = await fetch(endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({ prompt: "other", sessionId: "s2" }),
     });
     const command = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "new_session" }),
     });
     const settingsCommand = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "set_session_approval_mode",
         sessionId: "s1",
@@ -101,12 +121,12 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     });
     const archiveActiveSession = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "archive_session", sessionId: "s1" }),
     });
     const attachActiveSession = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: "s1",
@@ -114,7 +134,7 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     });
     const attachOtherSession = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: "s2",
@@ -122,7 +142,7 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     });
     const profileCommand = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "activate_profile", profileId: "profile-1" }),
     });
 
@@ -219,7 +239,7 @@ test("chat bridge treats an early handler failure as not persisted", async () =>
   try {
     const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
     });
 
@@ -250,7 +270,7 @@ test("chat bridge parses set_session_skills as a strict bounded command", async 
   try {
     const accepted = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: "session-1",
@@ -272,7 +292,7 @@ test("chat bridge parses set_session_skills as a strict bounded command", async 
     ]) {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: correlatedJsonHeaders("command"),
         body: JSON.stringify({
           kind: "set_session_skills",
           sessionId: "session-1",
@@ -336,6 +356,10 @@ test("chat bridge publishes only the send failure state captured inside its Sess
     assert.equal(errorEvent.message, "Model request failed.");
     assert.equal(errorEvent.promptPersistence, "persisted");
     assert.equal((errorEvent.state as ChatDialogState).activeSessionId, "s1");
+    assert.equal(
+      (errorEvent.state as ChatBridgeState).bridgeStateRevision,
+      (errorBody.state as ChatBridgeState).bridgeStateRevision,
+    );
     assert.equal(builds, 0);
   } finally {
     await bridge.close();
@@ -404,6 +428,9 @@ test("chat bridge success SSE uses the caller's send correlation ID", async () =
     });
 
     assert.equal(response.status, 200);
+    const responseBody = await response.json() as {
+      state: ChatBridgeState;
+    };
     const doneEvent = await readSsePayload(events, "done");
     assert.equal(doneEvent.sendId, sendId);
     assert.equal(doneEvent.sessionId, "s1");
@@ -411,20 +438,218 @@ test("chat bridge success SSE uses the caller's send correlation ID", async () =
       (doneEvent.state as ChatDialogState).sessionActivities,
       [{
         sessionId: "s1",
-        sendId,
         status: "completed",
         message: "Completed",
         unread: true,
       }],
     );
+    assert.equal(
+      (doneEvent.state as ChatBridgeState).bridgeStateRevision,
+      responseBody.state.bridgeStateRevision,
+    );
+    assert.equal(
+      (doneEvent.state as ChatBridgeState).bridgeStateCoveredThroughRevision,
+      responseBody.state.bridgeStateCoveredThroughRevision,
+    );
     const selected = await fetch(`${chatUrl.origin}/command?token=${token}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "select_session", sessionId: "s1" }),
     });
-    const selectedState = await selected.json() as ChatDialogState;
+    const selectedState = await selected.json() as ChatBridgeState;
     assert.equal(selectedState.sessionActivities?.[0]?.unread, false);
+    assert.ok(
+      BigInt(selectedState.bridgeStateRevision) >
+        BigInt(responseBody.state.bridgeStateRevision),
+    );
   } finally {
+    await bridge.close();
+  }
+});
+
+test("chat bridge projects steering storage hashes out of SSE and full state", async () => {
+  const steeringEvent: SessionEvent = {
+    id: "steering-event",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    kind: "user",
+    content: "Leave more headroom",
+    steeringReceipt: {
+      sendId: "projection-send",
+      id: "projection-steer",
+      sha256: "a".repeat(64),
+    },
+  };
+  const state = { events: [steeringEvent] } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.sessionEvent(steeringEvent);
+      return state;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  let events: Response | undefined;
+
+  try {
+    events = await fetch(endpoint("/events"));
+    const eventPayload = readSsePayload(events, "session_event");
+    const send = await fetch(endpoint("/send"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "projection-send",
+      },
+      body: JSON.stringify({ prompt: "Start", sessionId: "s1" }),
+    });
+    const published = await eventPayload;
+    const body = await send.json() as { state: ChatBridgeState };
+
+    assert.deepEqual(
+      (published.event as { steeringAck?: unknown }).steeringAck,
+      { sendId: "projection-send", steerId: "projection-steer" },
+    );
+    assert.deepEqual(body.state.events[0]?.steeringAck, {
+      sendId: "projection-send",
+      steerId: "projection-steer",
+    });
+    assert.doesNotMatch(
+      JSON.stringify({ published, state: body.state }),
+      /steeringReceipt|sha256/,
+    );
+  } finally {
+    await events?.body?.cancel().catch(() => {});
+    await bridge.close();
+  }
+});
+
+test("bridge projection events precede later full-state revisions", async () => {
+  const state = {
+    activeSessionId: "s1",
+    sessions: [{ id: "s1" }],
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.progress("Working");
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
+      method: "POST",
+      headers: correlatedJsonHeaders("send"),
+      body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+    });
+    const progress = await readSsePayload(events, "progress");
+    const body = await (await send).json() as { state: ChatBridgeState };
+
+    assert.ok(
+      BigInt(progress.bridgeStateRevision as string) <
+        BigInt(body.state.bridgeStateRevision),
+    );
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("a late full-state publication exposes the patch cut captured before its build", async () => {
+  let releaseBuild!: () => void;
+  let markBuildStarted!: () => void;
+  const buildGate = new Promise<void>((resolve) => {
+    releaseBuild = resolve;
+  });
+  const buildStarted = new Promise<void>((resolve) => {
+    markBuildStarted = resolve;
+  });
+  const staleState = {
+    activeSessionId: "s1",
+    approvalMode: "manual",
+    sessions: [{ id: "s1", approvalMode: "manual" }],
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => {
+      markBuildStarted();
+      await buildGate;
+      return staleState;
+    },
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => staleState,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+
+  try {
+    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const stateRequest = fetch(`${chatUrl.origin}/state?token=${token}`);
+    await buildStarted;
+    const approvalEvent = readSsePayload(events, "approval_mode_changed");
+    bridge.publishSessionApprovalMode("s1", "everything");
+    const approval = await approvalEvent;
+    releaseBuild();
+    const state = await (await stateRequest).json() as ChatBridgeState;
+
+    assert.equal(state.approvalMode, "manual");
+    assert.equal(state.bridgeStateCoveredThroughRevision, "0");
+    assert.ok(
+      BigInt(approval.bridgeStateRevision as string) <
+        BigInt(state.bridgeStateRevision),
+    );
+    assert.ok(
+      BigInt(state.bridgeStateCoveredThroughRevision) <
+        BigInt(approval.bridgeStateRevision as string),
+    );
+  } finally {
+    releaseBuild();
+    await bridge.close();
+  }
+});
+
+test("event stream reconnect replays the latest approval patch per Session", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  let initialEvents: Response | undefined;
+  let reconnectedEvents: Response | undefined;
+
+  try {
+    initialEvents = await fetch(endpoint("/events"));
+    const firstPatch = readSsePayload(initialEvents, "approval_mode_changed");
+    bridge.publishSessionApprovalMode("s1", "everything");
+    const first = await firstPatch;
+
+    bridge.publishSessionApprovalMode("s1", "manual");
+    reconnectedEvents = await fetch(endpoint("/events"));
+    const replayed = await readSsePayload(
+      reconnectedEvents,
+      "approval_mode_changed",
+    );
+
+    assert.equal(replayed.sessionId, "s1");
+    assert.equal(replayed.approvalMode, "manual");
+    assert.ok(
+      BigInt(replayed.bridgeStateRevision as string) >
+        BigInt(first.bridgeStateRevision as string),
+    );
+  } finally {
+    await initialEvents?.body?.cancel().catch(() => {});
+    await reconnectedEvents?.body?.cancel().catch(() => {});
     await bridge.close();
   }
 });
@@ -486,7 +711,12 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
   const confirmationPending = new Promise<void>((resolve) => {
     markConfirmationPending = resolve;
   });
+  let markSecondConfirmationPending!: () => void;
+  const secondConfirmationPending = new Promise<void>((resolve) => {
+    markSecondConfirmationPending = resolve;
+  });
   let confirmationResult: boolean | undefined;
+  let secondConfirmationResult: boolean | undefined;
   const state = {} as ChatDialogState;
   const bridge = await createChatBridge({
     buildState: async () => state,
@@ -499,6 +729,12 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
       });
       markConfirmationPending();
       confirmationResult = await result;
+      const secondResult = stream.requestConfirmation({
+        message: "Apply another change?",
+        groups: [{ title: "Track", rows: ["Rename Lead"] }],
+      });
+      markSecondConfirmationPending();
+      secondConfirmationResult = await secondResult;
     },
   });
   const chatUrl = new URL(bridge.url);
@@ -525,16 +761,62 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
     assert.deepEqual(payload.groups, [
       { title: "Song", rows: ["Set tempo to 124 BPM"] },
     ]);
+    assert.deepEqual(payload.activity, {
+      status: "waiting_confirmation",
+      message: "Waiting for confirmation",
+    });
     assert.equal(typeof payload.id, "string");
+    assert.equal(payload.confirmationGeneration, 1);
 
+    const resolvedEvents = await fetch(endpoint("/events"));
+    const resolvedPayload = readSsePayload(
+      resolvedEvents,
+      "confirm_resolved",
+    );
     const confirmation = await fetch(endpoint("/confirm"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders(),
       body: JSON.stringify({ id: payload.id, apply: false }),
     });
     assert.equal(confirmation.status, 200);
+    const confirmationBody = await confirmation.json() as Record<string, unknown>;
+    assert.equal(
+      confirmationBody.confirmationGeneration,
+      payload.confirmationGeneration,
+    );
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await resolvedPayload),
+      {
+        type: "confirm_resolved",
+        sendId,
+        sessionId: "s1",
+        id: payload.id,
+        confirmationGeneration: payload.confirmationGeneration,
+        activity: {
+          status: "running",
+          message: "Continuing after cancellation",
+        },
+      },
+    );
+    await secondConfirmationPending;
+    const secondEvents = await fetch(endpoint("/events"));
+    const secondPayload = await readSsePayload(secondEvents, "confirm_request");
+    assert.notEqual(secondPayload.id, payload.id);
+    assert.equal(secondPayload.confirmationGeneration, 2);
+    const secondConfirmation = await fetch(endpoint("/confirm"), {
+      method: "POST",
+      headers: correlatedJsonHeaders(),
+      body: JSON.stringify({ id: secondPayload.id, apply: false }),
+    });
+    assert.equal(secondConfirmation.status, 200);
+    assert.equal(
+      ((await secondConfirmation.json()) as Record<string, unknown>)
+        .confirmationGeneration,
+      2,
+    );
     assert.equal((await send).status, 200);
     assert.equal(confirmationResult, false);
+    assert.equal(secondConfirmationResult, false);
   } finally {
     await bridge.close();
   }
@@ -603,12 +885,196 @@ test("stop reports a non-terminal abort until the correlated send error complete
 
     const command = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "new_session" }),
     });
     assert.equal(command.status, 200);
   } finally {
     releaseCleanup();
+    await bridge.close();
+  }
+});
+
+test("stop tombstones a correlated send while its request body is still arriving", async () => {
+  let sendCalls = 0;
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {
+      sendCalls += 1;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token")!;
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const sendId = "send-slow-body-stop";
+  const body = JSON.stringify({ prompt: "slow", sessionId: "s1" });
+  const splitAt = Math.floor(body.length / 2);
+  const socket = connect(Number(chatUrl.port), "127.0.0.1");
+  const responseChunks: NodeBuffer[] = [];
+  socket.on("data", (chunk: NodeBuffer) => responseChunks.push(chunk));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write([
+      `POST /send?token=${token} HTTP/1.1`,
+      `Host: 127.0.0.1:${chatUrl.port}`,
+      "Content-Type: application/json",
+      `X-Live-Smith-Send-Id: ${sendId}`,
+      `Content-Length: ${NodeBuffer.byteLength(body)}`,
+      "Connection: close",
+      "",
+      body.slice(0, splitAt),
+    ].join("\r\n"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+
+    const firstStop = await fetch(endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": sendId,
+      },
+      body: "{}",
+    });
+    assert.deepEqual(await firstStop.json(), {
+      ok: true,
+      terminal: false,
+      sendId,
+    });
+
+    const rawSendResponse = new Promise<string>((resolve, reject) => {
+      socket.once("end", () => {
+        resolve(NodeBuffer.concat(responseChunks).toString("utf8"));
+      });
+      socket.once("error", reject);
+    });
+    socket.end(body.slice(splitAt));
+    const responseText = await rawSendResponse;
+    assert.match(responseText, /^HTTP\/1\.1 409 /);
+    assert.equal(sendCalls, 0);
+
+    const terminalStop = await fetch(endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": sendId,
+      },
+      body: "{}",
+    });
+    assert.deepEqual(await terminalStop.json(), {
+      ok: true,
+      terminal: true,
+      sendId,
+      promptPersistence: "not_persisted",
+    });
+  } finally {
+    socket.destroy();
+    await bridge.close();
+  }
+});
+
+test("stop fences late stream publications without hiding durable Session events", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let confirmationAfterStop: boolean | "pending" | undefined;
+  const state = {
+    activeSessionId: "s1",
+    sessions: [{ id: "s1" }],
+  } as unknown as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream, signal) => {
+      markStarted();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await stream.assistantDelta("late delta");
+      await stream.assistantReset();
+      await stream.webSearchUpdate({
+        id: "late-search",
+        status: "searching",
+        action: "search",
+        queries: ["late"],
+        sources: [],
+      });
+      await stream.sessionEvent({
+        id: "late-durable-steering",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        kind: "user",
+        content: "Persisted before Stop completed",
+        steeringReceipt: {
+          sendId: "send-stop-publication-fence",
+          id: "steer-stop-publication-fence",
+          sha256: "a".repeat(64),
+        },
+      });
+      await stream.progress("Late progress after Stop");
+      confirmationAfterStop = await Promise.race([
+        stream.requestConfirmation({
+          message: "Late confirmation after Stop?",
+          groups: [{ title: "Song", rows: ["Set tempo"] }],
+        }),
+        new Promise<"pending">((resolve) => {
+          setTimeout(() => resolve("pending"), 25);
+        }),
+      ]);
+      throw signal.reason;
+    },
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  const events = await fetch(endpoint("/events"));
+  const send = fetch(endpoint("/send"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Send-Id": "send-stop-publication-fence",
+    },
+    body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
+  });
+
+  try {
+    await started;
+    const publications = readSsePayloadsThrough(events, "error");
+    const stop = await fetch(endpoint("/stop"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "send-stop-publication-fence",
+      },
+      body: "{}",
+    });
+    assert.equal((await stop.json() as { terminal: boolean }).terminal, false);
+    assert.equal((await send).status, 500);
+    const payloads = await publications;
+
+    assert.equal(confirmationAfterStop, false);
+    assert.deepEqual(
+      payloads.map((payload) => payload.type),
+      ["session_event", "error"],
+    );
+    assert.deepEqual(payloads[0]?.activity, {
+      status: "stopped",
+      message: "Stopped",
+    });
+    const refreshed = await (await fetch(endpoint("/state"))).json() as ChatBridgeState;
+    assert.deepEqual(refreshed.sessionActivities, [{
+      sessionId: "s1",
+      status: "stopped",
+      message: "Stopped",
+      unread: false,
+    }]);
+  } finally {
     await bridge.close();
   }
 });
@@ -699,7 +1165,7 @@ test("chat bridge serializes command mutations", async () => {
   const commandBody = JSON.stringify({ kind: "new_session" });
   const firstCommand = fetch(endpoint("/command"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("command"),
     body: commandBody,
   });
 
@@ -707,12 +1173,12 @@ test("chat bridge serializes command mutations", async () => {
     await started;
     const secondCommand = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: commandBody,
     });
     const send = await fetch(endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
     });
 
@@ -751,7 +1217,7 @@ test("state requested during an active command waits for the command terminal st
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
   const command = fetch(endpoint("/command"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("command"),
     body: JSON.stringify({ kind: "new_session" }),
   });
   let stateRequest: Promise<Response> | undefined;
@@ -773,8 +1239,14 @@ test("state requested during an active command waits for the command terminal st
     assert.equal(stateSettled, false);
 
     releaseCommand();
-    assert.deepEqual(await (await stateRequest).json(), { status: "after" });
-    assert.deepEqual(await (await command).json(), { status: "after" });
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await (await stateRequest).json()),
+      { status: "after" },
+    );
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await (await command).json()),
+      { status: "after" },
+    );
   } finally {
     releaseCommand();
     await command.catch(() => undefined);
@@ -811,6 +1283,7 @@ test("the command state fence starts before the command body finishes reading", 
     `POST /command?token=${token} HTTP/1.1`,
     `Host: ${chatUrl.host}`,
     "Content-Type: application/json",
+    "X-Live-Smith-Command-Id: partial-command-body",
     `Content-Length: ${NodeBuffer.byteLength(body)}`,
     "Connection: keep-alive",
     "",
@@ -830,7 +1303,10 @@ test("the command state fence starts before the command body finishes reading", 
 
     socket.write(body.slice(1));
     await commandFinished;
-    assert.deepEqual(await (await stateRequest).json(), { status: "after" });
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await (await stateRequest).json()),
+      { status: "after" },
+    );
   } finally {
     socket.destroy();
     await bridge.close();
@@ -868,7 +1344,7 @@ test("the command state fence covers unknown-outcome reconciliation", async () =
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
   const command = fetch(endpoint("/command"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("command"),
     body: JSON.stringify({ kind: "new_session" }),
   });
   let stateRequest: Promise<Response> | undefined;
@@ -887,7 +1363,10 @@ test("the command state fence covers unknown-outcome reconciliation", async () =
     releaseReconciliation();
     const commandResponse = await command;
     assert.equal(commandResponse.status, 500);
-    assert.deepEqual(await (await stateRequest).json(), { status: "reconciled" });
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await (await stateRequest).json()),
+      { status: "reconciled" },
+    );
     assert.equal(buildCalls, 2);
   } finally {
     releaseReconciliation();
@@ -919,14 +1398,14 @@ test("a command unknown outcome uses its in-lease authoritative state without re
   try {
     const response = await fetch(`${chatUrl.origin}/command?token=${token}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "new_session" }),
     });
     assert.equal(response.status, 500);
     const body = await response.json() as Record<string, unknown>;
     assert.equal(typeof body.commandId, "string");
     delete body.commandId;
-    assert.deepEqual(body, {
+    assert.deepEqual(withoutBridgeStateRevisions(body), {
       error: "Selected source outcome is unknown.",
       commandOutcome: "unknown",
       state: authoritative,
@@ -972,7 +1451,7 @@ test("chat bridge correlates command state with the request header without chang
       "command-correlation-1",
     );
     assert.equal(stateEvent.commandId, "command-correlation-1");
-    assert.deepEqual(stateEvent.state, state);
+    assert.deepEqual(withoutBridgeStateRevisions(stateEvent.state), state);
     assert.deepEqual(commandInput, { kind: "new_session" });
   } finally {
     await bridge.close();
@@ -1008,7 +1487,7 @@ test("chat bridge returns authoritative state when a command commit outcome is u
     });
 
     assert.equal(response.status, 500);
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(withoutBridgeStateRevisions(await response.json()), {
       error: "Storage mutation completed, but its durable commit could not be confirmed.",
       commandId: "command-unknown-1",
       commandOutcome: "unknown",
@@ -1083,7 +1562,7 @@ test("closing the chat bridge aborts an active command", async () => {
   const token = chatUrl.searchParams.get("token");
   const command = fetch(`${chatUrl.origin}/command?token=${token}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("command"),
     body: JSON.stringify({ kind: "new_session" }),
   });
   const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
@@ -1118,7 +1597,7 @@ test("closing the chat bridge aborts an active send with an event stream connect
   const token = chatUrl.searchParams.get("token");
   const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("send"),
     body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
   });
   const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
@@ -1153,7 +1632,7 @@ test("closing waits for an active handler to reach its terminal state", async ()
   const token = chatUrl.searchParams.get("token");
   const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("send"),
     body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
   });
 
@@ -1170,22 +1649,35 @@ test("closing waits for an active handler to reach its terminal state", async ()
   await send.catch(() => undefined);
 });
 
-test("closing destroys read-only chat and state requests without waiting for buildState", async () => {
+test("closing aborts and waits for read-only chat and state builds", {
+  timeout: 2_000,
+}, async () => {
   for (const path of ["/state", "/chat"]) {
-    let releaseState!: () => void;
+    let finishState!: () => void;
     let markStarted!: () => void;
-    const stateGate = new Promise<void>((resolve) => {
-      releaseState = resolve;
+    let markAbortObserved!: () => void;
+    const finishStateGate = new Promise<void>((resolve) => {
+      finishState = resolve;
     });
     const stateStarted = new Promise<void>((resolve) => {
       markStarted = resolve;
     });
+    const abortObserved = new Promise<void>((resolve) => {
+      markAbortObserved = resolve;
+    });
     const state = {} as ChatDialogState;
     const bridge = await createChatBridge({
-      buildState: async () => {
+      buildState: async (signal) => {
         markStarted();
-        await stateGate;
-        return state;
+        assert.ok(signal, `${path} must receive a bridge-owned AbortSignal.`);
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        markAbortObserved();
+        await finishStateGate;
+        throw signal.reason;
       },
       renderHtml: () => "<html></html>",
       handleCommand: async () => state,
@@ -1201,25 +1693,20 @@ test("closing destroys read-only chat and state requests without waiting for bui
 
     try {
       await stateStarted;
-      closing = bridge.close();
-      let closeTimeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          closing,
-          new Promise<never>((_resolve, reject) => {
-            closeTimeout = setTimeout(
-              () => reject(new Error(`Bridge close waited for ${path} buildState.`)),
-              500,
-            );
-          }),
-        ]);
-      } finally {
-        if (closeTimeout !== undefined) clearTimeout(closeTimeout);
-      }
+      let closeSettled = false;
+      closing = bridge.close().then(() => {
+        closeSettled = true;
+      });
+      await abortObserved;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false, `Bridge close did not wait for ${path}.`);
+
+      finishState();
+      await closing;
       const readResult = await readRequest;
       assert.ok("error" in readResult, `Expected ${path} connection to be destroyed.`);
     } finally {
-      releaseState();
+      finishState();
       await readRequest;
       await (closing ?? bridge.close());
     }
@@ -1252,7 +1739,7 @@ test("a confirmation requested after bridge shutdown starts resolves without dea
   const token = chatUrl.searchParams.get("token");
   const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("send"),
     body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
   });
 
@@ -1294,6 +1781,9 @@ test("closing destroys partial command and send bodies before handlers can start
       `POST ${path}?token=${token} HTTP/1.1`,
       `Host: ${chatUrl.host}`,
       "Content-Type: application/json",
+      path === "/command"
+        ? "X-Live-Smith-Command-Id: partial-command-close"
+        : "X-Live-Smith-Send-Id: partial-send-close",
       "Content-Length: 100",
       "Connection: keep-alive",
       "",
@@ -1338,7 +1828,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
   try {
     const send = await fetch(endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({
         prompt: "test",
         sessionId: "s1",
@@ -1351,7 +1841,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
 
     const command = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "new_session",
         settings: { apiKey: "must-not-pass" },
@@ -1368,7 +1858,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     ]) {
       const authCommand = await fetch(endpoint("/command"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: correlatedJsonHeaders("command"),
         body: JSON.stringify({ kind, accessToken: "must-not-pass" }),
       });
       assert.equal(authCommand.status, 400);
@@ -1381,7 +1871,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
 
     const restore = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "restore_session",
         sessionId: "session-previous",
@@ -1396,7 +1886,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
 
     const archive = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "archive_session",
         sessionId: "session-previous",
@@ -1412,7 +1902,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
 
     const validSourceAttach = await fetch(endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: "session-audio",
@@ -1435,7 +1925,7 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
       commandInput = undefined;
       const rejected = await fetch(endpoint("/command"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: correlatedJsonHeaders("command"),
         body: JSON.stringify({
           kind: "attach_selected_audio_source",
           sessionId: "session-audio",
@@ -1474,7 +1964,7 @@ test("Session approval commands require one Session and one valid mode", async (
     for (const approvalMode of ["manual", "low-risk", "everything"] as const) {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: correlatedJsonHeaders("command"),
         body: JSON.stringify({
           kind: "set_session_approval_mode",
           sessionId: "session-1",
@@ -1497,7 +1987,7 @@ test("Session approval commands require one Session and one valid mode", async (
     ]) {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: correlatedJsonHeaders("command"),
         body: JSON.stringify(body),
       });
       assert.equal(response.status, 400);
@@ -1613,7 +2103,7 @@ test("attachment upload and delete routes use bounded raw bodies and narrow inpu
       },
     );
     assert.equal(upload.status, 201);
-    assert.deepEqual(await upload.json(), state);
+    assert.deepEqual(withoutBridgeStateRevisions(await upload.json()), state);
     assert.equal(uploadInput?.sessionId, "session-1");
     assert.equal(uploadInput?.fileName, "idea 中文.png");
     assert.equal(uploadInput?.claimedMediaType, "image/png");
@@ -1687,7 +2177,7 @@ test("Skill install and delete routes use raw Markdown, receipts, and narrow inp
       install.headers.get("x-live-smith-command-id"),
       "skill-install-1",
     );
-    assert.deepEqual(await install.json(), {
+    assert.deepEqual(withoutBridgeStateRevisions(await install.json()), {
       state,
       receipt: { id: "mix-review", sha256: "a".repeat(64) },
     });
@@ -1697,7 +2187,10 @@ test("Skill install and delete routes use raw Markdown, receipts, and narrow inp
 
     const deletion = await fetch(
       `${chatUrl.origin}/skills/mix-review?token=${token}`,
-      { method: "DELETE" },
+      {
+        method: "DELETE",
+        headers: { "X-Live-Smith-Command-Id": "skill-delete-1" },
+      },
     );
     assert.equal(deletion.status, 200);
     assert.deepEqual(deletes, ["mix-review"]);
@@ -1706,7 +2199,10 @@ test("Skill install and delete routes use raw Markdown, receipts, and narrow inp
       `${chatUrl.origin}/skills?token=${token}&replace=true&extra=1`,
       {
         method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "X-Live-Smith-Command-Id": "skill-invalid-query",
+        },
         body: attachmentRequestBody(markdown),
       },
     );
@@ -1777,7 +2273,7 @@ test("Skill install early validation drains its body and does not broadcast an u
       body: attachmentRequestBody(NodeBuffer.from("valid")),
     });
     assert.equal(valid.status, 201);
-    assert.deepEqual(await nextEvent, {
+    assert.deepEqual(withoutBridgeStateRevisions(await nextEvent), {
       type: "state",
       commandId: "valid-skill-command",
       state,
@@ -1788,7 +2284,10 @@ test("Skill install early validation drains its body and does not broadcast an u
       `${chatUrl.origin}/skills?token=${token}&replace=maybe`,
       {
         method: "POST",
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "X-Live-Smith-Command-Id": "invalid-skill-query",
+        },
         body: attachmentRequestBody(NodeBuffer.from("invalid")),
       },
     );
@@ -1923,7 +2422,10 @@ test("Skill raw bodies enforce exact media type and the 64 KiB boundary", async 
         `${chatUrl.origin}/skills?token=${chatUrl.searchParams.get("token")}`,
         {
           method: "POST",
-          headers: { "Content-Type": contentType },
+          headers: {
+            "Content-Type": contentType,
+            "X-Live-Smith-Command-Id": `skill-media-${size}`,
+          },
           body: attachmentRequestBody(NodeBuffer.alloc(size, 0x61)),
         },
       );
@@ -2341,7 +2843,7 @@ test("attachment operations conflict only with the same Session's active mutatio
   const token = chatUrl.searchParams.get("token")!;
   const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: correlatedJsonHeaders("send"),
     body: JSON.stringify({ prompt: "test", sessionId: "session-1" }),
   });
 
@@ -2428,7 +2930,7 @@ test("different-Session attachment failures stay on their initiating HTTP respon
 
     const send = await fetch(`${chatUrl.origin}/send?token=${token}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({ prompt: "probe", sessionId: "session-success" }),
     });
     assert.equal(send.status, 200);
@@ -2474,7 +2976,7 @@ test("attachment post-commit state failures reconcile as unknown outcomes", asyn
       },
     );
     assert.equal(response.status, 500);
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(withoutBridgeStateRevisions(await response.json()), {
       error: "Attachment changed, but state could not be confirmed.",
       commandOutcome: "unknown",
       state: authoritative,
@@ -2925,7 +3427,7 @@ test("chat bridge preserves Profile validation fields in safe command errors", a
   try {
     const command = await fetch(`${chatUrl.origin}/command?token=${token}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "new_session" }),
     });
 
@@ -2938,6 +3440,19 @@ test("chat bridge preserves Profile validation fields in safe command errors", a
     await bridge.close();
   }
 });
+
+function withoutBridgeStateRevisions(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutBridgeStateRevisions);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, entry]) =>
+      key === "bridgeStateRevision" ||
+          key === "bridgeStateCoveredThroughRevision"
+        ? []
+        : [[key, withoutBridgeStateRevisions(entry)]]
+    ),
+  );
+}
 
 async function readSsePayload(
   response: Response,
@@ -2981,6 +3496,40 @@ async function readNextSsePayload(
           .find((line) => line.startsWith("data: "))
           ?.slice("data: ".length);
         if (data) return JSON.parse(data) as Record<string, unknown>;
+      }
+    }
+  } finally {
+    await reader.cancel();
+  }
+}
+
+async function readSsePayloadsThrough(
+  response: Response,
+  terminalType: string,
+): Promise<Record<string, unknown>[]> {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  const payloads: Record<string, unknown>[] = [];
+  let received = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        throw new Error(`Event stream ended before ${terminalType}.`);
+      }
+      received += NodeBuffer.from(chunk.value).toString("utf8");
+      for (;;) {
+        const boundary = received.indexOf("\n\n");
+        if (boundary < 0) break;
+        const block = received.slice(0, boundary);
+        received = received.slice(boundary + 2);
+        const data = block.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice("data: ".length);
+        if (!data) continue;
+        const payload = JSON.parse(data) as Record<string, unknown>;
+        payloads.push(payload);
+        if (payload.type === terminalType) return payloads;
       }
     }
   } finally {

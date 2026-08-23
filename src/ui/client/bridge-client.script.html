@@ -2,9 +2,19 @@
       window.LiveSmithFactories.createBridgeClient = function createBridgeClient({
         bridgeConfig,
         getState,
-        hostAdapter,
+        presentStatus,
         setState,
       }) {
+      const maximumDiscoveredModelCount = __MAX_DISCOVERED_MODEL_COUNT__;
+      const maximumDiscoveredModelIdCodePoints =
+        __MAX_DISCOVERED_MODEL_ID_CODE_POINTS__;
+      const maximumDiscoveredModelDisplayNameCodePoints =
+        __MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS__;
+      const maximumDiscoveredModelOutputTokens =
+        __MAX_DISCOVERED_MODEL_OUTPUT_TOKENS__;
+      if (!isWireChatBridgeState(getState())) {
+        throw new Error("Initial Live Smith state is invalid.");
+      }
       let view = null;
 
       function connectView(nextView) {
@@ -19,25 +29,11 @@
         return getState().activeSessionId;
       }
 
-      function createSendId() {
+      function createCorrelationId(prefix) {
         if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
           return globalThis.crypto.randomUUID();
         }
-        return `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      }
-
-      function createSteerId() {
-        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
-          return globalThis.crypto.randomUUID();
-        }
-        return `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      }
-
-      function createCommandId() {
-        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
-          return globalThis.crypto.randomUUID();
-        }
-        return `command-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       }
 
       function isActiveSendPayload(payload) {
@@ -56,17 +52,24 @@
       const composerDraftRevisionsBySession = new Map();
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
+      const approvalModePatchRevisionsBySession = new Map();
+      const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
       const pausedFollowUpSessions = new Set();
       const failedSendRecoveriesBySession = new Map();
+      const sessionStateCollections = [
+        "sessions",
+        "previousSessions",
+        "archivedSessions",
+      ];
       let confirmedDefaultFollowUpBehavior = isDefaultFollowUpBehavior(
         getState().settings?.defaultFollowUpBehavior,
       )
         ? getState().settings.defaultFollowUpBehavior
         : "queue";
       let confirmedDefaultFollowUpBehaviorRevision =
-        isDefaultFollowUpBehaviorRevision(
+        isDecimalRevision(
           getState().settings?.defaultFollowUpBehaviorRevision,
         )
           ? getState().settings.defaultFollowUpBehaviorRevision
@@ -80,11 +83,380 @@
       let retainedCanceledFollowUpCount = 0;
       let activeCommandAttempt = null;
       let nextComposerDraftRevision = 1;
-      const commandSseReconciliationTimeoutMs = 5000;
+      const sseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
 
       function activeSendAttempt() {
         return sendAttemptsBySession.get(activeSessionId()) || null;
+      }
+
+      function clearConfirmationResolution(sessionId) {
+        const resolution = confirmationResolutionsBySession.get(sessionId);
+        confirmationResolutionsBySession.delete(sessionId);
+        resolution?.resolveOutcomeWait?.();
+      }
+
+      function sessionStateEntry(state, sessionId) {
+        for (const collection of sessionStateCollections) {
+          const session = state?.[collection]?.find(
+            (entry) => entry.id === sessionId,
+          );
+          if (session) return { collection, session };
+        }
+        return null;
+      }
+
+      function sessionStateIds(state) {
+        const sessionIds = new Set();
+        for (const collection of sessionStateCollections) {
+          for (const session of state?.[collection] || []) {
+            if (typeof session?.id === "string") sessionIds.add(session.id);
+          }
+        }
+        return sessionIds;
+      }
+
+      function sameJsonValue(left, right) {
+        return JSON.stringify(left) === JSON.stringify(right);
+      }
+
+      function captureCausalState() {
+        const state = getState();
+        return JSON.parse(JSON.stringify({
+          sessions: state.sessions,
+          previousSessions: state.previousSessions,
+          archivedSessions: state.archivedSessions,
+          bridgeStateRevision: state.bridgeStateRevision,
+          bridgeStateCoveredThroughRevision:
+            state.bridgeStateCoveredThroughRevision,
+          activeSessionId: state.activeSessionId,
+          events: state.events,
+          pendingAttachments: state.pendingAttachments,
+          contextSummary: state.contextSummary,
+          sessionContinueTarget: state.sessionContinueTarget,
+          sessionActivities: state.sessionActivities,
+          status: state.status,
+        }));
+      }
+
+      function mergeChangedEntries(
+        currentEntries,
+        authoritativeEntries,
+        key,
+        authoritativeOwnedIds,
+      ) {
+        const currentById = new Map(
+          (currentEntries || []).map((entry) => [entry[key], entry]),
+        );
+        const authoritativeById = new Map(
+          (authoritativeEntries || []).map((entry) => [entry[key], entry]),
+        );
+        const orderedIds = [
+          ...authoritativeById.keys(),
+          ...[...currentById.keys()].filter(
+            (id) => !authoritativeById.has(id),
+          ),
+        ];
+        const merged = [];
+        for (const id of orderedIds) {
+          const current = currentById.get(id);
+          const authoritative = authoritativeById.get(id);
+          const useAuthoritative = authoritativeOwnedIds?.has(id) === true;
+          const selected = useAuthoritative
+            ? authoritative
+            : current;
+          if (selected) merged.push(selected);
+        }
+        return merged;
+      }
+
+      function mergeImmutableEntries(currentEntries, authoritativeEntries, key) {
+        const currentById = new Map(
+          (currentEntries || []).map((entry) => [entry[key], entry]),
+        );
+        const merged = [];
+        const authoritativeIds = new Set();
+        for (const authoritative of authoritativeEntries || []) {
+          const id = authoritative[key];
+          authoritativeIds.add(id);
+          const current = currentById.get(id);
+          merged.push(
+            current && !sameJsonValue(current, authoritative)
+              ? current
+              : authoritative,
+          );
+        }
+        for (const current of currentEntries || []) {
+          if (!authoritativeIds.has(current[key])) merged.push(current);
+        }
+        return merged;
+      }
+
+      function mergeSessionActivities(
+        currentEntries,
+        authoritativeEntries,
+        attempt,
+        incomingCoveredThroughRevision,
+      ) {
+        const currentById = new Map(
+          (currentEntries || []).map((entry) => [entry.sessionId, entry]),
+        );
+        const authoritativeById = new Map(
+          (authoritativeEntries || []).map((entry) => [entry.sessionId, entry]),
+        );
+        const orderedIds = [
+          ...authoritativeById.keys(),
+          ...[...currentById.keys()].filter(
+            (sessionId) => !authoritativeById.has(sessionId),
+          ),
+        ];
+        const merged = [];
+        for (const sessionId of orderedIds) {
+          const useAuthoritative =
+            attempt.ownedSessionActivityIds?.has(sessionId) === true ||
+            compareDecimalRevisions(
+              activityProjectionRevisionsBySession.get(sessionId) || "0",
+              incomingCoveredThroughRevision,
+            ) < 0;
+          const selected = useAuthoritative
+            ? authoritativeById.get(sessionId)
+            : currentById.get(sessionId);
+          if (selected) merged.push(selected);
+        }
+        return merged.map((entry) => {
+          const fields = attempt.ownedSessionActivityFields?.get(entry.sessionId);
+          const authoritative = authoritativeById.get(entry.sessionId);
+          if (!fields || !authoritative) return entry;
+          const updated = { ...entry };
+          for (const field of fields) {
+            if (Object.prototype.hasOwnProperty.call(authoritative, field)) {
+              updated[field] = authoritative[field];
+            } else {
+              delete updated[field];
+            }
+          }
+          return updated;
+        });
+      }
+
+      function captureOwnedPendingAttachmentAdditions(attempt, state) {
+        if (
+          !attempt ||
+          !["attachment", "attach_selected_audio_source"].includes(attempt.kind)
+        ) return;
+        const baselineIds = new Set(
+          attempt.causalStateSnapshot.pendingAttachments.map(
+            (attachment) => attachment.id,
+          ),
+        );
+        for (const attachment of state.pendingAttachments || []) {
+          if (!baselineIds.has(attachment.id)) {
+            attempt.ownedPendingAttachmentIds ??= new Set();
+            attempt.ownedPendingAttachmentIds.add(attachment.id);
+          }
+        }
+      }
+
+      function mergeChangedSessionState(
+        baseline,
+        current,
+        authoritative,
+        authoritativeMembershipOwned,
+        authoritativeOwnedFields,
+        sessionId,
+        incomingCoveredThroughRevision,
+      ) {
+        const currentMembershipChanged =
+          (current?.collection || null) !== (baseline?.collection || null);
+        const selected = authoritativeMembershipOwned || !currentMembershipChanged
+          ? authoritative
+          : current;
+        if (!selected) return null;
+        if (!current || !authoritative) return selected;
+        const session = {};
+        const keys = new Set([
+          ...Object.keys(baseline?.session || {}),
+          ...Object.keys(current.session),
+          ...Object.keys(authoritative.session),
+        ]);
+        for (const key of keys) {
+          const approvalPatchOrder = key === "approvalMode"
+            ? compareDecimalRevisions(
+              approvalModePatchRevisionsBySession.get(sessionId) || "0",
+              incomingCoveredThroughRevision,
+            )
+            : null;
+          const currentFieldChanged = !sameJsonValue(
+            current.session[key],
+            baseline?.session?.[key],
+          );
+          const useAuthoritative = approvalPatchOrder !== null
+            ? authoritativeOwnedFields?.has(key)
+              ? approvalPatchOrder <= 0
+              : approvalPatchOrder < 0 || !currentFieldChanged
+            : authoritativeOwnedFields?.has(key) || !currentFieldChanged;
+          const source = useAuthoritative
+            ? authoritative.session
+            : current.session;
+          if (Object.prototype.hasOwnProperty.call(source, key)) {
+            session[key] = source[key];
+          }
+        }
+        return { collection: selected.collection, session };
+      }
+
+      function preserveNewerCausalState(state, attempt) {
+        const baseline = attempt.causalStateSnapshot;
+        const current = getState();
+        const incomingCurrentRevisionOrder = compareDecimalRevisions(
+          state.bridgeStateRevision,
+          current.bridgeStateRevision,
+        );
+        const currentChangedSinceBaseline = compareDecimalRevisions(
+          current.bridgeStateRevision,
+          baseline.bridgeStateRevision,
+        ) !== 0 || compareDecimalRevisions(
+          current.bridgeStateCoveredThroughRevision,
+          baseline.bridgeStateCoveredThroughRevision,
+        ) !== 0;
+        if (!currentChangedSinceBaseline) return state;
+        const protectedSessionIds = new Set(
+          [
+            ...sessionStateIds(baseline),
+            ...sessionStateIds(current),
+            ...sessionStateIds(state),
+          ],
+        );
+        const merged = !attempt.ownsGlobalState
+          ? { ...current }
+          : { ...state };
+        if (attempt.ownsAvailableSkills) {
+          merged.availableSkills = state.availableSkills;
+        }
+        if (!attempt.ownsGlobalState && sameJsonValue(current.status, baseline.status)) {
+          merged.status = state.status;
+        }
+        if (protectedSessionIds.size > 0) {
+          const protectedEntries = new Map();
+          for (const sessionId of protectedSessionIds) {
+            const baselineEntry = sessionStateEntry(baseline, sessionId);
+            const authoritativeEntry = sessionStateEntry(state, sessionId);
+            const authoritativeMembershipOwned =
+              attempt.ownedSessionMembershipIds?.has(sessionId) === true ||
+              attempt.ownsAuthoritativeSessionAdditions === true &&
+                !baselineEntry && Boolean(authoritativeEntry);
+            protectedEntries.set(sessionId, mergeChangedSessionState(
+              baselineEntry,
+              sessionStateEntry(current, sessionId),
+              authoritativeEntry,
+              authoritativeMembershipOwned,
+              attempt.ownedSessionFields?.get(sessionId),
+              sessionId,
+              state.bridgeStateCoveredThroughRevision,
+            ));
+          }
+          for (const collection of sessionStateCollections) {
+            const retained = state[collection].filter(
+              (session) => !protectedSessionIds.has(session.id),
+            );
+            for (const [sessionId, protectedEntry] of protectedEntries) {
+              if (protectedEntry?.collection !== collection) continue;
+              const currentIndex = current[collection].findIndex(
+                (session) => session.id === sessionId,
+              );
+              const authoritativeIndex = state[collection].findIndex(
+                (session) => session.id === sessionId,
+              );
+              const index = currentIndex >= 0
+                ? currentIndex
+                : authoritativeIndex >= 0
+                  ? authoritativeIndex
+                  : retained.length;
+              retained.splice(
+                Math.min(index, retained.length),
+                0,
+                protectedEntry.session,
+              );
+            }
+            merged[collection] = retained;
+          }
+        }
+
+        const authoritativeOwnsSelection =
+          attempt.ownsActiveSessionSelection === true;
+        const currentActiveContextChanged =
+          current.activeSessionId !== baseline.activeSessionId ||
+          !sameJsonValue(
+            {
+              contextSummary: current.contextSummary,
+              sessionContinueTarget: current.sessionContinueTarget,
+            },
+            {
+              contextSummary: baseline.contextSummary,
+              sessionContinueTarget: baseline.sessionContinueTarget,
+            },
+          );
+        if (authoritativeOwnsSelection) {
+          merged.activeSessionId = state.activeSessionId;
+          merged.events = state.events;
+          merged.pendingAttachments = state.pendingAttachments;
+          merged.contextSummary = state.contextSummary;
+          merged.sessionContinueTarget = state.sessionContinueTarget;
+        } else {
+          merged.activeSessionId = current.activeSessionId;
+          merged.events = current.events;
+          merged.pendingAttachments = current.pendingAttachments;
+          merged.contextSummary = current.contextSummary;
+          merged.sessionContinueTarget = current.sessionContinueTarget;
+        }
+        if (
+          state.activeSessionId === merged.activeSessionId &&
+          current.activeSessionId === merged.activeSessionId
+        ) {
+          merged.events = mergeImmutableEntries(
+            current.events,
+            state.events,
+            "id",
+          );
+          merged.pendingAttachments = mergeChangedEntries(
+            current.pendingAttachments,
+            state.pendingAttachments,
+            "id",
+            attempt.ownedPendingAttachmentIds,
+          );
+          if (
+            attempt.ownedActiveContextSessionId === merged.activeSessionId ||
+            !currentActiveContextChanged
+          ) {
+            merged.contextSummary = state.contextSummary;
+            merged.sessionContinueTarget = state.sessionContinueTarget;
+          }
+        }
+        if (
+          Array.isArray(baseline.sessionActivities) ||
+          Array.isArray(current.sessionActivities) ||
+          Array.isArray(state.sessionActivities)
+        ) {
+          merged.sessionActivities = mergeSessionActivities(
+            current.sessionActivities,
+            state.sessionActivities,
+            attempt,
+            state.bridgeStateCoveredThroughRevision,
+          );
+        }
+        merged.bridgeStateRevision = incomingCurrentRevisionOrder > 0
+          ? state.bridgeStateRevision
+          : current.bridgeStateRevision;
+        merged.bridgeStateCoveredThroughRevision = maxDecimalRevision(
+          state.bridgeStateCoveredThroughRevision,
+          current.bridgeStateCoveredThroughRevision,
+        );
+        const activeSession = merged.sessions.find(
+          (session) => session.id === merged.activeSessionId,
+        );
+        merged.approvalMode = activeSession?.approvalMode || "manual";
+        merged.activeSkillIds = [...(activeSession?.activeSkillIds || [])];
+        return merged;
       }
 
       function subscriptionSendGateMessage() {
@@ -112,14 +484,1342 @@
         return value === "queue" || value === "steer";
       }
 
-      function isDefaultFollowUpBehaviorRevision(value) {
+      function isDecimalRevision(value) {
         return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
       }
 
-      function compareDefaultFollowUpBehaviorRevisions(left, right) {
+      function compareDecimalRevisions(left, right) {
         if (left.length !== right.length) return left.length < right.length ? -1 : 1;
         if (left === right) return 0;
         return left < right ? -1 : 1;
+      }
+
+      function maxDecimalRevision(left, right) {
+        return compareDecimalRevisions(left, right) >= 0 ? left : right;
+      }
+
+      function recordProjectionRevision(revisionsBySession, sessionId, revision) {
+        revisionsBySession.set(
+          sessionId,
+          maxDecimalRevision(
+            revisionsBySession.get(sessionId) || "0",
+            revision,
+          ),
+        );
+      }
+
+      function recordAttemptOwnedActivityRevisions(attempt, state) {
+        if (!attempt) return;
+        const sessionIds = new Set([
+          ...(attempt.ownedSessionActivityIds || []),
+          ...(attempt.ownedSessionActivityFields?.keys() || []),
+        ]);
+        for (const sessionId of sessionIds) {
+          recordProjectionRevision(
+            activityProjectionRevisionsBySession,
+            sessionId,
+            state.bridgeStateRevision,
+          );
+        }
+      }
+
+      function recordFullStateProjectionCoverage(state) {
+        for (const sessionId of sessionStateIds(state)) {
+          recordProjectionRevision(
+            approvalModePatchRevisionsBySession,
+            sessionId,
+            state.bridgeStateCoveredThroughRevision,
+          );
+          recordProjectionRevision(
+            activityProjectionRevisionsBySession,
+            sessionId,
+            state.bridgeStateCoveredThroughRevision,
+          );
+        }
+      }
+
+      function recordSessionProjectionCoverage(state, sessionId) {
+        recordProjectionRevision(
+          approvalModePatchRevisionsBySession,
+          sessionId,
+          state.bridgeStateCoveredThroughRevision,
+        );
+        recordProjectionRevision(
+          activityProjectionRevisionsBySession,
+          sessionId,
+          state.bridgeStateCoveredThroughRevision,
+        );
+      }
+
+      function reconcileAttemptProgressFromActivities(state) {
+        for (const [sessionId, attempt] of sendAttemptsBySession) {
+          if (attempt.awaitingStopTerminal) continue;
+          const activity = (state.sessionActivities || []).find(
+            (entry) => entry.sessionId === sessionId,
+          );
+          if (!activity?.message) continue;
+          attempt.progress = activity.message;
+          attempt.progressIsError = activity.status === "failed";
+        }
+      }
+
+      function receiveStateChangeRevision(payload) {
+        const revision = payload?.bridgeStateRevision;
+        if (!isDecimalRevision(revision)) return null;
+        const state = getState();
+        const covered = compareDecimalRevisions(
+          revision,
+          state.bridgeStateCoveredThroughRevision,
+        ) <= 0;
+        state.bridgeStateRevision = maxDecimalRevision(
+          state.bridgeStateRevision,
+          revision,
+        );
+        return { covered, revision };
+      }
+
+      function projectionRevisionIsCovered(
+        revisionsBySession,
+        sessionId,
+        received,
+      ) {
+        return received.covered || compareDecimalRevisions(
+          received.revision,
+          revisionsBySession.get(sessionId) || "0",
+        ) <= 0;
+      }
+
+      function stateChangeActivity(payload, required) {
+        const activity = payload?.activity;
+        if (activity === undefined) return required ? null : undefined;
+        if (
+          !isWireRecord(activity) ||
+          !hasOnlyWireKeys(activity, ["status", "message"]) ||
+          ![
+            "running",
+            "waiting_confirmation",
+            "completed",
+            "failed",
+            "stopped",
+          ].includes(activity.status) ||
+          typeof activity.message !== "string"
+        ) return null;
+        return activity;
+      }
+
+      function isWireRecord(value) {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+      }
+
+      function hasOnlyWireKeys(value, allowedKeys) {
+        const allowed = new Set(allowedKeys);
+        return Object.keys(value).every((key) => allowed.has(key));
+      }
+
+      function isWireStorageId(value) {
+        return typeof value === "string" &&
+          /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+      }
+
+      function isWireCorrelationId(value) {
+        return typeof value === "string" &&
+          /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+      }
+
+      function wireUtf8ByteLength(value) {
+        let byteLength = 0;
+        for (const character of value) {
+          const codePoint = character.codePointAt(0);
+          byteLength += codePoint <= 0x7f
+            ? 1
+            : codePoint <= 0x7ff
+              ? 2
+              : codePoint <= 0xffff
+                ? 3
+                : 4;
+        }
+        return byteLength;
+      }
+
+      function isWireActionDiffGroups(value) {
+        return Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((group) =>
+            isWireRecord(group) &&
+            hasOnlyWireKeys(group, ["title", "rows"]) &&
+            typeof group.title === "string" &&
+            Boolean(group.title) &&
+            Array.isArray(group.rows) &&
+            group.rows.length > 0 &&
+            group.rows.every((row) =>
+              typeof row === "string" &&
+              Boolean(row)
+            )
+          );
+      }
+
+      function wireActionDiffGroupsEqual(left, right) {
+        return left.length === right.length && left.every((group, groupIndex) => {
+          const candidate = right[groupIndex];
+          return group.title === candidate.title &&
+            group.rows.length === candidate.rows.length &&
+            group.rows.every((row, rowIndex) => row === candidate.rows[rowIndex]);
+        });
+      }
+
+      function isWireCitation(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["url", "title"]) ||
+          typeof value.url !== "string" ||
+          wireUtf8ByteLength(value.url) > 2048 ||
+          typeof value.title !== "string" ||
+          value.title !== value.title.trim() ||
+          !value.title ||
+          [...value.title].length > 256 ||
+          /[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(value.title)
+        ) return false;
+        try {
+          const parsed = new URL(value.url);
+          return ["http:", "https:"].includes(parsed.protocol) &&
+            !parsed.username &&
+            !parsed.password &&
+            parsed.href === value.url;
+        } catch {
+          return false;
+        }
+      }
+
+      function isWireCitations(value, allowEmpty) {
+        return Array.isArray(value) &&
+          (allowEmpty || value.length > 0) &&
+          value.length <= 20 &&
+          value.every(isWireCitation) &&
+          new Set(value.map((citation) => citation.url)).size === value.length;
+      }
+
+      function isWireWebSearch(value, allowSearching) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["id", "status", "action", "queries", "sources"]) ||
+          !isWireCorrelationId(value.id) ||
+          ![
+            ...(allowSearching ? ["searching"] : []),
+            "completed",
+            "failed",
+          ].includes(value.status) ||
+          !["search", "open_page", "find_in_page"].includes(value.action) ||
+          !Array.isArray(value.queries) ||
+          value.queries.length > 8 ||
+          !value.queries.every((query) =>
+            typeof query === "string" &&
+            query === query.trim() &&
+            Boolean(query) &&
+            [...query].length <= 512 &&
+            !/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(query)
+          ) ||
+          new Set(value.queries).size !== value.queries.length ||
+          !isWireCitations(value.sources, true) ||
+          (value.status === "failed" && value.sources.length !== 0)
+        ) return false;
+        return true;
+      }
+
+      function isWireSessionAttachment(value) {
+        if (
+          !isWireRecord(value) ||
+          !isWireStorageId(value.id) ||
+          !["image", "document", "audio"].includes(value.kind) ||
+          !isWireAttachmentDisplayFileName(value.fileName) ||
+          !Number.isInteger(value.byteLength) ||
+          value.byteLength <= 0 ||
+          typeof value.sha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(value.sha256)
+        ) return false;
+        const commonKeys = [
+          "id",
+          "kind",
+          "fileName",
+          "mediaType",
+          "byteLength",
+          "sha256",
+        ];
+        if (value.kind === "image") {
+          return hasOnlyWireKeys(value, commonKeys) &&
+            ["image/png", "image/jpeg", "image/webp"].includes(value.mediaType) &&
+            value.byteLength <= __MAX_IMAGE_ATTACHMENT_BYTES__;
+        }
+        if (value.kind === "document") {
+          return hasOnlyWireKeys(value, commonKeys) &&
+            [
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ].includes(value.mediaType) &&
+            value.byteLength <= __MAX_DOCUMENT_ATTACHMENT_BYTES__;
+        }
+        return hasOnlyWireKeys(value, [
+          ...commonKeys,
+          "durationSeconds",
+          "sampleRate",
+          "channels",
+        ]) &&
+          ["audio/wav", "audio/mpeg"].includes(value.mediaType) &&
+          value.byteLength <= __MAX_AUDIO_ATTACHMENT_BYTES__ &&
+          Number.isFinite(value.durationSeconds) &&
+          value.durationSeconds > 0 &&
+          value.durationSeconds <= __MAX_AUDIO_DURATION_SECONDS__ &&
+          Number.isInteger(value.sampleRate) &&
+          (value.mediaType === "audio/mpeg"
+            ? [16_000, 22_050, 24_000, 32_000, 44_100, 48_000]
+              .includes(value.sampleRate)
+            : value.sampleRate >= 8_000 && value.sampleRate <= 192_000) &&
+          Number.isInteger(value.channels) &&
+          value.channels >= 1 &&
+          value.channels <= (value.mediaType === "audio/mpeg" ? 2 : 8);
+      }
+
+      function isWireAttachmentDisplayFileName(value) {
+        return typeof value === "string" &&
+          Boolean(value) &&
+          value.length <= __MAX_ATTACHMENT_FILE_NAME_BYTES__ &&
+          wireUtf8ByteLength(value) <= __MAX_ATTACHMENT_FILE_NAME_BYTES__ &&
+          value === value.normalize("NFC") &&
+          value === value.replaceAll("\\", "/").split("/").at(-1) &&
+          !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u
+            .test(value);
+      }
+
+      function isWireSessionAttachments(value) {
+        if (
+          !Array.isArray(value) ||
+          value.length === 0 ||
+          value.length > __MAX_PENDING_ATTACHMENT_COUNT__ ||
+          !value.every(isWireSessionAttachment) ||
+          new Set(value.map((attachment) => attachment.id)).size !== value.length
+        ) return false;
+        const totalBytes = value.reduce(
+          (total, attachment) => total + attachment.byteLength,
+          0,
+        );
+        const imageBytes = value
+          .filter((attachment) => attachment.kind === "image")
+          .reduce((total, attachment) => total + attachment.byteLength, 0);
+        const documentBytes = value
+          .filter((attachment) => attachment.kind === "document")
+          .reduce((total, attachment) => total + attachment.byteLength, 0);
+        const audio = value.filter((attachment) => attachment.kind === "audio");
+        const audioBytes = audio.reduce(
+          (total, attachment) => total + attachment.byteLength,
+          0,
+        );
+        return totalBytes <= __MAX_PENDING_TOTAL_ATTACHMENT_BYTES__ &&
+          imageBytes <= __MAX_PENDING_IMAGE_ATTACHMENT_BYTES__ &&
+          documentBytes <= __MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES__ &&
+          audioBytes <= __MAX_PENDING_AUDIO_ATTACHMENT_BYTES__ &&
+          audio.length <= __MAX_PENDING_AUDIO_ATTACHMENT_COUNT__;
+      }
+
+      function isWireLegacySessionAttachment(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "id",
+            "kind",
+            "fileName",
+            "mediaType",
+            "byteLength",
+            "sha256",
+          ]) ||
+          Object.keys(value).length !== 6 ||
+          !isWireStorageId(value.id) ||
+          !["image", "document", "audio"].includes(value.kind) ||
+          !isWireAttachmentDisplayFileName(value.fileName) ||
+          !Number.isInteger(value.byteLength) ||
+          value.byteLength <= 0 ||
+          value.byteLength > __MAX_IMAGE_ATTACHMENT_BYTES__ ||
+          typeof value.sha256 !== "string" ||
+          !/^[a-f0-9]{64}$/.test(value.sha256)
+        ) return false;
+        if (value.kind === "image") {
+          return ["image/png", "image/jpeg", "image/webp"]
+            .includes(value.mediaType);
+        }
+        if (value.kind === "audio") {
+          return ["audio/wav", "audio/mpeg"].includes(value.mediaType);
+        }
+        return [
+          "application/pdf",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ].includes(value.mediaType);
+      }
+
+      function isWireLegacySessionAttachments(value) {
+        return Array.isArray(value) &&
+          value.length > 0 &&
+          value.length <= __MAX_PENDING_ATTACHMENT_COUNT__ &&
+          value.every(isWireLegacySessionAttachment) &&
+          new Set(value.map((attachment) => attachment.id)).size === value.length &&
+          value.reduce(
+            (total, attachment) => total + attachment.byteLength,
+            0,
+          ) <= __MAX_PENDING_IMAGE_ATTACHMENT_BYTES__;
+      }
+
+      function isWireRecovery(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["active", "completedActionDigests"]) ||
+          typeof value.active !== "boolean" ||
+          !Array.isArray(value.completedActionDigests) ||
+          value.completedActionDigests.length > 4096 ||
+          !value.completedActionDigests.every(
+            (digest) => typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
+          ) ||
+          new Set(value.completedActionDigests).size !==
+            value.completedActionDigests.length
+        ) return false;
+        return value.active || value.completedActionDigests.length === 0;
+      }
+
+      function isWireSteeringAck(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["sendId", "steerId"]) &&
+          isWireCorrelationId(value.sendId) &&
+          isWireCorrelationId(value.steerId);
+      }
+
+      function isWireSessionEvent(value, attachmentPolicy = "current") {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "id",
+            "createdAt",
+            "kind",
+            "content",
+            "name",
+            "recovery",
+            "attachments",
+            "citations",
+            "webSearch",
+            "steeringAck",
+          ]) ||
+          !isWireStorageId(value.id) ||
+          typeof value.createdAt !== "string" ||
+          ![
+            "user",
+            "assistant",
+            "web_search",
+            "tool_call",
+            "tool_result",
+            "apply_requested",
+            "apply_auto_approved",
+            "apply_result",
+            "error",
+          ].includes(value.kind) ||
+          typeof value.content !== "string" ||
+          (value.name !== undefined && typeof value.name !== "string") ||
+          (value.attachments !== undefined && (
+            value.kind !== "user" ||
+            !isWireSessionAttachments(value.attachments) &&
+              (
+                attachmentPolicy !== "persisted" ||
+                !isWireLegacySessionAttachments(value.attachments)
+              )
+          )) ||
+          (value.citations !== undefined && (
+            value.kind !== "assistant" ||
+            !isWireCitations(value.citations, false)
+          )) ||
+          (value.recovery !== undefined && (
+            value.kind !== "apply_result" ||
+            !isWireRecovery(value.recovery)
+          )) ||
+          (value.steeringAck !== undefined && (
+            value.kind !== "user" ||
+            value.name !== undefined ||
+            value.attachments !== undefined ||
+            !isWireSteeringAck(value.steeringAck)
+          ))
+        ) return false;
+        return value.kind === "web_search"
+          ? isWireWebSearch(value.webSearch, false)
+          : value.webSearch === undefined;
+      }
+
+      function isWireApprovalMode(value) {
+        return ["manual", "low-risk", "everything"].includes(value);
+      }
+
+      function isWireConversationScope(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["kind", "identity", "label"]) &&
+          ["track", "clip", "object", "selection"].includes(value.kind) &&
+          typeof value.identity === "string" &&
+          typeof value.label === "string";
+      }
+
+      function isWireSkillId(value) {
+        return typeof value === "string" &&
+          /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) &&
+          value.length <= __MAX_SKILL_ID_LENGTH__;
+      }
+
+      function isWireSkillIds(value) {
+        return Array.isArray(value) &&
+          value.length <= __MAX_ACTIVE_SKILL_COUNT__ &&
+          value.every(isWireSkillId) &&
+          new Set(value).size === value.length;
+      }
+
+      function isWireAgentSession(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, [
+            "id",
+            "title",
+            "projectKey",
+            "scope",
+            "originScope",
+            "archivedAt",
+            "activeSkillIds",
+            "approvalMode",
+            "createdAt",
+            "updatedAt",
+          ]) &&
+          isWireStorageId(value.id) &&
+          typeof value.title === "string" &&
+          typeof value.projectKey === "string" &&
+          isWireConversationScope(value.scope) &&
+          (value.originScope === undefined ||
+            isWireConversationScope(value.originScope)) &&
+          (value.archivedAt === undefined || typeof value.archivedAt === "string") &&
+          (value.activeSkillIds === undefined ||
+            isWireSkillIds(value.activeSkillIds)) &&
+          (value.approvalMode === undefined ||
+            isWireApprovalMode(value.approvalMode)) &&
+          typeof value.createdAt === "string" &&
+          typeof value.updatedAt === "string";
+      }
+
+      function isWireReasoningEffort(value) {
+        return [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra",
+        ].includes(value);
+      }
+
+      function isWireReasoningCapabilities(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, [
+            "supported",
+            "canDisable",
+            "efforts",
+            "budgetTokens",
+            "strategy",
+          ]) &&
+          typeof value.supported === "boolean" &&
+          typeof value.canDisable === "boolean" &&
+          Array.isArray(value.efforts) &&
+          value.efforts.every(isWireReasoningEffort) &&
+          new Set(value.efforts).size === value.efforts.length &&
+          typeof value.budgetTokens === "boolean" &&
+          [
+            "effort",
+            "adaptive-thinking",
+            "budget-thinking",
+            "none",
+          ].includes(value.strategy);
+      }
+
+      function isWireInputCapabilities(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["image", "audio", "pdf"]) &&
+          typeof value.image === "boolean" &&
+          typeof value.audio === "boolean" &&
+          typeof value.pdf === "boolean";
+      }
+
+      function isWireModelCapabilities(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, [
+            "tools",
+            "streaming",
+            "temperature",
+            "maxOutputTokens",
+            "reasoning",
+            "inputs",
+          ]) &&
+          typeof value.tools === "boolean" &&
+          typeof value.streaming === "boolean" &&
+          ["supported", "unsupported"].includes(value.temperature) &&
+          (value.maxOutputTokens === undefined ||
+            Number.isInteger(value.maxOutputTokens) &&
+              value.maxOutputTokens > 0 &&
+              value.maxOutputTokens <= maximumDiscoveredModelOutputTokens) &&
+          isWireReasoningCapabilities(value.reasoning) &&
+          isWireInputCapabilities(value.inputs);
+      }
+
+      function isWireInputCapabilityEvidence(value) {
+        const allowed = ["supported", "unsupported", "unverified"];
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["image", "audio", "pdf"]) &&
+          allowed.includes(value.image) &&
+          allowed.includes(value.audio) &&
+          allowed.includes(value.pdf);
+      }
+
+      function isWireCapabilityOverrides(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "tools",
+            "streaming",
+            "temperature",
+            "maxOutputTokens",
+            "reasoning",
+            "inputs",
+          ]) ||
+          (value.tools !== undefined && typeof value.tools !== "boolean") ||
+          (value.streaming !== undefined && typeof value.streaming !== "boolean") ||
+          (value.temperature !== undefined &&
+            !["supported", "unsupported"].includes(value.temperature)) ||
+          (value.maxOutputTokens !== undefined &&
+            (!Number.isInteger(value.maxOutputTokens) ||
+              value.maxOutputTokens <= 0 ||
+              value.maxOutputTokens > maximumDiscoveredModelOutputTokens))
+        ) return false;
+        if (value.reasoning !== undefined) {
+          const reasoning = value.reasoning;
+          if (
+            !isWireRecord(reasoning) ||
+            !hasOnlyWireKeys(reasoning, [
+              "supported",
+              "canDisable",
+              "efforts",
+              "budgetTokens",
+              "strategy",
+            ]) ||
+            (reasoning.supported !== undefined &&
+              typeof reasoning.supported !== "boolean") ||
+            (reasoning.canDisable !== undefined &&
+              typeof reasoning.canDisable !== "boolean") ||
+            (reasoning.efforts !== undefined && (
+              !Array.isArray(reasoning.efforts) ||
+              !reasoning.efforts.every(isWireReasoningEffort) ||
+              new Set(reasoning.efforts).size !== reasoning.efforts.length
+            )) ||
+            (reasoning.budgetTokens !== undefined &&
+              typeof reasoning.budgetTokens !== "boolean") ||
+            (reasoning.strategy !== undefined &&
+              ![
+                "effort",
+                "adaptive-thinking",
+                "budget-thinking",
+                "none",
+              ].includes(reasoning.strategy))
+          ) return false;
+        }
+        if (value.inputs !== undefined) {
+          const inputs = value.inputs;
+          if (
+            !isWireRecord(inputs) ||
+            !hasOnlyWireKeys(inputs, ["image", "audio", "pdf"]) ||
+            ["image", "audio", "pdf"].some(
+              (key) => inputs[key] !== undefined && typeof inputs[key] !== "boolean",
+            )
+          ) return false;
+        }
+        return true;
+      }
+
+      function isWireProfileReasoning(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["mode", "effort", "budgetTokens"]) &&
+          ["default", "disabled", "enabled"].includes(value.mode) &&
+          (value.effort === undefined || isWireReasoningEffort(value.effort)) &&
+          (value.budgetTokens === undefined ||
+            Number.isInteger(value.budgetTokens) &&
+              value.budgetTokens > 0 &&
+              value.budgetTokens <= maximumDiscoveredModelOutputTokens);
+      }
+
+      function isWireModelConnection(value) {
+        if (!isWireRecord(value)) return false;
+        if (value.kind === "codex-subscription") {
+          return hasOnlyWireKeys(value, ["kind", "provider"]) &&
+            value.provider === "openai";
+        }
+        return value.kind === "direct-api" &&
+          hasOnlyWireKeys(value, [
+            "kind",
+            "apiFamily",
+            "apiMode",
+            "baseUrl",
+            "apiKey",
+          ]) &&
+          (
+            value.apiFamily === "openai" &&
+              ["responses", "chat-completions"].includes(value.apiMode) ||
+            value.apiFamily === "anthropic" && value.apiMode === "messages"
+          ) &&
+          typeof value.baseUrl === "string" &&
+          typeof value.apiKey === "string";
+      }
+
+      function isWireSavedProfile(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "id",
+            "name",
+            "connection",
+            "model",
+            "parameters",
+            "advanced",
+          ]) ||
+          !isWireStorageId(value.id) ||
+          typeof value.name !== "string" ||
+          typeof value.model !== "string" ||
+          !isWireModelConnection(value.connection) ||
+          !isWireRecord(value.parameters) ||
+          !isWireProfileReasoning(value.parameters.reasoning) ||
+          !isWireRecord(value.advanced)
+        ) return false;
+        if (value.connection.kind === "codex-subscription") {
+          return hasOnlyWireKeys(value.parameters, ["reasoning"]) &&
+            hasOnlyWireKeys(value.advanced, []);
+        }
+        if (
+          !hasOnlyWireKeys(value.parameters, [
+            "maxOutputTokens",
+            "temperature",
+            "reasoning",
+          ]) ||
+          !Number.isInteger(value.parameters.maxOutputTokens) ||
+          value.parameters.maxOutputTokens <= 0 ||
+          value.parameters.maxOutputTokens > maximumDiscoveredModelOutputTokens ||
+          (value.parameters.temperature !== undefined &&
+            !Number.isFinite(value.parameters.temperature)) ||
+          !hasOnlyWireKeys(value.advanced, [
+            "capabilityOverrides",
+            "hostedTools",
+            "extraBody",
+          ]) ||
+          (value.advanced.capabilityOverrides !== undefined &&
+            !isWireCapabilityOverrides(value.advanced.capabilityOverrides)) ||
+          (value.advanced.hostedTools !== undefined && (
+            !isWireRecord(value.advanced.hostedTools) ||
+            !hasOnlyWireKeys(value.advanced.hostedTools, ["webSearch"]) ||
+            value.advanced.hostedTools.webSearch !== true
+          )) ||
+          (value.advanced.extraBody !== undefined &&
+            !isWireRecord(value.advanced.extraBody))
+        ) return false;
+        return true;
+      }
+
+      function isWireAgentSettings(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "schemaVersion",
+            "activeProfileId",
+            "profiles",
+            "approvalMode",
+            "defaultFollowUpBehavior",
+            "defaultFollowUpBehaviorRevision",
+          ]) ||
+          value.schemaVersion !== 4 ||
+          !Array.isArray(value.profiles) ||
+          !value.profiles.every(isWireSavedProfile) ||
+          new Set(value.profiles.map((profile) => profile.id)).size !==
+            value.profiles.length ||
+          !isWireApprovalMode(value.approvalMode) ||
+          !isDefaultFollowUpBehavior(value.defaultFollowUpBehavior) ||
+          !isDecimalRevision(value.defaultFollowUpBehaviorRevision)
+        ) return false;
+        return value.activeProfileId === null ||
+          isWireStorageId(value.activeProfileId) &&
+            value.profiles.some((profile) => profile.id === value.activeProfileId);
+      }
+
+      function isWireModelInfo(value) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["id", "displayName", "capabilities"]) &&
+          isWireModelDisplayString(
+            value.id,
+            maximumDiscoveredModelIdCodePoints,
+          ) &&
+          isWireModelDisplayString(
+            value.displayName,
+            maximumDiscoveredModelDisplayNameCodePoints,
+          ) &&
+          isWireModelCapabilities(value.capabilities);
+      }
+
+      function isWireModelDisplayString(value, maximumCodePoints) {
+        return typeof value === "string" &&
+          Boolean(value) &&
+          value === value.trim() &&
+          wireCodePointLengthAtMost(value, maximumCodePoints) &&
+          !/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]/u.test(value);
+      }
+
+      function wireCodePointLengthAtMost(value, maximum) {
+        let count = 0;
+        for (const _character of value) {
+          count += 1;
+          if (count > maximum) return false;
+        }
+        return true;
+      }
+
+      function isWireModelStateSource(value) {
+        return value === null ||
+          isWireRecord(value) &&
+            hasOnlyWireKeys(value, ["profileId", "connection", "model"]) &&
+            isWireStorageId(value.profileId) &&
+            isWireModelConnection(value.connection) &&
+            typeof value.model === "string";
+      }
+
+      function isWireRuntimeProfile(value) {
+        if (value === null) return true;
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "profile",
+            "capabilities",
+            "inputCapabilityEvidence",
+          ]) ||
+          !isWireRecord(value.profile) ||
+          !hasOnlyWireKeys(value.profile, [
+            "id",
+            "name",
+            "connectionKind",
+            "apiFamily",
+            "apiMode",
+            "model",
+          ]) ||
+          !isWireStorageId(value.profile.id) ||
+          typeof value.profile.name !== "string" ||
+          typeof value.profile.model !== "string" ||
+          !isWireModelCapabilities(value.capabilities) ||
+          !isWireInputCapabilityEvidence(value.inputCapabilityEvidence)
+        ) return false;
+        return value.profile.connectionKind === "codex-subscription"
+          ? value.profile.apiFamily === "openai" && value.profile.apiMode === null
+          : value.profile.connectionKind === "direct-api" &&
+              (
+                value.profile.apiFamily === "openai" &&
+                  ["responses", "chat-completions"].includes(
+                    value.profile.apiMode,
+                  ) ||
+                value.profile.apiFamily === "anthropic" &&
+                  value.profile.apiMode === "messages"
+              );
+      }
+
+      function isWireManagedAuth(value) {
+        if (!isWireRecord(value) || typeof value.status !== "string") return false;
+        if (value.status === "signed-out") {
+          return hasOnlyWireKeys(value, ["status"]);
+        }
+        if (value.status === "unavailable") {
+          return hasOnlyWireKeys(value, ["status", "message", "definitive"]) &&
+            typeof value.message === "string" &&
+            (value.definitive === undefined || typeof value.definitive === "boolean");
+        }
+        if (value.status === "pending") {
+          return hasOnlyWireKeys(value, [
+            "status",
+            "verificationUrl",
+            "userCode",
+          ]) &&
+            typeof value.verificationUrl === "string" &&
+            typeof value.userCode === "string";
+        }
+        return value.status === "signed-in" &&
+          hasOnlyWireKeys(value, [
+            "status",
+            "accountLabel",
+            "planType",
+            "subscriptionEligible",
+          ]) &&
+          (value.accountLabel === null || typeof value.accountLabel === "string") &&
+          typeof value.planType === "string" &&
+          typeof value.subscriptionEligible === "boolean";
+      }
+
+      function isWireSessionActivity(value, sessionIds) {
+        return isWireRecord(value) &&
+          hasOnlyWireKeys(value, ["sessionId", "status", "message", "unread"]) &&
+          isWireStorageId(value.sessionId) &&
+          sessionIds.has(value.sessionId) &&
+          [
+            "running",
+            "waiting_confirmation",
+            "completed",
+            "failed",
+            "stopped",
+          ].includes(value.status) &&
+          (value.message === undefined || typeof value.message === "string") &&
+          typeof value.unread === "boolean";
+      }
+
+      function isWireChatBridgeState(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, [
+            "contextSummary",
+            "sessionContinueTarget",
+            "sessions",
+            "previousSessions",
+            "archivedSessions",
+            "activeSessionId",
+            "approvalMode",
+            "events",
+            "pendingAttachments",
+            "availableSkills",
+            "activeSkillIds",
+            "capabilities",
+            "availableModels",
+            "modelStateSource",
+            "runtimeProfile",
+            "settings",
+            "codexAuth",
+            "openSettingsOnLoad",
+            "status",
+            "sessionActivities",
+            "bridgeStateRevision",
+            "bridgeStateCoveredThroughRevision",
+          ]) ||
+          typeof value.contextSummary !== "string" ||
+          !isWireRecord(value.sessionContinueTarget) ||
+          !hasOnlyWireKeys(value.sessionContinueTarget, ["kind", "label"]) ||
+          !["track", "clip", "object", "selection"].includes(
+            value.sessionContinueTarget.kind,
+          ) ||
+          typeof value.sessionContinueTarget.label !== "string" ||
+          !Array.isArray(value.sessions) ||
+          !Array.isArray(value.previousSessions) ||
+          !Array.isArray(value.archivedSessions) ||
+          ![
+            ...value.sessions,
+            ...value.previousSessions,
+            ...value.archivedSessions,
+          ].every(isWireAgentSession) ||
+          !isWireStorageId(value.activeSessionId) ||
+          !isWireApprovalMode(value.approvalMode) ||
+          !Array.isArray(value.events) ||
+          !value.events.every((event) =>
+            isWireSessionEvent(event, "persisted")
+          ) ||
+          !Array.isArray(value.pendingAttachments) ||
+          !(
+            value.pendingAttachments.length === 0 ||
+            isWireSessionAttachments(value.pendingAttachments)
+          ) ||
+          !Array.isArray(value.availableSkills) ||
+          !value.availableSkills.every((skill) =>
+            isWireRecord(skill) &&
+            hasOnlyWireKeys(skill, ["id", "description"]) &&
+            isWireSkillId(skill.id) &&
+            typeof skill.description === "string"
+          ) ||
+          !isWireSkillIds(value.activeSkillIds) ||
+          !isWireModelCapabilities(value.capabilities) ||
+          !Array.isArray(value.availableModels) ||
+          value.availableModels.length > maximumDiscoveredModelCount ||
+          !value.availableModels.every(isWireModelInfo) ||
+          !isWireModelStateSource(value.modelStateSource) ||
+          !isWireRuntimeProfile(value.runtimeProfile) ||
+          !isWireAgentSettings(value.settings) ||
+          (value.codexAuth !== undefined && !isWireManagedAuth(value.codexAuth)) ||
+          typeof value.openSettingsOnLoad !== "boolean" ||
+          (value.status !== undefined && typeof value.status !== "string") ||
+          !isDecimalRevision(value.bridgeStateRevision) ||
+          !isDecimalRevision(value.bridgeStateCoveredThroughRevision) ||
+          compareDecimalRevisions(
+            value.bridgeStateCoveredThroughRevision,
+            value.bridgeStateRevision,
+          ) >= 0
+        ) return false;
+
+        const allSessions = [
+          ...value.sessions,
+          ...value.previousSessions,
+          ...value.archivedSessions,
+        ];
+        const allSessionIds = allSessions.map((session) => session.id);
+        if (new Set(allSessionIds).size !== allSessionIds.length) return false;
+        const activeSession = value.sessions.find(
+          (session) => session.id === value.activeSessionId,
+        );
+        if (!activeSession) return false;
+        if (
+          value.approvalMode !== (activeSession.approvalMode || "manual") ||
+          !sameJsonValue(
+            value.activeSkillIds,
+            activeSession.activeSkillIds || [],
+          )
+        ) return false;
+
+        if (
+          new Set(value.events.map((event) => event.id)).size !==
+            value.events.length
+        ) return false;
+        const consumedAttachmentIds = value.events.flatMap((event) =>
+          (event.attachments || []).map((attachment) => attachment.id)
+        );
+        if (
+          new Set(consumedAttachmentIds).size !== consumedAttachmentIds.length ||
+          value.pendingAttachments.some((attachment) =>
+            consumedAttachmentIds.includes(attachment.id)
+          )
+        ) return false;
+        const steeringAckIds = value.events.flatMap((event) =>
+          event.steeringAck
+            ? [`${event.steeringAck.sendId}\u0000${event.steeringAck.steerId}`]
+            : []
+        );
+        if (new Set(steeringAckIds).size !== steeringAckIds.length) return false;
+
+        const availableSkillIds = new Set(
+          value.availableSkills.map((skill) => skill.id),
+        );
+        if (
+          availableSkillIds.size !== value.availableSkills.length ||
+          !value.activeSkillIds.every((skillId) => availableSkillIds.has(skillId))
+        ) return false;
+        if (
+          new Set(value.availableModels.map((model) => model.id)).size !==
+            value.availableModels.length
+        ) return false;
+
+        if (value.sessionActivities !== undefined) {
+          const currentSessionIds = new Set(
+            value.sessions.map((session) => session.id),
+          );
+          if (
+            !Array.isArray(value.sessionActivities) ||
+            !value.sessionActivities.every((activity) =>
+              isWireSessionActivity(activity, currentSessionIds)
+            ) ||
+            new Set(
+              value.sessionActivities.map((activity) => activity.sessionId),
+            ).size !== value.sessionActivities.length
+          ) return false;
+        }
+        return true;
+      }
+
+      function wireErrorEnvelopeKind(payload) {
+        if (
+          !isWireRecord(payload) ||
+          payload.type !== "error" ||
+          typeof payload.message !== "string" ||
+          (payload.field !== undefined && typeof payload.field !== "string")
+        ) return null;
+        const hasSendCorrelation =
+          payload.sendId !== undefined || payload.sessionId !== undefined;
+        const hasCommandCorrelation = payload.commandId !== undefined;
+        if (hasSendCorrelation) {
+          if (
+            hasCommandCorrelation ||
+            !hasOnlyWireKeys(payload, [
+              "type",
+              "sendId",
+              "sessionId",
+              "message",
+              "field",
+              "promptPersistence",
+              "sendFailureKind",
+              "state",
+            ]) ||
+            !isWireCorrelationId(payload.sendId) ||
+            !isWireStorageId(payload.sessionId) ||
+            !["persisted", "not_persisted", "unknown"].includes(
+              payload.promptPersistence,
+            ) ||
+            (payload.sendFailureKind !== undefined &&
+              payload.sendFailureKind !== "session_unavailable") ||
+            (payload.state !== undefined &&
+              !isWireChatBridgeState(payload.state))
+          ) return null;
+          return "send";
+        }
+        if (hasCommandCorrelation) {
+          if (
+            !hasOnlyWireKeys(payload, [
+              "type",
+              "commandId",
+              "message",
+              "field",
+              "commandOutcome",
+              "state",
+              "reconciliationRequired",
+            ]) ||
+            !isWireCorrelationId(payload.commandId) ||
+            (payload.commandOutcome !== undefined &&
+              payload.commandOutcome !== "unknown") ||
+            (payload.reconciliationRequired !== undefined &&
+              payload.reconciliationRequired !== true) ||
+            (payload.state !== undefined &&
+              !isWireChatBridgeState(payload.state))
+          ) return null;
+          if (payload.commandOutcome === undefined) {
+            if (
+              payload.state !== undefined ||
+              payload.reconciliationRequired !== undefined
+            ) return null;
+          } else if (
+            (payload.state === undefined) ===
+              (payload.reconciliationRequired === undefined)
+          ) return null;
+          return "command";
+        }
+        return hasOnlyWireKeys(payload, ["type", "message", "field"])
+          ? "global"
+          : null;
+      }
+
+      function decodeBridgeHttpResponse(path, response, value, context = {}) {
+        if (!isWireRecord(value)) throw invalidBridgeHttpResponse(path);
+        if (response.ok) return decodeBridgeHttpSuccess(path, value, context);
+        const envelope = decodeBridgeHttpError(path, value, context);
+        const error = new Error(envelope.error);
+        error.httpStatus = response.status;
+        if (typeof envelope.field === "string") error.field = envelope.field;
+        if (envelope.commandOutcome === "unknown") {
+          error.commandOutcome = "unknown";
+        }
+        if (envelope.steeringOutcome === "unknown") {
+          error.steeringOutcome = "unknown";
+        }
+        if (envelope.promptPersistence !== undefined) {
+          error.promptPersistence = envelope.promptPersistence;
+        }
+        if (envelope.sendFailureKind === "session_unavailable") {
+          error.sendFailureKind = "session_unavailable";
+        }
+        if (envelope.state !== undefined) error.state = envelope.state;
+        if (envelope.reconciliationRequired === true) {
+          error.reconciliationRequired = true;
+        }
+        throw error;
+      }
+
+      function decodeBridgeHttpSuccess(path, value, context) {
+        if (path === "/command") {
+          if (isWireChatBridgeState(value)) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/send") {
+          if (
+            hasOnlyWireKeys(value, ["ok", "state"]) &&
+            value.ok === true &&
+            isWireChatBridgeState(value.state)
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/stop") {
+          const terminal = value.terminal;
+          const promptPersistence = value.promptPersistence;
+          if (
+            hasOnlyWireKeys(value, [
+              "ok",
+              "terminal",
+              "sendId",
+              "promptPersistence",
+            ]) &&
+            value.ok === true &&
+            typeof terminal === "boolean" &&
+            value.sendId === context.sendId &&
+            (terminal
+              ? ["persisted", "not_persisted", "unknown"]
+                .includes(promptPersistence)
+              : promptPersistence === undefined)
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/steer") {
+          const activity = stateChangeActivity(value, false);
+          if (
+            hasOnlyWireKeys(value, [
+              "ok",
+              "bridgeStateRevision",
+              "activity",
+            ]) &&
+            value.ok === true &&
+            (value.bridgeStateRevision === undefined ||
+              isDecimalRevision(value.bridgeStateRevision)) &&
+            activity !== null &&
+            (!activity ||
+              activity.status === "running" &&
+                activity.message === "Guidance applied") &&
+            (!activity || value.bridgeStateRevision !== undefined)
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/confirm") {
+          const hasReceipt = value.bridgeStateRevision !== undefined ||
+            value.confirmationGeneration !== undefined ||
+            value.activity !== undefined;
+          const activity = stateChangeActivity(value, hasReceipt);
+          if (
+            hasOnlyWireKeys(value, [
+              "ok",
+              "bridgeStateRevision",
+              "confirmationGeneration",
+              "activity",
+            ]) &&
+            value.ok === true &&
+            (!hasReceipt ||
+              isDecimalRevision(value.bridgeStateRevision) &&
+                Number.isSafeInteger(value.confirmationGeneration) &&
+                value.confirmationGeneration > 0 &&
+                activity &&
+                activity.status === "running" &&
+                [
+                  "Applying confirmed changes",
+                  "Continuing after cancellation",
+                ].includes(activity.message))
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        throw invalidBridgeHttpResponse(path);
+      }
+
+      function decodeBridgeHttpError(path, value, context) {
+        if (typeof value.error !== "string" || !value.error) {
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/command") {
+          const hasOutcomeProjection = value.commandOutcome !== undefined ||
+            value.state !== undefined ||
+            value.reconciliationRequired !== undefined;
+          if (
+            !hasOnlyWireKeys(value, [
+              "error",
+              "commandId",
+              "field",
+              "commandOutcome",
+              "state",
+              "reconciliationRequired",
+            ]) ||
+            (hasOutcomeProjection
+              ? value.commandId !== context.commandId
+              : value.commandId !== undefined &&
+                value.commandId !== context.commandId) ||
+            (value.field !== undefined && typeof value.field !== "string") ||
+            (value.commandOutcome !== undefined &&
+              value.commandOutcome !== "unknown") ||
+            (value.state !== undefined && !isWireChatBridgeState(value.state)) ||
+            (value.reconciliationRequired !== undefined &&
+              value.reconciliationRequired !== true)
+          ) throw invalidBridgeHttpResponse(path);
+          if (value.commandOutcome === undefined) {
+            if (
+              value.state !== undefined ||
+              value.reconciliationRequired !== undefined
+            ) throw invalidBridgeHttpResponse(path);
+          } else if (
+            (value.state === undefined) ===
+              (value.reconciliationRequired === undefined)
+          ) throw invalidBridgeHttpResponse(path);
+          return value;
+        }
+        if (path === "/send") {
+          if (
+            hasOnlyWireKeys(value, [
+              "error",
+              "field",
+              "promptPersistence",
+              "sendFailureKind",
+              "state",
+            ]) &&
+            (value.field === undefined || typeof value.field === "string") &&
+            ["persisted", "not_persisted", "unknown"]
+              .includes(value.promptPersistence) &&
+            (value.sendFailureKind === undefined ||
+              value.sendFailureKind === "session_unavailable") &&
+            (value.state === undefined || isWireChatBridgeState(value.state))
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/steer") {
+          if (
+            hasOnlyWireKeys(value, ["error", "field", "steeringOutcome"]) &&
+            (value.field === undefined || typeof value.field === "string") &&
+            (value.steeringOutcome === undefined ||
+              value.steeringOutcome === "unknown")
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        if (path === "/confirm" || path === "/stop") {
+          if (
+            hasOnlyWireKeys(value, ["error", "field"]) &&
+            (value.field === undefined || typeof value.field === "string")
+          ) return value;
+          throw invalidBridgeHttpResponse(path);
+        }
+        throw invalidBridgeHttpResponse(path);
+      }
+
+      function invalidBridgeHttpResponse(path) {
+        const operation = path.replace(/^\//, "") || "bridge";
+        return new Error(
+          `The ${operation} response did not match its wire contract.`,
+        );
+      }
+
+      function applyStateChangeActivity(sessionId, activity, received) {
+        if (!activity) return false;
+        const covered = projectionRevisionIsCovered(
+          activityProjectionRevisionsBySession,
+          sessionId,
+          received,
+        );
+        recordProjectionRevision(
+          activityProjectionRevisionsBySession,
+          sessionId,
+          received.revision,
+        );
+        if (covered) return false;
+        setLocalActivity(sessionId, activity.status, activity.message);
+        const attempt = sendAttemptsBySession.get(sessionId);
+        if (attempt) {
+          attempt.progress = activity.message;
+          attempt.progressIsError = activity.status === "failed";
+        }
+        return true;
+      }
+
+      function applySendActivity(attempt, activity, received) {
+        if (!activity) return false;
+        if (attempt?.awaitingStopTerminal) {
+          recordProjectionRevision(
+            activityProjectionRevisionsBySession,
+            attempt.sessionId,
+            received.revision,
+          );
+          return false;
+        }
+        return applyStateChangeActivity(
+          attempt.sessionId,
+          activity,
+          received,
+        );
       }
 
       function effectiveDefaultFollowUpBehavior() {
@@ -152,7 +1852,11 @@
         const confirmation = activePendingConfirmation();
         if (!attempt || confirmation?.sendId !== attempt.id) return false;
         const resolution = confirmationResolutionsBySession.get(attempt.sessionId);
-        return Boolean(attempt.steering || resolution?.sendId === attempt.id);
+        return Boolean(
+          attempt.awaitingStopTerminal ||
+          attempt.steering ||
+          resolution?.sendId === attempt.id,
+        );
       }
 
       function writeEffectiveFollowUpBehaviorToState(state = getState()) {
@@ -168,8 +1872,8 @@
         const revision = state?.settings?.defaultFollowUpBehaviorRevision;
         if (
           isDefaultFollowUpBehavior(behavior) &&
-          isDefaultFollowUpBehaviorRevision(revision) &&
-          compareDefaultFollowUpBehaviorRevisions(
+          isDecimalRevision(revision) &&
+          compareDecimalRevisions(
             revision,
             confirmedDefaultFollowUpBehaviorRevision,
           ) > 0
@@ -179,7 +1883,7 @@
           const optimistic = optimisticDefaultFollowUpBehavior;
           if (
             optimistic &&
-            compareDefaultFollowUpBehaviorRevisions(
+            compareDecimalRevisions(
               revision,
               optimistic.committedRevision ?? optimistic.startedRevision,
             ) > 0
@@ -195,8 +1899,8 @@
         const revision = payload?.defaultFollowUpBehaviorRevision;
         if (
           !isDefaultFollowUpBehavior(behavior) ||
-          !isDefaultFollowUpBehaviorRevision(revision) ||
-          compareDefaultFollowUpBehaviorRevisions(
+          !isDecimalRevision(revision) ||
+          compareDecimalRevisions(
             revision,
             confirmedDefaultFollowUpBehaviorRevision,
           ) <= 0
@@ -208,7 +1912,7 @@
           if (payload.commandId === optimistic.commandId) {
             optimistic.committedRevision = revision;
           } else if (
-            compareDefaultFollowUpBehaviorRevisions(
+            compareDecimalRevisions(
               revision,
               optimistic.committedRevision ?? optimistic.startedRevision,
             ) > 0
@@ -295,12 +1999,7 @@
         );
       }
 
-      function deferSendTerminalWhileAwaitingStop(attempt, terminal) {
-        if (
-          !attempt?.awaitingStopTerminal ||
-          attempt.failureHandled ||
-          !attemptIsCurrent(attempt)
-        ) return false;
+      function mergeDeferredSendTerminal(attempt, terminal) {
         const previous = attempt.deferredSendTerminal || {};
         attempt.deferredSendTerminal = {
           ...previous,
@@ -313,11 +2012,48 @@
           ...(terminal?.sendFailureKind === "session_unavailable"
             ? { sendFailureKind: terminal.sendFailureKind }
             : {}),
+          ...(["persisted", "not_persisted", "unknown"].includes(
+              terminal?.promptPersistence,
+            )
+            ? { promptPersistence: terminal.promptPersistence }
+            : {}),
+          ...(["success", "error"].includes(terminal?.sendOutcome)
+            ? { sendOutcome: terminal.sendOutcome }
+            : {}),
           ...(terminal?.state && typeof terminal.state === "object"
             ? { state: terminal.state }
             : {}),
         };
+      }
+
+      function resolveSendOutcome(attempt, terminal) {
+        if (!attempt?.sendOutcomePending) return;
+        mergeDeferredSendTerminal(attempt, terminal);
+        attempt.sendOutcomePending = false;
+        attempt.resolveSendOutcome();
+      }
+
+      function deferSendTerminalWhileAwaitingStop(attempt, terminal) {
+        if (
+          !attempt?.awaitingStopTerminal ||
+          attempt.failureHandled ||
+          !attemptIsCurrent(attempt)
+        ) return false;
+        if (terminal) mergeDeferredSendTerminal(attempt, terminal);
         return true;
+      }
+
+      async function waitForSendOutcome(attempt) {
+        if (!attempt?.sendOutcomePending) return;
+        let timeoutId;
+        const timeout = new Promise((resolve) => {
+          timeoutId = window.setTimeout(resolve, sseReconciliationTimeoutMs);
+        });
+        try {
+          await Promise.race([attempt.sendOutcomeSignal, timeout]);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
       }
 
       function isOperationInProgress() {
@@ -336,7 +2072,6 @@
           attachmentInProgress: attachmentOperationInProgress,
           skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeAttempt),
-          steerInProgress: Boolean(activeAttempt?.steerInProgress),
         });
       }
 
@@ -377,9 +2112,56 @@
         const payload = { kind, ...(extra || {}) };
         let resolveSseOutcome;
         let resolveSseUnavailable;
+        const targetSessionId = typeof extra?.sessionId === "string"
+          ? extra.sessionId
+          : null;
+        const ownedSessionMembershipIds = new Set(
+          [
+            "restore_session",
+            "archive_session",
+            "unarchive_session",
+            "delete_session",
+          ].includes(kind) && targetSessionId
+            ? [targetSessionId]
+            : [],
+        );
+        const ownedSessionFields = new Map();
+        const fieldNames = kind === "rename_session"
+          ? ["title", "updatedAt"]
+          : kind === "set_session_approval_mode"
+            ? ["approvalMode", "updatedAt"]
+            : kind === "set_session_skills"
+              ? ["activeSkillIds", "updatedAt"]
+              : kind === "restore_session"
+                ? ["projectKey", "scope", "originScope", "updatedAt"]
+                : ["archive_session", "unarchive_session"].includes(kind)
+                  ? ["archivedAt", "updatedAt"]
+                  : [];
+        if (targetSessionId && fieldNames.length > 0) {
+          ownedSessionFields.set(targetSessionId, new Set(fieldNames));
+        }
         const attempt = {
-          id: options?.commandId || createCommandId(),
+          id: options?.commandId || createCorrelationId("command"),
           kind,
+          ownedSessionMembershipIds,
+          ownedSessionFields,
+          ownedSessionActivityIds: new Set(
+            ["archive_session", "delete_session"].includes(kind) && targetSessionId
+              ? [targetSessionId]
+              : [],
+          ),
+          ownedSessionActivityFields: new Map(
+            kind === "select_session" && targetSessionId
+              ? [[targetSessionId, new Set(["unread"])]]
+              : [],
+          ),
+          ownsActiveSessionSelection:
+            ["new_session", "select_session", "restore_session"].includes(kind) ||
+            ["archive_session", "delete_session"].includes(kind) &&
+              targetSessionId === activeSessionId(),
+          ownsAuthoritativeSessionAdditions: kind === "new_session",
+          ownsGlobalState: !sessionCommand && kind !== "save_global_settings",
+          causalStateSnapshot: captureCausalState(),
           sseOutcome: new Promise((resolve) => {
             resolveSseOutcome = resolve;
           }),
@@ -411,7 +2193,7 @@
           let outcome = await Promise.race([httpOutcome, attempt.sseOutcome]);
           if (
             outcome.type === "state" &&
-            !isAuthoritativeCommandState(outcome.state)
+            !isWireChatBridgeState(outcome.state)
           ) {
             outcome = await recoverLostCommandResponse(
               attempt,
@@ -440,22 +2222,26 @@
             outcome.type === "error" &&
             outcome.error.commandOutcome === "unknown" &&
             outcome.error.reconciliationRequired !== true &&
-            !isAuthoritativeCommandState(outcome.error.state)
+            !isWireChatBridgeState(outcome.error.state)
           ) {
-            outcome = await reconcileInterruptedCommand(outcome.error, kind);
+            outcome = await reconcileInterruptedCommand(
+              outcome.error,
+              kind,
+              attempt,
+            );
           }
           if (activeCommandAttempt !== attempt) return false;
           if (outcome.type === "state") {
-            applyCommandState(kind, outcome.state);
+            applyCommandState(kind, outcome.state, attempt);
             commandSucceeded = true;
           } else if (outcome.type === "reconciled") {
             commandWarning = outcome.message;
             commandSucceeded = true;
           } else if (
             outcome.error.commandOutcome === "unknown" &&
-            isAuthoritativeCommandState(outcome.error.state)
+            isWireChatBridgeState(outcome.error.state)
           ) {
-            applyCommandState(kind, outcome.error.state);
+            applyCommandState(kind, outcome.error.state, attempt);
             commandWarning = outcome.error.message || String(outcome.error);
             commandSucceeded = true;
           } else {
@@ -472,12 +2258,9 @@
         }
         if (commandSucceeded) syncActiveSessionUi();
         if (commandWarning) {
-          showStatus(
-            [commandWarning, attempt.localFollowUpCancellation]
-              .filter(Boolean)
-              .join(" "),
-            true,
-          );
+          showStatus(commandWarning, true, {
+            canceledFollowUpCount: attempt.canceledFollowUpCount || 0,
+          });
         }
         if (commandError) {
           const message = commandError.message || String(commandError);
@@ -498,7 +2281,7 @@
         const timeout = new Promise((resolve) => {
           timeoutId = window.setTimeout(
             () => resolve({ type: "reconcile" }),
-            commandSseReconciliationTimeoutMs,
+            sseReconciliationTimeoutMs,
           );
         });
         try {
@@ -527,19 +2310,19 @@
           : { type: "reconcile" };
         if (
           outcome.type === "state" &&
-          !isAuthoritativeCommandState(outcome.state)
+          !isWireChatBridgeState(outcome.state)
         ) {
           outcome = { type: "reconcile" };
         }
         return outcome.type === "reconcile"
-          ? reconcileInterruptedCommand(responseError, kind)
+          ? reconcileInterruptedCommand(responseError, kind, attempt)
           : outcome;
       }
 
-      async function reconcileInterruptedCommand(originalError, kind) {
+      async function reconcileInterruptedCommand(originalError, kind, causalAttempt) {
         const originalMessage = originalError?.message || "The command response was lost.";
         try {
-          const refreshed = await refreshState(undefined, kind);
+          const refreshed = await refreshState(causalAttempt, kind);
           if (!refreshed) throw new Error("The bridge did not return current state.");
           return {
             type: "reconciled",
@@ -588,15 +2371,9 @@
 
       function reconcileLocalFollowUpsIntoState(state) {
         const canceledFollowUpCount = reconcileLocalFollowUpsWithState(state);
-        if (canceledFollowUpCount === 0) return "";
-        const cancellation = `${canceledFollowUpCount} queued follow-up${
-          canceledFollowUpCount === 1 ? "" : "s"
-        } canceled because the target Session is no longer available.`;
+        if (canceledFollowUpCount === 0) return 0;
         retainCanceledFollowUps(canceledFollowUpCount);
-        state.status = state.status
-          ? `${state.status} ${cancellation}`
-          : cancellation;
-        return cancellation;
+        return canceledFollowUpCount;
       }
 
       function retainCanceledFollowUps(count) {
@@ -605,27 +2382,34 @@
         }
       }
 
-      function withLocalFollowUpCancellation(attempt, message) {
-        const cancellation = attempt?.localFollowUpCancellation;
-        if (!cancellation || String(message).includes(cancellation)) return message;
-        return `${message} ${cancellation}`;
-      }
-
-      function applyCommandState(kind, state) {
+      function applyCommandState(kind, state, causalAttempt) {
+        if (!isWireChatBridgeState(state)) return false;
+        captureOwnedPendingAttachmentAdditions(causalAttempt, state);
+        adoptFollowUpBehaviorFromState(state);
+        const reconciledState = causalAttempt
+          ? preserveNewerCausalState(state, causalAttempt)
+          : state;
         const previousSessionId = activeSessionId();
         const prompt = document.getElementById("prompt");
         if (prompt) composerDraftsBySession.set(previousSessionId, prompt.value);
-        const cancellation = reconcileLocalFollowUpsIntoState(state);
+        const canceledFollowUpCount = reconcileLocalFollowUpsIntoState(
+          reconciledState,
+        );
         if (
-          cancellation &&
+          canceledFollowUpCount &&
           activeCommandAttempt?.kind === kind
         ) {
-          activeCommandAttempt.localFollowUpCancellation = cancellation;
+          activeCommandAttempt.canceledFollowUpCount =
+            (activeCommandAttempt.canceledFollowUpCount || 0) +
+            canceledFollowUpCount;
         }
-        reconcileWebSearchUpdatesFromState(state);
-        adoptFollowUpBehaviorFromState(state);
-        setState(state);
-        requireView().syncModelStateSource(state.modelStateSource);
+        reconcileWebSearchUpdatesFromState(reconciledState);
+        adoptFollowUpBehaviorFromState(reconciledState);
+        setState(reconciledState);
+        recordFullStateProjectionCoverage(reconciledState);
+        recordAttemptOwnedActivityRevisions(causalAttempt, state);
+        reconcileAttemptProgressFromActivities(reconciledState);
+        requireView().syncModelStateSource(reconciledState.modelStateSource);
         if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
           requireView().renderSettingsForm();
         } else if (kind === "set_session_approval_mode") {
@@ -634,15 +2418,29 @@
           requireView().renderModelOptions();
           requireView().updateCapabilityPreview();
         }
-        if (prompt && state.activeSessionId !== previousSessionId) {
-          prompt.value = composerDraftsBySession.get(state.activeSessionId) || "";
+        if (prompt && reconciledState.activeSessionId !== previousSessionId) {
+          prompt.value = composerDraftsBySession.get(
+            reconciledState.activeSessionId,
+          ) || "";
         }
         requireView().render();
-        return cancellation;
+        return true;
       }
 
-      function mergeBackgroundState(state, sessionId) {
+      function mergeBackgroundState(state, attempt) {
         const current = getState();
+        const sessionId = attempt.sessionId;
+        const authoritativeSession = state.sessions.find(
+          (session) => session.id === sessionId,
+        );
+        if (
+          authoritativeSession &&
+          current.sessions.some((session) => session.id === sessionId)
+        ) {
+          current.sessions = current.sessions.map((session) =>
+            session.id === sessionId ? authoritativeSession : session
+          );
+        }
         if (Array.isArray(state.sessionActivities)) {
           const activity = state.sessionActivities.find(
             (entry) => entry.sessionId === sessionId,
@@ -656,17 +2454,30 @@
             ];
           }
         }
+        current.bridgeStateRevision = maxDecimalRevision(
+          current.bridgeStateRevision,
+          state.bridgeStateRevision,
+        );
+        recordSessionProjectionCoverage(state, sessionId);
       }
 
       function applyAuthoritativeSendState(attempt, state) {
-        if (!attempt || !isAuthoritativeCommandState(state)) return false;
+        if (!attempt || !isWireChatBridgeState(state)) return false;
+        // Global behavior has its own monotonic revision; Session ownership below
+        // remains scoped to this send so an older terminal cannot prune peers.
         adoptFollowUpBehaviorFromState(state);
-        if (!state.sessions.some((session) => session.id === attempt.sessionId)) {
-          attempt.targetSessionUnavailableState = state;
-        }
-        const cancellation = reconcileLocalFollowUpsIntoState(state);
-        if (cancellation) attempt.localFollowUpCancellation = cancellation;
-        if (!reconcileSteeringReceipt(attempt, state)) {
+        const visible =
+          attempt.sessionId === activeSessionId() &&
+          state.activeSessionId === activeSessionId();
+        const reconciledState = preserveNewerCausalState(state, attempt);
+        attempt.targetSessionUnavailableState =
+          !reconciledState.sessions.some(
+            (session) => session.id === attempt.sessionId,
+          )
+            ? reconciledState
+            : null;
+        if (visible) reconcileLocalFollowUpsIntoState(reconciledState);
+        if (!reconcileSteeringAck(attempt, state)) {
           setAttemptStatus(
             attempt,
             "The steering outcome could not be reconciled from Session state. Close and reopen Live Smith before continuing.",
@@ -674,35 +2485,33 @@
           );
           return false;
         }
-        if (
-          attempt.sessionId === activeSessionId() &&
-          state.activeSessionId === activeSessionId()
-        ) {
-          reconcileWebSearchUpdatesFromState(state);
-          setState(state);
-          requireView().syncModelStateSource(state.modelStateSource);
+        if (visible) {
+          reconcileWebSearchUpdatesFromState(reconciledState);
+          setState(reconciledState);
+          recordFullStateProjectionCoverage(reconciledState);
+          requireView().syncModelStateSource(reconciledState.modelStateSource);
           requireView().renderModelOptions();
           requireView().updateCapabilityPreview();
         } else {
-          mergeBackgroundState(state, attempt.sessionId);
-          if (cancellation) {
-            const currentState = getState();
-            currentState.status = currentState.status
-              ? `${currentState.status} ${cancellation}`
-              : cancellation;
-          }
+          mergeBackgroundState(reconciledState, attempt);
         }
-        requireView().render();
+        recordAttemptOwnedActivityRevisions(attempt, state);
+        reconcileAttemptProgressFromActivities(getState());
+        if (visible) {
+          requireView().render();
+        } else {
+          renderDefaultFollowUpBehavior();
+          requireView().renderSessions();
+        }
         return true;
       }
 
-      function setLocalActivity(sessionId, sendId, status, message) {
+      function setLocalActivity(sessionId, status, message) {
         const activities = getState().sessionActivities || [];
         const current = activities.find((entry) => entry.sessionId === sessionId);
         const next = {
           ...(current || {}),
           sessionId,
-          sendId,
           status,
           message,
           unread: current?.unread || false,
@@ -758,28 +2567,17 @@
         }
       }
 
-      function renderSendButton(running) {
-        const button = document.getElementById("sendButton");
-        if (!button) return;
-        button.textContent = running ? "Stop" : "Send";
-        button.classList.toggle("stop", running);
-        if (running) {
-          button.setAttribute("aria-label", "Stop current response");
-          button.setAttribute("title", "Stop current response");
-          button.removeAttribute("aria-keyshortcuts");
-        } else {
-          button.setAttribute("aria-label", "Send message");
-          button.setAttribute("title", "Send (Cmd/Ctrl+Enter)");
-          button.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
-        }
-      }
-
       function syncActiveSessionUi() {
         const attempt = activeSendAttempt();
-        renderSendButton(Boolean(attempt));
         renderDefaultFollowUpBehavior();
         syncOperationState();
-        if (attempt?.progress) showStatus(attempt.progress, attempt.progressIsError);
+        if (attempt?.progress) {
+          showStatus(
+            attempt.progress,
+            attempt.progressIsError,
+            attempt.awaitingStopTerminal ? { stopPhase: true } : undefined,
+          );
+        }
         else {
           const activity = (getState().sessionActivities || []).find(
             (entry) => entry.sessionId === activeSessionId(),
@@ -789,12 +2587,24 @@
         }
       }
 
-      function setAttemptStatus(attempt, message, isError) {
-        if (!attempt) return;
+      function setAttemptStatus(
+        attempt,
+        message,
+        isError,
+        { stopPhase = false } = {},
+      ) {
+        if (
+          !attempt ||
+          attempt.awaitingStopTerminal && !stopPhase
+        ) return;
         attempt.progress = message;
         attempt.progressIsError = Boolean(isError);
         if (activeSessionId() === attempt.sessionId && attemptIsCurrent(attempt)) {
-          showStatus(message, isError);
+          showStatus(
+            message,
+            isError,
+            stopPhase ? { stopPhase: true } : undefined,
+          );
         }
       }
 
@@ -821,17 +2631,21 @@
         const paused = pausedFollowUpSessions.has(sessionId);
         const failedQueuedFollowUp = failedSendRecoveriesBySession.get(sessionId);
         let resumesQueuedFollowUp = false;
+        let resumedQueueId = null;
         if (
           paused &&
           failedQueuedFollowUp &&
           failedQueuedFollowUp.entry.prompt === prompt
         ) {
           const entries = queuedFollowUpsBySession.get(sessionId) || [];
-          if (entries[0]?.id === failedQueuedFollowUp.entry.id) entries.shift();
+          if (
+            entries[0]?.queueId === failedQueuedFollowUp.entry.queueId
+          ) entries.shift();
           if (entries.length === 0) queuedFollowUpsBySession.delete(sessionId);
           failedSendRecoveriesBySession.delete(sessionId);
           pausedFollowUpSessions.delete(sessionId);
           resumesQueuedFollowUp = true;
+          resumedQueueId = failedQueuedFollowUp.entry.queueId;
         } else if (paused && failedQueuedFollowUp) {
           failedSendRecoveriesBySession.delete(sessionId);
           pausedFollowUpSessions.delete(sessionId);
@@ -841,14 +2655,21 @@
           resumesQueuedFollowUp = true;
         }
         void startSend({
-          id: createSendId(),
+          id: createCorrelationId("send"),
           prompt,
+          queueId: resumedQueueId,
           queuedFollowUp: resumesQueuedFollowUp,
           sessionId,
         });
       }
 
-      async function startSend({ id, prompt, queuedFollowUp = false, sessionId }) {
+      async function startSend({
+        id,
+        prompt,
+        queueId = null,
+        queuedFollowUp = false,
+        sessionId,
+      }) {
         if (sendAttemptsBySession.has(sessionId) || !prompt.trim()) return;
         const payload = { prompt, sessionId };
         const visible = activeSessionId() === sessionId;
@@ -864,14 +2685,32 @@
               : [],
           ),
         );
+        const causalStateSnapshot = captureCausalState();
+        let resolveSendOutcomeSignal;
+        const sendOutcomeSignal = new Promise((resolve) => {
+          resolveSendOutcomeSignal = resolve;
+        });
         const attempt = {
           id,
           sessionId,
+          causalStateSnapshot,
+          ownedSessionActivityIds: new Set([sessionId]),
+          ownedPendingAttachmentIds: new Set(
+            causalStateSnapshot.pendingAttachments.map(
+              (attachment) => attachment.id,
+            ),
+          ),
+          ownedActiveContextSessionId: sessionId,
+          resolvedConfirmationGeneration: 0,
           payload,
+          queueId,
           progress: "Starting Live Smith…",
           progressIsError: false,
           queuedFollowUp: Boolean(queuedFollowUp),
           failureHandled: false,
+          sendOutcomePending: true,
+          sendOutcomeSignal,
+          resolveSendOutcome: resolveSendOutcomeSignal,
         };
         sendAttemptsBySession.set(sessionId, attempt);
         if (visible) {
@@ -882,7 +2721,7 @@
           recordComposerDraft(sessionId, composerDraftsBySession.get(sessionId) || "");
         }
         captureAttemptComposerBaseline(attempt);
-        setSendInProgress(sessionId, true);
+        syncSendPresentation(sessionId);
         setAttemptStatus(attempt, "Starting Live Smith…", false);
 
         try {
@@ -894,28 +2733,31 @@
             },
             body: JSON.stringify(payload),
           });
-          const result = await response.json().catch(() => ({}));
-          if (deferSendTerminalWhileAwaitingStop(attempt, {
-            message: response.ok ? undefined : result.error,
-            field: result.field,
-            sendFailureKind: result.sendFailureKind,
-            state: result.state,
-          })) return;
-          if (!response.ok) {
-            const error = new Error(result.error || `${response.status} ${response.statusText}`);
-            error.httpStatus = response.status;
-            if (["persisted", "not_persisted", "unknown"].includes(result.promptPersistence)) {
-              error.promptPersistence = result.promptPersistence;
-            }
-            if (typeof result.field === "string") error.field = result.field;
-            if (result.sendFailureKind === "session_unavailable") {
-              error.sendFailureKind = "session_unavailable";
-            }
-            if (result.state && typeof result.state === "object") {
-              error.state = result.state;
-            }
-            throw error;
+          let rawResult;
+          try {
+            rawResult = await response.json();
+          } catch {
+            throw new Error("The bridge response ended before JSON was complete.");
           }
+          let result;
+          try {
+            result = decodeBridgeHttpResponse(
+              "/send",
+              response,
+              rawResult,
+              { sendId: attempt.id, sessionId: attempt.sessionId },
+            );
+          } catch (error) {
+            if (!response.ok) throw error;
+            // A malformed 2xx envelope is response loss, not a decoded
+            // success. Only a subsequent authoritative state may settle it.
+            result = { state: undefined };
+          }
+          resolveSendOutcome(attempt, {
+            sendOutcome: "success",
+            state: result.state,
+          });
+          if (deferSendTerminalWhileAwaitingStop(attempt)) return;
           if (!attemptIsCurrent(attempt)) return;
           let refreshed = applyAuthoritativeSendState(attempt, result.state);
           if (!refreshed) refreshed = await refreshState(attempt);
@@ -935,18 +2777,19 @@
           }
           settleSendAttempt(attempt);
           if (activeSessionId() === sessionId && !activeSendAttempt()) {
-            showStatus(
-              attempt.localFollowUpCancellation || getState().status || "",
-            );
+            showStatus(getState().status || "");
           }
         } catch (error) {
           const message = error.message || String(error);
-          if (deferSendTerminalWhileAwaitingStop(attempt, {
+          resolveSendOutcome(attempt, {
+            sendOutcome: "error",
             message,
             field: error.field,
+            promptPersistence: error.promptPersistence,
             sendFailureKind: error.sendFailureKind,
             state: error.state,
-          })) return;
+          });
+          if (deferSendTerminalWhileAwaitingStop(attempt)) return;
           if (!error.httpStatus && !error.promptPersistence) {
             await recoverInterruptedSend(attempt, message);
           } else {
@@ -979,7 +2822,7 @@
           return;
         }
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
-        entries.push({ id: createSendId(), prompt });
+        entries.push({ queueId: createCorrelationId("queue"), prompt });
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
         promptControl.value = "";
         recordComposerDraft(attempt.sessionId, "");
@@ -1009,7 +2852,13 @@
         const next = entries?.shift();
         if (!next) return false;
         if (entries.length === 0) queuedFollowUpsBySession.delete(sessionId);
-        void startSend({ ...next, queuedFollowUp: true, sessionId });
+        void startSend({
+          id: createCorrelationId("send"),
+          prompt: next.prompt,
+          queueId: next.queueId,
+          queuedFollowUp: true,
+          sessionId,
+        });
         if (activeSessionId() === sessionId) requireView().renderTimeline();
         return sendAttemptsBySession.has(sessionId);
       }
@@ -1046,7 +2895,7 @@
         }
         const optimistic = {
           behavior,
-          commandId: createCommandId(),
+          commandId: createCorrelationId("command"),
           startedRevision: confirmedDefaultFollowUpBehaviorRevision,
           committedRevision: null,
         };
@@ -1075,10 +2924,19 @@
         const isCurrent = attemptIsCurrent(attempt);
         attempt.steering = null;
         attempt.steerInProgress = false;
+        if (Number.isSafeInteger(steering.supersededConfirmationGeneration)) {
+          attempt.resolvedConfirmationGeneration = Math.max(
+            attempt.resolvedConfirmationGeneration,
+            steering.supersededConfirmationGeneration,
+          );
+        }
         const confirmation = pendingConfirmationsBySession.get(attempt.sessionId);
-        if (confirmation?.sendId === attempt.id) {
+        if (
+          confirmation?.sendId === attempt.id &&
+          confirmation.id === steering.supersededConfirmationId
+        ) {
           pendingConfirmationsBySession.delete(attempt.sessionId);
-          confirmationResolutionsBySession.delete(attempt.sessionId);
+          clearConfirmationResolution(attempt.sessionId);
           if (activeSessionId() === attempt.sessionId) {
             requireView().renderTimeline();
           }
@@ -1102,13 +2960,38 @@
           recordComposerDraft(attempt.sessionId, "");
         }
         if (isCurrent) {
-          setAttemptStatus(attempt, "Guidance applied.", false);
           syncOperationState();
         }
         return true;
       }
 
-      function reconcileSteeringReceipt(attempt, state) {
+      function applySteeringAcceptedPayload(attempt, steering, payload) {
+        if (attempt?.steering !== steering || payload?.steerId !== steering.id) {
+          return false;
+        }
+        const activity = stateChangeActivity(payload, false);
+        if (
+          activity === null ||
+          activity && (
+            activity.status !== "running" ||
+            activity.message !== "Guidance applied"
+          )
+        ) return false;
+        const received = receiveStateChangeRevision(payload);
+        if (!received || !acknowledgeSteering(attempt, steering)) return false;
+        const activityApplied = applySendActivity(
+          attempt,
+          activity,
+          received,
+        );
+        if (activityApplied) requireView().renderSessions();
+        if (activeSessionId() === attempt.sessionId && attemptIsCurrent(attempt)) {
+          syncActiveSessionUi();
+        }
+        return true;
+      }
+
+      function reconcileSteeringAck(attempt, state) {
         const steering = attempt?.steering;
         if (!steering) return true;
         if (
@@ -1118,24 +3001,41 @@
         ) return false;
         const matches = state.events.filter((event) =>
           event &&
-          event.steeringReceipt &&
-          event.steeringReceipt.sendId === attempt.id &&
-          event.steeringReceipt.id === steering.id
+          event.steeringAck &&
+          event.steeringAck.sendId === attempt.id &&
+          event.steeringAck.steerId === steering.id
         );
         if (matches.length > 1) return false;
         if (matches.length === 1) {
           const event = matches[0];
           if (
             event.kind !== "user" ||
-            event.content !== steering.prompt ||
-            typeof event.steeringReceipt.sha256 !== "string" ||
-            !/^[a-f0-9]{64}$/.test(event.steeringReceipt.sha256)
+            event.content !== steering.prompt
           ) return false;
           return acknowledgeSteering(attempt, steering);
         }
         attempt.steering = null;
         attempt.steerInProgress = false;
         return true;
+      }
+
+      function acknowledgeIncrementalSteeringEvent(attempt, event) {
+        const steering = attempt?.steering;
+        if (
+          !steering ||
+          event.steeringAck?.sendId !== attempt.id ||
+          event.steeringAck.steerId !== steering.id ||
+          event.kind !== "user" ||
+          event.content !== steering.prompt
+        ) return false;
+        return acknowledgeSteering(attempt, steering);
+      }
+
+      function incrementalSteeringEventIsCausal(attempt, event) {
+        const steering = attempt?.steering;
+        return !steering ||
+          event.steeringAck?.steerId !== steering.id ||
+          event.content === steering.prompt;
       }
 
       async function steerPrompt() {
@@ -1145,6 +3045,7 @@
           : null;
         if (
           !attempt ||
+          attempt.awaitingStopTerminal ||
           attempt.steerInProgress ||
           (commandInProgress && commandInProgress !== "save_global_settings") ||
           commandReconciliationBlocked ||
@@ -1173,24 +3074,37 @@
           promptControl.focus({ preventScroll: true });
           return;
         }
+        const pendingConfirmation = pendingConfirmationsBySession.get(
+          attempt.sessionId,
+        );
+        const retryingSteering = attempt.steering?.prompt === prompt;
         const steering = {
-          id: attempt.steering?.prompt === prompt
+          id: retryingSteering
             ? attempt.steering.id
-            : createSteerId(),
+            : createCorrelationId("steer"),
           prompt,
           draftRevision: composerDraftRevisionsBySession.get(attempt.sessionId),
+          supersededConfirmationId: retryingSteering
+            ? attempt.steering.supersededConfirmationId
+            : pendingConfirmation?.sendId === attempt.id
+              ? pendingConfirmation.id
+              : null,
+          supersededConfirmationGeneration: retryingSteering
+            ? attempt.steering.supersededConfirmationGeneration
+            : pendingConfirmation?.sendId === attempt.id
+              ? pendingConfirmation.confirmationGeneration
+              : null,
         };
         attempt.steering = steering;
         attempt.steerInProgress = true;
         composerDraftsBySession.set(attempt.sessionId, prompt);
-        const pendingConfirmation = pendingConfirmationsBySession.get(attempt.sessionId);
         if (pendingConfirmation?.sendId === attempt.id) {
           requireView().setConfirmationState(true);
         }
         setAttemptStatus(attempt, "Applying guidance…", false);
         syncOperationState();
         try {
-          await postBridge(
+          const accepted = await postBridge(
             "/steer",
             { prompt, sessionId: attempt.sessionId },
             {
@@ -1198,7 +3112,17 @@
               "X-Live-Smith-Steer-Id": steering.id,
             },
           );
-          acknowledgeSteering(attempt, steering);
+          if (
+            attempt.steering === steering &&
+            !applySteeringAcceptedPayload(attempt, steering, {
+              ...accepted,
+              steerId: steering.id,
+            })
+          ) {
+            throw new Error(
+              "The steering response did not contain its authoritative acknowledgement.",
+            );
+          }
         } catch (error) {
           if (
             !attemptIsCurrent(attempt) ||
@@ -1236,6 +3160,9 @@
       ) {
         if (!attempt || attempt.failureHandled || !attemptIsCurrent(attempt)) return;
         attempt.awaitingStopTerminal = true;
+        if (activeSessionId() === attempt.sessionId) {
+          requireView().setConfirmationState(true);
+        }
         if (resumeQueuedAfterStop) attempt.resumeQueuedAfterStopRequested = true;
         if (attempt.recoveryInProgress) {
           await attempt.recoveryInProgress;
@@ -1246,6 +3173,7 @@
             attempt,
             `${message} Stopping the active agent request…`,
             true,
+            { stopPhase: true },
           );
           while (attemptIsCurrent(attempt) && !attempt.failureHandled) {
             try {
@@ -1256,14 +3184,37 @@
               );
               if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
               if (result.terminal === true) {
-                const deferredTerminal = attempt.deferredSendTerminal || {};
-                const promptPersistence = [
+                let deferredTerminal = attempt.deferredSendTerminal || {};
+                let promptPersistence = [
                   "persisted",
                   "not_persisted",
                   "unknown",
                 ].includes(result.promptPersistence)
                   ? result.promptPersistence
                   : null;
+                if (
+                  promptPersistence === "unknown" &&
+                  attempt.sendOutcomePending
+                ) {
+                  setAttemptStatus(
+                    attempt,
+                    `${message} Stop reached a terminal state; waiting briefly for the original Send outcome…`,
+                    true,
+                    { stopPhase: true },
+                  );
+                  await waitForSendOutcome(attempt);
+                  if (!attemptIsCurrent(attempt) || attempt.failureHandled) return;
+                  deferredTerminal = attempt.deferredSendTerminal || {};
+                }
+                if (promptPersistence === "unknown") {
+                  promptPersistence = deferredTerminal.sendOutcome === "success"
+                    ? "persisted"
+                    : ["persisted", "not_persisted", "unknown"].includes(
+                        deferredTerminal.promptPersistence,
+                      )
+                      ? deferredTerminal.promptPersistence
+                      : "unknown";
+                }
                 if (promptPersistence === "not_persisted") {
                   await handleSendFailure(
                     attempt,
@@ -1315,6 +3266,7 @@
                     attempt,
                     `${message} The agent request stopped, but current state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
                     true,
+                    { stopPhase: true },
                   );
                 }
                 return;
@@ -1323,6 +3275,7 @@
                 attempt,
                 `${message} Stop requested; waiting for the agent request to reach a terminal state…`,
                 true,
+                { stopPhase: true },
               );
               if (!(await waitForStopPoll(attempt))) return;
             } catch {
@@ -1331,6 +3284,7 @@
                 attempt,
                 `${message} The stop request could not be confirmed. Retry Stop or close Live Smith.`,
                 true,
+                { stopPhase: true },
               );
               return;
             }
@@ -1379,16 +3333,17 @@
       function settleSendAttempt(attempt, { promoteQueued = true } = {}) {
         if (!attemptIsCurrent(attempt)) return false;
         cancelSendRecovery(attempt);
+        resolveSendOutcome(attempt);
         cancelAssistantDraftRender(attempt.sessionId);
         attempt.failureHandled = true;
         assistantDraftsBySession.set(attempt.sessionId, "");
         webSearchUpdatesBySession.delete(attempt.sessionId);
         webSearchEventIdsAtSendStartBySession.delete(attempt.sessionId);
         pendingConfirmationsBySession.delete(attempt.sessionId);
-        confirmationResolutionsBySession.delete(attempt.sessionId);
+        clearConfirmationResolution(attempt.sessionId);
         sendAttemptsBySession.delete(attempt.sessionId);
         const promoted = promoteQueued && startNextQueuedFollowUp(attempt.sessionId);
-        if (!promoted) setSendInProgress(attempt.sessionId, false);
+        if (!promoted) syncSendPresentation(attempt.sessionId);
         else syncActiveSessionUi();
         if (activeSessionId() === attempt.sessionId) {
           requireView().renderTimeline();
@@ -1430,16 +3385,13 @@
         ) {
           if (restoreQueuedFollowUp) requireView().renderTimeline();
           showStatus(
-            [restoreQueuedFollowUp
+            restoreQueuedFollowUp
               ? queuedRecovery?.restoredToComposer
                 ? `${message} The queued follow-up was restored as a draft; choose Send before later follow-ups can continue.`
                 : `${message} The queued follow-up remains paused under Up next; the newer composer draft was preserved.`
               : pauseQueuedFollowUps
                 ? `${message} Queued follow-ups remain paused; check the timeline, then choose Send when you are ready to continue.`
               : `${message} The interrupted request was stopped; check the timeline before trying again.`,
-              attempt.localFollowUpCancellation]
-              .filter(Boolean)
-              .join(" "),
             true,
           );
         }
@@ -1452,9 +3404,12 @@
       }
 
       function pauseFailedSendForRecovery(attempt) {
-        const entry = { id: attempt.id, prompt: attempt.payload.prompt };
+        const entry = {
+          queueId: attempt.queueId || createCorrelationId("queue"),
+          prompt: attempt.payload.prompt,
+        };
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
-        if (entries[0]?.id !== entry.id) entries.unshift(entry);
+        if (entries[0]?.queueId !== entry.queueId) entries.unshift(entry);
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
         pausedFollowUpSessions.add(attempt.sessionId);
         const canRestoreToComposer =
@@ -1488,35 +3443,90 @@
         if (activeSessionId() === attempt.sessionId) {
           document.getElementById("prompt").value = "";
         }
-        const stateReconciled = isAuthoritativeCommandState(authoritativeState);
-        const stateCancellation = stateReconciled
-          ? applyCommandState("session_unavailable", authoritativeState)
-          : "";
+        const stateReconciled = isWireChatBridgeState(authoritativeState);
+        if (stateReconciled) {
+          const causalAttempt = {
+            causalStateSnapshot: attempt.causalStateSnapshot,
+            ownedSessionMembershipIds: new Set([attempt.sessionId]),
+            ownedSessionActivityIds: new Set([attempt.sessionId]),
+            ...(wasVisible ? { ownsActiveSessionSelection: true } : {}),
+          };
+          if (wasVisible) {
+            applyCommandState(
+              "session_unavailable",
+              authoritativeState,
+              causalAttempt,
+            );
+          } else {
+            const reconciledState = preserveNewerCausalState(
+              authoritativeState,
+              causalAttempt,
+            );
+            mergeUnavailableBackgroundSessionState(
+              reconciledState,
+              attempt.sessionId,
+            );
+            recordAttemptOwnedActivityRevisions(
+              causalAttempt,
+              authoritativeState,
+            );
+          }
+        }
         if (!settleSendAttempt(attempt, { promoteQueued: false })) return true;
-        const cancellationMessage = [`${canceledCount
-            ? `${message} ${canceledCount} queued follow-up${
-                canceledCount === 1 ? "" : "s"
-              } canceled.`
-            : message}${stateReconciled
-              ? ""
-              : " Current Session state is unavailable; close and reopen Live Smith before continuing."}`,
-            stateCancellation]
-            .filter(Boolean)
-            .join(" ");
+        const stateUnavailableMessage = stateReconciled
+          ? ""
+          : "Current Session state is unavailable; close and reopen Live Smith before continuing.";
+        const cancellationMessage = message;
         if (canceledCount > 0) {
           retainCanceledFollowUps(canceledCount);
         }
         const currentState = getState();
         currentState.status = currentState.status &&
-            !cancellationMessage.includes(currentState.status)
+            !currentState.status.includes(cancellationMessage)
           ? `${currentState.status} ${cancellationMessage}`
           : cancellationMessage;
         if (wasVisible || !activeSendAttempt()) {
-          showStatus(currentState.status, true);
+          showStatus(currentState.status, true, {
+            trailingMessage: stateUnavailableMessage,
+          });
         } else {
           syncActiveSessionUi();
         }
         return true;
+      }
+
+      function mergeUnavailableBackgroundSessionState(state, sessionId) {
+        const current = getState();
+        const authoritative = sessionStateEntry(state, sessionId);
+        current.sessions = current.sessions.filter(
+          (session) => session.id !== sessionId,
+        );
+        current.previousSessions = current.previousSessions.filter(
+          (session) => session.id !== sessionId,
+        );
+        current.archivedSessions = current.archivedSessions.filter(
+          (session) => session.id !== sessionId,
+        );
+        if (authoritative?.collection === "previousSessions") {
+          current.previousSessions = [
+            authoritative.session,
+            ...current.previousSessions,
+          ];
+        } else if (authoritative?.collection === "archivedSessions") {
+          current.archivedSessions = [
+            authoritative.session,
+            ...current.archivedSessions,
+          ];
+        }
+        current.sessionActivities = (current.sessionActivities || []).filter(
+          (activity) => activity.sessionId !== sessionId,
+        );
+        current.bridgeStateRevision = maxDecimalRevision(
+          current.bridgeStateRevision,
+          state.bridgeStateRevision,
+        );
+        recordSessionProjectionCoverage(state, sessionId);
+        requireView().renderSessions();
       }
 
       function cancelReconciledUnavailableSession(attempt, message) {
@@ -1544,14 +3554,14 @@
         attempt.failureObserved = true;
         cancelSendRecovery(attempt);
         pendingConfirmationsBySession.delete(attempt.sessionId);
-        confirmationResolutionsBySession.delete(attempt.sessionId);
+        clearConfirmationResolution(attempt.sessionId);
         if (activeSessionId() === attempt.sessionId) requireView().renderTimeline();
         if (
           sendFailureKind === "session_unavailable" &&
           cancelUnavailableSessionQueue(attempt, authoritativeState, message)
         ) return;
         if (
-          isAuthoritativeCommandState(authoritativeState) &&
+          isWireChatBridgeState(authoritativeState) &&
           !authoritativeState.sessions.some(
             (session) => session.id === attempt.sessionId,
           )
@@ -1560,7 +3570,7 @@
           return;
         }
         if (persistence === "not_persisted") {
-          if (isAuthoritativeCommandState(authoritativeState)) {
+          if (isWireChatBridgeState(authoritativeState)) {
             applyAuthoritativeSendState(attempt, authoritativeState);
           }
           const failedRecovery = pauseFailedSendForRecovery(attempt);
@@ -1571,18 +3581,15 @@
             }
             if (!field || !requireView().showFieldError(field, message)) {
               showStatus(
-                withLocalFollowUpCancellation(
-                  attempt,
-                  !failedRecovery.restoredToComposer
+                !failedRecovery.restoredToComposer
                   ? `${message} The failed ${
                       attempt.queuedFollowUp ? "queued follow-up" : "original request"
                     } remains paused under Up next; the newer composer draft was preserved.`
                   : message,
-                ),
                 true,
               );
             } else {
-              showStatus(attempt.localFollowUpCancellation || "");
+              showStatus("");
             }
             requireView().renderTimeline();
           }
@@ -1604,11 +3611,9 @@
         if (!refreshed) {
           setAttemptStatus(
             attempt,
-            withLocalFollowUpCancellation(
-              attempt,
-              `${message} ${guidance} Authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
-            ),
+            `${message} ${guidance} Authoritative state is unavailable. Retry Stop or close and reopen Live Smith before continuing.`,
             true,
+            { stopPhase: true },
           );
           return;
         }
@@ -1621,12 +3626,9 @@
             }
             requireView().renderTimeline();
             showStatus(
-              withLocalFollowUpCancellation(
-                attempt,
-                queuedRecovery.restoredToComposer
+              queuedRecovery.restoredToComposer
                 ? `${message} ${guidance}`
                 : `${message} ${guidance} The newer composer draft was preserved; the failed follow-up remains paused under Up next.`,
-              ),
               true,
             );
           }
@@ -1641,10 +3643,7 @@
           if (activeSessionId() === attempt.sessionId) {
             requireView().renderTimeline();
             showStatus(
-              withLocalFollowUpCancellation(
-                attempt,
-                `${message} ${guidance} Queued follow-ups remain paused until you deliberately continue.`,
-              ),
+              `${message} ${guidance} Queued follow-ups remain paused until you deliberately continue.`,
               true,
             );
           }
@@ -1656,12 +3655,9 @@
           !sendAttemptsBySession.has(attempt.sessionId)
         ) {
           showStatus(
-            withLocalFollowUpCancellation(
-              attempt,
-              persistence === "persisted"
+            persistence === "persisted"
               ? "Request stopped. The prompt and error are saved in this Session; check the timeline before continuing."
               : `${message} ${guidance}`,
-            ),
             true,
           );
         }
@@ -1679,43 +3675,41 @@
         } catch {
           throw new Error("The bridge response ended before JSON was complete.");
         }
-        if (!result || typeof result !== "object" || Array.isArray(result)) {
-          throw new Error("The bridge response did not contain a JSON object.");
-        }
-        if (!response.ok) {
-          const error = new Error(result.error || `${response.status} ${response.statusText}`);
-          error.httpStatus = response.status;
-          if (typeof result.field === "string") error.field = result.field;
-          if (result.commandOutcome === "unknown") error.commandOutcome = "unknown";
-          if (result.steeringOutcome === "unknown") error.steeringOutcome = "unknown";
-          if (result.state && typeof result.state === "object") error.state = result.state;
-          if (result.reconciliationRequired === true) error.reconciliationRequired = true;
-          throw error;
-        }
-        return result;
+        return decodeBridgeHttpResponse(path, response, result, {
+          commandId: extraHeaders?.["X-Live-Smith-Command-Id"],
+          sendId: extraHeaders?.["X-Live-Smith-Send-Id"],
+        });
       }
 
-      async function runAttachmentOperation(operation) {
+      async function runFileOperation(kind, operation) {
         if (isOperationInProgress()) {
           throw new Error("Another Live Smith operation is already in progress.");
         }
-        attachmentOperationInProgress = true;
+        const causalAttempt = {
+          kind,
+          causalStateSnapshot: captureCausalState(),
+          ownedPendingAttachmentIds: new Set(),
+          ownsAvailableSkills: kind === "skill",
+        };
+        if (kind === "attachment") attachmentOperationInProgress = true;
+        else skillOperationInProgress = true;
         syncOperationState();
         try {
-          return await operation();
+          return await operation(causalAttempt);
         } finally {
-          attachmentOperationInProgress = false;
+          if (kind === "attachment") attachmentOperationInProgress = false;
+          else skillOperationInProgress = false;
           syncOperationState();
           startQueuedFollowUpsForIdleSessions();
         }
       }
 
-      async function requestAttachment(path, init) {
+      async function requestAttachment(path, init, causalAttempt) {
         let response;
         try {
           response = await fetch(bridgeUrl(path), init);
         } catch (error) {
-          return reconcileAttachmentResponseLoss(error);
+          return reconcileAttachmentResponseLoss(error, causalAttempt);
         }
         let result;
         try {
@@ -1723,11 +3717,13 @@
         } catch {
           return reconcileAttachmentResponseLoss(
             new Error("The attachment response ended before its state was available."),
+            causalAttempt,
           );
         }
         if (!result || typeof result !== "object" || Array.isArray(result)) {
           return reconcileAttachmentResponseLoss(
             new Error("The attachment response did not contain state."),
+            causalAttempt,
           );
         }
         if (!response.ok) {
@@ -1737,8 +3733,12 @@
           error.httpStatus = response.status;
           if (result.commandOutcome === "unknown") {
             error.attachmentFailureKind = "unknown";
-            if (isAuthoritativeCommandState(result.state)) {
-              applyCommandState("attachment_reconcile", result.state);
+            if (isWireChatBridgeState(result.state)) {
+              applyCommandState(
+                "attachment_reconcile",
+                result.state,
+                causalAttempt,
+              );
             } else {
               commandReconciliationBlocked = true;
             }
@@ -1754,19 +3754,23 @@
           }
           throw error;
         }
-        if (!isAuthoritativeCommandState(result)) {
+        if (!isWireChatBridgeState(result)) {
           return reconcileAttachmentResponseLoss(
             new Error("The attachment response did not contain authoritative state."),
+            causalAttempt,
           );
         }
-        applyCommandState("attachment", result);
+        applyCommandState("attachment", result, causalAttempt);
         return result;
       }
 
-      async function reconcileAttachmentResponseLoss(error) {
+      async function reconcileAttachmentResponseLoss(error, causalAttempt) {
         let reconciled = false;
         try {
-          reconciled = await refreshState(undefined, "attachment_reconcile") === true;
+          reconciled = await refreshState(
+            causalAttempt,
+            "attachment_reconcile",
+          ) === true;
         } catch {
           reconciled = false;
         }
@@ -1787,7 +3791,7 @@
       }
 
       function uploadAttachments(sessionId, files) {
-        return runAttachmentOperation(async () => {
+        return runFileOperation("attachment", async (causalAttempt) => {
           let state = null;
           const committedWarnings = [];
           const policyFailures = [];
@@ -1795,7 +3799,7 @@
           const uncertainFailures = [];
           for (let index = 0; index < files.length; index += 1) {
             const file = files[index];
-            const contentSha256 = await attachmentContentSha256(file);
+            const contentSha256 = await fileContentSha256(file);
             const previousIds = new Set(
               (getState().pendingAttachments || []).map((attachment) => attachment.id),
             );
@@ -1803,14 +3807,18 @@
               `?sessionId=${encodeURIComponent(sessionId)}` +
               `&fileName=${encodeURIComponent(file.name)}`;
             try {
-              state = await requestAttachment(path, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/octet-stream",
-                  "X-Live-Smith-File-Type": file.type || "application/octet-stream",
+              state = await requestAttachment(
+                path,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/octet-stream",
+                    "X-Live-Smith-File-Type": file.type || "application/octet-stream",
+                  },
+                  body: file,
                 },
-                body: file,
-              });
+                causalAttempt,
+              );
             } catch (error) {
               const detail = `${attachmentFileLabel(file)}: ${
                 error.message || String(error)
@@ -1860,7 +3868,7 @@
         });
       }
 
-      async function attachmentContentSha256(file) {
+      async function fileContentSha256(file) {
         const subtle = globalThis.crypto?.subtle;
         if (
           !subtle ||
@@ -1892,26 +3900,15 @@
       }
 
       function deleteAttachment(sessionId, attachmentId) {
-        return runAttachmentOperation(() => requestAttachment(
-          `/attachments/${encodeURIComponent(attachmentId)}` +
-            `?sessionId=${encodeURIComponent(sessionId)}`,
-          { method: "DELETE" },
-        ));
-      }
-
-      async function runSkillOperation(operation) {
-        if (isOperationInProgress()) {
-          throw new Error("Another Live Smith operation is already in progress.");
-        }
-        skillOperationInProgress = true;
-        syncOperationState();
-        try {
-          return await operation();
-        } finally {
-          skillOperationInProgress = false;
-          syncOperationState();
-          startQueuedFollowUpsForIdleSessions();
-        }
+        return runFileOperation("attachment", (causalAttempt) => {
+          causalAttempt.ownedPendingAttachmentIds.add(attachmentId);
+          return requestAttachment(
+            `/attachments/${encodeURIComponent(attachmentId)}` +
+              `?sessionId=${encodeURIComponent(sessionId)}`,
+            { method: "DELETE" },
+            causalAttempt,
+          );
+        });
       }
 
       function skillRequestWithNewCommandId(init) {
@@ -1919,7 +3916,7 @@
           ...init,
           headers: {
             ...(init.headers || {}),
-            "X-Live-Smith-Command-Id": createCommandId(),
+            "X-Live-Smith-Command-Id": createCorrelationId("command"),
           },
         };
       }
@@ -1931,25 +3928,39 @@
         );
       }
 
-      async function requestSkill(path, init) {
+      async function requestSkill(path, init, causalAttempt) {
         try {
           return await requestSkillAttempt(
             path,
             skillRequestWithNewCommandId(init),
+            causalAttempt,
           );
         } catch (error) {
           if (error.skillNetworkFailure !== true) throw error;
-          return retrySkillAfterResponseLoss(path, init, error);
+          return retrySkillAfterResponseLoss(
+            path,
+            init,
+            error,
+            causalAttempt,
+          );
         }
       }
 
-      async function retrySkillAfterResponseLoss(path, init, responseError) {
+      async function retrySkillAfterResponseLoss(
+        path,
+        init,
+        responseError,
+        causalAttempt,
+      ) {
         showStatus(
           "Lost the Skill response. Waiting for authoritative bridge state…",
           true,
         );
         try {
-          const refreshed = await refreshState(undefined, "skill_reconcile");
+          const refreshed = await refreshState(
+            causalAttempt,
+            "skill_reconcile",
+          );
           if (refreshed !== true) {
             throw new Error("The bridge did not return current Skill state.");
           }
@@ -1960,13 +3971,14 @@
           return await requestSkillAttempt(
             path,
             skillRequestWithNewCommandId(init),
+            causalAttempt,
           );
         } catch (error) {
           throw unconfirmedSkillResultError(error);
         }
       }
 
-      async function requestSkillAttempt(path, init) {
+      async function requestSkillAttempt(path, init, causalAttempt) {
         let response;
         try {
           response = await fetch(bridgeUrl(path), init);
@@ -1990,8 +4002,8 @@
           );
           error.httpStatus = response.status;
           if (result.commandOutcome === "unknown") {
-            if (isAuthoritativeCommandState(result.state)) {
-              applyCommandState("skill_reconcile", result.state);
+            if (isWireChatBridgeState(result.state)) {
+              applyCommandState("skill_reconcile", result.state, causalAttempt);
             } else {
               commandReconciliationBlocked = true;
             }
@@ -2004,8 +4016,8 @@
         const state = result.state && typeof result.state === "object"
           ? result.state
           : result;
-        if (!isAuthoritativeCommandState(state)) throw skillResponseLossError();
-        applyCommandState("skill", state);
+        if (!isWireChatBridgeState(state)) throw skillResponseLossError();
+        applyCommandState("skill", state, causalAttempt);
         return result;
       }
 
@@ -2017,28 +4029,9 @@
         return error;
       }
 
-      function isAuthoritativeCommandState(value) {
-        return Boolean(
-          value &&
-          typeof value === "object" &&
-          !Array.isArray(value) &&
-          typeof value.activeSessionId === "string" &&
-          Array.isArray(value.sessions) &&
-          Array.isArray(value.previousSessions) &&
-          Array.isArray(value.archivedSessions) &&
-          Array.isArray(value.events) &&
-          Array.isArray(value.pendingAttachments) &&
-          Array.isArray(value.availableSkills) &&
-          Array.isArray(value.activeSkillIds) &&
-          value.settings &&
-          typeof value.settings === "object" &&
-          typeof value.openSettingsOnLoad === "boolean"
-        );
-      }
-
       async function installSkill(file, replace) {
-        return runSkillOperation(async () => {
-          const contentSha256 = await skillContentSha256(file);
+        return runFileOperation("skill", async (causalAttempt) => {
+          const contentSha256 = await fileContentSha256(file);
           if (!contentSha256) {
             commandReconciliationBlocked = true;
             throw new Error(
@@ -2054,6 +4047,7 @@
               },
               body: file,
             },
+            causalAttempt,
           );
           const receipt = result.receipt;
           if (
@@ -2071,106 +4065,63 @@
         });
       }
 
-      async function skillContentSha256(file) {
-        const subtle = globalThis.crypto?.subtle;
-        if (
-          !subtle ||
-          typeof subtle.digest !== "function" ||
-          typeof file?.arrayBuffer !== "function"
-        ) return null;
-        try {
-          const digest = await subtle.digest("SHA-256", await file.arrayBuffer());
-          return [...new Uint8Array(digest)]
-            .map((byte) => byte.toString(16).padStart(2, "0"))
-            .join("");
-        } catch {
-          return null;
-        }
-      }
-
       function deleteSkill(skillId) {
-        return runSkillOperation(() => requestSkill(
+        return runFileOperation("skill", (causalAttempt) => requestSkill(
           `/skills/${encodeURIComponent(skillId)}`,
           {
             method: "DELETE",
           },
+          causalAttempt,
         ));
       }
 
-      async function refreshState(expectedSendAttempt, commandKind) {
+      async function refreshState(causalAttempt, commandKind) {
         if (
-          expectedSendAttempt &&
-          !attemptIsCurrent(expectedSendAttempt)
+          !commandKind &&
+          causalAttempt &&
+          !attemptIsCurrent(causalAttempt)
         ) return;
         const response = await fetch(bridgeUrl("/state"));
         if (!response.ok) return false;
         const state = await response.json();
+        if (!isWireChatBridgeState(state)) return false;
         if (
-          expectedSendAttempt &&
-          !attemptIsCurrent(expectedSendAttempt)
+          !commandKind &&
+          causalAttempt &&
+          !attemptIsCurrent(causalAttempt)
         ) return;
         if (commandKind) {
-          applyCommandState(commandKind, state);
-        } else if (expectedSendAttempt) {
-          if (!applyAuthoritativeSendState(expectedSendAttempt, state)) {
+          if (!applyCommandState(commandKind, state, causalAttempt)) return false;
+        } else if (causalAttempt) {
+          if (!applyAuthoritativeSendState(causalAttempt, state)) {
             return false;
           }
-        } else {
-          if (
-            expectedSendAttempt?.sessionId === activeSessionId() &&
-            state.activeSessionId === activeSessionId()
-          ) {
-            reconcileWebSearchUpdatesFromState(state);
-            setState(state);
-          } else {
-            mergeBackgroundState(
-              state,
-              expectedSendAttempt?.sessionId || state.activeSessionId,
-            );
-          }
-          requireView().syncModelStateSource(state.modelStateSource);
-          requireView().renderModelOptions();
-          requireView().updateCapabilityPreview();
-          requireView().render();
         }
         return true;
       }
 
-      function showStatus(message, isError) {
+      function showStatus(message, isError, options) {
         const visibleAttempt = activeSendAttempt();
-        const cancellation = retainedCanceledFollowUpCount > 0
-          ? `${retainedCanceledFollowUpCount} queued follow-up${
-              retainedCanceledFollowUpCount === 1 ? "" : "s"
-            } canceled because the target Session is no longer available.`
-          : "";
-        const rawMessage = String(message || "");
-        const mentionedCanceledCount = [...rawMessage.matchAll(
-          /(\d+) queued follow-ups? canceled/gi,
-        )].reduce((sum, match) => sum + Number(match[1]), 0);
-        const messageAlreadyHasAggregate = cancellation &&
-          mentionedCanceledCount === retainedCanceledFollowUpCount;
-        const baseMessage = (cancellation && !messageAlreadyHasAggregate
-          ? rawMessage.replace(
-              /(?:^|\s)\d+ queued follow-ups? canceled(?: because the target Session is no longer available)?\.?/gi,
-              " ",
-            )
-          : rawMessage)
-          .replace(/\s+/g, " ")
-          .trim();
-        const renderedMessage = [
-          baseMessage,
-          messageAlreadyHasAggregate ? "" : cancellation,
-        ].filter(Boolean).join(" ");
-        if (cancellation && !visibleAttempt) retainedCanceledFollowUpCount = 0;
-        const status = document.getElementById("status");
-        status.textContent = renderedMessage;
-        status.hidden = !renderedMessage;
-        status.classList.toggle("error", Boolean(isError) || Boolean(cancellation));
+        if (
+          visibleAttempt?.awaitingStopTerminal &&
+          options?.stopPhase !== true
+        ) return;
+        const canceledFollowUpCount =
+          options?.canceledFollowUpCount ?? retainedCanceledFollowUpCount;
+        presentStatus({
+          canceledFollowUpCount,
+          isError: Boolean(isError),
+          message: String(message || ""),
+          source: "bridge",
+          trailingMessage: options?.trailingMessage || "",
+        });
+        if (retainedCanceledFollowUpCount && !visibleAttempt) {
+          retainedCanceledFollowUpCount = 0;
+        }
       }
 
-      function setSendInProgress(sessionId, value) {
+      function syncSendPresentation(sessionId) {
         if (activeSessionId() === sessionId) {
-          renderSendButton(value);
           renderDefaultFollowUpBehavior();
         }
         syncOperationState();
@@ -2193,47 +4144,141 @@
         });
       }
 
+      function applyConfirmationResolvedPayload(attempt, payload) {
+        if (
+          !attempt ||
+          payload?.sendId !== attempt.id ||
+          payload?.sessionId !== attempt.sessionId ||
+          !isWireCorrelationId(payload.id) ||
+          !Number.isSafeInteger(payload.confirmationGeneration) ||
+          payload.confirmationGeneration <= 0
+        ) return false;
+        const activity = stateChangeActivity(payload, false);
+        if (
+          activity === null ||
+          activity && (
+            activity.status !== "running" ||
+            ![
+              "Applying confirmed changes",
+              "Continuing after cancellation",
+            ].includes(activity.message)
+          )
+        ) return false;
+        if (
+          payload.confirmationGeneration <=
+            attempt.resolvedConfirmationGeneration
+        ) return true;
+        const resolution = confirmationResolutionsBySession.get(attempt.sessionId);
+        const resolutionMatches =
+          resolution?.sendId === attempt.id &&
+          resolution.confirmationId === payload.id &&
+          resolution.confirmationGeneration === payload.confirmationGeneration;
+        const pending = pendingConfirmationsBySession.get(attempt.sessionId);
+        const pendingMatches =
+          pending?.sendId === attempt.id &&
+          pending.id === payload.id &&
+          pending.confirmationGeneration === payload.confirmationGeneration;
+        if (!resolutionMatches && !pendingMatches) return false;
+        const received = receiveStateChangeRevision(payload);
+        if (!received) return false;
+        attempt.resolvedConfirmationGeneration = payload.confirmationGeneration;
+        if (resolutionMatches) {
+          resolution.authoritativeResolutionObserved = true;
+          clearConfirmationResolution(attempt.sessionId);
+        }
+        if (pendingMatches) {
+          pendingConfirmationsBySession.delete(attempt.sessionId);
+          if (activeSessionId() === attempt.sessionId) {
+            requireView().renderTimeline();
+          }
+        }
+        applySendActivity(attempt, activity, received);
+        requireView().renderSessions();
+        if (activity && activeSessionId() === attempt.sessionId) {
+          syncActiveSessionUi();
+        }
+        return true;
+      }
+
       async function resolveConfirm(id, apply) {
         const attempt = activeSendAttempt();
         const confirmation = activePendingConfirmation();
         const activeResolution = confirmationResolutionsBySession.get(activeSessionId());
         if (
           !attempt ||
+          attempt.awaitingStopTerminal ||
           !confirmation ||
           confirmation.sendId !== attempt.id ||
           confirmation.id !== id ||
           activeConfirmationIsLocked() ||
           activeResolution?.sendId === attempt.id
         ) return;
-        const resolution = { sendId: attempt.id, confirmationId: id };
+        let resolveOutcomeWait;
+        const outcomeSignal = new Promise((resolve) => {
+          resolveOutcomeWait = resolve;
+        });
+        const resolution = {
+          sendId: attempt.id,
+          confirmationId: id,
+          confirmationGeneration: confirmation.confirmationGeneration,
+          authoritativeResolutionObserved: false,
+          outcomeSignal,
+          resolveOutcomeWait,
+        };
         confirmationResolutionsBySession.set(attempt.sessionId, resolution);
         requireView().setConfirmationState(true);
         try {
-          await postBridge("/confirm", { id, apply });
+          const resolved = await postBridge("/confirm", { id, apply });
           if (
             confirmationResolutionsBySession.get(attempt.sessionId) !== resolution ||
             !attemptIsCurrent(attempt)
           ) return;
           if (
-            pendingConfirmationsBySession.get(attempt.sessionId)?.sendId === attempt.id &&
-            pendingConfirmationsBySession.get(attempt.sessionId)?.id === id
+            resolved.confirmationGeneration !==
+              resolution.confirmationGeneration
           ) {
-            pendingConfirmationsBySession.delete(attempt.sessionId);
-            if (activeSessionId() === attempt.sessionId) {
-              requireView().renderTimeline();
-            }
+            throw new Error(
+              "The confirmation response did not match its authoritative generation.",
+            );
           }
-          if (activeSessionId() === attempt.sessionId) showStatus("");
+          if (!applyConfirmationResolvedPayload(attempt, {
+            ...resolved,
+            sendId: attempt.id,
+            sessionId: attempt.sessionId,
+            id,
+          })) {
+            throw new Error(
+              "The confirmation response did not contain its authoritative activity.",
+            );
+          }
         } catch (error) {
           if (
             confirmationResolutionsBySession.get(attempt.sessionId) === resolution &&
             attemptIsCurrent(attempt)
           ) {
-            await recoverInterruptedSend(attempt, error.message || String(error));
+            if (!error.httpStatus && !resolution.authoritativeResolutionObserved) {
+              let timeoutId;
+              const timeout = new Promise((resolve) => {
+                timeoutId = window.setTimeout(resolve, sseReconciliationTimeoutMs);
+              });
+              try {
+                await Promise.race([resolution.outcomeSignal, timeout]);
+              } finally {
+                window.clearTimeout(timeoutId);
+              }
+            }
+            if (!resolution.authoritativeResolutionObserved) {
+              if (
+                confirmationResolutionsBySession.get(attempt.sessionId) === resolution &&
+                attemptIsCurrent(attempt)
+              ) {
+                await recoverInterruptedSend(attempt, error.message || String(error));
+              }
+            }
           }
         } finally {
           if (confirmationResolutionsBySession.get(attempt.sessionId) === resolution) {
-            confirmationResolutionsBySession.delete(attempt.sessionId);
+            clearConfirmationResolution(attempt.sessionId);
             if (attemptIsCurrent(attempt) && activeSessionId() === attempt.sessionId) {
               requireView().setConfirmationState(activeConfirmationIsLocked());
             }
@@ -2265,22 +4310,59 @@
         if (eventSource) return;
         eventSource = new EventSource(bridgeUrl("/events"));
         eventSource.onmessage = (message) => {
-          const payload = JSON.parse(message.data);
-          if (payload.sendId && !payload.sessionId) {
-            const attempt = [...sendAttemptsBySession.values()]
-              .find((entry) => entry.id === payload.sendId);
-            if (attempt) payload.sessionId = attempt.sessionId;
+          let payload;
+          try {
+            payload = JSON.parse(message.data);
+          } catch {
+            return;
           }
+          if (!isWireRecord(payload) || typeof payload.type !== "string") return;
           if (payload.type === "default_follow_up_behavior_changed") {
-            if (!adoptFollowUpBehaviorEvent(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "defaultFollowUpBehavior",
+                "defaultFollowUpBehaviorRevision",
+                "commandId",
+                "bridgeStateRevision",
+              ]) ||
+              !isDefaultFollowUpBehavior(payload.defaultFollowUpBehavior) ||
+              !isDecimalRevision(payload.defaultFollowUpBehaviorRevision) ||
+              !isWireCorrelationId(payload.commandId)
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const adopted = adoptFollowUpBehaviorEvent(payload);
+            if (!adopted) return;
             renderDefaultFollowUpBehavior();
             return;
           }
           if (payload.type === "approval_mode_changed") {
             if (
-              typeof payload.sessionId !== "string" ||
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sessionId",
+                "approvalMode",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireStorageId(payload.sessionId) ||
               !["manual", "low-risk", "everything"].includes(payload.approvalMode)
             ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const projectionCovered = projectionRevisionIsCovered(
+              approvalModePatchRevisionsBySession,
+              payload.sessionId,
+              received,
+            );
+            recordProjectionRevision(
+              approvalModePatchRevisionsBySession,
+              payload.sessionId,
+              received.revision,
+            );
+            if (projectionCovered) {
+              return;
+            }
             const state = getState();
             for (const sessions of [
               state.sessions,
@@ -2297,7 +4379,16 @@
             return;
           }
           if (payload.type === "assistant_delta") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "delta",
+              ]) ||
+              !isActiveSendPayload(payload) ||
+              typeof payload.delta !== "string"
+            ) return;
             const draft = (assistantDraftsBySession.get(payload.sessionId) || "") + payload.delta;
             assistantDraftsBySession.set(payload.sessionId, draft);
             if (activeSessionId() === payload.sessionId) {
@@ -2306,7 +4397,10 @@
             return;
           }
           if (payload.type === "assistant_reset") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, ["type", "sendId", "sessionId"]) ||
+              !isActiveSendPayload(payload)
+            ) return;
             cancelAssistantDraftRender(payload.sessionId);
             assistantDraftsBySession.set(payload.sessionId, "");
             if (activeSessionId() === payload.sessionId) {
@@ -2315,24 +4409,35 @@
             return;
           }
           if (payload.type === "steer_accepted") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "steerId",
+                "activity",
+                "bridgeStateRevision",
+              ]) ||
+              !isActiveSendPayload(payload)
+            ) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
             const steering = attempt?.steering;
             if (!steering || payload.steerId !== steering.id) return;
-            acknowledgeSteering(attempt, steering);
-            setLocalActivity(
-              payload.sessionId,
-              payload.sendId,
-              "running",
-              "Guidance applied",
-            );
-            requireView().renderSessions();
+            applySteeringAcceptedPayload(attempt, steering, payload);
             return;
           }
           if (payload.type === "web_search_update") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "update",
+              ]) ||
+              !isActiveSendPayload(payload)
+            ) return;
             const update = payload.update;
-            if (!update || typeof update.id !== "string") return;
+            if (!isWireWebSearch(update, true)) return;
             const updates = webSearchUpdatesBySession.get(payload.sessionId) || new Map();
             updates.set(update.id, update);
             webSearchUpdatesBySession.set(payload.sessionId, updates);
@@ -2342,66 +4447,228 @@
             return;
           }
           if (payload.type === "session_event") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "event",
+                "activity",
+                "bridgeStateRevision",
+              ]) ||
+              !isActiveSendPayload(payload) ||
+              !isWireSessionEvent(payload.event) ||
+              payload.event.steeringAck !== undefined &&
+                payload.event.steeringAck.sendId !== payload.sendId ||
+              !incrementalSteeringEventIsCausal(
+                sendAttemptsBySession.get(payload.sessionId),
+                payload.event,
+              )
+            ) {
+              return;
+            }
+            const activity = stateChangeActivity(
+              payload,
+              payload.event.steeringAck !== undefined,
+            );
+            if (
+              activity === null ||
+              payload.event.steeringAck === undefined && activity !== undefined ||
+              payload.event.steeringAck !== undefined && (
+                !activity ||
+                !(
+                  activity.status === "running" &&
+                    activity.message === "Guidance applied" ||
+                  activity.status === "stopped" &&
+                    activity.message === "Stopped"
+                )
+              )
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            const steeringAcknowledged = acknowledgeIncrementalSteeringEvent(
+              attempt,
+              payload.event,
+            );
+            if (activity) {
+              const activityBelongsToOlderSteering = Boolean(
+                attempt.steering && !steeringAcknowledged
+              );
+              if (activityBelongsToOlderSteering) {
+                recordProjectionRevision(
+                  activityProjectionRevisionsBySession,
+                  payload.sessionId,
+                  received.revision,
+                );
+              } else if (applySendActivity(
+                attempt,
+                activity,
+                received,
+              )) {
+                requireView().renderSessions();
+                if (activeSessionId() === payload.sessionId) {
+                  syncActiveSessionUi();
+                }
+              }
+            }
             appendSessionEvent(payload.sessionId, payload.event);
             return;
           }
           if (payload.type === "progress") {
-            if (!isActiveSendPayload(payload)) return;
-            const attempt = sendAttemptsBySession.get(payload.sessionId);
-            if (attempt) {
-              attempt.progress = payload.message;
-              attempt.progressIsError = false;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "message",
+                "activity",
+                "bridgeStateRevision",
+              ]) ||
+              !isActiveSendPayload(payload) ||
+              typeof payload.message !== "string"
+            ) {
+              return;
             }
-            setLocalActivity(payload.sessionId, payload.sendId, "running", payload.message);
-            if (activeSessionId() === payload.sessionId) showStatus(payload.message);
+            const activity = stateChangeActivity(payload, true);
+            if (
+              !activity ||
+              activity.status !== "running" ||
+              activity.message !== payload.message
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            const applied = applySendActivity(
+              attempt,
+              activity,
+              received,
+            );
+            if (!applied) return;
+            if (activeSessionId() === payload.sessionId) {
+              showStatus(activity.message, activity.status === "failed");
+            }
             requireView().renderSessions();
             return;
           }
           if (payload.type === "confirm_request") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "id",
+                "confirmationGeneration",
+                "message",
+                "groups",
+                "activity",
+                "bridgeStateRevision",
+              ]) ||
+              !isActiveSendPayload(payload) ||
+              !isWireCorrelationId(payload.id) ||
+              !Number.isSafeInteger(payload.confirmationGeneration) ||
+              payload.confirmationGeneration <= 0 ||
+              typeof payload.message !== "string" ||
+              !payload.message ||
+              !isWireActionDiffGroups(payload.groups)
+            ) return;
+            const activity = stateChangeActivity(payload, true);
+            if (
+              !activity ||
+              activity.status !== "waiting_confirmation" ||
+              activity.message !== "Waiting for confirmation"
+            ) return;
+            const attempt = sendAttemptsBySession.get(payload.sessionId);
+            if (
+              payload.confirmationGeneration <=
+                attempt.resolvedConfirmationGeneration
+            ) return;
+            const pending = pendingConfirmationsBySession.get(payload.sessionId);
+            const pendingBelongsToAttempt = pending?.sendId === payload.sendId;
+            const priorResolution = confirmationResolutionsBySession.get(
+              payload.sessionId,
+            );
+            const resolutionBelongsToAttempt =
+              priorResolution?.sendId === payload.sendId;
+            const currentGeneration = Math.max(
+              attempt.resolvedConfirmationGeneration,
+              pendingBelongsToAttempt ? pending.confirmationGeneration : 0,
+              resolutionBelongsToAttempt
+                ? priorResolution.confirmationGeneration
+                : 0,
+            );
+            const isPendingReplay =
+              pendingBelongsToAttempt &&
+              payload.confirmationGeneration === pending.confirmationGeneration;
+            if (isPendingReplay && (
+              payload.id !== pending.id ||
+              payload.message !== pending.message ||
+              !wireActionDiffGroupsEqual(payload.groups, pending.groups)
+            )) return;
+            if (
+              !isPendingReplay &&
+              payload.confirmationGeneration !== currentGeneration + 1
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            if (
+              pendingBelongsToAttempt &&
+              payload.confirmationGeneration > pending.confirmationGeneration
+            ) {
+              attempt.resolvedConfirmationGeneration = Math.max(
+                attempt.resolvedConfirmationGeneration,
+                pending.confirmationGeneration,
+              );
+            }
+            if (
+              resolutionBelongsToAttempt &&
+              payload.confirmationGeneration >
+                priorResolution.confirmationGeneration
+            ) {
+              priorResolution.authoritativeResolutionObserved = true;
+              attempt.resolvedConfirmationGeneration = Math.max(
+                attempt.resolvedConfirmationGeneration,
+                priorResolution.confirmationGeneration,
+              );
+              clearConfirmationResolution(payload.sessionId);
+            }
             pendingConfirmationsBySession.set(payload.sessionId, {
               sendId: payload.sendId,
               id: payload.id,
+              confirmationGeneration: payload.confirmationGeneration,
               message: payload.message,
               groups: payload.groups || [],
             });
-            const attempt = sendAttemptsBySession.get(payload.sessionId);
-            if (attempt) {
-              attempt.progress = "Waiting for your confirmation";
-              attempt.progressIsError = false;
+            if (applySendActivity(
+              attempt,
+              activity,
+              received,
+            )) {
+              if (activeSessionId() === payload.sessionId) {
+                showStatus(activity.message, activity.status === "failed");
+              }
             }
-            setLocalActivity(
-              payload.sessionId,
-              payload.sendId,
-              "waiting_confirmation",
-              "Waiting for confirmation",
-            );
             if (activeSessionId() === payload.sessionId) {
-              showStatus("Waiting for your confirmation");
               requireView().renderTimeline();
             }
             requireView().renderSessions();
             return;
           }
           if (payload.type === "confirm_resolved") {
-            if (!isActiveSendPayload(payload)) return;
-            const pendingConfirmation = pendingConfirmationsBySession.get(payload.sessionId);
             if (
-              pendingConfirmation &&
-              pendingConfirmation.sendId === payload.sendId &&
-              pendingConfirmation.id === payload.id
-            ) {
-              pendingConfirmationsBySession.delete(payload.sessionId);
-              if (activeSessionId() === payload.sessionId) requireView().renderTimeline();
-            }
-            setLocalActivity(payload.sessionId, payload.sendId, "running", "Continuing");
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "id",
+                "confirmationGeneration",
+                "activity",
+                "bridgeStateRevision",
+              ]) ||
+              !isActiveSendPayload(payload)
+            ) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
-            if (attempt) {
-              attempt.progress = "Continuing";
-              attempt.progressIsError = false;
-            }
-            requireView().renderSessions();
+            applyConfirmationResolvedPayload(attempt, payload);
             return;
           }
           if (payload.type === "state") {
@@ -2409,19 +4676,42 @@
               !activeCommandAttempt ||
               payload.commandId !== activeCommandAttempt.id
             ) return;
+            const state = hasOnlyWireKeys(payload, [
+                "type",
+                "commandId",
+                "state",
+              ]) && isWireChatBridgeState(payload.state)
+              ? payload.state
+              : null;
             activeCommandAttempt.resolveSseOutcome({
               type: "state",
-              state: payload.state,
+              state,
               source: "sse",
             });
             return;
           }
           if (payload.type === "done") {
-            if (!isActiveSendPayload(payload)) return;
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sendId",
+                "sessionId",
+                "state",
+              ]) ||
+              !isActiveSendPayload(payload) ||
+              !isWireChatBridgeState(payload.state)
+            ) return;
             const attempt = sendAttemptsBySession.get(payload.sessionId);
             if (deferSendTerminalWhileAwaitingStop(attempt, {
+              sendOutcome: "success",
               state: payload.state,
-            })) return;
+            })) {
+              resolveSendOutcome(attempt, {
+                sendOutcome: "success",
+                state: payload.state,
+              });
+              return;
+            }
             cancelSendRecovery(attempt);
             if (!applyAuthoritativeSendState(attempt, payload.state)) return;
             if (cancelReconciledUnavailableSession(
@@ -2430,33 +4720,45 @@
             )) return;
             settleSendAttempt(attempt);
             if (activeSessionId() === payload.sessionId && !activeSendAttempt()) {
-              showStatus(
-                attempt.localFollowUpCancellation || getState().status || "",
-              );
+              showStatus(getState().status || "");
             }
             return;
           }
           if (payload.type === "error") {
-            if (payload.sendId !== undefined) {
+            const envelopeKind = wireErrorEnvelopeKind(payload);
+            if (envelopeKind === null) return;
+            if (envelopeKind === "send") {
               if (!isActiveSendPayload(payload)) return;
               const attempt = sendAttemptsBySession.get(payload.sessionId);
               if (deferSendTerminalWhileAwaitingStop(attempt, {
+                sendOutcome: "error",
                 message: payload.message,
                 field: payload.field,
+                promptPersistence: payload.promptPersistence,
                 sendFailureKind: payload.sendFailureKind,
                 state: payload.state,
-              })) return;
+              })) {
+                resolveSendOutcome(attempt, {
+                  sendOutcome: "error",
+                  message: payload.message,
+                  field: payload.field,
+                  promptPersistence: payload.promptPersistence,
+                  sendFailureKind: payload.sendFailureKind,
+                  state: payload.state,
+                });
+                return;
+              }
               void handleSendFailure(
                 attempt,
                 payload.message,
-                payload.promptPersistence || "unknown",
+                payload.promptPersistence,
                 payload.field,
                 payload.state,
                 payload.sendFailureKind,
               );
               return;
             }
-            if (payload.commandId !== undefined) {
+            if (envelopeKind === "command") {
               if (
                 !activeCommandAttempt ||
                 payload.commandId !== activeCommandAttempt.id
@@ -2464,7 +4766,7 @@
               const error = new Error(payload.message);
               if (typeof payload.field === "string") error.field = payload.field;
               if (payload.commandOutcome === "unknown") error.commandOutcome = "unknown";
-              if (payload.state && typeof payload.state === "object") error.state = payload.state;
+              if (payload.state !== undefined) error.state = payload.state;
               if (payload.reconciliationRequired === true) {
                 error.reconciliationRequired = true;
               }
@@ -2480,9 +4782,6 @@
             } else {
               showStatus("");
             }
-            pendingConfirmationsBySession.delete(activeSessionId());
-            confirmationResolutionsBySession.delete(activeSessionId());
-            requireView().renderTimeline();
           }
         };
         eventSource.onerror = () => {
@@ -2495,7 +4794,6 @@
       }
 
       return {
-        closeWithResult: hostAdapter.closeWithResult,
         connectView,
         deleteAttachment,
         deleteSkill,

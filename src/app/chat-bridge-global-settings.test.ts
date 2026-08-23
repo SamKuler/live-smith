@@ -82,7 +82,10 @@ test("global follow-up settings are strict commands allowed during an active sen
     `${chatUrl.origin}${pathname}?token=${token}`;
   const activeSend = fetch(endpoint("/send"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Send-Id": "settings-active-send",
+    },
     body: JSON.stringify({ prompt: "test", sessionId: "session-1" }),
   });
 
@@ -124,7 +127,10 @@ test("global follow-up settings are strict commands allowed during an active sen
     ]) {
       const response = await fetch(endpoint("/command"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Live-Smith-Command-Id": `settings-command-${body.defaultFollowUpBehavior}`,
+        },
         body: JSON.stringify(body),
       });
       assert.equal(response.status, 400);
@@ -167,15 +173,18 @@ test("global follow-up events replay and reconcile states by revision", async ()
     });
 
     firstEvents = await fetch(endpoint("/events"));
-    assert.deepEqual(
-      await readSsePayload(firstEvents, "default_follow_up_behavior_changed"),
-      {
+    const firstEvent = await readSsePayload(
+      firstEvents,
+      "default_follow_up_behavior_changed",
+    );
+    assert.match(String(firstEvent.bridgeStateRevision), /^[1-9][0-9]*$/);
+    delete firstEvent.bridgeStateRevision;
+    assert.deepEqual(firstEvent, {
         type: "default_follow_up_behavior_changed",
         defaultFollowUpBehavior: "steer",
         defaultFollowUpBehaviorRevision: "9007199254740992",
         commandId: "save-steer-2",
-      },
-    );
+    });
 
     const overlaid = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
     assert.equal(overlaid.settings.defaultFollowUpBehavior, "steer");
@@ -199,18 +208,18 @@ test("global follow-up events replay and reconcile states by revision", async ()
       commandId: "stale-save",
     });
     snapshotEvents = await fetch(endpoint("/events"));
-    assert.deepEqual(
-      await readSsePayload(
-        snapshotEvents,
-        "default_follow_up_behavior_changed",
-      ),
-      {
+    const snapshotEvent = await readSsePayload(
+      snapshotEvents,
+      "default_follow_up_behavior_changed",
+    );
+    assert.match(String(snapshotEvent.bridgeStateRevision), /^[1-9][0-9]*$/);
+    delete snapshotEvent.bridgeStateRevision;
+    assert.deepEqual(snapshotEvent, {
         type: "default_follow_up_behavior_changed",
         defaultFollowUpBehavior: "queue",
         defaultFollowUpBehaviorRevision: "9007199254740993",
         commandId: "bridge-state-snapshot",
-      },
-    );
+    });
     await snapshotEvents.body?.cancel();
     snapshotEvents = undefined;
 
@@ -220,18 +229,18 @@ test("global follow-up events replay and reconcile states by revision", async ()
       commandId: "save-queue-3",
     });
     reconnectedEvents = await fetch(endpoint("/events"));
-    assert.deepEqual(
-      await readSsePayload(
-        reconnectedEvents,
-        "default_follow_up_behavior_changed",
-      ),
-      {
+    const reconnectedEvent = await readSsePayload(
+      reconnectedEvents,
+      "default_follow_up_behavior_changed",
+    );
+    assert.match(String(reconnectedEvent.bridgeStateRevision), /^[1-9][0-9]*$/);
+    delete reconnectedEvent.bridgeStateRevision;
+    assert.deepEqual(reconnectedEvent, {
         type: "default_follow_up_behavior_changed",
         defaultFollowUpBehavior: "queue",
         defaultFollowUpBehaviorRevision: "9007199254740993",
         commandId: "save-queue-3",
-      },
-    );
+    });
   } finally {
     await firstEvents?.body?.cancel();
     await snapshotEvents?.body?.cancel();
@@ -275,15 +284,18 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
     });
     const replay = await fetch(endpoint("/events"));
     try {
-      assert.deepEqual(
-        await readSsePayload(replay, "default_follow_up_behavior_changed"),
-        {
+      const replayEvent = await readSsePayload(
+        replay,
+        "default_follow_up_behavior_changed",
+      );
+      assert.match(String(replayEvent.bridgeStateRevision), /^[1-9][0-9]*$/);
+      delete replayEvent.bridgeStateRevision;
+      assert.deepEqual(replayEvent, {
           type: "default_follow_up_behavior_changed",
           defaultFollowUpBehavior: "steer",
           defaultFollowUpBehaviorRevision: "10000000000000000",
           commandId: "larger-revision",
-        },
-      );
+      });
     } finally {
       await replay.body?.cancel();
     }

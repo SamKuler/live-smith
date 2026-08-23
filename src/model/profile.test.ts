@@ -5,6 +5,7 @@ import {
   compareDefaultFollowUpBehaviorRevisions,
   incrementDefaultFollowUpBehaviorRevision,
   isDefaultFollowUpBehaviorRevision,
+  profileSecrets,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DirectApiConnection,
@@ -148,6 +149,46 @@ test("Profile validation still rejects malformed and non-HTTP Base URLs", () => 
   assert.throws(
     () => validateDraftProfileForSave(profile("file:///tmp/provider")),
     /Base URL must use HTTP or HTTPS/,
+  );
+});
+
+test("profileSecrets retains every raw and decoded Base URL secret form", () => {
+  const saved = validateDraftProfileForSave(profile(
+    "https://api.deepseek.com/anthropic" +
+      "?encoded=raw%2Dquery&space=signed%20query" +
+      "&slash=signed%2fquery&plus=plus+query" +
+      "&repeat=first%2Drepeat&repeat=second%2Drepeat" +
+      "&malformed=broken%2Dquery%zz#raw%2Dfragment",
+  ));
+
+  const secrets = profileSecrets(saved);
+  for (const expected of [
+    "raw%2Dquery",
+    "raw-query",
+    "signed%20query",
+    "signed+query",
+    "signed query",
+    "signed%2fquery",
+    "signed%2Fquery",
+    "signed/query",
+    "plus+query",
+    "plus query",
+    "first%2Drepeat",
+    "first-repeat",
+    "second%2Drepeat",
+    "second-repeat",
+    "broken%2Dquery%zz",
+    "broken-query%25zz",
+    "broken-query%zz",
+    "raw%2Dfragment",
+    "raw-fragment",
+  ]) {
+    assert.ok(secrets.includes(expected), `Expected secret form ${expected}`);
+  }
+  assert.equal(new Set(secrets).size, secrets.length);
+  assert.deepEqual(
+    secrets.map((secret) => secret.length),
+    secrets.map((secret) => secret.length).sort((left, right) => right - left),
   );
 });
 
@@ -393,7 +434,7 @@ test("subscription Profiles persist no direct API credentials", () => {
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   });
 
@@ -402,6 +443,7 @@ test("subscription Profiles persist no direct API credentials", () => {
     provider: "openai",
   });
   assert.equal(JSON.stringify(saved).includes("apiKey"), false);
+  assert.equal(JSON.stringify(saved).includes("maxOutputTokens"), false);
 });
 
 test("reasoning effort validation preserves ultra and rejects unknown values", () => {
@@ -455,7 +497,7 @@ test("subscription Profiles reject direct credentials and unsupported request se
     name: "ChatGPT subscription",
     connection: { kind: "codex-subscription", provider: "openai" },
     model: "gpt-5.6-sol",
-    parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+    parameters: { reasoning: { mode: "default" } },
     advanced: {},
   };
 
@@ -471,6 +513,7 @@ test("subscription Profiles reject direct credentials and unsupported request se
   }
 
   for (const settings of [
+    { parameters: { ...base.parameters, maxOutputTokens: 8192 } },
     {
       parameters: {
         ...base.parameters,
@@ -490,7 +533,7 @@ test("subscription Profiles reject direct credentials and unsupported request se
   ]) {
     assert.throws(
       () => validateDraftProfileForSave({ ...base, ...settings }),
-      /not supported by Codex subscription Profiles|cannot be disabled/,
+      /does not support property|not supported by Codex subscription Profiles|cannot be disabled/,
     );
   }
 });

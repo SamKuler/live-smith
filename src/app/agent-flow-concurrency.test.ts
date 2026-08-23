@@ -56,6 +56,32 @@ import {
 } from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
 
+let bridgeRequestSequence = 0;
+
+function bridgeJsonHeaders(): Record<string, string> {
+  bridgeRequestSequence += 1;
+  return {
+    "Content-Type": "application/json",
+    "X-Live-Smith-Command-Id": `concurrency-command-${bridgeRequestSequence}`,
+    "X-Live-Smith-Send-Id": `concurrency-send-${bridgeRequestSequence}`,
+  };
+}
+
+function bridgeSkillHeaders(): Record<string, string> {
+  bridgeRequestSequence += 1;
+  return {
+    "Content-Type": "text/markdown; charset=utf-8",
+    "X-Live-Smith-Command-Id": `concurrency-skill-${bridgeRequestSequence}`,
+  };
+}
+
+function bridgeSkillDeleteHeaders(): Record<string, string> {
+  bridgeRequestSequence += 1;
+  return {
+    "X-Live-Smith-Command-Id": `concurrency-skill-${bridgeRequestSequence}`,
+  };
+}
+
 test("approval decisions follow the target Session and ignore global follow-up settings", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-approval-decision-"));
   await fs.writeFile(
@@ -223,7 +249,7 @@ test("Session approval changes publish to every open bridge for the same storage
     const notification = readSsePayload(events, "approval_mode_changed");
     const response = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "set_session_approval_mode",
         sessionId: fixture.sessionId,
@@ -234,7 +260,9 @@ test("Session approval changes publish to every open bridge for the same storage
     assert.equal(response.status, 200);
     const state = await response.json() as ChatDialogState;
     assert.equal(state.approvalMode, "everything");
-    assert.deepEqual(await resolvesWithin(notification, "approval mode notification"), {
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(notification, "approval mode notification"),
+    ), {
       type: "approval_mode_changed",
       sessionId: fixture.sessionId,
       approvalMode: "everything",
@@ -282,7 +310,9 @@ test("global follow-up behavior changes publish to every open bridge for the sam
     const state = await response.json() as ChatDialogState;
     assert.equal(state.settings.defaultFollowUpBehavior, "steer");
     assert.equal(state.settings.defaultFollowUpBehaviorRevision, "1");
-    assert.deepEqual(await resolvesWithin(notification, "follow-up behavior notification"), {
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(notification, "follow-up behavior notification"),
+    ), {
       type: "default_follow_up_behavior_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
@@ -344,7 +374,9 @@ test("an unknown global settings commit publishes its reconciled value to every 
     assert.equal(body.reconciliationRequired, undefined);
     assert.equal(body.state?.settings.defaultFollowUpBehavior, "steer");
     assert.equal(body.state?.settings.defaultFollowUpBehaviorRevision, "1");
-    assert.deepEqual(await resolvesWithin(notification, "unknown commit notification"), {
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(notification, "unknown commit notification"),
+    ), {
       type: "default_follow_up_behavior_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
@@ -449,7 +481,9 @@ test("unknown global settings readback stays ordered before a later save", async
     assert.equal(secondBody.settings.defaultFollowUpBehavior, "queue");
     assert.equal(secondBody.settings.defaultFollowUpBehaviorRevision, "2");
     assert.deepEqual(
-      await resolvesWithin(firstNotification, "first settings notification"),
+      withoutBridgeStateRevision(
+        await resolvesWithin(firstNotification, "first settings notification"),
+      ),
       {
         type: "default_follow_up_behavior_changed",
         defaultFollowUpBehavior: "steer",
@@ -458,7 +492,9 @@ test("unknown global settings readback stays ordered before a later save", async
       },
     );
     assert.deepEqual(
-      await resolvesWithin(secondNotification, "second settings notification"),
+      withoutBridgeStateRevision(
+        await resolvesWithin(secondNotification, "second settings notification"),
+      ),
       {
         type: "default_follow_up_behavior_changed",
         defaultFollowUpBehavior: "queue",
@@ -513,7 +549,7 @@ test("concurrent state and discovery responses each keep models, capabilities, a
 
         const discoveryResponsePromise = fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "discover_models", profile: profileB }),
         });
         await discoveryStarted.promise;
@@ -546,7 +582,6 @@ test("concurrent state and discovery responses each keep models, capabilities, a
     },
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -582,7 +617,7 @@ test("two bridges serialize a same-Session send and delete without recreating ev
   try {
     const send = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Finish safely",
         sessionId: fixture.sessionId,
@@ -601,7 +636,7 @@ test("two bridges serialize a same-Session send and delete without recreating ev
     let deleteSettled = false;
     const deletion = fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
@@ -720,7 +755,6 @@ test("a second dialog opens while an existing Session send holds its fence", asy
     },
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: { track: leadTrack },
     scope: { kind: "track", identity: "1", label: "Lead" },
@@ -744,7 +778,7 @@ test("a second dialog opens while an existing Session send holds its fence", asy
     const state = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
     send = fetch(endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Hold this Session fence",
         sessionId: state.activeSessionId,
@@ -792,7 +826,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
   try {
     const install = await fetch(`${fixture.second.endpoint("/skills")}&replace=false`, {
       method: "POST",
-      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      headers: bridgeSkillHeaders(),
       body: attachmentRequestBody(markdown),
     });
     assert.equal(install.status, 201);
@@ -811,7 +845,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
     await setSessionArchived(fixture.directory, historical.id, true);
     const removalOnly = await fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: historical.id,
@@ -827,7 +861,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
     );
     const historicalAddition = await fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: historical.id,
@@ -838,7 +872,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
 
     const send = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Hold the Session lease",
         sessionId: fixture.sessionId,
@@ -850,7 +884,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
       fixture.second.endpoint("/command"),
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: bridgeJsonHeaders(),
         body: JSON.stringify({
           kind: "set_session_skills",
           sessionId: fixture.sessionId,
@@ -866,7 +900,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
 
     const activation = await fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: fixture.sessionId,
@@ -883,13 +917,13 @@ test("Skills mutate atomically and reject activation during another dialog's act
 
     const deleteInUse = await fetch(
       fixture.second.endpoint("/skills/mix-review"),
-      { method: "DELETE" },
+      { method: "DELETE", headers: bridgeSkillDeleteHeaders() },
     );
     assert.equal(deleteInUse.status, 409);
 
     const clearing = await fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: fixture.sessionId,
@@ -900,7 +934,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
 
     const deletion = await fetch(
       fixture.second.endpoint("/skills/mix-review"),
-      { method: "DELETE" },
+      { method: "DELETE", headers: bridgeSkillDeleteHeaders() },
     );
     assert.equal(deletion.status, 200);
     const deletedState = await deletion.json() as ChatDialogState;
@@ -934,13 +968,13 @@ test("state reports active Skills from the same Session snapshot", async () => {
         );
         const install = await fetch(`${endpoint("/skills")}&replace=false`, {
           method: "POST",
-          headers: { "Content-Type": "text/markdown; charset=utf-8" },
+          headers: bridgeSkillHeaders(),
           body: attachmentRequestBody(markdown),
         });
         assert.equal(install.status, 201);
         const activation = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "set_session_skills",
             sessionId,
@@ -954,7 +988,7 @@ test("state reports active Skills from the same Session snapshot", async () => {
         await staleSessionRead.promise;
         const clearing = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "set_session_skills",
             sessionId,
@@ -977,7 +1011,6 @@ test("state reports active Skills from the same Session snapshot", async () => {
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1040,7 +1073,7 @@ test("state revalidates events and pending attachments as one generation", async
 
     const send = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Consume the pending attachment",
         sessionId: fixture.sessionId,
@@ -1120,14 +1153,14 @@ test("a held Session state build never acquires the dialog's different active Se
   try {
     const created = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "new_session" }),
     });
     assert.equal(created.status, 200);
     const sessionB = (await created.json() as ChatDialogState).activeSessionId;
     const selectedA = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "select_session",
         sessionId: fixture.sessionId,
@@ -1137,7 +1170,7 @@ test("a held Session state build never acquires the dialog's different active Se
 
     firstSend = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Hold Session A",
         sessionId: fixture.sessionId,
@@ -1146,14 +1179,14 @@ test("a held Session state build never acquires the dialog's different active Se
     await resolvesWithin(firstModelStarted.promise, "Session A model request");
     const selectedB = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ kind: "select_session", sessionId: sessionB }),
     });
     assert.equal(selectedB.status, 200);
 
     secondSend = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Finish Session B independently",
         sessionId: sessionB,
@@ -1241,7 +1274,7 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
         try {
           const deletion = await fetch(endpoint("/command"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({ kind: "delete_session", sessionId }),
           });
           assert.equal(deletion.status, 500);
@@ -1251,7 +1284,7 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
 
         const send = await fetch(endpoint("/send"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ prompt: "Do not hang", sessionId }),
         });
         assert.equal(send.status, 500);
@@ -1268,7 +1301,6 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1293,7 +1325,7 @@ test("the HTTP send boundary validates whitespace without trimming the persisted
   try {
     const response = await fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ prompt, sessionId: fixture.sessionId }),
     });
     assert.equal(response.status, 200);
@@ -1326,7 +1358,7 @@ for (const commandKind of ["delete_session", "archive_session"] as const) {
     try {
       const attachment = fetch(fixture.first.endpoint("/command"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: bridgeJsonHeaders(),
         body: JSON.stringify({
           kind: "attach_selected_audio_source",
           sessionId: fixture.sessionId,
@@ -1337,7 +1369,7 @@ for (const commandKind of ["delete_session", "archive_session"] as const) {
       let mutationSettled = false;
       const mutation = fetch(fixture.second.endpoint("/command"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: bridgeJsonHeaders(),
         body: JSON.stringify({
           kind: commandKind,
           sessionId: fixture.sessionId,
@@ -1418,7 +1450,7 @@ test("a selected source attachment and send share the same-Session fence", async
   try {
     const attachment = fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: fixture.sessionId,
@@ -1427,7 +1459,7 @@ test("a selected source attachment and send share the same-Session fence", async
     await resolvesWithin(sourceStarted.promise, "selected source copy");
     const send = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         prompt: "Analyze the audio",
         sessionId: fixture.sessionId,
@@ -1481,7 +1513,7 @@ test("selected source final state remains inside the same-Session fence", async 
   try {
     const attachment = fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: fixture.sessionId,
@@ -1492,7 +1524,7 @@ test("selected source final state remains inside the same-Session fence", async 
     let deleteSettled = false;
     const deletion = fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
@@ -1543,7 +1575,7 @@ test("selected source copies for different Sessions do not share a fence", async
   try {
     const first = fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: fixture.sessionId,
@@ -1552,7 +1584,7 @@ test("selected source copies for different Sessions do not share a fence", async
     await resolvesWithin(firstSourceStarted.promise, "first selected source copy");
     const other = await resolvesWithin(fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "attach_selected_audio_source",
         sessionId: otherSession.id,
@@ -1571,7 +1603,7 @@ test("selected source copies for different Sessions do not share a fence", async
   }
 });
 
-test("stopping a same-Session send while it waits for another bridge never persists its prompt", async () => {
+test("stopping a same-Session send before or while it waits never persists its prompt", async () => {
   const firstModelStarted = deferred<void>();
   const releaseFirstModel = deferred<void>();
   let secondModelCalls = 0;
@@ -1617,21 +1649,32 @@ test("stopping a same-Session send while it waits for another bridge never persi
         sessionId: fixture.sessionId,
       }),
     });
-    const stopResult = await resolvesWithin(
-      stopSendWhenActive(fixture.second, "second-queued-send"),
-      "queued send registration",
+    const stopResponse = await resolvesWithin(
+      fetch(fixture.second.endpoint("/stop"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Live-Smith-Send-Id": "second-queued-send",
+        },
+        body: "{}",
+      }),
+      "queued send stop response",
     );
-    assert.deepEqual(stopResult, {
-      ok: true,
-      terminal: false,
-      sendId: "second-queued-send",
-    });
+    const stopResult = await stopResponse.json() as Record<string, unknown>;
+    assert.equal(stopResult.ok, true);
+    assert.equal(stopResult.sendId, "second-queued-send");
+    assert.equal(typeof stopResult.terminal, "boolean");
+    if (stopResult.terminal === true) {
+      assert.equal(stopResult.promptPersistence, "unknown");
+    } else {
+      assert.equal(stopResult.promptPersistence, undefined);
+    }
 
     const secondResponse = await resolvesWithin(
       secondSend,
       "aborted queued send response",
     );
-    assert.equal(secondResponse.status, 500);
+    assert.equal(secondResponse.status, stopResult.terminal === true ? 409 : 500);
     assert.equal(
       (await secondResponse.json() as { promptPersistence?: string }).promptPersistence,
       "not_persisted",
@@ -1714,7 +1757,7 @@ test("closing a bridge cancels its queued same-Session send without affecting th
         sessionId: fixture.sessionId,
       }),
     });
-    await waitForSessionActivity(fixture.second, "second-close-queued");
+    await waitForSessionActivity(fixture.second, fixture.sessionId);
 
     await resolvesWithin(fixture.closeSecond(), "queued bridge close");
     const secondResponse = await resolvesWithin(secondSend, "closed queued send response");
@@ -1789,7 +1832,7 @@ test("a failed send builds its authoritative state before releasing the cross-br
     let deleteSettled = false;
     const deletion = fetch(fixture.second.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
@@ -1854,7 +1897,7 @@ test("two bridges can run different Sessions concurrently", async () => {
       fixture.second.endpoint("/command"),
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: bridgeJsonHeaders(),
         body: JSON.stringify({ kind: "new_session" }),
       },
     );
@@ -1865,7 +1908,7 @@ test("two bridges can run different Sessions concurrently", async () => {
 
     const firstSend = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ prompt: "First", sessionId: fixture.sessionId }),
     });
     const sendBoundary = await resolvesWithin(Promise.race([
@@ -1879,7 +1922,7 @@ test("two bridges can run different Sessions concurrently", async () => {
     assert.deepEqual(sendBoundary, { type: "model" });
     const secondSend = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({ prompt: "Second", sessionId: secondSessionId }),
     });
     await Promise.race([
@@ -1928,7 +1971,7 @@ test("a second bridge rejects a deleted Session before allocating an upload body
   try {
     const deletion = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
@@ -1999,7 +2042,7 @@ test("attachment upload revalidates its Session after the body-read race window"
 
     const deletion = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
@@ -2040,7 +2083,6 @@ test("selected Live source audio becomes pending without a Profile or user event
   }) as Sample<"1.0.0">;
   let interaction!: LiveInteractionContext;
   interaction = {
-    defaultPrompt: "Analyze the selected source",
     summary: "Sample: Selected Source",
     target: { object: sample },
     scope: { kind: "object", identity: "91", label: "Selected Source" },
@@ -2060,7 +2102,7 @@ test("selected Live source audio becomes pending without a Profile or user event
         sessionId = initial.activeSessionId;
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "attach_selected_audio_source",
             sessionId,
@@ -2096,7 +2138,6 @@ test("selected source command redacts a failing Live selection refresh", async (
   let failRefresh = false;
   let interaction!: LiveInteractionContext;
   interaction = {
-    defaultPrompt: "Analyze the selected source",
     summary: "Sample: Selected Source",
     target: { object: fakeMidiTrack(92n, "Selected Source") },
     scope: { kind: "object", identity: "92", label: "Selected Source" },
@@ -2120,7 +2161,7 @@ test("selected source command redacts a failing Live selection refresh", async (
         failRefresh = true;
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "attach_selected_audio_source",
             sessionId: initial.activeSessionId,
@@ -2172,7 +2213,7 @@ test("model discovery accepts a Draft with blank name and model without changing
           `${chatUrl.origin}/command?token=${token}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({ kind: "discover_models", profile: draft }),
           },
         );
@@ -2187,7 +2228,6 @@ test("model discovery accepts a Draft with blank name and model without changing
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2222,7 +2262,7 @@ test("a definite Session metadata deletion failure preserves event history", asy
 
         const failed = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
         assert.equal(failed.status, 500);
@@ -2240,7 +2280,6 @@ test("a definite Session metadata deletion failure preserves event history", asy
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2278,7 +2317,7 @@ test("an event-log cleanup failure leaves the logically deleted Session reconcil
 
         const failed = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
         assert.equal(failed.status, 500);
@@ -2301,7 +2340,6 @@ test("an event-log cleanup failure leaves the logically deleted Session reconcil
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2336,7 +2374,7 @@ test("session deletion removes attachments only after events and metadata", asyn
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
 
@@ -2350,7 +2388,6 @@ test("session deletion removes attachments only after events and metadata", asyn
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2388,7 +2425,7 @@ test("session deletion attachment cleanup failure is unknown and retried from st
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
 
@@ -2422,7 +2459,6 @@ test("session deletion attachment cleanup failure is unknown and retried from st
 
   try {
     await runAgentFlow(context as never, {
-      defaultPrompt: "Test prompt",
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2455,7 +2491,7 @@ test("an unknown Session metadata delete commit reconciles attachment cleanup", 
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: deletedSessionId }),
         });
         assert.equal(response.status, 500);
@@ -2482,7 +2518,6 @@ test("an unknown Session metadata delete commit reconciles attachment cleanup", 
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2609,7 +2644,7 @@ test("attachment routes enforce Session ownership, pending state, and immutable 
 
         const removed = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId }),
         });
         assert.equal(removed.status, 200);
@@ -2627,7 +2662,6 @@ test("attachment routes enforce Session ownership, pending state, and immutable 
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2697,7 +2731,6 @@ test("attachment upload accepts the exact pending image subtotal and count limit
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2751,7 +2784,6 @@ test("startup orphan reconciliation removes abandoned Session data and preserves
   };
 
   await runAgentFlow(context as never, {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2770,7 +2802,7 @@ test("a post-commit state failure is reconciled as an unknown command outcome", 
         const token = chatUrl.searchParams.get("token");
         const response = await fetch(`${chatUrl.origin}/command?token=${token}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "new_session" }),
         });
         const body = await response.json() as {
@@ -2792,7 +2824,6 @@ test("a post-commit state failure is reconciled as an unknown command outcome", 
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2835,7 +2866,7 @@ test("selecting a Track Session refreshes context from that Session's Live objec
 
         const selected = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "select_session", sessionId: leadSession.id }),
         });
         const selectedState = await selected.json() as ChatDialogState;
@@ -2887,7 +2918,6 @@ test("selecting a Track Session refreshes context from that Session's Live objec
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Opening Bass context",
       target: { track: trackA },
       scope: { kind: "track", identity: "101", label: "Bass" },
@@ -2923,10 +2953,6 @@ test("opening an Arrangement selection keeps its bounded selection context", asy
 
         assert.match(state.contextSummary, /Arrangement selection: beats 8 to 16/);
         assert.match(state.contextSummary, /Lane 1: MIDI track "Bass"/);
-        assert.equal(
-          state.defaultPrompt,
-          "Analyze this arrangement selection and suggest the next useful production move.",
-        );
         const send = await fetch(`${chatUrl.origin}/send?token=${token}`, {
           method: "POST",
           headers: {
@@ -2945,7 +2971,7 @@ test("opening an Arrangement selection keeps its bounded selection context", asy
           `${chatUrl.origin}/command?token=${token}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({ kind: "new_session" }),
           },
         );
@@ -2965,7 +2991,7 @@ test("opening an Arrangement selection keeps its bounded selection context", asy
           `${chatUrl.origin}/command?token=${token}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({
               kind: "select_session",
               sessionId: ordinarySession.id,
@@ -2986,7 +3012,7 @@ test("opening an Arrangement selection keeps its bounded selection context", asy
           `${chatUrl.origin}/command?token=${token}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({
               kind: "select_session",
               sessionId: state.activeSessionId,
@@ -3055,7 +3081,7 @@ test("a concurrent Session switch cannot capture an unresolved invocation select
         try {
           const selected = await fetch(endpoint("/command"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: bridgeJsonHeaders(),
             body: JSON.stringify({
               kind: "select_session",
               sessionId: leadSession.id,
@@ -3124,7 +3150,7 @@ test("restoring a historical Session binds only that Session to the current sele
 
         const restoredResponse = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "restore_session",
             sessionId: historical.id,
@@ -3145,7 +3171,7 @@ test("restoring a historical Session binds only that Session to the current sele
         });
         const ordinaryResponse = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "select_session",
             sessionId: ordinarySession.id,
@@ -3255,7 +3281,7 @@ test("a late state snapshot cannot roll active Session back after a switch", asy
         await lookupStarted.promise;
         const selected = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "select_session", sessionId: sessionB.id }),
         });
         assert.equal((await selected.json() as ChatDialogState).activeSessionId, sessionB.id);
@@ -3272,7 +3298,6 @@ test("a late state snapshot cannot roll active Session back after a switch", asy
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track A",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Track A" },
@@ -3317,7 +3342,7 @@ test("a state snapshot retries when Session changes while its events are loading
         await eventsLoadStarted.promise;
         const selected = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "select_session", sessionId: sessionB.id }),
         });
         assert.equal((await selected.json() as ChatDialogState).activeSessionId, sessionB.id);
@@ -3332,7 +3357,6 @@ test("a state snapshot retries when Session changes while its events are loading
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "Track A",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Track A" },
@@ -3391,7 +3415,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const deleted = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "delete_session", sessionId: obsolete.id }),
         });
         assert.equal(deleted.status, 200);
@@ -3404,7 +3428,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const renamed = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "rename_session",
             sessionId: previous.id,
@@ -3419,7 +3443,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const archived = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "archive_session", sessionId: previous.id }),
         });
         assert.equal(archived.status, 200);
@@ -3429,7 +3453,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const unarchived = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({ kind: "unarchive_session", sessionId: previous.id }),
         });
         assert.equal(unarchived.status, 200);
@@ -3439,7 +3463,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const rejected = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "restore_session",
             sessionId: previous.id,
@@ -3451,7 +3475,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: bridgeJsonHeaders(),
           body: JSON.stringify({
             kind: "restore_session",
             sessionId: previous.id,
@@ -3479,7 +3503,6 @@ test("a prior-activation Session is restored only to the server-owned current Li
   await runAgentFlow(
     context as never,
     {
-      defaultPrompt: "Test prompt",
       summary: "MIDI track Drums",
       target: { track: currentTrack },
       scope: { kind: "track", identity: "20", label: "Drums" },
@@ -3716,7 +3739,6 @@ async function openCrossBridgeFixture(options: {
     },
   };
   const interaction: LiveInteractionContext = {
-    defaultPrompt: "Test prompt",
     summary: "Track: Lead",
     target: { track: leadTrack },
     scope: { kind: "track", identity: "1", label: "Lead" },
@@ -3824,31 +3846,14 @@ async function runIsolatedProcess(
 
 async function waitForSessionActivity(
   bridge: CrossBridgeEndpoint,
-  sendId: string,
+  sessionId: string,
 ): Promise<void> {
   for (;;) {
     const response = await fetch(bridge.endpoint("/state"));
     const state = await response.json() as ChatDialogState;
-    if (state.sessionActivities?.some((activity) => activity.sendId === sendId)) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-}
-
-async function stopSendWhenActive(
-  bridge: CrossBridgeEndpoint,
-  sendId: string,
-): Promise<Record<string, unknown>> {
-  for (;;) {
-    const response = await fetch(bridge.endpoint("/stop"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Live-Smith-Send-Id": sendId,
-      },
-      body: "{}",
-    });
-    const result = await response.json() as Record<string, unknown>;
-    if (result.terminal === false) return result;
+    if (state.sessionActivities?.some((activity) =>
+      activity.sessionId === sessionId && activity.status === "running"
+    )) return;
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
@@ -3862,6 +3867,14 @@ function deferred<T>(): {
     resolve = nextResolve;
   });
   return { promise, resolve };
+}
+
+function withoutBridgeStateRevision(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  assert.match(String(payload.bridgeStateRevision), /^[1-9][0-9]*$/);
+  const { bridgeStateRevision: _revision, ...rest } = payload;
+  return rest;
 }
 
 async function resolvesWithin<T>(
