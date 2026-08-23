@@ -5,6 +5,7 @@ import type {
   ModelToolCall,
   ModelTurn,
 } from "../contracts.js";
+import { ModelConnectionError } from "../connection-error.js";
 import { normalizeModelCitations } from "../citations.js";
 import {
   HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
@@ -94,7 +95,7 @@ export function createOpenAIResponsesTransport(
         await request.onHostedWebSearch?.(search);
       }
       return turnFromResponse(response, "OpenAI Responses", hostedWebSearches);
-      });
+      }, request.signal);
     },
   };
 }
@@ -329,7 +330,9 @@ async function streamResponsesTurn(
       throw new Error("OpenAI Responses failed.");
     }
   }
-  throw new Error("OpenAI Responses stream ended without a terminal response.");
+  throw new ModelConnectionError(
+    "OpenAI Responses stream ended without a terminal response.",
+  );
 }
 
 function webSearchUpdateFromOpenAIEvent(

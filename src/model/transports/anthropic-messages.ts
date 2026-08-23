@@ -5,6 +5,7 @@ import type {
   ModelToolCall,
   ModelTurn,
 } from "../contracts.js";
+import { ModelConnectionError } from "../connection-error.js";
 import { normalizeModelCitations } from "../citations.js";
 import {
   decodeDiscoveredModelCatalog,
@@ -99,6 +100,7 @@ export function createAnthropicMessagesTransport(
       profile,
       "model discovery",
       () => listAnthropicModels(profile, fetchImpl, signal),
+      signal,
     ),
     createToolTurn(request) {
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
@@ -109,7 +111,7 @@ export function createAnthropicMessagesTransport(
         buildAnthropicBody(request),
         fetchImpl,
       );
-      });
+      }, request.signal);
     },
   };
 }
@@ -679,7 +681,7 @@ async function streamAnthropicMessage(
     }
   }
   if (!stopped) {
-    throw new Error("Anthropic stream ended before message_stop.");
+    throw new ModelConnectionError("Anthropic stream ended before message_stop.");
   }
   for (const index of inputJson.keys()) {
     finalizeToolInput(index, contentBlocks, inputJson);

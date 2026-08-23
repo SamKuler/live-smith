@@ -1,6 +1,7 @@
 import { TextDecoder } from "node:util";
 
 import { throwIfAborted } from "../../runtime/host.js";
+import { ModelConnectionError } from "../connection-error.js";
 import {
   cancelStreamBestEffort,
   releaseReaderLockBestEffort,
@@ -12,6 +13,7 @@ interface JsonResponseOptions {
   label: string;
   signal?: AbortSignal;
   maximumBytes?: number;
+  connectionFailureOnRead?: boolean;
 }
 
 export async function readBoundedJsonResponse(
@@ -43,6 +45,7 @@ export async function readBoundedJsonResponse(
       response.body,
       maximumBytes,
       options.signal,
+      options.connectionFailureOnRead ?? false,
       () => oversizedJsonResponse(options.label, response.status, maximumBytes),
     );
   } catch (cause) {
@@ -67,6 +70,7 @@ async function readBoundedText(
   body: ReadableStream<Uint8Array>,
   maximumBytes: number,
   signal: AbortSignal | undefined,
+  connectionFailureOnRead: boolean,
   tooLarge: () => Error,
 ): Promise<string> {
   const reader = body.getReader();
@@ -87,7 +91,15 @@ async function readBoundedText(
   try {
     throwIfAborted(signal);
     while (true) {
-      const result = await reader.read();
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch (cause) {
+        await Promise.resolve();
+        throwIfAborted(signal);
+        if (connectionFailureOnRead) throw new ModelConnectionError();
+        throw cause;
+      }
       throwIfAborted(signal);
       if (result.done) {
         reachedEnd = true;

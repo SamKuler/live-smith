@@ -755,7 +755,7 @@ test("OpenAI Chat rejects streaming incomplete finish reasons", async () => {
     await assert.rejects(
       transport.createToolTurn(req),
       finishReason === null
-        ? /finish_reason.*before completion/i
+        ? /\[DONE\].*before its protocol terminal event/i
         : new RegExp(`finish_reason ${finishReason}`),
     );
   }

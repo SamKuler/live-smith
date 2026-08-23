@@ -1,3 +1,5 @@
+import { throwIfAborted } from "../../runtime/host.js";
+import { ModelConnectionError } from "../connection-error.js";
 import {
   profileApiMode,
   profileProvider,
@@ -10,19 +12,23 @@ export async function withTransportContext<T>(
   profile: DraftProfile | SavedProfile,
   operation: "request" | "model discovery",
   run: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   try {
     return await run();
   } catch (cause) {
+    throwIfAborted(signal);
     const rawMessage = cause instanceof Error ? cause.message : String(cause);
     const message = redactTransportMessage(rawMessage, profileSecrets(profile));
     const apiMode = profileApiMode(profile);
     const context = apiMode
       ? `${profileProvider(profile)}/${apiMode}`
       : `${profileProvider(profile)}/${profile.connection.kind}`;
-    throw new Error(
-      `${context} ${operation} failed: ${message}`,
-    );
+    const contextualMessage = `${context} ${operation} failed: ${message}`;
+    if (cause instanceof ModelConnectionError) {
+      throw new ModelConnectionError(contextualMessage);
+    }
+    throw new Error(contextualMessage);
   }
 }
 

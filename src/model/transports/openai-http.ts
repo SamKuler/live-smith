@@ -1,6 +1,7 @@
 import { URL } from "node:url";
 
 import { throwIfAborted } from "../../runtime/host.js";
+import { ModelConnectionError } from "../connection-error.js";
 import {
   requireDirectApiConnection,
   type DirectApiConnection,
@@ -51,11 +52,13 @@ async function requestOpenAIResource(
     openAIEndpoint(connection.baseUrl, resource),
     openAIRequestInit(connection, options),
     options.signal,
+    resource !== "/models",
   );
   await assertOpenAIResponse(response, options.signal);
   return readBoundedJsonResponse(response, {
     label: "OpenAI-compatible endpoint",
     ...(options.signal ? { signal: options.signal } : {}),
+    connectionFailureOnRead: resource !== "/models",
   });
 }
 
@@ -76,6 +79,7 @@ export async function* streamOpenAIEvents(
       ...(signal ? { signal } : {}),
     }),
     signal,
+    true,
   );
   await assertOpenAIResponse(response, signal);
   if (!response.body) {
@@ -85,7 +89,11 @@ export async function* streamOpenAIEvents(
 
   for await (const data of parseServerSentEventData(response.body, signal)) {
     throwIfAborted(signal);
-    if (data === "[DONE]") return;
+    if (data === "[DONE]") {
+      throw new Error(
+        "OpenAI-compatible stream sent [DONE] before its protocol terminal event.",
+      );
+    }
     let event: unknown;
     try {
       event = JSON.parse(data) as unknown;
@@ -107,11 +115,13 @@ async function fetchOpenAIResponse(
   url: string,
   init: RequestInit,
   signal?: AbortSignal,
+  connectionFailure = false,
 ): Promise<Response> {
   try {
     return await fetchImpl(url, init);
   } catch (cause) {
     throwIfAborted(signal);
+    if (connectionFailure) throw new ModelConnectionError();
     throw cause;
   }
 }

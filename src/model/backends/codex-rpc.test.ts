@@ -12,6 +12,7 @@ import { URL } from "node:url";
 import { CodexExecutableUnavailableError } from "../../runtime/codex-executable.js";
 import { createHostAbortController } from "../../runtime/host.js";
 import { ModelBackendManager } from "../backend-registry.js";
+import { ModelConnectionError } from "../connection-error.js";
 import { MAX_CODEX_RPC_LINE_BYTES } from "./codex-limits.js";
 import { CodexRpcClient } from "./codex-rpc.js";
 
@@ -484,6 +485,7 @@ test("stdout EOF and process exit reject pending work without stderr disclosure"
     const pending = harness.client.request("pending", {});
     terminate(harness.child);
     await assert.rejects(pending, (error: unknown) => {
+      assert.equal(error instanceof ModelConnectionError, false);
       assert.equal(String(error).includes("sk-secret-stderr"), false);
       assert.match(String(error), /Codex App Server connection closed/);
       return true;

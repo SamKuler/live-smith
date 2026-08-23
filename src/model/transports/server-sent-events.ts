@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { TextDecoder } from "node:util";
 
 import { throwIfAborted } from "../../runtime/host.js";
+import { ModelConnectionError } from "../connection-error.js";
 import {
   cancelStreamBestEffort,
   releaseReaderLockBestEffort,
@@ -32,7 +33,14 @@ export async function* parseServerSentEventData(
     try {
       throwIfAborted(signal);
       while (true) {
-        const result = await reader.read();
+        let result: ReadableStreamReadResult<Uint8Array>;
+        try {
+          result = await reader.read();
+        } catch {
+          await Promise.resolve();
+          throwIfAborted(signal);
+          throw new ModelConnectionError();
+        }
         throwIfAborted(signal);
         if (result.done) {
           reachedEnd = true;

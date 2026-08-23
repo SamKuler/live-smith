@@ -59,7 +59,7 @@ export async function listOpenAIModels(
       );
     }
     return catalog;
-  });
+  }, signal);
 }
 
 export function buildOpenAIChatMessages(

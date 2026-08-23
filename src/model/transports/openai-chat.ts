@@ -1,4 +1,5 @@
 import type { ModelToolCall, ModelTurn } from "../contracts.js";
+import { ModelConnectionError } from "../connection-error.js";
 import { cloneJsonValue } from "../json-clone.js";
 import { isDirectApiProfile } from "../profile.js";
 import type {
@@ -73,7 +74,7 @@ export function createOpenAIChatTransport(
       );
       assertCompleteChatFinishReason(choice.finish_reason, turn.toolCalls.length);
       return turn;
-      });
+      }, request.signal);
     },
   };
 }
@@ -154,31 +155,39 @@ async function streamChatTurn(
     throwIfAborted(request.signal);
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     const choice = isRecord(choices[0]) ? choices[0] : undefined;
+    let reachedTerminal = false;
     if (choice?.finish_reason !== undefined && choice.finish_reason !== null) {
       finishReason = choice.finish_reason;
+      reachedTerminal = true;
     }
     const delta = choice && isRecord(choice.delta) ? choice.delta : undefined;
-    if (!delta) continue;
-
-    if (typeof delta.content === "string" && delta.content) {
-      content += delta.content;
-      rawMessage.content = content;
-      await request.onDelta?.(delta.content);
-    }
-    accumulateUnknownDelta(rawMessage, delta);
-    const calls = toolCallsArray(delta.tool_calls, "OpenAI Chat Completions");
-    for (const entry of calls) {
-      if (!isRecord(entry)) {
-        throw new Error("OpenAI Chat Completions returned a malformed tool call.");
+    if (delta) {
+      if (typeof delta.content === "string" && delta.content) {
+        content += delta.content;
+        rawMessage.content = content;
+        await request.onDelta?.(delta.content);
       }
-      const index = typeof entry.index === "number" ? entry.index : 0;
-      rawToolCalls.set(
-        index,
-        mergeStreamRecord(rawToolCalls.get(index) ?? {}, entry, new Set(["index"])),
-      );
+      accumulateUnknownDelta(rawMessage, delta);
+      const calls = toolCallsArray(delta.tool_calls, "OpenAI Chat Completions");
+      for (const entry of calls) {
+        if (!isRecord(entry)) {
+          throw new Error("OpenAI Chat Completions returned a malformed tool call.");
+        }
+        const index = typeof entry.index === "number" ? entry.index : 0;
+        rawToolCalls.set(
+          index,
+          mergeStreamRecord(rawToolCalls.get(index) ?? {}, entry, new Set(["index"])),
+        );
+      }
     }
+    if (reachedTerminal) break;
   }
 
+  if (finishReason === undefined) {
+    throw new ModelConnectionError(
+      "OpenAI Chat Completions finish_reason was missing before completion.",
+    );
+  }
   const completedRawToolCalls = [...rawToolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, toolCall]) => toolCall);
