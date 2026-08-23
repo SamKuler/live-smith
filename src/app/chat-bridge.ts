@@ -214,6 +214,7 @@ export interface ChatBridgeConfirmationRequest {
 export interface ChatBridgeStream {
   assistantDelta(delta: string): Promise<void>;
   assistantReset(): Promise<void>;
+  modelTurnAccepted(): Promise<void>;
   webSearchUpdate(update: ModelHostedWebSearch): Promise<void>;
   sessionEvent(event: SessionEvent): Promise<void>;
   progress(message: string): Promise<void>;
@@ -285,6 +286,7 @@ async function lookupSteeringReceiptSafely(
 
 interface PendingConfirmation {
   confirmationGeneration: number;
+  modelTurnEpoch: number;
   sendId: string;
   sessionId: string;
   request: ChatBridgeConfirmationRequest;
@@ -298,6 +300,9 @@ interface ActiveSend {
   steering: SteeringChannel;
   stopRequested: boolean;
   nextConfirmationGeneration: number;
+  modelTurnEpoch: number;
+  assistantDraft: string;
+  searchMap: Map<string, ModelHostedWebSearch>;
 }
 
 interface PendingSendAdmission {
@@ -317,6 +322,7 @@ type StateChangeSsePayloadBase =
       type: "session_event";
       sendId: string;
       sessionId: string;
+      modelTurnEpoch: number;
       event: ChatSessionEvent;
       activity?: StateChangeActivity;
     }
@@ -333,6 +339,7 @@ type StateChangeSsePayloadBase =
       sessionId: string;
       id: string;
       confirmationGeneration: number;
+      modelTurnEpoch: number;
       message: string;
       groups: ActionDiffGroup[];
       activity: StateChangeActivity;
@@ -372,13 +379,35 @@ interface StateChangeActivity {
 }
 
 type SsePayload =
-  | { type: "assistant_delta"; sendId: string; sessionId: string; delta: string }
-  | { type: "assistant_reset"; sendId: string; sessionId: string }
+  | {
+      type: "assistant_delta";
+      sendId: string;
+      sessionId: string;
+      modelTurnEpoch: number;
+      delta: string;
+    }
+  | {
+      type: "assistant_reset";
+      sendId: string;
+      sessionId: string;
+      modelTurnEpoch: number;
+    }
   | {
       type: "web_search_update";
       sendId: string;
       sessionId: string;
+      modelTurnEpoch: number;
       update: ModelHostedWebSearch;
+    }
+  | {
+      type: "model_turn_state";
+      sendId: string;
+      sessionId: string;
+      modelTurnEpoch: number;
+      assistantDraft: string;
+      webSearchUpdates: ModelHostedWebSearch[];
+      progress: string;
+      resolvedConfirmationGeneration: number;
     }
   | StateChangeSsePayload
   | { type: "state"; commandId: string; state: ChatBridgeState }
@@ -718,101 +747,142 @@ export async function createChatBridge(
         };
 
   const createStream = (
-    sendId: string,
-    sessionId: string,
+    activeSend: ActiveSend,
     onSessionEvent: (event: SessionEvent) => void,
-  ): ChatBridgeStream => ({
-    assistantDelta: async (delta) => {
-      const activeSend = activeSendsById.get(sendId);
-      if (!activeSend || activeSend.stopRequested) return;
-      broadcast({ type: "assistant_delta", sendId, sessionId, delta });
-    },
-    assistantReset: async () => {
-      const activeSend = activeSendsById.get(sendId);
-      if (!activeSend || activeSend.stopRequested) return;
-      broadcast({ type: "assistant_reset", sendId, sessionId });
-    },
-    webSearchUpdate: async (update) => {
-      const activeSend = activeSendsById.get(sendId);
-      if (!activeSend || activeSend.stopRequested) return;
-      broadcast({ type: "web_search_update", sendId, sessionId, update });
-    },
-    sessionEvent: async (event) => {
-      onSessionEvent(event);
-      const projectedEvent = chatSessionEvent(event);
-      const activeSend = activeSendsById.get(sendId);
-      if (!activeSend) return;
-      const activity = projectedEvent.steeringAck
-        ? stateChangeActivity(activeSend.stopRequested
-          ? sessionActivities.get(sessionId) ?? updateActivity(
-              sessionId,
-              "stopped",
-              { message: "Stopped" },
-            )
-          : updateActivity(sessionId, "running", {
-              message: "Guidance applied",
-            }))
-        : undefined;
-      broadcastStateChange({
-        type: "session_event",
-        sendId,
-        sessionId,
-        event: projectedEvent,
-        ...(activity ? { activity } : {}),
-      });
-    },
-    progress: async (message) => {
-      const activeSend = activeSendsById.get(sendId);
-      if (!activeSend || activeSend.stopRequested) return;
-      const activity = updateActivity(sessionId, "running", { message });
-      broadcastStateChange({
-        type: "progress",
-        sendId,
-        sessionId,
-        message,
-        activity: stateChangeActivity(activity),
-      });
-    },
-    requestConfirmation: (request) => {
-      const activeSend = activeSendsById.get(sendId);
-      if (
-        !activeSend ||
-        closing ||
-        activeSend.stopRequested ||
-        activeSend.steering.hasPending()
-      ) {
-        return Promise.resolve(false);
-      }
-      const confirmationGeneration = activeSend.nextConfirmationGeneration;
-      if (!Number.isSafeInteger(confirmationGeneration)) {
-        return Promise.resolve(false);
-      }
-      activeSend.nextConfirmationGeneration += 1;
-      return new Promise<boolean>((resolve) => {
-        const id = randomUUID();
-        pendingConfirmations.set(id, {
-          confirmationGeneration,
+  ): ChatBridgeStream => {
+    const { sendId, sessionId } = activeSend;
+    const acceptsTransientUpdates = (): boolean =>
+      !closing &&
+      !activeSend.stopRequested &&
+      activeSendsById.get(sendId) === activeSend;
+    const advanceModelTurn = (): void => {
+      activeSend.modelTurnEpoch += 1;
+      activeSend.assistantDraft = "";
+      activeSend.searchMap.clear();
+    };
+    return {
+      assistantDelta: async (delta) => {
+        if (!acceptsTransientUpdates()) return;
+        activeSend.assistantDraft += delta;
+        broadcast({
+          type: "assistant_delta",
           sendId,
           sessionId,
-          request,
-          resolve,
+          modelTurnEpoch: activeSend.modelTurnEpoch,
+          delta,
         });
-        const activity = updateActivity(sessionId, "waiting_confirmation", {
-          message: "Waiting for confirmation",
+      },
+      assistantReset: async () => {
+        if (!acceptsTransientUpdates()) return;
+        advanceModelTurn();
+        broadcast({
+          type: "assistant_reset",
+          sendId,
+          sessionId,
+          modelTurnEpoch: activeSend.modelTurnEpoch,
         });
+      },
+      modelTurnAccepted: async () => {
+        if (!acceptsTransientUpdates()) return;
+        advanceModelTurn();
+      },
+      webSearchUpdate: async (update) => {
+        if (!acceptsTransientUpdates()) return;
+        activeSend.searchMap.set(update.id, update);
+        broadcast({
+          type: "web_search_update",
+          sendId,
+          sessionId,
+          modelTurnEpoch: activeSend.modelTurnEpoch,
+          update,
+        });
+      },
+      sessionEvent: async (event) => {
+        onSessionEvent(event);
+        const projectedEvent = chatSessionEvent(event);
+        if (activeSendsById.get(sendId) !== activeSend) return;
+        if (event.kind === "assistant") {
+          activeSend.assistantDraft = "";
+        } else if (
+          event.kind === "web_search" &&
+          event.webSearch &&
+          event.webSearch.status !== "searching"
+        ) {
+          activeSend.searchMap.delete(event.webSearch.id);
+        }
+        const activity = projectedEvent.steeringAck
+          ? stateChangeActivity(activeSend.stopRequested
+            ? sessionActivities.get(sessionId) ?? updateActivity(
+                sessionId,
+                "stopped",
+                { message: "Stopped" },
+              )
+            : updateActivity(sessionId, "running", {
+                message: "Guidance applied",
+              }))
+          : undefined;
         broadcastStateChange({
-          type: "confirm_request",
+          type: "session_event",
           sendId,
           sessionId,
-          id,
-          confirmationGeneration,
-          message: request.message,
-          groups: request.groups,
+          modelTurnEpoch: activeSend.modelTurnEpoch,
+          event: projectedEvent,
+          ...(activity ? { activity } : {}),
+        });
+      },
+      progress: async (message) => {
+        if (!acceptsTransientUpdates()) return;
+        const activity = updateActivity(sessionId, "running", { message });
+        broadcastStateChange({
+          type: "progress",
+          sendId,
+          sessionId,
+          message,
           activity: stateChangeActivity(activity),
         });
-      });
-    },
-  });
+      },
+      requestConfirmation: (request) => {
+        if (
+          activeSendsById.get(sendId) !== activeSend ||
+          closing ||
+          activeSend.stopRequested ||
+          activeSend.steering.hasPending()
+        ) {
+          return Promise.resolve(false);
+        }
+        const confirmationGeneration = activeSend.nextConfirmationGeneration;
+        if (!Number.isSafeInteger(confirmationGeneration)) {
+          return Promise.resolve(false);
+        }
+        activeSend.nextConfirmationGeneration += 1;
+        return new Promise<boolean>((resolve) => {
+          const id = randomUUID();
+          pendingConfirmations.set(id, {
+            confirmationGeneration,
+            modelTurnEpoch: activeSend.modelTurnEpoch,
+            sendId,
+            sessionId,
+            request,
+            resolve,
+          });
+          const activity = updateActivity(sessionId, "waiting_confirmation", {
+            message: "Waiting for confirmation",
+          });
+          broadcastStateChange({
+            type: "confirm_request",
+            sendId,
+            sessionId,
+            id,
+            confirmationGeneration,
+            modelTurnEpoch: activeSend.modelTurnEpoch,
+            message: request.message,
+            groups: request.groups,
+            activity: stateChangeActivity(activity),
+          });
+        });
+      },
+    };
+  };
 
   const server = createServer(async (request, response) => {
     // Capture before any async work. A later publication number describes only
@@ -906,7 +976,6 @@ export async function createChatBridge(
           "Content-Type": "text/event-stream",
         });
         response.write("\n");
-        clients.add(response);
         if (latestGlobalSettingsChange) {
           writeSse(response, {
             type: "default_follow_up_behavior_changed",
@@ -917,6 +986,24 @@ export async function createChatBridge(
         for (const published of latestApprovalModeChanges.values()) {
           writeSse(response, published);
         }
+        for (const activeSend of activeSendsById.values()) {
+          if (activeSend.stopRequested) continue;
+          const pendingConfirmation = [...pendingConfirmations.values()].find(
+            (pending) => pending.sendId === activeSend.sendId,
+          );
+          writeSse(response, {
+            type: "model_turn_state",
+            sendId: activeSend.sendId,
+            sessionId: activeSend.sessionId,
+            modelTurnEpoch: activeSend.modelTurnEpoch,
+            assistantDraft: activeSend.assistantDraft,
+            webSearchUpdates: [...activeSend.searchMap.values()],
+            progress: sessionActivities.get(activeSend.sessionId)?.message ?? "",
+            resolvedConfirmationGeneration: pendingConfirmation
+              ? pendingConfirmation.confirmationGeneration - 1
+              : activeSend.nextConfirmationGeneration - 1,
+          });
+        }
         for (const [id, pending] of pendingConfirmations) {
           const activity = sessionActivities.get(pending.sessionId);
           writeSse(response, {
@@ -925,6 +1012,7 @@ export async function createChatBridge(
             sessionId: pending.sessionId,
             id,
             confirmationGeneration: pending.confirmationGeneration,
+            modelTurnEpoch: pending.modelTurnEpoch,
             message: pending.request.message,
             groups: pending.request.groups,
             activity: stateChangeActivity(activity ?? {
@@ -936,6 +1024,7 @@ export async function createChatBridge(
             bridgeStateRevision: nextStateRevision(),
           });
         }
+        clients.add(response);
         request.on("close", () => clients.delete(response));
         return;
       }
@@ -1251,6 +1340,9 @@ export async function createChatBridge(
           steering,
           stopRequested: false,
           nextConfirmationGeneration: 1,
+          modelTurnEpoch: 0,
+          assistantDraft: "",
+          searchMap: new Map(),
         };
         pendingSendAdmissions.delete(sendId);
         sendAdmission = undefined;
@@ -1262,7 +1354,7 @@ export async function createChatBridge(
         });
         let sendOutcomeError: unknown;
         try {
-          const stream = createStream(sendId, input.sessionId, (event) => {
+          const stream = createStream(activeSend, (event) => {
             if (event.kind === "user") sendPromptPersistence = "persisted";
           });
           let handledState: ChatDialogState | void;

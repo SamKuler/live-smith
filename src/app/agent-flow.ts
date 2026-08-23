@@ -1969,6 +1969,7 @@ export async function runAgentFlow(
               steeringSendId: sendContext.sendId,
               onDelta: (delta) => stream.assistantDelta(delta),
               onAssistantReset: () => stream.assistantReset(),
+              onModelTurnAccepted: () => stream.modelTurnAccepted(),
               onProgress: (message) => stream.progress(message),
               onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
               onSessionEvent: (event) => stream.sessionEvent(event),

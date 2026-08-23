@@ -310,6 +310,9 @@ export async function handleAgentRequest(
           },
         }
         : {}),
+      ...(callbacks.onModelTurnAccepted
+        ? { onModelTurnAccepted: callbacks.onModelTurnAccepted }
+        : {}),
       askModel: async (input) => {
         await callbacks.onProgress(`Thinking with ${profile.name} / ${profile.model}`);
         const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
@@ -666,6 +669,7 @@ interface AgentRequestCallbacks {
   steeringSendId?: string;
   onDelta(delta: string): Promise<void> | void;
   onAssistantReset?(): Promise<void> | void;
+  onModelTurnAccepted?(): Promise<void> | void;
   onProgress(message: string): Promise<void> | void;
   onWebSearchUpdate?(
     update: ModelHostedWebSearch,

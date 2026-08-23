@@ -107,6 +107,8 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   hasPendingSteering?(): boolean;
   /** Clears transient provider output after the new user guidance is installed. */
   onSteeringApplied?(messageCount: number): Promise<void> | void;
+  /** Advances transient output after one complete, non-continuation model turn. */
+  onModelTurnAccepted?(): Promise<void> | void;
   askModel(input: AgentLoopModelInput): Promise<ModelTurn>;
   observe(request: AgentObservationRequest): Promise<string>;
   preflightActions?(
@@ -396,6 +398,8 @@ export async function runAgentLoop(
       );
       continue;
     }
+
+    await options.onModelTurnAccepted?.();
 
     const completedTurnContent = pendingContinuationContent + (turn.content ?? "");
     const completedTurnCitations = mergeCitations(
