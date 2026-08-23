@@ -8,7 +8,10 @@ import {
   type DraftProfile,
   type SavedProfile,
 } from "../profile.js";
-import { parseServerSentEventData } from "./server-sent-events.js";
+import {
+  assertServerSentEventResponse,
+  parseServerSentEventData,
+} from "./server-sent-events.js";
 import { readBoundedJsonResponse } from "./response-body.js";
 import { cancelStreamBestEffort } from "./stream-cancel.js";
 
@@ -86,6 +89,7 @@ export async function* streamOpenAIEvents(
     throwIfAborted(signal);
     throw new Error("OpenAI-compatible endpoint returned a streaming response without a body.");
   }
+  assertServerSentEventResponse(response, "OpenAI-compatible endpoint", signal);
 
   for await (const data of parseServerSentEventData(response.body, signal)) {
     throwIfAborted(signal);

@@ -8,6 +8,7 @@ import { requestAnthropicJson } from "./anthropic-http.js";
 import { requestOpenAIJson } from "./openai-http.js";
 import { readBoundedJsonResponse } from "./response-body.js";
 import {
+  assertServerSentEventResponse,
   MAX_DIRECT_SSE_EVENT_BYTES,
   parseServerSentEventData,
 } from "./server-sent-events.js";
@@ -200,6 +201,37 @@ test("bounded JSON failures do not wait for stream cancellation", async (t) => {
 });
 
 test("SSE termination does not wait for stream cancellation", async (t) => {
+  await t.test("incompatible media type preserves nonblocking cleanup and Abort", () => {
+    const stream = neverSettlingCancelStream();
+    const response = new Response(stream.body as never, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+    assert.throws(
+      () => assertServerSentEventResponse(response, "Test provider"),
+      /non-event-stream/,
+    );
+    assert.equal(stream.cancelCalls(), 1);
+
+    const reason = new Error("SSE request stopped");
+    const controller = createHostAbortController();
+    const abortedStream = neverSettlingCancelStream();
+    const abortedResponse = new Response(abortedStream.body as never, {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+    controller.abort(reason);
+    assert.throws(
+      () => assertServerSentEventResponse(
+        abortedResponse,
+        "Test provider",
+        controller.signal,
+      ),
+      (error: unknown) => error === reason,
+    );
+    assert.equal(abortedStream.cancelCalls(), 1);
+  });
+
   await t.test("oversized event", async () => {
     const stream = neverSettlingCancelStream(
       new Uint8Array(MAX_DIRECT_SSE_EVENT_BYTES + 1).fill(97),

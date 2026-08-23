@@ -10,6 +10,20 @@ import {
 
 export const MAX_DIRECT_SSE_EVENT_BYTES = 1024 * 1024;
 
+export function assertServerSentEventResponse(
+  response: Response,
+  label: string,
+  signal?: AbortSignal,
+): void {
+  const contentType = response.headers.get("content-type");
+  if (contentType === null) return;
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType === "text/event-stream") return;
+  cancelStreamBestEffort(response.body, signal?.reason);
+  throwIfAborted(signal);
+  throw new Error(`${label} returned a non-event-stream response.`);
+}
+
 export async function* parseServerSentEventData(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,

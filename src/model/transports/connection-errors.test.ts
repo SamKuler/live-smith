@@ -435,6 +435,80 @@ test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
   });
 });
 
+test("an explicit incompatible streaming Content-Type is ordinary in every Direct mode", async () => {
+  const fetchImpl = (async () => new Response("<html>gateway</html>", {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  })) as typeof fetch;
+
+  for (const item of directCases(fetchImpl)) {
+    await assert.rejects(
+      item.transport.createToolTurn(request(item.profile, { streaming: true })),
+      (error: unknown) => assertOrdinaryError(error, /event-stream/i),
+      item.name,
+    );
+  }
+});
+
+test("a missing streaming Content-Type remains compatible with valid SSE", async () => {
+  const fixtures: Array<{
+    name: string;
+    profile: SavedProfile;
+    payload: string;
+    transport(fetchImpl: typeof fetch): ModelTransport;
+  }> = [
+    {
+      name: "OpenAI Responses",
+      profile: openAIProfile(),
+      payload: `data: ${JSON.stringify({
+        type: "response.completed",
+        response: { status: "completed", output_text: "Done", output: [] },
+      })}\n\n`,
+      transport: (fetchImpl) => createOpenAIResponsesTransport({ fetchImpl }),
+    },
+    {
+      name: "OpenAI Chat Completions",
+      profile: openAIProfile("chat-completions"),
+      payload: `data: ${JSON.stringify({
+        choices: [{ finish_reason: "stop", delta: { content: "Done" } }],
+      })}\n\n`,
+      transport: (fetchImpl) => createOpenAIChatTransport({ fetchImpl }),
+    },
+    {
+      name: "Anthropic Messages",
+      profile: anthropicProfile(),
+      payload: [
+        { type: "message_start", message: { content: [] } },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Done" },
+        },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" } },
+        { type: "message_stop" },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+      transport: (fetchImpl) => createAnthropicMessagesTransport({ fetchImpl }),
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const fetchImpl = (async () => new Response(
+      new TextEncoder().encode(fixture.payload),
+      { status: 200 },
+    )) as typeof fetch;
+    const turn = await fixture.transport(fetchImpl).createToolTurn(
+      request(fixture.profile, { streaming: true }),
+    );
+    assert.equal(turn.content, "Done", fixture.name);
+  }
+});
+
 test("JSON, protocol, oversize, and callback failures remain ordinary", async (t) => {
   await t.test("malformed JSON response", async () => {
     const transport = createAnthropicMessagesTransport({

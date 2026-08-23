@@ -8,7 +8,10 @@ import {
 } from "../profile.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { ModelConnectionError } from "../connection-error.js";
-import { parseServerSentEventData } from "./server-sent-events.js";
+import {
+  assertServerSentEventResponse,
+  parseServerSentEventData,
+} from "./server-sent-events.js";
 import { readBoundedJsonResponse } from "./response-body.js";
 import { cancelStreamBestEffort } from "./stream-cancel.js";
 
@@ -88,6 +91,7 @@ export async function* streamAnthropicEvents(
     throwIfAborted(signal);
     throw new Error("Anthropic returned a streaming response without a body.");
   }
+  assertServerSentEventResponse(response, "Anthropic", signal);
 
   for await (const data of parseServerSentEventData(response.body, signal)) {
     throwIfAborted(signal);
