@@ -60,7 +60,7 @@
       const composerDraftRevisionsBySession = new Map();
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
-      const approvalModePatchRevisionsBySession = new Map();
+      const approvalModeProjectionsBySession = new Map();
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
@@ -351,13 +351,32 @@
         sessionId,
         incomingCoveredThroughRevision,
       ) {
+        const approvalProjection = approvalModeProjectionsBySession.get(sessionId);
         const currentMembershipChanged =
           (current?.collection || null) !== (baseline?.collection || null);
         const selected = authoritativeMembershipOwned || !currentMembershipChanged
           ? authoritative
           : current;
         if (!selected) return null;
-        if (!current || !authoritative) return selected;
+        if (!current || !authoritative) {
+          const approvalPatchIsUncovered =
+            !current &&
+            authoritative &&
+            approvalProjection?.approvalMode !== undefined &&
+            compareDecimalRevisions(
+              approvalProjection.revision,
+              incomingCoveredThroughRevision,
+            ) > 0;
+          return approvalPatchIsUncovered
+            ? {
+                ...selected,
+                session: {
+                  ...selected.session,
+                  approvalMode: approvalProjection.approvalMode,
+                },
+              }
+            : selected;
+        }
         const session = {};
         const keys = new Set([
           ...Object.keys(baseline?.session || {}),
@@ -367,7 +386,7 @@
         for (const key of keys) {
           const approvalPatchOrder = key === "approvalMode"
             ? compareDecimalRevisions(
-              approvalModePatchRevisionsBySession.get(sessionId) || "0",
+              approvalProjection?.revision || "0",
               incomingCoveredThroughRevision,
             )
             : null;
@@ -376,9 +395,11 @@
             baseline?.session?.[key],
           );
           const useAuthoritative = approvalPatchOrder !== null
-            ? authoritativeOwnedFields?.has(key)
+            ? approvalProjection?.approvalMode !== undefined
               ? approvalPatchOrder <= 0
-              : approvalPatchOrder < 0 || !currentFieldChanged
+              : authoritativeOwnedFields?.has(key)
+                ? approvalPatchOrder <= 0
+                : approvalPatchOrder < 0 || !currentFieldChanged
             : authoritativeOwnedFields?.has(key) || !currentFieldChanged;
           const source = useAuthoritative
             ? authoritative.session
@@ -593,6 +614,17 @@
         );
       }
 
+      function recordApprovalModeProjectionCoverage(sessionId, coveredThrough) {
+        const projection = approvalModeProjectionsBySession.get(sessionId);
+        if (
+          projection &&
+          compareDecimalRevisions(coveredThrough, projection.revision) < 0
+        ) return;
+        approvalModeProjectionsBySession.set(sessionId, {
+          revision: coveredThrough,
+        });
+      }
+
       function recordAttemptOwnedActivityRevisions(attempt, state) {
         if (!attempt) return;
         const sessionIds = new Set([
@@ -609,9 +641,18 @@
       }
 
       function recordFullStateProjectionCoverage(state) {
-        for (const sessionId of sessionStateIds(state)) {
-          recordProjectionRevision(
-            approvalModePatchRevisionsBySession,
+        const coveredSessionIds = sessionStateIds(state);
+        for (const [sessionId, projection] of approvalModeProjectionsBySession) {
+          if (
+            !coveredSessionIds.has(sessionId) &&
+            compareDecimalRevisions(
+              state.bridgeStateCoveredThroughRevision,
+              projection.revision,
+            ) >= 0
+          ) approvalModeProjectionsBySession.delete(sessionId);
+        }
+        for (const sessionId of coveredSessionIds) {
+          recordApprovalModeProjectionCoverage(
             sessionId,
             state.bridgeStateCoveredThroughRevision,
           );
@@ -624,8 +665,7 @@
       }
 
       function recordSessionProjectionCoverage(state, sessionId) {
-        recordProjectionRevision(
-          approvalModePatchRevisionsBySession,
+        recordApprovalModeProjectionCoverage(
           sessionId,
           state.bridgeStateCoveredThroughRevision,
         );
@@ -4466,19 +4506,20 @@
             ) return;
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
-            const projectionCovered = projectionRevisionIsCovered(
-              approvalModePatchRevisionsBySession,
+            const projection = approvalModeProjectionsBySession.get(
               payload.sessionId,
-              received,
             );
-            recordProjectionRevision(
-              approvalModePatchRevisionsBySession,
-              payload.sessionId,
+            const projectionCovered = received.covered || compareDecimalRevisions(
               received.revision,
-            );
+              projection?.revision || "0",
+            ) <= 0;
             if (projectionCovered) {
               return;
             }
+            approvalModeProjectionsBySession.set(payload.sessionId, {
+              approvalMode: payload.approvalMode,
+              revision: received.revision,
+            });
             const state = getState();
             for (const sessions of [
               state.sessions,

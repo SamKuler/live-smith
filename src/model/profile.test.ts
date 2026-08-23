@@ -153,12 +153,23 @@ test("Profile validation still rejects malformed and non-HTTP Base URLs", () => 
 });
 
 test("profileSecrets retains every raw and decoded Base URL secret form", () => {
+  const rawFragment =
+    "token=fragment%2Dsecret&tenant=studio%20fragment" +
+    "&malformed=broken%2Dfragment%zz" +
+    "&repeat=first%2Dfragment&repeat=second%2Dfragment" +
+    "&literal=plus+fragment";
+  const forgivingDecodedFragment =
+    "token=fragment-secret&tenant=studio fragment" +
+    "&malformed=broken-fragment%zz" +
+    "&repeat=first-fragment&repeat=second-fragment" +
+    "&literal=plus+fragment";
   const saved = validateDraftProfileForSave(profile(
     "https://api.deepseek.com/anthropic" +
       "?encoded=raw%2Dquery&space=signed%20query" +
       "&slash=signed%2fquery&plus=plus+query" +
       "&repeat=first%2Drepeat&repeat=second%2Drepeat" +
-      "&malformed=broken%2Dquery%zz#raw%2Dfragment",
+      "&malformed=broken%2Dquery%zz" +
+      `#${rawFragment}`,
   ));
 
   const secrets = profileSecrets(saved);
@@ -180,11 +191,27 @@ test("profileSecrets retains every raw and decoded Base URL secret form", () => 
     "broken%2Dquery%zz",
     "broken-query%25zz",
     "broken-query%zz",
-    "raw%2Dfragment",
-    "raw-fragment",
+    rawFragment,
+    "broken%2Dfragment%zz",
+    "broken-fragment%zz",
+    forgivingDecodedFragment,
+    "fragment%2Dsecret",
+    "fragment-secret",
+    "studio%20fragment",
+    "studio fragment",
+    "first%2Dfragment",
+    "first-fragment",
+    "second%2Dfragment",
+    "second-fragment",
+    "plus+fragment",
   ]) {
     assert.ok(secrets.includes(expected), `Expected secret form ${expected}`);
   }
+  for (const unrelated of ["token", "tenant", "malformed", "repeat", "literal"]) {
+    assert.equal(secrets.includes(unrelated), false);
+  }
+  assert.equal(secrets.includes("plus fragment"), false);
+
   assert.equal(new Set(secrets).size, secrets.length);
   assert.deepEqual(
     secrets.map((secret) => secret.length),

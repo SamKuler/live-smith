@@ -1,4 +1,4 @@
-import { URL } from "node:url";
+import { URL, URLSearchParams } from "node:url";
 import { isIP } from "node:net";
 
 import { cloneJsonValue } from "./json-clone.js";
@@ -250,9 +250,11 @@ export function profileSecrets(
   try {
     const baseUrl = new URL(profile.connection.baseUrl);
     secrets.push(...baseUrl.searchParams.values());
-    addQuerySecretForms(secrets, baseUrl.search.slice(1));
-    addQuerySecretForms(secrets, baseUrl.searchParams.toString());
-    addUrlSecretForms(secrets, baseUrl.hash.slice(1), false);
+    addUrlComponentSecretForms(secrets, baseUrl.search.slice(1), true);
+    addUrlComponentSecretForms(secrets, baseUrl.searchParams.toString(), true);
+    const fragment = baseUrl.hash.slice(1);
+    addUrlSecretForms(secrets, fragment, false);
+    addUrlComponentSecretForms(secrets, fragment, false);
   } catch {
     // Profile validation owns invalid Base URLs; retain API-key redaction here.
   }
@@ -260,11 +262,15 @@ export function profileSecrets(
     .sort((left, right) => right.length - left.length);
 }
 
-function addQuerySecretForms(secrets: string[], search: string): void {
-  for (const component of search.split("&")) {
+function addUrlComponentSecretForms(
+  secrets: string[],
+  serialized: string,
+  formEncoded: boolean,
+): void {
+  for (const component of serialized.split("&")) {
     const separator = component.indexOf("=");
     if (separator < 0) continue;
-    addUrlSecretForms(secrets, component.slice(separator + 1), true);
+    addUrlSecretForms(secrets, component.slice(separator + 1), formEncoded);
   }
 }
 
@@ -281,7 +287,10 @@ function addUrlSecretForms(
     );
     if (decoded) secrets.push(decoded);
   } catch {
-    // Keep the raw form; URLSearchParams above also retains query's forgiving decode.
+    if (formEncoded) return;
+    const protectedRaw = raw.replaceAll("+", "%2B").replaceAll("&", "%26");
+    const decoded = new URLSearchParams(`value=${protectedRaw}`).get("value");
+    if (decoded) secrets.push(decoded);
   }
 }
 

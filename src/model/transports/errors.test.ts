@@ -53,6 +53,16 @@ test("transport errors redact raw, decoded, repeated, plus, and malformed URL se
   if (profile.connection.kind !== "direct-api") {
     throw new Error("Expected the transport fixture to use Direct API.");
   }
+  const rawFragment =
+    "token=fragment%2Dsecret&tenant=studio%20fragment" +
+    "&malformed=broken%2Dfragment%zz" +
+    "&repeat=first%2Dfragment&repeat=second%2Dfragment" +
+    "&literal=plus+fragment";
+  const forgivingDecodedFragment =
+    "token=fragment-secret&tenant=studio fragment" +
+    "&malformed=broken-fragment%zz" +
+    "&repeat=first-fragment&repeat=second-fragment" +
+    "&literal=plus+fragment";
   const encodedProfile: SavedProfile = {
     ...profile,
     connection: {
@@ -61,7 +71,8 @@ test("transport errors redact raw, decoded, repeated, plus, and malformed URL se
         "https://example.test/v1?encoded=raw%2Dquery&space=signed%20query" +
         "&slash=signed%2fquery&plus=plus+query" +
         "&repeat=first%2Drepeat&repeat=second%2Drepeat" +
-        "&malformed=broken%2Dquery%zz#raw%2Dfragment",
+        "&malformed=broken%2Dquery%zz" +
+        `#${rawFragment}`,
     },
   };
   const exposedForms = [
@@ -82,19 +93,33 @@ test("transport errors redact raw, decoded, repeated, plus, and malformed URL se
     "broken%2Dquery%zz",
     "broken-query%25zz",
     "broken-query%zz",
-    "raw%2Dfragment",
-    "raw-fragment",
+    rawFragment,
+    forgivingDecodedFragment,
+    "fragment%2Dsecret",
+    "fragment-secret",
+    "studio%20fragment",
+    "studio fragment",
+    "broken%2Dfragment%zz",
+    "broken-fragment%zz",
+    "first%2Dfragment",
+    "first-fragment",
+    "second%2Dfragment",
+    "second-fragment",
+    "plus+fragment",
   ];
 
   await assert.rejects(
     withTransportContext(encodedProfile, "request", async () => {
-      throw new Error(`Detached values: ${exposedForms.join(" | ")}`);
+      throw new Error(
+        `Detached values: ${exposedForms.join(" | ")} | unrelated plus fragment`,
+      );
     }),
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       for (const exposed of exposedForms) {
         assert.equal(message.includes(exposed), false, `Leaked ${exposed}`);
       }
+      assert.match(message, /unrelated plus fragment/);
       return true;
     },
   );

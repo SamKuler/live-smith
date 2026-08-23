@@ -545,6 +545,53 @@ test("an older command response cannot roll back a newer approval event", async 
   }
 });
 
+test("a stale state first introducing a Session preserves its newer approval patch", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const stale = cloneState(state);
+  state.sessions = state.sessions.filter((session) => session.id !== "session-2");
+  const harness = await createDialogHarness(state);
+  try {
+    const ui = (harness.window as unknown as { LiveSmithUI: DialogUi }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("select_session", { sessionId: "session-2" });
+    await waitFor(
+      () => harness.calls.some((call) =>
+        call.path === "/command" &&
+        (call.jsonBody as { kind?: string } | undefined)?.kind ===
+          "select_session"
+      ),
+      "Expected the selection command to wait for its response.",
+    );
+
+    harness.emitServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-2",
+      approvalMode: "everything",
+      bridgeStateRevision: "3",
+    });
+    activateStateSession(stale, "session-2");
+    harness.setServerState(stale);
+    harness.queueNextStatePublication("4", "1");
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+
+    assert.ok(
+      harness.document.querySelector(
+        '.session-entry[data-session-id="session-2"]',
+      ),
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "everything",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("an older attachment response cannot roll back a newer approval event", async () => {
   const state = imageCapableState();
   state.openSettingsOnLoad = false;
@@ -947,6 +994,8 @@ test("a newer Send terminal supersedes an earlier peer command projection", asyn
 test("revision tracking preserves an approval field after an ABA event sequence", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
+  state.sessions.find((session) => session.id === "session-1")!.approvalMode =
+    "manual";
   const harness = await createDialogHarness(state);
   try {
     const ui = (harness.window as unknown as { LiveSmithUI: DialogUi }).LiveSmithUI;
@@ -965,26 +1014,26 @@ test("revision tracking preserves an approval field after an ABA event sequence"
     );
 
     const stale = cloneState(state);
-    stale.bridgeStateRevision = "2";
     stale.approvalMode = "low-risk";
     stale.sessions.find((session) => session.id === "session-1")!.approvalMode =
       "low-risk";
     stale.sessions.find((session) => session.id === "session-2")!.title =
       "Renamed through ABA";
     harness.setServerState(stale);
-    harness.emitServerEvent({
+    harness.emitRawServerEvent({
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
       bridgeStateRevision: "3",
     });
-    harness.emitServerEvent({
+    harness.emitRawServerEvent({
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "manual",
       bridgeStateRevision: "4",
     });
 
+    harness.queueNextStatePublication("5", "1");
     harness.releaseHeldCommandResponse();
     assert.equal(await command, true);
     await harness.settle();
@@ -998,6 +1047,116 @@ test("revision tracking preserves an approval field after an ABA event sequence"
         '.session-entry[data-session-id="session-2"] .session-title',
       )?.textContent,
       "Renamed through ABA",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an equal-cut state supersedes a pending approval value", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const ui = (harness.window as unknown as { LiveSmithUI: DialogUi }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("rename_session", {
+      sessionId: "session-2",
+      title: "Renamed at the equal cut",
+    });
+    await waitFor(
+      () => harness.calls.some((call) =>
+        call.path === "/command" &&
+        (call.jsonBody as { kind?: string } | undefined)?.kind ===
+          "rename_session"
+      ),
+      "Expected the equal-cut peer command to start.",
+    );
+
+    harness.emitRawServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-1",
+      approvalMode: "everything",
+      bridgeStateRevision: "2",
+    });
+    const authoritative = cloneState(state);
+    authoritative.approvalMode = "low-risk";
+    authoritative.sessions.find((session) => session.id === "session-1")!
+      .approvalMode = "low-risk";
+    authoritative.sessions.find((session) => session.id === "session-2")!.title =
+      "Renamed at the equal cut";
+    harness.setServerState(authoritative);
+    harness.queueNextStatePublication("3", "2");
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("covered approval state for an absent Session cannot affect its later commands", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const introduced = cloneState(state);
+  state.sessions = state.sessions.filter((session) => session.id !== "session-2");
+  const harness = await createDialogHarness(state);
+  try {
+    harness.emitRawServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-2",
+      approvalMode: "everything",
+      bridgeStateRevision: "2",
+    });
+    harness.queueNextStatePublication("3", "2");
+    await runCommand(harness, "rename_session", {
+      sessionId: "session-1",
+      title: "Covered current",
+    });
+
+    activateStateSession(introduced, "session-2");
+    harness.setServerState(introduced);
+    harness.queueNextStatePublication("4", "1");
+    await runCommand(harness, "select_session", { sessionId: "session-2" });
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "low-risk",
+    );
+
+    const ui = (harness.window as unknown as { LiveSmithUI: DialogUi }).LiveSmithUI;
+    harness.holdNextCommandResponse();
+    const command = ui.runCommand("set_session_approval_mode", {
+      sessionId: "session-2",
+      approvalMode: "everything",
+    });
+    await waitFor(
+      () => harness.calls.some((call) =>
+        call.path === "/command" &&
+        (call.jsonBody as { kind?: string } | undefined)?.kind ===
+          "set_session_approval_mode"
+      ),
+      "Expected the later approval command to wait for its response.",
+    );
+    harness.emitRawServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-1",
+      approvalMode: "everything",
+      bridgeStateRevision: "5",
+    });
+    harness.queueNextStatePublication("6", "1");
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
+      "everything",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
