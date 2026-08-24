@@ -1213,6 +1213,10 @@
           value.length <= __MAX_SKILL_ID_LENGTH__;
       }
 
+      function isWireSkillSource(value) {
+        return value === "built-in" || value === "user";
+      }
+
       function isWireSkillIds(value) {
         return Array.isArray(value) &&
           value.length <= __MAX_ACTIVE_SKILL_COUNT__ &&
@@ -1812,9 +1816,10 @@
           !Array.isArray(value.availableSkills) ||
           !value.availableSkills.every((skill) =>
             isWireRecord(skill) &&
-            hasOnlyWireKeys(skill, ["id", "description"]) &&
+            hasOnlyWireKeys(skill, ["id", "description", "source"]) &&
             isWireSkillId(skill.id) &&
-            typeof skill.description === "string"
+            typeof skill.description === "string" &&
+            isWireSkillSource(skill.source)
           ) ||
           !isWireSkillIds(value.activeSkillIds) ||
           !isWireModelCapabilities(value.capabilities) ||

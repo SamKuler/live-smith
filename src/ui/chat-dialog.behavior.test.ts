@@ -1927,6 +1927,7 @@ test("a background send keeps global Skill mutations locked until it settles", a
   state.availableSkills = [{
     id: "mix-review",
     description: "Review balance and space",
+    source: "user",
   }];
   const harness = await createDialogHarness(state);
   try {

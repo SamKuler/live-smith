@@ -2276,6 +2276,26 @@
         gap: 7px;
       }
 
+      .skill-group {
+        display: grid;
+        gap: 6px;
+      }
+
+      .skill-group + .skill-group {
+        margin-top: 5px;
+        padding-top: 11px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .skill-group h3 {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
       .skill-list {
         display: grid;
         gap: 5px;
@@ -2591,6 +2611,11 @@
       .skill-paste-fields {
         display: grid;
         gap: 7px;
+      }
+
+      .skill-import-body {
+        display: grid;
+        gap: 8px;
         padding-top: 8px;
       }
 
@@ -2782,6 +2807,15 @@
           width: 100%;
           max-width: none;
           margin-left: 0;
+        }
+
+        .skill-row[data-skill-source="user"] {
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+
+        .skill-row[data-skill-source="user"] .skill-delete {
+          justify-self: end;
         }
       }
 
@@ -3208,21 +3242,31 @@
           <div id="skillsPanel" class="tab-panel skills-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
             <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false">
               <h2 id="skillsHeading">Session Skills</h2>
-              <p class="skill-note">Skills add local workflow guidance to this Session. They cannot add tools, access files, or bypass approval.</p>
-              <div id="skillDropZone" class="skill-drop-zone">
-                <strong>Drop a SKILL.md file here</strong>
-                <span>File browsing is not available in this Ableton window.</span>
-              </div>
-              <details class="skill-paste">
-                <summary>Paste Skill Markdown</summary>
-                <div class="skill-paste-fields">
-                  <label for="skillPasteText">SKILL.md content</label>
-                  <textarea id="skillPasteText" name="skillMarkdown" autocomplete="off" spellcheck="false" placeholder="---&#10;name: my-skill&#10;description: What this Skill does&#10;---&#10;Instructions…"></textarea>
-                  <button id="installPastedSkillButton" class="secondary" type="button" disabled>Install pasted Skill</button>
-                </div>
-              </details>
-              <div id="skillList" class="skill-list" role="list" aria-label="Installed Skills"></div>
-              <p id="skillEmptyState" class="skill-empty">No Skills installed.</p>
+              <p class="skill-note">Choose the workflows that guide this Session.</p>
+              <section class="skill-group" aria-labelledby="builtInSkillsHeading">
+                <h3 id="builtInSkillsHeading">Built-in</h3>
+                <p class="skill-note">Included with Live Smith. Off by default.</p>
+                <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
+              </section>
+              <section class="skill-group" aria-labelledby="userSkillsHeading">
+                <h3 id="userSkillsHeading">User Skills</h3>
+                <div id="userSkillList" class="skill-list" role="list" aria-labelledby="userSkillsHeading"></div>
+                <p id="userSkillEmptyState" class="skill-empty">No user Skills.</p>
+                <details class="skill-paste">
+                  <summary>Import User Skill</summary>
+                  <div class="skill-import-body">
+                    <div id="skillDropZone" class="skill-drop-zone">
+                      <strong>Drop a SKILL.md file here</strong>
+                      <span>File browsing is not available in this Ableton window.</span>
+                    </div>
+                    <div class="skill-paste-fields">
+                      <label for="skillPasteText">Or paste SKILL.md</label>
+                      <textarea id="skillPasteText" name="skillMarkdown" autocomplete="off" spellcheck="false" placeholder="---&#10;name: my-skill&#10;description: What this Skill does&#10;---&#10;Instructions…"></textarea>
+                      <button id="installPastedSkillButton" class="secondary" type="button" disabled>Install Skill</button>
+                    </div>
+                  </div>
+                </details>
+              </section>
             </section>
           </div>
           <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>

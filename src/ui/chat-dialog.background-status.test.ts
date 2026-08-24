@@ -726,7 +726,11 @@ test("attachment response-loss reconciliation preserves a newer approval event",
 test("Skill response-loss reconciliation preserves a newer approval event", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
-  state.availableSkills = [{ id: "mix-review", description: "Review balance" }];
+  state.availableSkills = [{
+    id: "mix-review",
+    description: "Review balance",
+    source: "user",
+  }];
   const harness = await createDialogHarness(state);
   try {
     harness.truncateNextSkillResponseAfterCommit();

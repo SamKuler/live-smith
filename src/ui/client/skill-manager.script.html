@@ -29,47 +29,37 @@
         );
       }
 
-      function render() {
-        const list = document.getElementById("skillList");
-        const empty = document.getElementById("skillEmptyState");
-        if (!list || !empty) return;
-        list.replaceChildren();
-        const state = getState();
-        const installed = [...(state.availableSkills || [])].sort(
-          (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
-        );
-        const active = new Set(state.activeSkillIds || []);
-        empty.hidden = installed.length !== 0;
+      function renderSkillRow(skill, active) {
+        const row = document.createElement("div");
+        row.className = "skill-row";
+        row.dataset.skillId = skill.id;
+        row.dataset.skillSource = skill.source;
+        row.setAttribute("role", "listitem");
 
-        for (const skill of installed) {
-          const row = document.createElement("div");
-          row.className = "skill-row";
-          row.dataset.skillId = skill.id;
-          row.setAttribute("role", "listitem");
+        const toggleLabel = document.createElement("label");
+        toggleLabel.className = "skill-toggle";
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.checked = active.has(skill.id);
+        toggle.disabled = busy;
+        toggle.setAttribute("aria-label", `Use Skill ${skill.id} in this Session`);
+        toggle.addEventListener("change", () => {
+          void toggleSkill(skill.id, toggle.checked);
+        });
+        const copy = document.createElement("span");
+        copy.className = "skill-copy";
+        const id = document.createElement("strong");
+        id.textContent = skill.id;
+        const description = document.createElement("span");
+        description.textContent = skill.description;
+        copy.append(id, description);
+        toggleLabel.append(toggle, copy);
+        row.append(toggleLabel);
 
-          const toggleLabel = document.createElement("label");
-          toggleLabel.className = "skill-toggle";
-          const toggle = document.createElement("input");
-          toggle.type = "checkbox";
-          toggle.checked = active.has(skill.id);
-          toggle.disabled = busy;
-          toggle.setAttribute("aria-label", `Use Skill ${skill.id} in this Session`);
-          toggle.addEventListener("change", () => {
-            void toggleSkill(skill.id, toggle.checked);
-          });
-          const copy = document.createElement("span");
-          copy.className = "skill-copy";
-          const id = document.createElement("strong");
-          id.textContent = skill.id;
-          const description = document.createElement("span");
-          description.textContent = skill.description;
-          copy.append(id, description);
-          toggleLabel.append(toggle, copy);
-
+        if (skill.source === "user") {
           const remove = document.createElement("button");
           remove.type = "button";
           remove.className = "skill-delete secondary";
-          remove.textContent = "Delete";
           const inUse = skillIsUsed(skill.id);
           remove.disabled = busy;
           remove.textContent = inUse ? "Disable" : "Delete";
@@ -86,8 +76,32 @@
             if (inUse) void disableSkillEverywhere(skill.id);
             else void removeSkill(skill.id);
           });
-          row.append(toggleLabel, remove);
-          list.append(row);
+          row.append(remove);
+        }
+        return row;
+      }
+
+      function render() {
+        const builtInList = document.getElementById("builtInSkillList");
+        const userList = document.getElementById("userSkillList");
+        const userEmpty = document.getElementById("userSkillEmptyState");
+        if (!builtInList || !userList || !userEmpty) return;
+        builtInList.replaceChildren();
+        userList.replaceChildren();
+        const state = getState();
+        const available = [...(state.availableSkills || [])].sort(
+          (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+        );
+        const active = new Set(state.activeSkillIds || []);
+        const builtInSkills = available.filter((skill) => skill.source === "built-in");
+        const userSkills = available.filter((skill) => skill.source === "user");
+        userEmpty.hidden = userSkills.length !== 0;
+
+        for (const skill of builtInSkills) {
+          builtInList.append(renderSkillRow(skill, active));
+        }
+        for (const skill of userSkills) {
+          userList.append(renderSkillRow(skill, active));
         }
         updateAutocomplete();
       }

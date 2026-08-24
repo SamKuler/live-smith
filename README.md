@@ -42,9 +42,10 @@
   can also be copied into the pending attachments. Images, native PDFs, and
   audio have explicit provider capability boundaries; Office documents are
   extracted locally as bounded text.
-- Installs strict local `SKILL.md` workflow guides, lets each Session keep up to
-  four enabled Skills, and supports one-turn `$skill-id` mentions outside
-  Markdown code. Skill bodies never enter chat state, events, or logs.
+- Includes three arrangement Skills, imports strict local `SKILL.md` workflow
+  guides, lets each Session keep up to four enabled Skills, and supports
+  one-turn `$skill-id` mentions outside Markdown code. Skill bodies never enter
+  chat state, events, or logs.
 - Renders user and assistant messages with locally bundled, sanitized Markdown,
   including headings, emphasis, nested lists, quotes, safe links, tables, and
   code blocks. Raw HTML remains inert text, while tool traces and errors
@@ -501,13 +502,17 @@ If a Steer persistence result is unknown, the exact text and steering ID remain
 one unresolved operation. Different guidance and Queue submission stay blocked
 until an unchanged same-ID retry or authoritative Session state resolves it.
 
-### Local Skills
+### Skills
 
-Open the Inspector's **Skills** tab and either drop one UTF-8 `SKILL.md` into its
-import area or paste the Markdown into the keyboard-accessible editor. The
-definition must be at
-most 64 KiB and use exactly this frontmatter shape before a non-empty Markdown
-body:
+The Inspector's **Skills** tab includes three read-only arrangement workflows:
+`arranging-section-energy`, `developing-musical-variation`, and
+`organizing-instrument-roles`. They start off and can be enabled independently
+for each Session.
+
+To add a User Skill, open **Import User Skill** and either drop one UTF-8
+`SKILL.md` into the import area or paste it into the keyboard-accessible editor.
+The definition must be at most 64 KiB and use exactly this frontmatter shape
+before a non-empty Markdown body:
 
 ```markdown
 ---
@@ -518,23 +523,23 @@ Your local workflow guidance goes here.
 ```
 
 Names use lowercase letters, numbers, and single hyphens. Live Smith stores at
-most 32 Skills and 1 MiB of Skill source in total. A Session can enable at most
-four; enabled Skill IDs persist with that Session. Typing `$mix-review` at a
-normal whitespace boundary adds an installed Skill for one request without
+most 32 User Skills and 1 MiB of User Skill source in total; built-ins do not
+consume that quota. A Session can enable at most four Skills across both
+sources, and those IDs persist with the Session. Typing `$mix-review` at a
+normal whitespace boundary adds any available Skill for one request without
 changing the prompt. Mentions inside inline or fenced Markdown code, email/path
 tokens, currency-like numbers, and numeric-leading IDs are not activated.
 
-The repository includes three optional
-[arrangement Skill examples](examples/skills/README.md) covering section energy,
-instrument roles, and motif variation. They are examples only: Live Smith does
-not install or enable them until the user explicitly imports their `SKILL.md`.
+Built-ins cannot be replaced or deleted. For compatibility, a User Skill that
+was already installed under a now-built-in ID remains authoritative; deleting
+that User Skill restores the built-in definition.
 
-Skills are locally installed declarative workflow guidance. They cannot install
-or execute scripts, binaries, MCP servers, plugins, nested resources, or
-arbitrary paths; change provider settings; add tools; or add Live actions. A
-Skill never expands the built-in action schema or tool set. Every action remains
-subject to observation, schema validation, the selected Approval policy,
-preflight, cancellation, process-wide mutation serialization, and state-drift
+Skills are declarative workflow guidance. They cannot install or execute
+scripts, binaries, MCP servers, plugins, nested resources, or arbitrary paths;
+change provider settings; add tools; or add Live actions. A Skill never expands
+the built-in action schema or tool set. Every action remains subject to
+observation, schema validation, the selected Approval policy, preflight,
+cancellation, process-wide mutation serialization, and state-drift
 revalidation. Skill Markdown has lower priority than Live Smith's system and
 safety instructions and cannot authorize secrets, filesystem access,
 unsupported provider fields, or actions outside the built-in schema.
@@ -614,8 +619,9 @@ The directory contains:
   metadata owned by that Session.
 - `live-smith-models-<profile-id>-<hash>.json` — Direct API model-discovery
   cache; Live Smith's normalized subscription projection is modal-only.
-- `live-smith-skills/` — private Skill catalog, recovery metadata, and one
-  strict `SKILL.md` definition per installed ID.
+- `live-smith-skills/` — private User Skill catalog, recovery metadata, and one
+  strict `SKILL.md` definition per installed ID. Built-in Skills are bundled in
+  the extension and never written here.
 - `codex-subscription/` — private official Codex CLI home containing the shared
   ChatGPT file-store credential, Codex's own model-metadata cache, and managed
   runtime state; never share or sync it.

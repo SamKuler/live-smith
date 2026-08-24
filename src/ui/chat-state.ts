@@ -25,7 +25,7 @@ import type { SessionEvent } from "../storage/events.js";
 import type { SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
-import type { SkillSummary } from "../skills/format.js";
+import type { AvailableSkillSummary } from "../skills/builtins.js";
 
 export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
 
@@ -42,7 +42,7 @@ export interface ChatDialogState {
   approvalMode: ApprovalMode;
   events: ChatSessionEvent[];
   pendingAttachments: SessionAttachmentRef[];
-  availableSkills: SkillSummary[];
+  availableSkills: AvailableSkillSummary[];
   activeSkillIds: string[];
   capabilities: ModelCapabilities;
   capabilityEvidence: ModelCapabilityEvidence;

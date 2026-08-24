@@ -12,6 +12,10 @@ import {
   type GenerationParameters,
   type SavedProfile,
 } from "../model/profile.js";
+import {
+  availableSkillSummaries,
+  isBuiltInSkillId,
+} from "../skills/builtins.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -311,7 +315,7 @@ function stateFixture(): ChatBridgeState {
     approvalMode: "manual",
     events: [],
     pendingAttachments: [],
-    availableSkills: [],
+    availableSkills: availableSkillSummaries([]),
     activeSkillIds: [],
     capabilities: capabilities(),
     capabilityEvidence: capabilityEvidence(),
@@ -1121,9 +1125,17 @@ async function createDialogHarness(
               const source = NodeBuffer.from(bytes).toString("utf8");
               const id = /^name:\s*(.+)$/m.exec(source)?.[1]?.trim() ?? "";
               const description = /^description:\s*(.+)$/m.exec(source)?.[1]?.trim() ?? "";
-              const existing = serverState.availableSkills.find(
-                (skill) => skill.id === id,
+              const installed = serverState.availableSkills.filter(
+                (skill) => skill.source === "user",
               );
+              const existing = installed.find((skill) => skill.id === id);
+              if (!existing && isBuiltInSkillId(id)) {
+                return failedResponse(
+                  { error: `Built-in Skill ${id} is read-only.` },
+                  400,
+                  "Bad Request",
+                );
+              }
               if (existing && url.searchParams.get("replace") !== "true") {
                 return failedResponse(
                   { error: `Skill ${id} is already installed.` },
@@ -1131,10 +1143,10 @@ async function createDialogHarness(
                   "Conflict",
                 );
               }
-              serverState.availableSkills = [
-                ...serverState.availableSkills.filter((skill) => skill.id !== id),
+              serverState.availableSkills = availableSkillSummaries([
+                ...installed.filter((skill) => skill.id !== id),
                 { id, description },
-              ].sort((left, right) => left.id.localeCompare(right.id));
+              ]);
               const responseRejection = skillResponseRejections.shift();
               if (responseRejection) throw responseRejection;
               if (truncatedSkillResponses > 0) {
@@ -1167,8 +1179,10 @@ async function createDialogHarness(
                   "Conflict",
                 );
               }
-              serverState.availableSkills = serverState.availableSkills.filter(
-                (skill) => skill.id !== skillId,
+              serverState.availableSkills = availableSkillSummaries(
+                serverState.availableSkills.filter(
+                  (skill) => skill.source === "user" && skill.id !== skillId,
+                ),
               );
               if (truncatedSkillResponses > 0) {
                 truncatedSkillResponses -= 1;

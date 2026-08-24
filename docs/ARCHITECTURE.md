@@ -61,6 +61,9 @@ src/
       Type-specific inspection and bounded local document extraction.
 
   skills/
+    builtins.ts
+      Bundled, read-only arrangement Skill registry and merged availability
+      projection.
     format.ts
       Strict UTF-8 `SKILL.md` parser and safe Skill ID/summary contracts.
 
@@ -382,13 +385,22 @@ written approval; see
 
 ## Skill boundary
 
-A Skill is one declarative, local UTF-8 `SKILL.md`; it is not a general Codex or
-Claude Code Skill package. The parser accepts exactly two plain frontmatter
+A Skill is one declarative UTF-8 `SKILL.md` definition from either the bundled
+read-only registry or the local User Skill catalog; it is not a general Codex
+or Claude Code Skill package. The parser accepts exactly two plain frontmatter
 scalars (`name` and `description`) followed by a non-empty Markdown body. It
 rejects malformed UTF-8, BOMs, unsafe controls, ambiguous YAML constructs, and
-files larger than 64 KiB. The catalog permits 32 definitions and 1 MiB total.
-Directories, symlinks, scripts, binaries, assets, nested references, plugins,
-MCP servers, executables, and caller-supplied paths are outside this contract.
+files larger than 64 KiB. The User Skill catalog permits 32 definitions and 1
+MiB total; built-ins consume neither quota. Directories, symlinks, scripts,
+binaries, assets, nested references, plugins, MCP servers, executables, and
+caller-supplied paths are outside this contract.
+
+`skills/builtins.ts` contains the three canonical arrangement definitions and
+parses them through the same strict parser used for User Skills. Built-ins are
+available in every Session, start disabled, never create storage, and cannot be
+installed, replaced, or deleted. Application state merges both sources and
+projects the required `source: "built-in" | "user"` discriminator without a
+body, hash, or path.
 
 `storage/skills.ts` derives every path from a validated Skill ID and uses the
 same global per-storage transaction queue as Sessions. Install/replace/delete
@@ -400,21 +412,25 @@ capabilities are scoped to an active opaque storage transaction, and detached
 operations are drained before the transaction releases.
 
 `AgentSession.activeSkillIds` is an optional, sorted, unique list of at most four
-safe IDs. Activation validates the Session and installed catalog, then writes
-the Session inside the same global storage transaction. Normal active Sessions
-can add or remove installed Skills. Archived and foreign-project Sessions allow
-removal-only changes so a user can unblock catalog deletion without restoring a
-historical Live binding. Deletion scans all current, historical, and archived
-Sessions in the same transaction and refuses while any still references the ID.
+safe IDs. Activation validates the Session and the combined available IDs, then
+writes the Session inside the same global storage transaction. Normal active
+Sessions can add or remove available Skills. Archived and foreign-project
+Sessions allow removal-only changes so a user can unblock User Skill deletion
+without restoring a historical Live binding. Deletion scans all current,
+historical, and archived Sessions in the same transaction and refuses while any
+still references the ID.
 
 The per-Session mutation fence labels active sends. A cross-dialog
 `set_session_skills` command fails immediately while that Session is sending;
 otherwise queue order determines whether activation precedes the next send. A
 send resolves persistent IDs and lexical `$skill-id` candidates in one storage
-transaction before attachments or event append. Unknown mentions remain plain
-prompt text. Inline code, CommonMark backtick/tilde fences, email/path tokens,
-currency-like numeric tokens, and numeric-leading IDs are not mention syntax.
-The prompt and persisted user event remain byte-for-byte unchanged.
+transaction before attachments or event append. A historical User Skill with a
+built-in ID remains authoritative; deleting that override reveals the built-in
+definition. New imports using a reserved built-in ID are rejected. Unknown
+mentions remain plain prompt text. Inline code, CommonMark backtick/tilde
+fences, email/path tokens, currency-like numeric tokens, and numeric-leading
+IDs are not mention syntax. The prompt and persisted user event remain
+byte-for-byte unchanged.
 
 Selected definitions are escaped at the wrapper boundary, sorted by ID, and
 limited to 128 KiB after final UTF-8 rendering. The same immutable block is used
@@ -425,15 +441,15 @@ Skill IDs/descriptions and active IDs may enter chat state; bodies, hashes,
 frontmatter source, and paths never enter chat state, Session events, logs, or
 errors.
 
-Skills are locally installed declarative workflow guidance. They cannot install
-or execute scripts, binaries, MCP servers, plugins, nested resources, or
-arbitrary paths; change provider settings; add tools; or add Live actions. A
-Skill never expands the built-in action schema or tool set. Every action remains
-subject to observation, schema validation, Approval policy, preflight,
-cancellation, process-wide mutation serialization, and state-drift
-revalidation. Skill Markdown has lower priority than system and safety
-instructions and cannot authorize secrets, filesystem access, unsupported
-provider fields, or actions outside the built-in schema.
+Skills are declarative workflow guidance. They cannot install or execute
+scripts, binaries, MCP servers, plugins, nested resources, or arbitrary paths;
+change provider settings; add tools; or add Live actions. A Skill never expands
+the built-in action schema or tool set. Every action remains subject to
+observation, schema validation, Approval policy, preflight, cancellation,
+process-wide mutation serialization, and state-drift revalidation. Skill
+Markdown has lower priority than system and safety instructions and cannot
+authorize secrets, filesystem access, unsupported provider fields, or actions
+outside the built-in schema.
 
 The authenticated local bridge exposes a raw `POST /skills` route with exact
 `text/markdown; charset=utf-8`, a 64-KiB reader, a bounded process-wide read
@@ -1113,5 +1129,5 @@ classification is `unknown` while the original Send response is outstanding,
 the client waits up to the existing five-second reconciliation budget for a
 definitive Send outcome before falling back to unknown recovery. Every JSON
 body is bounded
-to 1 MiB before parsing. Skill source is never a JSON field; it uses the
-separate authenticated raw route described above.
+to 1 MiB before parsing. User Skill Markdown source is never a JSON field; it
+uses the separate authenticated raw route described above.
