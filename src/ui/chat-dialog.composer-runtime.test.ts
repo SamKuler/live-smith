@@ -123,6 +123,18 @@ test("composer keeps live, runtime, and follow-up controls as independent layout
     assert.ok(live);
     assert.ok(runtime);
     assert.ok(followUp);
+    assert.equal(
+      live.querySelector(".approval-mode-copy")?.classList.contains("visually-hidden"),
+      true,
+      "the compact approval selector should keep its meaning for assistive tech without consuming toolbar width",
+    );
+    for (const selector of ["#approvalMode", "#composerModel", "#composerReasoning"]) {
+      assert.equal(
+        toolbar?.querySelector(selector)?.classList.contains("composer-select"),
+        true,
+        `${selector} should use the shared composer select treatment`,
+      );
+    }
     assert.equal(runtime.querySelector("#composerModel") !== null, true);
     assert.equal(runtime.querySelector("#composerReasoning") !== null, true);
     assert.equal(runtime.querySelector("#contextUsage") !== null, true);

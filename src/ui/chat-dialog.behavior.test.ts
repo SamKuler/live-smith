@@ -126,6 +126,48 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
   }
 });
 
+test("the narrow Inspector drawer isolates covered chat and restores focus on close", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const setViewportWidth = (width: number) => {
+      Object.defineProperty(harness.window, "innerWidth", {
+        configurable: true,
+        value: width,
+      });
+      harness.window.dispatchEvent(new harness.window.Event("resize"));
+    };
+    setViewportWidth(680);
+
+    const chat = harness.document.querySelector<HTMLElement>(".chat-pane");
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    const settings = harness.document.querySelector<HTMLButtonElement>("#settingsButton");
+    assert.equal(chat?.hasAttribute("inert"), false);
+    assert.equal(harness.document.activeElement, prompt);
+
+    settings?.click();
+    assert.equal(chat?.hasAttribute("inert"), true);
+    assert.equal(harness.document.activeElement?.id, "settingsTab");
+
+    setViewportWidth(1040);
+    assert.equal(chat?.hasAttribute("inert"), false);
+    prompt?.focus();
+    assert.equal(harness.document.activeElement, prompt);
+
+    setViewportWidth(680);
+    assert.equal(chat?.hasAttribute("inert"), true);
+    assert.equal(harness.document.activeElement?.id, "settingsTab");
+
+    settings?.click();
+    assert.equal(chat?.hasAttribute("inert"), false);
+    assert.equal(harness.document.activeElement, settings);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("the dialog exposes accessible names, tabs, and live status semantics", async () => {
   const harness = await createDialogHarness();
   try {
@@ -277,7 +319,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     const guide = harness.document.querySelector("#modelSetupGuide");
     assert.equal(guide?.querySelectorAll("li").length, 3);
     assert.match(guide?.textContent ?? "", /name the profile.*connection details/i);
-    assert.match(guide?.textContent ?? "", /connect & load models/i);
+    assert.match(guide?.textContent ?? "", /load models/i);
     assert.match(guide?.textContent ?? "", /choose a model/i);
     assert.match(guide?.textContent ?? "", /save & use/i);
     assert.equal(
@@ -297,7 +339,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     );
     assert.match(
       harness.document.querySelector("#discoverModelsButton")?.textContent ?? "",
-      /connect.*load/i,
+      /load models/i,
     );
     assert.match(
       harness.document.querySelector("#saveProfileButton")?.textContent ?? "",

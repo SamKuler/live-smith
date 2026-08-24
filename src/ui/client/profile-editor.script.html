@@ -711,9 +711,9 @@
           return {
             state: "unchecked",
             badge: "Not checked",
-            title: "Check account status",
-            detail: "Sign in, or check an existing Live Smith session.",
-            signIn: { label: "Sign in to ChatGPT", hidden: false, tone: "primary" },
+            title: "Check account",
+            detail: "",
+            signIn: { label: "Sign in", hidden: false, tone: "primary" },
             check: { label: "Check account", hidden: false, tone: "secondary" },
             logout: { label: "Sign out", hidden: true, tone: "quiet" },
           };
@@ -728,7 +728,7 @@
               : "ChatGPT subscription unavailable",
             detail: `${auth.message} Fix the issue, then check again.`,
             signIn: {
-              label: retryableSignIn ? "Try sign-in again" : "Sign in to ChatGPT",
+              label: retryableSignIn ? "Try sign-in again" : "Sign in",
               hidden: !retryableSignIn,
               tone: "primary",
             },
@@ -745,8 +745,8 @@
             state: "signed-out",
             badge: "Signed out",
             title: "Sign in to continue",
-            detail: "Use an eligible ChatGPT account. API billing stays off.",
-            signIn: { label: "Sign in to ChatGPT", hidden: false, tone: "primary" },
+            detail: "",
+            signIn: { label: "Sign in", hidden: false, tone: "primary" },
             check: { label: "Check account", hidden: false, tone: "secondary" },
             logout: { label: "Sign out", hidden: true, tone: "quiet" },
           };
@@ -757,7 +757,7 @@
             badge: "Waiting",
             title: "Finish sign-in",
             detail: "Open the OpenAI page, enter the one-time code, then return here.",
-            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+            signIn: { label: "Sign in", hidden: true, tone: "secondary" },
             check: { label: "Check sign-in", hidden: false, tone: "primary" },
             logout: {
               label: "Cancel sign-in",
@@ -773,7 +773,7 @@
             badge: "Not eligible",
             title: "This account isn’t supported",
             detail: "Workspace-managed plans aren’t supported here. Sign out and connect a personal ChatGPT plan.",
-            signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+            signIn: { label: "Sign in", hidden: true, tone: "secondary" },
             check: { label: "Refresh account", hidden: false, tone: "secondary" },
             logout: { label: "Sign out", hidden: false, tone: "quiet" },
           };
@@ -785,7 +785,7 @@
           detail: auth.accountLabel
             ? `Signed in as ${auth.accountLabel} (${auth.planType}).`
             : `Signed in with a ${auth.planType} plan.`,
-          signIn: { label: "Sign in to ChatGPT", hidden: true, tone: "secondary" },
+          signIn: { label: "Sign in", hidden: true, tone: "secondary" },
           check: { label: "Refresh account", hidden: false, tone: "secondary" },
           logout: { label: "Sign out", hidden: false, tone: "quiet" },
         };
@@ -819,7 +819,9 @@
         if (renderedCodexAuthKey !== presentationKey) {
           renderedCodexAuthKey = presentationKey;
           document.getElementById("codexAuthStateLabel").textContent = presentation.title;
-          document.getElementById("codexAuthStateDetail").textContent = presentation.detail;
+          const detail = document.getElementById("codexAuthStateDetail");
+          detail.textContent = presentation.detail;
+          detail.hidden = !presentation.detail;
           const pending = auth?.status === "pending";
           ticket.hidden = !pending;
           if (pending) {

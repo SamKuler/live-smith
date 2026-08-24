@@ -104,9 +104,32 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     assert.equal(harness.document.querySelector<HTMLSelectElement>("#overrideInputImage")?.disabled, true);
     assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#extraBody")?.value, "");
     assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#extraBody")?.disabled, true);
-    assert.match(
-      harness.document.querySelector("#codexAuthPanel")?.textContent ?? "",
-      /Codex CLI 0\.148\.x.*experimental.*No API key fallback/is,
+    assert.equal(
+      harness.document.querySelector('label[for="connectionKind"]')?.textContent,
+      "Type",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLOptionElement>(
+        '#connectionKind option[value="codex-subscription"]',
+      )?.textContent,
+      "ChatGPT subscription",
+    );
+    assert.equal(
+      harness.document.querySelector(".subscription-auth-note")?.textContent,
+      "Uses your ChatGPT plan. API billing stays off.",
+    );
+    assert.equal(
+      harness.document.querySelector(".subscription-auth-details summary")?.textContent,
+      "Requirements",
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll(".subscription-auth-details li")].map(
+        (item) => item.textContent,
+      ),
+      [
+        "Codex CLI 0.148.x must be on PATH.",
+        "Personal ChatGPT plans only; workspace-managed accounts are not eligible.",
+      ],
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -199,6 +222,12 @@ test("device-code login controls send strict commands and render backend state s
       harness.document.querySelector(".subscription-auth-state-title")?.textContent ?? "",
       /sign in to continue/i,
     );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+      true,
+      "the signed-out state should not repeat the persistent billing note",
+    );
+    assert.equal(signIn?.textContent, "Sign in");
     assert.equal(signIn?.classList.contains("primary"), true);
     assert.equal(signIn?.hidden, false);
     assert.equal(check?.textContent, "Check account");
@@ -320,7 +349,7 @@ test("device-code login controls send strict commands and render backend state s
     });
     assert.match(
       harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
-      /sign in to continue.*eligible ChatGPT/is,
+      /sign in to continue/i,
     );
     assert.equal(panel?.dataset.authState, "signed-out");
     assert.equal(signIn?.hidden, false);
@@ -582,6 +611,7 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       auth: { status: "signed-out" } as const,
       badge: "Signed out",
       checkLabel: "Check account",
+      detailHidden: true,
       logoutHidden: true,
       message: /sign in to ChatGPT before sending/i,
       panelState: "signed-out",
@@ -596,6 +626,7 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       } as const,
       badge: "Waiting",
       checkLabel: "Check sign-in",
+      detailHidden: false,
       logoutHidden: false,
       message: /complete ChatGPT sign-in before sending/i,
       panelState: "pending",
@@ -609,6 +640,7 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       } as const,
       badge: "Unavailable",
       checkLabel: "Check again",
+      detailHidden: false,
       logoutHidden: true,
       message: /ChatGPT subscription is unavailable/i,
       panelState: "unavailable",
@@ -624,6 +656,7 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       } as const,
       badge: "Not eligible",
       checkLabel: "Refresh account",
+      detailHidden: false,
       logoutHidden: false,
       message: /account is not eligible for subscription requests/i,
       panelState: "ineligible",
@@ -661,6 +694,10 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       assert.equal(
         harness.document.querySelector("#codexCheckAccountButton")?.textContent,
         entry.checkLabel,
+      );
+      assert.equal(
+        harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+        entry.detailHidden,
       );
       assert.equal(
         harness.document.querySelector<HTMLButtonElement>("#codexLogoutButton")?.hidden,
@@ -760,6 +797,10 @@ test("clean subscription Profiles enable Send for an eligible signed-in account"
     assert.match(
       harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
       /<img src=x onerror="alert\(1\)">/,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+      false,
     );
     const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
     assert.equal(send?.disabled, false);

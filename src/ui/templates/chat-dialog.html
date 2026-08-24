@@ -88,11 +88,13 @@
       }
 
       .header-tool-button svg {
+        display: block;
         width: 15px;
         height: 15px;
         fill: none;
         stroke: currentColor;
         stroke-linecap: round;
+        stroke-linejoin: round;
         stroke-width: 1.7;
       }
 
@@ -109,22 +111,23 @@
       }
 
       main {
+        position: relative;
         display: grid;
-        grid-template-columns: 180px minmax(480px, 1fr);
+        grid-template-columns: 180px minmax(0, 1fr);
         min-height: 0;
         overflow: hidden;
       }
 
       .app.inspector-open main {
-        grid-template-columns: 180px minmax(480px, 1fr) 356px;
+        grid-template-columns: 180px minmax(0, 1fr) 356px;
       }
 
       .app.sessions-collapsed main {
-        grid-template-columns: minmax(480px, 1fr);
+        grid-template-columns: minmax(0, 1fr);
       }
 
       .app.sessions-collapsed.inspector-open main {
-        grid-template-columns: minmax(480px, 1fr) 356px;
+        grid-template-columns: minmax(0, 1fr) 356px;
       }
 
       .sessions-pane,
@@ -508,14 +511,6 @@
         background: var(--bg);
       }
 
-      .composer-options {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-        padding: 4px 2px;
-      }
-
       .approval-mode-label {
         display: flex;
         align-items: center;
@@ -526,10 +521,8 @@
       }
 
       .approval-mode-select {
-        width: auto;
-        min-width: 126px;
-        height: 28px;
-        font-weight: 600;
+        width: 104px;
+        min-width: 104px;
       }
 
       .approval-mode-select.is-everything {
@@ -1196,6 +1189,7 @@
         align-items: center;
         column-gap: 8px;
         row-gap: 5px;
+        min-width: 0;
         min-height: 42px;
         padding: 5px 7px;
         border: 1px solid var(--line-soft);
@@ -1228,7 +1222,7 @@
       }
 
       .composer-runtime-controls {
-        flex: 0 0 286px;
+        flex: 1 1 270px;
         order: 1;
         width: auto;
         max-width: 286px;
@@ -1236,6 +1230,7 @@
       }
 
       .composer-runtime-field {
+        display: block;
         min-width: 0;
       }
 
@@ -1248,7 +1243,7 @@
         max-width: 82px;
       }
 
-      .composer-runtime-select {
+      .composer-select {
         min-width: 0;
         height: 30px;
         padding: 0 20px 0 7px;
@@ -1268,7 +1263,7 @@
         color: #c59cff;
       }
 
-      .composer-runtime-select:hover:not(:disabled) {
+      .composer-select:hover:not(:disabled) {
         border-color: #686868;
         background-color: #454545;
       }
@@ -1618,12 +1613,17 @@
       }
 
       .icon-button {
+        display: grid;
+        place-items: center;
         width: 28px;
         height: 28px;
+        padding: 0;
+        line-height: 1;
       }
 
       .inspector-pane {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         grid-template-rows: auto minmax(0, 1fr);
         min-width: 0;
         overflow: hidden;
@@ -1642,6 +1642,7 @@
 
       .tab-bar button {
         flex: 1;
+        min-width: 0;
         height: 36px;
         padding: 0 10px;
         color: var(--quiet);
@@ -1677,6 +1678,7 @@
 
       .settings-panel {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr) auto;
         overflow: hidden;
         scrollbar-gutter: auto;
@@ -1871,13 +1873,8 @@
         gap: 10px;
       }
 
-      .subscription-auth-identity {
-        display: grid;
-        gap: 1px;
-        min-width: 0;
-      }
-
-      .subscription-auth-kicker {
+      .subscription-auth-experimental {
+        margin-left: 4px;
         color: var(--quiet);
         font-size: 8px;
         font-weight: 650;
@@ -1911,7 +1908,7 @@
         white-space: nowrap;
       }
 
-      .subscription-auth-lede {
+      .subscription-auth-note {
         margin: -2px 0 0;
         color: var(--quiet);
         line-height: 1.45;
@@ -2755,6 +2752,55 @@
         white-space: pre-wrap;
       }
 
+      @media (max-width: 1015px) {
+        .app.inspector-open main {
+          grid-template-columns: 180px minmax(0, 1fr);
+        }
+
+        .app.sessions-collapsed.inspector-open main {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .app.inspector-open .inspector-pane {
+          position: absolute;
+          z-index: 30;
+          inset: 0 0 0 auto;
+          width: min(356px, calc(100% - 180px));
+          border-left: 1px solid var(--line);
+          box-shadow: -12px 0 24px rgba(0, 0, 0, 0.32);
+        }
+
+        .app.sessions-collapsed.inspector-open .inspector-pane {
+          width: min(356px, 100%);
+        }
+      }
+
+      @media (max-width: 520px) {
+        .composer-live-controls,
+        .composer-runtime-controls {
+          flex: 1 1 100%;
+          width: 100%;
+          max-width: none;
+          margin-left: 0;
+        }
+      }
+
+      @media (max-width: 420px) {
+        .settings-actions {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .settings-actions .draft-status {
+          grid-column: 1 / -1;
+        }
+
+        .settings-actions button {
+          width: 100%;
+          min-width: 0;
+          padding-inline: 6px;
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -2775,7 +2821,7 @@
         <div class="header-actions">
           <button id="sessionsToggleButton" class="icon-button header-tool-button sessions-toggle-button" type="button" title="Collapse Sessions" aria-label="Collapse Sessions" aria-controls="sessionsPane" aria-expanded="true" onclick="LiveSmithUI.toggleSessionsPane()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="4" width="17" height="16" rx="2"></rect><path d="M9 4v16M6 8h.01M6 12h.01"></path></svg></button>
           <button id="settingsButton" class="icon-button header-tool-button settings-button" type="button" title="Settings" aria-label="Open Settings" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6"></path></svg></button>
-          <button id="closeButton" class="icon-button" type="button" title="Close" aria-label="Close Live Smith" onclick="LiveSmithUI.requestClose()">&#215;</button>
+          <button id="closeButton" class="icon-button header-tool-button" type="button" title="Close" aria-label="Close Live Smith" onclick="LiveSmithUI.requestClose()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
         </div>
       </header>
       <main>
@@ -2801,7 +2847,7 @@
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
             <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
             <div id="skillAutocomplete" class="skill-autocomplete" role="listbox" aria-label="Skill suggestions" hidden></div>
-            <div class="composer-options composer-toolbar">
+            <div class="composer-toolbar">
               <div class="composer-live-controls">
                 <div id="attachmentMenuShell" class="attachment-menu-shell">
                   <button id="attachmentMenuButton" class="attachment-menu-button" type="button" aria-label="Add attachment" aria-controls="attachmentMenu" aria-describedby="attachmentCapabilityHint" aria-expanded="false">+</button>
@@ -2819,8 +2865,8 @@
                   </div>
                 </div>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request.">
-                  <span>Apply</span>
-                  <select id="approvalMode" name="approvalMode" class="approval-mode-select" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()">
+                  <span class="approval-mode-copy visually-hidden">Apply</span>
+                  <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()">
                     <option value="manual">Manual</option>
                     <option value="low-risk">Low Risk</option>
                     <option value="everything">Accept Everything</option>
@@ -2838,11 +2884,11 @@
                 </div>
                 <label class="composer-runtime-field model" for="composerModel">
                   <span class="visually-hidden">Model for the active Session</span>
-                  <select id="composerModel" name="composerModel" class="composer-runtime-select" aria-label="Model for the active Session" onfocus="LiveSmithUI.ensureSessionModelCapabilities()" onpointerdown="LiveSmithUI.ensureSessionModelCapabilities()" onchange="LiveSmithUI.saveSessionModelSelection(true)"></select>
+                  <select id="composerModel" name="composerModel" class="composer-select" aria-label="Model for the active Session" onfocus="LiveSmithUI.ensureSessionModelCapabilities()" onpointerdown="LiveSmithUI.ensureSessionModelCapabilities()" onchange="LiveSmithUI.saveSessionModelSelection(true)"></select>
                 </label>
                 <label class="composer-runtime-field reasoning" for="composerReasoning">
                   <span class="visually-hidden">Reasoning effort for the active Session</span>
-                  <select id="composerReasoning" name="composerReasoning" class="composer-runtime-select" aria-label="Reasoning effort for the active Session" onfocus="LiveSmithUI.ensureSessionModelCapabilities()" onpointerdown="LiveSmithUI.ensureSessionModelCapabilities()" onchange="LiveSmithUI.saveSessionModelSelection(false)"></select>
+                  <select id="composerReasoning" name="composerReasoning" class="composer-select" aria-label="Reasoning effort for the active Session" onfocus="LiveSmithUI.ensureSessionModelCapabilities()" onpointerdown="LiveSmithUI.ensureSessionModelCapabilities()" onchange="LiveSmithUI.saveSessionModelSelection(false)"></select>
                 </label>
                 <button id="sendButton" class="primary composer-send" data-action="send" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" aria-label="Send message" title="Send (Cmd/Ctrl+Enter)" onclick="LiveSmithUI.handleSendButton()"><span id="sendButtonLabel" class="send-button-label visually-hidden">Send</span><svg class="send-button-icon send-button-send-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 20V4M5.5 10.5 12 4l6.5 6.5"></path></svg><svg class="send-button-icon send-button-stop-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1"></rect></svg></button>
               </div>
@@ -2864,7 +2910,7 @@
                 <h2 id="modelSetupGuideHeading">Connect a model</h2>
                 <ol>
                   <li>Name the Profile and enter connection details.</li>
-                  <li>Select Connect &amp; Load Models.</li>
+                  <li>Load models.</li>
                   <li>Choose a model, then Save &amp; Use.</li>
                 </ol>
               </section>
@@ -2890,10 +2936,10 @@
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
                 <h2 id="connectionSettingsHeading">Connection</h2>
                 <div class="field">
-                  <label for="connectionKind">Connection</label>
+                  <label for="connectionKind">Type</label>
                   <select id="connectionKind" name="connectionKind" autocomplete="off" onchange="LiveSmithUI.handleConnectionKindChange()">
                     <option value="direct-api">Direct API</option>
-                    <option value="codex-subscription">ChatGPT subscription (Experimental)</option>
+                    <option value="codex-subscription">ChatGPT subscription</option>
                   </select>
                 </div>
                 <div id="directApiFields" class="direct-api-fields">
@@ -2935,17 +2981,14 @@
                 </div>
                 <section id="codexAuthPanel" class="subscription-auth-panel" data-auth-state="unchecked" aria-labelledby="codexAuthHeading" hidden>
                   <div class="subscription-auth-header">
-                    <div class="subscription-auth-identity">
-                      <span class="subscription-auth-kicker">Managed · Experimental</span>
-                      <h3 id="codexAuthHeading">ChatGPT subscription</h3>
-                    </div>
+                    <h3 id="codexAuthHeading">Account <span class="subscription-auth-experimental">Experimental</span></h3>
                     <span id="codexAuthStateBadge" class="subscription-auth-state-badge">Not checked</span>
                   </div>
-                  <p class="subscription-auth-lede">Use your ChatGPT plan through Codex. API-key billing never starts automatically.</p>
+                  <p class="subscription-auth-note">Uses your ChatGPT plan. API billing stays off.</p>
                   <div id="codexAuthStatus" class="subscription-auth-status">
                     <div id="codexAuthState" class="subscription-auth-state" role="status" aria-live="polite" aria-atomic="true">
                       <strong id="codexAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
-                      <span id="codexAuthStateDetail" class="subscription-auth-state-detail">Sign in, or check an existing Live Smith session.</span>
+                      <span id="codexAuthStateDetail" class="subscription-auth-state-detail" hidden></span>
                     </div>
                     <div id="codexDeviceCodeTicket" class="subscription-auth-device-ticket" aria-labelledby="codexDeviceCodeHeading" hidden>
                       <a id="codexVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden>
@@ -2960,22 +3003,21 @@
                     </div>
                   </div>
                   <div class="subscription-auth-actions">
-                    <button id="codexSignInButton" class="primary" type="button" aria-describedby="codexAuthState" data-idle-label="Sign in to ChatGPT" onclick="LiveSmithUI.startCodexLogin()">Sign in to ChatGPT</button>
+                    <button id="codexSignInButton" class="primary" type="button" aria-describedby="codexAuthState" data-idle-label="Sign in" onclick="LiveSmithUI.startCodexLogin()">Sign in</button>
                     <button id="codexCheckAccountButton" class="secondary" type="button" aria-describedby="codexAuthState" data-idle-label="Check existing session" onclick="LiveSmithUI.refreshCodexAccount()">Check existing session</button>
                     <button id="codexLogoutButton" class="subscription-auth-quiet-action" type="button" aria-describedby="codexAuthState" data-idle-label="Sign out" onclick="LiveSmithUI.logoutCodex()" hidden>Sign out</button>
                   </div>
                   <details class="subscription-auth-details">
-                    <summary>Connection requirements</summary>
+                    <summary>Requirements</summary>
                     <ul>
-                      <li>Requires the official Codex CLI 0.148.x on PATH.</li>
-                      <li>App Server support is experimental; workspace-managed plans are not eligible.</li>
-                      <li>No API key fallback is performed. Choose Direct API for API billing.</li>
+                      <li>Codex CLI 0.148.x must be on PATH.</li>
+                      <li>Personal ChatGPT plans only; workspace-managed accounts are not eligible.</li>
                     </ul>
                   </details>
                 </section>
                 <div class="connection-action">
                   <div class="connection-action-row">
-                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Connect &amp; Load Models" onclick="LiveSmithUI.discoverModels()">Connect &amp; Load Models</button>
+                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
                     <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Checks the connection and loads the models this provider exposes." data-tooltip="Checks the connection and loads the models this provider exposes.">?</span>
                   </div>
                 </div>

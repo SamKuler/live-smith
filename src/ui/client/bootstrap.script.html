@@ -32,6 +32,7 @@
           skillInProgress: false,
         };
         const contextTokenFormatter = new Intl.NumberFormat();
+        const INSPECTOR_DRAWER_MAX_WIDTH = 1015;
 
         function presentStatus({
           canceledFollowUpCount = 0,
@@ -590,20 +591,40 @@
           setSessionsPaneCollapsed(!sessionsPaneCollapsed);
         }
 
+        function synchronizeInspectorDrawerIsolation() {
+          const app = document.querySelector(".app");
+          const chat = document.querySelector(".chat-pane");
+          const inspector = document.getElementById("inspectorPane");
+          if (!app || !chat || !inspector) return;
+          const isolateChat = app.classList.contains("inspector-open") &&
+            !inspector.hidden &&
+            window.innerWidth <= INSPECTOR_DRAWER_MAX_WIDTH;
+          const focusWasCovered = isolateChat && chat.contains(document.activeElement);
+          chat.toggleAttribute("inert", isolateChat);
+          if (focusWasCovered) {
+            inspector.querySelector('[role="tab"][aria-selected="true"]')
+              ?.focus({ preventScroll: true });
+          }
+        }
+
         function setInspectorOpen(open) {
+          const inspector = document.getElementById("inspectorPane");
+          const focusWasInside = !open && inspector.contains(document.activeElement);
           document.querySelector(".app").classList.toggle("inspector-open", open);
-          document.getElementById("inspectorPane").hidden = !open;
+          inspector.hidden = !open;
           const settingsButton = document.getElementById("settingsButton");
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
             "aria-label",
             open ? "Close Settings" : "Open Settings",
           );
+          synchronizeInspectorDrawerIsolation();
+          if (focusWasInside) settingsButton.focus({ preventScroll: true });
         }
 
         function openInspector(tab) {
-          setInspectorOpen(true);
           sessionTimeline.switchInspectorTab(tab || "settings");
+          setInspectorOpen(true);
         }
 
         function toggleInspector() {
@@ -923,6 +944,7 @@
           setSessionsPaneCollapsed(false);
           setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));
           sessionTimeline.switchInspectorTab("settings");
+          window.addEventListener("resize", synchronizeInspectorDrawerIsolation);
           const prompt = document.getElementById("prompt");
           prompt.value = "";
           prompt.addEventListener("input", bridgeClient.handleComposerInput);
