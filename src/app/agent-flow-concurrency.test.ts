@@ -16,6 +16,7 @@ import {
   type LiveInteractionContext,
 } from "../live/context.js";
 import type { DiscoveredModelInfo } from "../model/provider.js";
+import { availableSkillSummaries } from "../skills/builtins.js";
 import type {
   DirectApiModelConfig,
   SavedProfile,
@@ -892,6 +893,16 @@ test("Skills mutate atomically and reject activation during another dialog's act
   );
 
   try {
+    const builtInMarkdown = NodeBuffer.from(
+      "---\nname: arranging-section-energy\ndescription: Override\n---\nUnsafe override.\n",
+    );
+    for (const replace of [false, true]) {
+      const rejected = await fetch(
+        `${fixture.second.endpoint("/skills")}&replace=${replace}`,
+        { method: "POST", headers: bridgeSkillHeaders(), body: attachmentRequestBody(builtInMarkdown) },
+      );
+      assert.equal(rejected.status, 400);
+    }
     const install = await fetch(`${fixture.second.endpoint("/skills")}&replace=false`, {
       method: "POST",
       headers: bridgeSkillHeaders(),
@@ -956,7 +967,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
         body: JSON.stringify({
           kind: "set_session_skills",
           sessionId: fixture.sessionId,
-          skillIds: ["mix-review"],
+          skillIds: ["arranging-section-energy", "mix-review"],
         }),
       },
     ), "cross-dialog Skill activation conflict");
@@ -972,15 +983,18 @@ test("Skills mutate atomically and reject activation during another dialog's act
       body: JSON.stringify({
         kind: "set_session_skills",
         sessionId: fixture.sessionId,
-        skillIds: ["mix-review"],
+        skillIds: ["arranging-section-energy", "mix-review"],
       }),
     });
     assert.equal(activation.status, 200);
     const activeState = await activation.json() as ChatDialogState;
-    assert.deepEqual(activeState.activeSkillIds, ["mix-review"]);
+    assert.deepEqual(activeState.activeSkillIds, [
+      "arranging-section-energy",
+      "mix-review",
+    ]);
     assert.deepEqual(
       activeState.availableSkills,
-      [{ id: "mix-review", description: "Review the mix" }],
+      availableSkillSummaries([{ id: "mix-review", description: "Review the mix" }]),
     );
 
     const deleteInUse = await fetch(
@@ -1006,7 +1020,7 @@ test("Skills mutate atomically and reject activation during another dialog's act
     );
     assert.equal(deletion.status, 200);
     const deletedState = await deletion.json() as ChatDialogState;
-    assert.deepEqual(deletedState.availableSkills, []);
+    assert.deepEqual(deletedState.availableSkills, availableSkillSummaries([]));
   } finally {
     releaseModel.resolve();
     await fixture.close();

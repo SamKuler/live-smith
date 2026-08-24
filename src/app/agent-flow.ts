@@ -45,6 +45,10 @@ import {
   SkillFormatError,
 } from "../skills/format.js";
 import {
+  availableSkillSummaries,
+  isBuiltInSkillId,
+} from "../skills/builtins.js";
+import {
   createDirectApiBackend,
   type ModelBackendManager,
 } from "../model/backend-registry.js";
@@ -713,10 +717,11 @@ export async function runAgentFlow(
               transaction,
               storageDirectory,
             );
-            const availableSkills = (await listInstalledSkillsInTransaction(
+            const installedSkills = await listInstalledSkillsInTransaction(
               transaction,
               storageDirectory,
-            )).map(({ id, description }) => ({ id, description }));
+            );
+            const availableSkills = availableSkillSummaries(installedSkills);
             return { allSessions, availableSkills };
           },
         );
@@ -1651,13 +1656,15 @@ export async function runAgentFlow(
                   transaction,
                   storageDirectory,
                 );
-                const installedIds = new Set(installed.map((skill) => skill.id));
+                const availableIds = new Set(
+                  availableSkillSummaries(installed).map((skill) => skill.id),
+                );
                 const unavailable = requestedSkillIds.find(
-                  (skillId) => !installedIds.has(skillId),
+                  (skillId) => !availableIds.has(skillId),
                 );
                 if (unavailable !== undefined) {
                   throw new ChatBridgeSkillValidationError(
-                    `Skill ${unavailable} is not installed.`,
+                    `Skill ${unavailable} is not available.`,
                   );
                 }
 
@@ -2044,6 +2051,11 @@ export async function runAgentFlow(
             transaction,
             storageDirectory,
           )).find((skill) => skill.id === definition.id);
+          if (existing === undefined && isBuiltInSkillId(definition.id)) {
+            throw new ChatBridgeSkillValidationError(
+              `Built-in Skill ${definition.id} is read-only and cannot be installed or replaced.`,
+            );
+          }
           if (existing?.sha256 === expectedSha256) return existing;
           if (existing !== undefined && !input.replace) {
             throw new ChatBridgeConflictError(
@@ -2082,7 +2094,10 @@ export async function runAgentFlow(
             { cause: error, authoritativeState },
           );
         }
-      } else if (error instanceof ChatBridgeConflictError) {
+      } else if (
+        error instanceof ChatBridgeConflictError ||
+        error instanceof ChatBridgeSkillValidationError
+      ) {
         throw error;
       } else if (error instanceof SkillStorageCorruptionError) {
         throw new ChatBridgeSkillValidationError(

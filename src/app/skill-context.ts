@@ -6,6 +6,10 @@ import {
   type SkillDefinition,
 } from "../skills/format.js";
 import {
+  availableSkillSummaries,
+  builtInSkillDefinition,
+} from "../skills/builtins.js";
+import {
   withSkillCatalogTransaction,
 } from "../storage/skills.js";
 
@@ -45,15 +49,18 @@ export async function resolveSkillContext(input: {
     }
 
     const installedIds = new Set(installed.map((skill) => skill.id));
+    const availableIds = new Set(
+      availableSkillSummaries(installed).map((skill) => skill.id),
+    );
     for (const skillId of input.sessionSkillIds) {
-      if (!installedIds.has(skillId)) {
+      if (!availableIds.has(skillId)) {
         throw unavailableSkillError(skillId);
       }
     }
 
     const activeSkillIds = [...new Set([
       ...input.sessionSkillIds,
-      ...mentionedCandidates.filter((skillId) => installedIds.has(skillId)),
+      ...mentionedCandidates.filter((skillId) => availableIds.has(skillId)),
     ])].sort();
     if (activeSkillIds.length > MAX_ACTIVE_SKILL_COUNT) {
       throw new SkillContextError(
@@ -63,10 +70,16 @@ export async function resolveSkillContext(input: {
 
     const definitions: SkillDefinition[] = [];
     for (const skillId of activeSkillIds) {
-      try {
-        definitions.push(await catalog.readInstalledSkill(skillId));
-      } catch {
-        throw unavailableSkillError(skillId);
+      if (installedIds.has(skillId)) {
+        try {
+          definitions.push(await catalog.readInstalledSkill(skillId));
+        } catch {
+          throw unavailableSkillError(skillId);
+        }
+      } else {
+        const definition = builtInSkillDefinition(skillId);
+        if (definition === undefined) throw unavailableSkillError(skillId);
+        definitions.push(definition);
       }
     }
 

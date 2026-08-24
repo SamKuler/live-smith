@@ -3,15 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { installSkill } from "../storage/skills.js";
 import { resolveSkillContext } from "./skill-context.js";
-
-const examplesDirectory = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../examples/skills",
-);
 
 const skillIds = [
   "arranging-section-energy",
@@ -19,17 +12,11 @@ const skillIds = [
   "organizing-instrument-roles",
 ] as const;
 
-test("arrangement examples enter requests only while explicitly active", async (t) => {
+test("built-in arrangement Skills enter requests only while explicitly active", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-arrangement-skill-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const skillId of skillIds) {
-    await installSkill(
-      directory,
-      await fs.readFile(path.join(examplesDirectory, skillId, "SKILL.md")),
-    );
-  }
 
   assert.deepEqual(
     await resolveSkillContext({
@@ -67,4 +54,8 @@ test("arrangement examples enter requests only while explicitly active", async (
       1,
     );
   }
+  await assert.rejects(
+    fs.stat(path.join(directory, "live-smith-skills")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 });

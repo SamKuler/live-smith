@@ -11,7 +11,7 @@ import {
   resolveSkillContext,
   skillMentionCandidates,
 } from "./skill-context.js";
-import { installSkill } from "../storage/skills.js";
+import { deleteInstalledSkill, installSkill } from "../storage/skills.js";
 
 function skillBytes(
   id: string,
@@ -137,6 +137,39 @@ test("skill context deduplicates persistent and one-turn activation", async () =
 
   assert.deepEqual(resolved.activeSkillIds, ["mixing-review"]);
   assert.equal(resolved.instructionBlock.split('<skill id="').length - 1, 1);
+});
+
+test("installed same-ID guidance shadows a built-in until the user copy is deleted", async () => {
+  const directory = await temporaryDirectory();
+  const builtIn = await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["arranging-section-energy"],
+    prompt: "Arrange the section.",
+  });
+  assert.match(builtIn.instructionBlock, /Build the Arc/u);
+
+  await installSkill(
+    directory,
+    skillBytes(
+      "arranging-section-energy",
+      "PRIVATE-LEGACY-OVERRIDE\n",
+    ),
+  );
+  const overridden = await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["arranging-section-energy"],
+    prompt: "Arrange the section.",
+  });
+  assert.match(overridden.instructionBlock, /PRIVATE-LEGACY-OVERRIDE/u);
+  assert.doesNotMatch(overridden.instructionBlock, /Build the Arc/u);
+
+  await deleteInstalledSkill(directory, "arranging-section-energy");
+  const restored = await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["arranging-section-energy"],
+    prompt: "Arrange the section.",
+  });
+  assert.match(restored.instructionBlock, /Build the Arc/u);
 });
 
 test("skill context escapes instruction bodies so labelled boundaries cannot collide", async () => {

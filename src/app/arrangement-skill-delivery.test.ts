@@ -1,19 +1,10 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import type { RuntimeProfile } from "../model/provider.js";
-import { installSkill } from "../storage/skills.js";
 import { buildModelRequest } from "./model-request.js";
 import { resolveSkillContext } from "./skill-context.js";
 
-const examplesDirectory = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../examples/skills",
-);
 const skillIds = [
   "arranging-section-energy",
   "developing-musical-variation",
@@ -60,21 +51,10 @@ const runtimeProfile: RuntimeProfile = {
   },
 };
 
-test("arrangement Skill bodies reach only trusted system instructions", async (t) => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-arrangement-delivery-"),
-  );
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const skillId of skillIds) {
-    await installSkill(
-      directory,
-      await fs.readFile(path.join(examplesDirectory, skillId, "SKILL.md")),
-    );
-  }
-
+test("built-in arrangement Skill bodies reach only trusted system instructions", async () => {
   const prompt = `Keep this exact prompt, including $${skillIds[0]}.`;
   const skillContext = await resolveSkillContext({
-    storageDirectory: directory,
+    storageDirectory: undefined,
     sessionSkillIds: [...skillIds],
     prompt,
   });
@@ -112,7 +92,7 @@ test("arrangement Skill bodies reach only trusted system instructions", async (t
   assert.deepEqual(request.history, history);
 
   const disabled = await resolveSkillContext({
-    storageDirectory: directory,
+    storageDirectory: undefined,
     sessionSkillIds: [],
     prompt: "No Skill mention here.",
   });
