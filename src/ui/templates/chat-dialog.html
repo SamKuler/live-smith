@@ -3240,13 +3240,14 @@
             </div>
           </div>
           <div id="skillsPanel" class="tab-panel skills-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
-            <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false">
+            <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
               <h2 id="skillsHeading">Session Skills</h2>
               <p class="skill-note">Choose the workflows that guide this Session.</p>
               <section class="skill-group" aria-labelledby="builtInSkillsHeading">
                 <h3 id="builtInSkillsHeading">Built-in</h3>
                 <p class="skill-note">Included with Live Smith. Off by default.</p>
                 <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
+                <p id="builtInSkillEmptyState" class="skill-empty" hidden>Same-ID User Skills are shown below.</p>
               </section>
               <section class="skill-group" aria-labelledby="userSkillsHeading">
                 <h3 id="userSkillsHeading">User Skills</h3>

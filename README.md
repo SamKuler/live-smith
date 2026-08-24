@@ -545,11 +545,12 @@ safety instructions and cannot authorize secrets, filesystem access,
 unsupported provider fields, or actions outside the built-in schema.
 
 Import and delete use separate authenticated local bridge routes; `/send`
-remains exactly `{ prompt, sessionId }`. Only Skill ID/description summaries and
-active IDs reach the UI. Selected bodies are read and hash-checked only when a
-request actually activates them, then escaped into a bounded 128-KiB system
-instruction block. Deleting a Skill is blocked while any current, historical,
-or archived Session uses it; the UI can disable it across those Sessions first.
+remains exactly `{ prompt, sessionId }`. Only Skill ID/description/source
+summaries and active IDs reach the UI. Selected built-ins resolve from the
+bundle; selected User Skill bodies are read and hash-checked only when a request
+activates them. Both are escaped into a bounded 128-KiB system instruction
+block. Deleting a User Skill is blocked while any current, historical, or
+archived Session uses it; the UI can disable it across those Sessions first.
 
 ## Local data and privacy
 

@@ -996,7 +996,11 @@ test("Skills mutate atomically and reject activation during another dialog's act
       activeState.availableSkills,
       availableSkillSummaries([{ id: "mix-review", description: "Review the mix" }]),
     );
-
+    const builtInDelete = await fetch(fixture.second.endpoint("/skills/arranging-section-energy"), {
+      method: "DELETE", headers: bridgeSkillDeleteHeaders(),
+    });
+    assert.equal(builtInDelete.status, 200);
+    assert.deepEqual((await builtInDelete.json() as ChatDialogState).activeSkillIds, activeState.activeSkillIds);
     const deleteInUse = await fetch(
       fixture.second.endpoint("/skills/mix-review"),
       { method: "DELETE", headers: bridgeSkillDeleteHeaders() },

@@ -2136,6 +2136,11 @@ export async function runAgentFlow(
         storageDirectory,
         async (transaction) => {
           throwIfAborted(signal);
+          const existing = (await listInstalledSkillsInTransaction(
+            transaction,
+            storageDirectory,
+          )).some((skill) => skill.id === input.skillId);
+          if (!existing) return;
           const sessions = await listSessionsInTransaction(
             transaction,
             storageDirectory,
@@ -2147,11 +2152,6 @@ export async function runAgentFlow(
               "Remove this Skill from every Session before deleting it.",
             );
           }
-          const existing = (await listInstalledSkillsInTransaction(
-            transaction,
-            storageDirectory,
-          )).some((skill) => skill.id === input.skillId);
-          if (!existing) return;
           throwIfAborted(signal);
           await deleteInstalledSkillInTransaction(
             transaction,

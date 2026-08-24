@@ -29,6 +29,7 @@ test("built-in and user Skills have separate controls and built-ins start disabl
       '[data-skill-id="arranging-section-energy"]',
     );
     assert.equal(builtInRow?.dataset.skillSource, "built-in");
+    assert.equal(builtInRow?.querySelector("strong")?.getAttribute("translate"), "no");
     assert.equal(
       builtInRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked,
       false,
@@ -41,13 +42,39 @@ test("built-in and user Skills have separate controls and built-ins start disabl
     assert.equal(userRow?.dataset.skillSource, "user");
     assert.equal(userRow?.querySelector<HTMLButtonElement>(".skill-delete")?.textContent, "Delete");
 
-    builtInRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click();
+    const builtInToggle = builtInRow?.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    harness.holdNextCommand();
+    builtInToggle?.focus();
+    builtInToggle?.click();
+    await waitForCondition(
+      () => commandCalls(harness).length === 1,
+      "Expected the built-in toggle command to start.",
+    );
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector("#skillManager"),
+    );
+    assert.equal(builtInToggle?.isConnected, true);
+    assert.equal(builtInToggle?.disabled, true);
+    assert.equal(
+      harness.document.querySelector("#skillManager")?.getAttribute("aria-busy"),
+      "true",
+    );
+    harness.releaseHeldCommand();
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_session_skills",
       sessionId: "session-1",
       skillIds: ["arranging-section-energy"],
     });
+    assert.equal(
+      harness.document.activeElement,
+      builtInList?.querySelector(
+        '[data-skill-id="arranging-section-energy"] input[type="checkbox"]',
+      ),
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -69,6 +96,37 @@ test("built-in Skills participate in prompt autocomplete", async () => {
       [...listbox.querySelectorAll("[role='option'] strong")]
         .map((option) => option.textContent),
       ["$arranging-section-energy"],
+    );
+    assert.equal(
+      listbox.querySelector("[role='option'] strong")?.getAttribute("translate"),
+      "no",
+    );
+  } finally {
+    harness.close();
+  }
+});
+
+test("the Built-in group explains when legacy User Skills replace every built-in", async () => {
+  const state = stateFixture();
+  state.availableSkills = availableSkillSummaries([
+    { id: "arranging-section-energy", description: "Legacy section guidance" },
+    { id: "developing-musical-variation", description: "Legacy variation guidance" },
+    { id: "organizing-instrument-roles", description: "Legacy role guidance" },
+  ]);
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelectorAll("#builtInSkillList .skill-row").length,
+      0,
+    );
+    const empty = harness.document.querySelector<HTMLElement>(
+      "#builtInSkillEmptyState",
+    );
+    assert.equal(empty?.hidden, false);
+    assert.match(empty?.textContent ?? "", /same-ID User Skills.*below/i);
+    assert.equal(
+      harness.document.querySelectorAll("#userSkillList .skill-row").length,
+      3,
     );
   } finally {
     harness.close();
@@ -129,6 +187,83 @@ test("the initial-state decoder requires a recognized Skill source", async () =>
   }
 });
 
+test("Skill toggle focus survives command failure and the four-Skill limit", async () => {
+  const activeSkillIds = [
+    "arranging-section-energy",
+    "developing-musical-variation",
+    "organizing-instrument-roles",
+    "user-fourth",
+  ];
+  const state = stateFixture();
+  state.availableSkills = availableSkillSummaries([
+    { id: "user-fourth", description: "Fourth workflow" },
+    { id: "user-fifth", description: "Fifth workflow" },
+  ]);
+  state.sessions[0]!.activeSkillIds = [...activeSkillIds];
+  state.activeSkillIds = [...activeSkillIds];
+  const harness = await createDialogHarness(state);
+  try {
+    const fifth = harness.document.querySelector<HTMLInputElement>(
+      '[data-skill-id="user-fifth"] input[type="checkbox"]',
+    );
+    assert.ok(fifth);
+    fifth.focus();
+    fifth.click();
+    await harness.settle();
+    const restoredFifth = harness.document.querySelector<HTMLInputElement>(
+      '[data-skill-id="user-fifth"] input[type="checkbox"]',
+    );
+    assert.equal(harness.document.activeElement, restoredFifth);
+    assert.equal(restoredFifth?.checked, false);
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /at most 4 Skills/i,
+    );
+
+    const active = harness.document.querySelector<HTMLInputElement>(
+      '[data-skill-id="arranging-section-energy"] input[type="checkbox"]',
+    );
+    assert.ok(active);
+    harness.failNextCommand("Session Skill update failed.");
+    active.focus();
+    active.click();
+    await harness.settle();
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector(
+        '[data-skill-id="arranging-section-energy"] input[type="checkbox"]',
+      ),
+    );
+  } finally {
+    harness.close();
+  }
+});
+
+test("Skill completion does not steal focus moved elsewhere while busy", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    const toggle = harness.document.querySelector<HTMLInputElement>(
+      '[data-skill-id="arranging-section-energy"] input[type="checkbox"]',
+    );
+    const close = harness.document.querySelector<HTMLButtonElement>("#closeButton");
+    assert.ok(toggle && close);
+    harness.holdNextCommand();
+    toggle.focus();
+    toggle.click();
+    await waitForCondition(
+      () => commandCalls(harness).length === 1,
+      "Expected the held Skill command to start.",
+    );
+    close.focus();
+    assert.equal(harness.document.activeElement, close);
+    harness.releaseHeldCommand();
+    await harness.settle();
+    assert.equal(harness.document.activeElement, close);
+  } finally {
+    harness.close();
+  }
+});
+
 test("keyboard users can paste Skill Markdown without a native file picker", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
@@ -149,6 +284,7 @@ test("keyboard users can paste Skill Markdown without a native file picker", asy
       "",
     ].join("\n"));
     assert.equal(install?.disabled, false);
+    install?.focus();
     harness.click("#installPastedSkillButton");
     await waitForCondition(
       () => harness.calls.some((call) => call.path === "/skills"),
@@ -166,6 +302,29 @@ test("keyboard users can paste Skill Markdown without a native file picker", asy
       harness.document.querySelector<HTMLTextAreaElement>("#skillPasteText")?.value,
       "",
     );
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector(
+        '[data-skill-id="pasted-skill"] input[type="checkbox"]',
+      ),
+    );
+
+    harness.input("#skillPasteText", [
+      "---",
+      "name: arranging-section-energy",
+      "description: Cannot replace a built-in",
+      "---",
+      "Replacement body",
+      "",
+    ].join("\n"));
+    install?.focus();
+    harness.click("#installPastedSkillButton");
+    await waitForCondition(
+      () => harness.calls.filter((call) => call.path === "/skills").length === 2,
+      "Expected the rejected pasted built-in request.",
+    );
+    await harness.settle();
+    assert.equal(harness.document.activeElement, install);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -229,6 +388,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
     );
     assert.equal(deleteButton?.disabled, false);
     assert.equal(deleteButton?.textContent, "Disable");
+    deleteButton?.focus();
     deleteButton?.click();
     await harness.acceptAppConfirmation();
     await harness.settle();
@@ -241,10 +401,15 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
       "[data-skill-id='mix-review'] .skill-delete",
     );
     assert.equal(enabledDelete?.disabled, false);
+    enabledDelete?.focus();
     enabledDelete?.click();
     await harness.acceptAppConfirmation();
     await harness.settle();
     assert.ok(harness.calls.some((call) => call.path === "/skills/mix-review"));
+    assert.equal(
+      harness.document.activeElement,
+      harness.document.querySelector(".skill-paste > summary"),
+    );
     assert.equal(
       harness.calls.filter((call) => call.jsonBody !== undefined)
         .some((call) => JSON.stringify(call.jsonBody).includes("PRIVATE SKILL BODY")),
@@ -447,6 +612,82 @@ test("a committed Skill delete with truncated JSON reconciles before an idempote
   }
 });
 
+test("a response-lost legacy override delete stays idempotent after its built-in becomes active", async () => {
+  const skillId = "arranging-section-energy";
+  const state = stateFixture();
+  state.availableSkills = availableSkillSummaries([{
+    id: skillId,
+    description: "Legacy user guidance",
+  }]);
+  const harness = await createDialogHarness(state);
+  try {
+    harness.truncateNextSkillResponseAfterCommit();
+    harness.holdNextState();
+    assert.equal(
+      harness.document.querySelector(
+        `#builtInSkillList [data-skill-id='${skillId}']`,
+      ),
+      null,
+    );
+    const deleteButton = harness.document.querySelector<HTMLButtonElement>(
+      `[data-skill-id='${skillId}'] .skill-delete`,
+    );
+    assert.equal(
+      deleteButton?.closest<HTMLElement>(".skill-row")?.dataset.skillSource,
+      "user",
+    );
+    deleteButton?.focus();
+    deleteButton?.click();
+    await harness.acceptAppConfirmation();
+    await waitForCondition(
+      () => harness.calls.some((call) => call.path === "/state"),
+      "Expected the response-lost override deletion to refresh state.",
+    );
+
+    const peerState = stateFixture();
+    peerState.sessions[0]!.activeSkillIds = [skillId];
+    peerState.activeSkillIds = [skillId];
+    harness.setServerState(peerState);
+    harness.releaseHeldState();
+    await waitForCondition(
+      () => harness.calls.filter(
+        (call) => call.path === `/skills/${skillId}`,
+      ).length === 2,
+      "Expected an idempotent delete retry after the built-in became active.",
+    );
+    await harness.settle();
+
+    assert.deepEqual(
+      harness.calls.map((call) => call.path),
+      [`/skills/${skillId}`, "/state", `/skills/${skillId}`],
+    );
+    const builtInRow = harness.document.querySelector<HTMLElement>(
+      `[data-skill-id='${skillId}']`,
+    );
+    assert.equal(builtInRow?.dataset.skillSource, "built-in");
+    assert.equal(
+      builtInRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked,
+      true,
+    );
+    assert.equal(builtInRow?.querySelector(".skill-delete"), null);
+    assert.equal(
+      harness.document.activeElement,
+      builtInRow?.querySelector('input[type="checkbox"]'),
+    );
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /User Skill arranging-section-energy deleted.*built-in Skill is available again/i,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("Skill autocomplete is accessible and skips numeric IDs and Markdown code", async () => {
   const state = stateFixture();
   state.availableSkills = [
@@ -555,6 +796,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
       "[data-skill-id='history-guide'] .skill-delete",
     );
     assert.equal(disable?.textContent, "Disable");
+    disable?.focus();
     disable?.click();
     await harness.acceptAppConfirmation();
     await harness.settle();
@@ -567,6 +809,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
       "[data-skill-id='history-guide'] .skill-delete",
     );
     assert.equal(deletion?.textContent, "Delete");
+    assert.equal(harness.document.activeElement, deletion);
     deletion?.click();
     await harness.acceptAppConfirmation();
     await harness.settle();

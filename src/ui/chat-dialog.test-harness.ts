@@ -1167,23 +1167,26 @@ async function createDialogHarness(
 
             if (url.pathname.startsWith("/skills/") && init?.method === "DELETE") {
               const skillId = decodeURIComponent(url.pathname.slice("/skills/".length));
-              const inUse = [
-                ...serverState.sessions,
-                ...serverState.previousSessions,
-                ...serverState.archivedSessions,
-              ].some((session) => session.activeSkillIds?.includes(skillId));
-              if (inUse) {
-                return failedResponse(
-                  { error: "Remove this Skill from every Session before deleting it." },
-                  409,
-                  "Conflict",
+              const installed = serverState.availableSkills.filter(
+                (skill) => skill.source === "user",
+              );
+              if (installed.some((skill) => skill.id === skillId)) {
+                const inUse = [
+                  ...serverState.sessions,
+                  ...serverState.previousSessions,
+                  ...serverState.archivedSessions,
+                ].some((session) => session.activeSkillIds?.includes(skillId));
+                if (inUse) {
+                  return failedResponse(
+                    { error: "Remove this Skill from every Session before deleting it." },
+                    409,
+                    "Conflict",
+                  );
+                }
+                serverState.availableSkills = availableSkillSummaries(
+                  installed.filter((skill) => skill.id !== skillId),
                 );
               }
-              serverState.availableSkills = availableSkillSummaries(
-                serverState.availableSkills.filter(
-                  (skill) => skill.source === "user" && skill.id !== skillId,
-                ),
-              );
               if (truncatedSkillResponses > 0) {
                 truncatedSkillResponses -= 1;
                 return truncatedJsonResponse();

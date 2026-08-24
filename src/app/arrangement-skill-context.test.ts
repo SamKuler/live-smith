@@ -45,7 +45,7 @@ test("built-in arrangement Skills enter requests only while explicitly active", 
 
     const mentionedAndActive = await resolveSkillContext({
       storageDirectory: directory,
-      sessionSkillIds: [skillId],
+      sessionSkillIds: [],
       prompt: `$${skillId} Arrange the middle section.`,
     });
     assert.deepEqual(mentionedAndActive.activeSkillIds, [skillId]);

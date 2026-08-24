@@ -6,13 +6,11 @@ import {
   type SkillSummary,
 } from "./format.js";
 
-export type AvailableSkillSource = "built-in" | "user";
-
 export interface AvailableSkillSummary extends SkillSummary {
-  source: AvailableSkillSource;
+  source: "built-in" | "user";
 }
 
-const builtInSkillMarkdown = [
+const builtInSkillsMarkdown = [
   `---
 name: arranging-section-energy
 description: Use when repeated song sections feel flat, transitions lack direction, or an Arrangement needs a clearer energy arc.
@@ -169,17 +167,13 @@ This Skill governs simultaneous instrument roles and density. It does not design
 `,
 ] as const;
 
-const definitions = builtInSkillMarkdown.map((source) =>
+const definitions = builtInSkillsMarkdown.map((source) =>
   parseSkillMarkdown(Buffer.from(source, "utf8"))
 ).sort(compareSkillIds);
 
 const definitionsById = new Map(
   definitions.map((definition) => [definition.id, definition] as const),
 );
-
-export function builtInSkillDefinitions(): SkillDefinition[] {
-  return definitions.map(cloneSkillDefinition);
-}
 
 export function builtInSkillDefinition(
   skillId: string,

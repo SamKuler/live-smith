@@ -13,6 +13,7 @@
       let suggestions = [];
       let selectedSuggestion = -1;
       let mentionRange = null;
+      let retainedSkillFocus = null;
 
       function allSessions() {
         const state = getState();
@@ -29,6 +30,33 @@
         );
       }
 
+      function focusedSkillControl() {
+        const element = document.activeElement;
+        if (!element?.matches?.('input[type="checkbox"], .skill-delete')) return null;
+        const row = element.closest(".skill-row");
+        const skillId = row?.dataset.skillId;
+        if (!skillId) return null;
+        return {
+          skillId,
+          control: element.matches(".skill-delete") ? "manage" : "toggle",
+        };
+      }
+
+      function restoreSkillFocus(target) {
+        if (!target) return;
+        const row = [...document.querySelectorAll(".skill-row")].find(
+          (candidate) => candidate.dataset.skillId === target.skillId,
+        );
+        const preferred = target.control === "manage"
+          ? row?.querySelector(".skill-delete")
+          : row?.querySelector('input[type="checkbox"]');
+        const fallback = preferred ||
+          row?.querySelector('input[type="checkbox"]') ||
+          document.querySelector('#userSkillList input[type="checkbox"]') ||
+          document.querySelector(".skill-paste > summary");
+        fallback?.focus();
+      }
+
       function renderSkillRow(skill, active) {
         const row = document.createElement("div");
         row.className = "skill-row";
@@ -41,7 +69,6 @@
         const toggle = document.createElement("input");
         toggle.type = "checkbox";
         toggle.checked = active.has(skill.id);
-        toggle.disabled = busy;
         toggle.setAttribute("aria-label", `Use Skill ${skill.id} in this Session`);
         toggle.addEventListener("change", () => {
           void toggleSkill(skill.id, toggle.checked);
@@ -49,6 +76,7 @@
         const copy = document.createElement("span");
         copy.className = "skill-copy";
         const id = document.createElement("strong");
+        id.setAttribute("translate", "no");
         id.textContent = skill.id;
         const description = document.createElement("span");
         description.textContent = skill.description;
@@ -61,7 +89,6 @@
           remove.type = "button";
           remove.className = "skill-delete secondary";
           const inUse = skillIsUsed(skill.id);
-          remove.disabled = busy;
           remove.textContent = inUse ? "Disable" : "Delete";
           remove.title = inUse
             ? "Disable this Skill in every Session before deleting it."
@@ -82,10 +109,18 @@
       }
 
       function render() {
+        if (busy) return;
         const builtInList = document.getElementById("builtInSkillList");
+        const builtInEmpty = document.getElementById("builtInSkillEmptyState");
         const userList = document.getElementById("userSkillList");
         const userEmpty = document.getElementById("userSkillEmptyState");
-        if (!builtInList || !userList || !userEmpty) return;
+        if (!builtInList || !builtInEmpty || !userList || !userEmpty) return;
+        const focusedControl = focusedSkillControl();
+        const focusTarget = focusedControl || (
+          document.activeElement === document.getElementById("skillManager")
+            ? retainedSkillFocus
+            : null
+        );
         builtInList.replaceChildren();
         userList.replaceChildren();
         const state = getState();
@@ -95,6 +130,7 @@
         const active = new Set(state.activeSkillIds || []);
         const builtInSkills = available.filter((skill) => skill.source === "built-in");
         const userSkills = available.filter((skill) => skill.source === "user");
+        builtInEmpty.hidden = builtInSkills.length !== 0;
         userEmpty.hidden = userSkills.length !== 0;
 
         for (const skill of builtInSkills) {
@@ -103,6 +139,8 @@
         for (const skill of userSkills) {
           userList.append(renderSkillRow(skill, active));
         }
+        retainedSkillFocus = null;
+        restoreSkillFocus(focusTarget);
         updateAutocomplete();
       }
 
@@ -136,7 +174,14 @@
         }))) return;
         try {
           await deleteSkill(skillId);
-          showStatus(`Skill ${skillId} deleted.`);
+          const builtInRestored = (getState().availableSkills || []).some(
+            (skill) => skill.id === skillId && skill.source === "built-in",
+          );
+          showStatus(
+            builtInRestored
+              ? `User Skill ${skillId} deleted. The built-in Skill is available again.`
+              : `User Skill ${skillId} deleted.`,
+          );
         } catch (error) {
           showStatus(error.message || String(error), true);
         }
@@ -170,18 +215,18 @@
       }
 
       async function importSkillFile(file) {
-        if (!file) return false;
+        if (!file) return null;
         if (file.size === 0 || file.size > maxSkillFileBytes) {
           showStatus(
             `SKILL.md must contain 1-${maxSkillFileBytes} UTF-8 bytes.`,
             true,
           );
-          return false;
+          return null;
         }
         try {
           const receipt = await installSkill(file, false);
           showStatus(`Skill ${receipt.id} installed.`);
-          return true;
+          return receipt;
         } catch (error) {
           if (error.httpStatus === 409 && (await confirmAction({
             title: "Replace installed Skill?",
@@ -191,14 +236,14 @@
             try {
               const receipt = await installSkill(file, true);
               showStatus(`Skill ${receipt.id} replaced.`);
-              return true;
+              return receipt;
             } catch (replacementError) {
               showStatus(replacementError.message || String(replacementError), true);
-              return false;
+              return null;
             }
           } else {
             showStatus(error.message || String(error), true);
-            return false;
+            return null;
           }
         }
       }
@@ -214,26 +259,47 @@
         const text = document.getElementById("skillPasteText");
         const markdown = text?.value || "";
         if (!markdown.trim()) return;
-        const installed = await importSkillFile(new File(
+        const receipt = await importSkillFile(new File(
           [markdown],
           "SKILL.md",
           { type: "text/markdown" },
         ));
-        if (installed && text) text.value = "";
+        if (receipt && text) text.value = "";
         syncPastedSkillAction();
+        if (document.activeElement !== document.getElementById("skillManager")) {
+          return;
+        }
+        const focusTarget = receipt
+          ? [...document.querySelectorAll(".skill-row")]
+              .find((row) => row.dataset.skillId === receipt.id)
+              ?.querySelector('input[type="checkbox"]')
+          : document.getElementById("installPastedSkillButton");
+        (focusTarget || document.querySelector(".skill-paste > summary"))?.focus();
       }
 
       function setBusy(nextBusy) {
+        const manager = document.getElementById("skillManager");
+        if (nextBusy) {
+          retainedSkillFocus = focusedSkillControl() || retainedSkillFocus;
+          if (manager?.contains(document.activeElement)) {
+            manager.focus({ preventScroll: true });
+          }
+        }
+        const wasBusy = busy;
         busy = Boolean(nextBusy);
         const dropZone = document.getElementById("skillDropZone");
         const pasteText = document.getElementById("skillPasteText");
         dropZone?.setAttribute("aria-disabled", String(busy));
         if (busy) dropZone?.classList.remove("drop-target");
         if (pasteText) pasteText.disabled = busy;
+        for (const control of document.querySelectorAll(
+          ".skill-list input, .skill-list button",
+        )) {
+          control.disabled = busy;
+        }
         syncPastedSkillAction();
-        document.getElementById("skillManager")
-          ?.setAttribute("aria-busy", String(busy));
-        render();
+        manager?.setAttribute("aria-busy", String(busy));
+        if (wasBusy && !busy) render();
       }
 
       function updateAutocomplete() {
@@ -271,6 +337,7 @@
           option.setAttribute("role", "option");
           option.setAttribute("aria-selected", String(index === selectedSuggestion));
           const id = document.createElement("strong");
+          id.setAttribute("translate", "no");
           id.textContent = `$${skill.id}`;
           const description = document.createElement("span");
           description.textContent = skill.description;

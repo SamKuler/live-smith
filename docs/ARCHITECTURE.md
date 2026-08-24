@@ -28,8 +28,9 @@ src/
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
     skill-context.ts
-      Resolves persistent and one-turn Skill activation from one immutable,
-      hash-validated storage snapshot without changing prompt bytes.
+      Resolves persistent and one-turn Skill activation from bundled definitions
+      and one immutable, hash-validated User Skill snapshot without changing
+      prompt bytes.
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
       context from events.
@@ -182,10 +183,11 @@ src/
    Boolean can keep a protocol usable without being presented as verified
    provider support.
 4. Before attachment reads or event append, `skill-context.ts` unions sorted
-   persistent Session IDs with installed `$skill-id` mentions. It validates and
-   copies only selected definitions inside one global storage transaction,
-   escapes their `&<>` boundary text, and freezes one 128-KiB-bounded instruction
-   snapshot for every model turn in the loop. The original prompt is not rewritten.
+   persistent Session IDs with available `$skill-id` mentions. It resolves
+   selected bundled definitions and copies/hash-validates selected User Skill
+   definitions inside one global storage transaction, escapes their `&<>`
+   boundary text, and freezes one 128-KiB-bounded instruction snapshot for every
+   model turn in the loop. The original prompt is not rewritten.
 5. Before appending the user event, `attachment-context.ts` verifies pending
    attachment metadata/blobs, resolves current plus bounded historical user
    parts, and extracts supported Office text. The append atomically consumes the
@@ -434,12 +436,12 @@ byte-for-byte unchanged.
 
 Selected definitions are escaped at the wrapper boundary, sorted by ID, and
 limited to 128 KiB after final UTF-8 rendering. The same immutable block is used
-for every model turn. System order is the four built-in safety instructions,
-the fixed lower-priority Skill boundary, rendered Skill blocks, then the Live
-action system prompt. Empty activation produces the exact legacy system text.
-Skill IDs/descriptions and active IDs may enter chat state; bodies, hashes,
-frontmatter source, and paths never enter chat state, Session events, logs, or
-errors.
+for every model turn. System order is the fixed built-in safety instructions,
+the lower-priority Skill boundary, rendered Skill blocks, then the Live action
+system prompt. Empty activation produces the exact legacy system text.
+Skill IDs/descriptions, their `built-in` or `user` source, and active IDs may
+enter chat state; bodies, hashes, frontmatter source, and paths never enter chat
+state, Session events, logs, or errors.
 
 Skills are declarative workflow guidance. They cannot install or execute
 scripts, binaries, MCP servers, plugins, nested resources, or arbitrary paths;

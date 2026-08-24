@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   availableSkillSummaries,
   builtInSkillDefinition,
-  builtInSkillDefinitions,
   isBuiltInSkillId,
 } from "./builtins.js";
 
@@ -15,9 +14,8 @@ const builtInIds = [
 ] as const;
 
 test("built-in arrangement Skills are unique, sorted, and parsed by the real format", () => {
-  const definitions = builtInSkillDefinitions();
-  assert.deepEqual(definitions.map((skill) => skill.id), builtInIds);
-  assert.equal(new Set(definitions.map((skill) => skill.id)).size, builtInIds.length);
+  const definitions = builtInIds.map((id) => builtInSkillDefinition(id)!);
+  assert.deepEqual(availableSkillSummaries([]).map((skill) => skill.id), builtInIds);
   for (const definition of definitions) {
     assert.match(definition.description, /^Use when\b/u);
     assert.ok(definition.body.trim().split(/\s+/u).length < 500);
@@ -27,16 +25,15 @@ test("built-in arrangement Skills are unique, sorted, and parsed by the real for
 });
 
 test("built-in Skill readers return isolated definitions and source-labelled summaries", () => {
-  const first = builtInSkillDefinitions();
-  first[0]!.body = "mutated";
-  assert.notEqual(builtInSkillDefinitions()[0]?.body, "mutated");
+  const first = builtInSkillDefinition("arranging-section-energy")!;
+  first.body = "mutated";
+  assert.notEqual(
+    builtInSkillDefinition("arranging-section-energy")?.body,
+    "mutated",
+  );
   assert.deepEqual(
     availableSkillSummaries([]).map(({ id, source }) => ({ id, source })),
     builtInIds.map((id) => ({ id, source: "built-in" })),
-  );
-  assert.deepEqual(
-    builtInSkillDefinition("arranging-section-energy"),
-    builtInSkillDefinitions()[0],
   );
   assert.equal(builtInSkillDefinition("mix-review"), undefined);
 });
