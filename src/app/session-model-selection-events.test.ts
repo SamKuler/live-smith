@@ -31,6 +31,7 @@ test("Session model selection notifications are storage-scoped and cloned", () =
       "/tmp/live-smith-model-selection-a",
       {
         sessionId: "session-a",
+        updatedAt: "2026-08-25T00:00:00.000Z",
         modelSelection: {
           profileId: "profile-a",
           model: "model-a",
@@ -40,6 +41,7 @@ test("Session model selection notifications are storage-scoped and cloned", () =
     );
     const expected = JSON.stringify({
       sessionId: "session-a",
+      updatedAt: "2026-08-25T00:00:00.000Z",
       modelSelection: {
         profileId: "profile-a",
         model: "model-a",
@@ -56,6 +58,7 @@ test("Session model selection notifications are storage-scoped and cloned", () =
       "/tmp/live-smith-model-selection-a",
       {
         sessionId: "session-a",
+        updatedAt: "2026-08-25T00:01:00.000Z",
         modelSelection: { profileId: "profile-a", model: "model-b" },
       },
     );

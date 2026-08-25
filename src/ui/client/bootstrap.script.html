@@ -15,6 +15,11 @@
         };
         let activeAppConfirmation = null;
         let profileSettingsLocked = false;
+        let profileCommandAdmissionLocked = false;
+        let sessionControlsLocked = false;
+        let retainedCommandControlFocus = null;
+        let retainedSessionControlFocus = null;
+        let renderedContextSummary = null;
         let sessionsPaneCollapsed = false;
         let statusUnderlay = {
           canceledFollowUpCount: 0,
@@ -208,9 +213,10 @@
 
         const profileEditor = factories.createProfileEditor({
           confirmAction,
+          createCommandId: bridgeClient.createCommandId,
           getState,
           hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
-          isOperationInProgress: bridgeClient.isOperationInProgress,
+          isOperationInProgress: bridgeClient.isProfileSettingsOperationInProgress,
           requestComposerPresentation: renderComposerPresentation,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
@@ -226,15 +232,15 @@
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
+          showStatus: bridgeClient.showStatus,
         });
 
-        function renderStatusAndContext() {
+        function renderStateStatus() {
           const state = getState();
           presentStatus({
             message: state.status || "",
             source: "state",
           });
-          renderContextSummary(state.contextSummary || "");
         }
 
         function renderComposerPresentation() {
@@ -315,6 +321,8 @@
         }
 
         function renderContextSummary(summary) {
+          if (summary === renderedContextSummary) return;
+          renderedContextSummary = summary;
           const context = document.getElementById("context");
           const header = document.createElement("div");
           header.className = "context-header";
@@ -419,12 +427,25 @@
           return labels[reasoning.effort] || "Enabled";
         }
 
+        function renderSelectOptions(select, rows) {
+          const changed = select.options.length !== rows.length ||
+            rows.some((row, index) =>
+              select.options[index]?.value !== row.value ||
+              select.options[index]?.textContent !== row.label
+            );
+          if (!changed) return;
+          select.replaceChildren(...rows.map(
+            (row) => new Option(row.label, row.value),
+          ));
+        }
+
         function renderComposerRuntimeControls() {
           const state = getState();
           const runtime = state.runtimeProfile;
           const modelSelect = document.getElementById("composerModel");
           const reasoningSelect = document.getElementById("composerReasoning");
-          if (!modelSelect || !reasoningSelect) return;
+          const reasoningField = reasoningSelect?.closest(".composer-runtime-field");
+          if (!modelSelect || !reasoningSelect || !reasoningField) return;
 
           const configuredModels = Array.isArray(state.configuredModels)
             ? state.configuredModels
@@ -432,57 +453,68 @@
           const subscriptionCatalogPending =
             runtime?.profile?.connectionKind === "codex-subscription" &&
             state.configuredModelsReady === false;
-          modelSelect.replaceChildren();
-          for (const configured of configuredModels) {
-            modelSelect.append(new Option(configured.label || configured.model, configured.model));
-          }
+          const modelRows = configuredModels.map((configured) => ({
+            label: configured.label || configured.model,
+            value: configured.model,
+          }));
           if (!runtime || configuredModels.length === 0) {
-            modelSelect.append(new Option(
-              subscriptionCatalogPending ? "Load models…" : "Set up Profile",
-              "",
-            ));
+            modelRows.push({
+              label: subscriptionCatalogPending ? "Load models…" : "Set up Profile",
+              value: "",
+            });
           }
+          renderSelectOptions(modelSelect, modelRows);
           const selectedModel = runtime?.selection?.model || "";
           modelSelect.value = [...modelSelect.options].some(
             (option) => option.value === selectedModel,
           ) ? selectedModel : "";
 
-          reasoningSelect.replaceChildren();
           const reasoning = runtime?.selection?.reasoning;
-          const efforts = runtime?.capabilities?.reasoning?.efforts || [];
+          const reasoningCapability = runtime?.capabilities?.reasoning;
+          const efforts = reasoningCapability?.efforts || [];
+          const reasoningAvailable = Boolean(runtime) &&
+            !subscriptionCatalogPending &&
+            reasoningCapability?.supported === true &&
+            reasoningCapability.strategy !== "none" &&
+            efforts.length > 0;
+          reasoningField.hidden = !reasoningAvailable;
+          const reasoningRows = [];
           if (subscriptionCatalogPending) {
-            reasoningSelect.append(new Option("Load capabilities…", ""));
+            reasoningRows.push({ label: "Load capabilities…", value: "" });
           } else if (efforts.length) {
-            reasoningSelect.append(new Option(
-              reasoning?.effort ? "Profile default" : reasoningLabel(reasoning),
-              "",
-            ));
+            reasoningRows.push({
+              label: reasoning?.effort ? "Profile default" : reasoningLabel(reasoning),
+              value: "",
+            });
             for (const effort of efforts) {
-              reasoningSelect.append(new Option(
-                effort === "xhigh"
+              reasoningRows.push({
+                label: effort === "xhigh"
                   ? "XHigh"
                   : effort[0].toUpperCase() + effort.slice(1),
-                effort,
-              ));
+                value: effort,
+              });
             }
             if (
               reasoning?.effort &&
-              ![...reasoningSelect.options].some(
-                (option) => option.value === reasoning.effort,
+              !reasoningRows.some(
+                (row) => row.value === reasoning.effort,
               )
             ) {
-              reasoningSelect.append(new Option(
-                reasoningLabel(reasoning),
-                reasoning.effort,
-              ));
+              reasoningRows.push({
+                label: reasoningLabel(reasoning),
+                value: reasoning.effort,
+              });
             }
-            reasoningSelect.value = reasoning?.effort || "";
           } else {
-            reasoningSelect.append(new Option(
-              runtime ? reasoningLabel(reasoning) : "No Profile",
-              "",
-            ));
+            reasoningRows.push({
+              label: runtime ? reasoningLabel(reasoning) : "No Profile",
+              value: "",
+            });
           }
+          renderSelectOptions(reasoningSelect, reasoningRows);
+          reasoningSelect.value = !subscriptionCatalogPending && efforts.length
+            ? reasoning?.effort || ""
+            : "";
 
           const busy = Boolean(composerOperationState.commandKind) ||
             composerOperationState.sendInProgress ||
@@ -490,8 +522,7 @@
             composerOperationState.skillInProgress;
           modelSelect.disabled = busy || !runtime ||
             !subscriptionCatalogPending && configuredModels.length < 2;
-          reasoningSelect.disabled = busy || !runtime ||
-            subscriptionCatalogPending || efforts.length === 0;
+          reasoningSelect.disabled = busy || !reasoningAvailable;
           modelSelect.setAttribute("aria-busy", String(
             [
               "set_session_model_selection",
@@ -668,7 +699,8 @@
         }
 
         function renderApplication() {
-          renderStatusAndContext();
+          renderStateStatus();
+          renderContextSummary(getState().contextSummary || "");
           renderComposerPresentation();
           renderComposerContextUsage();
           bridgeClient.renderDefaultFollowUpBehavior();
@@ -680,6 +712,98 @@
           profileEditor.renderCodexAuthState(profileSettingsLocked);
           profileEditor.updateReasoningVisibility();
           profileEditor.updateDraftActions();
+          if (profileSettingsLocked) syncProfileSettingsLock(true);
+          if (profileCommandAdmissionLocked) syncProfileCommandAdmission(true);
+          if (sessionControlsLocked) syncSessionControlsLock(true);
+        }
+
+        function profileCommandControls() {
+          return [
+            "profileSelector",
+            "saveProfileButton",
+            "deleteProfileButton",
+            "discoverModelsButton",
+            "codexSignInButton",
+            "codexCheckAccountButton",
+            "codexLogoutButton",
+          ].map((id) => document.getElementById(id)).filter(Boolean);
+        }
+
+        function syncProfileSettingsLock(locked) {
+          const changed = profileSettingsLocked !== locked;
+          profileSettingsLocked = locked;
+          if (!locked && !changed) return;
+          document.querySelectorAll(
+            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
+          ).forEach((control) => {
+            control.disabled = locked;
+          });
+        }
+
+        function syncProfileCommandAdmission(locked) {
+          const changed = profileCommandAdmissionLocked !== locked;
+          profileCommandAdmissionLocked = locked;
+          if (!locked && !changed) return;
+          for (const control of profileCommandControls()) {
+            control.disabled = locked || profileSettingsLocked;
+          }
+        }
+
+        function syncSessionControlsLock(locked) {
+          const pane = document.querySelector(".sessions-pane");
+          const changed = sessionControlsLocked !== locked;
+          if (locked && changed && pane?.contains(document.activeElement)) {
+            const control = document.activeElement;
+            const selector = [
+              ".session-rename-input",
+              ".session-row",
+              ".session-menu-button",
+              ".session-continue-button",
+            ].find((candidate) => control.matches?.(candidate)) || null;
+            retainedSessionControlFocus = {
+              control,
+              selector,
+              sessionId: control.closest?.(".session-entry")?.dataset.sessionId || null,
+            };
+          }
+          sessionControlsLocked = locked;
+          document.querySelectorAll(".sessions-pane button, .sessions-pane input")
+            .forEach((control) => {
+              control.disabled = locked;
+          });
+          if (!locked && changed) {
+            const retained = retainedSessionControlFocus;
+            retainedSessionControlFocus = null;
+            let target = retained?.control || null;
+            if (
+              !target?.isConnected &&
+              retained?.sessionId
+            ) {
+              const entry = [...document.querySelectorAll(".session-entry")].find(
+                (candidate) => candidate.dataset.sessionId === retained.sessionId,
+              );
+              target = retained.selector
+                ? entry?.querySelector(retained.selector) || null
+                : null;
+              target ||= entry?.querySelector(".session-row") || null;
+              target ||= document.querySelector(".session-entry .session-row") ||
+                document.getElementById("newSessionButton");
+            }
+            if (
+              target?.isConnected &&
+              !target.disabled &&
+              [
+                document.body,
+                document.documentElement,
+                retained?.control,
+                target,
+              ].includes(
+                document.activeElement,
+              )
+            ) {
+              target.focus({ preventScroll: true });
+            }
+          }
         }
 
         const commandFeedback = {
@@ -747,7 +871,7 @@
             controlId: "newSessionButton",
             status: "Creating Session…",
           },
-          select_session: { busyLabel: "Switching…", status: "Switching Session…" },
+          select_session: { status: "Switching Session…" },
           restore_session: { busyLabel: "Restoring…", status: "Restoring Session…" },
           delete_session: { status: "Deleting Session…" },
           rename_session: { status: "Renaming Session…" },
@@ -784,6 +908,27 @@
           activeCommandAriaWasChanged = false;
         }
 
+        function restoreCommandControlFocus() {
+          const retained = retainedCommandControlFocus;
+          retainedCommandControlFocus = null;
+          if (!retained) return;
+          const target = retained.control?.isConnected
+            ? retained.control
+            : document.getElementById(retained.controlId);
+          if (
+            target?.isConnected &&
+            !target.disabled &&
+            [
+              document.body,
+              document.documentElement,
+              retained.control,
+              target,
+            ].includes(document.activeElement)
+          ) {
+            target.focus({ preventScroll: true });
+          }
+        }
+
         function updateCommandFeedback(kind) {
           if (kind === activeCommandKind) return;
           restoreCommandFeedback();
@@ -798,6 +943,16 @@
           activeCommandControl = feedback.controlId
             ? document.getElementById(feedback.controlId)
             : focusedControl;
+          if (
+            focusedControl &&
+            focusedControl === activeCommandControl &&
+            focusedControl.id
+          ) {
+            retainedCommandControlFocus = {
+              control: focusedControl,
+              controlId: focusedControl.id,
+            };
+          }
           const busyLabel = activeCommandControl?.dataset.busyLabel ||
             feedback.busyLabel;
           if (activeCommandControl && busyLabel) {
@@ -817,6 +972,7 @@
           anySendInProgress,
           attachmentInProgress,
           commandKind,
+          profileSettingsInProgress,
           sendInProgress,
           skillInProgress,
         }) {
@@ -832,9 +988,10 @@
             attachmentInProgress || skillInProgress;
           const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
-          const settingsBusy = Boolean(commandKind) || anySendInProgress ||
+          const settingsBusy = profileSettingsInProgress || anySendInProgress;
+          const commandAdmissionBusy = Boolean(commandKind) ||
             attachmentInProgress || skillInProgress;
-          profileSettingsLocked = settingsBusy;
+          const skillsBusy = settingsBusy || Boolean(commandKind);
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
           sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
@@ -842,7 +999,7 @@
           document.getElementById("settingsPanel")
             .setAttribute("aria-busy", String(settingsBusy));
           document.getElementById("skillsPanel")
-            .setAttribute("aria-busy", String(settingsBusy));
+            .setAttribute("aria-busy", String(skillsBusy));
           document.getElementById("settingsLockNotice").hidden = !(
             anySendInProgress && !sendInProgress
           );
@@ -850,15 +1007,9 @@
           profileEditor.updateApprovalModePresentation();
           document.getElementById("prompt").disabled = composerBlockingCommand ||
             attachmentInProgress || skillInProgress;
-          document.querySelectorAll(".sessions-pane button, .sessions-pane input")
-            .forEach((control) => {
-              control.disabled = sessionControlsBusy;
-            });
-          document.querySelectorAll(
-            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
-          ).forEach((control) => {
-            control.disabled = settingsBusy;
-          });
+          syncSessionControlsLock(sessionControlsBusy);
+          syncProfileSettingsLock(settingsBusy);
+          syncProfileCommandAdmission(commandAdmissionBusy);
           profileEditor.updateHostedToolControls(settingsBusy);
           profileEditor.renderCodexAuthState(settingsBusy);
           approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
@@ -866,14 +1017,16 @@
           document.getElementById("defaultFollowUpBehavior").disabled =
             Boolean(commandKind) || attachmentInProgress || skillInProgress;
           attachments.setBusy(operationBusy);
-          skillManager.setBusy(settingsBusy);
+          skillManager.setBusy(skillsBusy);
 
-          if (!operationBusy) {
+          if (!settingsBusy) {
             profileEditor.updateReasoningVisibility();
             profileEditor.updateDraftActions();
           } else {
             renderComposerPresentation();
           }
+          if (commandAdmissionBusy) syncProfileCommandAdmission(true);
+          if (!commandKind) restoreCommandControlFocus();
         }
 
         bridgeClient.connectView({
@@ -884,7 +1037,8 @@
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
           renderContextUsage: renderComposerContextUsage,
           renderSessions: sessionTimeline.renderSessions,
-          renderModelOptions: profileEditor.renderModelOptions,
+          syncSessionPresentation: sessionTimeline.syncSessionPresentation,
+          renderProfileModels: profileEditor.renderProfileModels,
           renderApprovalMode: profileEditor.renderApprovalMode,
           reconcileSettingsForm: profileEditor.reconcileSettingsForm,
           renderSettingsForm: profileEditor.renderSettingsForm,
@@ -911,13 +1065,14 @@
           handleApiFamilyChange: profileEditor.handleApiFamilyChange,
           handleApiModeChange: profileEditor.handleApiModeChange,
           handleConnectionKindChange: profileEditor.handleConnectionKindChange,
+          handleManualModelIdKeydown: profileEditor.handleManualModelIdKeydown,
           handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
           handleProfileSelection: profileEditor.handleProfileSelection,
           handleModelConfigSelection: profileEditor.handleModelConfigSelection,
           handleWebSearchChange: profileEditor.handleWebSearchChange,
           handleSendButton: bridgeClient.handleSendButton,
           markDraftDirty: profileEditor.markDraftDirty,
-          addModelConfig: profileEditor.addModelConfig,
+          addManualModel: profileEditor.addManualModel,
           logoutCodex: profileEditor.logoutCodex,
           openInspector,
           refreshCodexAccount: profileEditor.refreshCodexAccount,
@@ -933,6 +1088,7 @@
           toggleInspector,
           toggleSessionsPane,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
+          updateManualModelActions: profileEditor.updateManualModelActions,
         };
 
         window.addEventListener("DOMContentLoaded", () => {

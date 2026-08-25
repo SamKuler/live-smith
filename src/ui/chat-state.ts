@@ -47,6 +47,8 @@ export interface ChatDialogState {
   capabilities: ModelCapabilities;
   capabilityEvidence: ModelCapabilityEvidence;
   availableModels: ModelInfo[];
+  /** Command receipt for the latest confirmed explicit model-catalog load. */
+  modelCatalogLoadReceipt?: string;
   configuredModels: ChatConfiguredModel[];
   configuredModelsReady: boolean;
   modelStateSource: ChatModelStateSource | null;

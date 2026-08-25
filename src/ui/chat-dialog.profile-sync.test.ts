@@ -86,6 +86,56 @@ test("an external Profile event gates Send until authoritative runtime and Setti
   }
 });
 
+test("an external Profile refresh cannot unlock settings during an active send", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Keep Profile settings locked");
+    harness.click("#sendButton");
+    await waitForCondition(
+      () => harness.sendIds.length === 1,
+      "Expected the send to stay active.",
+    );
+
+    harness.setServerState(activateSecondProfile(state));
+    harness.emitServerEvent({
+      type: "profile_settings_changed",
+      commandId: "external-profile-during-send",
+    });
+    await waitForCondition(
+      () => harness.document.querySelector<HTMLInputElement>("#profileName")
+        ?.value === "Mix review",
+      "Expected the external Profile state to render.",
+    );
+
+    assert.equal(
+      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      "true",
+    );
+    for (const selector of [
+      "#profileName",
+      "#apiKey",
+      "#baseUrl",
+      "#temperature",
+      "#saveProfileButton",
+    ]) {
+      assert.equal(
+        harness.document.querySelector<HTMLInputElement | HTMLButtonElement>(selector)
+          ?.disabled,
+        true,
+        `${selector} must remain locked`,
+      );
+    }
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
 test("a failed external Profile refresh keeps the stale runtime blocked", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;

@@ -110,6 +110,8 @@ export async function handleAgentRequest(
         storageDirectory,
         interaction,
         projectKey,
+        undefined,
+        callbacks.signal,
       )
     : (await listSessions(storageDirectory, projectKey)).find(
         (entry) => entry.id === sessionId && !entry.archivedAt,

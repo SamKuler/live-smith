@@ -4,6 +4,7 @@ import { storageScopeKey } from "../storage/scope.js";
 export interface SessionApprovalModeChange {
   sessionId: string;
   approvalMode: ApprovalMode;
+  updatedAt: string;
 }
 
 type SessionApprovalModeListener = (change: SessionApprovalModeChange) => void;

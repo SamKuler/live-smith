@@ -313,6 +313,14 @@ Each Profile stores one complete connection and one or more configured models:
 Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
 the entire draft and makes it active. Changing session or sending a message does
 not save the draft. Send remains disabled until the draft is saved or discarded.
+**Load Models** checks the Draft connection, refreshes the provider catalog, and
+adds every newly discovered ID to that Draft without deleting existing model
+configurations. Only a matching command receipt may trigger the merge, so a
+failed load cannot reuse an older cached catalog. Verified capability limits may
+adjust incompatible Draft values; explicit capability overrides remain
+authoritative. A catalog contains at most 1,000 entries, while a Profile may
+contain at most 2,000 models so one existing/manual set can coexist with one
+complete catalog.
 An edit carries a fixed-length SHA-256 revision of the normalized Saved Profile
 from which its Draft started. The storage transaction recomputes that same
 Profile's revision and rejects a mismatch, instead of silently replacing a newer
@@ -333,7 +341,7 @@ saved model configuration inside the final storage transaction.
 The implementation keeps three Profile representations explicit:
 
 - `DraftProfile` is the editable, possibly incomplete connection and model
-  collection. **Connect & Load** checks only its connection fields, so the name
+  collection. **Load Models** checks only its connection fields, so the name
   and model list may still be incomplete.
 - `SavedProfile` is the fully validated connection, default model, and model
   configuration collection persisted by Profile CRUD.

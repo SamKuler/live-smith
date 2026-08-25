@@ -18,7 +18,8 @@ test("a typed non-catalog model stays unverified after Save and Use", async () =
     harness.input("#baseUrl", "https://draft.example/v1");
     harness.click("#discoverModelsButton");
     await harness.settle();
-    harness.input("#model", "typed-model-not-in-catalog");
+    harness.input("#manualModelId", "typed-model-not-in-catalog");
+    harness.click("#addManualModelButton");
 
     const expected = [
       ["Images · Unverified", "unverified"],
@@ -88,7 +89,9 @@ test("manual input overrides remain authoritative after an unverified Save", asy
   const harness = await createDialogHarness();
   try {
     harness.input("#baseUrl", "https://unverified.example/v1");
-    harness.input("#model", "typed-model-not-in-catalog");
+    harness.input("#manualModelId", "typed-model-not-in-catalog");
+    harness.click("#addManualModelButton");
+    harness.click("#setDefaultModelButton");
     harness.select("#overrideInputImage", "true");
     harness.select("#overrideInputAudio", "false");
     harness.select("#overrideInputPdf", "true");
@@ -100,6 +103,59 @@ test("manual input overrides remain authoritative after an unverified Save", asy
       ["Audio · Unsupported", "unsupported"],
       ["PDF · Supported", "supported"],
     ]);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Load Models keeps an explicit output-limit override above discovery", async () => {
+  const state = stateFixture();
+  state.settings.profiles = [];
+  state.settings.activeProfileId = null;
+  state.activeProfileRevision = null;
+  state.runtimeProfile = null;
+  state.modelStateSource = null;
+  state.availableModels = [];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#profileName", "Override profile");
+    harness.input("#baseUrl", "http://localhost:1234/v1");
+    harness.input("#maxOutputTokens", "64000");
+    harness.input("#overrideMaxOutputTokens", "64000");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.value,
+      "64000",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>(
+        "#overrideMaxOutputTokens",
+      )?.value,
+      "64000",
+    );
+
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    const saved = commandCalls(harness).findLast((call) =>
+      (call.body as { kind?: string }).kind === "save_profile"
+    )?.body as {
+      profile?: {
+        models?: Array<{
+          parameters?: { maxOutputTokens?: number };
+          advanced?: {
+            capabilityOverrides?: { maxOutputTokens?: number };
+          };
+        }>;
+      };
+    };
+    assert.equal(saved.profile?.models?.[0]?.parameters?.maxOutputTokens, 64000);
+    assert.equal(
+      saved.profile?.models?.[0]?.advanced?.capabilityOverrides?.maxOutputTokens,
+      64000,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -165,6 +221,27 @@ test("initial state rejects capability evidence that contradicts its values", as
       image: "supported",
     },
   };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /invalid initial state/i,
+    );
+    assert.equal(
+      harness.document.querySelector(".app")?.hasAttribute("inert"),
+      true,
+    );
+    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.equal("LiveSmithUI" in harness.window, false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("initial state rejects a malformed model-catalog load receipt", async () => {
+  const state = stateFixture();
+  state.modelCatalogLoadReceipt = "invalid receipt";
   const harness = await createDialogHarness(state);
   try {
     assert.match(

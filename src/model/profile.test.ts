@@ -5,6 +5,7 @@ import {
   compareDefaultFollowUpBehaviorRevisions,
   incrementDefaultFollowUpBehaviorRevision,
   isDefaultFollowUpBehaviorRevision,
+  MAX_PROFILE_MODEL_COUNT,
   profileSecrets,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
@@ -455,6 +456,23 @@ test("Profile validation requires a unique configured default model", () => {
       models: [model, { ...model }],
     }),
     /appears more than once/,
+  );
+});
+
+test("Profile validation rejects model sets above the Profile limit", () => {
+  const base = profile("https://example.test/v1");
+  const [model] = base.models as DraftModelConfig[];
+  assert(model);
+  assert.throws(
+    () => validateDraftProfileForSave({
+      ...base,
+      defaultModel: "model-0",
+      models: Array.from(
+        { length: MAX_PROFILE_MODEL_COUNT + 1 },
+        (_, index) => ({ ...model, model: `model-${index}` }),
+      ),
+    }),
+    new RegExp(`at most ${MAX_PROFILE_MODEL_COUNT} models`, "i"),
   );
 });
 

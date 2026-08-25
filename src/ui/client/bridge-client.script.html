@@ -6,6 +6,7 @@
         setState,
       }) {
       const maximumDiscoveredModelCount = __MAX_DISCOVERED_MODEL_COUNT__;
+      const maximumProfileModelCount = __MAX_PROFILE_MODEL_COUNT__;
       const maximumDiscoveredModelIdCodePoints =
         __MAX_DISCOVERED_MODEL_ID_CODE_POINTS__;
       const maximumDiscoveredModelDisplayNameCodePoints =
@@ -65,7 +66,8 @@
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
       const approvalModeProjectionsBySession = new Map();
-      const modelSelectionProjectionRevisionsBySession = new Map();
+      const modelSelectionProjectionsBySession = new Map();
+      const sessionUpdatedAtProjectionsBySession = new Map();
       const modelSelectionRefreshesBySession = new Map();
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
@@ -77,6 +79,20 @@
         "previousSessions",
         "archivedSessions",
       ];
+      const sessionCommandKinds = new Set([
+        "new_session",
+        "select_session",
+        "restore_session",
+        "delete_session",
+        "rename_session",
+        "archive_session",
+        "unarchive_session",
+        "attach_selected_audio_source",
+        "set_session_skills",
+        "set_session_approval_mode",
+        "set_session_model_selection",
+        "load_session_model_capabilities",
+      ]);
       let confirmedDefaultFollowUpBehavior = isDefaultFollowUpBehavior(
         getState().settings?.defaultFollowUpBehavior,
       )
@@ -227,7 +243,6 @@
           bridgeStateCoveredThroughRevision:
             state.bridgeStateCoveredThroughRevision,
           activeSessionId: state.activeSessionId,
-          events: state.events,
           pendingAttachments: state.pendingAttachments,
           contextSummary: state.contextSummary,
           sessionContinueTarget: state.sessionContinueTarget,
@@ -369,6 +384,10 @@
         incomingCoveredThroughRevision,
       ) {
         const approvalProjection = approvalModeProjectionsBySession.get(sessionId);
+        const modelSelectionProjection = modelSelectionProjectionsBySession.get(
+          sessionId,
+        );
+        const updatedAtProjection = sessionUpdatedAtProjectionsBySession.get(sessionId);
         const currentMembershipChanged =
           (current?.collection || null) !== (baseline?.collection || null);
         const selected = authoritativeMembershipOwned || !currentMembershipChanged
@@ -384,15 +403,44 @@
               approvalProjection.revision,
               incomingCoveredThroughRevision,
             ) > 0;
-          return approvalPatchIsUncovered
-            ? {
-                ...selected,
-                session: {
-                  ...selected.session,
-                  approvalMode: approvalProjection.approvalMode,
-                },
-              }
-            : selected;
+          const updatedAtPatchIsUncovered =
+            !current &&
+            authoritative &&
+            updatedAtProjection?.updatedAt !== undefined &&
+            compareDecimalRevisions(
+              updatedAtProjection.revision,
+              incomingCoveredThroughRevision,
+            ) > 0;
+          const modelSelectionPatchIsUncovered =
+            !current &&
+            authoritative &&
+            modelSelectionProjection?.modelSelection !== undefined &&
+            compareDecimalRevisions(
+              modelSelectionProjection.revision,
+              incomingCoveredThroughRevision,
+            ) > 0;
+          if (
+            !approvalPatchIsUncovered &&
+            !updatedAtPatchIsUncovered &&
+            !modelSelectionPatchIsUncovered
+          ) {
+            return selected;
+          }
+          return {
+            ...selected,
+            session: {
+              ...selected.session,
+              ...(approvalPatchIsUncovered
+                ? { approvalMode: approvalProjection.approvalMode }
+                : {}),
+              ...(updatedAtPatchIsUncovered
+                ? { updatedAt: updatedAtProjection.updatedAt }
+                : {}),
+              ...(modelSelectionPatchIsUncovered
+                ? { modelSelection: { ...modelSelectionProjection.modelSelection } }
+                : {}),
+            },
+          };
         }
         const session = {};
         const keys = new Set([
@@ -413,11 +461,23 @@
           );
           const modelSelectionPatchOrder = key === "modelSelection"
             ? compareDecimalRevisions(
-                modelSelectionProjectionRevisionsBySession.get(sessionId) || "0",
+                modelSelectionProjection?.revision || "0",
                 incomingCoveredThroughRevision,
               )
             : null;
-          const useAuthoritative = modelSelectionPatchOrder !== null
+          const updatedAtPatchOrder = key === "updatedAt"
+            ? compareDecimalRevisions(
+                updatedAtProjection?.revision || "0",
+                incomingCoveredThroughRevision,
+              )
+            : null;
+          const useAuthoritative = updatedAtPatchOrder !== null
+            ? updatedAtProjection?.updatedAt !== undefined
+              ? updatedAtPatchOrder <= 0
+              : authoritativeOwnedFields?.has(key)
+                ? updatedAtPatchOrder <= 0
+                : updatedAtPatchOrder < 0 || !currentFieldChanged
+            : modelSelectionPatchOrder !== null
             ? modelSelectionPatchOrder <= 0 &&
               (authoritativeOwnedFields?.has(key) || !currentFieldChanged)
             : approvalPatchOrder !== null
@@ -448,6 +508,11 @@
           target.capabilities = source.capabilities;
           target.capabilityEvidence = source.capabilityEvidence;
           target.availableModels = source.availableModels;
+          if (source.modelCatalogLoadReceipt === undefined) {
+            delete target.modelCatalogLoadReceipt;
+          } else {
+            target.modelCatalogLoadReceipt = source.modelCatalogLoadReceipt;
+          }
           target.modelStateSource = source.modelStateSource;
         }
         if (source.codexAuth === undefined) delete target.codexAuth;
@@ -475,6 +540,7 @@
             capabilities: current.capabilities,
             capabilityEvidence: current.capabilityEvidence,
             availableModels: current.availableModels,
+            modelCatalogLoadReceipt: current.modelCatalogLoadReceipt,
             modelStateSource: current.modelStateSource,
           };
         }
@@ -595,9 +661,9 @@
           attempt.ownsActiveRuntimeProjection ||
           attempt.ownsRuntimeCatalogProjection;
         const stateCoversActiveModelSelection = compareDecimalRevisions(
-          modelSelectionProjectionRevisionsBySession.get(
+          modelSelectionProjectionsBySession.get(
             merged.activeSessionId,
-          ) || "0",
+          )?.revision || "0",
           state.bridgeStateCoveredThroughRevision,
         ) <= 0;
         const runtimeProjection =
@@ -720,6 +786,53 @@
         });
       }
 
+      function recordModelSelectionProjection(sessionId, modelSelection, revision) {
+        const current = modelSelectionProjectionsBySession.get(sessionId);
+        if (
+          current &&
+          compareDecimalRevisions(current.revision, revision) > 0
+        ) return;
+        modelSelectionProjectionsBySession.set(sessionId, {
+          revision,
+          modelSelection: { ...modelSelection },
+        });
+      }
+
+      function recordModelSelectionProjectionCoverage(sessionId, coveredThrough) {
+        const projection = modelSelectionProjectionsBySession.get(sessionId);
+        if (
+          projection &&
+          compareDecimalRevisions(coveredThrough, projection.revision) < 0
+        ) return;
+        modelSelectionProjectionsBySession.set(sessionId, {
+          revision: coveredThrough,
+        });
+      }
+
+      function recordSessionUpdatedAtProjection(sessionId, updatedAt, revision) {
+        const current = sessionUpdatedAtProjectionsBySession.get(sessionId);
+        if (
+          current &&
+          compareDecimalRevisions(current.revision, revision) > 0
+        ) return current.updatedAt;
+        sessionUpdatedAtProjectionsBySession.set(sessionId, {
+          revision,
+          updatedAt,
+        });
+        return updatedAt;
+      }
+
+      function recordSessionUpdatedAtProjectionCoverage(sessionId, coveredThrough) {
+        const projection = sessionUpdatedAtProjectionsBySession.get(sessionId);
+        if (
+          projection &&
+          compareDecimalRevisions(coveredThrough, projection.revision) < 0
+        ) return;
+        sessionUpdatedAtProjectionsBySession.set(sessionId, {
+          revision: coveredThrough,
+        });
+      }
+
       function recordAttemptOwnedActivityRevisions(attempt, state) {
         if (!attempt) return;
         const sessionIds = new Set([
@@ -746,6 +859,15 @@
             ) >= 0
           ) approvalModeProjectionsBySession.delete(sessionId);
         }
+        for (const [sessionId, projection] of sessionUpdatedAtProjectionsBySession) {
+          if (
+            !coveredSessionIds.has(sessionId) &&
+            compareDecimalRevisions(
+              state.bridgeStateCoveredThroughRevision,
+              projection.revision,
+            ) >= 0
+          ) sessionUpdatedAtProjectionsBySession.delete(sessionId);
+        }
         for (const sessionId of coveredSessionIds) {
           recordApprovalModeProjectionCoverage(
             sessionId,
@@ -756,15 +878,24 @@
             sessionId,
             state.bridgeStateCoveredThroughRevision,
           );
-          recordProjectionRevision(
-            modelSelectionProjectionRevisionsBySession,
+          recordModelSelectionProjectionCoverage(
+            sessionId,
+            state.bridgeStateCoveredThroughRevision,
+          );
+          recordSessionUpdatedAtProjectionCoverage(
             sessionId,
             state.bridgeStateCoveredThroughRevision,
           );
         }
-        for (const sessionId of modelSelectionProjectionRevisionsBySession.keys()) {
-          if (!coveredSessionIds.has(sessionId)) {
-            modelSelectionProjectionRevisionsBySession.delete(sessionId);
+        for (const [sessionId, projection] of modelSelectionProjectionsBySession) {
+          if (
+            !coveredSessionIds.has(sessionId) &&
+            compareDecimalRevisions(
+              state.bridgeStateCoveredThroughRevision,
+              projection.revision,
+            ) >= 0
+          ) {
+            modelSelectionProjectionsBySession.delete(sessionId);
           }
         }
       }
@@ -779,8 +910,11 @@
           sessionId,
           state.bridgeStateCoveredThroughRevision,
         );
-        recordProjectionRevision(
-          modelSelectionProjectionRevisionsBySession,
+        recordModelSelectionProjectionCoverage(
+          sessionId,
+          state.bridgeStateCoveredThroughRevision,
+        );
+        recordSessionUpdatedAtProjectionCoverage(
           sessionId,
           state.bridgeStateCoveredThroughRevision,
         );
@@ -1566,7 +1700,7 @@
           ) ||
           !Array.isArray(value.models) ||
           value.models.length === 0 ||
-          value.models.length > maximumDiscoveredModelCount ||
+          value.models.length > maximumProfileModelCount ||
           !value.models.every((model) =>
             isWireSavedModelConfig(
               model,
@@ -1774,6 +1908,7 @@
             "capabilities",
             "capabilityEvidence",
             "availableModels",
+            "modelCatalogLoadReceipt",
             "configuredModels",
             "configuredModelsReady",
             "modelStateSource",
@@ -1830,8 +1965,10 @@
           !Array.isArray(value.availableModels) ||
           value.availableModels.length > maximumDiscoveredModelCount ||
           !value.availableModels.every(isWireModelInfo) ||
+          (value.modelCatalogLoadReceipt !== undefined &&
+            !isWireCorrelationId(value.modelCatalogLoadReceipt)) ||
           !Array.isArray(value.configuredModels) ||
-          value.configuredModels.length > maximumDiscoveredModelCount ||
+          value.configuredModels.length > maximumProfileModelCount ||
           !value.configuredModels.every(isWireConfiguredModel) ||
           typeof value.configuredModelsReady !== "boolean" ||
           !isWireModelStateSource(value.modelStateSource) ||
@@ -2478,6 +2615,25 @@
           modelSelectionRefreshesBySession.has(activeSessionId());
       }
 
+      function isProfileSettingsOperationInProgress() {
+        return Boolean(
+          profileSettingsRefresh ||
+          modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          commandReconciliationBlocked ||
+          attachmentOperationInProgress ||
+          skillOperationInProgress ||
+          commandLocksProfileSettings(commandInProgress)
+        );
+      }
+
+      function commandLocksProfileSettings(kind) {
+        return Boolean(
+          kind &&
+          kind !== "save_global_settings" &&
+          !sessionCommandKinds.has(kind)
+        );
+      }
+
       function syncOperationState() {
         const activeAttempt = activeSendAttempt();
         const modelSelectionReconciliation =
@@ -2498,6 +2654,7 @@
           anySendInProgress: sendAttemptsBySession.size > 0 ||
             runnableQueuedFollowUpCount() > 0,
           attachmentInProgress: attachmentOperationInProgress,
+          profileSettingsInProgress: isProfileSettingsOperationInProgress(),
           skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeAttempt),
         });
@@ -2516,21 +2673,8 @@
           showStatus("Wait for the current file or Skill operation to finish.", true);
           return false;
         }
-        const sessionCommand = [
-          "new_session",
-          "select_session",
-          "restore_session",
-          "delete_session",
-          "rename_session",
-          "archive_session",
-          "unarchive_session",
-          "attach_selected_audio_source",
-          "set_session_skills",
-          "set_session_approval_mode",
-          "set_session_model_selection",
-          "load_session_model_capabilities",
-        ].includes(kind);
-        const allowedDuringSend = sessionCommand || kind === "save_global_settings";
+        const sessionCommand = sessionCommandKinds.has(kind);
+        const allowedDuringSend = !commandLocksProfileSettings(kind);
         if (
           (sendAttemptsBySession.size || runnableQueuedFollowUpCount()) &&
           !allowedDuringSend
@@ -2538,7 +2682,12 @@
           showStatus("Profile settings cannot change while an agent request is active.");
           return false;
         }
-        if (commandInProgress || commandReconciliationBlocked) return false;
+        if (commandInProgress || commandReconciliationBlocked) {
+          if (commandInProgress) {
+            showStatus("Wait for the current operation to finish.");
+          }
+          return false;
+        }
         const payload = { kind, ...(extra || {}) };
         let resolveSseOutcome;
         let resolveSseUnavailable;
@@ -2888,6 +3037,28 @@
         else runtimeSourceBySession.set(sessionId, next);
       }
 
+      function refreshUncoveredActiveModelSelection(state) {
+        const sessionId = state?.activeSessionId;
+        const projection = modelSelectionProjectionsBySession.get(sessionId);
+        if (
+          !projection?.modelSelection ||
+          compareDecimalRevisions(
+            projection.revision,
+            state.bridgeStateCoveredThroughRevision,
+          ) <= 0 ||
+          modelSelectionRefreshesBySession.has(sessionId)
+        ) return;
+        const previousSource = runtimeSourceBySession.get(sessionId);
+        const nextSource = runtimeSourceForSelection(
+          state,
+          projection.modelSelection,
+        );
+        if (previousSource !== nextSource) contextUsageBySession.delete(sessionId);
+        if (nextSource === null) runtimeSourceBySession.delete(sessionId);
+        else runtimeSourceBySession.set(sessionId, nextSource);
+        refreshActiveModelSelection(sessionId);
+      }
+
       function retainCanceledFollowUps(count) {
         if (Number.isInteger(count) && count > 0) {
           retainedCanceledFollowUpCount += count;
@@ -2927,6 +3098,7 @@
         const canceledFollowUpCount = reconcileLocalFollowUpsIntoState(
           reconciledState,
         );
+        reconcileWebSearchUpdatesFromState(reconciledState);
         if (
           canceledFollowUpCount &&
           activeCommandAttempt?.kind === kind
@@ -2935,12 +3107,12 @@
             (activeCommandAttempt.canceledFollowUpCount || 0) +
             canceledFollowUpCount;
         }
-        reconcileWebSearchUpdatesFromState(reconciledState);
         reconcileContextUsageWithState(reconciledState);
         reconcileRuntimeSourceWithState(reconciledState);
         adoptFollowUpBehaviorFromState(reconciledState);
         setState(reconciledState);
         recordFullStateProjectionCoverage(reconciledState);
+        refreshUncoveredActiveModelSelection(reconciledState);
         reconcileProfileSettingsRefreshWithState(reconciledState);
         recordAttemptOwnedActivityRevisions(causalAttempt, state);
         reconcileAttemptProgressFromActivities(reconciledState);
@@ -2952,7 +3124,7 @@
         } else if (kind === "set_session_approval_mode") {
           requireView().renderApprovalMode();
         } else if (kind === "discover_models") {
-          requireView().renderModelOptions();
+          requireView().renderProfileModels();
           requireView().updateCapabilityPreview();
         }
         if (prompt && reconciledState.activeSessionId !== previousSessionId) {
@@ -3000,7 +3172,8 @@
 
       function applyAuthoritativeSendState(attempt, state) {
         if (!attempt || !isWireChatBridgeState(state)) return false;
-        const previousSettings = getState().settings;
+        const previousState = getState();
+        const previousSettings = previousState.settings;
         // Global behavior has its own monotonic revision; Session ownership below
         // remains scoped to this send so an older terminal cannot prune peers.
         adoptFollowUpBehaviorFromState(state);
@@ -3015,6 +3188,14 @@
             previousSettings.profiles,
             reconciledState.settings.profiles,
           );
+        const profileModelProjectionChanged = profileSettingsChanged ||
+          !sameJsonValue(
+            previousState.availableModels,
+            reconciledState.availableModels,
+          ) || !sameJsonValue(
+            previousState.modelStateSource,
+            reconciledState.modelStateSource,
+          );
         attempt.targetSessionUnavailableState =
           !reconciledState.sessions.some(
             (session) => session.id === attempt.sessionId,
@@ -3022,6 +3203,7 @@
             ? reconciledState
             : null;
         if (visible) reconcileLocalFollowUpsIntoState(reconciledState);
+        if (visible) reconcileWebSearchUpdatesFromState(reconciledState);
         if (!reconcileSteeringAck(attempt, state)) {
           setAttemptStatus(
             attempt,
@@ -3031,16 +3213,18 @@
           return false;
         }
         if (visible) {
-          reconcileWebSearchUpdatesFromState(reconciledState);
           reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
           recordFullStateProjectionCoverage(reconciledState);
+          refreshUncoveredActiveModelSelection(reconciledState);
           reconcileProfileSettingsRefreshWithState(reconciledState);
           requireView().syncModelStateSource(reconciledState.modelStateSource);
           if (profileSettingsChanged) {
             requireView().reconcileSettingsForm();
           }
-          requireView().renderModelOptions();
+          if (profileModelProjectionChanged) {
+            requireView().renderProfileModels();
+          }
           requireView().updateCapabilityPreview();
         } else {
           mergeBackgroundState(reconciledState, attempt);
@@ -3536,7 +3720,7 @@
           activity,
           received,
         );
-        if (activityApplied) requireView().renderSessions();
+        if (activityApplied) requireView().syncSessionPresentation(attempt.sessionId);
         if (activeSessionId() === attempt.sessionId && attemptIsCurrent(attempt)) {
           syncActiveSessionUi();
         }
@@ -3895,7 +4079,7 @@
         const promoted = promoteQueued && startNextQueuedFollowUp(attempt.sessionId);
         if (!promoted) syncSendPresentation(attempt.sessionId);
         else syncActiveSessionUi();
-        if (activeSessionId() === attempt.sessionId) {
+        if (!promoted && activeSessionId() === attempt.sessionId) {
           requireView().renderTimeline();
         }
         return true;
@@ -4682,7 +4866,7 @@
           renderDefaultFollowUpBehavior();
         }
         syncOperationState();
-        if (activeSessionId() !== sessionId) requireView().renderSessions();
+        requireView().syncSessionPresentation(sessionId);
       }
 
       function handleSendButton() {
@@ -4750,7 +4934,7 @@
           }
         }
         applySendActivity(attempt, activity, received);
-        requireView().renderSessions();
+        requireView().syncSessionPresentation(attempt.sessionId);
         if (activity && activeSessionId() === attempt.sessionId) {
           syncActiveSessionUi();
         }
@@ -4874,7 +5058,7 @@
         requireView().renderTimeline();
       }
 
-      function applySessionModelSelectionMetadata(sessionId, selection) {
+      function applySessionModelSelectionMetadata(sessionId, selection, updatedAt) {
         const state = getState();
         for (const sessions of [
           state.sessions,
@@ -4882,7 +5066,10 @@
           state.archivedSessions,
         ]) {
           const session = sessions.find((entry) => entry.id === sessionId);
-          if (session) session.modelSelection = { ...selection };
+          if (session) {
+            session.modelSelection = { ...selection };
+            if (updatedAt !== undefined) session.updatedAt = updatedAt;
+          }
         }
       }
 
@@ -5036,9 +5223,11 @@
                 "type",
                 "sessionId",
                 "approvalMode",
+                "updatedAt",
                 "bridgeStateRevision",
               ]) ||
               !isWireStorageId(payload.sessionId) ||
+              typeof payload.updatedAt !== "string" ||
               !["manual", "low-risk", "everything"].includes(payload.approvalMode)
             ) return;
             const received = receiveStateChangeRevision(payload);
@@ -5057,6 +5246,11 @@
               approvalMode: payload.approvalMode,
               revision: received.revision,
             });
+            const effectiveUpdatedAt = recordSessionUpdatedAtProjection(
+              payload.sessionId,
+              payload.updatedAt,
+              received.revision,
+            );
             const state = getState();
             for (const sessions of [
               state.sessions,
@@ -5064,8 +5258,14 @@
               state.archivedSessions,
             ]) {
               const session = sessions.find((entry) => entry.id === payload.sessionId);
-              if (session) session.approvalMode = payload.approvalMode;
+              if (session) {
+                session.approvalMode = payload.approvalMode;
+                if (effectiveUpdatedAt !== undefined) {
+                  session.updatedAt = effectiveUpdatedAt;
+                }
+              }
             }
+            requireView().syncSessionPresentation(payload.sessionId);
             if (activeSessionId() === payload.sessionId) {
               state.approvalMode = payload.approvalMode;
               requireView().renderApprovalMode();
@@ -5078,27 +5278,41 @@
                 "type",
                 "sessionId",
                 "modelSelection",
+                "updatedAt",
                 "bridgeStateRevision",
               ]) ||
               !isWireStorageId(payload.sessionId) ||
+              typeof payload.updatedAt !== "string" ||
               !isWireSessionModelSelection(payload.modelSelection)
             ) return;
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
-            if (projectionRevisionIsCovered(
-              modelSelectionProjectionRevisionsBySession,
+            const projection = modelSelectionProjectionsBySession.get(
               payload.sessionId,
-              received,
-            )) return;
-            recordProjectionRevision(
-              modelSelectionProjectionRevisionsBySession,
+            );
+            if (
+              received.covered ||
+              compareDecimalRevisions(
+                received.revision,
+                projection?.revision || "0",
+              ) <= 0
+            ) return;
+            recordModelSelectionProjection(
               payload.sessionId,
+              payload.modelSelection,
+              received.revision,
+            );
+            const effectiveUpdatedAt = recordSessionUpdatedAtProjection(
+              payload.sessionId,
+              payload.updatedAt,
               received.revision,
             );
             applySessionModelSelectionMetadata(
               payload.sessionId,
               payload.modelSelection,
+              effectiveUpdatedAt,
             );
+            requireView().syncSessionPresentation(payload.sessionId);
             if (activeSessionId() === payload.sessionId) {
               const previousSource = runtimeSourceBySession.get(payload.sessionId) ??
                 runtimeSourceForState(getState());
@@ -5112,8 +5326,6 @@
               }
               runtimeSourceBySession.set(payload.sessionId, nextSource);
               refreshActiveModelSelection(payload.sessionId);
-            } else {
-              requireView().renderSessions();
             }
             return;
           }
@@ -5367,7 +5579,7 @@
                 activity,
                 received,
               )) {
-                requireView().renderSessions();
+                requireView().syncSessionPresentation(payload.sessionId);
                 if (activeSessionId() === payload.sessionId) {
                   syncActiveSessionUi();
                 }
@@ -5413,7 +5625,7 @@
             if (activeSessionId() === payload.sessionId) {
               showStatus(activity.message, activity.status === "failed");
             }
-            requireView().renderSessions();
+            requireView().syncSessionPresentation(payload.sessionId);
             return;
           }
           if (payload.type === "confirm_request") {
@@ -5539,7 +5751,7 @@
             if (activeSessionId() === payload.sessionId) {
               requireView().renderTimeline();
             }
-            requireView().renderSessions();
+            requireView().syncSessionPresentation(payload.sessionId);
             return;
           }
           if (payload.type === "confirm_resolved") {
@@ -5684,6 +5896,7 @@
 
       return {
         connectView,
+        createCommandId: () => createCorrelationId("command"),
         deleteAttachment,
         deleteSkill,
         getAssistantDraft: activeAssistantDraft,
@@ -5704,6 +5917,7 @@
         hasRunnableSendWork: () => sendAttemptsBySession.size > 0 ||
           runnableQueuedFollowUpCount() > 0,
         isOperationInProgress,
+        isProfileSettingsOperationInProgress,
         isCommandInProgress: () => Boolean(commandInProgress) ||
           commandReconciliationBlocked ||
           profileSettingsRefresh !== null ||

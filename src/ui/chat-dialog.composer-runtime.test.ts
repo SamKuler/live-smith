@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { MAX_DISCOVERED_MODEL_COUNT } from "../model/catalog.js";
 import {
   capabilities,
+  capabilityEvidence,
+  cloneState,
   commandCalls,
   createDialogHarness,
+  modelStateSourceFixture,
   profileFixture,
   profileRevisionFixture,
   stateFixture,
@@ -72,15 +76,22 @@ test("composer model and reasoning selectors use Session runtime without touchin
     assert.equal(model?.value, "model-a");
     assert.equal(model?.selectedOptions[0]?.textContent, "Model A");
     assert.equal(reasoning?.value, "high");
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      false,
+    );
     assert.equal(model?.getAttribute("aria-label"), "Model for the active Session");
     assert.equal(
       reasoning?.getAttribute("aria-label"),
       "Reasoning effort for the active Session",
     );
+    const originalModelOption = model?.options[0];
 
-    harness.input("#model", "unsaved-draft-model");
+    harness.input("#manualModelId", "unsaved-draft-model");
+    harness.click("#addManualModelButton");
     harness.select("#reasoningMode", "default");
 
+    assert.equal(model?.options[0], originalModelOption);
     assert.equal(model?.value, "model-a");
     assert.equal(reasoning?.value, "high");
     harness.select("#composerModel", "model-b");
@@ -97,7 +108,9 @@ test("composer model and reasoning selectors use Session runtime without touchin
     });
     assert.equal(model?.value, "model-b");
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#model")?.value,
+      harness.document.querySelector<HTMLSelectElement>(
+        "#modelConfigSelector",
+      )?.selectedOptions[0]?.textContent,
       "unsaved-draft-model",
     );
     assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Unsaved changes");
@@ -105,6 +118,77 @@ test("composer model and reasoning selectors use Session runtime without touchin
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
       true,
     );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("composer hides reasoning when the model has no selectable efforts", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      true,
+    );
+    assert.equal(reasoning?.disabled, true);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("composer hides leftover efforts when explicit reasoning is unsupported", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.runtimeProfile!.capabilities.reasoning = {
+    supported: false,
+    canDisable: false,
+    efforts: ["high"],
+    budgetTokens: false,
+    strategy: "effort",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      true,
+    );
+    assert.equal(reasoning?.disabled, true);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("composer hides efforts without a configured reasoning strategy", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.runtimeProfile!.capabilities.reasoning = {
+    supported: true,
+    canDisable: false,
+    efforts: ["high"],
+    budgetTokens: false,
+    strategy: "none",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      true,
+    );
+    assert.equal(reasoning?.disabled, true);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -145,23 +229,103 @@ test("composer keeps live, runtime, and follow-up controls as independent layout
   }
 });
 
-test("Settings adds, removes, and chooses a default full model configuration", async () => {
-  const harness = await createDialogHarness();
+test("Load Models merges the provider catalog into the Profile", async () => {
+  const state = stateFixture();
+  state.availableModels = [
+    {
+      id: "model-a",
+      displayName: "Model A",
+      capabilities: capabilities(),
+      capabilityEvidence: capabilityEvidence(),
+    },
+    {
+      id: "model-b",
+      displayName: "Model B",
+      capabilities: { ...capabilities(), maxOutputTokens: 4096 },
+      capabilityEvidence: capabilityEvidence(),
+    },
+    {
+      id: "model-c",
+      displayName: "Model C",
+      capabilities: { ...capabilities(), maxOutputTokens: 32768 },
+      capabilityEvidence: capabilityEvidence(),
+    },
+  ];
+  const harness = await createDialogHarness(state);
   try {
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "1 model in this Profile",
+    );
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLOptionElement>(
         "#modelConfigSelector option",
       )].map((option) => option.textContent),
-      ["model-a · Default"],
+      ["Model A · model-a · Default"],
     );
-    harness.click("#addModelConfigButton");
-    harness.input("#model", "model-b");
-    harness.input("#maxOutputTokens", "16384");
+    assert.equal(
+      harness.document.querySelector("label[for='modelConfigSelector']")?.textContent,
+      "Profile models",
+    );
+    assert.equal(
+      harness.document.querySelector("#removeModelConfigButton")?.textContent,
+      "Remove",
+    );
+    assert.equal(
+      harness.document.querySelector("#setDefaultModelButton")?.textContent,
+      "Make Default",
+    );
+
+    harness.input("#maxOutputTokens", "7000");
+    harness.click("#manualModelEntry summary");
+    harness.input("#manualModelId", "pending-manual-model");
+    harness.holdNextCommand();
+    harness.click("#discoverModelsButton");
+    await Promise.resolve();
+    const commandId = harness.commandIds.at(-1);
+    assert.ok(commandId);
+    const discoveryState = cloneState(state);
+    discoveryState.availableModels[0]!.capabilities.maxOutputTokens = 4096;
+    discoveryState.modelCatalogLoadReceipt = commandId;
+    discoveryState.modelStateSource = modelStateSourceFixture(
+      state.settings.profiles[0]!,
+    );
+    harness.emitServerEvent({ type: "state", commandId, state: discoveryState });
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      [
+        "Model A · model-a · Default",
+        "Model B · model-b",
+        "Model C · model-c",
+      ],
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.value,
+      "4096",
+    );
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "3 models in this Profile",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#manualModelId")?.value,
+      "pending-manual-model",
+    );
+    harness.select("#modelConfigSelector", "1");
+    harness.document.querySelector<HTMLButtonElement>("#setDefaultModelButton")
+      ?.focus();
     harness.click("#setDefaultModelButton");
     assert.equal(
       harness.document.querySelector("#modelConfigDefault")?.textContent,
       "Default for new Sessions",
     );
+    assert.equal(harness.document.activeElement?.id, "modelConfigSelector");
+
+    harness.releaseHeldCommand();
+    await harness.settle();
     harness.click("#saveProfileButton");
     await harness.settle();
     const saved = commandCalls(harness).findLast((call) =>
@@ -181,7 +345,181 @@ test("Settings adds, removes, and chooses a default full model configuration", a
         entry.model,
         entry.parameters?.maxOutputTokens,
       ]),
-      [["model-a", 8192], ["model-b", 16384]],
+      [["model-a", 4096], ["model-b", 4096], ["model-c", 8192]],
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Load Models does not merge an old catalog without its command receipt", async () => {
+  const state = stateFixture();
+  state.availableModels = [{
+    id: "stale-model",
+    displayName: "Stale model",
+    capabilities: capabilities(),
+    capabilityEvidence: capabilityEvidence(),
+  }];
+  delete state.modelCatalogLoadReceipt;
+  const harness = await createDialogHarness(state);
+  try {
+    harness.rejectNextCommand("The request never reached the bridge.");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default"],
+    );
+    assert.equal(
+      harness.document.querySelector("#draftStatus")?.textContent,
+      "Saved",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Load Models can preserve one manual model beside a full catalog", async () => {
+  const state = stateFixture();
+  state.availableModels = [];
+  const catalog = Array.from(
+    { length: MAX_DISCOVERED_MODEL_COUNT },
+    (_, index) => ({
+      id: `catalog-model-${index}`,
+      displayName: `Catalog model ${index}`,
+      capabilities: capabilities(),
+      capabilityEvidence: capabilityEvidence(),
+    }),
+  );
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextCommand();
+    harness.click("#discoverModelsButton");
+    await Promise.resolve();
+    const commandId = harness.commandIds.at(-1);
+    assert.ok(commandId);
+    const discoveryState = cloneState(state);
+    discoveryState.availableModels = catalog;
+    discoveryState.modelCatalogLoadReceipt = commandId;
+    harness.emitServerEvent({ type: "state", commandId, state: discoveryState });
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelectorAll("#modelConfigSelector option").length,
+      MAX_DISCOVERED_MODEL_COUNT + 1,
+    );
+    harness.releaseHeldCommand();
+    await harness.settle();
+    harness.click("#saveProfileButton");
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelectorAll("#composerModel option").length,
+      MAX_DISCOVERED_MODEL_COUNT + 1,
+    );
+    assert.equal(
+      harness.document.querySelector("#draftStatus")?.textContent,
+      "Saved",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Direct API keeps manual model IDs in a secondary disclosure", async () => {
+  const state = stateFixture();
+  state.availableModels = [];
+  state.modelStateSource = null;
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "1 model in this Profile",
+    );
+    const manualEntry = harness.document.querySelector<HTMLDetailsElement>(
+      "#manualModelEntry",
+    );
+    assert.equal(manualEntry?.hidden, false);
+    assert.equal(manualEntry?.open, false);
+    harness.click("#manualModelEntry summary");
+    assert.equal(manualEntry?.open, true);
+    harness.input("#manualModelId", "custom-chat-model");
+    harness.document.querySelector<HTMLInputElement>("#manualModelId")
+      ?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "Enter",
+      }));
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "custom-chat-model"],
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>(
+        "#modelConfigSelector",
+      )?.selectedOptions[0]?.textContent,
+      "custom-chat-model",
+    );
+    assert.equal(
+      harness.document.querySelector("#manualModelIdHint")?.textContent,
+      "Use this only when the provider does not list the model.",
+    );
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "2 models in this Profile",
+    );
+    harness.document.querySelector<HTMLButtonElement>("#removeModelConfigButton")
+      ?.focus();
+    harness.click("#removeModelConfigButton");
+    assert.equal(harness.document.activeElement?.id, "modelConfigSelector");
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "1 model in this Profile",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("subscription Profiles load catalog models and hide manual IDs", async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    connection: { kind: "codex-subscription", provider: "openai" },
+    defaultModel: "model-a",
+    models: [{
+      model: "model-a",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+  });
+  state.settings.profiles[0] = profile;
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = null;
+  state.availableModels = [];
+  state.configuredModels = [{ model: "model-a", label: "model-a" }];
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLDetailsElement>("#manualModelEntry")?.hidden,
+      true,
+    );
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "Discovered model · model-discovered"],
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -256,6 +594,10 @@ test("subscription composer loads model capabilities only when its selector is o
       "#composerReasoning",
     );
     assert.equal(reasoning?.disabled, true);
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      true,
+    );
     assert.equal(reasoning?.textContent, "Load capabilities…");
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await harness.settle();
@@ -272,6 +614,10 @@ test("subscription composer loads model capabilities only when its selector is o
       profileId: "profile-1",
     });
     assert.equal(reasoning?.disabled, false);
+    assert.equal(
+      reasoning?.closest<HTMLElement>(".composer-runtime-field")?.hidden,
+      false,
+    );
     assert.deepEqual(
       [...(reasoning?.options || [])].map((option) => option.value),
       ["", "low", "high"],
@@ -308,11 +654,17 @@ test("an external Session model event refreshes authoritative runtime without us
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
   try {
+    const meta = harness.document.querySelector<HTMLElement>(
+      '.session-entry[data-session-id="session-1"] .session-meta',
+    );
+    assert.ok(meta);
+    const previousTimestamp = meta.title;
     harness.holdNextState();
     harness.emitServerEvent({
       type: "session_model_selection_changed",
       sessionId: "session-1",
       modelSelection: { profileId: "profile-1", model: "model-b" },
+      updatedAt: "2026-08-25T00:00:00.000Z",
     });
     await Promise.resolve();
     const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
@@ -320,6 +672,7 @@ test("an external Session model event refreshes authoritative runtime without us
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
       "model-a",
     );
+    assert.notEqual(meta.title, previousTimestamp);
     assert.equal(send?.disabled, true);
     harness.input("#prompt", "Must wait for the authoritative model");
     harness.click("#sendButton");
@@ -340,6 +693,106 @@ test("an external Session model event refreshes authoritative runtime without us
       1,
     );
     assert.equal(state.runtimeProfile?.selection.model, "model-a");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("selecting a Session with an uncovered model event refreshes before Send", async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    defaultModel: "model-a",
+    models: [
+      {
+        model: "model-a",
+        parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+        advanced: {},
+      },
+      {
+        model: "model-b",
+        parameters: { maxOutputTokens: 8192, reasoning: { mode: "default" } },
+        advanced: {},
+      },
+    ],
+  });
+  state.settings.profiles[0] = profile;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.configuredModels = [
+    { model: "model-a", label: "Model A" },
+    { model: "model-b", label: "Model B" },
+  ];
+  state.sessions[1]!.modelSelection = {
+    profileId: profile.id,
+    model: "model-a",
+  };
+  state.openSettingsOnLoad = false;
+  const staleSelected = cloneState(state);
+  state.sessions = state.sessions.filter((session) => session.id !== "session-2");
+  const harness = await createDialogHarness(state);
+  const ui = (harness.window as unknown as {
+    LiveSmithUI: {
+      runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+    };
+  }).LiveSmithUI;
+  try {
+    harness.holdNextCommandResponse();
+    harness.holdNextState();
+    const command = ui.runCommand("select_session", { sessionId: "session-2" });
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "select_session"
+      ),
+      "Expected the Session selection to wait for its response.",
+    );
+    harness.emitServerEvent({
+      type: "session_model_selection_changed",
+      sessionId: "session-2",
+      modelSelection: { profileId: profile.id, model: "model-b" },
+      updatedAt: "2026-08-25T00:03:00.000Z",
+      bridgeStateRevision: "3",
+    });
+
+    staleSelected.activeSessionId = "session-2";
+    staleSelected.approvalMode = "low-risk";
+    staleSelected.runtimeProfile!.selection.model = "model-a";
+    staleSelected.modelStateSource = modelStateSourceFixture(profile);
+    harness.setServerState(staleSelected);
+    harness.queueNextStatePublication("4", "1");
+    harness.releaseHeldCommandResponse();
+    assert.equal(await command, true);
+    await waitForCondition(
+      () => harness.calls.some((call) => call.path === "/state"),
+      "Expected an authoritative model refresh for the newly active Session.",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      true,
+    );
+
+    const refreshed = cloneState(staleSelected);
+    refreshed.sessions[1]!.modelSelection = {
+      profileId: profile.id,
+      model: "model-b",
+    };
+    refreshed.runtimeProfile!.selection.model = "model-b";
+    refreshed.modelStateSource = {
+      ...modelStateSourceFixture(profile),
+      model: "model-b",
+    };
+    harness.setServerState(refreshed);
+    harness.queueNextStatePublication("5", "3");
+    harness.releaseHeldState();
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
+      false,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -977,9 +1430,11 @@ test("Settings follows the Profile to Conversation Behavior workflow", async () 
     }
 
     assert.ok(
-      harness.document.querySelector("#connectionSettingsSection #discoverModelsButton"),
+      harness.document.querySelector("#modelSettingsSection #discoverModelsButton"),
     );
-    assert.ok(harness.document.querySelector("#modelSettingsSection #model"));
+    assert.ok(
+      harness.document.querySelector("#modelSettingsSection #modelConfigSelector"),
+    );
     assert.ok(
       harness.document.querySelector("#capabilitySettingsSection #webSearchEnabled"),
     );

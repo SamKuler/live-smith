@@ -9,6 +9,7 @@
         isConfirmationLocked,
         resolveConfirm,
         runCommand,
+        showStatus,
       }) {
       const sessionDateFormatter = new Intl.DateTimeFormat(undefined, {
         day: "numeric",
@@ -21,6 +22,10 @@
       let confirmationReturnFocus = null;
       const selectedSessionIds = new Set();
       let sessionSelectionAnchorId = null;
+      let pendingSessionSwitchId = null;
+      let nextSessionSelectionStatusId = 0;
+      let renderedTimelineKey = null;
+      let renderedAssistantDraft = "";
 
       function sessionRecords() {
         const state = getState();
@@ -34,19 +39,26 @@
       function updateSessionSelectionUi() {
         for (const entry of document.querySelectorAll(".session-entry")) {
           const selected = selectedSessionIds.has(entry.dataset.sessionId);
-          entry.toggleAttribute("data-selected", selected);
+          if (entry.hasAttribute("data-selected") !== selected) {
+            entry.toggleAttribute("data-selected", selected);
+          }
           const selectionStatus = entry.querySelector(".session-selection-status");
           if (selectionStatus) {
-            selectionStatus.textContent = selected
+            const message = selected
               ? "Selected for bulk actions."
               : "Not selected for bulk actions.";
+            if (selectionStatus.textContent !== message) {
+              selectionStatus.textContent = message;
+            }
           }
         }
         const count = document.getElementById("sessionSelectionCount");
         if (!count) return;
         const selectedCount = selectedSessionIds.size;
-        count.hidden = selectedCount === 0;
-        count.textContent = selectedCount ? `${selectedCount} selected` : "";
+        const hidden = selectedCount === 0;
+        const message = selectedCount ? `${selectedCount} selected` : "";
+        if (count.hidden !== hidden) count.hidden = hidden;
+        if (count.textContent !== message) count.textContent = message;
       }
 
       function pruneSessionSelection() {
@@ -382,8 +394,8 @@
         menu.style.top = `${Math.round(top)}px`;
       }
 
-      function startRenameSession(sessionId, entry, row, titleEl) {
-        if (isCommandInProgress()) return;
+      function startRenameSession(sessionId, entry, row, titleEl, draft = null) {
+        if (isCommandInProgress() && !draft) return;
         if (entry.querySelector(".session-rename-input")) return;
         closeSessionMenus();
         const current = titleEl.textContent;
@@ -393,7 +405,9 @@
         input.className = "session-rename-input";
         input.name = "sessionName";
         input.autocomplete = "off";
-        input.value = current;
+        input.value = draft?.dirty ? draft.value : current;
+        input.dataset.originalTitle = current;
+        input.disabled = Boolean(draft?.disabled);
         input.setAttribute("aria-label", "Session Name");
         let settled = false;
         const restoreRow = () => {
@@ -422,7 +436,10 @@
           restoreRow();
           row.focus();
         };
-        input.addEventListener("blur", () => commit(false));
+        input.addEventListener("blur", () => {
+          if (input.disabled) return;
+          commit(false);
+        });
         input.addEventListener("keydown", (e) => {
           if (e.key === "Enter") { e.preventDefault(); commit(true); }
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
@@ -431,30 +448,59 @@
         if (menuButton) menuButton.hidden = true;
         if (continueButton) continueButton.hidden = true;
         entry.append(input);
+        if (draft?.focus === false) return;
         input.focus();
-        input.select();
+        if (
+          Number.isInteger(draft?.selectionStart) &&
+          Number.isInteger(draft?.selectionEnd)
+        ) {
+          input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+        } else {
+          input.select();
+        }
+      }
+
+      function sessionRecordsForIds(sessionIds) {
+        const current = new Map(
+          sessionRecords().map((record) => [record.session.id, record]),
+        );
+        return sessionIds.map((sessionId) => current.get(sessionId)).filter(Boolean);
+      }
+
+      function syncDeleteConfirmationPresentation(confirmation) {
+        const sessionIds = JSON.parse(confirmation.dataset.deleteSessionIds);
+        const records = sessionRecordsForIds(sessionIds);
+        const sessions = records.map(({ session }) => session);
+        if (!sessions.length) return records;
+        const multiple = sessions.length > 1;
+        confirmation.dataset.deleteSessionId = sessions[0].id;
+        confirmation.dataset.deleteSessionCount = String(sessions.length);
+        const label = multiple
+          ? `Delete ${sessions.length} sessions`
+          : `Delete session ${sessions[0].title || sessions[0].scope.label}`;
+        if (confirmation.getAttribute("aria-label") !== label) {
+          confirmation.setAttribute("aria-label", label);
+        }
+        const question = confirmation.querySelector(".session-delete-question");
+        const questionText = multiple
+          ? `Delete ${sessions.length} sessions?`
+          : "Delete this session?";
+        if (question && question.textContent !== questionText) {
+          question.textContent = questionText;
+        }
+        return records;
       }
 
       function beginDeleteSessions(records, entry, menuButton, menu) {
-        if (isCommandInProgress()) return;
-        const sessions = records.map(({ session }) => session);
-        const multiple = sessions.length > 1;
+        if (isCommandInProgress() || !records.length) return;
         const confirmation = document.createElement("div");
         confirmation.className = "session-delete-confirm";
-        confirmation.dataset.deleteSessionId = sessions[0].id;
-        confirmation.dataset.deleteSessionCount = String(sessions.length);
-        confirmation.setAttribute("role", "alertdialog");
-        confirmation.setAttribute(
-          "aria-label",
-          multiple
-            ? `Delete ${sessions.length} sessions`
-            : `Delete session ${sessions[0].title || sessions[0].scope.label}`,
+        confirmation.dataset.deleteSessionIds = JSON.stringify(
+          records.map(({ session }) => session.id),
         );
+        confirmation.setAttribute("role", "alertdialog");
         const question = document.createElement("span");
         question.className = "session-delete-question";
-        question.textContent = multiple
-          ? `Delete ${sessions.length} sessions?`
-          : "Delete this session?";
         const controls = document.createElement("span");
         controls.className = "session-delete-controls";
         const cancel = document.createElement("button");
@@ -477,14 +523,23 @@
         };
         cancel.onclick = restoreUi;
         remove.onclick = async () => {
+          const currentRecords = syncDeleteConfirmationPresentation(confirmation);
+          if (!currentRecords.length) {
+            restoreUi();
+            return;
+          }
           cancel.disabled = true;
           remove.disabled = true;
-          if (!(await runSessionCommands("delete_session", records)) && entry.isConnected) {
+          if (
+            !(await runSessionCommands("delete_session", currentRecords)) &&
+            entry.isConnected
+          ) {
             restoreUi();
           }
         };
         controls.append(cancel, remove);
         confirmation.append(question, controls);
+        syncDeleteConfirmationPresentation(confirmation);
         menu.classList.add("delete-confirm-mode");
         menu.setAttribute("role", "presentation");
         menu.replaceChildren(confirmation);
@@ -494,7 +549,7 @@
         cancel.focus();
       }
 
-      function createSessionMenu(session, entry, row, title, archived) {
+      function createSessionMenu(session, entry, row, title) {
         const menuButton = document.createElement("button");
         menuButton.className = "session-menu-button";
         menuButton.type = "button";
@@ -511,6 +566,17 @@
         menu.className = "session-action-menu";
         menu.setAttribute("role", "menu");
         menu.hidden = true;
+        const currentMenuRecords = () => {
+          const currentRecord = sessionRecords().find(
+            ({ session: candidate }) => candidate.id === session.id,
+          );
+          return currentRecord
+            ? selectedSessionRecords(
+                currentRecord.session,
+                currentRecord.archived,
+              )
+            : [];
+        };
         const addAction = (label, action, handler, danger, keepOpen) => {
           const button = document.createElement("button");
           button.type = "button";
@@ -520,7 +586,7 @@
           if (danger) button.className = "danger-text";
           button.onclick = (event) => {
             event.stopPropagation();
-            if (!keepOpen) closeSessionMenus();
+            if (!keepOpen) closeSessionMenus(session.id);
             handler();
           };
           menu.append(button);
@@ -548,7 +614,12 @@
             addAction(
               label,
               "archive",
-              () => runSessionCommands("archive_session", archiveRecords),
+              () => {
+                const current = currentMenuRecords().filter(
+                  (record) => !record.archived,
+                );
+                if (current.length) runSessionCommands("archive_session", current);
+              },
             );
           }
           if (unarchiveRecords.length) {
@@ -560,13 +631,23 @@
             addAction(
               label,
               "unarchive",
-              () => runSessionCommands("unarchive_session", unarchiveRecords),
+              () => {
+                const current = currentMenuRecords().filter(
+                  (record) => record.archived,
+                );
+                if (current.length) runSessionCommands("unarchive_session", current);
+              },
             );
           }
           addAction(
             multiple ? `Delete ${records.length} Sessions` : "Delete",
             "delete",
-            () => beginDeleteSessions(records, entry, menuButton, menu),
+            () => beginDeleteSessions(
+              currentMenuRecords(),
+              entry,
+              menuButton,
+              menu,
+            ),
             true,
             true,
           );
@@ -582,7 +663,9 @@
               selectedSessionIds.size &&
               !selectedSessionIds.has(session.id)
             ) clearSessionSelection();
-            populateMenu(selectedSessionRecords(session, archived));
+            const records = currentMenuRecords();
+            if (!records.length) return;
+            populateMenu(records);
             positionSessionMenu(menu, menuButton);
             menu.querySelector("button")?.focus({ preventScroll: true });
           }
@@ -594,59 +677,345 @@
         return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
       }
 
-      function appendSessionSection(list, title) {
+      function activityLabel(activity) {
+        return activity
+          ? {
+              running: "Working",
+              waiting_confirmation: "Needs approval",
+              completed: "Completed",
+              failed: "Failed",
+              stopped: "Stopped",
+            }[activity.status] || ""
+          : "";
+      }
+
+      function sessionTimestampTitle(session) {
+        const archivedDate = session.archivedAt
+          ? formatSessionDate(session.archivedAt)
+          : "";
+        const date = formatSessionDate(session.updatedAt || session.createdAt);
+        return [
+          archivedDate ? `Archived ${archivedDate}` : "",
+          date ? `Updated ${date}` : "",
+        ].filter(Boolean).join(" · ");
+      }
+
+      function syncSessionEntryPresentation(entry, session, mode, activity, isActive) {
+        const row = entry.querySelector(".session-row");
+        const title = row?.querySelector(".session-title");
+        const titleLine = row?.querySelector(".session-title-line");
+        const meta = row?.querySelector(".session-meta");
+        const metaContent = meta?.querySelector(".session-meta-content");
+        if (!row || !title || !titleLine || !meta || !metaContent) return;
+        const displayTitle = session.title || session.scope.label;
+        if (title.textContent !== displayTitle) title.textContent = displayTitle;
+        if (mode === "current") {
+          const pressed = String(isActive);
+          if (row.getAttribute("aria-pressed") !== pressed) {
+            row.setAttribute("aria-pressed", pressed);
+          }
+        } else if (row.hasAttribute("aria-pressed")) {
+          row.removeAttribute("aria-pressed");
+        }
+        const label = activityLabel(activity);
+        const scopeLabel = `${scopeKindLabel(session.scope.kind)} · ${session.scope.label}`;
+        const idleMeta = mode === "current" && label
+          ? `${label} · ${scopeLabel}`
+          : scopeLabel;
+        const switching = mode === "current" &&
+          pendingSessionSwitchId === session.id;
+        if (row.hasAttribute("data-switching") !== switching) {
+          row.toggleAttribute("data-switching", switching);
+        }
+        if (switching && row.getAttribute("aria-busy") !== "true") {
+          row.setAttribute("aria-busy", "true");
+        } else if (!switching && row.hasAttribute("aria-busy")) {
+          row.removeAttribute("aria-busy");
+        }
+        const metaText = switching ? "Switching…" : idleMeta;
+        if (metaContent.textContent !== metaText) metaContent.textContent = metaText;
+        const timestampTitle = sessionTimestampTitle(session);
+        if (meta.title !== timestampTitle) meta.title = timestampTitle;
+
+        const menuButton = entry.querySelector(".session-menu-button");
+        const menuLabel = `Session actions for ${displayTitle}`;
+        if (menuButton?.getAttribute("aria-label") !== menuLabel) {
+          menuButton?.setAttribute("aria-label", menuLabel);
+        }
+        const continueButton = entry.querySelector(".session-continue-button");
+        if (continueButton) {
+          const target = getState().sessionContinueTarget;
+          const continueLabel = `Continue ${displayTitle} using the current ${
+            target.kind
+          } ${target.label}. Last context label: ${
+            scopeKindLabel(session.scope.kind)
+          } ${session.scope.label}.`;
+          if (continueButton.getAttribute("aria-label") !== continueLabel) {
+            continueButton.setAttribute("aria-label", continueLabel);
+          }
+        }
+        const deleteConfirmation = entry.querySelector(".session-delete-confirm");
+        if (deleteConfirmation) {
+          syncDeleteConfirmationPresentation(deleteConfirmation);
+        }
+
+        let unread = titleLine.querySelector(".session-unread-dot");
+        if (activity?.unread && !isActive) {
+          if (!unread) {
+            unread = document.createElement("span");
+            titleLine.append(unread);
+          }
+          const className = `session-unread-dot ${activity.status}`;
+          const ariaLabel = `${label || "Update"} unread`;
+          const unreadTitle = label || "Session updated";
+          if (unread.className !== className) unread.className = className;
+          if (unread.getAttribute("aria-label") !== ariaLabel) {
+            unread.setAttribute("aria-label", ariaLabel);
+          }
+          if (unread.title !== unreadTitle) unread.title = unreadTitle;
+        } else {
+          unread?.remove();
+        }
+      }
+
+      function syncSessionPresentation(sessionId) {
+        const state = getState();
+        const collections = [
+          [state.sessions || [], "current"],
+          [state.previousSessions || [], "history"],
+          [state.archivedSessions || [], "archived"],
+        ];
+        let session = null;
+        let mode = null;
+        for (const [sessions, candidateMode] of collections) {
+          session = sessions.find((candidate) => candidate.id === sessionId) || null;
+          if (session) {
+            mode = candidateMode;
+            break;
+          }
+        }
+        if (!session || !mode) return;
+        const entry = [...document.querySelectorAll(".session-entry")].find(
+          (candidate) => candidate.dataset.sessionId === sessionId,
+        );
+        if (!entry) return;
+        const activity = (state.sessionActivities || []).find(
+          (candidate) => candidate.sessionId === sessionId,
+        );
+        syncSessionEntryPresentation(
+          entry,
+          session,
+          mode,
+          activity,
+          session.id === state.activeSessionId,
+        );
+        updateSessionMetaOverflow(entry);
+      }
+
+      function sessionSection(key, title, existingSections) {
+        const existing = existingSections.get(key);
+        if (existing) return existing;
         const heading = document.createElement("div");
         heading.className = "session-section-label";
+        heading.dataset.sessionSection = key;
         heading.textContent = title;
-        list.append(heading);
+        return heading;
+      }
+
+      function reconcileSessionList(list, desiredNodes) {
+        let cursor = list.firstChild;
+        for (const node of desiredNodes) {
+          if (node === cursor) {
+            cursor = cursor.nextSibling;
+          } else {
+            list.insertBefore(node, cursor);
+          }
+        }
+        while (cursor) {
+          const next = cursor.nextSibling;
+          cursor.remove();
+          cursor = next;
+        }
+      }
+
+      function reportRenameConflict(renameState, row) {
+        Promise.resolve().then(() => {
+          showStatus(
+            "This Session title changed while you were editing it. Review the new title before renaming.",
+            true,
+          );
+          if (
+            renameState.focus &&
+            row.isConnected &&
+            !row.disabled &&
+            [
+              document.body,
+              document.documentElement,
+              renameState.input,
+              row,
+            ].includes(document.activeElement)
+          ) {
+            row.focus({ preventScroll: true });
+          }
+        });
       }
 
       function renderSessions() {
         const state = getState();
         pruneSessionSelection();
+        const list = document.getElementById("sessions");
+        const renameInput = list.querySelector(".session-rename-input");
+        let renameState = renameInput
+          ? {
+              sessionId: renameInput.closest(".session-entry")?.dataset.sessionId,
+              value: renameInput.value,
+              originalTitle: renameInput.dataset.originalTitle,
+              dirty: renameInput.value !== renameInput.dataset.originalTitle,
+              selectionStart: renameInput.selectionStart,
+              selectionEnd: renameInput.selectionEnd,
+              disabled: renameInput.disabled,
+              focus: document.activeElement === renameInput,
+              input: renameInput,
+            }
+          : null;
+        if (renameState?.sessionId) {
+          const record = sessionRecords().find(
+            ({ session }) => session.id === renameState.sessionId,
+          );
+          const authoritativeTitle = record
+            ? record.session.title || record.session.scope.label
+            : null;
+          if (
+            authoritativeTitle !== null &&
+            authoritativeTitle !== renameState.originalTitle
+          ) {
+            if (renameState.dirty) {
+              const row = renameInput.closest(".session-entry")
+                ?.querySelector(".session-row");
+              renameInput.dispatchEvent(new KeyboardEvent("keydown", {
+                key: "Escape",
+                bubbles: true,
+              }));
+              if (row) reportRenameConflict(renameState, row);
+              renameState = null;
+            } else {
+              renameInput.value = authoritativeTitle;
+              renameInput.dataset.originalTitle = authoritativeTitle;
+              renameState.value = authoritativeTitle;
+              renameState.originalTitle = authoritativeTitle;
+              if (
+                renameState.focus &&
+                Number.isInteger(renameState.selectionStart) &&
+                Number.isInteger(renameState.selectionEnd)
+              ) {
+                const start = Math.min(
+                  renameState.selectionStart,
+                  authoritativeTitle.length,
+                );
+                const end = Math.min(
+                  renameState.selectionEnd,
+                  authoritativeTitle.length,
+                );
+                renameInput.setSelectionRange(start, end);
+                renameState.selectionStart = start;
+                renameState.selectionEnd = end;
+              }
+            }
+          }
+        }
         const navigationBlocked = isCommandInProgress();
         const activities = new Map(
           (state.sessionActivities || []).map((activity) => [activity.sessionId, activity]),
         );
-        const list = document.getElementById("sessions");
-        list.replaceChildren();
-        let selectionStatusIndex = 0;
+        const existingEntries = new Map(
+          [...list.querySelectorAll(".session-entry")].map((entry) => [
+            entry.dataset.sessionId,
+            entry,
+          ]),
+        );
+        const existingSections = new Map(
+          [...list.querySelectorAll("[data-session-section]")].map((section) => [
+            section.dataset.sessionSection,
+            section,
+          ]),
+        );
+        const desiredNodes = [];
 
         if (!state.sessions.length) {
-          const empty = document.createElement("div");
-          empty.className = "session-empty";
-          empty.textContent = "No sessions yet. Use New Session to create one.";
-          list.append(empty);
+          const empty = list.querySelector(".session-empty") ||
+            document.createElement("div");
+          if (!empty.classList.contains("session-empty")) {
+            empty.className = "session-empty";
+          }
+          const message = "No sessions yet. Use New Session to create one.";
+          if (empty.textContent !== message) empty.textContent = message;
+          desiredNodes.push(empty);
         }
 
         const appendSession = (session, mode) => {
+          const canContinue = mode === "history" &&
+            session.scope.kind === state.sessionContinueTarget.kind;
+          const activity = activities.get(session.id);
+          const isActive = session.id === state.activeSessionId;
+          const renderKey = JSON.stringify({
+            mode,
+            canContinue,
+          });
+          const existing = existingEntries.get(session.id);
+          if (existing?.dataset.renderKey === renderKey) {
+            syncSessionEntryPresentation(
+              existing,
+              session,
+              mode,
+              activity,
+              isActive,
+            );
+            desiredNodes.push(existing);
+            return;
+          }
+
           const entry = document.createElement("div");
           entry.className = `session-entry ${mode}-session-entry`;
           entry.dataset.sessionId = session.id;
-          const canContinue = mode === "history" &&
-            session.scope.kind === state.sessionContinueTarget.kind;
+          entry.dataset.renderKey = renderKey;
           const row = document.createElement("button");
           row.className = `session-row ${mode}-session-row`;
           row.type = "button";
           row.setAttribute("aria-keyshortcuts", "Backspace Delete");
           const selectionStatus = document.createElement("span");
           selectionStatus.className = "session-selection-status visually-hidden";
-          selectionStatus.id = `session-selection-status-${selectionStatusIndex}`;
-          selectionStatusIndex += 1;
+          selectionStatus.id = `session-selection-status-${
+            nextSessionSelectionStatusId++
+          }`;
           row.setAttribute("aria-describedby", selectionStatus.id);
           row.disabled = navigationBlocked;
-          const isActive = session.id === state.activeSessionId;
           if (mode === "current") {
             row.setAttribute("aria-pressed", isActive ? "true" : "false");
           }
           let selectionPromise = null;
+          function selectCurrentSession() {
+            if (selectionPromise) return selectionPromise;
+            pendingSessionSwitchId = session.id;
+            syncSessionPresentation(session.id);
+            selectionPromise = runCommand(
+              "select_session",
+              { sessionId: session.id },
+            ).finally(() => {
+              if (pendingSessionSwitchId === session.id) {
+                pendingSessionSwitchId = null;
+              }
+              syncSessionPresentation(session.id);
+              if (row.isConnected) selectionPromise = null;
+            });
+            return selectionPromise;
+          }
           row.onclick = (event) => {
             if (handleModifiedSessionSelection(event, session.id)) return;
             if (mode === "current") {
               clearSessionSelection();
               sessionSelectionAnchorId = session.id;
-              if (isActive) return;
-              selectionPromise ||= runCommand("select_session", { sessionId: session.id });
+              if (session.id === getState().activeSessionId) return;
+              selectionPromise = selectCurrentSession();
               if (event.detail === 0) {
                 selectionPromise.then(() => focusSessionRow(session.id));
               }
@@ -662,14 +1031,11 @@
             row.addEventListener("dblclick", async (e) => {
               e.preventDefault();
               if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-              if (isActive) {
+              if (session.id === getState().activeSessionId) {
                 startRenameSession(session.id, entry, row, title);
                 return;
               }
-              const selected = await (selectionPromise || runCommand(
-                "select_session",
-                { sessionId: session.id },
-              ));
+              const selected = await selectCurrentSession();
               if (!selected) return;
               const selectedEntry = document.querySelector(
                 `.session-entry[data-session-id="${session.id}"]`,
@@ -690,46 +1056,16 @@
           meta.className = "session-meta";
           const metaContent = document.createElement("span");
           metaContent.className = "session-meta-content";
-          const date = formatSessionDate(session.updatedAt || session.createdAt);
-          const activity = activities.get(session.id);
-          const activityLabel = activity
-            ? {
-                running: "Working",
-                waiting_confirmation: "Needs approval",
-                completed: "Completed",
-                failed: "Failed",
-                stopped: "Stopped",
-              }[activity.status]
-            : "";
-          const scopeLabel = `${scopeKindLabel(session.scope.kind)} · ${session.scope.label}`;
-          metaContent.textContent = mode === "current" && activityLabel
-            ? `${activityLabel} · ${scopeLabel}`
-            : scopeLabel;
           meta.append(metaContent);
-          const archivedDate = mode === "archived"
-            ? formatSessionDate(session.archivedAt)
-            : "";
-          meta.title = [
-            archivedDate ? `Archived ${archivedDate}` : "",
-            date ? `Updated ${date}` : "",
-          ].filter(Boolean).join(" · ");
           const titleLine = document.createElement("span");
           titleLine.className = "session-title-line";
           titleLine.append(title);
-          if (activity?.unread && !isActive) {
-            const dot = document.createElement("span");
-            dot.className = `session-unread-dot ${activity.status}`;
-            dot.setAttribute("aria-label", `${activityLabel || "Update"} unread`);
-            dot.title = activityLabel || "Session updated";
-            titleLine.append(dot);
-          }
           row.append(titleLine, meta);
           const { menuButton, menu } = createSessionMenu(
             session,
             entry,
             row,
             title,
-            mode === "archived",
           );
           menuButton.disabled = navigationBlocked;
           const continueButton = canContinue
@@ -758,23 +1094,45 @@
             };
           }
           entry.append(row, selectionStatus);
+          syncSessionEntryPresentation(
+            entry,
+            session,
+            mode,
+            activity,
+            isActive,
+          );
           if (continueButton) entry.append(continueButton);
           entry.append(menuButton, menu);
-          list.append(entry);
+          desiredNodes.push(entry);
         };
 
         for (const session of state.sessions) appendSession(session, "current");
 
         const previousSessions = state.previousSessions || [];
         if (previousSessions.length) {
-          appendSessionSection(list, "History");
+          desiredNodes.push(sessionSection("history", "History", existingSections));
           for (const session of previousSessions) appendSession(session, "history");
         }
 
         const archivedSessions = state.archivedSessions || [];
         if (archivedSessions.length) {
-          appendSessionSection(list, "Archived");
+          desiredNodes.push(sessionSection("archived", "Archived", existingSections));
           for (const session of archivedSessions) appendSession(session, "archived");
+        }
+        reconcileSessionList(list, desiredNodes);
+        if (renameState && !renameState.input.isConnected && renameState.sessionId) {
+          const entry = [...list.querySelectorAll(".session-entry")].find(
+            (candidate) => candidate.dataset.sessionId === renameState.sessionId,
+          );
+          const row = entry?.querySelector(".session-row");
+          const title = row?.querySelector(".session-title");
+          if (entry && row && title) {
+            if (title.textContent === renameState.originalTitle) {
+              startRenameSession(renameState.sessionId, entry, row, title, renameState);
+            } else {
+              reportRenameConflict(renameState, row);
+            }
+          }
         }
         updateSessionSelectionUi();
         updateSessionMetaOverflow(list);
@@ -856,6 +1214,13 @@
         let item = timeline.querySelector(".timeline-item.assistant.streaming");
         if (!assistantDraft) {
           item?.remove();
+          if (!timeline.children.length) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "No messages in this session yet.";
+            timeline.append(empty);
+          }
+          renderedAssistantDraft = "";
           return;
         }
 
@@ -869,7 +1234,10 @@
         } else {
           renderMarkdown(item.querySelector(".timeline-content"), assistantDraft);
         }
+        const confirmation = timeline.querySelector(".confirm-card");
+        if (confirmation) setConfirmationModalActive(true, confirmation);
         if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+        renderedAssistantDraft = assistantDraft;
       }
 
       function focusedTimelineLinkIdentity(element, timeline) {
@@ -921,6 +1289,16 @@
         const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
+        const renderKey = JSON.stringify({
+          events: state.events || [],
+          queuedFollowUps,
+          webSearchUpdates,
+          pendingConfirmation,
+        });
+        if (renderKey === renderedTimelineKey) {
+          if (assistantDraft !== renderedAssistantDraft) renderAssistantDraft();
+          return;
+        }
         const timeline = document.getElementById("timeline");
         const focusBeforeRender = document.activeElement;
         const focusedLinkIdentity = focusedTimelineLinkIdentity(
@@ -1040,6 +1418,8 @@
         if (nearBottom || pendingConfirmation) {
           timeline.scrollTop = timeline.scrollHeight;
         }
+        renderedTimelineKey = renderKey;
+        renderedAssistantDraft = assistantDraft;
       }
 
       function buildConfirmCard(confirm) {
@@ -1487,6 +1867,7 @@
         announceAssistantMessage,
         handleInspectorTabKeydown,
         renderAssistantDraft,
+        syncSessionPresentation,
         renderSessions,
         renderTimeline,
         setConfirmationState,

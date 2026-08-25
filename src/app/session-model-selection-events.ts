@@ -4,6 +4,7 @@ import { storageScopeKey } from "../storage/scope.js";
 export interface SessionModelSelectionChange {
   sessionId: string;
   modelSelection: SessionModelSelection;
+  updatedAt: string;
 }
 
 type SessionModelSelectionListener = (
@@ -39,6 +40,7 @@ export function publishSessionModelSelectionChange(
     try {
       listener({
         sessionId: change.sessionId,
+        updatedAt: change.updatedAt,
         modelSelection: {
           profileId: change.modelSelection.profileId,
           model: change.modelSelection.model,

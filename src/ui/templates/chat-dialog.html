@@ -227,6 +227,11 @@
         box-shadow: inset 3px 0 0 var(--accent);
       }
 
+      .session-row[data-switching] {
+        border-color: rgba(255, 165, 0, 0.52);
+        background: rgba(255, 165, 0, 0.08);
+      }
+
       .session-entry[data-selected] > .session-row {
         border-color: rgba(124, 184, 232, 0.72);
         background: rgba(124, 184, 232, 0.1);
@@ -862,6 +867,7 @@
         top: calc(100% + 7px);
         right: -5px;
         width: 250px;
+        max-width: calc(100vw - 32px);
         padding: 7px 9px;
         border: 1px solid var(--border-strong);
         border-radius: 6px;
@@ -1193,7 +1199,7 @@
         min-height: 42px;
         padding: 5px 7px;
         border: 1px solid var(--line-soft);
-        border-top-color: #353535;
+        border-top: 0;
         border-radius: 0 0 9px 9px;
         background: var(--field);
       }
@@ -1232,6 +1238,10 @@
       .composer-runtime-field {
         display: block;
         min-width: 0;
+      }
+
+      .composer-runtime-field[hidden] {
+        display: none;
       }
 
       .composer-runtime-field.model {
@@ -1357,22 +1367,6 @@
 
       .composer-send.stop .send-button-stop-icon {
         display: block;
-      }
-
-      .follow-up-shortcut-hint {
-        flex: 1 0 100%;
-        order: 2;
-        min-width: 0;
-        overflow: hidden;
-        color: var(--quiet);
-        font-size: 10px;
-        text-align: center;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .follow-up-shortcut-hint[hidden] {
-        display: none;
       }
 
       .attachment-menu-shell {
@@ -1806,24 +1800,6 @@
         gap: 6px;
       }
 
-      .connection-action {
-        display: grid;
-        gap: 4px;
-      }
-
-      .connection-action-row {
-        position: relative;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .connection-action button {
-        width: 100%;
-        border-color: rgba(255, 159, 26, 0.55);
-      }
-
       .subscription-auth-panel {
         --subscription-state: var(--quiet);
         position: relative;
@@ -2093,10 +2069,6 @@
         gap: 9px;
       }
 
-      #model {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-
       .capability-preview {
         display: flex;
         flex-wrap: wrap;
@@ -2238,15 +2210,68 @@
       .model-config-editor {
         display: grid;
         gap: 7px;
-        padding: 8px;
-        background: rgba(255, 255, 255, 0.025);
-        border: 1px solid var(--line-soft);
-        border-radius: 6px;
+      }
+
+      .model-load-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .model-load-row button {
+        min-width: 0;
+        height: 30px;
+        padding: 0 10px;
+      }
+
+      .model-load-copy {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .model-load-copy .inline-help::after {
+        right: auto;
+        left: 0;
+      }
+
+      .manual-model-entry {
+        font-size: 10px;
+      }
+
+      .manual-model-entry[hidden] {
+        display: none;
+      }
+
+      .manual-model-entry > summary {
+        width: max-content;
+        color: var(--quiet);
+        cursor: pointer;
+      }
+
+      .manual-model-entry[open] > summary {
+        margin-bottom: 6px;
+        color: var(--text);
+      }
+
+      .manual-model-entry-body {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 5px;
+      }
+
+      .manual-model-entry-body .field-hint {
+        grid-column: 1 / -1;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
 
       .model-config-actions {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 5px;
       }
 
@@ -2257,8 +2282,11 @@
       }
 
       .model-config-default {
+        min-width: 0;
         color: var(--trace);
         font-size: 10px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
       }
 
       .model-setup-guide[hidden],
@@ -2817,6 +2845,7 @@
         .skill-row[data-skill-source="user"] .skill-delete {
           justify-self: end;
         }
+
       }
 
       @media (max-width: 420px) {
@@ -2907,7 +2936,7 @@
                   </select>
                 </label>
               </div>
-              <span id="followUpShortcutHint" class="follow-up-shortcut-hint" hidden></span>
+              <span id="followUpShortcutHint" class="visually-hidden" hidden></span>
               <div class="composer-runtime-controls">
                 <div id="contextUsage" class="context-usage" data-state="unavailable" role="status" aria-live="polite" aria-atomic="true" aria-label="Context usage unavailable for the active Session." title="Context usage unavailable for the active Session.">
                   <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
@@ -2944,8 +2973,8 @@
                 <h2 id="modelSetupGuideHeading">Connect a model</h2>
                 <ol>
                   <li>Name the Profile and enter connection details.</li>
-                  <li>Load models.</li>
-                  <li>Choose a model, then Save &amp; Use.</li>
+                  <li>Click Load Models.</li>
+                  <li>Save &amp; Use.</li>
                 </ol>
               </section>
               <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
@@ -3049,37 +3078,37 @@
                     </ul>
                   </details>
                 </section>
-                <div class="connection-action">
-                  <div class="connection-action-row">
-                    <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
-                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Checks the connection and loads the models this provider exposes." data-tooltip="Checks the connection and loads the models this provider exposes.">?</span>
-                  </div>
-                </div>
               </section>
 
               <section id="modelSettingsSection" class="settings-section" aria-labelledby="modelSettingsHeading">
                 <h2 id="modelSettingsHeading">Models</h2>
+                <div class="model-load-row">
+                  <div class="model-load-copy">
+                    <span id="profileModelCount" class="field-hint" role="status" aria-live="polite"></span>
+                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads the provider catalog and adds new models. Values outside verified model limits may be adjusted in this Draft." data-tooltip="Loads the provider catalog and adds new models. Values outside verified model limits may be adjusted in this Draft.">?</span>
+                  </div>
+                  <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
+                </div>
                 <div class="model-config-editor">
                   <div class="field">
-                    <label for="modelConfigSelector">Configured model</label>
+                    <label for="modelConfigSelector">Profile models</label>
                     <select id="modelConfigSelector" name="modelConfigSelector" autocomplete="off" onchange="LiveSmithUI.handleModelConfigSelection()"></select>
                     <span id="modelConfigDefault" class="model-config-default" role="status" aria-live="polite"></span>
+                    <div id="inputCapabilitiesPreview" class="capability-preview" role="status" aria-live="polite" aria-atomic="true"></div>
                   </div>
                   <div class="model-config-actions">
-                    <button id="addModelConfigButton" class="secondary" type="button" onclick="LiveSmithUI.addModelConfig()">Add Model</button>
                     <button id="removeModelConfigButton" class="secondary" type="button" onclick="LiveSmithUI.removeModelConfig()">Remove</button>
-                    <button id="setDefaultModelButton" class="secondary" type="button" onclick="LiveSmithUI.setDefaultModel()">Set Default</button>
+                    <button id="setDefaultModelButton" class="secondary" type="button" onclick="LiveSmithUI.setDefaultModel()">Make Default</button>
                   </div>
                 </div>
-                <div class="field">
-                  <div class="field-label-row">
-                    <label for="model">Model ID</label>
-                    <span id="modelHelp" class="inline-help" tabindex="0" role="note" aria-label="Choose a loaded model or enter its exact ID. Each configured model keeps its own generation and capability settings." data-tooltip="Choose a loaded model or enter its exact ID. Each configured model keeps its own generation and capability settings.">?</span>
+                <details id="manualModelEntry" class="manual-model-entry">
+                  <summary>Add model ID manually</summary>
+                  <div class="manual-model-entry-body">
+                    <input id="manualModelId" name="manualModelId" autocomplete="off" spellcheck="false" translate="no" placeholder="Exact model ID" aria-label="Exact model ID to add" aria-describedby="manualModelIdHint" oninput="LiveSmithUI.updateManualModelActions()" onkeydown="LiveSmithUI.handleManualModelIdKeydown(event)" />
+                    <button id="addManualModelButton" class="secondary" type="button" onclick="LiveSmithUI.addManualModel()">Add</button>
+                    <span id="manualModelIdHint" class="field-hint" role="status" aria-live="polite">Use this only when the provider does not list the model.</span>
                   </div>
-                  <input id="model" name="model" list="modelOptions" autocomplete="off" spellcheck="false" placeholder="e.g. model-id…" aria-describedby="inputCapabilitiesPreview" oninput="LiveSmithUI.markDraftDirty(this)" />
-                  <datalist id="modelOptions"></datalist>
-                  <div id="inputCapabilitiesPreview" class="capability-preview" role="status" aria-live="polite" aria-atomic="true"></div>
-                </div>
+                </details>
               </section>
 
               <section id="capabilitySettingsSection" class="settings-section capability-settings-section" aria-labelledby="capabilitySettingsHeading">

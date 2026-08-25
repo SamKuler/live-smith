@@ -643,7 +643,11 @@ test("a late full-state publication exposes the patch cut captured before its bu
     const stateRequest = fetch(`${chatUrl.origin}/state?token=${token}`);
     await buildStarted;
     const approvalEvent = readSsePayload(events, "approval_mode_changed");
-    bridge.publishSessionApprovalMode("s1", "everything");
+    bridge.publishSessionApprovalMode(
+      "s1",
+      "everything",
+      "2026-08-25T00:00:00.000Z",
+    );
     const approval = await approvalEvent;
     releaseBuild();
     const state = await (await stateRequest).json() as ChatBridgeState;
@@ -681,10 +685,19 @@ test("event stream reconnect replays the latest approval patch per Session", asy
   try {
     initialEvents = await fetch(endpoint("/events"));
     const firstPatch = readSsePayload(initialEvents, "approval_mode_changed");
-    bridge.publishSessionApprovalMode("s1", "everything");
+    bridge.publishSessionApprovalMode(
+      "s1",
+      "everything",
+      "2026-08-25T00:00:00.000Z",
+    );
     const first = await firstPatch;
+    assert.equal(first.updatedAt, "2026-08-25T00:00:00.000Z");
 
-    bridge.publishSessionApprovalMode("s1", "manual");
+    bridge.publishSessionApprovalMode(
+      "s1",
+      "manual",
+      "2026-08-25T00:01:00.000Z",
+    );
     reconnectedEvents = await fetch(endpoint("/events"));
     const replayed = await readSsePayload(
       reconnectedEvents,
@@ -693,6 +706,7 @@ test("event stream reconnect replays the latest approval patch per Session", asy
 
     assert.equal(replayed.sessionId, "s1");
     assert.equal(replayed.approvalMode, "manual");
+    assert.equal(replayed.updatedAt, "2026-08-25T00:01:00.000Z");
     assert.ok(
       BigInt(replayed.bridgeStateRevision as string) >
         BigInt(first.bridgeStateRevision as string),
@@ -728,8 +742,9 @@ test("event stream publishes and replays the latest Session model selection", as
       profileId: "profile-a",
       model: "model-a",
       reasoningEffort: "high",
-    });
+    }, "2026-08-25T00:00:00.000Z");
     const first = await firstPatch;
+    assert.equal(first.updatedAt, "2026-08-25T00:00:00.000Z");
     assert.deepEqual(first.modelSelection, {
       profileId: "profile-a",
       model: "model-a",
@@ -739,7 +754,7 @@ test("event stream publishes and replays the latest Session model selection", as
     bridge.publishSessionModelSelection("s1", {
       profileId: "profile-a",
       model: "model-b",
-    });
+    }, "2026-08-25T00:01:00.000Z");
     reconnectedEvents = await fetch(endpoint("/events"));
     const replayed = await readSsePayload(
       reconnectedEvents,
@@ -747,6 +762,7 @@ test("event stream publishes and replays the latest Session model selection", as
     );
 
     assert.equal(replayed.sessionId, "s1");
+    assert.equal(replayed.updatedAt, "2026-08-25T00:01:00.000Z");
     assert.deepEqual(replayed.modelSelection, {
       profileId: "profile-a",
       model: "model-b",

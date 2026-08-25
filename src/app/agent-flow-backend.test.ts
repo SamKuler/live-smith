@@ -393,6 +393,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
           initial.availableModels.map((model) => model.id),
           [directProfile.defaultModel],
         );
+        assert.equal(initial.modelCatalogLoadReceipt, undefined);
 
         const response = await fetch(bridgeEndpoint(url, "/command"), {
           method: "POST",
@@ -412,6 +413,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
           state.availableModels.map((model) => model.id),
           [directProfile.defaultModel],
         );
+        assert.equal(state.modelCatalogLoadReceipt, undefined);
       },
     },
   };
@@ -473,11 +475,12 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
             );
             const initial = await initialResponse.json() as ChatDialogState;
 
+            const discoveryHeaders = bridgeJsonHeaders();
             const discoveryResponse = await fetch(
               bridgeEndpoint(url, "/command"),
               {
                 method: "POST",
-                headers: bridgeJsonHeaders(),
+                headers: discoveryHeaders,
                 body: JSON.stringify({
                   kind: "discover_models",
                   profile: directProfile,
@@ -493,6 +496,10 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
             assert.deepEqual(
               discovered.availableModels.map((model) => model.id),
               [directProfile.defaultModel],
+            );
+            assert.equal(
+              discovered.modelCatalogLoadReceipt,
+              discoveryHeaders["X-Live-Smith-Command-Id"],
             );
 
             const sendResponse = await fetch(bridgeEndpoint(url, "/send"), {

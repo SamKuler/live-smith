@@ -142,7 +142,55 @@ test("SessionMutationFence exposes a send queued behind another Session mutation
   const send = fence.runNamed("session-a", "send", undefined, async () => undefined);
 
   assert.equal(fence.hasQueuedOrActive("session-a", "send"), true);
+  assert.equal(fence.queuedOrActiveCount("session-a"), 2);
 
   releaseFirst();
   await Promise.all([first, send]);
+  assert.equal(fence.queuedOrActiveCount("session-a"), 0);
+});
+
+test("Session-first reuse probing does not hold intent changes behind a send", async () => {
+  const mutationFence = new SessionMutationFence();
+  const intentFence = new SessionMutationFence();
+  const order: string[] = [];
+  let releaseFirstIntent!: () => void;
+  let firstIntentStarted!: () => void;
+  let probeHasMutation!: () => void;
+  const firstIntentGate = new Promise<void>((resolve) => {
+    releaseFirstIntent = resolve;
+  });
+  const firstIntentActive = new Promise<void>((resolve) => {
+    firstIntentStarted = resolve;
+  });
+  const probeMutationActive = new Promise<void>((resolve) => {
+    probeHasMutation = resolve;
+  });
+
+  const firstIntent = intentFence.run("session-a", async () => {
+    firstIntentStarted();
+    await firstIntentGate;
+  });
+  await firstIntentActive;
+  const probe = mutationFence.run("session-a", async () => {
+    probeHasMutation();
+    await intentFence.run("session-a", async () => {
+      order.push("probe-intent");
+    });
+  });
+  await probeMutationActive;
+  const send = mutationFence.runNamed(
+    "session-a",
+    "send",
+    undefined,
+    async () => {
+      order.push("send");
+    },
+  );
+  const secondIntent = intentFence.run("session-a", async () => {
+    order.push("second-intent");
+  });
+
+  releaseFirstIntent();
+  await Promise.all([firstIntent, probe, send, secondIntent]);
+  assert.deepEqual(order, ["probe-intent", "second-intent", "send"]);
 });

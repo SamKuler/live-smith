@@ -159,7 +159,10 @@ test("subscription model discovery and Save use only the managed connection cont
     });
     assert.equal("apiKey" in discovery.profile, false);
 
-    harness.input("#model", "model-discovered");
+    harness.select("#modelConfigSelector", "1");
+    harness.click("#setDefaultModelButton");
+    harness.select("#modelConfigSelector", "0");
+    harness.click("#removeModelConfigButton");
     harness.click("#saveProfileButton");
     await harness.settle();
 

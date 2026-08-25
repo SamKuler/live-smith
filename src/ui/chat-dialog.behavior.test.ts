@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SavedProfile } from "../model/profile.js";
+import type { DirectApiProfile, SavedProfile } from "../model/profile.js";
 import type { ChatDialogState } from "./chat-state.js";
 import {
   capabilities,
@@ -215,15 +215,10 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       harness.document.querySelector("#baseUrl")?.getAttribute("aria-describedby"),
       null,
     );
-    assert.equal(
-      harness.document.querySelector("#model")?.getAttribute("aria-describedby"),
-      "inputCapabilitiesPreview",
-    );
     for (const id of [
       "apiModeHelp",
       "baseUrlHelp",
       "discoverModelsHelp",
-      "modelHelp",
       "followUpSettingsOwnerHelp",
     ]) {
       const help = harness.document.getElementById(id);
@@ -231,8 +226,8 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       assert.equal(help?.getAttribute("role"), "note");
       assert.equal(help?.dataset.tooltip, help?.getAttribute("aria-label"));
     }
-    harness.document.getElementById("modelHelp")?.focus();
-    assert.equal(harness.document.activeElement?.id, "modelHelp");
+    harness.document.getElementById("discoverModelsHelp")?.focus();
+    assert.equal(harness.document.activeElement?.id, "discoverModelsHelp");
     for (const section of [
       "#profileSettingsSection",
       "#connectionSettingsSection",
@@ -320,7 +315,6 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     assert.equal(guide?.querySelectorAll("li").length, 3);
     assert.match(guide?.textContent ?? "", /name the profile.*connection details/i);
     assert.match(guide?.textContent ?? "", /load models/i);
-    assert.match(guide?.textContent ?? "", /choose a model/i);
     assert.match(guide?.textContent ?? "", /save & use/i);
     assert.equal(
       harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
@@ -333,7 +327,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
     );
     assert.equal(
       harness.document.querySelector("#modelSettingsSection")?.contains(
-        harness.document.querySelector("#model"),
+        harness.document.querySelector("#modelConfigSelector"),
       ),
       true,
     );
@@ -396,7 +390,7 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
     const connectionHelp = [...harness.document.querySelectorAll<HTMLElement>(
       "#connectionSettingsSection .inline-help",
     )];
-    assert.equal(connectionHelp.length, 5);
+    assert.equal(connectionHelp.length, 4);
     assert.ok(connectionHelp.some((help) =>
       /official and compatible endpoints/i.test(help.getAttribute("aria-label") ?? "")
     ));
@@ -412,13 +406,13 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
       "Request format",
     );
     const discover = harness.document.querySelector("#discoverModelsButton")!;
-    const modelField = harness.document.querySelector("#model")!;
+    const modelField = harness.document.querySelector("#modelConfigSelector")!;
     assert.equal(
       Boolean(discover.compareDocumentPosition(modelField) &
         harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
       true,
     );
-    assert.equal(discover.closest(".connection-action") !== null, true);
+    assert.equal(discover.closest(".model-load-row") !== null, true);
     assert.equal(
       harness.document.querySelectorAll("#advancedSettingsSection > details").length,
       0,
@@ -513,25 +507,32 @@ test("first-run setup connects, selects a discovered model, and saves it for use
     harness.input("#profileName", "Studio model");
     harness.input("#apiKey", "");
     harness.input("#baseUrl", "http://localhost:1234/v1");
+    harness.input("#maxOutputTokens", "6000");
     harness.click("#discoverModelsButton");
     await harness.settle();
 
-    assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLOptionElement>("#modelOptions option")]
-        .map((option) => option.value),
-      ["model-discovered"],
+    assert.equal(
+      harness.document.querySelector("#profileModelCount")?.textContent,
+      "1 model in this Profile",
     );
-    harness.input("#model", "model-discovered");
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["Discovered model · model-discovered · Default"],
+    );
     harness.click("#saveProfileButton");
     await harness.settle();
 
     const savedProfile = (commandCalls(harness).at(-1)?.body as {
       profile: {
         connection: { apiKey: string; baseUrl: string };
+        models: Array<{ model: string; parameters: { maxOutputTokens: number } }>;
       };
     }).profile;
     assert.equal(savedProfile.connection.apiKey, "");
     assert.equal(savedProfile.connection.baseUrl, "http://localhost:1234/v1");
+    assert.equal(savedProfile.models[0]?.parameters.maxOutputTokens, 6000);
 
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
@@ -610,10 +611,20 @@ test("Apply approval mode follows the selected Session", async () => {
 test("a Session approval update from another dialog refreshes the active control", async () => {
   const harness = await createDialogHarness();
   try {
+    const row = harness.document.querySelector(
+      '.session-entry[data-session-id="session-1"] .session-row',
+    );
+    const meta = harness.document.querySelector<HTMLElement>(
+      '.session-entry[data-session-id="session-1"] .session-meta',
+    );
+    assert.ok(row);
+    assert.ok(meta);
+    const previousTimestamp = meta.title;
     harness.emitServerEvent({
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:00:00.000Z",
     });
 
     const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
@@ -623,6 +634,13 @@ test("a Session approval update from another dialog refreshes the active control
       control?.closest("label")?.getAttribute("title") ?? "",
       /including deletes and replacement writes/i,
     );
+    assert.equal(
+      harness.document.querySelector(
+        '.session-entry[data-session-id="session-1"] .session-row',
+      ),
+      row,
+    );
+    assert.notEqual(meta.title, previousTimestamp);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1132,28 +1150,6 @@ test("batch selection marks the active Session without issuing a command", async
       true,
     );
     assert.deepEqual(commandCalls(harness), []);
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
-test("creating a Session rebuilds the list only once", async () => {
-  const harness = await createDialogHarness();
-  try {
-    const sessions = harness.document.querySelector<HTMLElement>("#sessions");
-    assert.ok(sessions);
-    const replaceChildren = sessions.replaceChildren.bind(sessions);
-    let rebuilds = 0;
-    sessions.replaceChildren = (...nodes) => {
-      rebuilds += 1;
-      replaceChildren(...nodes);
-    };
-
-    harness.click("#newSessionButton");
-    await harness.settle();
-
-    assert.equal(rebuilds, 1);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -2062,6 +2058,19 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     assert.equal(harness.document.activeElement, followUpBehavior);
     assert.equal(cancel?.disabled, false);
     assert.equal(apply?.disabled, false);
+    harness.emitServerEvent({
+      type: "assistant_delta",
+      sendId,
+      sessionId: "session-1",
+      delta: "Waiting for your decision.",
+    });
+    assert.equal(harness.flushAnimationFrames(), 1);
+    assert.equal(
+      harness.document.querySelector(".timeline-item.streaming")
+        ?.hasAttribute("inert"),
+      true,
+    );
+    assert.equal(harness.document.activeElement, followUpBehavior);
 
     harness.document.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
       key: "Escape",
@@ -3016,33 +3025,43 @@ test("a command network error blocks mutations when stream and state reconciliat
   }
 });
 
-test("Connect and Load sends the current draft without saving or overwriting it", async () => {
+test("Load Models sends the current draft without saving or overwriting it", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Draft discovery");
     harness.input("#apiKey", "draft-key");
     harness.input("#baseUrl", "https://draft.example/v1");
-    harness.input("#model", "typed-model");
+    harness.input("#manualModelId", "typed-model");
+    harness.click("#addManualModelButton");
     harness.click("#discoverModelsButton");
     await harness.settle();
 
     const commands = commandCalls(harness);
     assert.equal(commands.length, 1);
+    const expectedProfile = profileFixture({
+      name: "Draft discovery",
+      connection: {
+        kind: "direct-api",
+        apiFamily: "openai",
+        apiMode: "chat-completions",
+        apiKey: "draft-key",
+        baseUrl: "https://draft.example/v1",
+      },
+    }) as DirectApiProfile;
+    expectedProfile.defaultModel = "typed-model";
+    expectedProfile.models.push({
+      model: "typed-model",
+      parameters: {
+        maxOutputTokens: 8192,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    });
     assert.deepEqual(commands[0], {
       path: "/command",
       body: {
         kind: "discover_models",
-        profile: profileFixture({
-          name: "Draft discovery",
-          connection: {
-            kind: "direct-api",
-            apiFamily: "openai",
-            apiMode: "chat-completions",
-            apiKey: "draft-key",
-            baseUrl: "https://draft.example/v1",
-          },
-          model: "typed-model",
-        }),
+        profile: expectedProfile,
       },
     });
     assert.equal(
@@ -3050,13 +3069,16 @@ test("Connect and Load sends the current draft without saving or overwriting it"
       "Draft discovery",
     );
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#model")?.value,
+      harness.document.querySelector<HTMLSelectElement>(
+        "#modelConfigSelector",
+      )?.selectedOptions[0]?.textContent,
       "typed-model",
     );
     assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLOptionElement>("#modelOptions option")]
-        .map((option) => option.value),
-      ["model-discovered"],
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3064,21 +3086,26 @@ test("Connect and Load sends the current draft without saving or overwriting it"
   }
 });
 
-test("Connect and Load permits a local keyless Draft with blank name and model", async () => {
-  const harness = await createDialogHarness();
+test("Load Models permits a local keyless Draft with blank name and model", async () => {
+  const state = stateFixture();
+  state.settings.profiles = [];
+  state.settings.activeProfileId = null;
+  state.activeProfileRevision = null;
+  state.runtimeProfile = null;
+  state.modelStateSource = null;
+  state.availableModels = [];
+  const harness = await createDialogHarness(state);
   try {
     harness.input("#profileName", "");
     harness.input("#apiKey", "");
     harness.input("#baseUrl", "http://127.0.0.1:1234/v1");
-    harness.input("#model", "");
-
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.title,
-      "Studio · model-a",
+      "Configure a model Profile in Settings",
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
-      "model-a",
+      "",
     );
     assert.equal(
       harness.document.querySelector("#draftPreviewLabel")?.textContent,
@@ -3107,12 +3134,14 @@ test("Connect and Load permits a local keyless Draft with blank name and model",
       "",
     );
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#model")?.value,
-      "",
+      harness.document.querySelector<HTMLSelectElement>(
+        "#modelConfigSelector",
+      )?.selectedOptions[0]?.textContent,
+      "Discovered model · model-discovered · Default",
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
-      "model-a",
+      "",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3126,11 +3155,17 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
     harness.input("#profileName", "Draft discovery");
     harness.input("#apiKey", "draft-key");
     harness.input("#baseUrl", "https://draft.example/v1");
-    harness.input("#model", "typed-model");
+    harness.input("#manualModelId", "typed-model");
+    harness.click("#addManualModelButton");
     harness.click("#discoverModelsButton");
     await harness.settle();
 
-    assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 1);
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
+    );
     const draft = profileFixture({
       name: "Draft discovery",
       connection: {
@@ -3160,9 +3195,10 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
     });
 
     assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLOptionElement>("#modelOptions option")]
-        .map((option) => option.value),
-      ["model-discovered"],
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
     );
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.max,
@@ -3183,7 +3219,8 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
   try {
     harness.input("#apiKey", "draft-key");
     harness.input("#baseUrl", "https://draft.example/v1");
-    harness.input("#model", "typed-model");
+    harness.input("#manualModelId", "typed-model");
+    harness.click("#addManualModelButton");
     const draft = profileFixture({
       connection: {
         kind: "direct-api",
@@ -3210,13 +3247,15 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
     const commandId = harness.commandIds.at(-1);
     assert.ok(commandId);
 
+    discoveryState.modelCatalogLoadReceipt = commandId;
     harness.emitServerEvent({ type: "state", commandId, state: discoveryState });
     await harness.settle();
 
     assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLOptionElement>("#modelOptions option")]
-        .map((option) => option.value),
-      ["typed-model"],
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "Typed model · typed-model"],
     );
     harness.releaseHeldCommand();
     await harness.settle();
@@ -3240,7 +3279,11 @@ test("Save and Use sends the complete current draft for its selected API mode", 
     );
     harness.input("#apiKey", "anthropic-key");
     harness.input("#baseUrl", "https://anthropic.example/v1");
-    harness.input("#model", "claude-test");
+    harness.input("#manualModelId", "claude-test");
+    harness.click("#addManualModelButton");
+    harness.click("#setDefaultModelButton");
+    harness.select("#modelConfigSelector", "0");
+    harness.click("#removeModelConfigButton");
     harness.input("#temperature", "0.7");
     harness.input("#maxOutputTokens", "4096");
     harness.input("#extraBody", "{\"metadata\":{\"source\":\"live\"}}");
@@ -3665,7 +3708,8 @@ test("a late send completion cannot unlock controls owned by an active command",
 test("unknown model output limits allow values above the 8192 profile default", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.input("#model", "custom-unknown-model");
+    harness.input("#manualModelId", "custom-unknown-model");
+    harness.click("#addManualModelButton");
     const outputTokens = harness.document.querySelector<HTMLInputElement>(
       "#maxOutputTokens",
     );
@@ -3680,6 +3724,7 @@ test("unknown model output limits allow values above the 8192 profile default", 
     );
 
     harness.input("#maxOutputTokens", "64000");
+    harness.click("#setDefaultModelButton");
     harness.click("#saveProfileButton");
     await harness.settle();
 
@@ -3690,7 +3735,12 @@ test("unknown model output limits allow values above the 8192 profile default", 
       profile?: SavedProfile;
     }).profile;
     assert.equal(savedProfile?.defaultModel, "custom-unknown-model");
-    assert.equal(savedProfile?.models[0]?.parameters.maxOutputTokens, 64_000);
+    assert.equal(
+      savedProfile?.models.find(
+        (model) => model.model === "custom-unknown-model",
+      )?.parameters.maxOutputTokens,
+      64_000,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -3707,7 +3757,8 @@ test("discovered model output limits still constrain the Profile input", async (
   }];
   const harness = await createDialogHarness(state);
   try {
-    harness.input("#model", "discovered-24k");
+    harness.input("#manualModelId", "discovered-24k");
+    harness.click("#addManualModelButton");
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.max,
       "24000",
@@ -3824,8 +3875,6 @@ for (const [field, value, label] of [
         harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.max,
         "8192",
       );
-      assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 1);
-
       harness.input(field, value);
 
       assert.equal(
@@ -3836,15 +3885,12 @@ for (const [field, value, label] of [
         harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
         /model output limit is unknown/i,
       );
-      assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 0);
-
       harness.input(field, originalValue);
 
       assert.equal(
         harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.max,
         "8192",
       );
-      assert.equal(harness.document.querySelectorAll("#modelOptions option").length, 1);
       assert.deepEqual(harness.errors, []);
     } finally {
       harness.close();

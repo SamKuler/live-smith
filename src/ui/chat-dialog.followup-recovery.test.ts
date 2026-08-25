@@ -777,7 +777,7 @@ test("SSE promotion preserves the newly started queued attempt status", async ()
   }
 });
 
-test("active Queue exposes an accessible shortcut hint and Close counts discarded items", async () => {
+test("active Queue exposes a non-layout shortcut hint and Close counts discarded items", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
@@ -791,6 +791,7 @@ test("active Queue exposes an accessible shortcut hint and Close counts discarde
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
     assert.equal(hint?.tagName, "SPAN");
     assert.equal(hint?.hidden, false);
+    assert.equal(hint?.classList.contains("visually-hidden"), true);
     assert.match(hint?.textContent ?? "", /Cmd\/Ctrl\+Enter.*Queue/i);
     assert.match(prompt?.getAttribute("aria-keyshortcuts") ?? "", /Meta\+Enter/);
     assert.match(prompt?.getAttribute("aria-describedby") ?? "", /followUpShortcutHint/);

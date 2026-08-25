@@ -49,6 +49,11 @@ const unavailableWebSearchInstructions = [
   "Do not promise to search or browse, and never claim that a search occurred.",
 ].join(" ");
 
+export interface RuntimeProfileModelIndexes {
+  configuredModelIndexes: ReadonlyMap<string, number>;
+  discoveredModelsById: ReadonlyMap<string, DiscoveredModelInfo>;
+}
+
 export interface ModelTurnRequestInput {
   prompt: string;
   liveContext: string;
@@ -134,9 +139,16 @@ export function runtimeProfileForSavedProfile(
     model?: string | undefined;
     reasoningEffort?: ReasoningEffort | null | undefined;
   } = {},
+  indexes?: RuntimeProfileModelIndexes,
 ): RuntimeProfile {
-  const source = materializeRuntimeModelSource(profile, selection);
-  const discovered = models.find((model) => model.id === source.model.model);
+  const source = materializeRuntimeModelSource(
+    profile,
+    selection,
+    indexes?.configuredModelIndexes,
+  );
+  const discovered = indexes
+    ? indexes.discoveredModelsById.get(source.model.model)
+    : models.find((model) => model.id === source.model.model);
   const resolved = resolveModelCapabilitiesWithEvidence(
     source,
     discovered?.capabilities,
@@ -154,10 +166,15 @@ export function materializeRuntimeModelSource(
     model?: string | undefined;
     reasoningEffort?: ReasoningEffort | null | undefined;
   } = {},
+  configuredModelIndexes?: ReadonlyMap<string, number>,
 ): RuntimeModelSource {
   const selectedModel = selection.model ?? profile.defaultModel;
   if (isDirectApiProfile(profile)) {
-    const configured = requireConfiguredModel(profile.models, selectedModel);
+    const configured = requireConfiguredModel(
+      profile.models,
+      selectedModel,
+      configuredModelIndexes,
+    );
     return {
       profile: {
         id: profile.id,
@@ -167,7 +184,11 @@ export function materializeRuntimeModelSource(
       model: effectiveModelConfig(configured, selection.reasoningEffort),
     };
   }
-  const configured = requireConfiguredModel(profile.models, selectedModel);
+  const configured = requireConfiguredModel(
+    profile.models,
+    selectedModel,
+    configuredModelIndexes,
+  );
   return {
     profile: {
       id: profile.id,
@@ -257,9 +278,12 @@ function emptyDraftModelConfig(model: string): DraftModelConfig {
 function requireConfiguredModel<Model extends SavedModelConfig>(
   models: readonly Model[],
   selectedModel: string,
+  indexes?: ReadonlyMap<string, number>,
 ): Model {
-  const configured = models.find((model) => model.model === selectedModel);
-  if (configured) return configured;
+  const configured = indexes
+    ? models[indexes.get(selectedModel) ?? -1]
+    : models.find((model) => model.model === selectedModel);
+  if (configured?.model === selectedModel) return configured;
   throw new Error(`Model ${selectedModel} is not configured in this Profile.`);
 }
 

@@ -11,6 +11,10 @@ interface PendingSessionMutation {
 export class SessionMutationFence {
   private readonly queues = new Map<string, PendingSessionMutation[]>();
 
+  queuedOrActiveCount(key: string): number {
+    return this.queues.get(key)?.length ?? 0;
+  }
+
   hasQueuedOrActive(key: string, kind: string): boolean {
     return this.queues.get(key)?.some((entry) => entry.kind === kind) ?? false;
   }

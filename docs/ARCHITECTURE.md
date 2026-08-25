@@ -625,7 +625,10 @@ in `ChatDialogState`, together with field-level evidence for temperature,
 output/context limits, reasoning, and input modalities. Both command HTTP
 responses and SSE state events use that identity, so an unsaved Profile draft
 cannot be confused with the active saved Profile when the two channels arrive
-in either order. Conservative fallback values remain `unverified`; only known
+in either order. Explicit model loading also carries the successful command ID;
+the editor merges a catalog only when that receipt matches its own request, so
+failure reconciliation cannot promote a stale durable cache. Conservative
+fallback values remain `unverified`; only known
 policy, explicit discovery metadata, or a manual override may make the preview
 authoritative.
 
@@ -762,6 +765,26 @@ and `activeSkillIds` are optional additive fields. `approvalMode` is also
 optional for backward compatibility; a missing value resolves to `manual`,
 while new Sessions explicitly persist `manual`. Existing Session files require
 no migration. Deleting a Session removes the mode with the same metadata record.
+
+The dialog always has a real persisted active Session before the first message,
+because Approval mode, model selection, Skills, attachments, and the eventual
+Send all use the same durable Session ID. Opening a scope therefore creates one
+only when no current unarchived Session already matches that exact project and
+scope identity. Default resolution and explicit New Session creation share a
+process-wide project-and-scope creation fence, so concurrent dialogs cannot both
+win the same find-or-create race. New Session reuses the current candidate first,
+then the newest matching candidate, only when its current persisted state is
+pristine: blank title, no origin/archive marker, no model choice, no non-default
+Approval mode, no active Skills, no events, no attachments, and no active or
+queued send. Event and attachment absence are rechecked under the candidate's
+Session mutation fence, and the final decision rejects any Session operation
+queued behind that check. Approval writes share a separate candidate-intent
+fence so they remain writable during a send without racing Session reuse. Any
+current persisted non-default state makes an empty conversation distinct and
+preserves it. No navigation or close path implicitly deletes a Session, because
+another dialog can still own local draft or running state for that ID;
+historical duplicate empties are left for explicit user deletion.
+
 Model context uses the latest 24 user/assistant events plus a separate bounded
 projection of the latest 12 persisted Apply results, rejected tool inputs, and
 errors (at most 12,000 characters). Recovery records are labelled untrusted

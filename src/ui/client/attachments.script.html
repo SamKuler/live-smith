@@ -62,6 +62,7 @@
       const supportedFileMessage =
         "only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 are supported";
       let busy = false;
+      let renderedAttachmentsKey = null;
       let initialized = false;
 
       function setAttachmentMenuOpen(open, { restoreFocus = false } = {}) {
@@ -128,8 +129,13 @@
         syncAttachAvailability();
         const strip = document.getElementById("pendingAttachments");
         if (!strip) return;
-        strip.replaceChildren();
         const attachments = pendingAttachments();
+        const renderKey = JSON.stringify(attachments);
+        if (renderKey === renderedAttachmentsKey) {
+          syncPendingBusyState();
+          return;
+        }
+        strip.replaceChildren();
         strip.hidden = attachments.length === 0;
         strip.setAttribute("aria-busy", String(busy));
         for (const attachment of attachments) {
@@ -163,11 +169,22 @@
           chip.append(label, remove);
           strip.append(chip);
         }
+        renderedAttachmentsKey = renderKey;
+      }
+
+      function syncPendingBusyState() {
+        const strip = document.getElementById("pendingAttachments");
+        if (!strip) return;
+        strip.setAttribute("aria-busy", String(busy));
+        for (const remove of strip.querySelectorAll(".attachment-remove")) {
+          remove.disabled = busy;
+        }
       }
 
       function setBusy(value) {
         busy = Boolean(value);
-        renderPending();
+        syncAttachAvailability();
+        syncPendingBusyState();
       }
 
       function activeSavedRuntime() {
@@ -411,7 +428,7 @@
         const attached = input === "image" ? "images" : "audio";
         const description = input === "image" ? "Image" : "Audio";
         if (activeSavedRuntime()?.profile?.connectionKind === "codex-subscription") {
-          return `${description} input support for the active model is unverified. Remove the attached ${attached}, reload the model list with Load Models, or select a model with verified ${input} input support.`;
+          return `${description} input support for the active model is unverified. Remove the attached ${attached}, load models in Settings, or select a model with verified ${input} input support.`;
         }
         return `${description} input support for the active model is unverified. Remove the attached ${attached}, discover model capabilities, or set an explicit ${input}-input override.`;
       }

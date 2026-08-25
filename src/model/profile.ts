@@ -157,6 +157,9 @@ export type DraftProfile = ProfileFields & {
 /** Complete, normalized configuration that is safe to persist and activate. */
 export type SavedProfile = DirectApiProfile | CodexSubscriptionProfile;
 
+/** A legacy/manual set plus one complete provider discovery catalog. */
+export const MAX_PROFILE_MODEL_COUNT = 2_000;
+
 export type ApprovalMode = "manual" | "low-risk" | "everything";
 export type DefaultFollowUpBehavior = "queue" | "steer";
 export type DefaultFollowUpBehaviorRevision = string;
@@ -427,6 +430,12 @@ function draftModelConfigs(
   connection: ModelConnection,
 ): DraftModelConfig[] {
   if (!Array.isArray(value)) return [];
+  if (value.length > MAX_PROFILE_MODEL_COUNT) {
+    throw new ProfileValidationError(
+      "models",
+      `A Profile can contain at most ${MAX_PROFILE_MODEL_COUNT} models.`,
+    );
+  }
   return value.map((entry) => {
     const record = isRecord(entry) ? entry : {};
     return connection.kind === "codex-subscription"
@@ -459,6 +468,12 @@ function savedModelConfigs(
     throw new ProfileValidationError(
       "models",
       "A Profile must contain at least one model.",
+    );
+  }
+  if (value.length > MAX_PROFILE_MODEL_COUNT) {
+    throw new ProfileValidationError(
+      "models",
+      `A Profile can contain at most ${MAX_PROFILE_MODEL_COUNT} models.`,
     );
   }
   const models = value.map((entry, index) =>

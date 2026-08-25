@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import type { AgentLoopInitialRecoveryState } from "../agent/loop.js";
 import type { LiveInteractionContext } from "../live/context.js";
+import { throwIfAborted } from "../runtime/host.js";
 import type { SessionEvent } from "../storage/events.js";
 import { createStorageId } from "../storage/id.js";
 import {
@@ -10,6 +11,10 @@ import {
   sessionScopeKey,
   type AgentSession,
 } from "../storage/sessions.js";
+import {
+  SessionMutationFence,
+  sessionMutationFenceKey,
+} from "./session-mutation-fence.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxRecoveryEvents = 12;
@@ -18,32 +23,77 @@ const activationProjectKeys = new WeakMap<
   object,
   { songHandleId: bigint; projectKey: string }
 >();
+const sessionCreationFence = new SessionMutationFence();
+
+export function withSessionCreationScope<T>(
+  storageDirectory: string | undefined,
+  projectKey: string,
+  scope: LiveInteractionContext["scope"],
+  signal: AbortSignal | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return sessionCreationFence.run(
+    sessionMutationFenceKey(
+      storageDirectory,
+      JSON.stringify(["session-scope", projectKey, sessionScopeKey(scope)]),
+    ),
+    signal,
+    operation,
+  );
+}
+
+export function isReusableEmptySessionMetadata(
+  session: AgentSession,
+  projectKey: string,
+  scope: LiveInteractionContext["scope"],
+): boolean {
+  return session.projectKey === projectKey &&
+    session.archivedAt === undefined &&
+    session.originScope === undefined &&
+    sessionScopeKey(session.scope) === sessionScopeKey(scope) &&
+    session.title === "" &&
+    (session.activeSkillIds?.length ?? 0) === 0 &&
+    (session.approvalMode === undefined || session.approvalMode === "manual") &&
+    session.modelSelection === undefined;
+}
 
 export async function getOrCreateDefaultSession(
   storageDirectory: string | undefined,
   interaction: LiveInteractionContext,
   projectKey: string,
   preferredSessionId?: string | undefined,
+  signal?: AbortSignal | undefined,
 ): Promise<AgentSession> {
-  const sessions = (await listSessions(storageDirectory, projectKey)).filter(
-    (session) => !session.archivedAt,
-  );
-  const preferred = sessions.find((session) => session.id === preferredSessionId);
-  if (preferred) return preferred;
-
   const scope = interaction.scope;
-  const scopeKey = sessionScopeKey(scope);
-  const existing = sessions.find(
-    (session) => sessionScopeKey(session.scope) === scopeKey,
-  );
-  if (existing) return existing;
-
-  return createSession(storageDirectory, {
-    title: "",
+  return withSessionCreationScope(
+    storageDirectory,
     projectKey,
     scope,
-    approvalMode: "manual",
-  });
+    signal,
+    async () => {
+      const sessions = (await listSessions(storageDirectory, projectKey)).filter(
+        (session) => !session.archivedAt,
+      );
+      const preferred = sessions.find(
+        (session) => session.id === preferredSessionId,
+      );
+      if (preferred) return preferred;
+
+      const scopeKey = sessionScopeKey(scope);
+      const existing = sessions.find(
+        (session) => sessionScopeKey(session.scope) === scopeKey,
+      );
+      if (existing) return existing;
+
+      throwIfAborted(signal);
+      return createSession(storageDirectory, {
+        title: "",
+        projectKey,
+        scope,
+        approvalMode: "manual",
+      });
+    },
+  );
 }
 
 export function recoveryContextFromEvents(events: SessionEvent[]): string {

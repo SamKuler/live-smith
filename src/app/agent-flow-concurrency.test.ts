@@ -269,8 +269,8 @@ test("Session approval changes publish to every open bridge for the same storage
       await resolvesWithin(notification, "approval mode notification"),
     ), {
       type: "approval_mode_changed",
-      sessionId: fixture.sessionId,
-      approvalMode: "everything",
+      sessionId: fixture.sessionId, approvalMode: "everything",
+      updatedAt: state.sessions.find((session) => session.id === fixture.sessionId)!.updatedAt,
     });
     const secondState = await (await fetch(
       fixture.second.endpoint("/state"),
@@ -1237,6 +1237,7 @@ test("a held Session state build never acquires the dialog's different active Se
   let firstSend: Promise<Response> | undefined;
   let secondSend: Promise<Response> | undefined;
   try {
+    await appendSessionEvent(fixture.directory, fixture.sessionId, { kind: "user", content: "Existing Session A history" });
     const created = await fetch(fixture.first.endpoint("/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
@@ -1253,7 +1254,6 @@ test("a held Session state build never acquires the dialog's different active Se
       }),
     });
     assert.equal(selectedA.status, 200);
-
     firstSend = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
@@ -1280,7 +1280,6 @@ test("a held Session state build never acquires the dialog's different active Se
     });
     const secondResponse = await resolvesWithin(secondSend, "Session B send");
     assert.equal(secondResponse.status, 200);
-
     releaseFirstModel.resolve();
     assert.equal((await resolvesWithin(firstSend, "Session A send")).status, 200);
   } finally {
@@ -1977,6 +1976,7 @@ test("two bridges can run different Sessions concurrently", async () => {
   });
 
   try {
+    await appendSessionEvent(fixture.directory, fixture.sessionId, { kind: "user", content: "Existing first Session history" });
     const newSessionResponse = await fetch(
       fixture.second.endpoint("/command"),
       {
@@ -2024,7 +2024,7 @@ test("two bridges can run different Sessions concurrently", async () => {
       [200, 200],
     );
     assert.equal(
-      (await loadSessionEvents(fixture.directory, fixture.sessionId))[0]?.content,
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).findLast((event) => event.kind === "user")?.content,
       "First",
     );
     assert.equal(

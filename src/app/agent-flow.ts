@@ -89,6 +89,7 @@ import {
   listSessions,
   listSessionsInTransaction,
   restoreSession,
+  sessionScopeKey,
   setSessionArchived,
   updateSession,
   updateSessionInTransaction,
@@ -174,9 +175,11 @@ import {
 } from "./model-request.js";
 import {
   getOrCreateDefaultSession,
+  isReusableEmptySessionMetadata,
   previousSessionsForProject,
   projectKeyForContext,
   continuableSessionsForScope,
+  withSessionCreationScope,
 } from "./session-context.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 import {
@@ -200,6 +203,7 @@ import {
 
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
+const sessionIntentFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
 
 function effectiveSessionModelSelection(
@@ -252,6 +256,8 @@ export interface AgentFlowDependencies {
   skillBodyReadOptions?: RawSkillBodyReadOptions;
   /** Test-only synchronization point for a concurrent Profile save. */
   beforeSessionModelSelectionCommit?(): Promise<void> | void;
+  /** Test-only synchronization point for a concurrent Session approval write. */
+  beforeSessionApprovalCommit?(): Promise<void> | void;
 }
 
 export async function runAgentFlow(
@@ -263,6 +269,7 @@ export async function runAgentFlow(
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
+  const modelCatalogLoadReceiptByConnection = new Map<string, string>();
   const codexCatalogGenerationByConnection = new Map<string, number>();
   const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
@@ -362,6 +369,15 @@ export async function runAgentFlow(
     signal,
     operation,
   );
+  const withSessionIntent = <T>(
+    sessionId: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ) => sessionIntentFence.run(
+    sessionMutationFenceKey(storageDirectory, sessionId),
+    signal,
+    operation,
+  );
 
   const resolveSessionInteraction = (
     session: { id: string; scope: LiveInteractionContext["scope"] },
@@ -371,7 +387,7 @@ export async function runAgentFlow(
       const refreshed = remembered.selectionContext.refresh(context);
       if (
         !refreshed ||
-        scopeKey(refreshed.scope) !== scopeKey(session.scope)
+        sessionScopeKey(refreshed.scope) !== sessionScopeKey(session.scope)
       ) return undefined;
       const rebound = { ...refreshed, scope: session.scope };
       selectionInteractionsBySessionId.set(session.id, rebound);
@@ -384,7 +400,7 @@ export async function runAgentFlow(
     if (interaction.selectionContext) {
       const refreshed = interaction.selectionContext.refresh(context);
       return refreshed &&
-          scopeKey(refreshed.scope) === scopeKey(interaction.scope)
+          sessionScopeKey(refreshed.scope) === sessionScopeKey(interaction.scope)
         ? { ...refreshed, scope: interaction.scope }
         : undefined;
     }
@@ -402,6 +418,7 @@ export async function runAgentFlow(
         interaction,
         projectKey,
         requestedSessionId,
+        signal,
       );
       throwIfAborted(signal);
       if (
@@ -458,6 +475,7 @@ export async function runAgentFlow(
   const clearCodexCatalogs = (): void => {
     for (const fingerprint of codexCatalogGenerationByConnection.keys()) {
       modelsByConnection.delete(fingerprint);
+      modelCatalogLoadReceiptByConnection.delete(fingerprint);
     }
     codexCatalogGenerationByConnection.clear();
   };
@@ -831,6 +849,15 @@ export async function runAgentFlow(
         availableModels: modelProfile
           ? resolveDiscoveredModels(modelProfile, models)
           : [],
+        ...(modelProfile && modelCatalogLoadReceiptByConnection.has(
+          connectionFingerprint(modelProfile),
+        )
+          ? {
+              modelCatalogLoadReceipt: modelCatalogLoadReceiptByConnection.get(
+                connectionFingerprint(modelProfile),
+              )!,
+            }
+          : {}),
         configuredModels: activeProfile
           ? chatConfiguredModels(activeProfile, activeProfileModels)
           : [],
@@ -947,15 +974,22 @@ export async function runAgentFlow(
       const saveWithCatalog = async (
         cachedModels: DiscoveredModelInfo[],
       ): Promise<ChatDialogState> => {
+        const previousModelsById = new Map(
+          (previousProfile?.models ?? []).map((model) => [model.model, model]),
+        );
+        const cachedModelsById = new Map(
+          cachedModels.map((model) => [model.id, model]),
+        );
+        const configuredModelIndexes = new Map(
+          profile.models.map((model, index) => [model.model, index]),
+        );
         const modelConfigsToValidate = profile.connection.kind === "direct-api"
           ? profile.models
           : profile.models.filter((model) => {
               if (previousProfile?.connection.kind !== "codex-subscription") {
                 return true;
               }
-              const previous = previousProfile.models.find(
-                (entry) => entry.model === model.model,
-              );
+              const previous = previousModelsById.get(model.model);
               return !previous || JSON.stringify(previous) !== JSON.stringify(model);
             });
         if (
@@ -970,7 +1004,7 @@ export async function runAgentFlow(
         for (const model of modelConfigsToValidate) {
           if (
             profile.connection.kind === "codex-subscription" &&
-            !cachedModels.some((entry) => entry.id === model.model)
+            !cachedModelsById.has(model.model)
           ) {
             throw new ProfileValidationError(
               "models",
@@ -981,6 +1015,10 @@ export async function runAgentFlow(
             profile,
             cachedModels,
             { model: model.model },
+            {
+              configuredModelIndexes,
+              discoveredModelsById: cachedModelsById,
+            },
           );
           validateGenerationParameters(
             runtimeProfile,
@@ -1045,6 +1083,7 @@ export async function runAgentFlow(
         )
       );
       modelsByConnection.clear();
+      modelCatalogLoadReceiptByConnection.clear();
       status = "Profile deleted.";
       openSettingsOnLoad = true;
       return buildStateAfterCommandMutation();
@@ -1059,6 +1098,7 @@ export async function runAgentFlow(
         )
       );
       modelsByConnection.clear();
+      modelCatalogLoadReceiptByConnection.clear();
       status = undefined;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
@@ -1119,35 +1159,39 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "set_session_approval_mode") {
-      await withStorageTransaction(
-        storageDirectory,
-        async (transaction) => {
-          throwIfAborted(signal);
-          const session = (await listSessionsInTransaction(
-            transaction,
-            storageDirectory,
-            projectKey,
-          )).find(
-            (candidate) =>
-              candidate.id === commandInput.sessionId && !candidate.archivedAt,
-          );
-          if (!session) {
-            throw new ChatBridgeResourceNotFoundError(
-              "That Session is not available in this Live Set.",
+      await withSessionIntent(commandInput.sessionId, signal, async () => {
+        await dependencies.beforeSessionApprovalCommit?.();
+        return withStorageTransaction(
+          storageDirectory,
+          async (transaction) => {
+            throwIfAborted(signal);
+            const session = (await listSessionsInTransaction(
+              transaction,
+              storageDirectory,
+              projectKey,
+            )).find(
+              (candidate) =>
+                candidate.id === commandInput.sessionId && !candidate.archivedAt,
             );
-          }
-          await updateSessionInTransaction(
-            transaction,
-            storageDirectory,
-            session.id,
-            { approvalMode: commandInput.approvalMode },
-          );
-          publishSessionApprovalModeChange(storageDirectory, {
-            sessionId: commandInput.sessionId,
-            approvalMode: commandInput.approvalMode,
-          });
-        },
-      );
+            if (!session) {
+              throw new ChatBridgeResourceNotFoundError(
+                "That Session is not available in this Live Set.",
+              );
+            }
+            const updatedSession = await updateSessionInTransaction(
+              transaction,
+              storageDirectory,
+              session.id,
+              { approvalMode: commandInput.approvalMode },
+            );
+            publishSessionApprovalModeChange(storageDirectory, {
+              sessionId: commandInput.sessionId,
+              approvalMode: commandInput.approvalMode,
+              updatedAt: updatedSession.updatedAt,
+            });
+          },
+        );
+      });
       status = "Session Approval Mode saved.";
       return buildStateAfterCommandMutation();
     }
@@ -1280,7 +1324,7 @@ export async function runAgentFlow(
             await dependencies.beforeSessionModelSelectionCommit();
           }
 
-          await withStorageTransaction(
+          const updatedSession = await withStorageTransaction(
             storageDirectory,
             async (transaction) => {
               throwIfAborted(signal);
@@ -1342,7 +1386,7 @@ export async function runAgentFlow(
                   "That Session is not available in this Live Set.",
                 );
               }
-              await updateSessionInTransaction(
+              return updateSessionInTransaction(
                 transaction,
                 storageDirectory,
                 session.id,
@@ -1355,6 +1399,7 @@ export async function runAgentFlow(
           publishSessionModelSelectionChange(storageDirectory, {
             sessionId: commandInput.sessionId,
             modelSelection: savedSelection,
+            updatedAt: updatedSession.updatedAt,
           });
           status = undefined;
           openSettingsOnLoad = false;
@@ -1377,19 +1422,33 @@ export async function runAgentFlow(
       const activeInteraction = activeSession
         ? resolveSessionInteraction(activeSession)
         : interaction;
-      throwIfAborted(signal);
-      const session = await createSession(storageDirectory, {
-        title: "",
+      const targetScope = activeInteraction?.scope ?? interaction.scope;
+      const { session, reused } = await withSessionCreationScope(
+        storageDirectory,
         projectKey,
-        scope: activeInteraction?.scope ?? interaction.scope,
-        approvalMode: "manual",
-      });
+        targetScope,
+        signal,
+        async () => {
+          const reusable = await findReusableEmptySession(targetScope, signal);
+          if (reusable) return { session: reusable, reused: true };
+          throwIfAborted(signal);
+          return {
+            session: await createSession(storageDirectory, {
+              title: "",
+              projectKey,
+              scope: targetScope,
+              approvalMode: "manual",
+            }),
+            reused: false,
+          };
+        },
+      );
       if (activeInteraction?.selectionContext) {
         selectionInteractionsBySessionId.set(session.id, activeInteraction);
         bindInvocationSelectionToNextSession = false;
       }
       activeSessionId = session.id;
-      status = "New session created.";
+      status = reused ? "Empty session ready." : "New session created.";
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -1753,6 +1812,10 @@ export async function runAgentFlow(
         throwIfAborted(signal);
         const fingerprint = connectionFingerprint(profile);
         modelsByConnection.set(fingerprint, discovered);
+        modelCatalogLoadReceiptByConnection.set(
+          fingerprint,
+          commandContext.commandId,
+        );
         if (profile.connection.kind === "codex-subscription") {
           codexCatalogGenerationByConnection.set(
             fingerprint,
@@ -1829,6 +1892,63 @@ export async function runAgentFlow(
     (await listSessions(storageDirectory)).some(
       (session) => session.id === sessionId,
     );
+
+  const findReusableEmptySession = async (
+    scope: LiveInteractionContext["scope"],
+    signal: AbortSignal,
+  ): Promise<AgentSession | undefined> => {
+    const sessions = await listSessions(storageDirectory, projectKey);
+    const candidates = [
+      ...sessions.filter((session) => session.id === activeSessionId),
+      ...sessions.filter((session) => session.id !== activeSessionId),
+    ].filter((session) =>
+      session.projectKey === projectKey &&
+      session.archivedAt === undefined &&
+      sessionScopeKey(session.scope) === sessionScopeKey(scope)
+    );
+    for (const candidate of candidates) {
+      const mutationKey = sessionMutationFenceKey(
+        storageDirectory,
+        candidate.id,
+      );
+      if (sessionMutationFence.hasQueuedOrActive(mutationKey, "send")) continue;
+      const reusable = await withSessionMutation(
+        candidate.id,
+        signal,
+        () => withSessionIntent(
+          candidate.id,
+          signal,
+          async () => {
+            const current = (await listSessions(
+              storageDirectory,
+              projectKey,
+            )).find((session) => session.id === candidate.id);
+            if (
+              !current ||
+              !isReusableEmptySessionMetadata(current, projectKey, scope)
+            ) return undefined;
+            const events = await (
+              dependencies.loadSessionEvents ?? loadSessionEvents
+            )(storageDirectory, current.id);
+            if (events.length) return undefined;
+            const attachments = await listPendingSessionAttachments(
+              storageDirectory,
+              current.id,
+              [],
+            );
+            if (
+              attachments.length > 0 ||
+              sessionMutationFence.queuedOrActiveCount(mutationKey) > 1 ||
+              sessionIntentFence.queuedOrActiveCount(mutationKey) > 1
+            ) return undefined;
+            return current;
+          },
+        ),
+      );
+      if (reusable) return reusable;
+    }
+    return undefined;
+  };
 
   async function retryPendingSessionCleanup(): Promise<void> {
     for (const sessionId of [...pendingSessionCleanup]) {
@@ -2475,14 +2595,14 @@ export async function runAgentFlow(
     });
     unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
       storageDirectory,
-      ({ sessionId, approvalMode }) => {
-        bridge?.publishSessionApprovalMode(sessionId, approvalMode);
+      ({ sessionId, approvalMode, updatedAt }) => {
+        bridge?.publishSessionApprovalMode(sessionId, approvalMode, updatedAt);
       },
     );
     unsubscribeModelSelections = subscribeSessionModelSelectionChanges(
       storageDirectory,
-      ({ sessionId, modelSelection }) => {
-        bridge?.publishSessionModelSelection(sessionId, modelSelection);
+      ({ sessionId, modelSelection, updatedAt }) => {
+        bridge?.publishSessionModelSelection(sessionId, modelSelection, updatedAt);
       },
     );
     unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
@@ -2616,10 +2736,6 @@ export async function decidePlanApproval(
     confirmed: await requestConfirmation(),
     source: "user",
   };
-}
-
-function scopeKey(scope: LiveInteractionContext["scope"]): string {
-  return `${scope.kind}:${scope.identity}`;
 }
 
 function assertNeverCommand(commandInput: never): never {

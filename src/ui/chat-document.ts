@@ -28,6 +28,7 @@ import {
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
   MAX_DISCOVERED_MODEL_OUTPUT_TOKENS,
 } from "../model/catalog.js";
+import { MAX_PROFILE_MODEL_COUNT } from "../model/profile.js";
 import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 
 export interface ChatClientScripts {
@@ -108,6 +109,10 @@ function injectSkillContract(script: string): string {
 function injectModelContract(script: string): string {
   return script
     .replaceAll(
+      "__MAX_PROFILE_MODEL_COUNT__",
+      String(MAX_PROFILE_MODEL_COUNT),
+    )
+    .replaceAll(
       "__MAX_DISCOVERED_MODEL_COUNT__",
       String(MAX_DISCOVERED_MODEL_COUNT),
     )
@@ -147,6 +152,7 @@ export function composeChatDocument(
   const bridgeClientScript = injectModelContract(injectSkillContract(
     injectAttachmentContract(scripts.bridgeClient),
   ));
+  const profileEditorScript = injectModelContract(scripts.profileEditor);
   const skillManagerScript = injectSkillContract(scripts.skillManager);
   const document = template
     .replace(
@@ -155,7 +161,7 @@ export function composeChatDocument(
     )
     .replace("__BRIDGE__", () => JSON.stringify(bridge))
     .replace("__HOST_ADAPTER_SCRIPT__", () => scripts.hostAdapter)
-    .replace("__PROFILE_EDITOR_SCRIPT__", () => scripts.profileEditor)
+    .replace("__PROFILE_EDITOR_SCRIPT__", () => profileEditorScript)
     .replace("__ATTACHMENTS_SCRIPT__", () => attachmentsScript)
     .replace("__SKILL_MANAGER_SCRIPT__", () => skillManagerScript)
     .replace("__BRIDGE_CLIENT_SCRIPT__", () => bridgeClientScript)

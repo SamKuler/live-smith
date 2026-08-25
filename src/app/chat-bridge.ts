@@ -230,10 +230,15 @@ export interface ChatBridgeStream {
 
 export interface ChatBridge {
   url: string;
-  publishSessionApprovalMode(sessionId: string, approvalMode: ApprovalMode): void;
+  publishSessionApprovalMode(
+    sessionId: string,
+    approvalMode: ApprovalMode,
+    updatedAt: string,
+  ): void;
   publishSessionModelSelection(
     sessionId: string,
     modelSelection: SessionModelSelection,
+    updatedAt: string,
   ): void;
   publishDefaultFollowUpBehavior(change: GlobalSettingsChange): void;
   publishProfileSettingsChange(change: ProfileSettingsChange): void;
@@ -370,11 +375,13 @@ type StateChangeSsePayloadBase =
       type: "approval_mode_changed";
       sessionId: string;
       approvalMode: ApprovalMode;
+      updatedAt: string;
     }
   | {
       type: "session_model_selection_changed";
       sessionId: string;
       modelSelection: SessionModelSelection;
+      updatedAt: string;
     }
   | {
       type: "default_follow_up_behavior_changed";
@@ -1858,20 +1865,22 @@ export async function createChatBridge(
 
   return {
     url: `${bridgeBaseUrl(server)}/chat?token=${token}`,
-    publishSessionApprovalMode: (sessionId, approvalMode) => {
+    publishSessionApprovalMode: (sessionId, approvalMode, updatedAt) => {
       const published = broadcastStateChange({
         type: "approval_mode_changed",
         sessionId,
         approvalMode,
+        updatedAt,
       });
       if (published?.type === "approval_mode_changed") {
         latestApprovalModeChanges.set(sessionId, published);
       }
     },
-    publishSessionModelSelection: (sessionId, modelSelection) => {
+    publishSessionModelSelection: (sessionId, modelSelection, updatedAt) => {
       const published = broadcastStateChange({
         type: "session_model_selection_changed",
         sessionId,
+        updatedAt,
         modelSelection: {
           profileId: modelSelection.profileId,
           model: modelSelection.model,

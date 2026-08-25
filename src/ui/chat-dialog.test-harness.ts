@@ -693,6 +693,9 @@ async function createDialogHarness(
         if (session) {
           session.approvalMode = event.approvalMode as
             ChatDialogState["approvalMode"];
+          if (typeof event.updatedAt === "string") {
+            session.updatedAt = event.updatedAt;
+          }
         }
       }
       if (serverState.activeSessionId === event.sessionId) {
@@ -717,7 +720,12 @@ async function createDialogHarness(
         serverState.archivedSessions,
       ]) {
         const session = sessions.find((entry) => entry.id === event.sessionId);
-        if (session) session.modelSelection = cloneState(selection);
+        if (session) {
+          session.modelSelection = cloneState(selection);
+          if (typeof event.updatedAt === "string") {
+            session.updatedAt = event.updatedAt;
+          }
+        }
       }
       if (serverState.activeSessionId === event.sessionId) {
         synchronizeActiveSessionProjection();
@@ -831,6 +839,20 @@ async function createDialogHarness(
       typeof event.type === "string" &&
       stateChangeEventTypes.has(event.type)
     ) {
+      if (
+        [
+          "approval_mode_changed",
+          "session_model_selection_changed",
+        ].includes(event.type) &&
+        event.updatedAt === undefined
+      ) {
+        const session = [
+          ...serverState.sessions,
+          ...serverState.previousSessions,
+          ...serverState.archivedSessions,
+        ].find((candidate) => candidate.id === event.sessionId);
+        event.updatedAt = session?.updatedAt || "2026-08-01T00:00:00.000Z";
+      }
       const bridgeStateRevision = typeof event.bridgeStateRevision === "string"
         ? event.bridgeStateRevision
         : allocateBridgeStateRevision();
@@ -1224,6 +1246,8 @@ async function createDialogHarness(
                   status === 409 ? "Conflict" : "Bad Request",
                 );
               }
+              const commandId = new Headers(init?.headers)
+                .get("X-Live-Smith-Command-Id") ?? "";
               const command = body as {
                 kind?: string;
                 approvalMode?: "manual" | "low-risk" | "everything";
@@ -1348,6 +1372,7 @@ async function createDialogHarness(
                 serverState.configuredModelsReady =
                   command.profile.connection.kind !== "codex-subscription";
               } else if (command.kind === "discover_models") {
+                serverState.modelCatalogLoadReceipt = commandId;
                 serverState.availableModels = [{
                   id: "model-discovered",
                   displayName: "Discovered model",

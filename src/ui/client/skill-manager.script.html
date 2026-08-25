@@ -14,6 +14,7 @@
       let selectedSuggestion = -1;
       let mentionRange = null;
       let retainedSkillFocus = null;
+      let renderedSkillStateKey = null;
 
       function allSessions() {
         const state = getState();
@@ -57,7 +58,7 @@
         fallback?.focus();
       }
 
-      function renderSkillRow(skill, active) {
+      function renderSkillRow(skill, active, usedSkillIds) {
         const row = document.createElement("div");
         row.className = "skill-row";
         row.dataset.skillId = skill.id;
@@ -88,7 +89,7 @@
           const remove = document.createElement("button");
           remove.type = "button";
           remove.className = "skill-delete secondary";
-          const inUse = skillIsUsed(skill.id);
+          const inUse = usedSkillIds.has(skill.id);
           remove.textContent = inUse ? "Disable" : "Delete";
           remove.title = inUse
             ? "Disable this Skill in every Session before deleting it."
@@ -108,13 +109,28 @@
         return row;
       }
 
-      function render() {
-        if (busy) return;
+      function render(force = false) {
         const builtInList = document.getElementById("builtInSkillList");
         const builtInEmpty = document.getElementById("builtInSkillEmptyState");
         const userList = document.getElementById("userSkillList");
         const userEmpty = document.getElementById("userSkillEmptyState");
         if (!builtInList || !builtInEmpty || !userList || !userEmpty) return;
+        const state = getState();
+        const available = [...(state.availableSkills || [])].sort(
+          (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+        );
+        const usedSkillIds = new Set(
+          allSessions().flatMap((session) => session.activeSkillIds || []),
+        );
+        const renderKey = JSON.stringify({
+          available,
+          activeSkillIds: [...(state.activeSkillIds || [])].sort(),
+          usedSkillIds: [...usedSkillIds].sort(),
+        });
+        if (!force && renderKey === renderedSkillStateKey) {
+          updateAutocomplete();
+          return;
+        }
         const focusedControl = focusedSkillControl();
         const focusTarget = focusedControl || (
           document.activeElement === document.getElementById("skillManager")
@@ -123,10 +139,6 @@
         );
         builtInList.replaceChildren();
         userList.replaceChildren();
-        const state = getState();
-        const available = [...(state.availableSkills || [])].sort(
-          (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
-        );
         const active = new Set(state.activeSkillIds || []);
         const builtInSkills = available.filter((skill) => skill.source === "built-in");
         const userSkills = available.filter((skill) => skill.source === "user");
@@ -134,13 +146,23 @@
         userEmpty.hidden = userSkills.length !== 0;
 
         for (const skill of builtInSkills) {
-          builtInList.append(renderSkillRow(skill, active));
+          builtInList.append(renderSkillRow(skill, active, usedSkillIds));
         }
         for (const skill of userSkills) {
-          userList.append(renderSkillRow(skill, active));
+          userList.append(renderSkillRow(skill, active, usedSkillIds));
         }
-        retainedSkillFocus = null;
-        restoreSkillFocus(focusTarget);
+        if (busy) {
+          retainedSkillFocus = focusTarget;
+          for (const control of document.querySelectorAll(
+            ".skill-list input, .skill-list button",
+          )) {
+            control.disabled = true;
+          }
+        } else {
+          retainedSkillFocus = null;
+          restoreSkillFocus(focusTarget);
+        }
+        renderedSkillStateKey = renderKey;
         updateAutocomplete();
       }
 
@@ -150,20 +172,20 @@
         else current.delete(skillId);
         if (current.size > maxActiveSkills) {
           showStatus(`A Session can use at most ${maxActiveSkills} Skills.`, true);
-          render();
+          render(true);
           return;
         }
         const changed = await runCommand("set_session_skills", {
           sessionId: getState().activeSessionId,
           skillIds: [...current].sort(),
         });
-        if (!changed) render();
+        if (!changed) render(true);
       }
 
       async function removeSkill(skillId) {
         if (skillIsUsed(skillId)) {
           showStatus("Remove this Skill from every Session before deleting it.", true);
-          render();
+          render(true);
           return;
         }
         if (!(await confirmAction({
@@ -192,7 +214,7 @@
           (session.activeSkillIds || []).includes(skillId)
         );
         if (!sessions.length) {
-          render();
+          render(true);
           return;
         }
         if (!(await confirmAction({
@@ -299,7 +321,13 @@
         }
         syncPastedSkillAction();
         manager?.setAttribute("aria-busy", String(busy));
-        if (wasBusy && !busy) render();
+        if (wasBusy && !busy) {
+          const focusTarget = document.activeElement === manager
+            ? retainedSkillFocus
+            : null;
+          retainedSkillFocus = null;
+          restoreSkillFocus(focusTarget);
+        }
       }
 
       function updateAutocomplete() {

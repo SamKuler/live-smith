@@ -510,6 +510,11 @@ test("an older command response cannot roll back a newer approval event", async 
   const harness = await createDialogHarness(state);
   try {
     const ui = (harness.window as unknown as { LiveSmithUI: DialogUi }).LiveSmithUI;
+    const meta = harness.document.querySelector<HTMLElement>(
+      '.session-entry[data-session-id="session-1"] .session-meta',
+    );
+    assert.ok(meta);
+    const initialTimestamp = meta.title;
     harness.holdNextCommandResponse();
     const command = ui.runCommand("rename_session", {
       sessionId: "session-1",
@@ -528,12 +533,20 @@ test("an older command response cannot roll back a newer approval event", async 
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:03:00.000Z",
       bridgeStateRevision: "3",
     });
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
       "everything",
     );
+    const eventTimestamp = meta.title;
+    assert.notEqual(eventTimestamp, initialTimestamp);
+
+    const staleResponse = cloneState(state);
+    staleResponse.sessions.find((session) => session.id === "session-1")!.title =
+      "Renamed current";
+    harness.setServerState(staleResponse);
 
     harness.releaseHeldCommandResponse();
     assert.equal(await command, true);
@@ -542,6 +555,7 @@ test("an older command response cannot roll back a newer approval event", async 
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
       "everything",
     );
+    assert.equal(meta.title, eventTimestamp);
     assertBackgroundSessionTitle(harness, "Renamed current");
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -572,6 +586,7 @@ test("a stale state first introducing a Session preserves its newer approval pat
       type: "approval_mode_changed",
       sessionId: "session-2",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:03:00.000Z",
       bridgeStateRevision: "3",
     });
     activateStateSession(stale, "session-2");
@@ -585,6 +600,20 @@ test("a stale state first introducing a Session preserves its newer approval pat
       harness.document.querySelector(
         '.session-entry[data-session-id="session-2"]',
       ),
+    );
+    const formatter = new harness.window.Intl.DateTimeFormat(undefined, {
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      month: "short",
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        '.session-entry[data-session-id="session-2"] .session-meta',
+      )?.title,
+      `Updated ${formatter.format(new harness.window.Date(
+        "2026-08-25T00:03:00.000Z",
+      ))}`,
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
@@ -614,6 +643,7 @@ test("an older attachment response cannot roll back a newer approval event", asy
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:03:00.000Z",
       bridgeStateRevision: "3",
     });
     assert.equal(
@@ -1032,12 +1062,14 @@ test("revision tracking preserves an approval field after an ABA event sequence"
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:03:00.000Z",
       bridgeStateRevision: "3",
     });
     harness.emitRawServerEvent({
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "manual",
+      updatedAt: "2026-08-25T00:04:00.000Z",
       bridgeStateRevision: "4",
     });
 
@@ -1086,6 +1118,7 @@ test("an equal-cut state supersedes a pending approval value", async () => {
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:02:00.000Z",
       bridgeStateRevision: "2",
     });
     const authoritative = cloneState(state);
@@ -1121,6 +1154,7 @@ test("covered approval state for an absent Session cannot affect its later comma
       type: "approval_mode_changed",
       sessionId: "session-2",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:02:00.000Z",
       bridgeStateRevision: "2",
     });
     harness.queueNextStatePublication("3", "2");
@@ -1156,6 +1190,7 @@ test("covered approval state for an absent Session cannot affect its later comma
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:05:00.000Z",
       bridgeStateRevision: "5",
     });
     harness.queueNextStatePublication("6", "1");
@@ -1296,6 +1331,7 @@ test("a full state does not cover a lower publication that happened after its cu
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:02:00.000Z",
       bridgeStateRevision: "2",
     });
     await harness.settle();
@@ -1322,6 +1358,7 @@ test("a reconnect replay repairs an approval patch missed after a stale Send cut
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:02:00.000Z",
       bridgeStateRevision: "2",
     });
 
@@ -1344,6 +1381,7 @@ test("a reconnect replay repairs an approval patch missed after a stale Send cut
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "manual",
+      updatedAt: "2026-08-25T00:03:00.000Z",
       bridgeStateRevision: "3",
     });
     await harness.settle();
@@ -1603,6 +1641,7 @@ test("an unversioned mutable patch is ignored", async () => {
       type: "approval_mode_changed",
       sessionId: "session-1",
       approvalMode: "everything",
+      updatedAt: "2026-08-25T00:00:00.000Z",
     });
     await harness.settle();
 
@@ -1610,6 +1649,47 @@ test("an unversioned mutable patch is ignored", async () => {
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
       "manual",
     );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("cross-type Session metadata events keep the newest timestamp", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const meta = harness.document.querySelector<HTMLElement>(
+      '.session-entry[data-session-id="session-2"] .session-meta',
+    );
+    assert.ok(meta);
+    harness.emitServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-2",
+      approvalMode: "everything",
+      updatedAt: "2026-08-22T08:02:00.000Z",
+      bridgeStateRevision: "2",
+    });
+    const approvalTimestamp = meta.title;
+    harness.emitServerEvent({
+      type: "session_model_selection_changed",
+      sessionId: "session-2",
+      modelSelection: { profileId: "profile-1", model: "model-a" },
+      updatedAt: "2026-08-24T08:04:00.000Z",
+      bridgeStateRevision: "4",
+    });
+    const modelTimestamp = meta.title;
+    assert.notEqual(modelTimestamp, approvalTimestamp);
+
+    harness.emitServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-2",
+      approvalMode: "low-risk",
+      updatedAt: "2026-08-23T08:03:00.000Z",
+      bridgeStateRevision: "3",
+    });
+    assert.equal(meta.title, modelTimestamp);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -2503,6 +2583,18 @@ test("state-change decoders require their event-specific wire fields", async () 
       bridgeStateRevision: "2",
     });
     assert.equal(followUp?.value, "queue");
+
+    const approval = harness.document.querySelector<HTMLSelectElement>(
+      "#approvalMode",
+    );
+    assert.equal(approval?.value, "manual");
+    harness.emitRawServerEvent({
+      type: "approval_mode_changed",
+      sessionId: "session-1",
+      approvalMode: "everything",
+      bridgeStateRevision: "2",
+    });
+    assert.equal(approval?.value, "manual");
 
     const sendId = await startHeldSend(harness, "Validate progress fields");
     harness.emitRawServerEvent({

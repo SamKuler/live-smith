@@ -62,7 +62,11 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       defaultFollowUpBehaviorRevision: "1",
       commandId: "settings-command",
     });
-    bridge.publishSessionApprovalMode("s1", "manual");
+    bridge.publishSessionApprovalMode(
+      "s1",
+      "manual",
+      "2026-08-25T00:00:00.000Z",
+    );
     const events = await fetch(endpoint("/events"));
     const publications = await readSsePayloads(events, 4);
     assert.deepEqual(publications.map((payload) => payload.type), [

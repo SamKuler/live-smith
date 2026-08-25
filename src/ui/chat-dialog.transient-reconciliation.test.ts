@@ -109,6 +109,10 @@ test("assistant reset clears the interrupted Session draft and live search", asy
       null,
     );
     assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
+    assert.equal(
+      harness.document.querySelector("#timeline > .empty")?.textContent,
+      "No messages in this session yet.",
+    );
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.deepEqual(harness.errors, []);
   } finally {

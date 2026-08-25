@@ -163,9 +163,9 @@ export async function updateSession(
   sessionId: string,
   update: SessionUpdate,
 ): Promise<void> {
-  await withStorageTransaction(storageDirectory, (context) =>
-    updateSessionInTransaction(context, storageDirectory, sessionId, update)
-  );
+  await withStorageTransaction(storageDirectory, async (context) => {
+    await updateSessionInTransaction(context, storageDirectory, sessionId, update);
+  });
 }
 
 export async function updateSessionInTransaction(
@@ -173,25 +173,30 @@ export async function updateSessionInTransaction(
   storageDirectory: string | undefined,
   sessionId: string,
   update: SessionUpdate,
-): Promise<void> {
+): Promise<AgentSession> {
   requireActiveStorageTransaction(context, storageDirectory);
   const normalizedUpdate = normalizeSessionUpdate(update);
   const sessions = storageDirectory === undefined
     ? memorySessions
     : await loadSessionsUnlocked(storageDirectory);
-  if (!sessions.some((session) => session.id === sessionId)) {
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  if (!session) {
     throw new Error(`Session ${sessionId} does not exist.`);
   }
-  const updated = sessions.map((session) =>
-    session.id === sessionId
-      ? { ...session, ...normalizedUpdate, updatedAt: new Date().toISOString() }
-      : session,
+  const updatedSession: AgentSession = {
+    ...session,
+    ...normalizedUpdate,
+    updatedAt: new Date().toISOString(),
+  };
+  const updated = sessions.map((candidate) =>
+    candidate.id === sessionId ? updatedSession : candidate
   );
   if (storageDirectory === undefined) {
     memorySessions = updated.map(cloneSession);
   } else {
     await saveSessions(storageDirectory, updated);
   }
+  return cloneSession(updatedSession);
 }
 
 export async function restoreSession(
