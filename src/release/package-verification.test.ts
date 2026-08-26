@@ -49,15 +49,41 @@ test("package verification requires the actual bundled third-party notices", asy
     "`path-expression-matcher` 1.6.2 — Copyright (c) 2024",
     "`strnum` 2.4.1 — Copyright (c) 2021 Natural Intelligence",
     "`xml-naming` 0.3.0 — Copyright (c) 2026 Natural Intelligence",
+    "`marked` 18.0.9",
+    "Copyright (c) 2018+, MarkedJS",
+    "Copyright (c) 2011-2018, Christopher Jeffrey",
+    "Copyright © 2004, John Gruber",
+    "`dompurify` 3.4.13",
+    "Copyright (c) Cure53 and other contributors",
+    "Apache License",
+    "Version 2.0, January 2004",
+    "END OF TERMS AND CONDITIONS",
     "Permission is hereby granted",
     "The above copyright notice and this permission notice shall be included in all",
     'THE SOFTWARE IS PROVIDED "AS IS"',
   ]) {
     assert.throws(
       () => assertPackagedBundleContainsThirdPartyNotices(
-        Buffer.from(noticedBundle.toString("utf8").replace(missingMarker, "missing")),
+        Buffer.from(noticedBundle.toString("utf8").replaceAll(missingMarker, "missing")),
       ),
       /third-party notice/i,
+    );
+  }
+});
+
+test("bundled notices retain the complete Markdown dependency licenses", async () => {
+  const notices = await readFile(
+    new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url),
+    "utf8",
+  );
+  for (const packageName of ["marked", "dompurify"]) {
+    const license = await readFile(
+      new URL(`../../node_modules/${packageName}/LICENSE`, import.meta.url),
+      "utf8",
+    );
+    assert.ok(
+      notices.includes(license.trim()),
+      `Bundled notices must include the complete ${packageName} license.`,
     );
   }
 });
