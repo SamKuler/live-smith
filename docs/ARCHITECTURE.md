@@ -1,7 +1,15 @@
 # Live Smith Architecture
 
-Live Smith keeps the Ableton extension entrypoint thin and separates Live API
-execution from model protocol details.
+This is the engineering reference for module ownership, request and Session
+lifecycles, and safety and concurrency contracts. Live Smith keeps the Ableton
+extension entrypoint thin and separates Live API execution from model protocol
+details.
+
+Use the [README](../README.md) for product usage, [AGENTS.md](../AGENTS.md) for
+contributor rules, and the [Development Guide](DEVELOPMENT.md) for source setup,
+verification, and packaging. [Model Profiles and Connection Backends](MODEL_PROVIDERS.md)
+owns connection configuration, capability resolution, and protocol-specific
+behavior; this document describes how those boundaries fit into the application.
 
 ## Module map
 
@@ -24,6 +32,9 @@ src/
     model-request.ts
       Materializes one Session-selected model from a saved multi-model Profile,
       then builds provider-neutral requests and Draft capability previews.
+    model-reconnect.ts
+      Rebuilds an unaccepted Direct API response on typed connection loss with
+      bounded, cancellable backoff; never re-enters send admission.
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
@@ -41,6 +52,9 @@ src/
       Serializes storage-wide managed auth reads/mutations and subscription
       sends, including pending-login reconciliation, generation invalidation,
       and poison.
+    live-mutation-queue.ts
+      Serializes validated Live plans across dialogs in one extension activation;
+      the caller revalidates state after acquiring the queue.
 
   agent/
     action-schema.ts
@@ -76,6 +90,9 @@ src/
       Converts Live objects and selections into model-readable context.
     observer.ts
       Reads allowed Live state for model tools.
+    preflight.ts
+      Fingerprints action-specific Live identities and overwrite-sensitive state
+      for revalidation immediately before execution.
     executor.ts
       Applies validated and confirmed actions to the Live Set.
     audio-attachment-source.ts
@@ -170,15 +187,34 @@ src/
       Shared WebView host adapter plus Profile/model settings, bridge lifecycle,
       attachment, local Skill, and session/timeline factories. Bootstrap owns
       final composer/status presentation and explicit dependency wiring.
+    client/markdown-renderer.ts
+      Shared sanitized Markdown rendering for conversation content and the
+      read-only built-in Skill viewer.
 ```
 
+### Extension Host compatibility
+
+Extension code imports Node runtime values such as `URL`, `Buffer`, and process
+data from their `node:` modules. Host-provided Fetch and Abort APIs are resolved
+only through `runtime/host.ts`, which reports missing capabilities explicitly
+and owns the shared cancellation helpers. `model/json-clone.ts` clones
+provider/Profile JSON without depending on `structuredClone`. `build.ts`
+checks these boundaries and smoke-loads the extension entrypoint without ambient
+Web APIs; a successful Node import alone is not proof of Extension Host
+compatibility.
+
 ## Model request flow
+
+### Admission and execution
 
 1. The bridge accepts a prompt and session ID only. Attachment upload/delete are
    separate authenticated, size-bounded routes with strict Session ownership;
    bytes never enter the send JSON body.
-2. `agent-flow.ts` loads the saved active profile; an unsaved UI draft can never
-   enter a model request.
+2. Under the Session mutation fence, `agent-flow.ts` reads the requested Session
+   and saved settings, then resolves the Session's model selection against the
+   active saved Profile. An absent selection, a selection from another Profile,
+   or a removed model uses that Profile's default model. An unsaved UI draft can
+   never enter a model request.
 3. `capabilities.ts` resolves effective model capabilities and their evidence,
    then validates saved generation parameters from manual overrides, raw
    discovery metadata, known policy, and conservative fallback. A fallback
@@ -233,13 +269,17 @@ src/
    stops changing failure variants that produce no Live mutation; any actual
    mutation resets it, so productive large workflows remain uncapped.
 
-One confirmation is an authorization boundary, not a promise of one Live Undo
+### Approval and Undo semantics
+
+An approval decision is an authorization boundary, not a promise of one Live Undo
 entry. The 1.0.0 beta SDK does not allow awaiting inside a transaction, so an
 ordered plan whose later mutations depend on earlier asynchronous results (for
 example, create a track and then rename it) necessarily uses sequential SDK
 transactions. Do not wrap the asynchronous executor in `withinTransaction` and
 claim that the full plan is one Undo step; only mutations initiated before the
 first await would be grouped.
+
+### Untrusted data and hosted tools
 
 Live context and tool results are explicitly untrusted data. Transports encode
 Live context as a JSON string inside a labelled data block, and system
@@ -267,8 +307,11 @@ persistence bound is omitted without discarding an otherwise valid final
 answer. The UI reconciles the transient card by call ID, preserves its disclosure
 state through terminal replacement, and keeps source-page links separate from
 answer citations. Provider-hosted page text is not copied into the Session
-event schema. Search data cannot
-authorize client tools, approvals, filesystem access, or Live mutations.
+event schema. Search data cannot authorize client tools, approvals, filesystem
+access, or Live mutations. Wire mappings and citation contracts are detailed in
+[Provider-hosted Web Search](MODEL_PROVIDERS.md#provider-hosted-web-search).
+
+### Protocol state and connection recovery
 
 OpenAI Responses always uses `store: false`. Responses output items, Chat raw
 assistant messages, and Anthropic content blocks are stored only inside the
@@ -325,10 +368,13 @@ advance the accepted-turn boundary until their final non-continuation turn.
 The backend contract mirrors that union. Direct API backends expose model
 listing and turn creation. The managed Codex backend additionally requires
 terminal notification, first-turn reservation, auth reads and auth mutations at
-compile time; application code no longer probes optional managed capabilities
-or creates a synthetic Profile to start the process. `requestModelTurn`
+compile time; application code uses that explicit contract rather than probing
+optional managed capabilities or creating a synthetic Profile to start the
+process. `requestModelTurn`
 receives one explicit turn executor—the backend or a reserved first-turn
 executor—and never creates hidden resources.
+
+### Managed ownership and lifecycle
 
 `storage/scope.ts` canonicalizes the Ableton-provided Live Smith storage path
 once, including aliases whose final leaf does not yet exist. The same canonical
@@ -390,6 +436,8 @@ written approval; see
 
 ## Skill boundary
 
+### Definitions and presentation
+
 A Skill is one declarative UTF-8 `SKILL.md` definition from either the bundled
 read-only registry or the local User Skill catalog; it is not a general Codex
 or Claude Code Skill package. The parser accepts exactly two plain frontmatter
@@ -407,10 +455,16 @@ installed, replaced, or deleted. Application state merges both sources and
 projects the required `source: "built-in" | "user"` discriminator without a
 body, hash, or path.
 
-The dialog document separately embeds a script-safe snapshot of those canonical
-built-in definitions for its local read-only viewer, outside chat state and the
-bridge protocol. Viewing follows the available-source discriminator, does not
-change activation, and never reads User Skill bodies.
+For Skills, `ChatDialogState` and `ChatBridgeState` expose only summaries and
+active IDs. The composed dialog document separately embeds a script-safe snapshot of
+canonical built-in definitions for its local read-only viewer; those bodies are
+not part of generic state or HTTP/SSE state payloads. Viewing follows the
+available-source discriminator, does not change activation, and never reads
+User Skill bodies. The viewer shares the conversation's sanitized Markdown
+renderer; raw HTML and images remain inert text, and links are limited to HTTP,
+HTTPS, and mailto destinations.
+
+### Storage and activation
 
 `storage/skills.ts` derives every path from a validated Skill ID and uses the
 same global per-storage transaction queue as Sessions. Install/replace/delete
@@ -430,6 +484,8 @@ without restoring a historical Live binding. Deletion scans all current,
 historical, and archived Sessions in the same transaction and refuses while any
 still references the ID.
 
+### Request snapshot and authority
+
 The per-Session mutation fence labels active sends. A cross-dialog
 `set_session_skills` command fails immediately while that Session is sending;
 otherwise queue order determines whether activation precedes the next send. A
@@ -446,7 +502,8 @@ Selected definitions are escaped at the wrapper boundary, sorted by ID, and
 limited to 128 KiB after final UTF-8 rendering. The same immutable block is used
 for every model turn. System order is the fixed built-in safety instructions,
 the lower-priority Skill boundary, rendered Skill blocks, then the Live action
-system prompt. Empty activation produces the exact legacy system text.
+system prompt. Empty activation uses the canonical base system instructions
+without a Skill wrapper.
 Skill IDs/descriptions, their `built-in` or `user` source, and active IDs may
 enter chat state; bodies, hashes, frontmatter source, and paths never enter chat
 state, Session events, logs, or errors.
@@ -461,6 +518,8 @@ Markdown has lower priority than system and safety instructions and cannot
 authorize secrets, filesystem access, unsupported provider fields, or actions
 outside the built-in schema.
 
+### Bridge routes
+
 The authenticated local bridge exposes a raw `POST /skills` route with exact
 `text/markdown; charset=utf-8`, a 64-KiB reader, a bounded process-wide read
 permit, timeout, optional explicit replacement, and an ID/SHA-256 receipt.
@@ -470,6 +529,8 @@ correlation and authoritative-state reconciliation. `/send` stays exactly
 `{ kind: "set_session_skills", sessionId, skillIds }` command.
 
 ## Attachment boundary
+
+### Size limits and private storage
 
 The accepted formats are PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 Shared policy constants allow at most 4 attachments and 30 MiB of raw bytes in
@@ -493,12 +554,14 @@ occurs before bridge commands are accepted, never from an ordinary state
 snapshot that could race Session creation. POSIX directories are tightened to
 `0700` and files to `0600`.
 
+### Local inspection
+
 PDFs receive bounded envelope checks and an encryption-token check before use;
 this is not PDF sanitization, page-count validation, or visual rendering. A PDF
 is carried as a native binary model part only when the active saved
 `RuntimeProfile` resolves `inputs.pdf === true` and its mode is OpenAI Responses
-or Anthropic Messages. OpenAI Chat PDF input is intentionally outside this Live
-Smith milestone, regardless of what a compatible endpoint may offer.
+or Anthropic Messages. Live Smith does not support PDF input through OpenAI Chat
+Completions, regardless of what a compatible endpoint may offer.
 
 Audio inspection accepts only RIFF/WAVE with PCM format tag 1 or IEEE-float
 format tag 3, and MP3 with MPEG-1 or MPEG-2 Layer III frames. The inspector
@@ -530,6 +593,8 @@ and 200,000 code points across the request; per-file truncation is labelled in
 the untrusted document wrapper, while a current request that exceeds the
 aggregate limit fails before event append.
 
+### Send admission and historical context
+
 Upload, selected-source copy, pending-quota validation, deletion, request
 preparation, event append, and existing-Session lifecycle mutations use the
 same process-wide Session mutation fence. Operations check cancellation at
@@ -550,6 +615,8 @@ only selected/current blobs are opened and verified. Missing, corrupt,
 profile-incompatible, and over-budget historical files become fixed untrusted
 markers instead of failing the new send. Assistant history is text-only.
 
+### Model input mapping
+
 The provider-neutral model contract carries typed user text, image, native PDF,
 and audio parts. Transports recheck the corresponding input capability before
 network I/O. The managed App Server maps image or audio data URLs only when its
@@ -557,18 +624,22 @@ signed-in model catalog explicitly declares that modality. Audio additionally
 requires explicit `supported` evidence on the active saved `RuntimeProfile` and
 either OpenAI Chat Completions or the managed subscription connection; model
 tool support is unrelated and is not a gate. OpenAI Responses and Anthropic
-Messages reject audio locally in this milestone. Office content is locally
+Messages reject audio locally. Office content is locally
 extracted and encoded with its filename and media type in a JSON-escaped block
 explicitly labelled untrusted. File names, embedded metadata, document text,
 audio, and other binary content have no instruction authority; attachment IDs
 and local paths are not exposed, and the action schema has no attachment or
 arbitrary-path sample source. A file may inform the model but cannot directly
-become a Live sample or filesystem capability.
+become a Live sample or filesystem capability. See
+[Image, document, and audio input mapping](MODEL_PROVIDERS.md#image-document-and-audio-input-mapping)
+for protocol encodings and capability evidence.
 
 ## Configuration boundaries
 
+### Write ownership and Profile revisions
+
 Only profile CRUD/activation and the dedicated global-settings command write the
-settings file. The global command currently owns the default Queue/Steer
+settings file. The global command owns the default Queue/Steer
 follow-up behavior, is allowed while sends are active, and broadcasts committed
 changes to every open dialog for the same storage directory. Sending,
 discovering models, and creating/selecting/renaming/deleting sessions do not
@@ -582,6 +653,8 @@ recomputes it from the current same-ID record before replacement. The dialog
 state projects only the active Profile's revision, so unrelated Profile saves do
 not conflict. A mismatch is recoverable, and one window cannot silently erase
 models or parameters saved by another.
+
+### Cross-dialog settings invalidation
 
 Every committed Profile Save, activation, or deletion publishes a
 credential-free `profile_settings_changed` invalidation to the other modal
@@ -608,6 +681,8 @@ control back. A bridge state snapshot may seed a revision, but a correlated
 event for the same value and revision replaces that synthetic provenance and is
 replayed.
 
+### Durable local storage
+
 Settings, sessions, and event logs serialize their read-modify-write operations
 per storage directory. JSON replacement uses a unique private temporary file,
 file sync, atomic rename, and parent-directory sync where the host supports it.
@@ -627,6 +702,30 @@ paths and credential-bearing causes are never returned to the WebView.
 Session deletion durably removes its event log before metadata; if event
 removal fails or has an unknown commit outcome, the session remains visible and
 retryable instead of leaving an unreachable conversation log.
+
+### Settings schema compatibility
+
+Settings schema version 5 combines connection Profiles, per-model configuration
+collections, the strict `defaultFollowUpBehavior` value `queue | steer`, and a
+canonical nonnegative decimal-string revision. It validates legacy
+`approvalMode` for compatibility, but runtime authorization never reads that
+field. Subscription model configurations persist reasoning mode and optional
+effort but no unconsumed output-token placeholder; the decoder removes that
+historical field from older nested subscription Profiles without rewriting on
+read.
+
+Persisted settings use adjacent migrations: v1 maps `autoApprove` into v2, v2
+wraps flat Profiles into the nested v3 connection shape, and v3 is
+shape-discriminated before migrating to v4. Version 4's single model becomes
+the default entry in a version-5 model configuration list. A v3 containing both
+follow-up fields must contain only flat Profiles and preserves its
+behavior/revision; a v3 containing neither must contain only nested Profiles
+and receives Queue at revision `"0"`. Partial fields, mixed Profile shapes, and
+unknown fields fail closed. Reads never rewrite the file; the next authorized
+settings mutation persists version 5. A future version or incomplete adjacent
+migration chain is reported as settings corruption.
+
+### Capability projections
 
 Capability previews and discovered model lists carry an explicit source identity
 in `ChatDialogState`, together with field-level evidence for temperature,
@@ -655,6 +754,8 @@ fallback values remain `unverified`; only known
 policy, explicit discovery metadata, or a manual override may make the preview
 authoritative.
 
+### Profile and Session model state
+
 Profile state has three deliberate boundaries: incomplete `DraftProfile` values
 enter through settings commands, only validated `SavedProfile` values reach
 storage, and generation plus the active UI summary consume one materialized
@@ -663,6 +764,14 @@ storage, and generation plus the active UI summary consume one materialized
 gate and therefore does not require a Profile name or selected model. Secrets
 enumeration returns only Direct API keys; managed subscription credentials stay
 inside the isolated Codex home.
+
+A Session's model selection stores only `profileId`, `model`, and an optional
+`reasoningEffort` override. It does not duplicate connection settings, generation
+parameters, capabilities, hosted-tool policy, Extra Body, or credentials. At send
+admission, the active saved Profile supplies those values and the selected model
+is materialized and validated as one `RuntimeProfile`. A selection from another
+Profile or a model removed from that Profile falls back to the active Profile's
+default model.
 
 ## Adding a model protocol
 
@@ -676,10 +785,14 @@ transport before changing the registry.
 
 1. Add one descriptor to `src/agent/action-schema.ts`; it derives the action
    type, tool JSON schema, strict runtime parser, and model example together.
-2. Add a confirmation summary in `src/agent/actions.ts`.
-3. Add execution logic to `src/live/executor.ts`.
-4. Add focused parsing, schema, confirmation, and execution tests.
-5. Run `npm test` and `npm run build`.
+2. Add its confirmation summary, protected-action classification, and
+   action-to-observation routing in `src/agent/actions.ts`.
+3. Implement target binding, preflight fingerprints, and execution in `src/live/`.
+4. Add focused parsing, schema, confirmation, execution, and state-drift/recovery
+   tests for the action's observable behavior.
+5. Run the required [verification](DEVELOPMENT.md#verification).
+
+### Target identity and structural edits
 
 When actions in one `apply_live_actions` call depend on a track that is renamed
 or created earlier in that call, express the dependency with top-level
@@ -705,6 +818,8 @@ is staged explicitly: apply the structural edit, inspect the resulting Session
 View, then submit the index-dependent work. Prebinding a prior Slot and silently
 using it after an insertion would authorize a different sequential meaning.
 
+### MIDI authoring and transforms
+
 Whole-Clip MIDI authoring uses `create_midi_clip` and accepts 0-4096 notes per
 action. An empty named Clip is the staging anchor for longer work.
 `replace_midi_clip_segment` then targets that exact arrangement Clip by track,
@@ -723,6 +838,8 @@ transpose, start quantization, velocity scaling, or beat shifting locally. A
 transform writes the complete resulting note set only after validating every
 pitch, start, and end against MIDI and Clip bounds; invalid output performs no
 mutation. Optional SDK note fields are preserved unchanged.
+
+### Audio analysis and SDK limits
 
 `analyze_audio_clip` is a client-executed read-only observation. It resolves one
 Arrangement Audio Clip on an Audio Track and refuses same-track overlap in the
@@ -746,6 +863,8 @@ read/write operation. Automation is therefore outside the current action and
 observation contracts; no parameter-write approximation is presented as
 Automation support.
 
+### Device and sample operations
+
 Extensions SDK 1.0.0-beta.1 accepts an exact built-in name through
 `insertDevice`, but exposes no Browser, installed-device catalog, list, or
 search API, and its insertion failure callback carries no host detail. The
@@ -761,7 +880,9 @@ name after case/whitespace normalization, never by substring guessing.
 Drum Pad configuration also has explicit intent. Filling an empty pad refuses to
 overwrite a chain that already contains devices. Replacing a sample requires an
 exact observed Simpler path and changes only that Simpler, preserving the rest
-of the Rack chain. Both replacement forms require explicit confirmation.
+of the Rack chain. Both replacement forms are protected actions: Manual and
+Low Risk require explicit confirmation, while Accept Everything approves
+them automatically without bypassing the remaining safety checks.
 Sample confirmations show the complete observed source locator, including an
 Arrangement start beat and a Simpler path/index. Session audio creation is
 explicitly create-or-replace: a source, Warp, or loop mismatch deletes the
@@ -772,14 +893,16 @@ operations.
 
 ## Sessions and safety
 
+### Scope identity and lifecycle
+
 Sessions are isolated by an activation-scoped project key and the selected Live
 object's opaque SDK handle ID. Track, clip, device, and other object scopes stay
 distinct even when their action target also retains an owning track; display
 labels never determine session identity. Because the beta SDK exposes no stable
 Set identifier across activation, historical object names are presented only as
 reference labels and never as evidence that two objects are the same. All
-unarchived prior-activation Sessions remain manageable in History. A Session
-whose scope kind matches the current opening scope may use Continue here; this
+unarchived prior-activation Sessions remain manageable in the Sessions pane. A
+Session whose scope kind matches the current opening scope may use Continue here; this
 does not match names or infer identity. The command sends only the Session ID,
 and `restore_session` atomically binds the history to the current server-owned
 handle while preserving the first binding as `originScope`. Rename, archive,
@@ -807,6 +930,22 @@ current persisted non-default state makes an empty conversation distinct and
 preserves it. No navigation or close path implicitly deletes a Session, because
 another dialog can still own local draft or running state for that ID;
 historical duplicate empties are left for explicit user deletion.
+
+### Session context, concurrency, and Approval
+
+Concurrency boundaries have distinct ownership:
+
+| Boundary | Scope | Responsibility |
+| --- | --- | --- |
+| Storage transaction | Canonical storage directory | Serialize durable settings, Session, event, attachment, and Skill mutations. |
+| Session mutation fence | Storage directory and Session ID | Hold one Session's send, attachment, Skill activation, and lifecycle boundary through reconciliation. |
+| Managed auth/send fence | Canonical storage directory | Keep auth changes, generations, and pending-login ownership coherent with subscription sends. |
+| Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, with revalidation after queue acquisition. |
+
+These are in-process coordination boundaries, not locks between independent
+Extension Host processes. Different Sessions may observe and plan in parallel;
+the Live mutation queue serializes their writes. Session Approval changes have
+their own intent fence and remain available during a send as described below.
 
 Model context uses the latest 24 user/assistant events plus a separate bounded
 projection of the latest 12 persisted Apply results, rejected tool inputs, and
@@ -836,6 +975,8 @@ single Undo entry. Accept Everything changes approval only and cannot bypass
 observation, action-schema validation, preflight, the process-wide mutation
 queue, cancellation, or target/state-drift revalidation. Profile,
 RuntimeProfile, attachment, and Skill state remain the request-start snapshot.
+
+### Queued follow-ups
 
 The composer has one follow-up dispatcher and one running control, Stop. Its
 persisted global default is Queue. A Queue submission is captured in a
@@ -884,6 +1025,8 @@ activity, Queue, recovery, and composer provenance; it never treats unrelated
 Sessions missing from its older snapshot as deleted. If that target is
 authoritatively deleted or archived, target-scoped reconciliation removes or
 moves only that record.
+
+### Bridge publications and authoritative receipts
 
 `agent-flow.ts` produces an unversioned domain state. At the WebView boundary,
 each modal bridge stamps every full `ChatBridgeState` exactly once with its own
@@ -936,6 +1079,8 @@ the replay guard uses constant space. Queue entries have a separate logical
 correlation ID, so a delayed terminal from a failed attempt cannot match its
 retry.
 
+### Transient model turns and context usage
+
 Transient model output uses a separate per-send `modelTurnEpoch`, not the
 bridge publication revision. A connection-loss reset or accepted complete turn
 advances the epoch and clears the prior assistant draft and in-flight search
@@ -976,6 +1121,8 @@ is only a status overlay; opening the replacement stream reveals the latest
 underlying state, Profile gate, command, Queue, Stop, or restored per-send
 progress instead of overwriting it.
 
+### Causal field ownership
+
 Send, command, attachment, and Skill attempts capture a
 causal baseline for all Session records, the active Session identity and its
 events, pending attachments, Live context, continuation target, and per-Session
@@ -1009,6 +1156,8 @@ window-local canceled count. Separate cancellations aggregate, remain visible
 beside foreground progress, and are not stored back as server state. Queues,
 drafts, and visible state for valid foreground or peer Sessions remain intact.
 
+### In-loop steering
+
 An active send can additionally accept bounded, pure-text steering for its
 exact bridge-owned send ID. The current send owner persists each steering
 message as an ordinary user event before acknowledging it or adding it to model
@@ -1041,25 +1190,9 @@ Steering detected at the first per-action guard has no completed action and is
 therefore a clean supersession, not a partial host failure; it closes the tool
 call and replans without opening a recovery ledger. A guard reached after any
 completed action retains the partial-recovery path.
-Current settings schema version 5 combines connection Profiles, per-model
-configuration collections, the strict `defaultFollowUpBehavior` value
-`queue | steer`, and a canonical nonnegative decimal-string revision. It still
-validates legacy `approvalMode` for compatibility, but runtime authorization
-never reads that field. Subscription model configurations persist reasoning
-mode and optional effort but no unconsumed output-token placeholder; the
-decoder removes that historical field
-from older nested subscription Profiles without rewriting on read. Persisted
-settings use adjacent migrations: v1 maps `autoApprove` into v2, v2 wraps flat
-Profiles into the subscription branch's nested v3 shape, and v3 is
-shape-discriminated before migrating to v4. Version 4's single model becomes
-the default entry in a version-5 model configuration list. A v3 containing
-both follow-up fields must contain only flat Profiles and preserves its
-behavior/revision; a v3 containing neither must contain only nested Profiles
-and receives Queue at
-revision `"0"`. Partial fields, mixed Profile shapes, and unknown fields fail
-closed. Reads never rewrite the file; the next authorized settings mutation
-persists version 5. A future version or incomplete adjacent migration chain is
-reported as settings corruption.
+
+### Loop limits and partial recovery
+
 The agent loop enforces a rolling 12-step no-progress window, a per-model-turn
 tool fanout limit, cancellation, and a repeated-identical-invalid-tool-call
 limit. Distinct validation errors are treated as an evolving repair attempt and
@@ -1117,12 +1250,18 @@ active unresolved failure. The same invalid tool error still
 stops at the configured repeated-error limit. If the result cannot be persisted,
 the failure remains fatal so the model can never retry without knowing what
 already changed. Device parameter values outside the freshly observed range are
-rejected rather than silently clamped after confirmation. Command mutations
-whose follow-up state cannot be built use the same unknown-outcome reconciliation
-path as uncertain storage commits. Closing the dialog aborts active work and
+rejected rather than silently clamped after confirmation.
+
+### Reconciliation and dialog shutdown
+
+Command mutations whose follow-up state cannot be built use the same
+unknown-outcome reconciliation path as uncertain storage commits. Closing the
+dialog aborts active work and
 waits for send and command handlers to finish their terminal cleanup. Read-only
 chat/state connections are destroyed instead, so an unresponsive state build
 cannot prevent the modal flow from returning.
+
+### Action diagnostics
 
 Scene actions describe Session View structure: `sceneIndex` identifies the
 target, `newName` is the desired name, and `sceneName` is only an optional exact
@@ -1137,6 +1276,8 @@ must be truncated, and failed or partial Applies open by default, so the UI and
 model both retain the complete diagnostic. Confirmation rows preserve the
 validated plan's original order and action numbers; category headings may repeat
 rather than reordering mutations before the user authorizes them.
+
+### Strict bridge inputs and Stop
 
 Bridge JSON inputs are strict route-specific contracts. Send accepts only
 `prompt` and `sessionId`. Steer accepts the same two fields but requires the
@@ -1174,7 +1315,7 @@ progress, deltas, searches, and confirmations
 cannot reopen the send's terminal activity; a durable late Session event may
 still publish, but it carries the stopped activity. If a Stop-first terminal
 classification is `unknown` while the original Send response is outstanding,
-the client waits up to the existing five-second reconciliation budget for a
+the client waits up to the five-second reconciliation budget for a
 definitive Send outcome before falling back to unknown recovery. Every JSON
 body is bounded
 to 1 MiB before parsing. User Skill Markdown source is never a JSON field; it

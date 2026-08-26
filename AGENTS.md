@@ -1,5 +1,22 @@
 # Live Smith Contributor Guide
 
+This file defines durable collaboration rules. It is not a product manual,
+implementation plan, or record of individual changes.
+
+## Documentation responsibilities
+
+- `README.md` introduces the product, user workflow, limits, and privacy.
+- `docs/DEVELOPMENT.md` owns setup, build, verification, packaging, and local
+  development data instructions.
+- `docs/ARCHITECTURE.md` owns module responsibilities, lifecycle, and safety
+  invariants; `docs/MODEL_PROVIDERS.md` owns model and connection contracts.
+- Keep documentation about the implemented product and lasting constraints.
+  Do not add task narratives, review outcomes, commit references, temporary
+  checklists, or conversation context. Keep migration compatibility details
+  where they describe supported data formats.
+- Never commit superpowers workflow documents or temporary execution plans.
+  Keep execution notes outside repository documentation.
+
 ## Project map
 
 - `src/app/` owns the chat bridge and orchestration. Model-request assembly and
@@ -12,8 +29,10 @@
   and provider protocol adapters.
 - `src/runtime/` owns explicit extension-host capability boundaries for Fetch
   and cancellation APIs.
+- `src/attachments/` validates and extracts supported attachment formats;
+  `src/skills/` owns Skill format rules and bundled definitions.
 - `src/storage/` persists Profiles, sessions, session events, and raw model
-  discovery metadata.
+  discovery metadata, and owns private attachment and User Skill storage.
 - `src/ui/` contains state serialization, dialogs, and the real DOM behavior
   tests for the chat interface.
 
@@ -42,6 +61,11 @@ and opaque response state inside `src/model/transports/`; keep managed runtime
 protocol and lifecycle mapping inside `src/model/backends/`. The agent loop and
 Live executor must remain provider-neutral. Resolve feature decisions from
 capabilities, not from model-name checks inside either boundary.
+
+Preserve supported, unsupported, and unverified capability evidence. Direct API
+discovery metadata belongs to its exact Profile connection; managed catalogs
+stay modal-only and scoped to the current auth generation. Configuration,
+discovery evidence, and Session model selection have separate owners.
 
 ## Safety invariants
 
@@ -84,6 +108,9 @@ logs, screenshots, or documentation.
 ## Editing rules
 
 - Preserve unrelated user changes and avoid destructive Git operations.
+- Diagnose the root cause and reproduce behavior before changing it. Fix the
+  responsible layer without model-specific exceptions, speculative abstractions,
+  redundant state, or checks that no caller consumes.
 - Keep the three transport modes explicit; do not reintroduce flattened legacy
   settings or implicit environment-variable provider configuration.
 - Add request-capture and replay tests when transport mapping changes.
@@ -99,6 +126,8 @@ logs, screenshots, or documentation.
   `npm run test:structure`; split shared harnesses from behavior domains.
 - Keep configuration writes limited to Profile CRUD/activation, explicit
   Session metadata commands, and the dedicated global-settings command.
+- Update the document that owns a changed user workflow or contract; link to it
+  from other documents instead of copying detailed implementation explanations.
 
 ## Verification
 
@@ -110,8 +139,7 @@ npm run build
 npm --cache /private/tmp/live-smith-npm-cache audit --json
 ```
 
-Also validate the composed dialog client after editing it:
-
-```sh
-node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
-```
+After editing dialog client fragments, also run the composed-client syntax check
+in [Development verification](docs/DEVELOPMENT.md#verification). Report what was
+actually checked; automated tests do not establish visual or live-provider
+behavior in the Ableton host.
