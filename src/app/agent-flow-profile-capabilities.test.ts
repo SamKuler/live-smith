@@ -19,9 +19,11 @@ import {
   saveSavedProfile,
   savedProfileRevision,
 } from "../storage/settings.js";
+import { createSession, listSessions } from "../storage/sessions.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
 import { runAgentFlow } from "./agent-flow.js";
+import { projectKeyForContext } from "./session-context.js";
 
 const interaction = {
   summary: "Track: Capability Probe",
@@ -204,6 +206,229 @@ test("Direct discovery evidence survives Save and a reopened modal", async (t) =
     reopenedState?.activeProfileRevision,
     savedProfileRevision(reopenedProfile),
   );
+});
+
+test("subscription capability loading restores a reopened modal without saving settings", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-subscription-capability-reopen-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const profile: SavedProfile = {
+    id: "subscription-capability-reopen",
+    name: "Subscription capability reopen",
+    connection: { kind: "codex-subscription", provider: "openai" },
+    defaultModel: "subscription-image",
+    models: ["subscription-image", "subscription-audio"].map((model) => ({
+      model,
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    })),
+  };
+  const catalog: DiscoveredModelInfo[] = [
+    {
+      id: "subscription-image",
+      displayName: "Image model",
+      capabilities: {
+        temperature: "unsupported",
+        reasoning: {
+          supported: true,
+          canDisable: false,
+          efforts: ["high"],
+          budgetTokens: false,
+          strategy: "effort",
+        },
+        inputs: { image: true, audio: false, pdf: false },
+      },
+    },
+    {
+      id: "subscription-audio",
+      displayName: "Audio model",
+      capabilities: {
+        temperature: "unsupported",
+        reasoning: {
+          supported: true,
+          canDisable: false,
+          efforts: ["low", "high"],
+          budgetTokens: false,
+          strategy: "effort",
+        },
+        inputs: { image: false, audio: true, pdf: false },
+      },
+    },
+  ];
+  const auth: ManagedAuthState = {
+    status: "signed-in",
+    accountLabel: null,
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const unverifiedInputs = {
+    image: "unverified",
+    audio: "unverified",
+    pdf: "unverified",
+  };
+  const imageEvidence = {
+    image: "supported",
+    audio: "unsupported",
+    pdf: "unsupported",
+  };
+  const audioEvidence = {
+    image: "unsupported",
+    audio: "supported",
+    pdf: "unsupported",
+  };
+  let opening = 0;
+  let listModelsCalls = 0;
+  let closedManagers = 0;
+  let firstLoadedState: ChatDialogState | undefined;
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const endpoint = endpointForDialog(url);
+        const initialResponse = await fetch(endpoint("/state"));
+        assert.equal(initialResponse.status, 200);
+        const initial = await initialResponse.json() as ChatDialogState;
+        assert.equal(initial.activeSessionId, session.id);
+        assert.deepEqual(initial.codexAuth, auth);
+        assert.equal(initial.configuredModelsReady, false);
+        assert.deepEqual(initial.availableModels, []);
+        assert.deepEqual(initial.capabilityEvidence.inputs, unverifiedInputs);
+        assert.deepEqual(
+          initial.runtimeProfile?.inputCapabilityEvidence,
+          unverifiedInputs,
+        );
+        assert.equal(listModelsCalls, opening);
+
+        const loaded = await command(
+          endpoint,
+          `subscription-load-${opening}`,
+          opening === 0
+            ? { kind: "discover_models", profile }
+            : {
+                kind: "load_session_model_capabilities",
+                sessionId: session.id,
+                profileId: profile.id,
+              },
+        );
+        assert.equal(loaded.response.status, 200);
+        const loadedState = loaded.body as unknown as ChatDialogState;
+        assert.equal(loadedState.configuredModelsReady, true);
+        assert.deepEqual(loadedState.availableModels.map((model) => ({
+          id: model.id,
+          displayName: model.displayName,
+          inputs: model.capabilityEvidence.inputs,
+        })), [
+          {
+            id: "subscription-image",
+            displayName: "Image model",
+            inputs: imageEvidence,
+          },
+          {
+            id: "subscription-audio",
+            displayName: "Audio model",
+            inputs: audioEvidence,
+          },
+        ]);
+        assert.deepEqual(loadedState.capabilityEvidence.inputs, imageEvidence);
+        assert.equal(
+          loadedState.runtimeProfile?.selection.model,
+          "subscription-audio",
+        );
+        assert.deepEqual(loadedState.runtimeProfile?.selection.reasoning, {
+          mode: "enabled",
+          effort: "high",
+        });
+        assert.deepEqual(
+          loadedState.runtimeProfile?.inputCapabilityEvidence,
+          audioEvidence,
+        );
+        assert.equal(listModelsCalls, opening + 1);
+        if (firstLoadedState) {
+          assert.deepEqual(
+            loadedState.availableModels,
+            firstLoadedState.availableModels,
+          );
+          assert.deepEqual(
+            loadedState.configuredModels,
+            firstLoadedState.configuredModels,
+          );
+          assert.deepEqual(
+            loadedState.runtimeProfile,
+            firstLoadedState.runtimeProfile,
+          );
+        } else {
+          firstLoadedState = loadedState;
+        }
+
+        const repeated = await command(endpoint, `subscription-repeat-${opening}`, {
+          kind: "load_session_model_capabilities",
+          sessionId: session.id,
+          profileId: profile.id,
+        });
+        assert.equal(repeated.response.status, 200);
+        assert.deepEqual(repeated.body.availableModels, loadedState.availableModels);
+        assert.equal(listModelsCalls, opening + 1);
+      },
+    },
+  };
+  await saveSavedProfile(directory, profile);
+  const savedSettings = await loadAgentSettings(directory);
+  const session = await createSession(directory, {
+    title: "Saved non-default selection",
+    projectKey: projectKeyForContext(context as never),
+    scope: interaction.scope,
+    modelSelection: {
+      profileId: profile.id,
+      model: "subscription-audio",
+      reasoningEffort: "high",
+    },
+  });
+  const savedSessions = await listSessions(directory);
+
+  for (; opening < 2; opening += 1) {
+    const backend: CodexSubscriptionBackend = {
+      kind: "codex-subscription",
+      async listModels() {
+        listModelsCalls += 1;
+        return catalog;
+      },
+      async createToolTurn() {
+        throw new Error("Capability restoration must not start a model turn.");
+      },
+      onTerminal() { return () => undefined; },
+      reserveToolTurn() {
+        throw new Error("Capability restoration must not reserve a model turn.");
+      },
+      async readAuthState() { return auth; },
+      async beginLogin() { throw new Error("Sign-in must not be restarted."); },
+      async logout() { throw new Error("Sign-in must not be changed."); },
+      async close() {},
+    };
+    await runAgentFlow(context as never, interaction, {
+      renderHtml: () => "<html></html>",
+      modelBackendManager: {
+        async forProfile() { return backend; },
+        async codex() { return backend; },
+        async codexLease() {
+          return { backend, async retire() { return true; } };
+        },
+        async invalidateCodex() {},
+        async close() { closedManagers += 1; },
+      },
+    });
+    assert.equal(closedManagers, opening + 1);
+    assert.deepEqual(await loadAgentSettings(directory), savedSettings);
+    assert.deepEqual(await listSessions(directory), savedSessions);
+    assert.deepEqual(
+      (await fs.readdir(directory)).filter((name) =>
+        name.startsWith("live-smith-models-")
+      ),
+      [],
+    );
+  }
+  assert.equal(listModelsCalls, 2);
 });
 
 test("subscription Save consumes only the current auth-generation catalog", async (t) => {

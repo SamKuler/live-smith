@@ -1234,5 +1234,11 @@
               ? document.getElementById("profileName")
               : document.getElementById("modelSetupGuide");
           initialFocus?.focus({ preventScroll: true });
+          if (
+            getState().codexAuth?.status === "signed-in" &&
+            getState().codexAuth.subscriptionEligible
+          ) {
+            void ensureSessionModelCapabilities();
+          }
         });
       })();

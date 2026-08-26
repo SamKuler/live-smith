@@ -212,12 +212,20 @@ releasing its final owner aborts startup and waits for the child process and
 metadata firewall to close.
 Explicit Check, Settings discovery, loading a missing composer model/reasoning
 projection, and send readiness request credential refresh, while ordinary
-signed-in or signed-out state hydration is passive. Before persisting every new
-subscription prompt, the server confirms an eligible signed-in account, reads
-the current App Server model catalog, and requires the saved Session-selected
-model in it. Readiness failures are unpersisted, so Queue pauses its head
-instead of draining. Live Smith's normalized subscription model projection
-stays only in the owning modal, is invalidated on every auth generation, is
+signed-in or signed-out state hydration is passive. When a window initializes
+with an eligible signed-in subscription but no catalog, the client makes one
+restoration attempt through the existing model-capability loading command.
+It restores Settings and composer evidence without saving Profile settings or
+changing the Session model selection. If it fails, opening the composer model
+selector or choosing Settings' **Load Models** retries explicitly. Passive
+`/state` reads do not list models, and this restoration does not persist the
+subscription catalog.
+
+Before persisting every new subscription prompt, the server confirms an eligible
+signed-in account, reads the current App Server model catalog, and requires the
+saved Session-selected model in it. Readiness failures are unpersisted, so Queue
+pauses its head instead of draining. Live Smith's normalized subscription model
+projection stays only in the owning modal, is invalidated on every auth generation, is
 cleared before that modal's next relevant operation, and is never written to
 Live Smith's persistent model cache. Only the non-sensitive process-local auth
 generation is projected to the UI; when a window next receives authoritative

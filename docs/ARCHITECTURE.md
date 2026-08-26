@@ -642,6 +642,14 @@ remain. Models from different APIs or ChatGPT accounts therefore cannot mix.
 The UI receives only the process-local numeric auth generation, never managed
 credentials, and keeps auth, editor catalog, and active subscription runtime
 projections generation-coherent across delayed HTTP and SSE state merges.
+On window initialization, an eligible signed-in subscription with a missing
+catalog gets one client-side restoration attempt through the existing
+`load_session_model_capabilities` command. It restores same-account capability
+evidence for Settings and the composer without saving the Profile, changing the
+Session selection, or applying a new Draft model collection. A failed attempt
+can be retried through the composer model selector or Settings' Load Models.
+Ordinary `/chat` and `/state` hydration remains passive; the restored catalog
+is still modal-only and auth-generation scoped.
 Failure reconciliation cannot promote a stale durable cache. Conservative
 fallback values remain `unverified`; only known
 policy, explicit discovery metadata, or a manual override may make the preview

@@ -388,6 +388,8 @@ async function createDialogHarness(
   options: {
     webCryptoAvailable?: boolean;
     webCryptoDigestFails?: boolean;
+    serverState?: ChatBridgeState;
+    initialCommandError?: string;
   } = {},
 ): Promise<DialogHarness> {
   const calls: BridgeCall[] = [];
@@ -417,7 +419,7 @@ async function createDialogHarness(
     reconciliationRequired?: boolean;
     state?: ChatBridgeState;
     status?: number;
-  } | null = null;
+  } | null = options.initialCommandError ? { error: options.initialCommandError } : null;
   let nextConfirmationError: { error: string } | null = null;
   let nextConfirmationResponseRejection: Error | null = null;
   let nextSendError: {
@@ -475,7 +477,7 @@ async function createDialogHarness(
     promptPersistence?: "persisted" | "not_persisted" | "unknown";
     sendId?: string;
   }> = [];
-  let serverState = cloneState(initialState);
+  let serverState = cloneState(options.serverState ?? initialState);
   let fallbackSessionSequence = 0;
   const synchronizeActiveSessionProjection = (): void => {
     let active = serverState.sessions.find(

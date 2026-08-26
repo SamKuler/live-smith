@@ -782,8 +782,16 @@
           current.settings.activeProfileId !== state.settings.activeProfileId ||
           !sameJsonValue(current.settings.profiles, state.settings.profiles) ||
           current.activeProfileRevision !== state.activeProfileRevision;
+        // A Session catalog read also refreshes Settings, but not a different Draft source.
+        const ownsEditorModelProjection = attempt.ownsEditorModelProjection || (
+          attempt.kind === "load_session_model_capabilities" &&
+          sameJsonValue(state.modelStateSource, current.modelStateSource)
+        );
         if (!currentChangedSinceBaseline) {
-          if (attempt.ownsGlobalState || incomingProfileSettingsChanged) {
+          if (
+            attempt.ownsGlobalState || incomingProfileSettingsChanged ||
+            ownsEditorModelProjection
+          ) {
             const merged = { ...state };
             adoptCoherentManagedModelProjections(
               merged,
@@ -838,7 +846,7 @@
           ? state
           : current;
         adoptSavedProfileProjection(merged, savedProfileProjection);
-        const editorProjection = attempt.ownsEditorModelProjection
+        const editorProjection = ownsEditorModelProjection
           ? state
           : (
           !useAuthoritativeProfileProjection || attempt.ownsGlobalState ||
