@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
 
+import packageMetadata from "../../../package.json" with { type: "json" };
 import { CodexExecutableUnavailableError } from "../../runtime/codex-executable.js";
 import { createHostAbortController } from "../../runtime/host.js";
 import { ModelBackendManager } from "../backend-registry.js";
@@ -28,7 +29,7 @@ test("start performs the exact initialization handshake and accepts 0.148.x", as
       clientInfo: {
         name: "live-smith",
         title: "Live Smith",
-        version: "0.1.1",
+        version: packageMetadata.version,
       },
       capabilities: {
         experimentalApi: true,
@@ -676,7 +677,12 @@ async function startHarness(
   launchCapture: LaunchCapture = {},
 ): Promise<Harness> {
   const storageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-rpc-"));
-  t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
+  let client: CodexRpcClient | undefined;
+  t.after(async () => {
+    // Lifecycle tests assert close failures; teardown still releases the listener.
+    await client?.close().catch(() => undefined);
+    await fs.rm(storageDirectory, { recursive: true, force: true });
+  });
   const outbound: RpcMessage[] = [];
   let pendingInput = "";
   child.stdin.on("data", (chunk: Buffer) => {
@@ -715,7 +721,7 @@ async function startHarness(
     launchCapture.args = args;
     return child;
   }) as unknown as typeof spawn;
-  const client = await CodexRpcClient.start({
+  client = await CodexRpcClient.start({
     storageDirectory,
     spawnImpl,
     resolveExecutableImpl: resolveTestExecutable,
