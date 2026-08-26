@@ -273,7 +273,8 @@
       function syncPastedSkillAction() {
         const text = document.getElementById("skillPasteText");
         const button = document.getElementById("installPastedSkillButton");
-        if (button) button.disabled = busy || !text?.value.trim();
+        const disabled = busy || !text?.value.trim();
+        if (button && button.disabled !== disabled) button.disabled = disabled;
       }
 
       async function installPastedSkill() {
@@ -311,16 +312,21 @@
         busy = Boolean(nextBusy);
         const dropZone = document.getElementById("skillDropZone");
         const pasteText = document.getElementById("skillPasteText");
-        dropZone?.setAttribute("aria-disabled", String(busy));
+        const busyValue = String(busy);
+        if (dropZone?.getAttribute("aria-disabled") !== busyValue) {
+          dropZone?.setAttribute("aria-disabled", busyValue);
+        }
         if (busy) dropZone?.classList.remove("drop-target");
-        if (pasteText) pasteText.disabled = busy;
+        if (pasteText && pasteText.disabled !== busy) pasteText.disabled = busy;
         for (const control of document.querySelectorAll(
           ".skill-list input, .skill-list button",
         )) {
-          control.disabled = busy;
+          if (control.disabled !== busy) control.disabled = busy;
         }
         syncPastedSkillAction();
-        manager?.setAttribute("aria-busy", String(busy));
+        if (manager?.getAttribute("aria-busy") !== busyValue) {
+          manager?.setAttribute("aria-busy", busyValue);
+        }
         if (wasBusy && !busy) {
           const focusTarget = document.activeElement === manager
             ? retainedSkillFocus
@@ -386,11 +392,15 @@
         const prompt = document.getElementById("prompt");
         const listbox = document.getElementById("skillAutocomplete");
         if (listbox) {
-          listbox.hidden = true;
-          listbox.replaceChildren();
+          if (!listbox.hidden) listbox.hidden = true;
+          if (listbox.childNodes.length) listbox.replaceChildren();
         }
-        prompt?.setAttribute("aria-expanded", "false");
-        prompt?.removeAttribute("aria-activedescendant");
+        if (prompt?.getAttribute("aria-expanded") !== "false") {
+          prompt?.setAttribute("aria-expanded", "false");
+        }
+        if (prompt?.hasAttribute("aria-activedescendant")) {
+          prompt?.removeAttribute("aria-activedescendant");
+        }
       }
 
       function selectSuggestion(index) {

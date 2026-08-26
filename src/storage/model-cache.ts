@@ -51,18 +51,21 @@ export async function loadModelCache(
   if (profile.connection.kind === "codex-subscription") return [];
   const expected = connectionFingerprint(profile);
   if (!storageDirectory) {
-    const entry = memoryCache.get(profile.id);
-    return entry?.fingerprint === expected
+    const entry = memoryCache.get(expected);
+    return entry
       ? decodeDiscoveredModelCatalog(entry.models) ?? []
       : [];
   }
 
   try {
-    const raw = await fs.readFile(cachePath(storageDirectory, profile.id), "utf8");
+    const raw = await fs.readFile(cachePath(storageDirectory, expected), "utf8");
     const entry = JSON.parse(raw) as unknown;
     return decodeModelCacheEntry(entry, expected) ?? [];
   } catch (error) {
-    if (isMissingFileError(error) || error instanceof SyntaxError) return [];
+    if (isMissingFileError(error)) {
+      return loadLegacyModelCache(storageDirectory, profile, expected);
+    }
+    if (error instanceof SyntaxError) return [];
     throw error;
   }
 }
@@ -72,31 +75,54 @@ export async function saveModelCache(
   profile: DraftProfile | SavedProfile,
   models: DiscoveredModelInfo[],
 ): Promise<void> {
-  if (profile.connection.kind === "codex-subscription") {
-    memoryCache.delete(profile.id);
-    return;
-  }
+  if (profile.connection.kind === "codex-subscription") return;
   const canonicalModels = decodeDiscoveredModelCatalog(models);
   if (!canonicalModels) throw new TypeError("Model catalog is invalid.");
+  const fingerprint = connectionFingerprint(profile);
   const entry: ModelCacheEntry = {
     schemaVersion: 1,
-    fingerprint: connectionFingerprint(profile),
+    fingerprint,
     models: canonicalModels,
   };
   if (!storageDirectory) {
-    memoryCache.set(profile.id, entry);
+    memoryCache.set(fingerprint, entry);
     return;
   }
 
-  await writeJsonAtomically(cachePath(storageDirectory, profile.id), entry);
+  await writeJsonAtomically(cachePath(storageDirectory, fingerprint), entry);
 }
 
-function cachePath(storageDirectory: string, profileId: string): string {
+function cachePath(storageDirectory: string, fingerprint: string): string {
+  return path.join(
+    storageDirectory,
+    `live-smith-models-v2-${fingerprint}.json`,
+  );
+}
+
+function legacyCachePath(storageDirectory: string, profileId: string): string {
   const safeId = profileId
     .replace(/[^a-zA-Z0-9_-]/g, "_")
     .slice(0, maximumCacheIdSlugLength) || "profile";
   const idHash = createHash("sha256").update(profileId).digest("hex").slice(0, 16);
   return path.join(storageDirectory, `live-smith-models-${safeId}-${idHash}.json`);
+}
+
+async function loadLegacyModelCache(
+  storageDirectory: string,
+  profile: DraftProfile | SavedProfile,
+  expectedFingerprint: string,
+): Promise<DiscoveredModelInfo[]> {
+  try {
+    const raw = await fs.readFile(
+      legacyCachePath(storageDirectory, profile.id),
+      "utf8",
+    );
+    const entry = JSON.parse(raw) as unknown;
+    return decodeModelCacheEntry(entry, expectedFingerprint) ?? [];
+  } catch (error) {
+    if (isMissingFileError(error) || error instanceof SyntaxError) return [];
+    throw error;
+  }
 }
 
 function decodeModelCacheEntry(

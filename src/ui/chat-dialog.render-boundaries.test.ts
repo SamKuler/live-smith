@@ -327,6 +327,153 @@ test("an Approval change keeps unrelated UI nodes mounted", async () => {
   }
 });
 
+test("an Approval change stays inline without moving the composer", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const approval = harness.document.querySelector<HTMLSelectElement>(
+      "#approvalMode",
+    );
+    const model = harness.document.querySelector<HTMLSelectElement>(
+      "#composerModel",
+    );
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    const status = harness.document.querySelector<HTMLElement>("#status");
+    assert.ok(approval);
+    assert.ok(model);
+    assert.ok(reasoning);
+    assert.ok(status);
+    const modelValue = model.value;
+    const reasoningValue = reasoning.value;
+    const modelOptions = [...model.options];
+    const reasoningOptions = [...reasoning.options];
+
+    harness.holdNextCommandResponse();
+    harness.select("#approvalMode", "everything");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind ===
+          "set_session_approval_mode"
+      ),
+      "Expected the Approval command to remain pending.",
+    );
+    assert.equal(approval.value, "everything");
+    assert.equal(status.hidden, true);
+    assert.equal(model.value, modelValue);
+    assert.equal(reasoning.value, reasoningValue);
+    assert.deepEqual([...model.options], modelOptions);
+    assert.deepEqual([...reasoning.options], reasoningOptions);
+
+    harness.releaseHeldCommandResponse();
+    await harness.settle();
+    assert.equal(approval.value, "everything");
+    assert.equal(status.hidden, true);
+    assert.deepEqual([...model.options], modelOptions);
+    assert.deepEqual([...reasoning.options], reasoningOptions);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an Approval change does not rewrite unrelated Settings or composer content", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  let commandReleased = false;
+  try {
+    const settings = harness.document.querySelector("#settingsPanel");
+    const composer = harness.document.querySelector(".composer");
+    assert.ok(settings);
+    assert.ok(composer);
+    const settingsRecords: MutationRecord[] = [];
+    const composerRecords: MutationRecord[] = [];
+    const settingsObserver = new harness.window.MutationObserver((records) => {
+      settingsRecords.push(...records);
+    });
+    const composerObserver = new harness.window.MutationObserver((records) => {
+      composerRecords.push(...records);
+    });
+    settingsObserver.observe(settings, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    composerObserver.observe(composer, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+
+    harness.holdNextCommandResponse();
+    harness.select("#approvalMode", "everything");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind ===
+          "set_session_approval_mode"
+      ),
+      "Expected the Approval command to remain pending.",
+    );
+    harness.releaseHeldCommandResponse();
+    commandReleased = true;
+    await harness.settle();
+    settingsObserver.disconnect();
+    composerObserver.disconnect();
+
+    const admissionControlIds = new Set([
+      "profileSelector",
+      "saveProfileButton",
+      "deleteProfileButton",
+      "discoverModelsButton",
+      "codexSignInButton",
+      "codexCheckAccountButton",
+      "codexLogoutButton",
+      "defaultFollowUpBehavior",
+    ]);
+    const unexpectedSettings = settingsRecords.filter((record) =>
+      record.type !== "attributes" ||
+      record.attributeName !== "disabled" ||
+      !admissionControlIds.has((record.target as Element).id)
+    );
+    const allowedComposerAttributes = new Map<string, Set<string>>([
+      ["approvalMode", new Set(["aria-label", "class", "disabled"])],
+      ["prompt", new Set(["disabled"])],
+      ["sendButton", new Set(["disabled", "title"])],
+      ["attachmentMenuButton", new Set(["disabled"])],
+      ["attachSelectedAudioButton", new Set(["disabled"])],
+      ["pendingAttachments", new Set(["aria-busy"])],
+    ]);
+    const approvalLabel = harness.document.querySelector("#approvalMode")
+      ?.closest("label");
+    const unexpectedComposer = composerRecords.filter((record) => {
+      if (record.type !== "attributes") return true;
+      if (
+        record.target === approvalLabel &&
+        record.attributeName === "title"
+      ) return false;
+      const allowed = allowedComposerAttributes.get(
+        (record.target as Element).id,
+      );
+      return !record.attributeName || !allowed?.has(record.attributeName);
+    });
+    const summarize = (record: MutationRecord) => ({
+      attribute: record.attributeName,
+      id: (record.target as Element).id,
+      type: record.type,
+    });
+    assert.deepEqual(unexpectedSettings.map(summarize), []);
+    assert.deepEqual(unexpectedComposer.map(summarize), []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!commandReleased) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
 test("a composer model change keeps unrelated Session content mounted", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
@@ -372,6 +519,62 @@ test("a composer model change keeps unrelated Session content mounted", async ()
         '.timeline-item[data-event-id="event-before-model-change"]',
       ),
       timelineItem,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("editing a Profile model does not rewrite unrelated controls", async () => {
+  const state = stateFixture();
+  const profile = state.settings.profiles[0];
+  assert.ok(profile);
+  profile.models.push({
+    ...JSON.parse(JSON.stringify(profile.models[0])),
+    model: "model-b",
+  });
+  const harness = await createDialogHarness(state);
+  try {
+    const selector = harness.document.querySelector<HTMLSelectElement>(
+      "#modelConfigSelector",
+    );
+    const capabilityItems = [...harness.document.querySelectorAll(
+      "#inputCapabilitiesPreview [data-capability-state]",
+    )];
+    const unrelatedRegions = [
+      harness.document.querySelector("#codexAuthPanel"),
+      harness.document.querySelector("#manualModelEntry"),
+      harness.document.querySelector("#draftStatus"),
+      harness.document.querySelector(".composer-toolbar"),
+    ];
+    assert.ok(selector);
+    assert.equal(capabilityItems.length, 3);
+    for (const region of unrelatedRegions) assert.ok(region);
+    const mutations: MutationRecord[] = [];
+    const observer = new harness.window.MutationObserver((records) => {
+      mutations.push(...records);
+    });
+    for (const region of unrelatedRegions) {
+      observer.observe(region!, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    harness.select("#modelConfigSelector", "1");
+    await Promise.resolve();
+    observer.disconnect();
+
+    assert.equal(selector.value, "1");
+    assert.deepEqual(mutations, []);
+    assert.deepEqual(
+      [...harness.document.querySelectorAll(
+        "#inputCapabilitiesPreview [data-capability-state]",
+      )],
+      capabilityItems,
+      "capability status rows should be reconciled instead of replaced",
     );
     assert.deepEqual(harness.errors, []);
   } finally {

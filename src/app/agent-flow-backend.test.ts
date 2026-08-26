@@ -195,6 +195,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         assert.deepEqual(initial.codexAuth, { status: "signed-out" });
 
         const pending = await command({ kind: "start_codex_login" });
+        assert.ok(pending.codexAuthGeneration > initial.codexAuthGeneration);
         assert.deepEqual(pending.codexAuth, {
           status: "pending",
           verificationUrl: "https://auth.openai.com/codex/device",
@@ -212,6 +213,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
           subscriptionEligible: true,
         };
         const signedIn = await command({ kind: "refresh_codex_account" });
+        assert.ok(signedIn.codexAuthGeneration > pending.codexAuthGeneration);
         assert.deepEqual(signedIn.codexAuth, auth);
 
         const discovered = await command({
@@ -235,6 +237,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         assert.equal(saved.runtimeProfile?.capabilities.inputs.image, true);
 
         const signedOut = await command({ kind: "logout_codex" });
+        assert.ok(signedOut.codexAuthGeneration > signedIn.codexAuthGeneration);
         assert.deepEqual(signedOut.codexAuth, { status: "signed-out" });
         assert.deepEqual(signedOut.availableModels, []);
       },
@@ -290,6 +293,9 @@ test("a Direct API send does not enter the managed ChatGPT auth fence", async (t
       return undefined;
     },
     updateAuthState() {},
+    peekAuthGeneration() {
+      return 0;
+    },
     authGeneration() {
       authGenerationCalls += 1;
       return 0;
@@ -433,6 +439,81 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
     await loadModelCache(directory, directProfile),
     cachedModels,
   );
+});
+
+test("unsaved Direct discovery cannot evict the saved connection across modal restart", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-draft-cache-isolation-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  const savedModels = [{
+    id: directProfile.defaultModel,
+    displayName: "Saved connection model",
+    capabilities: { tools: true, streaming: true },
+  }];
+  await saveModelCache(directory, directProfile, savedModels);
+  const draftConnection: DraftProfile = {
+    ...directProfile,
+    connection: {
+      ...directProfile.connection,
+      baseUrl: "https://draft.example.test/v1",
+      apiKey: "draft-key",
+    },
+  };
+  const draftModels = [{
+    id: "draft-only-model",
+    displayName: "Draft connection model",
+    capabilities: { tools: true, streaming: true },
+  }];
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const response = await fetch(bridgeEndpoint(url, "/command"), {
+          method: "POST",
+          headers: bridgeJsonHeaders(),
+          body: JSON.stringify({
+            kind: "discover_models",
+            profile: draftConnection,
+          }),
+        });
+        assert.equal(response.status, 200, await response.clone().text());
+        const discovered = await response.json() as ChatDialogState;
+        assert.deepEqual(
+          discovered.availableModels.map((model) => model.id),
+          ["draft-only-model"],
+        );
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    listModels: async () => draftModels,
+  });
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const state = await (
+          await fetch(bridgeEndpoint(url, "/state"))
+        ).json() as ChatDialogState;
+        assert.deepEqual(
+          state.availableModels.map((model) => model.id),
+          [directProfile.defaultModel],
+        );
+      },
+    },
+  } as never, interaction, { renderHtml: () => "<html></html>" });
 });
 
 test("Direct API state, discovery, and send survive managed poison or concurrent auth", {

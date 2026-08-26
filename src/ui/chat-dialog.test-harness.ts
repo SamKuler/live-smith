@@ -326,6 +326,7 @@ function stateFixture(): ChatBridgeState {
     runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
     activeProfileRevision: profileRevisionFixture(profileFixture()),
     codexAuth: { status: "signed-out" },
+    codexAuthGeneration: 0,
     settings: {
       schemaVersion: 5,
       activeProfileId: "profile-1",
@@ -1286,12 +1287,14 @@ async function createDialogHarness(
                   serverState.approvalMode = command.approvalMode;
                 }
               } else if (command.kind === "start_codex_login") {
+                serverState.codexAuthGeneration += 1;
                 serverState.codexAuth = {
                   status: "pending",
                   verificationUrl: "https://auth.openai.com/codex/device",
                   userCode: "ABCD-EFGH",
                 };
               } else if (command.kind === "refresh_codex_account") {
+                serverState.codexAuthGeneration += 1;
                 serverState.codexAuth = {
                   status: "signed-in",
                   accountLabel: "studio@example.test",
@@ -1299,6 +1302,7 @@ async function createDialogHarness(
                   subscriptionEligible: true,
                 };
               } else if (command.kind === "logout_codex") {
+                serverState.codexAuthGeneration += 1;
                 serverState.codexAuth = { status: "signed-out" };
               } else if (
                 command.kind === "set_session_model_selection" &&
@@ -2159,7 +2163,13 @@ function renderedCapabilityStatuses(
 ): Array<[string, string | undefined]> {
   return [...harness.document.querySelectorAll<HTMLElement>(
     "#inputCapabilitiesPreview [data-capability-state]",
-  )].map((item) => [item.textContent?.trim() ?? "", item.dataset.capabilityState]);
+  )].map((item) => [
+    [
+      item.querySelector(".capability-label")?.textContent,
+      item.querySelector(".capability-mark")?.textContent,
+    ].filter(Boolean).join(" "),
+    item.dataset.capabilityState,
+  ]);
 }
 
 function jsonCalls(harness: DialogHarness, path: string): ParsedBridgeCall[] {
@@ -2359,6 +2369,7 @@ export {
   pendingImage,
   profileFixture,
   renderedCapabilityStatuses,
+  runtimeSummaryForHarnessProfile,
   stateFixture,
   waitForCondition,
 };

@@ -4,14 +4,19 @@ import test from "node:test";
 import type { SavedProfile } from "../model/profile.js";
 import {
   capabilities,
+  cloneState,
   commandCalls,
   createDialogHarness,
+  jsonCalls,
   modelStateSourceFixture,
   pendingAudio,
   pendingDocument,
   pendingImage,
   profileFixture,
+  profileRevisionFixture,
+  runtimeSummaryForHarnessProfile,
   stateFixture,
+  waitForCondition,
 } from "./chat-dialog.test-harness.js";
 
 function subscriptionProfile(): SavedProfile {
@@ -36,6 +41,442 @@ function submitFromComposer(
     }),
   );
 }
+
+test("ChatGPT sign-in crosses a concurrent unrelated Profile refresh", async () => {
+  const state = stateFixture();
+  const harness = await createDialogHarness(state);
+  try {
+    harness.select("#connectionKind", "codex-subscription");
+    harness.holdNextCommand();
+    harness.click("#codexSignInButton");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "start_codex_login"
+      ),
+      "Expected ChatGPT sign-in to remain in flight.",
+    );
+
+    const external = JSON.parse(JSON.stringify(state)) as typeof state;
+    external.settings.profiles[1]!.name = "External rename during sign-in";
+    harness.setServerState(external);
+    harness.emitServerEvent({
+      type: "profile_settings_changed",
+      commandId: "external-rename-during-sign-in",
+    });
+    await harness.settle();
+
+    harness.releaseHeldCommand();
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+      "Waiting",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLOptionElement>(
+        '#profileSelector option[value="profile-2"]',
+      )?.textContent,
+      "External rename during sign-in",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a same-account Check invalidates the previous subscription Draft catalog", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.configuredModels = profile.models.map((model) => ({
+    model: model.model,
+    label: model.model,
+  }));
+  state.configuredModelsReady = true;
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["Discovered model · model-discovered · Default"],
+    );
+
+    const refreshed = cloneState(state);
+    refreshed.availableModels = [];
+    refreshed.configuredModelsReady = false;
+    delete refreshed.modelCatalogLoadReceipt;
+    harness.setServerState(refreshed);
+    harness.click("#codexCheckAccountButton");
+    await harness.settle();
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-discovered · Default"],
+    );
+    assert.match(
+      harness.document.querySelector("#inputCapabilitiesPreview")
+        ?.getAttribute("aria-label") ?? "",
+      /Unverified/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a peer subscription auth generation invalidates another dirty Draft catalog", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.configuredModels = profile.models.map((model) => ({
+    model: model.model,
+    label: model.model,
+  }));
+  state.configuredModelsReady = true;
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: null,
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+    harness.input("#profileName", "Dirty subscription Draft A");
+
+    const peerProfile = profileFixture({
+      id: "profile-2",
+      name: "Direct Profile B",
+      model: "peer-model",
+    });
+    const incoming = cloneState(state);
+    incoming.settings.profiles = [profile, peerProfile];
+    incoming.settings.activeProfileId = peerProfile.id;
+    incoming.activeProfileRevision = profileRevisionFixture(peerProfile);
+    incoming.modelStateSource = modelStateSourceFixture(peerProfile);
+    incoming.runtimeProfile = runtimeSummaryForHarnessProfile(peerProfile);
+    incoming.configuredModels = [{ model: "peer-model", label: "peer-model" }];
+    incoming.configuredModelsReady = true;
+    incoming.availableModels = [];
+    incoming.codexAuthGeneration = state.codexAuthGeneration + 1;
+    incoming.codexAuth = {
+      status: "signed-in",
+      accountLabel: "new-account@example.test",
+      planType: "pro",
+      subscriptionEligible: true,
+    };
+    delete incoming.modelCatalogLoadReceipt;
+    harness.setServerState(incoming);
+    harness.emitServerEvent({
+      type: "profile_settings_changed",
+      commandId: "peer-subscription-generation-change",
+    });
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Dirty subscription Draft A",
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-discovered · Default"],
+    );
+    assert.match(
+      harness.document.querySelector("#inputCapabilitiesPreview")
+        ?.getAttribute("aria-label") ?? "",
+      /Unverified/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a Direct Session command drops an old subscription Draft catalog after auth changes", async () => {
+  const state = stateFixture();
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  let commandReleased = false;
+  try {
+    harness.select("#connectionKind", "codex-subscription");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["Discovered model · model-discovered · Default"],
+    );
+
+    harness.holdNextCommandResponse();
+    harness.select("#approvalMode", "everything");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "set_session_approval_mode"
+      ),
+      "Expected the Approval command to reach the bridge.",
+    );
+    const incoming = cloneState(state);
+    incoming.codexAuthGeneration += 1;
+    incoming.approvalMode = "everything";
+    incoming.sessions[0]!.approvalMode = "everything";
+    incoming.availableModels = [];
+    delete incoming.modelCatalogLoadReceipt;
+    harness.setServerState(incoming);
+    harness.releaseHeldCommandResponse();
+    commandReleased = true;
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#connectionKind")?.value,
+      "codex-subscription",
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-discovered · Default"],
+    );
+    assert.match(
+      harness.document.querySelector("#inputCapabilitiesPreview")
+        ?.getAttribute("aria-label") ?? "",
+      /Unverified/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!commandReleased) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a delayed old subscription catalog cannot cross a newer auth generation", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  const peerProfile = profileFixture({
+    id: "profile-2",
+    name: "Peer Direct Profile",
+    model: "peer-model",
+  });
+  state.settings.profiles = [profile, peerProfile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.configuredModels = [{ model: profile.defaultModel, label: profile.defaultModel }];
+  state.configuredModelsReady = false;
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  let commandReleased = false;
+  try {
+    harness.holdNextCommand();
+    harness.click("#discoverModelsButton");
+    await waitForCondition(
+      () => harness.commandIds.length > 0,
+      "Expected Load Models to reach the bridge.",
+    );
+    const commandId = harness.commandIds.at(-1);
+    assert.ok(commandId);
+
+    const newer = cloneState(state);
+    newer.codexAuthGeneration += 1;
+    newer.codexAuth = {
+      status: "signed-in",
+      accountLabel: "new-account@example.test",
+      planType: "pro",
+      subscriptionEligible: true,
+    };
+    newer.availableModels = [];
+    newer.settings.profiles[1]!.name = "Peer renamed at new generation";
+    delete newer.modelCatalogLoadReceipt;
+    harness.setServerState(newer);
+    const stateCallsBeforeRefresh = jsonCalls(harness, "/state").length;
+    harness.emitServerEvent({
+      type: "profile_settings_changed",
+      commandId: "peer-profile-and-auth-generation-change",
+    });
+    await waitForCondition(
+      () => jsonCalls(harness, "/state").length > stateCallsBeforeRefresh,
+      "Expected the peer Profile event to request current state.",
+    );
+    await waitForCondition(
+      () => harness.document.querySelector<HTMLOptionElement>(
+          '#profileSelector option[value="profile-2"]',
+        )?.textContent === "Peer renamed at new generation",
+      "Expected the newer peer Profile before the delayed catalog.",
+    );
+    await waitForCondition(
+      () => harness.document.querySelector("#codexAuthStatus")?.textContent
+        ?.includes("new-account@example.test") === true,
+      "Expected the newer auth generation before the delayed catalog.",
+    );
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      [`${profile.defaultModel} · Default`],
+      "the newer generation must render before the delayed catalog",
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#inputCapabilitiesPreview")
+        ?.getAttribute("aria-label") ?? "",
+      /Image: Supported|Audio: Supported|PDF: Supported/,
+    );
+
+    const stale = cloneState(state);
+    stale.availableModels = [{
+      id: profile.defaultModel,
+      displayName: "Old account model",
+      capabilities: {
+        ...capabilities(),
+        inputs: { image: true, audio: true, pdf: true },
+      },
+      capabilityEvidence: {
+        ...cloneState(state.capabilityEvidence),
+        inputs: {
+          image: "supported",
+          audio: "supported",
+          pdf: "supported",
+        },
+      },
+    }];
+    stale.capabilities = {
+      ...capabilities(),
+      inputs: { image: true, audio: true, pdf: true },
+    };
+    stale.capabilityEvidence = {
+      ...cloneState(state.capabilityEvidence),
+      inputs: {
+        image: "supported",
+        audio: "supported",
+        pdf: "supported",
+      },
+    };
+    stale.modelCatalogLoadReceipt = commandId;
+    stale.configuredModels = [{
+      model: profile.defaultModel,
+      label: "Old runtime model",
+    }];
+    stale.configuredModelsReady = true;
+    stale.bridgeStateRevision = "4";
+    stale.bridgeStateCoveredThroughRevision = "1";
+    harness.emitRawServerEvent({ type: "state", commandId, state: stale });
+    await harness.settle();
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      [`${profile.defaultModel} · Default`],
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#composerModel option",
+      )].map((option) => option.textContent),
+      [profile.defaultModel],
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      /studio@example\.test/,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLOptionElement>(
+        '#profileSelector option[value="profile-2"]',
+      )?.textContent,
+      "Peer renamed at new generation",
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#inputCapabilitiesPreview")
+        ?.getAttribute("aria-label") ?? "",
+      /Image: Supported|Audio: Supported|PDF: Supported/,
+    );
+    assert.deepEqual(harness.errors, []);
+
+    harness.releaseHeldCommand();
+    commandReleased = true;
+    await harness.settle();
+  } finally {
+    if (!commandReleased) harness.releaseHeldCommand();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a Direct catalog remains independent of a newer subscription auth generation", async () => {
+  const state = stateFixture();
+  state.codexAuthGeneration = 1;
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: "new-account@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const stale = cloneState(state);
+  stale.codexAuthGeneration = 0;
+  stale.codexAuth = {
+    status: "signed-in",
+    accountLabel: "old-account@example.test",
+    planType: "plus",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    harness.setServerState(stale);
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      ["model-a · Default", "Discovered model · model-discovered"],
+    );
+    assert.match(
+      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      /new-account@example\.test/,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      /old-account@example\.test/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
 
 test("connection selection separates Direct API from experimental ChatGPT subscription", async () => {
   const state = stateFixture();

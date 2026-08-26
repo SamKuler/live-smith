@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cloneState,
   createDialogHarness,
+  modelStateSourceFixture,
+  profileFixture,
+  profileRevisionFixture,
+  runtimeSummaryForHarnessProfile,
   stateFixture,
   waitForCondition,
 } from "./chat-dialog.test-harness.js";
@@ -31,6 +36,30 @@ async function selectSession(harness: Harness, sessionId: string): Promise<void>
 
 function usageValue(harness: Harness): string {
   return harness.document.querySelector("#contextUsageValue")?.textContent ?? "";
+}
+
+function subscriptionState() {
+  const state = stateFixture();
+  const profile = profileFixture({
+    connection: { kind: "codex-subscription", provider: "openai" },
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  });
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.configuredModels = [{ model: profile.defaultModel, label: profile.defaultModel }];
+  state.configuredModelsReady = true;
+  state.codexAuth = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  state.openSettingsOnLoad = false;
+  return state;
 }
 
 function usageUpdate(
@@ -234,6 +263,94 @@ test("changing the active Profile endpoint clears context usage for the same mod
       true,
     );
     assert.equal(usageValue(harness), "?");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a subscription auth generation change clears retained context usage", async () => {
+  const state = subscriptionState();
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(harness, "Usage before account change");
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 1, 250));
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(usageValue(harness), "25%");
+
+    const changed = cloneState(state);
+    changed.codexAuthGeneration += 1;
+    changed.codexAuth = {
+      status: "signed-in",
+      accountLabel: "new-account@example.test",
+      planType: "pro",
+      subscriptionEligible: true,
+    };
+    changed.availableModels = [];
+    delete changed.modelCatalogLoadReceipt;
+    changed.configuredModelsReady = false;
+    harness.setServerState(changed);
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    assert.equal(
+      await ui.runCommand("set_session_approval_mode", {
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
+      true,
+    );
+
+    assert.equal(usageValue(harness), "?");
+    assert.match(
+      harness.document.querySelector("#contextUsage")?.getAttribute("aria-label") ?? "",
+      /unavailable/i,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#contextUsage")?.getAttribute("aria-label") ?? "",
+      /250|1,000/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a Direct runtime retains context usage across subscription auth generations", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(harness, "Direct usage stays independent");
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 1, 250));
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(usageValue(harness), "25%");
+
+    const changed = cloneState(state);
+    changed.codexAuthGeneration += 1;
+    harness.setServerState(changed);
+    const ui = (harness.window as unknown as {
+      LiveSmithUI: {
+        runCommand(kind: string, extra?: Record<string, unknown>): Promise<boolean>;
+      };
+    }).LiveSmithUI;
+    assert.equal(
+      await ui.runCommand("set_session_approval_mode", {
+        sessionId: "session-1",
+        approvalMode: "manual",
+      }),
+      true,
+    );
+
+    assert.equal(usageValue(harness), "25%");
+    assert.match(
+      harness.document.querySelector("#contextUsage")?.getAttribute("aria-label") ?? "",
+      /250 of 1,000/,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

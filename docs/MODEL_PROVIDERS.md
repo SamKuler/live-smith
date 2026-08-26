@@ -172,7 +172,9 @@ succeeds, or the owner closes;
 signing out also requires an explicit UI confirmation.
 Direct-only state hydration, catalog access, and sends stay outside this fence
 and do not acquire the managed backend registry; they neither wait for managed
-auth mutations nor inspect managed poison or generation state.
+auth mutations nor inspect managed health. State responses may read only the
+credential-free auth generation so stale subscription projections can be
+discarded without entering managed use.
 `storage/scope.ts` resolves the Ableton-provided Live Smith storage directory's
 longest existing ancestor before appending a missing suffix. That one canonical
 directory owns persistence transactions, Session mutation queues, cross-modal
@@ -214,12 +216,13 @@ signed-in or signed-out state hydration is passive. Before persisting every new
 subscription prompt, the server confirms an eligible signed-in account, reads
 the current App Server model catalog, and requires the saved Session-selected
 model in it. Readiness failures are unpersisted, so Queue pauses its head
-instead of draining. Live
-Smith's normalized subscription model projection
+instead of draining. Live Smith's normalized subscription model projection
 stays only in the owning modal, is invalidated on every auth generation, is
 cleared before that modal's next relevant operation, and is never written to
-Live Smith's persistent model cache. The RPC reader accepts a
-line up to twice the locally bounded encoded
+Live Smith's persistent model cache. Only the non-sensitive process-local auth
+generation is projected to the UI; when a window next receives authoritative
+state, it invalidates Draft metadata retained from an older account. The RPC
+reader accepts a line up to twice the locally bounded encoded
 `turn/start` payload, so valid attachment echoes are supported without
 unbounded framing. Oversized context fails before `thread/start`. Connection
 failure, unconfirmed turn start, or unconfirmed interruption closes the owned
@@ -313,14 +316,24 @@ Each Profile stores one complete connection and one or more configured models:
 Add and Duplicate create an unsaved draft. **Save & Use** validates and persists
 the entire draft and makes it active. Changing session or sending a message does
 not save the draft. Send remains disabled until the draft is saved or discarded.
-**Load Models** checks the Draft connection, refreshes the provider catalog, and
-adds every newly discovered ID to that Draft without deleting existing model
-configurations. Only a matching command receipt may trigger the merge, so a
-failed load cannot reuse an older cached catalog. Verified capability limits may
-adjust incompatible Draft values; explicit capability overrides remain
-authoritative. A catalog contains at most 1,000 entries, while a Profile may
-contain at most 2,000 models so one existing/manual set can coexist with one
-complete catalog.
+**Load Models** checks the Draft connection and refreshes the provider catalog.
+A Direct API reload adds newly discovered IDs when the Draft model collection
+still belongs to that same connection; changing kind, family, mode, endpoint, or
+API key replaces the old connection's collection. A ChatGPT subscription reload
+reconciles to the complete current account catalog, removing unavailable IDs
+while preserving reasoning settings for IDs that remain. The first available
+entry becomes the default only when the prior default is gone. An empty
+first-run model slot is reused so generation values entered before the first
+load are preserved. Only a matching command receipt may apply an operation, so
+a failed load cannot reuse an older cached catalog. Verified capability limits may adjust
+incompatible Draft values; explicit capability overrides remain authoritative.
+A catalog contains at most 1,000 entries, while a Profile may contain at most
+2,000 models so one existing/manual set can coexist with one complete catalog
+when both belong to the same connection.
+Direct API discovery metadata is stored in a credential-safe connection hash
+slot, so probing an unsaved connection cannot evict the still-saved
+connection's catalog. Existing Profile-ID cache files remain exact-match
+read-only fallbacks until that connection is discovered again.
 An edit carries a fixed-length SHA-256 revision of the normalized Saved Profile
 from which its Draft started. The storage transaction recomputes that same
 Profile's revision and rejects a mismatch, instead of silently replacing a newer

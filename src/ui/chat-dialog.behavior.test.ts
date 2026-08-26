@@ -3025,7 +3025,7 @@ test("a command network error blocks mutations when stream and state reconciliat
   }
 });
 
-test("Load Models sends the current draft without saving or overwriting it", async () => {
+test("Load Models replaces models after the Draft switches API connections", async () => {
   const harness = await createDialogHarness();
   try {
     harness.input("#profileName", "Draft discovery");
@@ -3072,13 +3072,28 @@ test("Load Models sends the current draft without saving or overwriting it", asy
       harness.document.querySelector<HTMLSelectElement>(
         "#modelConfigSelector",
       )?.selectedOptions[0]?.textContent,
-      "typed-model",
+      "Discovered model · model-discovered · Default",
     );
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLOptionElement>(
         "#modelConfigSelector option",
       )].map((option) => option.textContent),
-      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
+      ["Discovered model · model-discovered · Default"],
+    );
+
+    harness.input("#manualModelId", "new-api-manual-model");
+    harness.click("#addManualModelButton");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#modelConfigSelector option",
+      )].map((option) => option.textContent),
+      [
+        "Discovered model · model-discovered · Default",
+        "new-api-manual-model",
+      ],
+      "reloading the same API must keep manually configured models",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3164,7 +3179,7 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
       [...harness.document.querySelectorAll<HTMLOptionElement>(
         "#modelConfigSelector option",
       )].map((option) => option.textContent),
-      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
+      ["Discovered model · model-discovered · Default"],
     );
     const draft = profileFixture({
       name: "Draft discovery",
@@ -3198,7 +3213,7 @@ test("a later discovery SSE state cannot replace the settled HTTP command state"
       [...harness.document.querySelectorAll<HTMLOptionElement>(
         "#modelConfigSelector option",
       )].map((option) => option.textContent),
-      ["model-a · Default", "typed-model", "Discovered model · model-discovered"],
+      ["Discovered model · model-discovered · Default"],
     );
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.max,
@@ -3241,7 +3256,7 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
       capabilities: { ...capabilities(), maxOutputTokens: 24_000 },
       modelStateSource: modelStateSourceFixture(draft),
     });
-    harness.holdNextCommand();
+    harness.holdNextCommandResponse();
     harness.click("#discoverModelsButton");
     await Promise.resolve();
     const commandId = harness.commandIds.at(-1);
@@ -3255,9 +3270,9 @@ test("an earlier discovery SSE state is usable before its HTTP response arrives"
       [...harness.document.querySelectorAll<HTMLOptionElement>(
         "#modelConfigSelector option",
       )].map((option) => option.textContent),
-      ["model-a · Default", "Typed model · typed-model"],
+      ["Typed model · typed-model · Default"],
     );
-    harness.releaseHeldCommand();
+    harness.releaseHeldCommandResponse();
     await harness.settle();
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3511,9 +3526,9 @@ test("input capability overrides round-trip through the Profile form", async () 
     harness.select("#overrideInputPdf", "true");
 
     assert.deepEqual(renderedCapabilityStatuses(harness), [
-      ["Images · Supported", "supported"],
-      ["Audio · Unsupported", "unsupported"],
-      ["PDF · Supported", "supported"],
+      ["Image ✓", "supported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ✓", "supported"],
     ]);
 
     harness.click("#saveProfileButton");
@@ -3538,9 +3553,9 @@ test("input capability preview distinguishes unverified fields from unsupported 
   try {
     const preview = () => renderedCapabilityStatuses(harness);
     assert.deepEqual(preview(), [
-      ["Images · Unsupported", "unsupported"],
-      ["Audio · Unsupported", "unsupported"],
-      ["PDF · Unsupported", "unsupported"],
+      ["Image ×", "unsupported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ×", "unsupported"],
     ]);
 
     const originalBaseUrl = harness.document.querySelector<HTMLInputElement>(
@@ -3549,23 +3564,23 @@ test("input capability preview distinguishes unverified fields from unsupported 
     assert.ok(originalBaseUrl);
     harness.input("#baseUrl", "https://unverified.example/v1");
     assert.deepEqual(preview(), [
-      ["Images · Unverified", "unverified"],
-      ["Audio · Unverified", "unverified"],
-      ["PDF · Unverified", "unverified"],
+      ["Image ?", "unverified"],
+      ["Audio ?", "unverified"],
+      ["PDF ?", "unverified"],
     ]);
 
     harness.select("#overrideInputImage", "true");
     assert.deepEqual(preview(), [
-      ["Images · Supported", "supported"],
-      ["Audio · Unverified", "unverified"],
-      ["PDF · Unverified", "unverified"],
+      ["Image ✓", "supported"],
+      ["Audio ?", "unverified"],
+      ["PDF ?", "unverified"],
     ]);
 
     harness.input("#baseUrl", originalBaseUrl);
     assert.deepEqual(preview(), [
-      ["Images · Supported", "supported"],
-      ["Audio · Unsupported", "unsupported"],
-      ["PDF · Unsupported", "unsupported"],
+      ["Image ✓", "supported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ×", "unsupported"],
     ]);
     assert.deepEqual(harness.errors, []);
   } finally {

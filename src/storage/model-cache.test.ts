@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -76,7 +77,7 @@ test("connection fingerprints isolate connection changes", () => {
   assert.equal(original.includes("secret-key"), false);
 });
 
-test("model cache is profile and fingerprint scoped", async () => {
+test("model cache is connection-fingerprint scoped without exposing identity", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
   const active = profile({ id: "profile/unsafe" });
   const models: DiscoveredModelInfo[] = [{ id: "model-a", displayName: "A", capabilities }];
@@ -89,7 +90,8 @@ test("model cache is profile and fingerprint scoped", async () => {
 
   const files = await fs.readdir(directory);
   assert.equal(files.some((file) => file.includes("secret-key")), false);
-  assert.equal(files.some((file) => file.includes("profile_unsafe")), true);
+  assert.equal(files.some((file) => file.includes("profile_unsafe")), false);
+  assert.match(files[0]!, /^live-smith-models-v2-[a-f0-9]{64}\.json$/);
   const persisted = JSON.parse(
     await fs.readFile(path.join(directory, files[0]!), "utf8"),
   ) as Record<string, unknown>;
@@ -277,6 +279,100 @@ test("model cache supports isolated in-memory entries", async () => {
       baseUrl: "https://other.test",
     })),
     [],
+  );
+});
+
+test("different connections of one Profile keep independent persistent caches", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const connectionA = profile({ id: "shared-profile", apiKey: "key-a" });
+  const connectionB = profile({
+    id: connectionA.id,
+    apiKey: "key-b",
+    baseUrl: "https://other.example.test/v1",
+  });
+  const modelsA: DiscoveredModelInfo[] = [{
+    id: "model-a",
+    displayName: "A",
+    capabilities,
+  }];
+  const modelsB: DiscoveredModelInfo[] = [{
+    id: "model-b",
+    displayName: "B",
+    capabilities,
+  }];
+
+  await saveModelCache(directory, connectionA, modelsA);
+  await saveModelCache(directory, connectionB, modelsB);
+
+  assert.deepEqual(await loadModelCache(directory, connectionA), modelsA);
+  assert.deepEqual(await loadModelCache(directory, connectionB), modelsB);
+  assert.equal((await fs.readdir(directory)).length, 2);
+
+  await saveModelCache(directory, connectionA, []);
+  assert.deepEqual(await loadModelCache(directory, connectionA), []);
+  assert.deepEqual(await loadModelCache(directory, connectionB), modelsB);
+});
+
+test("different connections of one Profile keep independent in-memory caches", async () => {
+  const id = `shared-memory-profile-${Date.now()}`;
+  const connectionA = profile({ id, apiKey: "memory-key-a" });
+  const connectionB = profile({ id, apiKey: "memory-key-b" });
+  const modelsA: DiscoveredModelInfo[] = [{
+    id: "model-a",
+    displayName: "A",
+    capabilities,
+  }];
+  const modelsB: DiscoveredModelInfo[] = [{
+    id: "model-b",
+    displayName: "B",
+    capabilities,
+  }];
+
+  await saveModelCache(undefined, connectionA, modelsA);
+  await saveModelCache(undefined, connectionB, modelsB);
+
+  assert.deepEqual(await loadModelCache(undefined, connectionA), modelsA);
+  assert.deepEqual(await loadModelCache(undefined, connectionB), modelsB);
+});
+
+test("model cache reads an exact legacy slot only while its v2 slot is absent", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const active = profile({ id: "legacy-profile" });
+  const legacyModels: DiscoveredModelInfo[] = [{
+    id: "legacy-model",
+    displayName: "Legacy",
+    capabilities,
+  }];
+  const idHash = createHash("sha256").update(active.id).digest("hex").slice(0, 16);
+  const legacyPath = path.join(
+    directory,
+    `live-smith-models-${active.id}-${idHash}.json`,
+  );
+  await fs.writeFile(legacyPath, JSON.stringify({
+    schemaVersion: 1,
+    fingerprint: connectionFingerprint(active),
+    models: legacyModels,
+  }));
+
+  assert.deepEqual(await loadModelCache(directory, active), legacyModels);
+  assert.deepEqual(
+    await loadModelCache(directory, profile({ id: active.id, apiKey: "other" })),
+    [],
+  );
+
+  await saveModelCache(directory, active, []);
+  assert.deepEqual(await loadModelCache(directory, active), []);
+  const v2File = (await fs.readdir(directory)).find((file) =>
+    file.startsWith("live-smith-models-v2-")
+  );
+  assert.ok(v2File);
+  await fs.writeFile(path.join(directory, v2File), "{");
+  assert.deepEqual(
+    await loadModelCache(directory, active),
+    [],
+    "a corrupt v2 slot must not revive stale legacy metadata",
   );
 });
 

@@ -5,7 +5,7 @@
         getState,
         hasAnySendInProgress,
         isOperationInProgress,
-        requestComposerPresentation,
+        requestSendPresentation,
         runCommand,
         showStatus,
       }) {
@@ -19,6 +19,9 @@
       let draftProfileBaselineChanged = false;
       let selectedModelIndex = 0;
       let modelStateSource = null;
+      let draftModelsConnection = null;
+      let draftCatalogProjection = null;
+      let pendingCatalogApply = null;
       let renderedCatalogMatchesConnection = false;
       let renderedCodexAuthKey = null;
       const controlIdByProfileField = {
@@ -61,6 +64,20 @@
         return value == null ? value : JSON.parse(JSON.stringify(value));
       }
 
+      function setPropertyIfChanged(element, property, value) {
+        if (element[property] !== value) element[property] = value;
+      }
+
+      function setDataIfChanged(element, key, value) {
+        if (element.dataset[key] !== value) element.dataset[key] = value;
+      }
+
+      function toggleClassIfChanged(element, className, enabled) {
+        if (element.classList.contains(className) !== enabled) {
+          element.classList.toggle(className, enabled);
+        }
+      }
+
       function sameProfileSnapshot(left, right) {
         return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
       }
@@ -81,13 +98,19 @@
         if (!control?.id) return;
         const errorId = `${control.id}Error`;
         document.getElementById(errorId)?.remove();
-        control.removeAttribute("aria-invalid");
-        const describedBy = (control.getAttribute("aria-describedby") || "")
+        if (control.hasAttribute("aria-invalid")) {
+          control.removeAttribute("aria-invalid");
+        }
+        const currentDescription = control.getAttribute("aria-describedby") || "";
+        const describedBy = currentDescription
           .split(/\s+/)
           .filter((id) => id && id !== errorId);
+        const nextDescription = describedBy.join(" ");
         if (describedBy.length) {
-          control.setAttribute("aria-describedby", describedBy.join(" "));
-        } else {
+          if (currentDescription !== nextDescription) {
+            control.setAttribute("aria-describedby", nextDescription);
+          }
+        } else if (control.hasAttribute("aria-describedby")) {
           control.removeAttribute("aria-describedby");
         }
       }
@@ -132,7 +155,10 @@
         const message = error instanceof SyntaxError
           ? "Extra Body must be valid JSON."
           : error.message || String(error);
-        if (!showFieldError("advanced.extraBody", message)) {
+        if (!showFieldError(
+          `models.${selectedModelIndex}.advanced.extraBody`,
+          message,
+        )) {
           showStatus(message, true);
         }
       }
@@ -221,23 +247,42 @@
         });
       }
 
+      function sameModelConnection(left, right) {
+        if (!left || !right || left.kind !== right.kind) return false;
+        if (left.kind === "codex-subscription") {
+          return left.provider === right.provider;
+        }
+        return left.apiFamily === right.apiFamily &&
+          left.apiMode === right.apiMode &&
+          left.baseUrl === right.baseUrl &&
+          left.apiKey === right.apiKey;
+      }
+
+      function draftModelsMatchCurrentConnection() {
+        return sameModelConnection(
+          draftModelsConnection,
+          currentModelSource()?.connection,
+        );
+      }
+
       function syncModelStateSource(profile) {
         modelStateSource = modelSourceFor(profile);
       }
 
+      function invalidateDraftCatalogProjection() {
+        draftCatalogProjection = null;
+        pendingCatalogApply = null;
+      }
+
       function modelStateMatchesCurrentConnection() {
+        return modelSourceMatchesCurrentConnection(modelStateSource);
+      }
+
+      function modelSourceMatchesCurrentConnection(source) {
         const current = currentModelSource();
-        if (!modelStateSource || !current) return false;
-        if (
-          modelStateSource.profileId !== current.profileId ||
-          modelStateSource.connection.kind !== current.connection.kind
-        ) return false;
-        if (current.connection.kind === "codex-subscription") return true;
-        const source = modelStateSource.connection;
-        return source.apiFamily === current.connection.apiFamily &&
-          source.apiMode === current.connection.apiMode &&
-          source.baseUrl === current.connection.baseUrl &&
-          source.apiKey === current.connection.apiKey;
+        if (!source || !current) return false;
+        return source.profileId === current.profileId &&
+          sameModelConnection(source.connection, current.connection);
       }
 
       function modelStateMatchesCurrentProfile() {
@@ -264,7 +309,7 @@
             };
       }
 
-      function modelConfigFromForm() {
+      function modelConfigFromForm({ preserveInvalidExtraBody = false } = {}) {
         const subscription = isCodexSubscription();
         const temperatureControl = document.getElementById("temperature");
         const temperatureRaw = subscription || temperatureControl.disabled
@@ -277,10 +322,22 @@
           ? ""
           : document.getElementById("extraBody").value.trim();
         let extraBody;
+        let invalidExtraBody = false;
         if (extraRaw) {
-          extraBody = JSON.parse(extraRaw);
+          try {
+            extraBody = JSON.parse(extraRaw);
+          } catch (error) {
+            if (!preserveInvalidExtraBody) throw error;
+            invalidExtraBody = true;
+          }
+        }
+        if (!invalidExtraBody && extraRaw) {
           if (!extraBody || Array.isArray(extraBody) || typeof extraBody !== "object") {
-            throw new Error("Extra Body must be a JSON object.");
+            if (!preserveInvalidExtraBody) {
+              throw new Error("Extra Body must be a JSON object.");
+            }
+            invalidExtraBody = true;
+            extraBody = undefined;
           }
         }
         const selectedReasoningMode = document.getElementById("reasoningMode").value;
@@ -302,6 +359,13 @@
           advanced.hostedTools = { webSearch: true };
         }
         if (extraBody) advanced.extraBody = extraBody;
+        if (invalidExtraBody) {
+          const previousExtraBody = draftProfile?.models?.[selectedModelIndex]
+            ?.advanced?.extraBody;
+          if (previousExtraBody !== undefined) {
+            advanced.extraBody = cloneValue(previousExtraBody);
+          }
+        }
         const temperature = Number(temperatureRaw);
         return {
           model: selectedDraftModelId(),
@@ -320,7 +384,7 @@
         };
       }
 
-      function synchronizeCurrentModelConfig() {
+      function synchronizeCurrentModelConfig(options) {
         if (!draftProfile) return null;
         if (!Array.isArray(draftProfile.models) || draftProfile.models.length === 0) {
           draftProfile.models = [blankModelConfig()];
@@ -331,7 +395,7 @@
           draftProfile.models.length - 1,
         );
         const previous = draftProfile.models[selectedModelIndex];
-        const next = modelConfigFromForm();
+        const next = modelConfigFromForm(options);
         draftProfile.models[selectedModelIndex] = next;
         if (
           !draftProfile.defaultModel ||
@@ -354,6 +418,19 @@
           name: document.getElementById("profileName").value.trim(),
           connection: connectionFromForm(),
           defaultModel,
+          models,
+        };
+      }
+
+      function profileForDiscovery() {
+        synchronizeCurrentModelConfig({ preserveInvalidExtraBody: true });
+        const models = cloneValue(draftProfile?.models || []);
+        return {
+          id: draftProfile?.id || createProfileId(),
+          name: document.getElementById("profileName").value.trim(),
+          connection: connectionFromForm(),
+          defaultModel: models[selectedModelIndex]?.model ||
+            draftProfile?.defaultModel || "",
           models,
         };
       }
@@ -435,21 +512,35 @@
         selectedModelIndex = models.length
           ? Math.min(Math.max(0, selectedModelIndex), models.length - 1)
           : 0;
-        selector.value = String(selectedModelIndex);
-        selector.title = selector.selectedOptions[0]?.textContent || "";
+        setPropertyIfChanged(selector, "value", String(selectedModelIndex));
+        setPropertyIfChanged(
+          selector,
+          "title",
+          selector.selectedOptions[0]?.textContent || "",
+        );
         const selected = models[selectedModelIndex];
         const isDefault = Boolean(selected?.model) &&
           selected.model === draftProfile?.defaultModel;
         const defaultStatus = document.getElementById("modelConfigDefault");
-        defaultStatus.textContent = isDefault
-          ? "Default for new Sessions"
+        const defaultMessage = isDefault
+          ? ""
           : draftProfile?.defaultModel
-            ? `Default: ${draftProfile.defaultModel}`
-            : "No default model";
-        document.getElementById("removeModelConfigButton").disabled =
-          models.length <= 1;
-        document.getElementById("setDefaultModelButton").disabled =
-          !selected?.model || isDefault;
+            ? `New Sessions: ${draftProfile.defaultModel}`
+            : "Choose a default model";
+        if (defaultStatus.textContent !== defaultMessage) {
+          defaultStatus.textContent = defaultMessage;
+        }
+        if (defaultStatus.hidden !== isDefault) defaultStatus.hidden = isDefault;
+        setPropertyIfChanged(
+          document.getElementById("removeModelConfigButton"),
+          "disabled",
+          models.length <= 1,
+        );
+        setPropertyIfChanged(
+          document.getElementById("setDefaultModelButton"),
+          "disabled",
+          !selected?.model || isDefault,
+        );
       }
 
       function renderSelectedModelConfig() {
@@ -472,7 +563,7 @@
           ? JSON.stringify(entry.advanced.extraBody, null, 2)
           : "";
         if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
-        renderProfileModels();
+        renderModelConfigSelector();
         updateHostedToolControls();
         updateCapabilityPreview();
       }
@@ -494,13 +585,34 @@
         selectedModelIndex = nextIndex;
         clearFieldErrors();
         renderSelectedModelConfig();
-        updateDraftActions();
       }
 
       function catalogModelsForDraftConnection() {
+        const local = currentDraftCatalogProjection();
+        if (local) return local.models;
         return modelStateMatchesCurrentConnection()
           ? getState().availableModels || []
           : [];
+      }
+
+      function catalogProjectionMatchesCurrentConnection() {
+        return Boolean(currentDraftCatalogProjection()) ||
+          modelStateMatchesCurrentConnection();
+      }
+
+      function currentDraftCatalogProjection() {
+        const projection = draftCatalogProjection;
+        if (!projection || !modelSourceMatchesCurrentConnection(projection.source)) {
+          return null;
+        }
+        if (
+          projection.source.connection.kind === "codex-subscription" &&
+          projection.authGeneration !== getState().codexAuthGeneration
+        ) {
+          invalidateDraftCatalogProjection();
+          return null;
+        }
+        return projection;
       }
 
       function configuredModelIds() {
@@ -548,7 +660,11 @@
         return config;
       }
 
-      function addModelIds(modelIds, selectAddedModel) {
+      function addModelIds(
+        modelIds,
+        selectAddedModel,
+        catalogModels = catalogModelsForDraftConnection(),
+      ) {
         if (configuredModelIds().size + modelIds.length > maximumProfileModelCount) {
           showStatus(
             `A Profile can contain at most ${maximumProfileModelCount} models. Remove models before loading more.`,
@@ -557,7 +673,7 @@
           return false;
         }
         const catalogById = new Map(
-          catalogModelsForDraftConnection().map((model) => [model.id, model]),
+          catalogModels.map((model) => [model.id, model]),
         );
         const emptyIndexes = draftProfile.models
           .map((entry, index) => entry.model?.trim() ? -1 : index)
@@ -585,7 +701,12 @@
         draftDirty = true;
         getState().status = undefined;
         clearFieldErrors();
-        renderSelectedModelConfig();
+        if (selectAddedModel) {
+          renderSelectedModelConfig();
+        } else {
+          renderProfileModels();
+          updateCapabilityPreview();
+        }
         updateDraftActions();
         return true;
       }
@@ -610,17 +731,131 @@
         input.focus({ preventScroll: true });
       }
 
-      function mergeLoadedModelsIntoDraft() {
-        if (modelEditorLocked()) return;
-        const configured = configuredModelIds();
-        const remaining = catalogModelsForDraftConnection()
-          .map((model) => model.id)
-          .filter((modelId) => !configured.has(modelId));
-        if (!remaining.length) {
+      function replaceModelsWithLoadedCatalog(modelIds, catalogModels) {
+        const catalogById = new Map(
+          catalogModels.map((model) => [model.id, model]),
+        );
+        draftProfile.models = modelIds.length
+          ? modelIds.map((modelId) =>
+              modelConfigForId(modelId, null, catalogById)
+            )
+          : [blankModelConfig()];
+        draftProfile.defaultModel = modelIds[0] || "";
+        selectedModelIndex = 0;
+        draftDirty = true;
+        getState().status = undefined;
+        clearFieldErrors();
+        renderSelectedModelConfig();
+        updateDraftActions();
+        return true;
+      }
+
+      function reconcileSubscriptionModelsWithLoadedCatalog(
+        modelIds,
+        catalogModels,
+      ) {
+        const configuredById = new Map(
+          (draftProfile.models || []).map((model) => [model.model, model]),
+        );
+        const catalogById = new Map(
+          catalogModels.map((model) => [model.id, model]),
+        );
+        const selectedModel = selectedDraftModelId();
+        const models = modelIds.length
+          ? modelIds.map((modelId) => modelConfigForId(
+              modelId,
+              configuredById.get(modelId),
+              catalogById,
+            ))
+          : [blankModelConfig(true)];
+        const defaultModel = modelIds.includes(draftProfile.defaultModel)
+          ? draftProfile.defaultModel
+          : modelIds[0] || "";
+        const selectedModelId = modelIds.includes(selectedModel)
+          ? selectedModel
+          : defaultModel;
+        const nextSelectedIndex = Math.max(
+          0,
+          models.findIndex((model) => model.model === selectedModelId),
+        );
+        if (
+          JSON.stringify(draftProfile.models) === JSON.stringify(models) &&
+          draftProfile.defaultModel === defaultModel &&
+          selectedModelIndex === nextSelectedIndex
+        ) {
           renderProfileModels();
-          return;
+          return true;
         }
-        addModelIds(remaining, false);
+        draftProfile.models = models;
+        draftProfile.defaultModel = defaultModel;
+        selectedModelIndex = nextSelectedIndex;
+        draftDirty = true;
+        getState().status = undefined;
+        clearFieldErrors();
+        renderSelectedModelConfig();
+        updateDraftActions();
+        return true;
+      }
+
+      function applyLoadedModelsToDraft(
+        replaceExisting,
+        catalogModels,
+        source,
+      ) {
+        if (modelEditorLocked() || !modelSourceMatchesCurrentConnection(source)) {
+          return false;
+        }
+        const loadedModelIds = catalogModels.map((model) => model.id);
+        let applied;
+        if (isCodexSubscription()) {
+          applied = reconcileSubscriptionModelsWithLoadedCatalog(
+            loadedModelIds,
+            catalogModels,
+          );
+        } else if (replaceExisting) {
+          applied = replaceModelsWithLoadedCatalog(loadedModelIds, catalogModels);
+        } else {
+          const configured = configuredModelIds();
+          const remaining = loadedModelIds.filter(
+            (modelId) => !configured.has(modelId)
+          );
+          if (!remaining.length) {
+            renderProfileModels();
+            applied = true;
+          } else {
+            applied = addModelIds(remaining, false, catalogModels);
+          }
+        }
+        if (applied) {
+          draftModelsConnection = currentModelSource()?.connection || null;
+        }
+        return applied;
+      }
+
+      function retryPendingCatalogApply() {
+        const pending = pendingCatalogApply;
+        if (!pending) return false;
+        if (!draftProfile || draftProfileBaselineChanged) {
+          pendingCatalogApply = null;
+          return false;
+        }
+        if (isOperationInProgress() || hasAnySendInProgress()) return false;
+        if (
+          !modelSourceMatchesCurrentConnection(pending.projection.source) ||
+          currentDraftCatalogProjection() !== pending.projection
+        ) {
+          if (draftCatalogProjection === pending.projection) {
+            draftCatalogProjection = null;
+          }
+          pendingCatalogApply = null;
+          return false;
+        }
+        pendingCatalogApply = null;
+        return applyLoadedModelsToDraft(
+          pending.replaceExisting,
+          pending.projection.models,
+          pending.projection.source,
+        );
       }
 
       function handleManualModelIdKeydown(event) {
@@ -689,7 +924,14 @@
         getState().status = undefined;
         clearFieldError(control);
         if (
-          renderedCatalogMatchesConnection !== modelStateMatchesCurrentConnection()
+          draftCatalogProjection &&
+          !modelSourceMatchesCurrentConnection(draftCatalogProjection.source)
+        ) {
+          draftCatalogProjection = null;
+        }
+        if (
+          renderedCatalogMatchesConnection !==
+            catalogProjectionMatchesCurrentConnection()
         ) {
           renderProfileModels();
         }
@@ -835,7 +1077,6 @@
           : wasTurnedOff
           ? "Web Search was turned off because Chat Completions does not support provider-hosted search in Live Smith."
           : "Chat Completions does not support provider-hosted Web Search in Live Smith.";
-        applyConnectionKindPresentation(settingsLocked);
       }
 
       function updateAnthropicSubscriptionHint() {
@@ -943,13 +1184,16 @@
       }
 
       function configureCodexAuthAction(button, action) {
-        button.hidden = action.hidden;
-        button.dataset.idleLabel = action.label;
-        button.dataset.busyLabel = action.busyLabel || "";
-        if (!button.dataset.commandIdleLabel) button.textContent = action.label;
-        button.classList.toggle("primary", action.tone === "primary");
-        button.classList.toggle("secondary", action.tone === "secondary");
-        button.classList.toggle(
+        setPropertyIfChanged(button, "hidden", action.hidden);
+        setDataIfChanged(button, "idleLabel", action.label);
+        setDataIfChanged(button, "busyLabel", action.busyLabel || "");
+        if (!button.dataset.commandIdleLabel) {
+          setPropertyIfChanged(button, "textContent", action.label);
+        }
+        toggleClassIfChanged(button, "primary", action.tone === "primary");
+        toggleClassIfChanged(button, "secondary", action.tone === "secondary");
+        toggleClassIfChanged(
+          button,
           "subscription-auth-quiet-action",
           action.tone === "quiet",
         );
@@ -964,8 +1208,12 @@
         const verificationError = document.getElementById("codexVerificationError");
         const userCode = document.getElementById("codexUserCode");
         const presentationKey = JSON.stringify(auth || null);
-        panel.dataset.authState = presentation.state;
-        document.getElementById("codexAuthStateBadge").textContent = presentation.badge;
+        setDataIfChanged(panel, "authState", presentation.state);
+        setPropertyIfChanged(
+          document.getElementById("codexAuthStateBadge"),
+          "textContent",
+          presentation.badge,
+        );
 
         if (renderedCodexAuthKey !== presentationKey) {
           renderedCodexAuthKey = presentationKey;
@@ -1000,9 +1248,21 @@
         configureCodexAuthAction(signIn, presentation.signIn);
         configureCodexAuthAction(check, presentation.check);
         configureCodexAuthAction(logout, presentation.logout);
-        signIn.disabled = settingsLocked || !subscription || presentation.signIn.hidden;
-        check.disabled = settingsLocked || !subscription;
-        logout.disabled = settingsLocked || !subscription || presentation.logout.hidden;
+        setPropertyIfChanged(
+          signIn,
+          "disabled",
+          settingsLocked || !subscription || presentation.signIn.hidden,
+        );
+        setPropertyIfChanged(
+          check,
+          "disabled",
+          settingsLocked || !subscription,
+        );
+        setPropertyIfChanged(
+          logout,
+          "disabled",
+          settingsLocked || !subscription || presentation.logout.hidden,
+        );
       }
 
       function focusAfterCodexAuthCommand(source) {
@@ -1067,6 +1327,7 @@
 
       async function duplicateProfile() {
         if (!draftProfile) return;
+        const sourceModelsConnection = cloneValue(draftModelsConnection);
         if (draftDirty && !(await confirmAction({
           title: "Duplicate unsaved values?",
           message: "Create a new Profile from the values currently shown in the form?",
@@ -1079,7 +1340,13 @@
           showProfileFormError(error);
           return;
         }
-        setDraftProfile(blankProfile(current), null, true, null);
+        setDraftProfile(
+          blankProfile(current),
+          null,
+          true,
+          null,
+          sourceModelsConnection,
+        );
       }
 
       function discardProfileChanges() {
@@ -1122,19 +1389,28 @@
       }
 
       async function discoverModels() {
-        let profile;
-        try {
-          profile = profileFromForm();
-        } catch (error) {
-          showProfileFormError(error);
-          return;
-        }
-        profile.defaultModel = profile.models[selectedModelIndex]?.model ||
-          profile.defaultModel;
+        const profile = profileForDiscovery();
+        const replaceExisting = configuredModelIds().size > 0 &&
+          !draftModelsMatchCurrentConnection();
         const commandId = createCommandId();
         if (await runCommand("discover_models", { profile }, { commandId }) &&
           getState().modelCatalogLoadReceipt === commandId) {
-          mergeLoadedModelsIntoDraft();
+          const source = cloneValue(modelStateSource);
+          if (modelSourceMatchesCurrentConnection(source)) {
+            const projection = {
+              authGeneration: source.connection.kind === "codex-subscription"
+                ? getState().codexAuthGeneration
+                : null,
+              models: cloneValue(getState().availableModels || []),
+              source,
+            };
+            draftCatalogProjection = projection;
+            pendingCatalogApply = {
+              projection,
+              replaceExisting,
+            };
+            retryPendingCatalogApply();
+          }
         }
       }
 
@@ -1157,17 +1433,24 @@
 
       function updateApprovalModePresentation() {
         const control = document.getElementById("approvalMode");
-        control.classList.toggle("is-everything", control.value === "everything");
-        control.closest("label").title = control.value === "everything"
+        const isEverything = control.value === "everything";
+        if (control.classList.contains("is-everything") !== isEverything) {
+          control.classList.toggle("is-everything", isEverything);
+        }
+        const title = isEverything
           ? "Accept Everything auto-applies every validated change, including deletes and replacement writes."
           : control.value === "low-risk"
             ? "Low Risk auto-applies changes that are not deletes, Clip writes, Arrangement clears, or sample replacements."
             : "Manual requests approval for every Apply request.";
+        const label = control.closest("label");
+        if (label.title !== title) label.title = title;
       }
 
       function renderApprovalMode() {
         const control = document.getElementById("approvalMode");
-        control.value = getState().approvalMode;
+        if (control.value !== getState().approvalMode) {
+          control.value = getState().approvalMode;
+        }
         updateApprovalModePresentation();
       }
 
@@ -1216,6 +1499,10 @@
         );
         draftProfileChangedElsewhere = baselineChanged || activeProfileChanged;
         draftProfileBaselineChanged = baselineChanged;
+        if (baselineChanged) {
+          draftCatalogProjection = null;
+          pendingCatalogApply = null;
+        }
         updateDraftActions();
       }
 
@@ -1226,8 +1513,11 @@
           label: profile.name,
           value: profile.id,
         }));
-        document.getElementById("savedProfileControls").hidden =
-          profiles.length === 0;
+        setPropertyIfChanged(
+          document.getElementById("savedProfileControls"),
+          "hidden",
+          profiles.length === 0,
+        );
         if (
           selectedProfileId &&
           !profiles.some((profile) => profile.id === selectedProfileId)
@@ -1235,12 +1525,21 @@
           optionRows.push({ label: "Unsaved profile", value: selectedProfileId });
         }
         syncSelectOptions(selector, optionRows);
-        selector.value = selectedProfileId;
+        setPropertyIfChanged(selector, "value", selectedProfileId);
       }
 
-      function setDraftProfile(profile, saved, isNew, savedRevision) {
+      function setDraftProfile(
+        profile,
+        saved,
+        isNew,
+        savedRevision,
+        modelsConnection = modelSourceFor(profile)?.connection || null,
+      ) {
         clearFieldErrors();
+        draftCatalogProjection = null;
+        pendingCatalogApply = null;
         draftProfile = cloneValue(profile);
+        draftModelsConnection = cloneValue(modelsConnection);
         savedProfileSnapshot = cloneValue(saved);
         savedProfileRevisionSnapshot = saved ? savedRevision : null;
         savedActiveProfileIdSnapshot = getState().settings.activeProfileId;
@@ -1269,6 +1568,8 @@
             (entry) => entry.model === draftProfile.defaultModel,
           ),
         );
+        renderedCatalogMatchesConnection =
+          catalogProjectionMatchesCurrentConnection();
         updateAnthropicSubscriptionHint();
         applyConnectionKindPresentation();
         renderSelectedModelConfig();
@@ -1310,7 +1611,8 @@
       }
 
       function renderProfileModels() {
-        renderedCatalogMatchesConnection = modelStateMatchesCurrentConnection();
+        renderedCatalogMatchesConnection =
+          catalogProjectionMatchesCurrentConnection();
         updateManualModelActions();
         renderModelConfigSelector();
       }
@@ -1329,22 +1631,24 @@
         const countStatus = document.getElementById("profileModelCount");
         if (countStatus.textContent !== count) countStatus.textContent = count;
         const manualEntry = document.getElementById("manualModelEntry");
-        manualEntry.hidden = subscription;
-        if (subscription) manualEntry.open = false;
+        setPropertyIfChanged(manualEntry, "hidden", subscription);
+        if (subscription) setPropertyIfChanged(manualEntry, "open", false);
 
         const hint = document.getElementById("manualModelIdHint");
-        if (profileIsFull) {
-          hint.textContent = `This Profile already contains ${maximumProfileModelCount} models.`;
-        } else if (!modelId) {
-          hint.textContent = "Use this only when the provider does not list the model.";
-        } else if (duplicate) {
-          hint.textContent = `${modelId} is already in this Profile.`;
-        } else {
-          hint.textContent = "The provider will validate this ID when you use the model.";
-        }
+        const hintText = profileIsFull
+          ? `This Profile already contains ${maximumProfileModelCount} models.`
+          : !modelId
+            ? "Use this only when the provider does not list the model."
+            : duplicate
+              ? `${modelId} is already in this Profile.`
+              : "The provider will validate this ID when you use the model.";
+        setPropertyIfChanged(hint, "textContent", hintText);
 
-        document.getElementById("addManualModelButton").disabled = locked ||
-          subscription || profileIsFull || !modelId || duplicate;
+        setPropertyIfChanged(
+          document.getElementById("addManualModelButton"),
+          "disabled",
+          locked || subscription || profileIsFull || !modelId || duplicate,
+        );
       }
 
       function updateReasoningVisibility() {
@@ -1363,10 +1667,14 @@
         const budgetRow = document.getElementById("reasoningBudgetRow");
         const hint = document.getElementById("reasoningHint");
         if (hint) {
-          hint.hidden = supported && selection.authoritative.reasoning;
-          hint.textContent = selection.authoritative.reasoning
+          setPropertyIfChanged(
+            hint,
+            "hidden",
+            supported && selection.authoritative.reasoning,
+          );
+          setPropertyIfChanged(hint, "textContent", selection.authoritative.reasoning
             ? "Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced."
-            : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.";
+            : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.");
         }
         let adjusted = false;
         const rawRequestedMode = modeSelect.dataset.requestedValue ??
@@ -1392,11 +1700,12 @@
           }
           if (supported) modeRows.push({ label: "Enabled", value: "enabled" });
           syncSelectOptions(modeSelect, modeRows);
-          modeSelect.value = [...modeSelect.options].some(
+          const nextMode = [...modeSelect.options].some(
             (option) => option.value === requestedMode,
           )
             ? requestedMode
             : "default";
+          setPropertyIfChanged(modeSelect, "value", nextMode);
           if (modeSelect.value !== requestedMode) {
             clearFieldError(modeSelect);
             adjusted = true;
@@ -1415,24 +1724,37 @@
             });
           }
           syncSelectOptions(effortSelect, effortRows);
-          effortSelect.value = modeSelect.value === "enabled" &&
+          const nextEffort = modeSelect.value === "enabled" &&
               efforts.includes(requestedEffort)
             ? requestedEffort
             : "";
+          setPropertyIfChanged(effortSelect, "value", nextEffort);
           if (effortSelect.value !== requestedEffort) {
             clearFieldError(effortSelect);
             adjusted = true;
           }
-          effortRow.hidden = modeSelect.value !== "enabled" || !efforts.length;
+          setPropertyIfChanged(
+            effortRow,
+            "hidden",
+            modeSelect.value !== "enabled" || !efforts.length,
+          );
           if (effortRow.hidden) clearFieldError(effortSelect);
-          budgetRow.hidden = modeSelect.value !== "enabled" || !budgetSupported;
+          setPropertyIfChanged(
+            budgetRow,
+            "hidden",
+            modeSelect.value !== "enabled" || !budgetSupported,
+          );
           if (budgetRow.hidden && budgetInput.value) {
             budgetInput.value = "";
             clearFieldError(budgetInput);
             adjusted = true;
           }
           if (budgetRow.hidden) clearFieldError(budgetInput);
-          budgetInput.disabled = settingsLocked || budgetRow.hidden;
+          setPropertyIfChanged(
+            budgetInput,
+            "disabled",
+            settingsLocked || budgetRow.hidden,
+          );
         } else {
           preserveUnknownReasoningControls({
             budgetInput,
@@ -1456,7 +1778,11 @@
           adjusted = true;
         }
         if (temperatureUnsupported) clearFieldError(temperatureInput);
-        temperatureInput.disabled = settingsLocked || temperatureUnsupported;
+        setPropertyIfChanged(
+          temperatureInput,
+          "disabled",
+          settingsLocked || temperatureUnsupported,
+        );
         if (adjusted) markDraftDirtyForCapabilityAdjustment();
       }
 
@@ -1482,7 +1808,7 @@
             requestedMode,
           ));
         }
-        modeSelect.value = requestedMode;
+        setPropertyIfChanged(modeSelect, "value", requestedMode);
         if (
           requestedEffort &&
           ![...effortSelect.options].some(
@@ -1494,18 +1820,30 @@
             requestedEffort,
           ));
         }
-        effortSelect.value = requestedEffort;
-        effortRow.hidden = modeSelect.value !== "enabled" || !requestedEffort;
-        budgetRow.hidden = modeSelect.value !== "enabled" || !budgetInput.value;
-        budgetInput.disabled = settingsLocked || budgetRow.hidden;
+        setPropertyIfChanged(effortSelect, "value", requestedEffort);
+        setPropertyIfChanged(
+          effortRow,
+          "hidden",
+          modeSelect.value !== "enabled" || !requestedEffort,
+        );
+        setPropertyIfChanged(
+          budgetRow,
+          "hidden",
+          modeSelect.value !== "enabled" || !budgetInput.value,
+        );
+        setPropertyIfChanged(
+          budgetInput,
+          "disabled",
+          settingsLocked || budgetRow.hidden,
+        );
       }
 
       function selectedModelCapabilities() {
         const state = getState();
         const modelId = selectedDraftModelId();
-        const discovered = modelStateMatchesCurrentConnection()
-          ? (state.availableModels || []).find((model) => model.id === modelId)
-          : null;
+        const discovered = catalogModelsForDraftConnection().find(
+          (model) => model.id === modelId,
+        );
         const stateCapabilities = modelStateMatchesCurrentProfile()
           ? state.capabilities
           : null;
@@ -1600,7 +1938,7 @@
           const inputs = capability.inputs || {};
           const statuses = [
             inputCapabilityStatus(
-              "Images",
+              "Image",
               "image",
               inputs,
               selection.authoritative.inputs,
@@ -1618,26 +1956,22 @@
               selection.authoritative.inputs,
             ),
           ];
-          inputPreview.replaceChildren(...statuses.map((status) => {
-            const item = document.createElement("span");
-            item.className = "capability-status";
-            item.dataset.capabilityState = status.state;
-            item.textContent = `${status.label} · ${status.value}`;
-            return item;
-          }));
-          inputPreview.setAttribute(
-            "aria-label",
-            statuses.map((status) => `${status.label}: ${status.value}`).join(". "),
-          );
+          synchronizeInputCapabilityPreview(inputPreview, statuses);
         }
         const outputTokensInput = document.getElementById("maxOutputTokens");
         const subscription = isCodexSubscription();
         const trustedModelLimit = selection.authoritative.maxOutputTokens
           ? modelLimit
           : undefined;
-        outputTokensInput.disabled = settingsLocked || subscription;
-        outputTokensInput.max = String(
-          subscription ? 1000000 : trustedModelLimit ?? 1000000,
+        setPropertyIfChanged(
+          outputTokensInput,
+          "disabled",
+          settingsLocked || subscription,
+        );
+        setPropertyIfChanged(
+          outputTokensInput,
+          "max",
+          String(subscription ? 1000000 : trustedModelLimit ?? 1000000),
         );
         const requestedOutputTokens = Number(outputTokensInput.value);
         if (
@@ -1650,73 +1984,147 @@
           clearFieldError(outputTokensInput);
           markDraftDirtyForCapabilityAdjustment();
         }
-        document.getElementById("maxOutputTokensHint").textContent = subscription
+        const outputLimitHint = subscription
           ? "Codex App Server owns the output limit for subscription requests."
           : trustedModelLimit === undefined
             ? "Model output limit is unknown; the provider validates this request."
             : `Model output limit: ${trustedModelLimit}.`;
+        setPropertyIfChanged(
+          document.getElementById("maxOutputTokensHint"),
+          "textContent",
+          outputLimitHint,
+        );
       }
 
       function inputCapabilityStatus(label, key, inputs, authoritative) {
         if (!authoritative[key]) {
-          return { label, state: "unverified", value: "Unverified" };
+          return {
+            key,
+            label,
+            mark: "?",
+            state: "unverified",
+            value: "Unverified",
+          };
         }
         return inputs[key]
-          ? { label, state: "supported", value: "Supported" }
-          : { label, state: "unsupported", value: "Unsupported" };
+          ? { key, label, mark: "✓", state: "supported", value: "Supported" }
+          : { key, label, mark: "×", state: "unsupported", value: "Unsupported" };
+      }
+
+      function synchronizeInputCapabilityPreview(preview, statuses) {
+        let items = [...preview.querySelectorAll(":scope > .capability-status")];
+        const structureMatches = items.length === statuses.length &&
+          statuses.every((status, index) =>
+            items[index]?.dataset.capabilityKey === status.key
+          );
+        if (!structureMatches) {
+          items = statuses.map((status) => {
+            const item = document.createElement("span");
+            item.className = "capability-status";
+            item.dataset.capabilityKey = status.key;
+            item.setAttribute("aria-hidden", "true");
+            const label = document.createElement("span");
+            label.className = "capability-label";
+            const mark = document.createElement("span");
+            mark.className = "capability-mark";
+            item.append(label, mark);
+            return item;
+          });
+          preview.replaceChildren(...items);
+        }
+        statuses.forEach((status, index) => {
+          const item = items[index];
+          const label = item.querySelector(".capability-label");
+          const mark = item.querySelector(".capability-mark");
+          if (label.textContent !== status.label) label.textContent = status.label;
+          if (mark.textContent !== status.mark) mark.textContent = status.mark;
+          if (item.dataset.capabilityState !== status.state) {
+            item.dataset.capabilityState = status.state;
+          }
+          const title = `${status.label} input: ${status.value}`;
+          if (item.title !== title) item.title = title;
+        });
+        const accessibleLabel = `Input capabilities. ${
+          statuses.map((status) => `${status.label}: ${status.value}`).join(". ")
+        }.`;
+        if (preview.getAttribute("aria-label") !== accessibleLabel) {
+          preview.setAttribute("aria-label", accessibleLabel);
+        }
       }
 
       function updateDraftActions() {
         const settingsOperationInProgress = isOperationInProgress() ||
           hasAnySendInProgress();
         const hasSaved = Boolean(savedProfileSnapshot);
-        document.getElementById("saveProfileButton").disabled =
+        setPropertyIfChanged(
+          document.getElementById("saveProfileButton"),
+          "disabled",
           settingsOperationInProgress || !draftProfile || !draftDirty ||
-          draftProfileBaselineChanged;
-        document.getElementById("discardProfileButton").disabled =
-          settingsOperationInProgress || !draftDirty;
-        document.getElementById("deleteProfileButton").disabled =
+            draftProfileBaselineChanged,
+        );
+        setPropertyIfChanged(
+          document.getElementById("discardProfileButton"),
+          "disabled",
+          settingsOperationInProgress || !draftDirty,
+        );
+        setPropertyIfChanged(
+          document.getElementById("deleteProfileButton"),
+          "disabled",
           settingsOperationInProgress || !hasSaved ||
-          draftProfileBaselineChanged;
-        document.getElementById("duplicateProfileButton").disabled =
-          settingsOperationInProgress || !draftProfile;
+            draftProfileBaselineChanged,
+        );
+        setPropertyIfChanged(
+          document.getElementById("duplicateProfileButton"),
+          "disabled",
+          settingsOperationInProgress || !draftProfile,
+        );
         const selected = draftProfile?.models?.[selectedModelIndex];
         updateManualModelActions();
-        document.getElementById("removeModelConfigButton").disabled =
+        setPropertyIfChanged(
+          document.getElementById("removeModelConfigButton"),
+          "disabled",
           settingsOperationInProgress || !draftProfile ||
-          draftProfile.models.length <= 1;
-        document.getElementById("setDefaultModelButton").disabled =
+            draftProfile.models.length <= 1,
+        );
+        setPropertyIfChanged(
+          document.getElementById("setDefaultModelButton"),
+          "disabled",
           settingsOperationInProgress || !selected?.model ||
-          selected.model === draftProfile?.defaultModel;
+            selected.model === draftProfile?.defaultModel,
+        );
         const badge = document.getElementById("draftStatus");
-        badge.textContent = draftProfileBaselineChanged
+        const badgeText = draftProfileBaselineChanged
           ? "Draft blocked · Profile changed elsewhere"
           : draftProfileChangedElsewhere
             ? "Draft kept · Active Profile changed elsewhere"
             : draftDirty
               ? "Unsaved changes"
               : "Saved";
-        badge.classList.toggle("dirty", draftDirty);
-        badge.title = draftProfileBaselineChanged
+        setPropertyIfChanged(badge, "textContent", badgeText);
+        toggleClassIfChanged(badge, "dirty", draftDirty);
+        const badgeTitle = draftProfileBaselineChanged
           ? "This saved Profile changed in another Live Smith window. Your local Draft was preserved; discard it to load the latest version before editing again."
           : draftProfileChangedElsewhere
             ? "The active Profile changed in another Live Smith window. Your local Draft was preserved and can still be saved."
             : "";
+        setPropertyIfChanged(badge, "title", badgeTitle);
         const previewBadge = document.getElementById("draftPreviewLabel");
-        previewBadge.hidden = !draftDirty;
-        previewBadge.textContent = draftProfileBaselineChanged
+        setPropertyIfChanged(previewBadge, "hidden", !draftDirty);
+        const previewText = draftProfileBaselineChanged
           ? "Outdated saved Profile · local Draft preview"
           : draftProfileChangedElsewhere
             ? "External active Profile change · local Draft preview"
             : draftDirty
               ? "Unsaved Draft preview"
               : "";
-        requestComposerPresentation();
+        setPropertyIfChanged(previewBadge, "textContent", previewText);
+        requestSendPresentation();
       }
 
       return {
         addManualModel,
         addProfile,
+        applyConnectionKindPresentation,
         clearFieldErrors,
         deleteProfile,
         discardProfileChanges,
@@ -1741,6 +2149,7 @@
         updateApprovalModePresentation,
         updateHostedToolControls,
         renderProfileModels,
+        retryPendingCatalogApply,
         renderApprovalMode,
         reconcileSettingsForm,
         renderSettingsForm,

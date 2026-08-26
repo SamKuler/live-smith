@@ -14,7 +14,10 @@ import type { SavedProfile } from "../model/profile.js";
 import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
-import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
+import {
+  modelAuthSendFenceForStorage,
+  type ModelAuthSendFence,
+} from "./model-auth-send-fence.js";
 
 let bridgeRequestSequence = 0;
 
@@ -38,6 +41,159 @@ const subscriptionProfile: SavedProfile = {
     advanced: {},
   }],
 };
+
+const directProfile: SavedProfile = {
+  id: "direct-profile",
+  name: "Direct API",
+  connection: {
+    kind: "direct-api",
+    apiFamily: "openai",
+    apiMode: "responses",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+  },
+  defaultModel: "direct-model",
+  models: [{
+    model: "direct-model",
+    parameters: {
+      maxOutputTokens: 8_192,
+      reasoning: { mode: "default" },
+    },
+    advanced: {},
+  }],
+};
+
+test("Direct state does not pair stale managed auth with a newer generation", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-direct-auth-projection-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  await saveSavedProfile(directory, subscriptionProfile);
+
+  let generation = 0;
+  let managedReads = 0;
+  let healthCheckedGenerationReads = 0;
+  let projectedGenerationReads = 0;
+  const fence: ModelAuthSendFence = {
+    async enterRead() {
+      managedReads += 1;
+      return () => undefined;
+    },
+    async enterManagedUse() {
+      throw new Error("unused");
+    },
+    async enterAuth() {
+      throw new Error("unused");
+    },
+    async enterPendingOwnerCleanup() {
+      return null;
+    },
+    hasPendingLogin() {
+      return false;
+    },
+    async reconcilePendingAuthState() {
+      return undefined;
+    },
+    updateAuthState() {},
+    peekAuthGeneration() {
+      projectedGenerationReads += 1;
+      return generation;
+    },
+    authGeneration() {
+      healthCheckedGenerationReads += 1;
+      return generation;
+    },
+    poison() {},
+    releaseOwner() {},
+  };
+  const backend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    async listModels() {
+      return [];
+    },
+    async createToolTurn() {
+      throw new Error("unused");
+    },
+    onTerminal() {
+      return () => undefined;
+    },
+    reserveToolTurn() {
+      throw new Error("unused");
+    },
+    async readAuthState() {
+      return {
+        status: "signed-in",
+        accountLabel: "old-account@example.test",
+        planType: "pro",
+        subscriptionEligible: true,
+      };
+    },
+    async beginLogin() {
+      throw new Error("unused");
+    },
+    async logout() {
+      throw new Error("unused");
+    },
+    async close() {},
+  };
+  const manager = {
+    async codex() {
+      return backend;
+    },
+    async codexLease() {
+      throw new Error("unused");
+    },
+    async forProfile() {
+      throw new Error("unused");
+    },
+    async invalidateCodex() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const initial = await getState(url);
+        assert.equal(initial.codexAuth?.status, "signed-in");
+        assert.equal(initial.codexAuthGeneration, 0);
+
+        const activation = await command(url, {
+          kind: "activate_profile",
+          profileId: directProfile.id,
+        });
+        assert.equal(activation.status, 200, await activation.clone().text());
+        assert.equal(
+          (await activation.json() as ChatDialogState).codexAuth?.status,
+          "signed-in",
+        );
+
+        generation = 1;
+        managedReads = 0;
+        healthCheckedGenerationReads = 0;
+        projectedGenerationReads = 0;
+        const directState = await getState(url);
+        assert.equal(directState.codexAuthGeneration, 1);
+        assert.equal("codexAuth" in directState, false);
+        assert.equal(managedReads, 0);
+        assert.equal(healthCheckedGenerationReads, 0);
+        assert.equal(projectedGenerationReads, 1);
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+    modelAuthSendFence: fence,
+  });
+});
 
 test("a peer state or Check reconciles completed device login ownership", {
   timeout: 5_000,

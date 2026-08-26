@@ -70,8 +70,11 @@
         const menu = document.getElementById("attachmentMenu");
         if (!button || !menu) return;
         const nextOpen = Boolean(open) && !busy;
-        menu.hidden = !nextOpen;
-        button.setAttribute("aria-expanded", String(nextOpen));
+        if (menu.hidden !== !nextOpen) menu.hidden = !nextOpen;
+        const expanded = String(nextOpen);
+        if (button.getAttribute("aria-expanded") !== expanded) {
+          button.setAttribute("aria-expanded", expanded);
+        }
         if (!nextOpen && restoreFocus) button.focus({ preventScroll: true });
       }
 
@@ -175,9 +178,12 @@
       function syncPendingBusyState() {
         const strip = document.getElementById("pendingAttachments");
         if (!strip) return;
-        strip.setAttribute("aria-busy", String(busy));
+        const busyValue = String(busy);
+        if (strip.getAttribute("aria-busy") !== busyValue) {
+          strip.setAttribute("aria-busy", busyValue);
+        }
         for (const remove of strip.querySelectorAll(".attachment-remove")) {
-          remove.disabled = busy;
+          if (remove.disabled !== busy) remove.disabled = busy;
         }
       }
 
@@ -224,13 +230,17 @@
         const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
         const hint = document.getElementById("attachmentCapabilityHint");
         if (menuButton) {
-          menuButton.disabled = busy;
-          menuButton.title = imageCapabilityHint();
+          if (menuButton.disabled !== busy) menuButton.disabled = busy;
+          const title = imageCapabilityHint();
+          if (menuButton.title !== title) menuButton.title = title;
         }
-        if (selectedAudioButton) selectedAudioButton.disabled = busy;
+        if (selectedAudioButton && selectedAudioButton.disabled !== busy) {
+          selectedAudioButton.disabled = busy;
+        }
         if (hint) {
-          hint.textContent = imageCapabilityHint();
-          hint.hidden = !hint.textContent;
+          const text = imageCapabilityHint();
+          if (hint.textContent !== text) hint.textContent = text;
+          if (hint.hidden !== !text) hint.hidden = !text;
         }
         if (busy) setAttachmentMenuOpen(false);
       }

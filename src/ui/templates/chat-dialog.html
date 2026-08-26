@@ -104,7 +104,7 @@
         background: var(--accent-soft);
       }
 
-      .sessions-toggle-button[aria-expanded="false"] {
+      .sessions-toggle-button[aria-expanded="true"] {
         color: var(--accent);
         border-color: rgba(255, 159, 26, 0.55);
         background: var(--accent-soft);
@@ -2072,31 +2072,50 @@
       .capability-preview {
         display: flex;
         flex-wrap: wrap;
-        gap: 5px;
-        margin-top: 2px;
+        align-items: center;
+        column-gap: 12px;
+        row-gap: 4px;
+        margin-top: 3px;
+        color: var(--quiet);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 9px;
+        line-height: 1.3;
+      }
+
+      .capability-preview::before {
+        content: "Inputs";
+        color: var(--muted);
+        font-family: inherit;
+        font-size: 8px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
 
       .capability-status {
-        padding: 3px 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0;
         color: var(--quiet);
-        background: var(--field);
-        border: 1px solid var(--line-soft);
-        border-radius: 999px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 9px;
-        line-height: 1.2;
-        letter-spacing: 0.02em;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
         white-space: nowrap;
       }
 
       .capability-status[data-capability-state="supported"] {
         color: var(--trace);
-        border-color: rgba(120, 185, 232, 0.45);
       }
 
       .capability-status[data-capability-state="unsupported"] {
         color: #d99a91;
-        border-color: rgba(217, 154, 145, 0.35);
+      }
+
+      .capability-mark {
+        min-width: 1em;
+        font-weight: 700;
+        text-align: center;
       }
 
       .hosted-tool-control {
@@ -3085,7 +3104,7 @@
                 <div class="model-load-row">
                   <div class="model-load-copy">
                     <span id="profileModelCount" class="field-hint" role="status" aria-live="polite"></span>
-                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads the provider catalog and adds new models. Values outside verified model limits may be adjusted in this Draft." data-tooltip="Loads the provider catalog and adds new models. Values outside verified model limits may be adjusted in this Draft.">?</span>
+                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. ChatGPT reloads match the current account." data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. ChatGPT reloads match the current account.">?</span>
                   </div>
                   <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
                 </div>

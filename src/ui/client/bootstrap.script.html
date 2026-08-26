@@ -39,6 +39,26 @@
         const contextTokenFormatter = new Intl.NumberFormat();
         const INSPECTOR_DRAWER_MAX_WIDTH = 1015;
 
+        function setPropertyIfChanged(element, property, value) {
+          if (element[property] !== value) element[property] = value;
+        }
+
+        function setAttributeIfChanged(element, name, value) {
+          if (element.getAttribute(name) !== value) {
+            element.setAttribute(name, value);
+          }
+        }
+
+        function setDataIfChanged(element, key, value) {
+          if (element.dataset[key] !== value) element.dataset[key] = value;
+        }
+
+        function toggleClassIfChanged(element, className, enabled) {
+          if (element.classList.contains(className) !== enabled) {
+            element.classList.toggle(className, enabled);
+          }
+        }
+
         function presentStatus({
           canceledFollowUpCount = 0,
           isError = false,
@@ -77,9 +97,10 @@
             .join(" ");
           const status = document.getElementById("status");
           if (!status) return;
-          status.textContent = renderedMessage;
-          status.hidden = !renderedMessage;
-          status.classList.toggle(
+          setPropertyIfChanged(status, "textContent", renderedMessage);
+          setPropertyIfChanged(status, "hidden", !renderedMessage);
+          toggleClassIfChanged(
+            status,
             "error",
             visible.isError || visible.canceledFollowUpCount > 0,
           );
@@ -217,7 +238,7 @@
           getState,
           hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
           isOperationInProgress: bridgeClient.isProfileSettingsOperationInProgress,
-          requestComposerPresentation: renderComposerPresentation,
+          requestSendPresentation: renderSendPresentation,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
         });
@@ -243,26 +264,33 @@
           });
         }
 
-        function renderComposerPresentation() {
-          renderComposerRuntimeControls();
+        function renderSendPresentation() {
           const button = document.getElementById("sendButton");
           if (!button) return;
           const label = document.getElementById("sendButtonLabel");
           const running = composerOperationState.sendInProgress;
-          if (label) label.textContent = running ? "Stop" : "Send";
-          button.dataset.action = running ? "stop" : "send";
-          button.classList.toggle("stop", running);
+          if (label) {
+            setPropertyIfChanged(label, "textContent", running ? "Stop" : "Send");
+          }
+          setDataIfChanged(button, "action", running ? "stop" : "send");
+          toggleClassIfChanged(button, "stop", running);
           if (running) {
-            button.disabled = false;
-            button.setAttribute("aria-label", "Stop current response");
-            button.setAttribute("title", "Stop current response");
-            button.removeAttribute("aria-keyshortcuts");
+            setPropertyIfChanged(button, "disabled", false);
+            setAttributeIfChanged(button, "aria-label", "Stop current response");
+            setPropertyIfChanged(button, "title", "Stop current response");
+            if (button.hasAttribute("aria-keyshortcuts")) {
+              button.removeAttribute("aria-keyshortcuts");
+            }
             presentProfileGate("");
             return;
           }
 
-          button.setAttribute("aria-label", "Send message");
-          button.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+          setAttributeIfChanged(button, "aria-label", "Send message");
+          setAttributeIfChanged(
+            button,
+            "aria-keyshortcuts",
+            "Meta+Enter Control+Enter",
+          );
           const draft = profileEditor.getDraftState();
           const noActiveProfile = !getState().settings.activeProfileId;
           const subscriptionGate = bridgeClient.getSubscriptionSendGateMessage();
@@ -275,14 +303,19 @@
               composerOperationState.commandKind !== "save_global_settings" ||
             composerOperationState.attachmentInProgress ||
             composerOperationState.skillInProgress;
-          button.disabled = composerBlocked || Boolean(profileGate);
-          button.title = composerBlocked
+          setPropertyIfChanged(
+            button,
+            "disabled",
+            composerBlocked || Boolean(profileGate),
+          );
+          const title = composerBlocked
             ? "Wait for the current operation to finish."
             : draft.dirty
               ? "Save or discard profile changes before sending."
               : noActiveProfile
                 ? "Create and save a profile before sending."
                 : subscriptionGate || "Send (Cmd/Ctrl+Enter)";
+          setPropertyIfChanged(button, "title", title);
           presentProfileGate(composerBlocked ? "" : profileGate);
         }
 
@@ -293,11 +326,13 @@
           const usage = bridgeClient.getContextUsage();
           if (!usage) {
             const unavailable = "Context usage unavailable for the active Session.";
-            indicator.dataset.state = "unavailable";
-            indicator.style.removeProperty("--context-usage-offset");
-            indicator.setAttribute("aria-label", unavailable);
-            indicator.title = unavailable;
-            value.textContent = "?";
+            setDataIfChanged(indicator, "state", "unavailable");
+            if (indicator.style.getPropertyValue("--context-usage-offset")) {
+              indicator.style.removeProperty("--context-usage-offset");
+            }
+            setAttributeIfChanged(indicator, "aria-label", unavailable);
+            setPropertyIfChanged(indicator, "title", unavailable);
+            setPropertyIfChanged(value, "textContent", "?");
             return;
           }
           const percentage = Math.min(
@@ -310,14 +345,14 @@
           } of ${
             contextTokenFormatter.format(usage.contextWindowTokens)
           } tokens (${roundedPercentage}%). Latest accepted model turn.`;
-          indicator.dataset.state = "exact";
-          indicator.style.setProperty(
-            "--context-usage-offset",
-            String(100 - percentage),
-          );
-          indicator.setAttribute("aria-label", description);
-          indicator.title = description;
-          value.textContent = `${roundedPercentage}%`;
+          setDataIfChanged(indicator, "state", "exact");
+          const offset = String(100 - percentage);
+          if (indicator.style.getPropertyValue("--context-usage-offset") !== offset) {
+            indicator.style.setProperty("--context-usage-offset", offset);
+          }
+          setAttributeIfChanged(indicator, "aria-label", description);
+          setPropertyIfChanged(indicator, "title", description);
+          setPropertyIfChanged(value, "textContent", `${roundedPercentage}%`);
         }
 
         function renderContextSummary(summary) {
@@ -439,7 +474,7 @@
           ));
         }
 
-        function renderComposerRuntimeControls() {
+        function renderComposerRuntimeControls(syncState = true) {
           const state = getState();
           const runtime = state.runtimeProfile;
           const modelSelect = document.getElementById("composerModel");
@@ -453,21 +488,26 @@
           const subscriptionCatalogPending =
             runtime?.profile?.connectionKind === "codex-subscription" &&
             state.configuredModelsReady === false;
-          const modelRows = configuredModels.map((configured) => ({
-            label: configured.label || configured.model,
-            value: configured.model,
-          }));
-          if (!runtime || configuredModels.length === 0) {
-            modelRows.push({
-              label: subscriptionCatalogPending ? "Load models…" : "Set up Profile",
-              value: "",
-            });
-          }
-          renderSelectOptions(modelSelect, modelRows);
           const selectedModel = runtime?.selection?.model || "";
-          modelSelect.value = [...modelSelect.options].some(
-            (option) => option.value === selectedModel,
-          ) ? selectedModel : "";
+          if (syncState) {
+            const modelRows = configuredModels.map((configured) => ({
+              label: configured.label || configured.model,
+              value: configured.model,
+            }));
+            if (!runtime || configuredModels.length === 0) {
+              modelRows.push({
+                label: subscriptionCatalogPending
+                  ? "Load models…"
+                  : "Set up Profile",
+                value: "",
+              });
+            }
+            renderSelectOptions(modelSelect, modelRows);
+            const nextModel = [...modelSelect.options].some(
+              (option) => option.value === selectedModel,
+            ) ? selectedModel : "";
+            setPropertyIfChanged(modelSelect, "value", nextModel);
+          }
 
           const reasoning = runtime?.selection?.reasoning;
           const reasoningCapability = runtime?.capabilities?.reasoning;
@@ -477,77 +517,93 @@
             reasoningCapability?.supported === true &&
             reasoningCapability.strategy !== "none" &&
             efforts.length > 0;
-          reasoningField.hidden = !reasoningAvailable;
-          const reasoningRows = [];
-          if (subscriptionCatalogPending) {
-            reasoningRows.push({ label: "Load capabilities…", value: "" });
-          } else if (efforts.length) {
-            reasoningRows.push({
-              label: reasoning?.effort ? "Profile default" : reasoningLabel(reasoning),
-              value: "",
-            });
-            for (const effort of efforts) {
+          if (syncState) {
+            setPropertyIfChanged(
+              reasoningField,
+              "hidden",
+              !reasoningAvailable,
+            );
+            const reasoningRows = [];
+            if (subscriptionCatalogPending) {
+              reasoningRows.push({ label: "Load capabilities…", value: "" });
+            } else if (efforts.length) {
               reasoningRows.push({
-                label: effort === "xhigh"
-                  ? "XHigh"
-                  : effort[0].toUpperCase() + effort.slice(1),
-                value: effort,
+                label: reasoning?.effort
+                  ? "Profile default"
+                  : reasoningLabel(reasoning),
+                value: "",
+              });
+              for (const effort of efforts) {
+                reasoningRows.push({
+                  label: effort === "xhigh"
+                    ? "XHigh"
+                    : effort[0].toUpperCase() + effort.slice(1),
+                  value: effort,
+                });
+              }
+              if (
+                reasoning?.effort &&
+                !reasoningRows.some(
+                  (row) => row.value === reasoning.effort,
+                )
+              ) {
+                reasoningRows.push({
+                  label: reasoningLabel(reasoning),
+                  value: reasoning.effort,
+                });
+              }
+            } else {
+              reasoningRows.push({
+                label: runtime ? reasoningLabel(reasoning) : "No Profile",
+                value: "",
               });
             }
-            if (
-              reasoning?.effort &&
-              !reasoningRows.some(
-                (row) => row.value === reasoning.effort,
-              )
-            ) {
-              reasoningRows.push({
-                label: reasoningLabel(reasoning),
-                value: reasoning.effort,
-              });
-            }
-          } else {
-            reasoningRows.push({
-              label: runtime ? reasoningLabel(reasoning) : "No Profile",
-              value: "",
-            });
+            renderSelectOptions(reasoningSelect, reasoningRows);
+            const nextReasoning = !subscriptionCatalogPending && efforts.length
+              ? reasoning?.effort || ""
+              : "";
+            setPropertyIfChanged(reasoningSelect, "value", nextReasoning);
           }
-          renderSelectOptions(reasoningSelect, reasoningRows);
-          reasoningSelect.value = !subscriptionCatalogPending && efforts.length
-            ? reasoning?.effort || ""
-            : "";
 
           const busy = Boolean(composerOperationState.commandKind) ||
             composerOperationState.sendInProgress ||
             composerOperationState.attachmentInProgress ||
             composerOperationState.skillInProgress;
-          modelSelect.disabled = busy || !runtime ||
-            !subscriptionCatalogPending && configuredModels.length < 2;
-          reasoningSelect.disabled = busy || !reasoningAvailable;
-          modelSelect.setAttribute("aria-busy", String(
+          setPropertyIfChanged(
+            modelSelect,
+            "disabled",
+            busy || !runtime ||
+              !subscriptionCatalogPending && configuredModels.length < 2,
+          );
+          setPropertyIfChanged(
+            reasoningSelect,
+            "disabled",
+            busy || !reasoningAvailable,
+          );
+          const runtimeBusy = String(
             [
               "set_session_model_selection",
               "session_model_selection_refresh",
               "profile_settings_refresh",
             ].includes(composerOperationState.commandKind),
-          ));
-          reasoningSelect.setAttribute("aria-busy", String(
-            [
-              "set_session_model_selection",
-              "session_model_selection_refresh",
-              "profile_settings_refresh",
-            ].includes(composerOperationState.commandKind),
-          ));
-          const selectedLabel = configuredModels.find(
-            (configured) => configured.model === selectedModel,
-          )?.label || selectedModel || "Set up Profile";
-          modelSelect.title = runtime
-            ? subscriptionCatalogPending
-              ? `${runtime.profile.name} · ${selectedLabel} · Open to load capabilities`
-              : `${runtime.profile.name} · ${selectedLabel}`
-            : "Configure a model Profile in Settings";
-          reasoningSelect.title = runtime
-            ? `Reasoning · ${reasoningLabel(reasoning)}`
-            : "Reasoning unavailable";
+          );
+          setAttributeIfChanged(modelSelect, "aria-busy", runtimeBusy);
+          setAttributeIfChanged(reasoningSelect, "aria-busy", runtimeBusy);
+          if (syncState) {
+            const selectedLabel = configuredModels.find(
+              (configured) => configured.model === selectedModel,
+            )?.label || selectedModel || "Set up Profile";
+            const modelTitle = runtime
+              ? subscriptionCatalogPending
+                ? `${runtime.profile.name} · ${selectedLabel} · Open to load capabilities`
+                : `${runtime.profile.name} · ${selectedLabel}`
+              : "Configure a model Profile in Settings";
+            const reasoningTitle = runtime
+              ? `Reasoning · ${reasoningLabel(reasoning)}`
+              : "Reasoning unavailable";
+            setPropertyIfChanged(modelSelect, "title", modelTitle);
+            setPropertyIfChanged(reasoningSelect, "title", reasoningTitle);
+          }
         }
 
         async function ensureSessionModelCapabilities() {
@@ -571,7 +627,10 @@
           const runtime = state.runtimeProfile;
           const modelSelect = document.getElementById("composerModel");
           const reasoningSelect = document.getElementById("composerReasoning");
-          if (!runtime || modelSelect.disabled || reasoningSelect.disabled && !modelChanged) {
+          const changedControlDisabled = modelChanged
+            ? modelSelect.disabled
+            : reasoningSelect.disabled;
+          if (!runtime || changedControlDisabled) {
             renderComposerRuntimeControls();
             return false;
           }
@@ -698,10 +757,30 @@
           hostAdapter.closeWithResult({ kind: "close" });
         }
 
+        function renderProfileStateProjection() {
+          profileEditor.retryPendingCatalogApply();
+          profileEditor.renderCodexAuthState(profileSettingsLocked);
+          profileEditor.renderProfileModels();
+          profileEditor.updateCapabilityPreview();
+          profileEditor.updateDraftActions();
+          if (profileSettingsLocked) syncProfileSettingsLock(true, true);
+        }
+
+        function renderSettingsFormFromState() {
+          profileEditor.renderSettingsForm();
+          if (profileSettingsLocked) syncProfileSettingsLock(true, true);
+        }
+
+        function reconcileSettingsFormFromState() {
+          profileEditor.reconcileSettingsForm();
+          if (profileSettingsLocked) syncProfileSettingsLock(true, true);
+        }
+
         function renderApplication() {
           renderStateStatus();
           renderContextSummary(getState().contextSummary || "");
-          renderComposerPresentation();
+          renderComposerRuntimeControls();
+          renderSendPresentation();
           renderComposerContextUsage();
           bridgeClient.renderDefaultFollowUpBehavior();
           profileEditor.renderApprovalMode();
@@ -709,11 +788,7 @@
           sessionTimeline.renderTimeline();
           attachments.renderPending();
           skillManager.render();
-          profileEditor.renderCodexAuthState(profileSettingsLocked);
-          profileEditor.updateReasoningVisibility();
-          profileEditor.updateDraftActions();
-          if (profileSettingsLocked) syncProfileSettingsLock(true);
-          if (profileCommandAdmissionLocked) syncProfileCommandAdmission(true);
+          renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
         }
 
@@ -729,23 +804,24 @@
           ].map((id) => document.getElementById(id)).filter(Boolean);
         }
 
-        function syncProfileSettingsLock(locked) {
+        function syncProfileSettingsLock(locked, force = false) {
           const changed = profileSettingsLocked !== locked;
           profileSettingsLocked = locked;
-          if (!locked && !changed) return;
+          if (!changed && !force) return;
           document.querySelectorAll(
             "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
           ).forEach((control) => {
-            control.disabled = locked;
+            if (control.disabled !== locked) control.disabled = locked;
           });
         }
 
         function syncProfileCommandAdmission(locked) {
           const changed = profileCommandAdmissionLocked !== locked;
           profileCommandAdmissionLocked = locked;
-          if (!locked && !changed) return;
+          if (!changed) return;
           for (const control of profileCommandControls()) {
-            control.disabled = locked || profileSettingsLocked;
+            const disabled = locked || profileSettingsLocked;
+            if (control.disabled !== disabled) control.disabled = disabled;
           }
         }
 
@@ -830,11 +906,9 @@
           set_session_approval_mode: {
             busyAriaLabel: "Saving Approval Mode…",
             controlId: "approvalMode",
-            status: "Saving Session Approval Mode…",
           },
           set_session_model_selection: {
             busyAriaLabel: "Saving Session model selection…",
-            status: "Saving Session model selection…",
           },
           session_model_selection_refresh: {
             status: "Refreshing the Session model after an external change…",
@@ -992,40 +1066,70 @@
           const commandAdmissionBusy = Boolean(commandKind) ||
             attachmentInProgress || skillInProgress;
           const skillsBusy = settingsBusy || Boolean(commandKind);
+          const settingsLockChanged = profileSettingsLocked !== settingsBusy;
+          const commandAdmissionChanged = profileCommandAdmissionLocked !==
+            commandAdmissionBusy;
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
           sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
-          sessionsPane?.setAttribute("aria-busy", String(sessionControlsBusy));
-          document.getElementById("settingsPanel")
-            .setAttribute("aria-busy", String(settingsBusy));
-          document.getElementById("skillsPanel")
-            .setAttribute("aria-busy", String(skillsBusy));
-          document.getElementById("settingsLockNotice").hidden = !(
+          const sessionBusyValue = String(sessionControlsBusy);
+          if (sessionsPane?.getAttribute("aria-busy") !== sessionBusyValue) {
+            sessionsPane?.setAttribute("aria-busy", sessionBusyValue);
+          }
+          const settingsPanel = document.getElementById("settingsPanel");
+          const settingsBusyValue = String(settingsBusy);
+          if (settingsPanel.getAttribute("aria-busy") !== settingsBusyValue) {
+            settingsPanel.setAttribute("aria-busy", settingsBusyValue);
+          }
+          const skillsPanel = document.getElementById("skillsPanel");
+          const skillsBusyValue = String(skillsBusy);
+          if (skillsPanel.getAttribute("aria-busy") !== skillsBusyValue) {
+            skillsPanel.setAttribute("aria-busy", skillsBusyValue);
+          }
+          const settingsLockNotice = document.getElementById("settingsLockNotice");
+          const settingsLockNoticeHidden = !(
             anySendInProgress && !sendInProgress
           );
+          if (settingsLockNotice.hidden !== settingsLockNoticeHidden) {
+            settingsLockNotice.hidden = settingsLockNoticeHidden;
+          }
           const approvalMode = document.getElementById("approvalMode");
           profileEditor.updateApprovalModePresentation();
-          document.getElementById("prompt").disabled = composerBlockingCommand ||
+          const prompt = document.getElementById("prompt");
+          const promptDisabled = composerBlockingCommand ||
             attachmentInProgress || skillInProgress;
+          if (prompt.disabled !== promptDisabled) prompt.disabled = promptDisabled;
           syncSessionControlsLock(sessionControlsBusy);
-          syncProfileSettingsLock(settingsBusy);
           syncProfileCommandAdmission(commandAdmissionBusy);
-          profileEditor.updateHostedToolControls(settingsBusy);
-          profileEditor.renderCodexAuthState(settingsBusy);
-          approvalMode.disabled = Boolean(commandKind) || attachmentInProgress ||
+          syncProfileSettingsLock(settingsBusy);
+          const sessionSettingDisabled = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
-          document.getElementById("defaultFollowUpBehavior").disabled =
-            Boolean(commandKind) || attachmentInProgress || skillInProgress;
+          if (approvalMode.disabled !== sessionSettingDisabled) {
+            approvalMode.disabled = sessionSettingDisabled;
+          }
+          const defaultFollowUp = document.getElementById("defaultFollowUpBehavior");
+          if (defaultFollowUp.disabled !== sessionSettingDisabled) {
+            defaultFollowUp.disabled = sessionSettingDisabled;
+          }
           attachments.setBusy(operationBusy);
           skillManager.setBusy(skillsBusy);
 
-          if (!settingsBusy) {
-            profileEditor.updateReasoningVisibility();
-            profileEditor.updateDraftActions();
-          } else {
-            renderComposerPresentation();
+          if (
+            !settingsBusy &&
+            settingsLockChanged
+          ) {
+            profileEditor.applyConnectionKindPresentation(false);
+            profileEditor.updateHostedToolControls(false);
           }
-          if (commandAdmissionBusy) syncProfileCommandAdmission(true);
+          if (
+            !settingsBusy &&
+            (settingsLockChanged ||
+              commandAdmissionChanged && !commandAdmissionBusy)
+          ) {
+            renderProfileStateProjection();
+          }
+          renderComposerRuntimeControls(false);
+          renderSendPresentation();
           if (!commandKind) restoreCommandControlFocus();
         }
 
@@ -1038,10 +1142,9 @@
           renderContextUsage: renderComposerContextUsage,
           renderSessions: sessionTimeline.renderSessions,
           syncSessionPresentation: sessionTimeline.syncSessionPresentation,
-          renderProfileModels: profileEditor.renderProfileModels,
           renderApprovalMode: profileEditor.renderApprovalMode,
-          reconcileSettingsForm: profileEditor.reconcileSettingsForm,
-          renderSettingsForm: profileEditor.renderSettingsForm,
+          reconcileSettingsForm: reconcileSettingsFormFromState,
+          renderSettingsForm: renderSettingsFormFromState,
           renderTimeline: sessionTimeline.renderTimeline,
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,

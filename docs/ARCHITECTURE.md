@@ -143,7 +143,9 @@ src/
     persistence.ts
       Serialized local transactions plus private, atomic JSON replacement.
     model-cache.ts
-      Profile/fingerprint-isolated raw Direct API model-metadata cache;
+      Connection-fingerprint-slotted raw Direct API model-metadata cache;
+      unsaved Draft discovery cannot evict another connection's slot, and an
+      exact legacy Profile-ID slot remains read-only fallback;
       Live Smith's normalized subscription catalogs stay modal-only. Codex's
       separate isolated upstream cache is described below.
     events.ts, sessions.ts
@@ -355,7 +357,8 @@ The managed runtime is split by responsibility:
 Each modal lazily leases the shared manager on its first managed operation.
 Auth mutations exclude subscription sends across modals. Direct-only state
 hydration, catalog access, and sends neither acquire that managed registry nor
-inspect the managed auth fence's health or generation;
+inspect the managed auth fence's health; they may read its credential-free
+generation solely to invalidate stale subscription projections;
 pending device login and readiness reconciliation are single-flight;
 unknown auth outcomes retire the exact backend before advancing generation.
 Managed startup belongs to its shared manager slot: caller cancellation ends
@@ -626,8 +629,15 @@ output/context limits, reasoning, and input modalities. Both command HTTP
 responses and SSE state events use that identity, so an unsaved Profile draft
 cannot be confused with the active saved Profile when the two channels arrive
 in either order. Explicit model loading also carries the successful command ID;
-the editor merges a catalog only when that receipt matches its own request, so
-failure reconciliation cannot promote a stale durable cache. Conservative
+the editor applies a catalog only when that receipt matches its own request.
+Direct API reloads merge newly discovered IDs for the same connection and
+replace after a Draft connection change. Subscription reloads reconcile to the
+current auth-generation catalog while retaining settings for model IDs that
+remain. Models from different APIs or ChatGPT accounts therefore cannot mix.
+The UI receives only the process-local numeric auth generation, never managed
+credentials, and keeps auth, editor catalog, and active subscription runtime
+projections generation-coherent across delayed HTTP and SSE state merges.
+Failure reconciliation cannot promote a stale durable cache. Conservative
 fallback values remain `unverified`; only known
 policy, explicit discovery metadata, or a manual override may make the preview
 authoritative.

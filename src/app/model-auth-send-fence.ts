@@ -30,6 +30,8 @@ export interface ModelAuthSendFence {
     status: ManagedAuthStatus,
     mutationAttempted?: boolean,
   ): void;
+  /** Read the credential-free epoch for UI projection without admitting managed use. */
+  peekAuthGeneration(): number;
   authGeneration(): number;
   poison(cause: unknown): void;
   releaseOwner(owner: symbol): void;
@@ -228,13 +230,17 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   ): void {
     this.assertHealthy();
     if (status === "unavailable" && !mutationAttempted) return;
-    this.generation += 1;
     if (status === "pending") {
       this.pendingLoginOwner = owner;
     } else if (this.pendingLoginOwner === owner) {
       this.pendingLoginOwner = null;
     }
+    this.generation += 1;
     this.signalStateChange();
+  }
+
+  peekAuthGeneration(): number {
+    return this.generation;
   }
 
   authGeneration(): number {

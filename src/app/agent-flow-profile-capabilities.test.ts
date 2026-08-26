@@ -218,15 +218,38 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
     name: "Subscription capability save",
     connection: { kind: "codex-subscription", provider: "openai" },
     defaultModel: "subscription-model",
-    models: [{
-      model: "subscription-model",
-      parameters: { reasoning: { mode: "default" } },
-      advanced: {},
-    }],
+    models: [
+      {
+        model: "subscription-model",
+        parameters: { reasoning: { mode: "default" } },
+        advanced: {},
+      },
+      {
+        model: "subscription-model-b",
+        parameters: { reasoning: { mode: "default" } },
+        advanced: {},
+      },
+    ],
   };
   const catalog: DiscoveredModelInfo[] = [{
     id: baseProfile.defaultModel,
     displayName: "Subscription model",
+    capabilities: {
+      tools: true,
+      streaming: false,
+      temperature: "unsupported",
+      reasoning: {
+        supported: true,
+        canDisable: false,
+        efforts: ["high"],
+        budgetTokens: false,
+        strategy: "effort",
+      },
+      inputs: { image: true, audio: true, pdf: false },
+    },
+  }, {
+    id: "subscription-model-b",
+    displayName: "Subscription model B",
     capabilities: {
       tools: true,
       streaming: false,
@@ -353,6 +376,60 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
         );
         assert.equal(freshSave.response.status, 200);
         currentSavedState = freshSave.body as unknown as ChatDialogState;
+        const savedProfile = currentSavedState.settings.profiles.find(
+          (profile) => profile.id === baseProfile.id,
+        );
+        assert.ok(savedProfile);
+
+        fence.updateAuthState(peerOwner, "signed-in", true);
+        const staleDefaultSave = await command(
+          endpoint,
+          "subscription-stale-default-save",
+          {
+            kind: "save_profile",
+            expectedProfileRevision: currentSavedState.activeProfileRevision,
+            profile: {
+              ...savedProfile,
+              defaultModel: "subscription-model-b",
+            },
+          },
+        );
+        assert.equal(staleDefaultSave.response.status, 409);
+        assert.match(
+          String(staleDefaultSave.body.error),
+          /Load the current ChatGPT model catalog/i,
+        );
+        const rediscovered = await command(
+          endpoint,
+          "subscription-rediscover-before-empty-catalog",
+          { kind: "discover_models", profile: savedProfile },
+        );
+        assert.equal(rediscovered.response.status, 200);
+
+        catalog.splice(0, catalog.length);
+        const emptyCurrentDiscovery = await command(
+          endpoint,
+          "subscription-empty-current-discover",
+          { kind: "discover_models", profile: baseProfile },
+        );
+        assert.equal(emptyCurrentDiscovery.response.status, 200);
+        const unavailableUnchangedModel = await command(
+          endpoint,
+          "subscription-unavailable-unchanged-model",
+          {
+            kind: "save_profile",
+            expectedProfileRevision: currentSavedState.activeProfileRevision,
+            profile: {
+              ...savedProfile,
+              name: "Must not preserve an unavailable model",
+            },
+          },
+        );
+        assert.equal(unavailableUnchangedModel.response.status, 400);
+        assert.match(
+          String(unavailableUnchangedModel.body.error),
+          /not available for the signed-in ChatGPT account/i,
+        );
       },
     },
   } as never, interaction, {

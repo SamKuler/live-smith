@@ -58,6 +58,8 @@ export interface ChatDialogState {
   settings: AgentSettings;
   /** Credential-free state from the isolated official Codex runtime. */
   codexAuth?: ManagedAuthState;
+  /** Non-sensitive process-local epoch for subscription catalog ownership. */
+  codexAuthGeneration: number;
   openSettingsOnLoad: boolean;
   status?: string | undefined;
   sessionActivities?: ChatSessionActivity[];

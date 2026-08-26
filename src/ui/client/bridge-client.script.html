@@ -107,6 +107,7 @@
       let optimisticDefaultFollowUpBehavior = null;
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
+      let renderedOperationState = null;
       let profileSettingsRefresh = null;
       let attachmentOperationInProgress = false;
       let skillOperationInProgress = false;
@@ -231,6 +232,86 @@
 
       function sameJsonValue(left, right) {
         return JSON.stringify(left) === JSON.stringify(right);
+      }
+
+      function sameJsonData(left, right) {
+        if (left === right) return true;
+        if (Array.isArray(left) || Array.isArray(right)) {
+          return Array.isArray(left) && Array.isArray(right) &&
+            left.length === right.length &&
+            left.every((entry, index) => sameJsonData(entry, right[index]));
+        }
+        if (
+          !left || !right ||
+          typeof left !== "object" || typeof right !== "object"
+        ) return false;
+        const leftKeys = Object.keys(left).sort();
+        const rightKeys = Object.keys(right).sort();
+        return leftKeys.length === rightKeys.length &&
+          leftKeys.every((key, index) =>
+            key === rightKeys[index] && sameJsonData(left[key], right[key])
+          );
+      }
+
+      function normalizedProfileCommandTarget(profile) {
+        if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+          return null;
+        }
+        const normalized = JSON.parse(JSON.stringify(profile));
+        for (const key of ["id", "name", "defaultModel"]) {
+          if (typeof normalized[key] === "string") {
+            normalized[key] = normalized[key].trim();
+          }
+        }
+        if (normalized.connection?.kind === "direct-api") {
+          normalized.connection.baseUrl = String(
+            normalized.connection.baseUrl || "",
+          ).trim().replace(/\/+$/, "");
+          normalized.connection.apiKey = String(
+            normalized.connection.apiKey || "",
+          ).trim();
+        }
+        for (const model of normalized.models || []) {
+          if (typeof model?.model === "string") model.model = model.model.trim();
+        }
+        return normalized;
+      }
+
+      function profileMutationReflected(kind, state, attempt) {
+        const target = attempt?.profileMutationTarget;
+        if (!target || !state?.settings) return false;
+        if (kind === "save_profile") {
+          const expected = target.profile;
+          const saved = state.settings.profiles.find(
+            (profile) => profile.id === expected?.id,
+          );
+          return Boolean(saved) && sameJsonData(
+            normalizedProfileCommandTarget(saved),
+            expected,
+          );
+        }
+        if (kind === "delete_profile") {
+          return typeof target.profileId === "string" &&
+            !state.settings.profiles.some(
+              (profile) => profile.id === target.profileId,
+            );
+        }
+        return false;
+      }
+
+      function globalCommandNeedsStateBarrier(attempt) {
+        if (!attempt?.ownsGlobalState || attempt.ownsEditorModelProjection) {
+          return false;
+        }
+        const baseline = attempt.causalStateSnapshot;
+        const current = getState();
+        return current.settings.activeProfileId !==
+            baseline.profileSettings.activeProfileId ||
+          !sameJsonValue(
+            current.settings.profiles,
+            baseline.profileSettings.profiles,
+          ) ||
+          current.activeProfileRevision !== baseline.activeProfileRevision;
       }
 
       function captureCausalState() {
@@ -497,26 +578,190 @@
         return { collection: selected.collection, session };
       }
 
-      function adoptProfileProjection(target, source, includeEditorPreview) {
+      function adoptSavedProfileProjection(target, source) {
         target.settings = {
           ...target.settings,
           activeProfileId: source.settings.activeProfileId,
           profiles: source.settings.profiles,
         };
         target.activeProfileRevision = source.activeProfileRevision;
-        if (includeEditorPreview) {
-          target.capabilities = source.capabilities;
-          target.capabilityEvidence = source.capabilityEvidence;
-          target.availableModels = source.availableModels;
-          if (source.modelCatalogLoadReceipt === undefined) {
-            delete target.modelCatalogLoadReceipt;
-          } else {
-            target.modelCatalogLoadReceipt = source.modelCatalogLoadReceipt;
-          }
-          target.modelStateSource = source.modelStateSource;
-        }
+      }
+
+      function adoptManagedAuthProjection(target, current, state) {
+        const source = state.codexAuthGeneration > current.codexAuthGeneration
+          ? state
+          : state.codexAuthGeneration < current.codexAuthGeneration ||
+              state.codexAuth === undefined && current.codexAuth !== undefined
+            ? current
+            : state;
         if (source.codexAuth === undefined) delete target.codexAuth;
         else target.codexAuth = source.codexAuth;
+        target.codexAuthGeneration = source.codexAuthGeneration;
+      }
+
+      function adoptEditorModelProjection(target, source) {
+        target.capabilities = source.capabilities;
+        target.capabilityEvidence = source.capabilityEvidence;
+        target.availableModels = source.availableModels;
+        if (source.modelCatalogLoadReceipt === undefined) {
+          delete target.modelCatalogLoadReceipt;
+        } else {
+          target.modelCatalogLoadReceipt = source.modelCatalogLoadReceipt;
+        }
+        target.modelStateSource = source.modelStateSource;
+      }
+
+      function adoptRuntimeModelProjection(target, source) {
+        target.runtimeProfile = source.runtimeProfile;
+        target.configuredModels = source.configuredModels;
+        target.configuredModelsReady = source.configuredModelsReady;
+      }
+
+      function unverifiedModelCapabilities() {
+        return {
+          tools: true,
+          streaming: false,
+          temperature: "supported",
+          reasoning: {
+            supported: false,
+            canDisable: false,
+            efforts: [],
+            budgetTokens: false,
+            strategy: "none",
+          },
+          inputs: { image: false, audio: false, pdf: false },
+        };
+      }
+
+      function editorProjectionMatchesAuthGeneration(source, generation) {
+        return source.modelStateSource?.connection?.kind !==
+            "codex-subscription" ||
+          source.codexAuthGeneration === generation;
+      }
+
+      function runtimeProjectionMatchesAuthGeneration(source, generation) {
+        return source.runtimeProfile?.profile?.connectionKind !==
+            "codex-subscription" ||
+          source.codexAuthGeneration === generation;
+      }
+
+      function runtimeProjectionOwnsTarget(source, target) {
+        const activeProfile = target.settings.profiles.find(
+          (profile) => profile.id === target.settings.activeProfileId,
+        );
+        if (!activeProfile) {
+          return source.runtimeProfile === null &&
+            source.configuredModels.length === 0;
+        }
+        const runtime = source.runtimeProfile;
+        if (
+          !runtime ||
+          runtime.profile.id !== activeProfile.id ||
+          runtime.profile.name !== activeProfile.name ||
+          runtime.profile.connectionKind !== activeProfile.connection.kind
+        ) return false;
+        const activeSession = [
+          ...target.sessions,
+          ...target.previousSessions,
+          ...target.archivedSessions,
+        ].find((session) => session.id === target.activeSessionId);
+        const savedSelectionApplies = activeSession?.modelSelection?.profileId ===
+              activeProfile.id &&
+            activeProfile.models.some(
+              (model) => model.model === activeSession.modelSelection.model,
+            );
+        const selectedModel = savedSelectionApplies
+          ? activeSession.modelSelection.model
+          : activeProfile.defaultModel;
+        const selectedConfig = activeProfile.models.find(
+          (model) => model.model === selectedModel,
+        );
+        const expectedReasoning = savedSelectionApplies &&
+            activeSession.modelSelection.reasoningEffort !== undefined
+          ? {
+              mode: "enabled",
+              effort: activeSession.modelSelection.reasoningEffort,
+            }
+          : selectedConfig?.parameters?.reasoning;
+        return runtime.selection.model === selectedModel &&
+          sameJsonValue(runtime.selection.reasoning, expectedReasoning) &&
+          sameJsonValue(
+            source.configuredModels.map((model) => model.model),
+            activeProfile.models.map((model) => model.model),
+          );
+      }
+
+      function adoptUnavailableRuntimeModelProjection(target, source) {
+        if (!source?.runtimeProfile) {
+          target.runtimeProfile = null;
+          target.configuredModels = [];
+          target.configuredModelsReady = false;
+          return;
+        }
+        target.runtimeProfile = {
+          ...source.runtimeProfile,
+          capabilities: unverifiedModelCapabilities(),
+          inputCapabilityEvidence: {
+            image: "unverified",
+            audio: "unverified",
+            pdf: "unverified",
+          },
+        };
+        target.configuredModels = source.configuredModels.map((model) => ({
+          model: model.model,
+          label: model.model,
+        }));
+        target.configuredModelsReady = false;
+      }
+
+      function alternateProjectionSource(preferred, current, state) {
+        return preferred === current ? state : current;
+      }
+
+      function adoptCoherentManagedModelProjections(
+        target,
+        current,
+        state,
+        preferredEditor,
+        preferredRuntime,
+      ) {
+        adoptManagedAuthProjection(target, current, state);
+        const alternateEditor = alternateProjectionSource(
+          preferredEditor,
+          current,
+          state,
+        );
+        adoptEditorModelProjection(
+          target,
+          editorProjectionMatchesAuthGeneration(
+              preferredEditor,
+              target.codexAuthGeneration,
+            )
+            ? preferredEditor
+            : alternateEditor,
+        );
+        const alternateRuntime = alternateProjectionSource(
+          preferredRuntime,
+          current,
+          state,
+        );
+        const runtimeProjection = [preferredRuntime, alternateRuntime].find(
+          (source) =>
+            runtimeProjectionMatchesAuthGeneration(
+              source,
+              target.codexAuthGeneration,
+            ) && runtimeProjectionOwnsTarget(source, target),
+        );
+        if (runtimeProjection) {
+          adoptRuntimeModelProjection(target, runtimeProjection);
+          return;
+        }
+        adoptUnavailableRuntimeModelProjection(
+          target,
+          [preferredRuntime, alternateRuntime].find((source) =>
+            runtimeProjectionOwnsTarget(source, target)
+          ),
+        );
       }
 
       function preserveNewerCausalState(state, attempt) {
@@ -533,9 +778,23 @@
           current.bridgeStateCoveredThroughRevision,
           baseline.bridgeStateCoveredThroughRevision,
         ) !== 0;
+        const incomingProfileSettingsChanged =
+          current.settings.activeProfileId !== state.settings.activeProfileId ||
+          !sameJsonValue(current.settings.profiles, state.settings.profiles) ||
+          current.activeProfileRevision !== state.activeProfileRevision;
         if (!currentChangedSinceBaseline) {
-          if (attempt.ownsGlobalState) return state;
-          return {
+          if (attempt.ownsGlobalState || incomingProfileSettingsChanged) {
+            const merged = { ...state };
+            adoptCoherentManagedModelProjections(
+              merged,
+              current,
+              state,
+              state,
+              state,
+            );
+            return merged;
+          }
+          const merged = {
             ...state,
             capabilities: current.capabilities,
             capabilityEvidence: current.capabilityEvidence,
@@ -543,6 +802,14 @@
             modelCatalogLoadReceipt: current.modelCatalogLoadReceipt,
             modelStateSource: current.modelStateSource,
           };
+          adoptCoherentManagedModelProjections(
+            merged,
+            current,
+            state,
+            current,
+            state,
+          );
+          return merged;
         }
         const protectedSessionIds = new Set(
           [
@@ -561,21 +828,25 @@
           },
           baseline.profileSettings,
         ) || current.activeProfileRevision !== baseline.activeProfileRevision;
-        const incomingProfileSettingsChanged =
-          current.settings.activeProfileId !== state.settings.activeProfileId ||
-          !sameJsonValue(current.settings.profiles, state.settings.profiles) ||
-          current.activeProfileRevision !== state.activeProfileRevision;
         const useAuthoritativeProfileProjection =
           !currentProfileSettingsChanged ||
           compareDecimalRevisions(
             state.bridgeStateCoveredThroughRevision,
             current.bridgeStateCoveredThroughRevision,
           ) > 0;
-        adoptProfileProjection(
-          merged,
-          useAuthoritativeProfileProjection ? state : current,
+        const savedProfileProjection = useAuthoritativeProfileProjection
+          ? state
+          : current;
+        adoptSavedProfileProjection(merged, savedProfileProjection);
+        const editorProjection = attempt.ownsEditorModelProjection
+          ? state
+          : (
           !useAuthoritativeProfileProjection || attempt.ownsGlobalState ||
-            incomingProfileSettingsChanged,
+          incomingProfileSettingsChanged
+            ? savedProfileProjection
+            : !attempt.ownsGlobalState
+              ? current
+              : state
         );
         if (attempt.ownsAvailableSkills) {
           merged.availableSkills = state.availableSkills;
@@ -673,9 +944,13 @@
             state.activeSessionId === merged.activeSessionId
             ? state
             : current;
-        merged.runtimeProfile = runtimeProjection.runtimeProfile;
-        merged.configuredModels = runtimeProjection.configuredModels;
-        merged.configuredModelsReady = runtimeProjection.configuredModelsReady;
+        adoptCoherentManagedModelProjections(
+          merged,
+          current,
+          state,
+          editorProjection,
+          runtimeProjection,
+        );
         if (
           state.activeSessionId === merged.activeSessionId &&
           current.activeSessionId === merged.activeSessionId
@@ -1916,6 +2191,7 @@
             "settings",
             "activeProfileRevision",
             "codexAuth",
+            "codexAuthGeneration",
             "openSettingsOnLoad",
             "status",
             "sessionActivities",
@@ -1982,6 +2258,8 @@
               value.settings.activeProfileId !== null
           ) ||
           (value.codexAuth !== undefined && !isWireManagedAuth(value.codexAuth)) ||
+          !Number.isSafeInteger(value.codexAuthGeneration) ||
+          value.codexAuthGeneration < 0 ||
           typeof value.openSettingsOnLoad !== "boolean" ||
           (value.status !== undefined && typeof value.status !== "string") ||
           !isDecimalRevision(value.bridgeStateRevision) ||
@@ -2638,7 +2916,7 @@
         const activeAttempt = activeSendAttempt();
         const modelSelectionReconciliation =
           modelSelectionRefreshesBySession.get(activeSessionId());
-        requireView().setOperationState({
+        const operationState = {
           commandKind: commandInProgress ||
             (profileSettingsRefresh
               ? profileSettingsRefresh.failed
@@ -2657,7 +2935,15 @@
           profileSettingsInProgress: isProfileSettingsOperationInProgress(),
           skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeAttempt),
-        });
+        };
+        if (
+          renderedOperationState &&
+          Object.keys(operationState).every((key) =>
+            renderedOperationState[key] === operationState[key]
+          )
+        ) return;
+        renderedOperationState = operationState;
+        requireView().setOperationState(operationState);
       }
 
       function bridgeUrl(path) {
@@ -2689,6 +2975,11 @@
           return false;
         }
         const payload = { kind, ...(extra || {}) };
+        const profileMutationTarget = kind === "save_profile"
+          ? { profile: normalizedProfileCommandTarget(payload.profile) }
+          : kind === "delete_profile"
+            ? { profileId: payload.profileId }
+            : null;
         let resolveSseOutcome;
         let resolveSseUnavailable;
         const targetSessionId = typeof extra?.sessionId === "string"
@@ -2724,6 +3015,7 @@
         const attempt = {
           id: options?.commandId || createCorrelationId("command"),
           kind,
+          profileMutationTarget,
           ownedSessionMembershipIds,
           ownedSessionFields,
           ownedSessionActivityIds: new Set(
@@ -2751,6 +3043,7 @@
             "refresh_codex_account",
             "logout_codex",
           ].includes(kind),
+          ownsEditorModelProjection: kind === "discover_models",
           ownsAuthoritativeSessionAdditions: kind === "new_session",
           ownsGlobalState: !sessionCommand && kind !== "save_global_settings",
           causalStateSnapshot: captureCausalState(),
@@ -2773,6 +3066,24 @@
         let commandError = null;
         let commandWarning = null;
         let commandSucceeded = false;
+        const applyOutcomeState = async (state, commandOutcomeKnown) => {
+          let applied = false;
+          try {
+            applied = globalCommandNeedsStateBarrier(attempt)
+              ? await refreshState(attempt, kind, { commandOutcomeKnown })
+              : applyCommandState(kind, state, attempt, { commandOutcomeKnown });
+          } catch {
+            applied = false;
+          }
+          if (applied) return true;
+          const error = new Error(
+            "Current state could not be reconciled after the command response. Close and reopen Live Smith before continuing.",
+          );
+          error.reconciliationRequired = true;
+          commandError = error;
+          commandReconciliationBlocked = true;
+          return false;
+        };
         try {
           const httpOutcome = postBridge(
             "/command",
@@ -2824,8 +3135,7 @@
           }
           if (activeCommandAttempt !== attempt) return false;
           if (outcome.type === "state") {
-            applyCommandState(kind, outcome.state, attempt);
-            commandSucceeded = true;
+            commandSucceeded = await applyOutcomeState(outcome.state, true);
           } else if (outcome.type === "reconciled") {
             commandWarning = outcome.message;
             commandSucceeded = true;
@@ -2833,9 +3143,13 @@
             outcome.error.commandOutcome === "unknown" &&
             isWireChatBridgeState(outcome.error.state)
           ) {
-            applyCommandState(kind, outcome.error.state, attempt);
-            commandWarning = outcome.error.message || String(outcome.error);
-            commandSucceeded = true;
+            commandSucceeded = await applyOutcomeState(
+              outcome.error.state,
+              false,
+            );
+            if (commandSucceeded) {
+              commandWarning = outcome.error.message || String(outcome.error);
+            }
           } else {
             commandError = outcome.error;
             if (
@@ -2924,7 +3238,9 @@
       async function reconcileInterruptedCommand(originalError, kind, causalAttempt) {
         const originalMessage = originalError?.message || "The command response was lost.";
         try {
-          const refreshed = await refreshState(causalAttempt, kind);
+          const refreshed = await refreshState(causalAttempt, kind, {
+            commandOutcomeKnown: false,
+          });
           if (!refreshed) throw new Error("The bridge did not return current state.");
           return {
             type: "reconciled",
@@ -3006,7 +3322,11 @@
               baseUrl: connection.baseUrl.replace(/\/+$/, ""),
             }
           : connection?.kind === "codex-subscription"
-            ? { kind: connection.kind, provider: connection.provider }
+            ? {
+                kind: connection.kind,
+                provider: connection.provider,
+                authGeneration: state.codexAuthGeneration,
+              }
             : null;
         return JSON.stringify({
           profileId: selection.profileId,
@@ -3077,7 +3397,7 @@
         syncOperationState();
       }
 
-      function applyCommandState(kind, state, causalAttempt) {
+      function applyCommandState(kind, state, causalAttempt, options) {
         if (!isWireChatBridgeState(state)) return false;
         const previousSettings = getState().settings;
         captureOwnedPendingAttachmentAdditions(causalAttempt, state);
@@ -3111,22 +3431,23 @@
         reconcileRuntimeSourceWithState(reconciledState);
         adoptFollowUpBehaviorFromState(reconciledState);
         setState(reconciledState);
+        requireView().syncModelStateSource(reconciledState.modelStateSource);
         recordFullStateProjectionCoverage(reconciledState);
         refreshUncoveredActiveModelSelection(reconciledState);
-        reconcileProfileSettingsRefreshWithState(reconciledState);
         recordAttemptOwnedActivityRevisions(causalAttempt, state);
         reconcileAttemptProgressFromActivities(reconciledState);
-        requireView().syncModelStateSource(reconciledState.modelStateSource);
-        if (["save_profile", "delete_profile", "activate_profile"].includes(kind)) {
+        const rebuildSettingsForm = kind === "activate_profile" ||
+          ["save_profile", "delete_profile"].includes(kind) &&
+            (
+              options?.commandOutcomeKnown !== false ||
+              profileMutationReflected(kind, reconciledState, causalAttempt)
+            );
+        if (rebuildSettingsForm) {
           requireView().renderSettingsForm();
         } else if (profileSettingsChanged) {
           requireView().reconcileSettingsForm();
-        } else if (kind === "set_session_approval_mode") {
-          requireView().renderApprovalMode();
-        } else if (kind === "discover_models") {
-          requireView().renderProfileModels();
-          requireView().updateCapabilityPreview();
         }
+        reconcileProfileSettingsRefreshWithState(reconciledState);
         if (prompt && reconciledState.activeSessionId !== previousSessionId) {
           prompt.value = composerDraftsBySession.get(
             reconciledState.activeSessionId,
@@ -3188,14 +3509,6 @@
             previousSettings.profiles,
             reconciledState.settings.profiles,
           );
-        const profileModelProjectionChanged = profileSettingsChanged ||
-          !sameJsonValue(
-            previousState.availableModels,
-            reconciledState.availableModels,
-          ) || !sameJsonValue(
-            previousState.modelStateSource,
-            reconciledState.modelStateSource,
-          );
         attempt.targetSessionUnavailableState =
           !reconciledState.sessions.some(
             (session) => session.id === attempt.sessionId,
@@ -3215,17 +3528,13 @@
         if (visible) {
           reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
+          requireView().syncModelStateSource(reconciledState.modelStateSource);
           recordFullStateProjectionCoverage(reconciledState);
           refreshUncoveredActiveModelSelection(reconciledState);
-          reconcileProfileSettingsRefreshWithState(reconciledState);
-          requireView().syncModelStateSource(reconciledState.modelStateSource);
           if (profileSettingsChanged) {
             requireView().reconcileSettingsForm();
           }
-          if (profileModelProjectionChanged) {
-            requireView().renderProfileModels();
-          }
-          requireView().updateCapabilityPreview();
+          reconcileProfileSettingsRefreshWithState(reconciledState);
         } else {
           mergeBackgroundState(reconciledState, attempt);
         }
@@ -3260,44 +3569,59 @@
         const behavior = effectiveDefaultFollowUpBehavior();
         const running = Boolean(activeSendAttempt());
         const control = document.getElementById("defaultFollowUpBehavior");
-        if (control) control.value = behavior;
+        if (control && control.value !== behavior) control.value = behavior;
         const hint = document.getElementById("defaultFollowUpBehaviorHint");
         if (hint) {
-          hint.textContent = behavior === "steer"
+          const hintText = behavior === "steer"
             ? "Steer redirects the response that is currently in progress."
             : "Queue sends the message as a new turn after the current response finishes.";
+          if (hint.textContent !== hintText) hint.textContent = hintText;
         }
         const prompt = document.getElementById("prompt");
         if (prompt) {
-          prompt.placeholder = running
+          const placeholder = running
             ? behavior === "steer"
               ? "Redirect the response in progress…"
               : "Add a follow-up for after this response…"
             : "Ask about this Live Set…";
+          if (prompt.placeholder !== placeholder) prompt.placeholder = placeholder;
           const describedBy = new Set(
             (prompt.getAttribute("aria-describedby") || "")
               .split(/\s+/)
               .filter(Boolean),
           );
           if (running) {
-            prompt.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+            if (
+              prompt.getAttribute("aria-keyshortcuts") !==
+                "Meta+Enter Control+Enter"
+            ) {
+              prompt.setAttribute("aria-keyshortcuts", "Meta+Enter Control+Enter");
+            }
             describedBy.add("followUpShortcutHint");
           } else {
-            prompt.removeAttribute("aria-keyshortcuts");
+            if (prompt.hasAttribute("aria-keyshortcuts")) {
+              prompt.removeAttribute("aria-keyshortcuts");
+            }
             describedBy.delete("followUpShortcutHint");
           }
+          const describedByValue = [...describedBy].join(" ");
           if (describedBy.size) {
-            prompt.setAttribute("aria-describedby", [...describedBy].join(" "));
-          } else {
+            if (prompt.getAttribute("aria-describedby") !== describedByValue) {
+              prompt.setAttribute("aria-describedby", describedByValue);
+            }
+          } else if (prompt.hasAttribute("aria-describedby")) {
             prompt.removeAttribute("aria-describedby");
           }
         }
         const shortcutHint = document.getElementById("followUpShortcutHint");
         if (shortcutHint) {
-          shortcutHint.textContent = behavior === "steer"
+          const shortcutText = behavior === "steer"
             ? "Cmd/Ctrl+Enter · Steer current response"
             : "Cmd/Ctrl+Enter · Queue follow-up";
-          shortcutHint.hidden = !running;
+          if (shortcutHint.textContent !== shortcutText) {
+            shortcutHint.textContent = shortcutText;
+          }
+          if (shortcutHint.hidden !== !running) shortcutHint.hidden = !running;
         }
       }
 
@@ -4811,7 +5135,7 @@
         ));
       }
 
-      async function refreshState(causalAttempt, commandKind) {
+      async function refreshState(causalAttempt, commandKind, options) {
         if (
           !commandKind &&
           causalAttempt &&
@@ -4827,7 +5151,9 @@
           !attemptIsCurrent(causalAttempt)
         ) return;
         if (commandKind) {
-          if (!applyCommandState(commandKind, state, causalAttempt)) return false;
+          if (!applyCommandState(commandKind, state, causalAttempt, options)) {
+            return false;
+          }
         } else if (causalAttempt) {
           if (!applyAuthoritativeSendState(causalAttempt, state)) {
             return false;

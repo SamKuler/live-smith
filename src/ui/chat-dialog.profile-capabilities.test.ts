@@ -20,11 +20,12 @@ test("a typed non-catalog model stays unverified after Save and Use", async () =
     await harness.settle();
     harness.input("#manualModelId", "typed-model-not-in-catalog");
     harness.click("#addManualModelButton");
+    harness.click("#setDefaultModelButton");
 
     const expected = [
-      ["Images · Unverified", "unverified"],
-      ["Audio · Unverified", "unverified"],
-      ["PDF · Unverified", "unverified"],
+      ["Image ?", "unverified"],
+      ["Audio ?", "unverified"],
+      ["PDF ?", "unverified"],
     ];
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
 
@@ -36,6 +37,35 @@ test("a typed non-catalog model stays unverified after Save and Use", async () =
       "save_profile",
     );
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Load Models ignores invalid generation JSON and Save anchors its error", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.input("#extraBody", "{");
+    harness.click("#discoverModelsButton");
+    await harness.settle();
+
+    assert.equal(
+      commandCalls(harness).filter((call) =>
+        (call.body as { kind?: string }).kind === "discover_models"
+      ).length,
+      1,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLTextAreaElement>("#extraBody")?.value,
+      "{",
+    );
+
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    const error = harness.document.querySelector("#extraBodyError");
+    assert.match(error?.textContent ?? "", /valid JSON/i);
+    assert.equal(harness.document.activeElement?.id, "extraBody");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -68,9 +98,9 @@ test("explicit model input evidence survives Save and Use", async () => {
   const harness = await createDialogHarness(state);
   try {
     const expected = [
-      ["Images · Supported", "supported"],
-      ["Audio · Unsupported", "unsupported"],
-      ["PDF · Unverified", "unverified"],
+      ["Image ✓", "supported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ?", "unverified"],
     ];
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
 
@@ -99,10 +129,85 @@ test("manual input overrides remain authoritative after an unverified Save", asy
     await harness.settle();
 
     assert.deepEqual(renderedCapabilityStatuses(harness), [
-      ["Images · Supported", "supported"],
-      ["Audio · Unsupported", "unsupported"],
-      ["PDF · Supported", "supported"],
+      ["Image ✓", "supported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ✓", "supported"],
     ]);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("unchanged input capabilities keep their live-region nodes mounted", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const preview = harness.document.querySelector<HTMLElement>(
+      "#inputCapabilitiesPreview",
+    );
+    assert.ok(preview);
+    const items = [...preview.querySelectorAll("[data-capability-state]")];
+    assert.equal(items.length, 3);
+    const mutations: MutationRecord[] = [];
+    const observer = new harness.window.MutationObserver((records) => {
+      mutations.push(...records);
+    });
+    observer.observe(preview, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+
+    harness.input("#profileName", "Renamed without changing capabilities");
+    await Promise.resolve();
+    observer.disconnect();
+
+    assert.deepEqual(
+      [...preview.querySelectorAll("[data-capability-state]")],
+      items,
+    );
+    assert.deepEqual(mutations, []);
+    assert.equal(
+      preview.getAttribute("aria-label"),
+      "Input capabilities. Image: Unsupported. Audio: Unsupported. PDF: Unsupported.",
+    );
+
+    const changedMutations: MutationRecord[] = [];
+    const changedObserver = new harness.window.MutationObserver((records) => {
+      changedMutations.push(...records);
+    });
+    changedObserver.observe(preview, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    harness.select("#overrideInputImage", "true");
+    await Promise.resolve();
+    changedObserver.disconnect();
+
+    assert.deepEqual(
+      [...preview.querySelectorAll("[data-capability-state]")],
+      items,
+    );
+    assert.deepEqual(renderedCapabilityStatuses(harness), [
+      ["Image ✓", "supported"],
+      ["Audio ×", "unsupported"],
+      ["PDF ×", "unsupported"],
+    ]);
+    assert.equal(
+      changedMutations.some((mutation) =>
+        mutation.type === "childList" && mutation.target === preview
+      ),
+      false,
+    );
+    assert.equal(
+      changedMutations.some((mutation) => items[1]?.contains(mutation.target)),
+      false,
+    );
+    assert.equal(
+      changedMutations.some((mutation) => items[2]?.contains(mutation.target)),
+      false,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -242,6 +347,27 @@ test("initial state rejects capability evidence that contradicts its values", as
 test("initial state rejects a malformed model-catalog load receipt", async () => {
   const state = stateFixture();
   state.modelCatalogLoadReceipt = "invalid receipt";
+  const harness = await createDialogHarness(state);
+  try {
+    assert.match(
+      harness.document.querySelector("#status")?.textContent ?? "",
+      /invalid initial state/i,
+    );
+    assert.equal(
+      harness.document.querySelector(".app")?.hasAttribute("inert"),
+      true,
+    );
+    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.equal("LiveSmithUI" in harness.window, false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("initial state rejects an invalid subscription auth generation", async () => {
+  const state = stateFixture();
+  state.codexAuthGeneration = -1;
   const harness = await createDialogHarness(state);
   try {
     assert.match(

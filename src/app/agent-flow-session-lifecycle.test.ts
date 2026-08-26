@@ -207,7 +207,10 @@ test("concurrent dialogs serialize pristine Session creation and approval intent
     await approvalCommitStarted.promise;
     const newDuringApproval = create(secondUrl, secondToken);
     releaseApprovalCommit.resolve();
-    assert.equal((await approval).status, 200);
+    const approvalResponse = await approval;
+    assert.equal(approvalResponse.status, 200);
+    const approvalState = await approvalResponse.json() as ChatDialogState;
+    assert.equal(approvalState.status, undefined);
     const afterApprovalResponse = await newDuringApproval;
     const afterApprovalBody = await afterApprovalResponse.text();
     assert.equal(afterApprovalResponse.status, 200, afterApprovalBody);

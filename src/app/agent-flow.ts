@@ -828,6 +828,8 @@ export async function runAgentFlow(
             effectiveSessionModelSelection(activeProfile, activeSession),
           )
         : null;
+      const projectedAuthGeneration =
+        modelAuthSendFence.peekAuthGeneration();
       return {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
@@ -879,7 +881,11 @@ export async function runAgentFlow(
           ? null
           : savedProfileRevision(activeProfile),
         settings,
-        ...(codexAuth === undefined ? {} : { codexAuth }),
+        ...(codexAuth === undefined ||
+            observedAuthGeneration !== projectedAuthGeneration
+          ? {}
+          : { codexAuth }),
+        codexAuthGeneration: projectedAuthGeneration,
         status,
         openSettingsOnLoad: activeProfile ? openSettingsOnLoad : true,
       };
@@ -973,6 +979,7 @@ export async function runAgentFlow(
       const profileFingerprint = connectionFingerprint(profile);
       const saveWithCatalog = async (
         cachedModels: DiscoveredModelInfo[],
+        subscriptionCatalogReady = false,
       ): Promise<ChatDialogState> => {
         const previousModelsById = new Map(
           (previousProfile?.models ?? []).map((model) => [model.model, model]),
@@ -985,20 +992,26 @@ export async function runAgentFlow(
         );
         const modelConfigsToValidate = profile.connection.kind === "direct-api"
           ? profile.models
-          : profile.models.filter((model) => {
-              if (previousProfile?.connection.kind !== "codex-subscription") {
-                return true;
-              }
-              const previous = previousModelsById.get(model.model);
-              return !previous || JSON.stringify(previous) !== JSON.stringify(model);
-            });
+          : subscriptionCatalogReady
+            ? profile.models
+            : profile.models.filter((model) => {
+                if (previousProfile?.connection.kind !== "codex-subscription") {
+                  return true;
+                }
+                const previous = previousModelsById.get(model.model);
+                return !previous || JSON.stringify(previous) !== JSON.stringify(model);
+              });
+        const subscriptionDefaultChanged =
+          profile.connection.kind === "codex-subscription" &&
+          previousProfile?.connection.kind === "codex-subscription" &&
+          profile.defaultModel !== previousProfile.defaultModel;
         if (
           profile.connection.kind === "codex-subscription" &&
-          modelConfigsToValidate.length > 0 &&
-          cachedModels.length === 0
+          (modelConfigsToValidate.length > 0 || subscriptionDefaultChanged) &&
+          !subscriptionCatalogReady
         ) {
           throw new ChatBridgeConflictError(
-            "Load the current ChatGPT model catalog before adding a model or changing its reasoning settings.",
+            "Load the current ChatGPT model catalog before changing subscription model settings.",
           );
         }
         for (const model of modelConfigsToValidate) {
@@ -1064,11 +1077,13 @@ export async function runAgentFlow(
       }
       try {
         const generation = await synchronizeAuthGeneration(signal);
-        const cachedModels =
-          codexCatalogGenerationByConnection.get(profileFingerprint) === generation
-            ? modelsByConnection.get(profileFingerprint) ?? []
-            : [];
-        return await saveWithCatalog(cachedModels);
+        const subscriptionCatalogReady =
+          codexCatalogGenerationByConnection.get(profileFingerprint) === generation &&
+          modelsByConnection.has(profileFingerprint);
+        const cachedModels = subscriptionCatalogReady
+          ? modelsByConnection.get(profileFingerprint) ?? []
+          : [];
+        return await saveWithCatalog(cachedModels, subscriptionCatalogReady);
       } finally {
         releaseManagedSave();
       }
@@ -1192,7 +1207,7 @@ export async function runAgentFlow(
           },
         );
       });
-      status = "Session Approval Mode saved.";
+      status = undefined;
       return buildStateAfterCommandMutation();
     }
 

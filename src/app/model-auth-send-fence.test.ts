@@ -163,6 +163,19 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
   }
 });
 
+test("the credential-free generation projection remains readable after poison", () => {
+  const fence = modelAuthSendFenceForStorage(undefined);
+  const generation = fence.peekAuthGeneration();
+
+  fence.poison(new Error("managed shutdown failed"));
+
+  assert.equal(fence.peekAuthGeneration(), generation);
+  assert.throws(
+    () => fence.authGeneration(),
+    /shared ChatGPT subscription runtime could not be shut down safely/i,
+  );
+});
+
 test("pending reconciliation isolates waiter cancellation from its single flight", async () => {
   const fence = modelAuthSendFenceForStorage(undefined);
   const owner = Symbol("pending owner");
