@@ -20,7 +20,9 @@ import {
   MAX_ACTIVE_SKILL_COUNT,
   MAX_SKILL_FILE_BYTES,
   MAX_SKILL_ID_LENGTH,
+  type SkillDefinition,
 } from "../skills/format.js";
+import { builtInSkillDefinitions } from "../skills/builtins.js";
 import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -106,6 +108,22 @@ function injectSkillContract(script: string): string {
     );
 }
 
+export function injectBuiltInSkillDefinitions(
+  script: string,
+  definitions: readonly SkillDefinition[],
+): string {
+  const serialized = JSON.stringify(definitions)
+    .replaceAll("<", "\\u003C")
+    .replaceAll(">", "\\u003E")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+  return script.replaceAll(
+    "__BUILT_IN_SKILL_DEFINITIONS__",
+    () => serialized,
+  );
+}
+
 function injectModelContract(script: string): string {
   return script
     .replaceAll(
@@ -153,7 +171,10 @@ export function composeChatDocument(
     injectAttachmentContract(scripts.bridgeClient),
   ));
   const profileEditorScript = injectModelContract(scripts.profileEditor);
-  const skillManagerScript = injectSkillContract(scripts.skillManager);
+  const skillManagerScript = injectBuiltInSkillDefinitions(
+    injectSkillContract(scripts.skillManager),
+    builtInSkillDefinitions(),
+  );
   const document = template
     .replace(
       "__STATE__",

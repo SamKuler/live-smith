@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   availableSkillSummaries,
   builtInSkillDefinition,
+  builtInSkillDefinitions,
   isBuiltInSkillId,
 } from "./builtins.js";
 
@@ -36,6 +37,18 @@ test("built-in Skill readers return isolated definitions and source-labelled sum
     builtInIds.map((id) => ({ id, source: "built-in" })),
   );
   assert.equal(builtInSkillDefinition("mix-review"), undefined);
+});
+
+test("the complete built-in registry is a sorted snapshot of canonical definitions", () => {
+  const snapshot = builtInSkillDefinitions();
+  assert.deepEqual(snapshot, builtInIds.map((id) => builtInSkillDefinition(id)));
+  snapshot[0]!.body = "Changed reader body";
+  snapshot[0]!.description = "Changed reader description";
+  snapshot.pop();
+  assert.deepEqual(
+    builtInSkillDefinitions(),
+    builtInIds.map((id) => builtInSkillDefinition(id)),
+  );
 });
 
 test("installed summaries shadow same-ID built-ins without mutating either source", () => {

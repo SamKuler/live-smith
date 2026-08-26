@@ -407,6 +407,11 @@ installed, replaced, or deleted. Application state merges both sources and
 projects the required `source: "built-in" | "user"` discriminator without a
 body, hash, or path.
 
+The dialog document separately embeds a script-safe snapshot of those canonical
+built-in definitions for its local read-only viewer, outside chat state and the
+bridge protocol. Viewing follows the available-source discriminator, does not
+change activation, and never reads User Skill bodies.
+
 `storage/skills.ts` derives every path from a validated Skill ID and uses the
 same global per-storage transaction queue as Sessions. Install/replace/delete
 uses a recoverable pending mutation plus private staging, durable atomic writes,

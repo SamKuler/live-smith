@@ -2323,6 +2323,11 @@
         gap: 7px;
       }
 
+      .skill-manager[hidden],
+      .skill-viewer[hidden] {
+        display: none;
+      }
+
       .skill-group {
         display: grid;
         gap: 6px;
@@ -2391,17 +2396,72 @@
       }
 
       .skill-copy span,
-      .skill-empty,
-      .skill-note {
+      .skill-empty {
         color: var(--quiet);
         font-size: 11px;
         line-height: 1.35;
       }
 
-      .skill-delete {
+      .skill-delete,
+      .skill-view {
         height: 26px;
         padding: 0 7px;
         font-size: 11px;
+      }
+
+      .skill-viewer {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .skill-viewer-header {
+        position: sticky;
+        top: -12px;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 0;
+        background: var(--pane);
+      }
+
+      .skill-viewer-header button {
+        height: 28px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+
+      .skill-viewer-header span,
+      .skill-viewer-id {
+        color: var(--quiet);
+        font-size: 11px;
+      }
+
+      .skill-viewer-id {
+        overflow-wrap: anywhere;
+      }
+
+      .skill-viewer-description {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .skill-viewer-body {
+        min-width: 0;
+        padding-top: 12px;
+        border-top: 1px solid var(--line-soft);
+        font-size: 12px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+
+      .skill-viewer-body.markdown-body {
+        white-space: normal;
       }
 
       .draft-status {
@@ -3289,11 +3349,15 @@
           </div>
           <div id="skillsPanel" class="tab-panel skills-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
             <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
-              <h2 id="skillsHeading">Session Skills</h2>
-              <p class="skill-note">Choose the workflows that guide this Session.</p>
+              <div class="field-label-row">
+                <h2 id="skillsHeading">Session Skills</h2>
+                <span class="inline-help" tabindex="0" role="note" aria-label="Enable workflows for this Session. Use $skill-id in a message for one-time guidance." data-tooltip="Enable workflows for this Session. Use $skill-id in a message for one-time guidance.">?</span>
+              </div>
               <section class="skill-group" aria-labelledby="builtInSkillsHeading">
-                <h3 id="builtInSkillsHeading">Built-in</h3>
-                <p class="skill-note">Included with Live Smith. Off by default.</p>
+                <div class="field-label-row">
+                  <h3 id="builtInSkillsHeading">Built-in</h3>
+                  <span class="inline-help" tabindex="0" role="note" aria-label="Included with Live Smith and off by default. View opens the instructions without enabling the Skill." data-tooltip="Included with Live Smith and off by default. View opens the instructions without enabling the Skill.">?</span>
+                </div>
                 <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
                 <p id="builtInSkillEmptyState" class="skill-empty" hidden>Same-ID User Skills are shown below.</p>
               </section>
@@ -3316,6 +3380,15 @@
                   </div>
                 </details>
               </section>
+            </section>
+            <section id="skillViewer" class="skill-viewer" aria-labelledby="skillViewerId" hidden>
+              <div class="skill-viewer-header">
+                <button id="closeSkillViewer" class="secondary" type="button" aria-label="Back to Skills">← Skills</button>
+                <span>Built-in · Read-only</span>
+              </div>
+              <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
+              <p id="skillViewerDescription" class="skill-viewer-description"></p>
+              <div id="skillViewerBody" class="skill-viewer-body"></div>
             </section>
           </div>
           <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>

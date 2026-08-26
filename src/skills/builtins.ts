@@ -175,6 +175,10 @@ const definitionsById = new Map(
   definitions.map((definition) => [definition.id, definition] as const),
 );
 
+export function builtInSkillDefinitions(): SkillDefinition[] {
+  return definitions.map(cloneSkillDefinition);
+}
+
 export function builtInSkillDefinition(
   skillId: string,
 ): SkillDefinition | undefined {
