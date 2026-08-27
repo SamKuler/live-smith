@@ -816,7 +816,11 @@ test("OpenAI Chat replays the raw assistant message before tool results", async 
   ]));
   const assistantIndex = messages.findIndex((message) => message.reasoning_content === "opaque");
   assert.ok(assistantIndex >= 0);
-  assert.equal(messages[assistantIndex + 1]?.role, "tool");
+  assert.deepEqual(messages[assistantIndex + 1], {
+    role: "tool",
+    tool_call_id: "call-1",
+    content: "result",
+  });
   assert.deepEqual(messages[assistantIndex + 2], {
     role: "user",
     content: "Steer toward the Lead track.",
@@ -1069,6 +1073,7 @@ test("OpenAI Chat requires tool calls to match their terminal reason and type", 
 
   for (const streaming of [false, true]) {
     for (const item of cases) {
+      if (streaming && item.finishReason === "stop") continue;
       const toolCalls = item.toolCalls?.map((call, index) =>
         streaming ? { index, ...call } : call
       );
@@ -1171,38 +1176,30 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
   );
 });
 
-test("OpenAI Chat streaming preserves and replays fragmented nested extension state", async () => {
+test("OpenAI Chat streaming preserves and replays Gemini thought signatures", async () => {
   const chunks = [
     {
-      id: "chunk-1", object: "chat.completion.chunk", created: 1, model: "custom-model",
-      choices: [{ index: 0, finish_reason: null, delta: {
+      id: "chunk-1", object: "chat.completion.chunk", created: 1, model: "gemini-3.7-flash",
+      choices: [{ index: 0, delta: {
         role: "assistant",
-        tool_calls: [{
-          index: 0,
-          id: "call-opaque",
-          type: "function",
-          provider_signature: "sig-",
-          function: {
-            name: "ins",
-            arguments: "{",
-            extension: { checksum: "abc-" },
+        tool_calls: [
+          {
+            id: "call-opaque-a",
+            type: "function",
+            extra_content: { google: { thought_signature: "signature-a" } },
+            function: { name: "inspect", arguments: "{}" },
           },
-        }],
+          {
+            id: "call-opaque-b",
+            type: "function",
+            function: { name: "inspect", arguments: "{}" },
+          },
+        ],
       } }],
     },
     {
-      id: "chunk-2", object: "chat.completion.chunk", created: 1, model: "custom-model",
-      choices: [{ index: 0, finish_reason: "tool_calls", delta: {
-        tool_calls: [{
-          index: 0,
-          provider_signature: "tail",
-          function: {
-            name: "pect",
-            arguments: "}",
-            extension: { checksum: "123" },
-          },
-        }],
-      } }],
+      id: "chunk-2", object: "chat.completion.chunk", created: 1, model: "gemini-3.7-flash",
+      choices: [{ index: 0, finish_reason: "stop", delta: { role: "assistant" } }],
     },
   ];
   const sse = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
@@ -1237,25 +1234,27 @@ test("OpenAI Chat streaming preserves and replays fragmented nested extension st
   const streamingRequest = request(profile());
   streamingRequest.onDelta = () => {};
   const firstTurn = await transport.createToolTurn(streamingRequest);
-  assert.deepEqual(firstTurn.toolCalls, [{
-    id: "call-opaque",
-    name: "inspect",
-    arguments: "{}",
-  }]);
+  assert.deepEqual(firstTurn.toolCalls, [
+    { id: "call-opaque-a", name: "inspect", arguments: "{}" },
+    { id: "call-opaque-b", name: "inspect", arguments: "{}" },
+  ]);
 
   const rawMessage = (firstTurn.providerState as {
     message: Record<string, unknown>;
   }).message;
-  assert.deepEqual((rawMessage.tool_calls as Array<Record<string, unknown>>)[0], {
-    id: "call-opaque",
-    type: "function",
-    provider_signature: "sig-tail",
-    function: {
-      name: "inspect",
-      arguments: "{}",
-      extension: { checksum: "abc-123" },
+  assert.deepEqual(rawMessage.tool_calls, [
+    {
+      id: "call-opaque-a",
+      type: "function",
+      extra_content: { google: { thought_signature: "signature-a" } },
+      function: { name: "inspect", arguments: "{}" },
     },
-  });
+    {
+      id: "call-opaque-b",
+      type: "function",
+      function: { name: "inspect", arguments: "{}" },
+    },
+  ]);
 
   await transport.createToolTurn(request(profile(), [
     {
@@ -1264,13 +1263,53 @@ test("OpenAI Chat streaming preserves and replays fragmented nested extension st
       toolCalls: firstTurn.toolCalls,
       providerState: firstTurn.providerState,
     },
-    { role: "tool", toolCallId: "call-opaque", content: "result" },
+    { role: "tool", toolCallId: "call-opaque-a", content: "result-a" },
+    { role: "tool", toolCallId: "call-opaque-b", content: "result-b" },
+    {
+      role: "assistant",
+      content: null,
+      toolCalls: [{ id: "call-opaque-a", name: "inspect", arguments: "{}" }],
+      providerState: {
+        kind: "openai-chat",
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call-opaque-a",
+            type: "function",
+            function: { name: "inspect", arguments: "{}" },
+          }],
+        },
+      },
+    },
+    { role: "tool", toolCallId: "call-opaque-a", content: "unsigned-result" },
   ]));
   const replayed = replayedMessages.find((message) =>
     Array.isArray(message.tool_calls) &&
-    (message.tool_calls as Array<Record<string, unknown>>)[0]?.provider_signature === "sig-tail"
+    (((message.tool_calls as Array<Record<string, unknown>>)[0]?.extra_content as {
+      google?: { thought_signature?: unknown };
+    } | undefined)?.google?.thought_signature === "signature-a")
   );
   assert.deepEqual(replayed, rawMessage);
+  assert.deepEqual(replayedMessages.filter((message) => message.role === "tool"), [
+    {
+      role: "tool",
+      tool_call_id: "call-opaque-a",
+      name: "inspect",
+      content: "result-a",
+    },
+    {
+      role: "tool",
+      tool_call_id: "call-opaque-b",
+      name: "inspect",
+      content: "result-b",
+    },
+    {
+      role: "tool",
+      tool_call_id: "call-opaque-a",
+      content: "unsigned-result",
+    },
+  ]);
 });
 
 test("OpenAI Chat accumulates indexed reasoning_details and replays them unchanged", async () => {

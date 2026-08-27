@@ -76,6 +76,10 @@ Connect an OpenAI, Anthropic, or compatible API service using its endpoint and A
 key. Supported request formats are OpenAI Responses, OpenAI Chat Completions,
 and Anthropic Messages. API usage is billed by the provider.
 
+Google Gemini works through its official OpenAI Chat Completions compatibility
+endpoint. See the [Gemini setup](docs/MODEL_PROVIDERS.md#google-gemini) for the
+connection fields and capability settings.
+
 Hosted Web Search is available through supported OpenAI Responses and Anthropic
 Messages connections. It is off by default and configured per model.
 

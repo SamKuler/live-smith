@@ -189,11 +189,12 @@ async function streamChatTurn(
       }
       accumulateUnknownDelta(rawMessage, delta);
       const calls = toolCallsArray(delta.tool_calls, "OpenAI Chat Completions");
-      for (const entry of calls) {
+      for (const [position, entry] of calls.entries()) {
         if (!isRecord(entry)) {
           throw new Error("OpenAI Chat Completions returned a malformed tool call.");
         }
-        const index = typeof entry.index === "number" ? entry.index : 0;
+        // Compatible streams may omit OpenAI's per-call index while preserving order.
+        const index = typeof entry.index === "number" ? entry.index : position;
         rawToolCalls.set(
           index,
           mergeStreamRecord(rawToolCalls.get(index) ?? {}, entry, new Set(["index"])),
@@ -215,7 +216,13 @@ async function streamChatTurn(
     completedRawToolCalls,
     "OpenAI Chat Completions",
   );
-  assertCompleteChatFinishReason(finishReason, toolCalls.length);
+  assertCompleteChatFinishReason(
+    // Some compatible streams report stop after emitting complete tool calls.
+    finishReason === "stop" && toolCalls.length > 0
+      ? "tool_calls"
+      : finishReason,
+    toolCalls.length,
+  );
   if (completedRawToolCalls.length) {
     rawMessage.tool_calls = completedRawToolCalls;
   }

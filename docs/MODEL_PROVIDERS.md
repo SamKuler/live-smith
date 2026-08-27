@@ -523,7 +523,9 @@ user event.
 - Sends the protocol directly over HTTP/SSE without an OpenAI SDK runtime
   dependency.
 - Uses `max_completion_tokens` and `reasoning_effort`.
-- Uses assistant `tool_calls` followed by `role: tool` messages.
+- Uses assistant `tool_calls` followed by `role: tool` messages linked by call
+  ID. Signed Gemini tool turns also return the matching function name required
+  by that compatibility extension.
 - Requires a complete `stop` or `tool_calls` finish reason before returning a
   turn to the agent loop; truncated, filtered, unknown, and unterminated
   responses fail before any tool call can run.
@@ -531,9 +533,11 @@ user event.
   that require them during later tool turns.
 - Rejects missing, empty, or duplicate tool-call IDs, empty function names, and
   missing or non-string argument representations before any Live action can
-  run. Every call must have type `function`, `tool_calls` must be an array, and
-  the parsed calls must agree bidirectionally with the terminal finish reason.
-  Ordinary assistant text cannot hide a malformed or missing declared call.
+  run. Every call must have type `function` and `tool_calls` must be an array.
+  Compatible streams that omit per-call indexes use that delta's array order;
+  a terminal `stop` is normalized to `tool_calls` only after one or more calls
+  pass complete validation. Ordinary assistant text cannot hide a malformed or
+  missing declared call.
 
 ### Anthropic Messages
 
@@ -863,6 +867,29 @@ providers such as `localhost`, `127.0.0.1`, or `::1`; private-LAN and remote HTT
 endpoints are rejected before a Profile can be saved or used for discovery.
 Loopback endpoints may leave API key blank, in which case Live Smith omits the
 authentication header entirely. Every non-loopback endpoint requires a key.
+
+### Google Gemini
+
+Gemini uses its
+[official OpenAI compatibility endpoint](https://ai.google.dev/gemini-api/docs/openai);
+it is not a separate Live Smith provider mode. Create a Direct API Profile with:
+
+- API family: OpenAI
+- API mode: Chat Completions
+- Base URL: `https://generativelanguage.googleapis.com/v1beta/openai`
+- API key: a Gemini API key
+
+Use **Load Models** or enter a Gemini model ID manually. The compatible model
+catalog may omit modality and reasoning metadata. Set documented image or audio
+support in Advanced Overrides when needed; otherwise Live Smith keeps those
+inputs unavailable. Leave reasoning at Provider default unless the selected
+model's supported efforts are configured explicitly.
+
+This path supports Live Smith's client function tools and inline image/WAV audio
+input. It preserves
+[Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)
+across tool turns. Google's compatibility layer remains beta and does not add
+Gemini-native File API or Google Search grounding to Live Smith.
 
 Live context and tool results are sent as explicitly labelled untrusted data.
 Track, Clip, Device, parameter, and MIDI names/content never gain instruction

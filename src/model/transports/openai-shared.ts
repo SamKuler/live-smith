@@ -65,6 +65,7 @@ export async function listOpenAIModels(
 export function buildOpenAIChatMessages(
   request: TransportRequest,
 ): Array<Record<string, unknown>> {
+  let namedToolResults: ReadonlyMap<string, string> | undefined;
   const messages: Array<Record<string, unknown>> = [
     { role: "system", content: request.systemInstructions },
     ...request.history.map((message) => message.role === "assistant"
@@ -83,9 +84,11 @@ export function buildOpenAIChatMessages(
       while (index < request.agentMessages.length) {
         const toolMessage = request.agentMessages[index]!;
         if (toolMessage.role !== "tool") break;
+        const toolName = namedToolResults?.get(toolMessage.toolCallId);
         messages.push({
           role: "tool",
           tool_call_id: toolMessage.toolCallId,
+          ...(toolName ? { name: toolName } : {}),
           content: toolMessage.content,
         });
         if (toolMessage.modelInputPart) {
@@ -112,9 +115,11 @@ export function buildOpenAIChatMessages(
           ]),
         });
       }
+      namedToolResults = undefined;
       continue;
     }
     if (message.role === "user") {
+      namedToolResults = undefined;
       messages.push({
         role: "user",
         content: message.content,
@@ -123,6 +128,9 @@ export function buildOpenAIChatMessages(
       continue;
     }
     messages.push(chatAssistantMessage(message));
+    namedToolResults = hasGeminiToolSignature(message)
+      ? new Map(message.toolCalls.map((toolCall) => [toolCall.id, toolCall.name]))
+      : undefined;
     index += 1;
   }
   return messages;
@@ -183,6 +191,25 @@ function chatAssistantMessage(
         }
       : {}),
   };
+}
+
+function hasGeminiToolSignature(
+  message: Extract<ModelConversationMessage, { role: "assistant" }>,
+): boolean {
+  const state = message.providerState;
+  if (
+    !isRecord(state) ||
+    state.kind !== "openai-chat" ||
+    !isRecord(state.message) ||
+    !Array.isArray(state.message.tool_calls)
+  ) return false;
+  return state.message.tool_calls.some((toolCall) => {
+    if (!isRecord(toolCall) || !isRecord(toolCall.extra_content)) return false;
+    const google = toolCall.extra_content.google;
+    return isRecord(google) &&
+      typeof google.thought_signature === "string" &&
+      Boolean(google.thought_signature);
+  });
 }
 
 function capabilitiesFromMetadata(
