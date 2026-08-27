@@ -11,6 +11,7 @@ import {
   Simpler,
   TakeLane,
   Track,
+  WarpMode,
   type ArrangementSelection,
   type ClipSlotSelection,
   type ExtensionContext,
@@ -278,7 +279,7 @@ function summarizeArrangementSelection(
       );
       return [
         `Lane ${index + 1}: ${trackTypeLabel(object)} track "${object.name}"`,
-        `  muted=${object.mute}, solo=${object.solo}, armed=${object.arm}`,
+        `  ${trackStateSummary(object)}`,
         `  clips in range=${overlapping.length}`,
         ...overlapping.slice(0, 6).map((clip) => `  - ${summarizeClip(clip)}`),
       ].join("\n");
@@ -313,7 +314,7 @@ function summarizeObject(object: DataModelObject<"1.0.0">): string {
       : "Empty clip slot.";
   }
   if (object instanceof Scene) {
-    return `Scene "${object.name}", tempo=${object.tempo}, signature=${object.signatureNumerator}/${object.signatureDenominator}`;
+    return `Scene ${sceneStateSummary(object)}`;
   }
   if (object instanceof Simpler) {
     return `Simpler "${object.name}", sample=${object.sample ? audioFileLabel(object.sample.filePath) : "none"}`;
@@ -328,7 +329,7 @@ function summarizeObject(object: DataModelObject<"1.0.0">): string {
 function summarizeTrack(track: Track<"1.0.0">): string {
   return [
     `${trackTypeLabel(track)} track "${track.name}"`,
-    `mute=${track.mute}, solo=${track.solo}, armed=${track.arm}`,
+    trackStateSummary(track),
     `arrangement clips=${track.arrangementClips.length}`,
     `clip slots=${track.clipSlots.length}`,
     `devices=${track.devices.map((device) => device.name).join(", ") || "none"}`,
@@ -339,6 +340,7 @@ function summarizeClip(clip: Clip<"1.0.0">): string {
   const base = [
     `${clip instanceof MidiClip ? "MIDI" : clip instanceof AudioClip ? "Audio" : "Unknown"} clip "${clip.name}"`,
     `start=${clip.startTime}, end=${clip.endTime}, duration=${clip.duration}`,
+    `startMarker=${clip.startMarker}, endMarker=${clip.endMarker}`,
     `looping=${clip.looping}, muted=${clip.muted}, color=${clip.color}`,
   ];
 
@@ -349,11 +351,38 @@ function summarizeClip(clip: Clip<"1.0.0">): string {
   if (clip instanceof AudioClip) {
     base.push(
       `file=${audioFileLabel(clip.filePath)}`,
-      `warping=${clip.warping}, warpMode=${clip.warpMode}, warpMarkers=${clip.warpMarkers.length}`,
+      `warping=${clip.warping}, warpMode=${warpModeLabel(clip.warpMode)}, warpMarkers=${clip.warpMarkers.length}`,
     );
   }
 
   return base.join("\n");
+}
+
+export function trackStateSummary(track: Track<"1.0.0">): string {
+  const groupTrack = track.groupTrack;
+  return [
+    `mute=${track.mute}`,
+    `solo=${track.solo}`,
+    `mutedViaSolo=${track.mutedViaSolo}`,
+    `armed=${track.arm}`,
+    `groupTrack=${groupTrack ? `"${groupTrack.name}"` : "none"}`,
+  ].join(", ");
+}
+
+export function sceneStateSummary(scene: Scene<"1.0.0">): string {
+  return `"${scene.name}" tempo=${scene.tempo} signature=${scene.signatureNumerator}/${scene.signatureDenominator}`;
+}
+
+export function warpModeLabel(mode: WarpMode): string {
+  switch (mode) {
+    case WarpMode.Beats: return "beats";
+    case WarpMode.Tones: return "tones";
+    case WarpMode.Texture: return "texture";
+    case WarpMode.Repitch: return "repitch";
+    case WarpMode.Complex: return "complex";
+    case WarpMode.ComplexPro: return "complex_pro";
+    default: return String(mode);
+  }
 }
 
 export function audioFileLabel(filePath: string | undefined): string {

@@ -1443,7 +1443,7 @@ function observationRequestFromToolCall(
     case "inspect_clip": {
       assertOnlyKeys(
         args,
-        ["trackName", "clipName", "startBeat", "slotIndex"],
+        ["trackName", "clipName", "startBeat", "slotIndex", ...observationItemPageKeys],
         `${toolCall.name} arguments`,
       );
       const request = {
@@ -1452,6 +1452,7 @@ function observationRequestFromToolCall(
         ...optionalStringProp(args.clipName, "clipName"),
         ...optionalNumberProp(args.startBeat, "startBeat"),
         ...optionalIntegerProp(args.slotIndex, "slotIndex", 0),
+        ...observationItemPageProps(args),
       } as Extract<AgentObservationRequest, { type: "inspect_clip" }>;
       if (request.startBeat !== undefined && request.slotIndex !== undefined) {
         throw new Error("inspect_clip uses either startBeat or slotIndex, not both.");

@@ -248,7 +248,8 @@ test("Continue and archive lifecycle never persist the unused fallback Session",
     scope: { kind: "track", identity: "old-track", label: "Lead" },
   });
   const track = Object.setPrototypeOf({
-    handle: { id: 20n }, name: "Lead", mute: false, solo: false, arm: false,
+    handle: { id: 20n }, name: "Lead", mute: false, solo: false,
+    mutedViaSolo: false, arm: false, groupTrack: null,
     arrangementClips: [], takeLanes: [], clipSlots: [], devices: [],
   }, MidiTrack.prototype);
   let reopened = false;

@@ -43,7 +43,12 @@ import {
   resolveDeviceTarget,
   type DevicePath,
 } from "./device-tree.js";
-import { audioFileLabel } from "./context.js";
+import {
+  audioFileLabel,
+  sceneStateSummary,
+  trackStateSummary,
+  warpModeLabel,
+} from "./context.js";
 import { analyzeWaveFile, type WaveAnalysis } from "./wave-analysis.js";
 import { copyAudioFileSafely } from "./audio-attachment-source.js";
 import { consumePreFxAudioQueued } from "./audio-render-queue.js";
@@ -160,7 +165,7 @@ export async function observeLive(
           return `Session slotIndex ${request.slotIndex} on track "${track.name}" is empty.`;
         }
       }
-      return summarizeClipDetail(resolveObservedClip(context, request, target));
+      return summarizeClipDetail(resolveObservedClip(context, request, target), request);
     }
     case "inspect_midi_clip": {
       const clip = resolveMidiClip(context, request, target);
@@ -539,15 +544,15 @@ async function summarizeCurrentObject(
       target,
     );
   }
-  if (object instanceof Clip) return summarizeClipDetail(object);
+  if (object instanceof Clip) return summarizeClipDetail(object, request);
   if (object instanceof ClipSlot) {
     return object.clip
-      ? `Selected Session Clip Slot contains:\n${summarizeClipDetail(object.clip)}`
+      ? `Selected Session Clip Slot contains:\n${summarizeClipDetail(object.clip, request)}`
       : "Selected Session Clip Slot is empty.";
   }
   if (object instanceof Sample) return `Selected Sample: ${audioFileLabel(object.filePath)}`;
   if (object instanceof Scene) {
-    return `Selected Scene "${object.name}" tempo=${object.tempo || "-"} signature=${object.signatureNumerator}/${object.signatureDenominator}`;
+    return `Selected Scene ${sceneStateSummary(object)}`;
   }
   if (object instanceof CuePoint) {
     return `Selected Cue Point "${object.name}" at beat ${object.time}.`;
@@ -697,10 +702,14 @@ function resolveObservedClip(
   );
 }
 
-function summarizeClipDetail(clip: Clip<"1.0.0">): string {
+function summarizeClipDetail(
+  clip: Clip<"1.0.0">,
+  request: ObservationPageRequest = {},
+): string {
   const lines = [
     `${clip instanceof MidiClip ? "MIDI" : clip instanceof AudioClip ? "Audio" : "Unknown"} Clip "${clip.name}"`,
     `start=${clip.startTime} end=${clip.endTime} duration=${clip.duration}`,
+    `startMarker=${clip.startMarker} endMarker=${clip.endMarker}`,
     `looping=${clip.looping} loopStart=${clip.loopStart} loopEnd=${clip.loopEnd}`,
     `muted=${clip.muted} color=${clip.color}`,
   ];
@@ -708,9 +717,19 @@ function summarizeClipDetail(clip: Clip<"1.0.0">): string {
     lines.push(summarizeMidiNotes(clip.notes, { offset: 0, limit: 128 }));
   }
   if (clip instanceof AudioClip) {
+    const warpMarkerPage = pageOf(
+      clip.warpMarkers,
+      request.itemOffset,
+      request.itemLimit,
+      64,
+    );
     lines.push(
       `file=${audioFileLabel(clip.filePath)}`,
-      `warping=${clip.warping} warpMode=${clip.warpMode} warpMarkers=${clip.warpMarkers.length}`,
+      `warping=${clip.warping} warpMode=${warpModeLabel(clip.warpMode)} warpMarkers=${clip.warpMarkers.length}`,
+      pageHeader("warp markers", warpMarkerPage),
+      ...warpMarkerPage.items.map((marker, index) =>
+        `  marker index ${warpMarkerPage.offset + index}: sampleTime=${marker.sampleTime} beatTime=${marker.beatTime}`
+      ),
     );
   }
   return lines.join("\n");
@@ -745,14 +764,14 @@ function summarizeSongInfo(
   const lines = [
     `Tempo: ${song.tempo} BPM`,
     `Grid: ${gridLabel(song.gridQuantization)}${song.gridIsTriplet ? " (triplet)" : ""}`,
-    `Scale: ${song.scaleMode ? `${song.scaleName} (root=${song.rootNote})` : "Off"}`,
+    `Scale: mode=${song.scaleMode} name="${song.scaleName}" rootNote=${song.rootNote} intervals=[${song.scaleIntervals.join(",")}]`,
     `Tracks: ${song.tracks.length}`,
     `Scenes: ${song.scenes.length}`,
     `Cue Points: ${cuePoints.length}`,
     pageHeader("scenes", scenePage),
   ];
   for (const [i, scene] of scenePage.items.entries()) {
-    lines.push(`  Scene index ${scenePage.offset + i}: "${scene.name}" tempo=${scene.tempo || "-"}`);
+    lines.push(`  Scene index ${scenePage.offset + i}: ${sceneStateSummary(scene)}`);
   }
   lines.push(pageHeader("Cue Points", cuePointPage));
   for (const cuePoint of cuePointPage.items) {
@@ -776,6 +795,7 @@ function summarizeLiveSet(context: Api): string {
     ...tracks.map((track, index) =>
       [
         `Track ${index + 1}: ${trackTypeLabel(track)} "${track.name}"`,
+        `  ${trackStateSummary(track)}`,
         `  devices=${track.devices.map((device) => device.name).join(", ") || "none"}`,
       ].join("\n"),
     ),
@@ -800,7 +820,7 @@ async function summarizeTrackWithDevices(
   const devicePage = pageOf(track.devices, request.itemOffset, request.itemLimit, 24);
   const lines = [
     `${trackTypeLabel(track)} track "${track.name}"`,
-    `mute=${track.mute}, solo=${track.solo}, armed=${track.arm}`,
+    trackStateSummary(track),
     `arrangement clips=${track.arrangementClips.length}`,
     pageHeader("arrangement clips", arrangementPage),
     ...arrangementPage.items
@@ -940,6 +960,7 @@ function summarizeMidiClip(
   return [
     `MIDI clip "${clip.name}"`,
     `start=${clip.startTime}, end=${clip.endTime}, duration=${clip.duration}`,
+    `startMarker=${clip.startMarker}, endMarker=${clip.endMarker}`,
     `looping=${clip.looping}, muted=${clip.muted}`,
     summarizeMidiNotes(clip.notes, { offset: noteOffset, limit: noteLimit }),
   ].join("\n");

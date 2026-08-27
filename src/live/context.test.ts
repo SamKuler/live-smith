@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AudioClip,
+  AudioTrack,
   ClipSlot,
   MidiClip,
   MidiTrack,
   RackDevice,
   Simpler,
   TakeLane,
+  WarpMode,
 } from "@ableton-extensions/sdk";
 
 import {
@@ -47,12 +50,18 @@ test("Clip Slot selections report each owning track and exact zero-based slotInd
 });
 
 test("interactionContextForScope refreshes a saved Track session from current Live state", () => {
+  const group = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: 7n } },
+    name: { enumerable: true, value: "Music" },
+  }) as MidiTrack<"1.0.0">;
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
     handle: { enumerable: true, value: { id: 42n } },
     name: { configurable: true, enumerable: true, value: "Lead", writable: true },
     mute: { enumerable: true, value: false },
     solo: { enumerable: true, value: false },
+    mutedViaSolo: { enumerable: true, value: true },
     arm: { enumerable: true, value: false },
+    groupTrack: { enumerable: true, value: group },
     arrangementClips: { enumerable: true, value: [] },
     takeLanes: { enumerable: true, value: [] },
     clipSlots: { enumerable: true, value: [] },
@@ -69,6 +78,10 @@ test("interactionContextForScope refreshes a saved Track session from current Li
   });
   assert.equal(first?.target.track, track);
   assert.match(first?.summary ?? "", /MIDI track "Lead"/);
+  assert.match(
+    first?.summary ?? "",
+    /mute=false, solo=false, mutedViaSolo=true, armed=false, groupTrack="Music"/,
+  );
 
   track.name = "Lead renamed in Live";
   const refreshed = interactionContextForScope(context, {
@@ -77,6 +90,38 @@ test("interactionContextForScope refreshes a saved Track session from current Li
     label: "Lead",
   });
   assert.match(refreshed?.summary ?? "", /Lead renamed in Live/);
+});
+
+test("selected Audio Clip context includes source markers and readable Warp mode", () => {
+  const track = Object.defineProperties(Object.create(AudioTrack.prototype), {
+    handle: { enumerable: true, value: { id: 50n } },
+    name: { enumerable: true, value: "Audio" },
+  }) as AudioTrack<"1.0.0">;
+  const clip = Object.defineProperties(Object.create(AudioClip.prototype), {
+    handle: { enumerable: true, value: { id: 51n } },
+    parent: { enumerable: true, value: track },
+    name: { enumerable: true, value: "Warped" },
+    startTime: { enumerable: true, value: 16 },
+    endTime: { enumerable: true, value: 24 },
+    duration: { enumerable: true, value: 8 },
+    startMarker: { enumerable: true, value: 1.5 },
+    endMarker: { enumerable: true, value: 9.5 },
+    looping: { enumerable: true, value: true },
+    loopStart: { enumerable: true, value: 2 },
+    loopEnd: { enumerable: true, value: 6 },
+    muted: { enumerable: true, value: false },
+    color: { enumerable: true, value: 7 },
+    filePath: { enumerable: true, value: "/private/audio.wav" },
+    warping: { enumerable: true, value: true },
+    warpMode: { enumerable: true, value: WarpMode.ComplexPro },
+    warpMarkers: { enumerable: true, value: [{ sampleTime: 0, beatTime: 0 }] },
+  }) as AudioClip<"1.0.0">;
+  const context = { getObjectFromHandle: () => clip } as never;
+
+  const result = objectInteractionContext(context, clip.handle);
+
+  assert.match(result.summary, /startMarker=1\.5, endMarker=9\.5/);
+  assert.match(result.summary, /warping=true, warpMode=complex_pro, warpMarkers=1/);
 });
 
 test("interactionContextForScope resolves a Clip inside a Track take lane", () => {
@@ -102,6 +147,8 @@ test("interactionContextForScope resolves a Clip inside a Track take lane", () =
     startTime: { enumerable: true, value: 0 },
     endTime: { enumerable: true, value: 16 },
     duration: { enumerable: true, value: 16 },
+    startMarker: { enumerable: true, value: 0 },
+    endMarker: { enumerable: true, value: 16 },
     looping: { enumerable: true, value: false },
     muted: { enumerable: true, value: false },
     color: { enumerable: true, value: 1 },

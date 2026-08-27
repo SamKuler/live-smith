@@ -82,7 +82,7 @@ export function liveSmithTools(options: {
     ),
     observationTool(
       "inspect_clip",
-      "Inspect a MIDI or Audio Clip in Arrangement or Session View, including common properties and type-specific notes, warp state, or sample filename. Omit the locator to inspect the selected Clip.",
+      "Inspect a MIDI or Audio Clip in Arrangement or Session View, including common properties and type-specific notes, warp state, markers, or sample filename. Audio Warp Markers are paged; follow nextOffset until the needed marker is visible. Omit the locator to inspect the selected Clip.",
       {
         trackName: { type: "string" },
         clipName: { type: "string" },
@@ -95,6 +95,7 @@ export function liveSmithTools(options: {
           minimum: 0,
           description: "0-based Session View Clip Slot index. Do not combine with startBeat.",
         },
+        ...itemPageProperties(),
       },
     ),
     observationTool(

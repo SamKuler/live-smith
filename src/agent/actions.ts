@@ -83,13 +83,13 @@ export type AgentObservationRequest =
       devicePath?: DevicePath;
     } & ObservationItemPage & ObservationParameterPage)
   | { type: "inspect_mixer"; trackName?: string }
-  | {
+  | ({
       type: "inspect_clip";
       trackName?: string;
       clipName?: string;
       startBeat?: number;
       slotIndex?: number;
-    }
+    } & ObservationItemPage)
   | {
       type: "inspect_midi_clip";
       trackName?: string;

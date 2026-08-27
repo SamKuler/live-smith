@@ -57,6 +57,12 @@ async function setup(t: TestContext, scopes: EditScope[], mode: ApprovalMode = "
     tracks: [],
     scenes: [],
     cuePoints: [],
+    gridQuantization: 0,
+    gridIsTriplet: false,
+    scaleMode: false,
+    scaleName: "",
+    rootNote: 0,
+    scaleIntervals: [],
     get tempo() { return tempo; },
     set tempo(value: number) {
       tempo = value;

@@ -563,6 +563,44 @@ test("runAgentLoop supports inspect_song_info tool calls", async () => {
   assert.equal(result.message, "The tempo is 120 BPM.");
 });
 
+test("runAgentLoop passes Warp Marker pagination to inspect_clip", async () => {
+  const observedRequests: unknown[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> =>
+      input.messages.length === 0
+        ? {
+            content: "I will inspect the next Warp Marker.",
+            toolCalls: [{
+              id: "clip",
+              name: "inspect_clip",
+              arguments: JSON.stringify({
+                trackName: "Audio",
+                startBeat: 16,
+                itemOffset: 64,
+                itemLimit: 32,
+              }),
+            }],
+          }
+        : { content: "The marker is aligned.", toolCalls: [] },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return "warp markers page: offset=64, shown=1, total=65, nextOffset=none";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "inspect_clip",
+    trackName: "Audio",
+    startBeat: 16,
+    itemOffset: 64,
+    itemLimit: 32,
+  }]);
+});
+
 test("runAgentLoop supports strict analyze_audio_clip tool calls", async () => {
   const observedRequests: unknown[] = [];
   const result = await runAgentLoop({

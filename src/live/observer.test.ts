@@ -9,8 +9,10 @@ import {
   DrumRack,
   MidiClip,
   MidiTrack,
+  Scene,
   Simpler,
   TakeLane,
+  WarpMode,
 } from "@ableton-extensions/sdk";
 
 import { observeLive, readArrangementAudio } from "./observer.js";
@@ -533,6 +535,8 @@ test("inspect_midi_clip resolves an explicitly selected take-lane MIDI clip", as
     startTime: { enumerable: true, value: 8 },
     endTime: { enumerable: true, value: 24 },
     duration: { enumerable: true, value: 16 },
+    startMarker: { enumerable: true, value: 0 },
+    endMarker: { enumerable: true, value: 16 },
     looping: { enumerable: true, value: false },
     muted: { enumerable: true, value: false },
     notes: { enumerable: true, value: [] },
@@ -564,6 +568,8 @@ test("inspect_midi_clip resolves an exact Session slot without same-name ambigui
     startTime: 0,
     endTime: 4,
     duration: 4,
+    startMarker: 0,
+    endMarker: 4,
     looping: true,
     muted: false,
     notes: [],
@@ -574,6 +580,8 @@ test("inspect_midi_clip resolves an exact Session slot without same-name ambigui
     startTime: 0,
     endTime: 4,
     duration: 4,
+    startMarker: 0,
+    endMarker: 4,
     looping: true,
     muted: false,
     notes: [],
@@ -607,6 +615,8 @@ test("inspect_midi_clip startBeat resolves Arrangement without same-name Session
     startTime: 0,
     endTime: 4,
     duration: 4,
+    startMarker: 0,
+    endMarker: 4,
     looping: true,
     muted: false,
     notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
@@ -617,6 +627,8 @@ test("inspect_midi_clip startBeat resolves Arrangement without same-name Session
     startTime: 0,
     endTime: 4,
     duration: 4,
+    startMarker: 0,
+    endMarker: 4,
     looping: true,
     muted: false,
     notes: [{ pitch: 72, startTime: 0, duration: 1, velocity: 100 }],
@@ -734,13 +746,155 @@ test("inspect_clip reports an empty Session slot as observable state", async () 
   assert.equal(result, 'Session slotIndex 0 on track "Lead" is empty.');
 });
 
+test("inspect_clip pages exact Audio Clip markers and Warp state", async () => {
+  const clip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    name: "Warped",
+    startTime: 16,
+    endTime: 24,
+    duration: 8,
+    startMarker: 1.5,
+    endMarker: 9.5,
+    looping: true,
+    loopStart: 2,
+    loopEnd: 6,
+    muted: false,
+    color: 7,
+    filePath: "/private/audio.wav",
+    warping: true,
+    warpMode: WarpMode.ComplexPro,
+    warpMarkers: [
+      { sampleTime: 0, beatTime: 0 },
+      { sampleTime: 1.25, beatTime: 2 },
+      { sampleTime: 3.5, beatTime: 6 },
+    ],
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_clip",
+      trackName: "Audio",
+      startBeat: 16,
+      itemOffset: 1,
+      itemLimit: 1,
+    },
+    { track, clip },
+  );
+
+  assert.match(result, /startMarker=1\.5 endMarker=9\.5/);
+  assert.match(result, /warping=true warpMode=complex_pro warpMarkers=3/);
+  assert.match(result, /warp markers page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(result, /marker index 1: sampleTime=1\.25 beatTime=2/);
+  assert.doesNotMatch(result, /marker index 0|marker index 2/);
+});
+
+test("inspect_current_object applies Clip pagination to Warp Markers", async () => {
+  const clip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    name: "Selected Audio",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+    startMarker: 0,
+    endMarker: 8,
+    looping: false,
+    loopStart: 0,
+    loopEnd: 8,
+    muted: false,
+    color: 0,
+    filePath: "/private/selected.wav",
+    warping: true,
+    warpMode: WarpMode.Beats,
+    warpMarkers: [
+      { sampleTime: 0, beatTime: 0 },
+      { sampleTime: 2, beatTime: 4 },
+    ],
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [] } } } as never,
+    { type: "inspect_current_object", itemOffset: 1, itemLimit: 1 },
+    { object: clip, clip },
+  );
+
+  assert.match(result, /marker index 1: sampleTime=2 beatTime=4/);
+  assert.doesNotMatch(result, /marker index 0/);
+});
+
+test("inspect_live_set and inspect_track expose grouping and effective mute state", async () => {
+  const group = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "group" },
+    name: "Music",
+    mute: false,
+    solo: false,
+    mutedViaSolo: false,
+    arm: false,
+    groupTrack: null,
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+    devices: [],
+  });
+  const lead = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "lead" },
+    name: "Lead",
+    mute: false,
+    solo: false,
+    mutedViaSolo: true,
+    arm: true,
+    groupTrack: group,
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+    devices: [],
+  });
+  const context = { application: { song: { tracks: [group, lead] } } } as never;
+
+  const setResult = await observeLive(context, { type: "inspect_live_set" }, {});
+  const trackResult = await observeLive(
+    context,
+    { type: "inspect_track", trackName: "Lead" },
+    { track: lead },
+  );
+
+  for (const result of [setResult, trackResult]) {
+    assert.match(
+      result,
+      /mute=false, solo=false, mutedViaSolo=true, armed=true, groupTrack="Music"/,
+    );
+  }
+});
+
+test("inspect_current_object preserves a Scene tempo value of zero", async () => {
+  const scene = sdkObject<Scene<"1.0.0">>(Scene.prototype, {
+    name: "No Override",
+    tempo: 0,
+    signatureNumerator: 3,
+    signatureDenominator: 4,
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [] } } } as never,
+    { type: "inspect_current_object" },
+    { object: scene },
+  );
+
+  assert.equal(result, 'Selected Scene "No Override" tempo=0 signature=3/4');
+});
+
 test("inspect_track reports Session slot indexes in the same zero-based form used by tools", async () => {
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
     handle: { enumerable: true, value: { id: "track-1" } },
     name: { enumerable: true, value: "Lead" },
     mute: { enumerable: true, value: false },
     solo: { enumerable: true, value: false },
+    mutedViaSolo: { enumerable: true, value: false },
     arm: { enumerable: true, value: false },
+    groupTrack: { enumerable: true, value: null },
     arrangementClips: { enumerable: true, value: [] },
     clipSlots: { enumerable: true, value: [{ clip: undefined }, { clip: undefined }] },
     takeLanes: { enumerable: true, value: [] },
@@ -847,7 +1001,9 @@ test("inspect_device_tree pages devices without losing absolute paths", async ()
 test("inspect_song_info and inspect_track expose continuation offsets", async () => {
   const scenes = Array.from({ length: 3 }, (_, index) => ({
     name: `Scene ${index}`,
-    tempo: 120 + index,
+    tempo: index === 1 ? 0 : 120 + index,
+    signatureNumerator: index + 3,
+    signatureDenominator: 4,
   }));
   const cuePoints = Array.from({ length: 3 }, (_, index) => ({
     name: `Cue ${index}`,
@@ -863,6 +1019,7 @@ test("inspect_song_info and inspect_track expose continuation offsets", async ()
           scaleMode: false,
           scaleName: "Major",
           rootNote: 0,
+          scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
           tracks: [],
           scenes,
           cuePoints,
@@ -874,6 +1031,11 @@ test("inspect_song_info and inspect_track expose continuation offsets", async ()
   );
   assert.match(songResult, /scenes page: offset=1, shown=1, total=3, nextOffset=2/);
   assert.match(songResult, /Scene index 1: "Scene 1"/);
+  assert.match(songResult, /Scene index 1: "Scene 1" tempo=0 signature=4\/4/);
+  assert.match(
+    songResult,
+    /Scale: mode=false name="Major" rootNote=0 intervals=\[0,2,4,5,7,9,11\]/,
+  );
   assert.match(songResult, /Cue Points page: offset=1, shown=1, total=3, nextOffset=2/);
   assert.match(songResult, /Cue Point beat 8: "Cue 1"/);
 
@@ -882,7 +1044,9 @@ test("inspect_song_info and inspect_track expose continuation offsets", async ()
     name: { enumerable: true, value: "Lead" },
     mute: { enumerable: true, value: false },
     solo: { enumerable: true, value: false },
+    mutedViaSolo: { enumerable: true, value: false },
     arm: { enumerable: true, value: false },
+    groupTrack: { enumerable: true, value: null },
     arrangementClips: { enumerable: true, value: [] },
     clipSlots: { enumerable: true, value: [{}, {}, {}].map(() => ({ clip: undefined })) },
     takeLanes: { enumerable: true, value: [] },
@@ -904,7 +1068,9 @@ test("inspect_track distinguishes unavailable Take Lanes from an empty collectio
     name: { enumerable: true, value: "Lead" },
     mute: { enumerable: true, value: false },
     solo: { enumerable: true, value: false },
+    mutedViaSolo: { enumerable: true, value: false },
     arm: { enumerable: true, value: false },
+    groupTrack: { enumerable: true, value: null },
     arrangementClips: { enumerable: true, value: [] },
     clipSlots: { enumerable: true, value: [] },
     takeLanes: { enumerable: true, get: () => { throw new Error("unavailable"); } },
