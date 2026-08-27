@@ -4,6 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
+import { EDIT_SCOPES, type EditScope } from "../agent/edit-scopes.js";
+import { AttachmentProcessingError } from "../attachments/contracts.js";
+import { saveSessionAttachment } from "./attachments.js";
+import { appendSessionEvent, loadSessionEvents } from "./events.js";
 import {
   createSession,
   deleteSession,
@@ -15,11 +19,26 @@ import {
   sessionScopeKey,
   updateSession,
   updateSessionInTransaction,
+  type AgentSession,
 } from "./sessions.js";
 import {
   withStorageTransaction,
   type StorageTransactionContext,
 } from "./persistence.js";
+
+const emptySessionInput = {
+  title: "",
+  projectKey: "set-001",
+  scope: { kind: "track" as const, identity: "track-1", label: "Lead" },
+  approvalMode: "manual" as const,
+  editScopes: [...EDIT_SCOPES],
+};
+
+async function readPersistedSessions(directory: string): Promise<AgentSession[]> {
+  return JSON.parse(await fs.readFile(
+    path.join(directory, "live-smith-sessions.json"), "utf8",
+  )) as AgentSession[];
+}
 
 test("createSession stores title, projectKey, scope, and timestamps", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
@@ -38,6 +57,185 @@ test("createSession stores title, projectKey, scope, and timestamps", async () =
   assert.deepEqual(session.scope, { kind: "track", identity: "track-1", label: "Future Bass" });
   assert.equal(typeof session.createdAt, "string");
   assert.equal(typeof session.updatedAt, "string");
+});
+
+test("transient Sessions remain visible and storage-scoped without creating a Session file", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const firstDir = path.join(dir, "first");
+  const secondDir = path.join(dir, "second");
+  const first = await createSession(firstDir, emptySessionInput, { transient: true });
+  const second = await createSession(secondDir, emptySessionInput, { transient: true });
+
+  assert.deepEqual(await listSessions(firstDir), [first]);
+  assert.deepEqual(await listSessions(secondDir), [second]);
+  await withStorageTransaction(firstDir, async (transaction) => {
+    assert.deepEqual(await listSessionsInTransaction(transaction, firstDir), [first]);
+  });
+  for (const directory of [firstDir, secondDir]) {
+    await assert.rejects(
+      fs.readFile(path.join(directory, "live-smith-sessions.json")),
+      { code: "ENOENT" },
+    );
+  }
+
+  await deleteSession(firstDir, first.id);
+  assert.deepEqual(await listSessions(firstDir), []);
+  assert.deepEqual(await listSessions(secondDir), [second]);
+  await assert.rejects(
+    fs.readFile(path.join(firstDir, "live-smith-sessions.json")),
+    { code: "ENOENT" },
+  );
+  await deleteSession(secondDir, second.id);
+});
+
+test("Session writes persist only their target and preserve other transient Sessions", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const selected = await createSession(dir, emptySessionInput, { transient: true });
+  const untouched = await createSession(dir, emptySessionInput, { transient: true });
+  const saved = await createSession(dir, { ...emptySessionInput, title: "Saved" });
+  assert.deepEqual(await readPersistedSessions(dir), [saved]);
+
+  await updateSession(dir, saved.id, { title: "Renamed" });
+  const afterRename = await readPersistedSessions(dir);
+  assert.deepEqual(afterRename.map(({ id }) => id), [saved.id]);
+  assert.equal(afterRename[0]?.title, "Renamed");
+
+  await updateSession(dir, selected.id, { approvalMode: "manual" });
+  const persisted = await readPersistedSessions(dir);
+  assert.deepEqual(
+    persisted.map(({ id }) => id).sort(),
+    [saved.id, selected.id].sort(),
+  );
+  assert.equal(persisted.find(({ id }) => id === selected.id)?.approvalMode, "manual");
+  assert.deepEqual(
+    (await listSessions(dir)).map(({ id }) => id).sort(),
+    [saved.id, selected.id, untouched.id].sort(),
+  );
+  await deleteSession(dir, untouched.id);
+});
+
+test("transient Session promotion shares identity across a storage directory symlink", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const storage = path.join(dir, "storage");
+  const alias = path.join(dir, "alias");
+  await fs.mkdir(storage);
+  await fs.symlink(storage, alias, "dir");
+  const canonical = await fs.realpath(storage);
+  const session = await createSession(alias, emptySessionInput, { transient: true });
+
+  assert.deepEqual(await listSessions(canonical), [session]);
+  await appendSessionEvent(canonical, session.id, { kind: "user", content: "First prompt" });
+  assert.deepEqual(await readPersistedSessions(alias), [session]);
+  assert.deepEqual(await listSessions(alias), [session]);
+
+  await deleteSession(alias, session.id);
+  assert.deepEqual(await listSessions(canonical), []);
+});
+
+test("archival, restoration, events, and attachments promote only the affected transient Session", async (t) => {
+  const mutations: Array<{
+    name: string;
+    apply: (directory: string, session: AgentSession) => Promise<unknown>;
+  }> = [
+    {
+      name: "archive",
+      apply: (directory, session) => setSessionArchived(directory, session.id, true),
+    },
+    {
+      name: "restore",
+      apply: (directory, session) => restoreSession(directory, session.id, {
+        projectKey: "current-activation",
+        scope: { kind: "track", identity: "current-track", label: "Current lead" },
+      }),
+    },
+    {
+      name: "event",
+      apply: async (directory, session) => {
+        const event = await appendSessionEvent(directory, session.id, {
+          kind: "user", content: "First prompt",
+        });
+        assert.deepEqual(await loadSessionEvents(directory, session.id), [event]);
+      },
+    },
+    {
+      name: "attachment",
+      apply: (directory, session) => saveSessionAttachment(directory, session.id, {
+        fileName: "reference.png",
+        bytes: new Uint8Array([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+          0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+          0, 0, 0, 1, 0, 0, 0, 1,
+        ]),
+      }, { preSavePendingAttachmentRefs: [] }),
+    },
+  ];
+  for (const mutation of mutations) {
+    await t.test(mutation.name, async (subtest) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+      subtest.after(() => fs.rm(dir, { recursive: true, force: true }));
+      const selected = await createSession(dir, emptySessionInput, { transient: true });
+      const untouched = await createSession(dir, emptySessionInput, { transient: true });
+
+      await mutation.apply(dir, selected);
+
+      const persisted = await readPersistedSessions(dir);
+      assert.deepEqual(persisted.map(({ id }) => id), [selected.id]);
+      assert.deepEqual(
+        persisted[0],
+        (await listSessions(dir)).find(({ id }) => id === selected.id),
+      );
+      await deleteSession(dir, untouched.id);
+    });
+  }
+});
+
+test("rejected mutations leave a transient Session unsaved", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const session = await createSession(dir, emptySessionInput, { transient: true });
+
+  await assert.rejects(
+    updateSession(dir, session.id, { approvalMode: "unsafe" } as never),
+    /Approval mode is invalid/,
+  );
+  await assert.rejects(
+    appendSessionEvent(dir, session.id, { kind: "user", content: null } as never),
+    /Session event input is invalid/,
+  );
+  await assert.rejects(
+    saveSessionAttachment(dir, session.id, {
+      fileName: "unsupported.bin", bytes: new Uint8Array([0]),
+    }, { preSavePendingAttachmentRefs: [] }),
+    (error: unknown) =>
+      error instanceof AttachmentProcessingError && error.code === "invalid_document",
+  );
+  assert.deepEqual(await listSessions(dir), [session]);
+  await assert.rejects(
+    fs.readFile(path.join(dir, "live-smith-sessions.json")),
+    { code: "ENOENT" },
+  );
+  await deleteSession(dir, session.id);
+});
+
+test("a durable Session supersedes its transient reservation and cannot resurrect after deletion", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const session = await createSession(dir, emptySessionInput, { transient: true });
+  const committed = { ...session, title: "Committed by an uncertain write", approvalMode: "low-risk" };
+  await fs.writeFile(
+    path.join(dir, "live-smith-sessions.json"), JSON.stringify([committed]),
+  );
+
+  assert.deepEqual(await listSessions(dir), [committed]);
+  await withStorageTransaction(dir, async (transaction) => {
+    assert.deepEqual(await listSessionsInTransaction(transaction, dir), [committed]);
+  });
+  await deleteSession(dir, session.id);
+  assert.deepEqual(await readPersistedSessions(dir), []);
+  assert.deepEqual(await listSessions(dir), []);
 });
 
 test("deleteSession removes a session", async () => {
@@ -249,6 +447,123 @@ test("approvalMode persists as a per-Session authorization", async () => {
 
   await updateSession(dir, session.id, { approvalMode: "everything" });
   assert.equal((await listSessions(dir))[0]?.approvalMode, "everything");
+});
+
+test("edit scopes persist independently and survive Session lifecycle changes", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const session = await createSession(dir, {
+    title: "Scoped edits",
+    projectKey: "prior-set",
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+    editScopes: ["structure", "midi", "mixer"],
+    approvalMode: "everything",
+    activeSkillIds: ["mixing-review"],
+    modelSelection: { profileId: "studio-profile", model: "studio-model" },
+  });
+  assert.deepEqual(session.editScopes, ["midi", "mixer", "structure"]);
+
+  await updateSession(dir, session.id, { editScopes: [] });
+  const [readOnly] = await listSessions(dir);
+  assert.deepEqual(readOnly, { ...session, editScopes: [], updatedAt: readOnly?.updatedAt });
+  assert.deepEqual(JSON.parse(await fs.readFile(
+    path.join(dir, "live-smith-sessions.json"), "utf8",
+  ))[0].editScopes, []);
+
+  await updateSession(dir, session.id, { editScopes: ["devices", "audio"] });
+  const restored = await restoreSession(dir, session.id, {
+    projectKey: "current-set",
+    scope: { kind: "track", identity: "track-2", label: "Current lead" },
+  });
+  const archived = await setSessionArchived(dir, session.id, true);
+  const unarchived = await setSessionArchived(dir, session.id, false);
+  for (const current of [restored, archived, unarchived, ...(await listSessions(dir))]) {
+    assert.deepEqual(current.editScopes, ["audio", "devices"]);
+    assert.equal(current.approvalMode, "everything");
+  }
+});
+
+test("edit scopes reject malformed create, update, and persisted values without rewriting", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const session = await createSession(dir, {
+    title: "Scoped edits",
+    projectKey: "set-1",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    editScopes: [...EDIT_SCOPES],
+  });
+  const target = path.join(dir, "live-smith-sessions.json");
+  const original = await fs.readFile(target, "utf8");
+  for (const editScopes of [undefined, null, false, "midi", ["unknown"], ["midi", "midi"], [0]]) {
+    await assert.rejects(
+      createSession(dir, { ...session, editScopes } as never),
+      /Edit scopes/i,
+    );
+    await assert.rejects(
+      updateSession(dir, session.id, { editScopes } as never),
+      /Edit scopes/i,
+    );
+    assert.equal(await fs.readFile(target, "utf8"), original);
+    if (editScopes === undefined) continue;
+    const corrupt = JSON.stringify([{ ...session, editScopes }]);
+    await fs.writeFile(target, corrupt);
+    await assert.rejects(listSessions(dir), SessionStorageCorruptionError);
+    await assert.rejects(
+      updateSession(dir, session.id, { title: "Do not overwrite corruption" }),
+      SessionStorageCorruptionError,
+    );
+    assert.equal(await fs.readFile(target, "utf8"), corrupt);
+    await fs.writeFile(target, original);
+  }
+});
+
+test("legacy scope metadata stays absent and valid persisted scopes normalize on read", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const legacy = await createSession(dir, {
+    title: "Legacy scopes",
+    projectKey: "set-1",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+  });
+  const target = path.join(dir, "live-smith-sessions.json");
+  const original = await fs.readFile(target, "utf8");
+  assert.equal(Object.hasOwn((await listSessions(dir))[0]!, "editScopes"), false);
+  assert.equal(await fs.readFile(target, "utf8"), original);
+
+  const unordered = JSON.stringify([{ ...legacy, editScopes: ["mixer", "midi"] }]);
+  await fs.writeFile(target, unordered);
+  assert.deepEqual((await listSessions(dir))[0]?.editScopes, ["midi", "mixer"]);
+  assert.equal(await fs.readFile(target, "utf8"), unordered);
+});
+
+test("memory edit scopes are copied on create, update, listing, and restore", async (t) => {
+  const editScopes: EditScope[] = ["midi", "devices"];
+  const created = await createSession(undefined, {
+    title: "Memory edit scopes",
+    projectKey: "memory-original",
+    scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
+    editScopes,
+  });
+  t.after(() => deleteSession(undefined, created.id));
+  editScopes.splice(0);
+  created.editScopes?.splice(0);
+  const first = (await listSessions(undefined)).find(({ id }) => id === created.id)!;
+  assert.deepEqual(first.editScopes, ["midi", "devices"]);
+  first.editScopes?.splice(0);
+
+  const updatedScopes: EditScope[] = ["mixer", "audio"];
+  await updateSession(undefined, created.id, { editScopes: updatedScopes });
+  updatedScopes.splice(0);
+  const restored = await restoreSession(undefined, created.id, {
+    projectKey: "memory-restored",
+    scope: { kind: "selection", identity: "selection-2", label: "Current Set" },
+  });
+  assert.deepEqual(restored.editScopes, ["audio", "mixer"]);
+  restored.editScopes?.splice(0);
+  assert.deepEqual(
+    (await listSessions(undefined)).find(({ id }) => id === created.id)?.editScopes,
+    ["audio", "mixer"],
+  );
 });
 
 test("modelSelection persists per Session and is cloned across storage boundaries", async () => {

@@ -3,10 +3,16 @@ import { Buffer } from "node:buffer";
 import { connect } from "node:net";
 import test from "node:test";
 
-import type { ChatDialogState } from "../ui/chat-state.js";
+import type { ChatBridgeState, ChatDialogState } from "../ui/chat-state.js";
 import { createChatBridge } from "./chat-bridge.js";
 
 const jsonBody = JSON.stringify({ kind: "new_session" });
+const capabilityReadInput = {
+  kind: "load_session_model_capabilities",
+  sessionId: "session-1",
+  profileId: "profile-1",
+} as const;
+const capabilityReadBody = JSON.stringify(capabilityReadInput);
 const skillBody = Buffer.from(
   "---\nname: mix-review\ndescription: Review a mix\n---\nKeep it clear.\n",
 );
@@ -99,6 +105,14 @@ test("known bridge routes reject duplicate tokens and route-specific extra query
       init: { method: "POST", headers: jsonHeaders, body: jsonBody },
     },
     {
+      path: `/session-model-capabilities?token=${token}&extra=1`,
+      init: { method: "POST", headers: jsonHeaders, body: capabilityReadBody },
+    },
+    {
+      path: `/session-model-capabilities?token=${token}&token=${token}`,
+      init: { method: "POST", headers: jsonHeaders, body: capabilityReadBody },
+    },
+    {
       path: `/steer?token=${token}&extra=1`,
       init: {
         method: "POST",
@@ -189,6 +203,11 @@ test("every JSON route requires one unambiguous application/json media type", as
       headers: { "X-Live-Smith-Command-Id": "media-command" },
     },
     {
+      path: "/session-model-capabilities",
+      body: capabilityReadBody,
+      headers: { "X-Live-Smith-Command-Id": "media-capabilities" },
+    },
+    {
       path: "/steer",
       body: JSON.stringify({ prompt: "change", sessionId: "session-1" }),
       headers: {
@@ -267,7 +286,7 @@ test("every JSON route requires one unambiguous application/json media type", as
   }
 });
 
-test("send, command, and Skill mutations require caller-owned correlation IDs", async () => {
+test("send, command, capability reads, and Skill mutations require caller-owned correlation IDs", async () => {
   const { bridge, calls } = await createContractBridge();
   const { origin, token } = bridgeAddress(bridge.url);
 
@@ -283,6 +302,11 @@ test("send, command, and Skill mutations require caller-owned correlation IDs", 
         headers: { "Content-Type": "application/json" },
         body: jsonBody,
       }),
+      request(origin, `/session-model-capabilities?token=${token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: capabilityReadBody,
+      }),
       request(origin, `/skills?token=${token}`, {
         method: "POST",
         headers: { "Content-Type": "text/markdown; charset=utf-8" },
@@ -294,7 +318,7 @@ test("send, command, and Skill mutations require caller-owned correlation IDs", 
     ]);
     assert.deepEqual(
       responses.map((response) => response.status),
-      [400, 400, 400, 400],
+      [400, 400, 400, 400, 400],
     );
     assert.deepEqual(calls(), {
       commandCalls: 0,
@@ -304,6 +328,280 @@ test("send, command, and Skill mutations require caller-owned correlation IDs", 
     });
   } finally {
     await bridge.close();
+  }
+});
+
+test("held capability reads allow Session navigation, state hydration, and sending without publishing command state", {
+  timeout: 2_000,
+}, async () => {
+  let releaseRead!: () => void;
+  let markStarted!: () => void;
+  const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let current = { activeSessionId: "session-1" } as ChatDialogState;
+  const commands: unknown[] = [];
+  const sends: unknown[] = [];
+  const bridge = await createChatBridge({
+    buildState: async () => current,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input, _signal, context) => {
+      commands.push({ input, context });
+      if (input.kind === "load_session_model_capabilities") {
+        const captured = current;
+        markStarted();
+        await readGate;
+        return captured;
+      }
+      assert.equal(input.kind, "select_session");
+      current = { ...current, activeSessionId: "session-2" };
+      return current;
+    },
+    handleSend: async (input) => { sends.push(input); },
+  });
+  const { origin, token } = bridgeAddress(bridge.url);
+  const baseline = await (await request(origin, `/state?token=${token}`))
+    .json() as ChatBridgeState;
+  const events = await request(origin, `/events?token=${token}`);
+  let readSettled = false;
+  const capabilityRead = request(origin, `/session-model-capabilities?token=${token}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Command-Id": "capability-read",
+    },
+    body: capabilityReadBody,
+  }).then((response) => { readSettled = true; return response; });
+
+  try {
+    assert.equal(await Promise.race([
+      started.then(() => "started"),
+      capabilityRead.then((response) => response.status),
+    ]), "started");
+    const selected = await request(origin, `/command?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "parallel-navigation",
+      },
+      body: JSON.stringify({ kind: "select_session", sessionId: "session-2" }),
+    });
+    assert.equal(selected.status, 200);
+    const selectedState = await selected.json() as ChatBridgeState;
+    assert.equal(selectedState.activeSessionId, "session-2");
+    const send = await request(origin, `/send?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Send-Id": "parallel-send",
+      },
+      body: JSON.stringify({ prompt: "Keep typing", sessionId: "session-2" }),
+    });
+    assert.equal(send.status, 200);
+    const refreshed = await request(origin, `/state?token=${token}`);
+    assert.equal(refreshed.status, 200);
+    assert.equal((await refreshed.json() as ChatBridgeState).activeSessionId, "session-2");
+    assert.equal(readSettled, false);
+
+    releaseRead();
+    const response = await capabilityRead;
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-Live-Smith-Command-Id"), "capability-read");
+    const state = await response.json() as ChatBridgeState;
+    assert.equal(state.activeSessionId, "session-1");
+    assert.equal(state.bridgeStateCoveredThroughRevision, baseline.bridgeStateRevision);
+    assert.ok(BigInt(state.bridgeStateRevision) > BigInt(selectedState.bridgeStateRevision));
+    assert.deepEqual(commands, [
+      { input: capabilityReadInput, context: { commandId: "capability-read" } },
+      {
+        input: { kind: "select_session", sessionId: "session-2" },
+        context: { commandId: "parallel-navigation" },
+      },
+    ]);
+    assert.deepEqual(sends, [{ prompt: "Keep typing", sessionId: "session-2" }]);
+    await bridge.close();
+    const publications = (await events.text()).split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)) as { commandId?: string });
+    assert.ok(publications.some((entry) => entry.commandId === "parallel-navigation"));
+    assert.equal(publications.some((entry) => entry.commandId === "capability-read"), false);
+  } finally {
+    releaseRead();
+    await capabilityRead;
+    await bridge.close();
+  }
+});
+
+test("capability reads reject mutations, extra fields, oversized bodies, and invalid authentication or correlation", async () => {
+  const { bridge, calls } = await createContractBridge();
+  const { origin, token } = bridgeAddress(bridge.url);
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Live-Smith-Command-Id": "strict-capability-read",
+  };
+  const path = `/session-model-capabilities?token=${token}`;
+  const events = await request(origin, `/events?token=${token}`);
+
+  try {
+    for (const body of [
+      jsonBody,
+      JSON.stringify({ kind: "logout_codex" }),
+      JSON.stringify({ kind: "select_session", sessionId: "session-2" }),
+      JSON.stringify({ ...capabilityReadInput, settings: {} }),
+      JSON.stringify({ ...capabilityReadInput, sessionId: 1 }),
+      JSON.stringify({ ...capabilityReadInput, profileId: undefined }),
+      "{",
+      `${capabilityReadBody}${" ".repeat(1024 * 1024)}`,
+    ]) {
+      const response = await request(origin, path, { method: "POST", headers, body });
+      assert.equal(response.status, 400);
+      assert.equal(response.headers.get("X-Live-Smith-Command-Id"), "strict-capability-read");
+    }
+    for (const authPath of ["/session-model-capabilities", "/session-model-capabilities?token=incorrect"]) {
+      const response = await request(origin, authPath, {
+        method: "POST", headers, body: capabilityReadBody,
+      });
+      assert.equal(response.status, 403);
+    }
+    const invalidCorrelation = await request(origin, path, {
+      method: "POST",
+      headers: { ...headers, "X-Live-Smith-Command-Id": "invalid correlation" },
+      body: capabilityReadBody,
+    });
+    assert.equal(invalidCorrelation.status, 400);
+    assert.equal(await rawHttpStatus(origin, [
+      `POST ${path} HTTP/1.1`,
+      `Host: ${new URL(origin).host}`,
+      "Connection: close",
+      "Content-Type: application/json",
+      "X-Live-Smith-Command-Id: first-capability-read",
+      "X-Live-Smith-Command-Id: second-capability-read",
+      `Content-Length: ${Buffer.byteLength(capabilityReadBody)}`,
+      "",
+      capabilityReadBody,
+    ]), 400);
+    assert.equal(calls().commandCalls, 0);
+    await bridge.close();
+    assert.equal(await events.text(), "\n", "Read failures must not become foreground command events.");
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("capability read disconnect cancels its handler while the bridge stays available", {
+  timeout: 2_000,
+}, async () => {
+  let markStarted!: () => void;
+  let markAborted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+  const state = {} as ChatDialogState;
+  let readSignal: AbortSignal | undefined;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input, signal) => {
+      if (input.kind !== "load_session_model_capabilities") return state;
+      readSignal = signal;
+      markStarted();
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          markAborted();
+          reject(signal.reason);
+        }, { once: true });
+      });
+      return state;
+    },
+    handleSend: async () => {},
+  });
+  const { origin, token } = bridgeAddress(bridge.url);
+  const controller = new AbortController();
+  const capabilityRead = request(origin, `/session-model-capabilities?token=${token}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Command-Id": "disconnected-capability-read",
+    },
+    body: capabilityReadBody,
+    signal: controller.signal,
+  }).then((response) => ({ response }), (error: unknown) => ({ error }));
+
+  try {
+    assert.equal(await Promise.race([
+      started.then(() => "started"),
+      capabilityRead.then(() => "settled"),
+    ]), "started");
+    controller.abort();
+    await aborted;
+    assert.equal(readSignal?.aborted, true);
+    assert.ok("error" in await capabilityRead);
+    const command = await request(origin, `/command?token=${token}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "after-read-disconnect",
+      },
+      body: jsonBody,
+    });
+    assert.equal(command.status, 200);
+  } finally {
+    controller.abort();
+    await capabilityRead;
+    await bridge.close();
+  }
+});
+
+test("closing aborts and awaits capability read cleanup and destroys its response", {
+  timeout: 2_000,
+}, async () => {
+  let markStarted!: () => void;
+  let markAborted!: () => void;
+  let releaseCleanup!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+  const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (_input, signal) => {
+      markStarted();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      markAborted();
+      await cleanupGate;
+      throw signal.reason;
+    },
+    handleSend: async () => {},
+  });
+  const { origin, token } = bridgeAddress(bridge.url);
+  const capabilityRead = request(origin, `/session-model-capabilities?token=${token}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Live-Smith-Command-Id": "closing-capability-read",
+    },
+    body: capabilityReadBody,
+  }).then((response) => ({ response }), (error: unknown) => ({ error }));
+  let closing: Promise<void> | undefined;
+
+  try {
+    assert.equal(await Promise.race([
+      started.then(() => "started"),
+      capabilityRead.then(() => "settled"),
+    ]), "started");
+    let closeSettled = false;
+    closing = bridge.close().then(() => { closeSettled = true; });
+    await aborted;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+    assert.ok("error" in await capabilityRead);
+    releaseCleanup();
+    await closing;
+  } finally {
+    releaseCleanup();
+    await capabilityRead;
+    await (closing ?? bridge.close());
   }
 });
 

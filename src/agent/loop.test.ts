@@ -11,6 +11,7 @@ import {
   type AgentRecoveryLedgerUpdate,
 } from "./loop.js";
 import type { ModelTurn } from "../model/contracts.js";
+import { EditScopeDeniedError } from "./edit-scopes.js";
 
 function mutationOutcome(
   results: string[],
@@ -18,6 +19,45 @@ function mutationOutcome(
 ): AgentActionExecutionOutcome {
   return { results, mutationCount };
 }
+
+test("a scope denial after only no-ops does not create unfinished Live work", async () => {
+  const events: AgentLoopTraceEvent[] = [];
+  let turn = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async () => ++turn === 1
+      ? {
+          content: "Apply two changes",
+          toolCalls: [{
+            id: "scope-no-op",
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Adjust tempo",
+              actions: [{ type: "set_tempo", tempo: 120 }, { type: "set_tempo", tempo: 128 }],
+            }),
+          }],
+        }
+      : { content: "No changes were needed or permitted.", toolCalls: [] },
+    observe: async () => assert.fail("permission-only denial needs no recovery observation"),
+    preflightActions: async () => async () => undefined,
+    confirmActions: async () => true,
+    executeActions: async () => {
+      throw new AgentPartialCompletionError(
+        ["Kept tempo at 120 BPM because it already matches."],
+        new EditScopeDeniedError(["structure"]),
+        1,
+        { type: "set_tempo", tempo: 128 },
+        undefined,
+        [],
+        0,
+      );
+    },
+    onEvent: (event) => { events.push(event); },
+  });
+  assert.equal(result.message, "No changes were needed or permitted.");
+  assert.equal(events.some((event) => event.kind === "apply_result"), false);
+  assert.ok(events.some((event) => event.kind === "tool_result" && /edit scope/.test(event.content)));
+});
 
 test("runAgentLoop observes Live state before applying parameter actions", async () => {
   const modelInputs: AgentLoopModelInput[] = [];

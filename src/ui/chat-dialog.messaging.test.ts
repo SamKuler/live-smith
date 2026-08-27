@@ -35,6 +35,109 @@ test("Send posts only the prompt and active session ID", async () => {
   }
 });
 
+test("Send renders its user message immediately and reconciles it with the persisted event", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Make the drums wider now");
+    harness.click("#sendButton");
+
+    const pending = harness.document.querySelector(
+      ".timeline-item.user.local-user-message",
+    );
+    assert.equal(
+      pending?.querySelector(".timeline-label")?.textContent,
+      "You",
+    );
+    assert.equal(
+      pending?.querySelector(".timeline-content")?.textContent,
+      "Make the drums wider now",
+    );
+    assert.equal(pending?.hasAttribute("data-event-id"), false);
+
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: {
+        id: "persisted-user-message",
+        createdAt: "2026-08-27T00:00:00.000Z",
+        kind: "user",
+        content: "Make the drums wider now",
+      },
+    });
+
+    assert.equal(
+      harness.document.querySelector(".timeline-item.user.local-user-message"),
+      null,
+    );
+    const persisted = harness.document.querySelector(
+      '[data-event-id="persisted-user-message"]',
+    );
+    assert.equal(
+      persisted?.querySelector(".timeline-label")?.textContent,
+      "You",
+    );
+    assert.equal(
+      persisted?.querySelector(".timeline-content")?.textContent,
+      "Make the drums wider now",
+    );
+    assert.equal(
+      [...harness.document.querySelectorAll(".timeline-item.user")]
+        .filter((item) => item.textContent?.includes("Make the drums wider now"))
+        .length,
+      1,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("an active send stays distinct from queued follow-ups in the timeline", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Original request");
+    harness.click("#sendButton");
+    harness.input("#prompt", "Queued request");
+    harness.document.querySelector("#prompt")?.dispatchEvent(
+      new harness.window.KeyboardEvent("keydown", {
+        bubbles: true,
+        ctrlKey: true,
+        key: "Enter",
+      }),
+    );
+
+    assert.equal(
+      harness.document.querySelector(".timeline-item.user.local-user-message .timeline-content")
+        ?.textContent,
+      "Original request",
+    );
+    assert.equal(
+      harness.document.querySelector(".queued-follow-up .timeline-content")
+        ?.textContent,
+      "Queued request",
+    );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll("#timeline > .timeline-item.user")]
+        .map((item) => item.classList.contains("local-user-message")
+          ? "local"
+          : "queued"),
+      ["local", "queued"],
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
 test("Send rejects an empty composer without creating a request", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
@@ -59,11 +162,20 @@ test("Send restores the prompt only when the bridge says it was not persisted", 
     harness.input("#prompt", "Retry this safe prompt");
     harness.failNextSend("Profile validation failed.", "not_persisted");
     harness.click("#sendButton");
+    assert.equal(
+      harness.document.querySelector(".timeline-item.user.local-user-message .timeline-content")
+        ?.textContent,
+      "Retry this safe prompt",
+    );
     await harness.settle();
 
     assert.equal(
       harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
       "Retry this safe prompt",
+    );
+    assert.equal(
+      harness.document.querySelector(".timeline-item.user.local-user-message"),
+      null,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -712,12 +824,14 @@ test("a streaming reply remains after the Web Search that started first", async 
 
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLElement>("#timeline > .timeline-item")]
-        .map((item) => item.classList.contains("streaming")
-          ? "assistant-streaming"
-          : item.classList.contains("web_search")
-            ? "web-search-live"
-            : "other"),
-      ["web-search-live", "assistant-streaming"],
+        .map((item) => item.classList.contains("local-user-message")
+          ? "local-user"
+          : item.classList.contains("streaming")
+            ? "assistant-streaming"
+            : item.classList.contains("web_search")
+              ? "web-search-live"
+              : "other"),
+      ["local-user", "web-search-live", "assistant-streaming"],
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -1443,6 +1557,11 @@ for (const promptPersistence of ["persisted", "unknown"] as const) {
         harness.document.querySelector("#status")?.textContent ?? "",
         /authoritative state.*unavailable/i,
       );
+      assert.equal(
+        harness.document.querySelector(".timeline-item.user.local-user-message .timeline-content")
+          ?.textContent,
+        "Do not duplicate this persisted prompt",
+      );
 
       harness.click("#sendButton");
       await harness.settle();
@@ -1458,6 +1577,10 @@ for (const promptPersistence of ["persisted", "unknown"] as const) {
       assert.equal(
         harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled,
         false,
+      );
+      assert.equal(
+        harness.document.querySelector(".timeline-item.user.local-user-message"),
+        null,
       );
       assert.deepEqual(harness.errors, []);
     } finally {

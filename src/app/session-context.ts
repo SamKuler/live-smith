@@ -1,9 +1,11 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
+import { EDIT_SCOPES, resolveEditScopes } from "../agent/edit-scopes.js";
 import type { AgentLoopInitialRecoveryState } from "../agent/loop.js";
 import type { LiveInteractionContext } from "../live/context.js";
 import { throwIfAborted } from "../runtime/host.js";
-import type { SessionEvent } from "../storage/events.js";
+import { listSessionAttachments } from "../storage/attachments.js";
+import { loadSessionEvents, type SessionEvent } from "../storage/events.js";
 import { createStorageId } from "../storage/id.js";
 import {
   createSession,
@@ -15,6 +17,7 @@ import {
   SessionMutationFence,
   sessionMutationFenceKey,
 } from "./session-mutation-fence.js";
+import type { ChatSessionSummary } from "../ui/chat-state.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxRecoveryEvents = 12;
@@ -54,6 +57,7 @@ export function isReusableEmptySessionMetadata(
     session.title === "" &&
     (session.activeSkillIds?.length ?? 0) === 0 &&
     (session.approvalMode === undefined || session.approvalMode === "manual") &&
+    resolveEditScopes(session.editScopes).length === EDIT_SCOPES.length &&
     session.modelSelection === undefined;
 }
 
@@ -91,7 +95,8 @@ export async function getOrCreateDefaultSession(
         projectKey,
         scope,
         approvalMode: "manual",
-      });
+        editScopes: [...EDIT_SCOPES],
+      }, { transient: true });
     },
   );
 }
@@ -162,13 +167,23 @@ export function continuableSessionsForScope(
   );
 }
 
-export function previousSessionsForProject(
+export async function sessionSummaries(
+  storageDirectory: string | undefined,
   sessions: AgentSession[],
-  projectKey: string,
-): AgentSession[] {
-  return sessions.filter(
-    (session) => session.projectKey !== projectKey && !session.archivedAt,
-  );
+): Promise<ChatSessionSummary[]> {
+  return Promise.all(sessions.map(async (session) => {
+    let hasContent = session.title.trim().length > 0;
+    if (!hasContent) {
+      try {
+        hasContent = (await loadSessionEvents(storageDirectory, session.id)).length > 0 ||
+          (await listSessionAttachments(storageDirectory, session.id)).length > 0;
+      } catch {
+        // Unreadable content is not evidence of emptiness.
+        hasContent = true;
+      }
+    }
+    return { ...session, hasContent };
+  }));
 }
 
 export function projectKeyForContext(context: Api): string {

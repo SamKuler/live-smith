@@ -5,6 +5,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { platform } from "node:process";
 
+import { persistTransientSessionInTransaction } from "./sessions.js";
 import {
   attachmentQuotaIsWithinLimits,
   AttachmentProcessingError,
@@ -228,13 +229,14 @@ export async function saveSessionAttachment(
     throwIfAborted(signal);
     const fileName = sanitizedFileName(fileNameClaim, classification.mediaType);
 
-    return withStorageTransaction(storageDirectory, async () => {
+    return withStorageTransaction(storageDirectory, async (transaction) => {
       throwIfAborted(signal);
       storageCommitStarted = true;
       assertPendingAttachmentQuota(pendingSnapshot, {
         kind: classification.kind,
         byteLength: bytes.byteLength,
       });
+      await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
 
       if (!storageDirectory) {
         const sessionAttachments = memoryAttachments.get(sessionId) ?? new Map();

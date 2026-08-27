@@ -17,11 +17,18 @@ import {
 import {
   commandCalls,
   createDialogHarness,
+  jsonCalls,
   profileFixture,
   renderedCapabilityStatuses,
   stateFixture,
   waitForCondition,
 } from "./chat-dialog.test-harness.js";
+
+type DialogHarness = Awaited<ReturnType<typeof createDialogHarness>>;
+
+function capabilityCalls(harness: DialogHarness) {
+  return jsonCalls(harness, "/session-model-capabilities");
+}
 
 const catalog: DiscoveredModelInfo[] = [{
   id: "model-a",
@@ -94,10 +101,10 @@ test("opening a saved subscription restores every configured model's capabilitie
     serverState: subscriptionState(true),
   });
   try {
-    await waitForCondition(() => commandCalls(harness).length === 1,
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
       "Expected missing subscription capabilities to load when the window opens.");
     await harness.settle();
-    assert.deepEqual(commandCalls(harness).map((call) => call.body), [{
+    assert.deepEqual(capabilityCalls(harness).map((call) => call.body), [{
       kind: "load_session_model_capabilities", sessionId: "session-1", profileId: "profile-1",
     }]);
     assert.deepEqual(renderedCapabilityStatuses(harness), modelAInputs);
@@ -120,12 +127,281 @@ test("opening a saved subscription restores every configured model's capabilitie
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveProfileButton")?.disabled, true);
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 1);
+    assert.equal(capabilityCalls(harness).length, 1);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
 });
+
+test("restoring a saved subscription Session loads its reasoning capabilities after the command unlocks", async () => {
+  const initial = subscriptionState();
+  initial.openSettingsOnLoad = false;
+  initial.codexAuth = { status: "signed-out" };
+  const historicalSession = {
+    id: "session-history",
+    title: "Historical subscription Session",
+    projectKey: "previous-project",
+    scope: { kind: "track" as const, identity: "track-history", label: "Drums" },
+    modelSelection: {
+      profileId: "profile-1",
+      model: "model-b",
+      reasoningEffort: "high" as const,
+    },
+    createdAt: "2026-08-01T00:02:00.000Z",
+    updatedAt: "2026-08-01T00:02:00.000Z",
+  };
+  initial.previousSessions = [historicalSession];
+
+  const server = subscriptionState(true);
+  server.configuredModelsReady = false;
+  server.previousSessions = [historicalSession];
+  const modelB = server.availableModels.find((model) => model.id === "model-b")!;
+  modelB.capabilities.reasoning = {
+    supported: true,
+    canDisable: false,
+    efforts: ["low", "high"],
+    budgetTokens: false,
+    strategy: "effort",
+  };
+  const harness = await createDialogHarness(initial, undefined, {
+    serverState: server,
+  });
+  try {
+    assert.deepEqual(capabilityCalls(harness), []);
+    harness.click('[data-continue-session-id="session-history"]');
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected restored Session capabilities to load after restore_session completed.");
+    await harness.settle();
+
+    assert.deepEqual(commandCalls(harness).map((call) => call.body), [{
+      kind: "restore_session", sessionId: "session-history",
+    }]);
+    assert.deepEqual(capabilityCalls(harness).map((call) => call.body), [{
+      kind: "load_session_model_capabilities",
+      sessionId: "session-history",
+      profileId: "profile-1",
+    }]);
+    assert.deepEqual(
+      harness.calls
+        .filter((call) => ["/command", "/session-model-capabilities"].includes(call.path))
+        .map((call) => call.path),
+      ["/command", "/session-model-capabilities"],
+    );
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    )!;
+    assert.equal(reasoning.closest<HTMLElement>(".composer-runtime-field")?.hidden, false);
+    assert.deepEqual([...reasoning.options].map((option) => option.value), [
+      "", "low", "high",
+    ]);
+    assert.equal(reasoning.value, "high");
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
+      "model-b",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a pending startup capability read leaves drafts and Session switching usable and deduplicates focus", async () => {
+  const initial = subscriptionState();
+  const loaded = subscriptionState(true);
+  initial.openSettingsOnLoad = false;
+  loaded.sessions[1]!.modelSelection = { profileId: "profile-1", model: "model-b" };
+  initial.sessions[1]!.modelSelection = { ...loaded.sessions[1]!.modelSelection };
+  const harness = await createDialogHarness(initial, undefined, {
+    serverState: loaded,
+    holdInitialCommandResponse: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected the startup capability read to remain pending.");
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    const model = harness.document.querySelector<HTMLSelectElement>("#composerModel")!;
+    assert.equal(prompt.disabled, false);
+    assert.equal(model.disabled, false);
+    harness.input("#prompt", "Keep the Bass draft");
+    model.focus();
+    model.blur();
+    model.focus();
+    await harness.settle();
+    assert.equal(capabilityCalls(harness).length, 1);
+    assert.deepEqual(commandCalls(harness), []);
+
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await waitForCondition(() => commandCalls(harness).length === 1,
+      "Expected Session selection to execute while capability loading is pending.");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness)[0]?.body, {
+      kind: "select_session", sessionId: "session-2",
+    });
+    assert.equal(harness.document.querySelector('.session-row[aria-pressed="true"]')
+      ?.closest<HTMLElement>(".session-entry")?.dataset.sessionId, "session-2");
+    assert.equal(model.value, "model-b");
+    harness.input("#prompt", "Keep the Lead draft");
+    harness.input("#profileName", "Keep the unsaved Profile name");
+
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+    assert.equal(prompt.value, "Keep the Lead draft");
+    assert.equal(model.value, "model-b");
+    assert.equal(harness.document.querySelector('.session-row[aria-pressed="true"]')
+      ?.closest<HTMLElement>(".session-entry")?.dataset.sessionId, "session-2");
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Keep the unsaved Profile name");
+    assert.deepEqual(renderedCapabilityStatuses(harness), modelAInputs);
+    assert.equal(capabilityCalls(harness).length, 1);
+
+    harness.click('.session-entry[data-session-id="session-1"] .session-row');
+    await harness.settle();
+    assert.equal(prompt.value, "Keep the Bass draft");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("Send is admitted while the startup capability response is still pending", async () => {
+  const harness = await createDialogHarness(subscriptionState(), undefined, {
+    serverState: subscriptionState(true),
+    holdInitialCommandResponse: true,
+  });
+  let capabilityReleased = false;
+  let sendReleased = false;
+  harness.holdNextSend();
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected the startup capability read to remain pending.");
+    harness.input("#prompt", "Inspect the selected track");
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
+    harness.click("#sendButton");
+    await waitForCondition(() => jsonCalls(harness, "/send").length === 1,
+      "Expected Send to reach the bridge before capability loading finishes.");
+    assert.deepEqual(jsonCalls(harness, "/send")[0]?.body, {
+      prompt: "Inspect the selected track", sessionId: "session-1",
+    });
+    assert.deepEqual(commandCalls(harness), []);
+
+    harness.releaseHeldCommandResponse();
+    capabilityReleased = true;
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButtonLabel")?.textContent, "Stop");
+    assert.equal(capabilityCalls(harness).length, 1);
+    harness.releaseHeldSend();
+    sendReleased = true;
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButtonLabel")?.textContent, "Send");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!capabilityReleased) harness.releaseHeldCommandResponse();
+    if (!sendReleased) harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a late capability response preserves a foreground Session model selection", async () => {
+  const harness = await createDialogHarness(subscriptionState(), undefined, {
+    serverState: subscriptionState(true),
+    holdInitialCommandResponse: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected the startup capability read to remain pending.");
+    harness.select("#composerModel", "model-b");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness)[0]?.body, {
+      kind: "set_session_model_selection", sessionId: "session-1",
+      profileId: "profile-1", model: "model-b", reasoningEffort: null,
+    });
+    assert.equal(harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value, "model-b");
+    harness.input("#prompt", "Use the selected model");
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value, "model-b");
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value, "Use the selected model");
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a late capability response cannot overwrite a newly saved revision of the same Profile", async () => {
+  const harness = await createDialogHarness(subscriptionState(), undefined, {
+    serverState: subscriptionState(true),
+    holdInitialCommandResponse: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected the startup capability read to remain pending.");
+    harness.input("#profileName", "Saved while capability loading was pending");
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    assert.equal((commandCalls(harness)[0]?.body as { kind?: string })?.kind, "save_profile");
+    assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+      "Saved while capability loading was pending");
+    assert.equal(harness.document.querySelector<HTMLSelectElement>("#profileSelector")?.selectedOptions[0]?.textContent,
+      "Saved while capability loading was pending");
+    assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Saved");
+    assert.equal(capabilityCalls(harness).length, 1);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+for (const foreground of ["another Session", "a send"] as const) {
+test(`a late capability error does not replace status for ${foreground}`, async () => {
+  const harness = await createDialogHarness(subscriptionState(), undefined, {
+    serverState: subscriptionState(true), holdInitialCommandResponse: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1, "Expected startup read.");
+    if (foreground === "another Session") {
+      harness.click('.session-entry[data-session-id="session-2"] .session-row');
+      await harness.settle();
+    } else {
+      harness.holdNextSend();
+      harness.input("#prompt", "Inspect this track");
+      harness.click("#sendButton");
+      await waitForCondition(() => jsonCalls(harness, "/send").length === 1, "Expected send.");
+    }
+    const status = harness.document.querySelector("#status")?.textContent;
+    harness.rejectNextCommandResponse("Old capability request failed.");
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#status")?.textContent, status);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled, false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    if (foreground === "a send") harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+}
 
 test("an explicit same-source capability load updates Settings as well as the composer", async () => {
   const initial = subscriptionState();
@@ -137,7 +413,7 @@ test("an explicit same-source capability load updates Settings as well as the co
     assert.deepEqual(renderedCapabilityStatuses(harness), unknownInputs);
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 1);
+    assert.equal(capabilityCalls(harness).length, 1);
     assert.deepEqual(renderedCapabilityStatuses(harness), modelAInputs);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -163,7 +439,7 @@ test("startup capability loading skips Direct API, ready catalogs and unavailabl
     const harness = await createDialogHarness(state);
     try {
       await harness.settle();
-      assert.deepEqual(commandCalls(harness), []);
+      assert.deepEqual(capabilityCalls(harness), []);
       assert.deepEqual(harness.errors, []);
     } finally {
       harness.close();
@@ -177,22 +453,59 @@ test("a failed startup capability load stays unknown without looping and can be 
     initialCommandError: "The model catalog is temporarily unavailable.",
   });
   try {
-    await waitForCondition(() => commandCalls(harness).length === 1,
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
       "Expected a single startup capability attempt.");
     await harness.settle();
     assert.deepEqual(renderedCapabilityStatuses(harness), unknownInputs);
     assert.match(harness.document.querySelector("#status")?.textContent ?? "", /temporarily unavailable/);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled, false);
+    harness.input("#prompt", "Keep working while the catalog is unavailable");
     harness.click("#skillsTab");
     harness.click("#settingsTab");
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 1);
+    assert.equal(capabilityCalls(harness).length, 1);
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#discoverModelsButton")?.disabled, false);
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 2);
+    assert.equal(capabilityCalls(harness).length, 2);
     assert.deepEqual(renderedCapabilityStatuses(harness), modelAInputs);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
+      "Keep working while the catalog is unavailable");
     assert.deepEqual(harness.errors, []);
   } finally {
+    harness.close();
+  }
+});
+
+test("a failed capability transport leaves foreground commands usable without automatic reconciliation", async () => {
+  const harness = await createDialogHarness(subscriptionState(), undefined, {
+    serverState: subscriptionState(true),
+    holdInitialCommandResponse: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected the startup capability read to remain pending.");
+    harness.rejectNextCommandResponse("The catalog response was lost.");
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+    assert.deepEqual(renderedCapabilityStatuses(harness), unknownInputs);
+    assert.match(harness.document.querySelector("#status")?.textContent ?? "", /response was lost/);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled, false);
+    assert.deepEqual(jsonCalls(harness, "/state"), []);
+
+    harness.select("#approvalMode", "everything");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness)[0]?.body, {
+      kind: "set_session_approval_mode", sessionId: "session-1", approvalMode: "everything",
+    });
+    assert.equal(harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value, "everything");
+    assert.equal(capabilityCalls(harness).length, 1);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    await harness.settle();
     harness.close();
   }
 });
@@ -207,7 +520,7 @@ test("a delayed same-source capability result restores Settings without revertin
   let released = false;
   try {
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
-    await waitForCondition(() => commandCalls(harness).length === 1, "Expected the capability request.");
+    await waitForCondition(() => capabilityCalls(harness).length === 1, "Expected the capability request.");
     harness.emitServerEvent({
       type: "approval_mode_changed", sessionId: "session-1", approvalMode: "everything",
       updatedAt: "2026-08-26T08:00:00.000Z",
@@ -252,7 +565,7 @@ test("subscription capability loading cannot replace another connection's Draft 
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await harness.settle();
-    assert.equal(commandCalls(harness).length, 1);
+    assert.equal(capabilityCalls(harness).length, 1);
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#profileName")?.value, "Keep this unsaved connection");
     assert.equal(harness.document.querySelector<HTMLSelectElement>("#connectionKind")?.value, "direct-api");
@@ -271,7 +584,7 @@ test("a late capability response cannot restore evidence from an older ChatGPT a
   let released = false;
   try {
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
-    await waitForCondition(() => commandCalls(harness).length === 1, "Expected the held capability request.");
+    await waitForCondition(() => capabilityCalls(harness).length === 1, "Expected the held capability request.");
     const signedOut = subscriptionState();
     signedOut.codexAuthGeneration = 1;
     signedOut.codexAuth = { status: "signed-out" };

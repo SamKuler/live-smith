@@ -29,15 +29,20 @@ import type { AvailableSkillSummary } from "../skills/builtins.js";
 
 export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
 
+export interface ChatSessionSummary extends AgentSession {
+  /** Derived display metadata; never part of the stored Session record. */
+  hasContent?: boolean;
+}
+
 export interface ChatDialogState {
   contextSummary: string;
   sessionContinueTarget: {
     kind: ConversationScope["kind"];
     label: string;
   };
-  sessions: AgentSession[];
-  previousSessions: AgentSession[];
-  archivedSessions: AgentSession[];
+  sessions: ChatSessionSummary[];
+  previousSessions: ChatSessionSummary[];
+  archivedSessions: ChatSessionSummary[];
   activeSessionId: string;
   approvalMode: ApprovalMode;
   events: ChatSessionEvent[];

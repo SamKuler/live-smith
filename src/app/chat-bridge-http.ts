@@ -3,6 +3,11 @@ import type { IncomingMessage } from "node:http";
 import { clearTimeout, setTimeout } from "node:timers";
 import type { URL } from "node:url";
 
+import {
+  isEditScopes,
+  resolveEditScopes,
+  type EditScope,
+} from "../agent/edit-scopes.js";
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
 import {
   isSafeSkillId,
@@ -98,6 +103,11 @@ export type ChatBridgeCommandInput =
       kind: "set_session_approval_mode";
       sessionId: string;
       approvalMode: ApprovalMode;
+    }
+  | {
+      kind: "set_session_edit_scopes";
+      sessionId: string;
+      editScopes: EditScope[];
     }
   | {
       kind: "set_session_model_selection";
@@ -834,6 +844,23 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       kind,
       sessionId: inputString(input, "sessionId"),
       approvalMode: input.approvalMode,
+    };
+  }
+  if (kind === "set_session_edit_scopes") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "editScopes"],
+      `${kind} command`,
+    );
+    if (!isEditScopes(input.editScopes)) {
+      throw new ChatBridgeRequestValidationError(
+        "editScopes must be a list of distinct supported scopes.",
+      );
+    }
+    return {
+      kind,
+      sessionId: inputString(input, "sessionId"),
+      editScopes: resolveEditScopes(input.editScopes),
     };
   }
   if (kind === "set_session_model_selection") {

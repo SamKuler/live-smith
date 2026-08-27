@@ -658,6 +658,63 @@ test("Scene, Cue Point, and Take Lane snapshots bind exact host identities", asy
   assert.notEqual(laneAfter, laneBefore);
 });
 
+test("whole-Scene snapshots detect content and identity drift across the target row", async (t) => {
+  const changes: [string, (fixture: ReturnType<typeof sceneFixture>) => void][] = [
+    ["MIDI Clip replacement", ({ slots }) => {
+      Reflect.set(slots[0]!, "clip", midiClip(202n));
+    }],
+    ["MIDI note edits", ({ midi }) => {
+      midi.notes = [{ pitch: 60, startTime: 0, duration: 1, velocity: 90 }];
+    }],
+    ["Audio Clip source edits", ({ audio }) => {
+      Reflect.set(audio, "filePath", "/private/audio/replacement.wav");
+    }],
+    ["Audio Clip Warp edits", ({ audio }) => {
+      Reflect.set(audio, "warpMarkers", [{ sampleTime: 1, beatTime: 2 }]);
+    }],
+    ["occupied slot cleared", ({ slots }) => { Reflect.set(slots[1]!, "clip", null); }],
+    ["empty slot filled", ({ slots }) => { Reflect.set(slots[2]!, "clip", midiClip(203n)); }],
+    ["slot identity changed", ({ slots }) => { slots[0]!.handle.id = 204n; }],
+    ["track identity changed", ({ tracks }) => { tracks[0]!.handle.id = 14n; }],
+    ["track removed", ({ tracks }) => { tracks.pop(); }],
+  ];
+  for (const type of ["delete_scene", "duplicate_scene"] as const) {
+    for (const [label, change] of changes) {
+      await t.test(`${type}: ${label}`, async () => {
+        const fixture = sceneFixture();
+        const action = { type, sceneIndex: 1, sceneName: "Verse" };
+        const before = await captureLiveActionPreflightSnapshot(fixture.context, action, {});
+        change(fixture);
+        const after = await captureLiveActionPreflightSnapshot(fixture.context, action, {});
+        assert.notEqual(after, before);
+      });
+    }
+  }
+});
+
+test("Scene snapshots ignore Clip changes outside the action's affected contents", async () => {
+  for (const type of ["delete_scene", "duplicate_scene", "rename_scene"] as const) {
+    const fixture = sceneFixture();
+    const action = { type, sceneIndex: 1, sceneName: "Verse", newName: "Drop" };
+    const before = await captureLiveActionPreflightSnapshot(fixture.context, action, {});
+    fixture.otherRowClip.notes = [{ pitch: 72, startTime: 0, duration: 1, velocity: 90 }];
+    if (type === "rename_scene") Reflect.set(fixture.slots[0]!, "clip", midiClip(202n));
+    const after = await captureLiveActionPreflightSnapshot(fixture.context, action, {});
+    assert.equal(after, before);
+  }
+});
+
+test("whole-Scene snapshots fail closed when a target row slot cannot be verified", async () => {
+  for (const type of ["delete_scene", "duplicate_scene"] as const) {
+    const fixture = sceneFixture();
+    fixture.tracks[2]!.clipSlots.pop();
+    await assert.rejects(
+      captureLiveActionPreflightSnapshot(fixture.context, { type, sceneIndex: 1 }, {}),
+      /Could not find Session slot 1/,
+    );
+  }
+});
+
 test("rename_scene snapshots deterministically encode bigint values returned by the host", async () => {
   const scene = sdkObject<Scene<"1.0.0">>(Scene.prototype, {
     handle: { id: 910n },
@@ -735,6 +792,56 @@ function liveContext(track: MidiTrack<"1.0.0">) {
       },
     },
   } as never;
+}
+
+function sceneFixture() {
+  const midi = midiClip(101n);
+  const otherRowClip = midiClip(102n);
+  const audio = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: 103n },
+    name: "Vocal",
+    startTime: 0,
+    duration: 4,
+    startMarker: 0,
+    endMarker: 4,
+    looping: false,
+    loopStart: 0,
+    loopEnd: 4,
+    color: 0,
+    muted: false,
+    filePath: "/private/audio/vocal.wav",
+    warping: true,
+    warpMode: 4,
+    warpMarkers: [],
+  });
+  const slots = [midi, audio, null].map((clip, index) =>
+    sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+      handle: { id: BigInt(201 + index) }, clip,
+    }),
+  );
+  const tracks = [
+    midiTrack(11n, []),
+    sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, { handle: { id: 12n }, name: "Audio" }),
+    midiTrack(13n, []),
+  ];
+  tracks.forEach((track, index) => {
+    Object.defineProperty(track, "clipSlots", {
+      configurable: true,
+      value: [sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+        handle: { id: BigInt(301 + index) }, clip: index === 0 ? otherRowClip : null,
+      }), slots[index]],
+    });
+  });
+  const scenes = ["Intro", "Verse"].map((name, index) =>
+    sdkObject<Scene<"1.0.0">>(Scene.prototype, {
+      handle: { id: BigInt(401 + index) }, name, tempo: 120,
+      signatureNumerator: 4, signatureDenominator: 4,
+    }),
+  );
+  const context = {
+    application: { song: { handle: { id: 1n }, tracks, scenes } },
+  } as never;
+  return { context, tracks, slots, midi, audio, otherRowClip };
 }
 
 function midiTrack(

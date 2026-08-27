@@ -44,7 +44,7 @@ test("a repeated session event keeps its existing timeline position", async () =
 
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLElement>(
-        "#timeline > .timeline-item",
+        "#timeline > .timeline-item[data-event-id]",
       )].map((item) => item.dataset.eventId),
       ["event-earlier-error", "event-later-assistant"],
     );
@@ -109,9 +109,11 @@ test("assistant reset clears the interrupted Session draft and live search", asy
       null,
     );
     assert.equal(harness.document.querySelector(".timeline-item.streaming"), null);
+    assert.equal(harness.document.querySelector("#timeline > .empty"), null);
     assert.equal(
-      harness.document.querySelector("#timeline > .empty")?.textContent,
-      "No messages in this session yet.",
+      harness.document.querySelector(".timeline-item.user.local-user-message .timeline-content")
+        ?.textContent,
+      "Reconnect after a partial response",
     );
     assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
     assert.deepEqual(harness.errors, []);

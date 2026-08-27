@@ -5,6 +5,8 @@
         getQueuedFollowUps,
         getWebSearchUpdates,
         getPendingConfirmation,
+        getPendingUserMessage,
+        hasSessionLocalWork,
         isCommandInProgress,
         isConfirmationLocked,
         resolveConfirm,
@@ -26,14 +28,30 @@
       let nextSessionSelectionStatusId = 0;
       let renderedTimelineKey = null;
       let renderedAssistantDraft = "";
+      const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
+
+      function retainActiveSessionForWindow() {
+        activeSessionIdsThisWindow.add(getState().activeSessionId);
+      }
+
+      function isSessionVisible(session, archived = false) {
+        const state = getState();
+        return archived || session.id === state.activeSessionId ||
+          activeSessionIdsThisWindow.has(session.id) ||
+          session.hasContent !== false || hasSessionLocalWork(session.id) ||
+          (state.sessionActivities || []).some(
+            (activity) => activity.sessionId === session.id,
+          );
+      }
 
       function sessionRecords() {
+        retainActiveSessionForWindow();
         const state = getState();
         return [
           ...(state.sessions || []).map((session) => ({ session, archived: false })),
           ...(state.previousSessions || []).map((session) => ({ session, archived: false })),
           ...(state.archivedSessions || []).map((session) => ({ session, archived: true })),
-        ];
+        ].filter(({ session, archived }) => isSessionVisible(session, archived));
       }
 
       function updateSessionSelectionUi() {
@@ -732,8 +750,7 @@
         } else if (!switching && row.hasAttribute("aria-busy")) {
           row.removeAttribute("aria-busy");
         }
-        const metaText = switching ? "Switching…" : idleMeta;
-        if (metaContent.textContent !== metaText) metaContent.textContent = metaText;
+        if (metaContent.textContent !== idleMeta) metaContent.textContent = idleMeta;
         const timestampTitle = sessionTimestampTitle(session);
         if (meta.title !== timestampTitle) meta.title = timestampTitle;
 
@@ -798,6 +815,10 @@
         const entry = [...document.querySelectorAll(".session-entry")].find(
           (candidate) => candidate.dataset.sessionId === sessionId,
         );
+        if (isSessionVisible(session, mode === "archived") !== Boolean(entry)) {
+          renderSessions();
+          return;
+        }
         if (!entry) return;
         const activity = (state.sessionActivities || []).find(
           (candidate) => candidate.sessionId === sessionId,
@@ -861,7 +882,12 @@
       }
 
       function renderSessions() {
+        retainActiveSessionForWindow();
         const state = getState();
+        const currentSessions = state.sessions.filter((session) => isSessionVisible(session));
+        const previousSessions = (state.previousSessions || []).filter(
+          (session) => isSessionVisible(session),
+        );
         pruneSessionSelection();
         const list = document.getElementById("sessions");
         const renameInput = list.querySelector(".session-rename-input");
@@ -941,7 +967,7 @@
         );
         const desiredNodes = [];
 
-        if (!state.sessions.length) {
+        if (!currentSessions.length) {
           const empty = list.querySelector(".session-empty") ||
             document.createElement("div");
           if (!empty.classList.contains("session-empty")) {
@@ -1106,9 +1132,8 @@
           desiredNodes.push(entry);
         };
 
-        for (const session of state.sessions) appendSession(session, "current");
+        for (const session of currentSessions) appendSession(session, "current");
 
-        const previousSessions = state.previousSessions || [];
         if (previousSessions.length) {
           desiredNodes.push(sessionSection("history", "History", existingSections));
           for (const session of previousSessions) appendSession(session, "history");
@@ -1171,6 +1196,19 @@
         const body = document.createElement("div");
         body.className = "timeline-content";
         body.textContent = followUp.prompt;
+        item.append(label, body);
+        return item;
+      }
+
+      function buildPendingUserMessageItem(message) {
+        const item = document.createElement("article");
+        item.className = "timeline-item user local-user-message";
+        const label = document.createElement("div");
+        label.className = "timeline-label";
+        label.textContent = "You";
+        const body = document.createElement("div");
+        body.className = "timeline-content";
+        renderMarkdown(body, message.prompt);
         item.append(label, body);
         return item;
       }
@@ -1289,11 +1327,13 @@
         const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
+        const pendingUserMessage = getPendingUserMessage?.() || null;
         const renderKey = JSON.stringify({
           events: state.events || [],
           queuedFollowUps,
           webSearchUpdates,
           pendingConfirmation,
+          pendingUserMessage,
         });
         if (renderKey === renderedTimelineKey) {
           if (assistantDraft !== renderedAssistantDraft) renderAssistantDraft();
@@ -1331,7 +1371,8 @@
           !webSearchUpdates.length &&
           !assistantDraft &&
           !queuedFollowUps.length &&
-          !pendingConfirmation
+          !pendingConfirmation &&
+          !pendingUserMessage
         ) {
           const empty = document.createElement("div");
           empty.className = "empty";
@@ -1351,6 +1392,10 @@
             item.open = webSearchDetailsState.get(item.dataset.webSearchId);
           }
           timeline.append(item);
+        }
+
+        if (pendingUserMessage) {
+          timeline.append(buildPendingUserMessageItem(pendingUserMessage));
         }
 
         for (const search of webSearchUpdates) {

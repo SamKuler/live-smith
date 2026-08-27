@@ -527,13 +527,131 @@
 
       .approval-mode-select {
         width: 104px;
-        min-width: 104px;
       }
 
       .approval-mode-select.is-everything {
         color: var(--danger);
         border-color: var(--danger);
         box-shadow: 0 0 0 2px rgba(255, 110, 87, 0.14);
+      }
+
+      .edit-scope-shell {
+        min-width: 0;
+        max-width: min(220px, 100%);
+      }
+
+      .composer-select.edit-scope-button {
+        min-width: 104px;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .edit-scope-panel {
+        position: absolute;
+        z-index: 13;
+        bottom: calc(100% + 8px);
+        left: 7px;
+        width: min(260px, calc(100% - 14px));
+        padding: 12px;
+        color: var(--text);
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-radius: 7px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.44);
+      }
+
+      .edit-scope-panel[hidden] {
+        display: none;
+      }
+
+      .edit-scope-panel fieldset {
+        margin: 12px 0 0;
+        padding: 0;
+        border: 0;
+      }
+
+      .permissions-save-status {
+        color: var(--quiet);
+        font-size: 10px;
+      }
+
+      .permission-field-heading {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .permission-field-heading > label {
+        margin: 0;
+        font-size: inherit;
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .permission-field-heading h2 {
+        margin: 0;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .permission-field-heading .edit-scope-all {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+        color: var(--text);
+      }
+
+      .edit-scope-option {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .edit-scope-option label {
+        flex: 1;
+      }
+
+      .edit-scope-panel .inline-help::after {
+        box-sizing: border-box;
+        top: auto;
+        bottom: calc(100% + 7px);
+        left: 0;
+        right: auto;
+        width: 100%;
+      }
+
+      .edit-scope-options {
+        display: grid;
+        gap: 8px;
+      }
+
+      .edit-scope-options label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text);
+        font-size: 12px;
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .edit-scope-options input,
+      .edit-scope-all input {
+        flex: 0 0 15px;
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: var(--accent);
       }
 
       .timeline {
@@ -1190,6 +1308,7 @@
       }
 
       .composer-toolbar {
+        position: relative;
         display: flex;
         flex-wrap: wrap;
         align-items: center;
@@ -1224,6 +1343,8 @@
 
       .composer-live-controls {
         flex: 0 0 auto;
+        flex-wrap: wrap;
+        max-width: 100%;
         order: 0;
       }
 
@@ -1254,15 +1375,23 @@
       }
 
       .composer-select {
+        -webkit-appearance: none;
+        appearance: none;
         min-width: 0;
         height: 30px;
-        padding: 0 20px 0 7px;
+        padding: 0 23px 0 9px;
         color: var(--text);
         background-color: var(--pane-2);
-        border-color: var(--line-soft);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23c6c6c6' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        background-size: 10px 10px;
+        border: 1px solid var(--line-soft);
         border-radius: 999px;
+        font-family: inherit;
         font-size: 10px;
         font-weight: 650;
+        text-align: left;
       }
 
       #composerModel {
@@ -1276,6 +1405,11 @@
       .composer-select:hover:not(:disabled) {
         border-color: #686868;
         background-color: #454545;
+      }
+
+      .composer-select:disabled {
+        opacity: 0.45;
+        cursor: default;
       }
 
       .context-usage {
@@ -3014,6 +3148,22 @@
                     <option value="everything">Accept Everything</option>
                   </select>
                 </label>
+                <div id="editScopeShell" class="edit-scope-shell">
+                  <button id="editScopeButton" class="edit-scope-button composer-select" type="button" aria-label="Edit scope: All scopes" aria-haspopup="dialog" aria-controls="editScopePanel" aria-expanded="false">All scopes</button>
+                  <div id="editScopePanel" class="edit-scope-panel" role="dialog" aria-labelledby="editScopeHeading" aria-describedby="editScopeSavedSummary" aria-busy="false" hidden>
+                    <span id="editScopeSavedSummary" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">Saved: All</span>
+                    <div class="permission-field-heading">
+                      <h2 id="editScopeHeading">Scope</h2>
+                      <span id="editScopeHelp" class="inline-help" tabindex="0" role="note" aria-label="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-tooltip="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately.">?</span>
+                      <span id="permissionsSaveStatus" class="permissions-save-status" role="status" aria-live="polite" hidden></span>
+                      <label class="edit-scope-all"><input id="editScopeAll" type="checkbox" aria-label="All edit scopes">All</label>
+                    </div>
+                    <fieldset>
+                      <legend class="visually-hidden">Allowed changes</legend>
+                      <div id="editScopeOptions" class="edit-scope-options"></div>
+                    </fieldset>
+                  </div>
+                </div>
               </div>
               <span id="followUpShortcutHint" class="visually-hidden" hidden></span>
               <div class="composer-runtime-controls">

@@ -38,6 +38,16 @@
         };
         const contextTokenFormatter = new Intl.NumberFormat();
         const INSPECTOR_DRAWER_MAX_WIDTH = 1015;
+        const editScopeIds = __EDIT_SCOPES__;
+        const editScopeLabels = __EDIT_SCOPE_LABELS__;
+        const editScopeShortLabels = {
+          ...editScopeLabels,
+          midi: "MIDI",
+          audio: "Audio",
+          structure: "Structure",
+        };
+        let permissionsSessionId = null;
+        let pendingEditScopes = null;
 
         function setPropertyIfChanged(element, property, value) {
           if (element[property] !== value) element[property] = value;
@@ -249,6 +259,8 @@
           getQueuedFollowUps: bridgeClient.getQueuedFollowUps,
           getWebSearchUpdates: bridgeClient.getWebSearchUpdates,
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
+          getPendingUserMessage: bridgeClient.getPendingUserMessage,
+          hasSessionLocalWork: bridgeClient.hasSessionLocalWork,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
@@ -616,7 +628,7 @@
             composerOperationState.sendInProgress ||
             bridgeClient.isCommandInProgress()
           ) return false;
-          return bridgeClient.runCommand("load_session_model_capabilities", {
+          return bridgeClient.loadSessionModelCapabilities({
             sessionId: state.activeSessionId,
             profileId: runtime.profile.id,
           });
@@ -776,6 +788,169 @@
           if (profileSettingsLocked) syncProfileSettingsLock(true, true);
         }
 
+        function savedEditScopes() {
+          const session = getState().sessions.find(
+            (entry) => entry.id === getState().activeSessionId,
+          );
+          return editScopeIds.filter((scope) =>
+            (session?.editScopes ?? editScopeIds).includes(scope)
+          );
+        }
+
+        function editScopesSummary(scopes) {
+          return scopes.length === editScopeIds.length
+            ? "All"
+            : scopes.length === 0
+              ? "Read only"
+              : scopes.map((scope) => editScopeLabels[scope]).join(", ");
+        }
+
+        function closeEditScopes(restoreFocus = true) {
+          permissionsSessionId = null;
+          document.getElementById("editScopePanel").hidden = true;
+          const button = document.getElementById("editScopeButton");
+          button.setAttribute("aria-expanded", "false");
+          if (restoreFocus && !button.disabled) button.focus({ preventScroll: true });
+        }
+
+        function renderEditScopes() {
+          const sessionId = getState().activeSessionId;
+          if (permissionsSessionId && permissionsSessionId !== sessionId) {
+            closeEditScopes(false);
+          }
+          const scopes = savedEditScopes();
+          const summary = editScopesSummary(scopes);
+          const label = !scopes.length ? "Read only"
+            : scopes.length === editScopeIds.length ? "All scopes"
+              : scopes.length === 1 ? editScopeShortLabels[scopes[0]] : `${scopes.length} scopes`;
+          const accessibleSummary = scopes.length === editScopeIds.length ? label
+            : scopes.length > 1 ? `${label} (${summary})` : summary;
+          const button = document.getElementById("editScopeButton");
+          setPropertyIfChanged(button, "textContent", label);
+          setAttributeIfChanged(button, "aria-label", `Edit scope: ${accessibleSummary}`);
+          setAttributeIfChanged(button, "title", `Edit scope: ${summary}`);
+          setPropertyIfChanged(
+            document.getElementById("editScopeSavedSummary"),
+            "textContent",
+            `Saved: ${summary}`,
+          );
+          const displayedScopes = pendingEditScopes?.sessionId === sessionId
+            ? pendingEditScopes.scopes : scopes;
+          document.querySelectorAll("#editScopeOptions input").forEach((control) => {
+            setPropertyIfChanged(control, "checked", displayedScopes.includes(control.value));
+          });
+          const all = document.getElementById("editScopeAll");
+          setPropertyIfChanged(all, "checked", displayedScopes.length === editScopeIds.length);
+          setPropertyIfChanged(all, "indeterminate",
+            displayedScopes.length > 0 && displayedScopes.length < editScopeIds.length);
+          const scopeSaving = Boolean(pendingEditScopes) ||
+            composerOperationState.commandKind === "set_session_edit_scopes";
+          const permissionSaving = scopeSaving ||
+            composerOperationState.commandKind === "set_session_approval_mode";
+          const disabled = permissionSaving || Boolean(composerOperationState.commandKind) ||
+            composerOperationState.attachmentInProgress ||
+            composerOperationState.skillInProgress;
+          setPropertyIfChanged(button, "disabled", disabled && !permissionSaving);
+          setAttributeIfChanged(button, "aria-busy", String(scopeSaving));
+          const panel = document.getElementById("editScopePanel");
+          setAttributeIfChanged(panel, "aria-busy", String(scopeSaving));
+          panel.querySelectorAll("input, select").forEach((control) => {
+            setPropertyIfChanged(control, "disabled", disabled);
+          });
+          const status = document.getElementById("permissionsSaveStatus");
+          setPropertyIfChanged(status, "textContent", scopeSaving ? "Saving…" : "");
+          setPropertyIfChanged(status, "hidden", !scopeSaving);
+        }
+
+        function toggleEditScopes() {
+          const button = document.getElementById("editScopeButton");
+          if (button.disabled) return;
+          if (permissionsSessionId) {
+            closeEditScopes();
+            return;
+          }
+          permissionsSessionId = getState().activeSessionId;
+          document.getElementById("editScopePanel").hidden = false;
+          button.setAttribute("aria-expanded", "true");
+          renderEditScopes();
+          const firstControl = document.getElementById("editScope-midi");
+          if (!firstControl.disabled) firstControl.focus({ preventScroll: true });
+        }
+
+        async function saveEditScopes(scopes) {
+          if (!permissionsSessionId || pendingEditScopes) return;
+          const change = { sessionId: permissionsSessionId, scopes: [...scopes] };
+          pendingEditScopes = change;
+          try {
+            await bridgeClient.runCommand("set_session_edit_scopes", {
+              sessionId: change.sessionId,
+              editScopes: change.scopes,
+            });
+          } finally {
+            if (pendingEditScopes === change) pendingEditScopes = null;
+            renderEditScopes();
+          }
+        }
+
+        function initializeEditScopes() {
+          const options = document.getElementById("editScopeOptions");
+          for (const scope of editScopeIds) {
+            const row = document.createElement("div");
+            row.className = "edit-scope-option";
+            const label = document.createElement("label");
+            const control = document.createElement("input");
+            control.type = "checkbox";
+            control.id = `editScope-${scope}`;
+            control.name = "editScopes";
+            control.value = scope;
+            control.setAttribute("aria-label", editScopeLabels[scope]);
+            label.title = editScopeLabels[scope];
+            control.addEventListener("change", () => {
+              if (control.disabled) return;
+              void saveEditScopes(editScopeIds.filter((id) =>
+                document.getElementById(`editScope-${id}`).checked
+              ));
+            });
+            label.append(control, document.createTextNode(editScopeShortLabels[scope]));
+            row.append(label);
+            const helpText = scope === "devices"
+              ? "Instruments, effects, Racks, Drum Pads, and Simpler sample changes."
+              : scope === "structure"
+                ? "Tracks, Scenes, Cue Points, Take Lanes, and tempo. Deleting or duplicating a container also needs permission for its contents."
+                : null;
+            if (helpText) {
+              const help = document.createElement("span");
+              help.id = scope === "devices" ? "editScopeDevicesHelp" : "editScopeStructureHelp";
+              help.className = "inline-help";
+              help.tabIndex = 0;
+              help.setAttribute("role", "note");
+              help.setAttribute("aria-label", helpText);
+              help.dataset.tooltip = helpText;
+              help.textContent = "?";
+              control.setAttribute("aria-describedby", help.id);
+              row.append(help);
+            }
+            options.append(row);
+          }
+          document.getElementById("editScopeButton").addEventListener("click", toggleEditScopes);
+          document.getElementById("editScopeAll").addEventListener("change", (event) => {
+            if (event.target.disabled) return;
+            void saveEditScopes(event.target.checked ? editScopeIds : []);
+          });
+          document.getElementById("editScopeShell").addEventListener("keydown", (event) => {
+            if (event.key !== "Escape" || !permissionsSessionId) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeEditScopes();
+          });
+          document.addEventListener("mousedown", (event) => {
+            if (
+              permissionsSessionId &&
+              !document.getElementById("editScopeShell").contains(event.target)
+            ) closeEditScopes(false);
+          });
+        }
+
         function renderApplication() {
           renderStateStatus();
           renderContextSummary(getState().contextSummary || "");
@@ -784,6 +959,7 @@
           renderComposerContextUsage();
           bridgeClient.renderDefaultFollowUpBehavior();
           profileEditor.renderApprovalMode();
+          renderEditScopes();
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
           attachments.renderPending();
@@ -907,6 +1083,9 @@
             busyAriaLabel: "Saving Approval Mode…",
             controlId: "approvalMode",
           },
+          set_session_edit_scopes: {
+            busyAriaLabel: "Saving Edit Scope…",
+          },
           set_session_model_selection: {
             busyAriaLabel: "Saving Session model selection…",
           },
@@ -915,10 +1094,6 @@
           },
           profile_settings_refresh: {
             status: "Refreshing Profiles after an external change…",
-          },
-          load_session_model_capabilities: {
-            busyAriaLabel: "Loading model capabilities…",
-            status: "Loading model capabilities…",
           },
           save_global_settings: {
             busyAriaLabel: "Saving follow-up behavior…",
@@ -945,7 +1120,6 @@
             controlId: "newSessionButton",
             status: "Creating Session…",
           },
-          select_session: { status: "Switching Session…" },
           restore_session: { busyLabel: "Restoring…", status: "Restoring Session…" },
           delete_session: { status: "Deleting Session…" },
           rename_session: { status: "Renaming Session…" },
@@ -992,6 +1166,7 @@
           if (
             target?.isConnected &&
             !target.disabled &&
+            !target.closest("[hidden]") &&
             [
               document.body,
               document.documentElement,
@@ -1107,6 +1282,7 @@
           if (approvalMode.disabled !== sessionSettingDisabled) {
             approvalMode.disabled = sessionSettingDisabled;
           }
+          renderEditScopes();
           const defaultFollowUp = document.getElementById("defaultFollowUpBehavior");
           if (defaultFollowUp.disabled !== sessionSettingDisabled) {
             defaultFollowUp.disabled = sessionSettingDisabled;
@@ -1136,6 +1312,7 @@
         bridgeClient.connectView({
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
           clearFieldErrors: profileEditor.clearFieldErrors,
+          ensureSessionModelCapabilities,
           isDraftDirty: () => profileEditor.getDraftState().dirty,
           render: renderApplication,
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
@@ -1143,6 +1320,7 @@
           renderSessions: sessionTimeline.renderSessions,
           syncSessionPresentation: sessionTimeline.syncSessionPresentation,
           renderApprovalMode: profileEditor.renderApprovalMode,
+          renderEditScopes,
           reconcileSettingsForm: reconcileSettingsFormFromState,
           renderSettingsForm: renderSettingsFormFromState,
           renderTimeline: sessionTimeline.renderTimeline,
@@ -1196,6 +1374,7 @@
 
         window.addEventListener("DOMContentLoaded", () => {
           initializeAppConfirmation();
+          initializeEditScopes();
           skillManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();

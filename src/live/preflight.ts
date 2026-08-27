@@ -59,13 +59,32 @@ export async function captureLiveActionPreflightSnapshot(
           name: scene.name,
         })),
       });
-    case "rename_scene":
+    case "rename_scene": {
+      const scene = resolveScene(song, action.sceneIndex, action.sceneName);
+      return fingerprint(action.type, {
+        song: songIdentity,
+        scene: sceneIdentity(scene),
+      });
+    }
     case "duplicate_scene":
     case "delete_scene": {
       const scene = resolveScene(song, action.sceneIndex, action.sceneName);
       return fingerprint(action.type, {
         song: songIdentity,
         scene: sceneIdentity(scene),
+        clipSlots: song.tracks.map((track) => {
+          const slot = track.clipSlots[action.sceneIndex];
+          if (!slot) {
+            throw new Error(
+              `Could not find Session slot ${action.sceneIndex} on track "${track.name}".`,
+            );
+          }
+          return {
+            track: trackIdentity(track),
+            id: requireHandleIdentity(slot, "clip slot"),
+            clip: slot.clip ? clipContentIdentity(slot.clip) : null,
+          };
+        }),
       });
     }
     case "create_cue_point":

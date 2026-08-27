@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { EditScopeDeniedError } from "./edit-scopes.js";
 
 import {
   observationRequestForAction,
@@ -812,7 +813,8 @@ async function executeToolCall(
         throwIfAborted(options.signal);
         if (
           error instanceof AgentActionPreflightError ||
-          error instanceof AgentRecoveryPlanError
+          error instanceof AgentRecoveryPlanError ||
+          error instanceof EditScopeDeniedError
         ) throw error;
         throw new AgentActionPreflightError(
           `Action preflight failed: ${errorMessage(error)}`,
@@ -883,7 +885,10 @@ async function executeToolCall(
           }
         } catch (error) {
           throwIfAborted(options.signal);
-          if (error instanceof AgentSteeringBeforeApplyError) throw error;
+          if (
+            error instanceof AgentSteeringBeforeApplyError ||
+            error instanceof EditScopeDeniedError
+          ) throw error;
           throw new AgentActionPreflightError(
             `Live state changed after confirmation; refusing to execute actions: ${errorMessage(error)}`,
             error,
@@ -990,6 +995,30 @@ async function executeToolCall(
 
     throw new Error(`Unsupported model tool call: ${toolCall.name}`);
   } catch (error) {
+    const scopeDenial = error instanceof EditScopeDeniedError
+      ? error
+      : error instanceof AgentPartialCompletionError &&
+          error.completedMutationCount === 0 &&
+          error.cause instanceof EditScopeDeniedError
+        ? error.cause
+        : undefined;
+    if (scopeDenial) {
+      throwIfAborted(options.signal);
+      const content = `${scopeDenial.message}\nNo Live changes from this plan were applied.`;
+      await emitTraceEvent(options, {
+        kind: "tool_result",
+        name: toolCall.name,
+        content,
+      });
+      return {
+        toolContent: content,
+        userMessage: content,
+        cancelled: false,
+        failed: true,
+        mutationProgress: false,
+        failureKind: "host",
+      };
+    }
     if (error instanceof AgentSteeringBeforeApplyError) {
       await emitTraceEvent(options, {
         kind: "apply_result",
@@ -1080,7 +1109,9 @@ async function executeToolCall(
         failureContent,
         "Current Live state after the failure:",
         recoveryObservation,
-        recoveryObservationAvailable
+        error.cause instanceof EditScopeDeniedError
+          ? "The Session's edit scope blocked the next action. Keep completed work and do not retry forbidden edits. Only the user can expand Edit Scope; continue within the currently allowed scopes."
+          : recoveryObservationAvailable
           ? "Use this refreshed state or inspect a narrower target, keep every completed action, and continue only with missing work. The beta SDK did not identify the failure cause; do not infer that the device name is unavailable. Repair only what the observed state supports."
           : "Inspect the affected Live object successfully before applying anything else. Keep every completed action and continue only with missing work. The beta SDK did not identify the failure cause; do not infer that the device name is unavailable.",
       ].join("\n");

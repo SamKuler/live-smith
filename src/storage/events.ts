@@ -34,6 +34,7 @@ import {
   requireSafeStorageId,
 } from "./id.js";
 import { isMissingFileError } from "./errors.js";
+import { persistTransientSessionInTransaction } from "./sessions.js";
 import {
   ensurePrivateDirectory,
   ensurePrivateFile,
@@ -124,20 +125,18 @@ export async function appendSessionEvent(
   }
   const event = cloneSessionEvent(candidate);
 
-  return withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      const events = memoryEvents.get(sessionId) ?? [];
-      const existing = matchingSteeringReceiptEvent(events, event);
-      if (existing) return cloneSessionEvent(existing);
-      assertAttachmentIdsUnconsumed(events, event);
-      memoryEvents.set(sessionId, [...events, cloneSessionEvent(event)]);
-      return cloneSessionEvent(event);
-    }
-
-    const events = await loadSessionEventsUnlocked(storageDirectory, sessionId);
+  return withStorageTransaction(storageDirectory, async (transaction) => {
+    const events = storageDirectory === undefined
+      ? memoryEvents.get(sessionId) ?? []
+      : await loadSessionEventsUnlocked(storageDirectory, sessionId);
     const existing = matchingSteeringReceiptEvent(events, event);
     if (existing) return cloneSessionEvent(existing);
     assertAttachmentIdsUnconsumed(events, event);
+    await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
+    if (!storageDirectory) {
+      memoryEvents.set(sessionId, [...events, cloneSessionEvent(event)]);
+      return cloneSessionEvent(event);
+    }
     await ensurePrivateDirectory(storageDirectory);
     await writeJsonAtomically(
       eventsPath(storageDirectory, sessionId),

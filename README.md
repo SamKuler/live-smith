@@ -92,17 +92,46 @@ provider-specific limitations.
 
 ## You control the changes
 
-Each Session has an approval mode:
+Each Session has separate **Approval** and **Edit Scope** controls in the
+composer, initially labelled **Manual** and **All scopes**. Changes save
+immediately. The **?** hints inside Scope explain the less obvious category
+boundaries.
+
+| Edit Scope | Allowed changes |
+| --- | --- |
+| MIDI | MIDI Clips, notes, and Clip properties. |
+| Audio | Audio Clips, Warp, and Clip properties. |
+| Devices | Instruments, effects, Racks, Drum Pads, and Simpler samples. |
+| Mixer | Mixer parameters, mute, solo, and arm. |
+| Structure | Tracks, Scenes, Cue Points, Take Lanes, and tempo. |
+
+Scopes can be combined. The **All** checkbox selects or clears every category;
+clearing all makes the Session **Read only** while keeping inspection available.
+New and historical Sessions without a saved scope selection use All. The scope controls
+edits, not which Live information the assistant can read. Instruments and effects
+share Devices because the current SDK cannot reliably classify every device.
+
+Plans outside the selected scope are rejected before any action runs. Container
+operations also need permissions for their contents: deleting or duplicating a
+track requires structure and mixer permissions, plus the scopes of its Clips and
+devices. Approval cannot grant a missing scope.
+
+Within the selected scope, the approval mode controls confirmation:
 
 - **Manual** asks before every proposed edit plan.
 - **Low Risk** applies lower-risk plans automatically and asks before protected
   actions such as deletes, Clip writes, and sample replacements.
-- **Accept Everything** automatically approves all validated plans, including
-  deletes and replacement writes.
+- **Accept Everything** automatically approves all authorized, validated plans,
+  including deletes and replacement writes within the selected scope.
 
 All modes still inspect the relevant Live state, validate actions, and check that
 the Set has not changed before applying an edit. One approved plan may create
 more than one Live Undo step.
+
+Scope changes are saved per Session and synchronized across open dialogs. You
+can change them during a request; queued plans and subsequent actions recheck
+the saved permissions. An action already in progress may finish, and completed
+changes are not rolled back when permissions are narrowed.
 
 Live Smith does not run arbitrary model-generated code. It does not inspect or
 edit Automation, browse installed presets, or load a VST by plug-in identifier.
@@ -111,6 +140,12 @@ Existing devices can be inspected and edited where Live exposes their parameters
 ## Sessions, Skills, and attachments
 
 **Sessions** keep conversation and action history with their Live context.
+Opening the dialog or choosing New Session does not save an untouched empty
+conversation. Messages, Session settings, and attachments are saved when used;
+the Sessions list keeps empty entries that were active in the current window and
+hides unvisited empty entries across tracks and History. Closing the window clears
+that temporary visibility. Conversations and unsent drafts remain visible; hiding
+empty entries does not delete existing data.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 

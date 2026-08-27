@@ -1,13 +1,62 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MidiTrack } from "@ableton-extensions/sdk";
+import { AudioClip, AudioTrack, MidiClip, MidiTrack } from "@ableton-extensions/sdk";
 
+import { validateAgentPlan } from "../agent/actions.js";
 import {
   assertSameExistingPlanTargets,
   bindAgentPlanTargets,
   liveActionIdentityKeys,
 } from "./action-bindings.js";
+import { requiredEditScopesForPlan } from "./action-permissions.js";
+import { executeAgentPlanWithProgress } from "./executor.js";
+
+test("parsed Clip edits bind the selected track when optional target fields are omitted", async () => {
+  for (const [clipPrototype, trackPrototype, scope] of [
+    [MidiClip.prototype, MidiTrack.prototype, "midi"],
+    [AudioClip.prototype, AudioTrack.prototype, "audio"],
+  ] as const) {
+    const clip = sdkObject(clipPrototype, {
+      handle: { id: "selected-clip" }, name: "Phrase", startTime: 0, duration: 4,
+    });
+    const track = sdkObject(trackPrototype, {
+      handle: { id: "selected-track" }, name: "Lead", arrangementClips: [clip],
+    });
+    const context = { application: { song: { tracks: [track] } } } as never;
+    const plan = validateAgentPlan({
+      message: "Rename the selected track's Clip",
+      actions: [{ type: "set_clip_properties", startBeat: 0, newName: "Updated Phrase" }],
+    });
+    const bindings = bindAgentPlanTargets(context, plan, { track });
+
+    assert.equal(bindings.actionTracks.get(0), track);
+    assert.equal(bindings.actionObjects.get(0)?.clip, clip);
+    assert.deepEqual(requiredEditScopesForPlan(context, plan, bindings), [scope]);
+    const outcome = await executeAgentPlanWithProgress(context, plan, { track }, undefined, bindings);
+    assert.equal(outcome.mutationCount, 1);
+    assert.equal(clip.name, "Updated Phrase");
+  }
+});
+
+test("an implicit track target must fail binding when no track is selected", () => {
+  const plan = validateAgentPlan({
+    message: "Edit the current Clip",
+    actions: [{ type: "set_clip_properties", startBeat: 0, muted: true }],
+  });
+  assert.throws(() => bindAgentPlanTargets(
+    { application: { song: { tracks: [] } } } as never, plan,
+  ), /No target track is available/);
+});
+
+test("Set-level actions do not require a selected track", () => {
+  const plan = validateAgentPlan({
+    message: "Change Set structure",
+    actions: [{ type: "set_tempo", tempo: 128 }, { type: "create_midi_track", ref: "new" }],
+  });
+  const bindings = bindAgentPlanTargets({ application: { song: { tracks: [] } } } as never, plan);
+  assert.equal(bindings.actionTracks.size, 0);
+});
 
 test("existing plan targets bind by handle and reject replacement after confirmation", () => {
   const original = { name: "Lead", handle: { id: "track-1" } };
@@ -163,3 +212,11 @@ test("Device bindings reject an indexed object replacement after confirmation", 
     /object bound to action 1 changed/i,
   );
 });
+
+function sdkObject<T extends object>(prototype: T, properties: Record<string, unknown>): T {
+  return Object.defineProperties(Object.create(prototype), Object.fromEntries(
+    Object.entries(properties).map(([key, value]) => [
+      key, { configurable: true, enumerable: true, writable: true, value },
+    ]),
+  ));
+}

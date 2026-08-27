@@ -57,7 +57,7 @@ test("selecting a Session shows pending feedback before authoritative state arri
     );
     assert.equal(
       targetRow.querySelector(".session-meta-content")?.textContent,
-      "Switching…",
+      "Track · Lead",
     );
     assert.equal(
       harness.document.querySelector('.session-row[aria-pressed="true"]')
@@ -327,7 +327,7 @@ test("an Approval change keeps unrelated UI nodes mounted", async () => {
   }
 });
 
-test("an Approval change stays inline without moving the composer", async () => {
+test("an Approval change keeps Scope and runtime controls independent", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
@@ -361,6 +361,8 @@ test("an Approval change stays inline without moving the composer", async () => 
       "Expected the Approval command to remain pending.",
     );
     assert.equal(approval.value, "everything");
+    assert.equal(harness.document.querySelector("#editScopeButton")?.textContent, "All scopes");
+    assert.equal(harness.document.querySelector<HTMLElement>("#editScopePanel")?.hidden, true);
     assert.equal(status.hidden, true);
     assert.equal(model.value, modelValue);
     assert.equal(reasoning.value, reasoningValue);
@@ -370,6 +372,8 @@ test("an Approval change stays inline without moving the composer", async () => 
     harness.releaseHeldCommandResponse();
     await harness.settle();
     assert.equal(approval.value, "everything");
+    assert.equal(harness.document.querySelector("#editScopeButton")?.textContent, "All scopes");
+    assert.equal(harness.document.querySelector<HTMLElement>("#editScopePanel")?.hidden, true);
     assert.equal(status.hidden, true);
     assert.deepEqual([...model.options], modelOptions);
     assert.deepEqual([...reasoning.options], reasoningOptions);
@@ -385,6 +389,7 @@ test("an Approval change does not rewrite unrelated Settings or composer content
   const harness = await createDialogHarness(state);
   let commandReleased = false;
   try {
+    harness.click("#editScopeButton");
     const settings = harness.document.querySelector("#settingsPanel");
     const composer = harness.document.querySelector(".composer");
     assert.ok(settings);
@@ -445,7 +450,13 @@ test("an Approval change does not rewrite unrelated Settings or composer content
       ["attachmentMenuButton", new Set(["disabled"])],
       ["attachSelectedAudioButton", new Set(["disabled"])],
       ["pendingAttachments", new Set(["aria-busy"])],
+      ["editScopeButton", new Set(["disabled"])],
     ]);
+    for (const control of harness.document.querySelectorAll(
+      "#editScopePanel input",
+    )) {
+      allowedComposerAttributes.set(control.id, new Set(["disabled"]));
+    }
     const approvalLabel = harness.document.querySelector("#approvalMode")
       ?.closest("label");
     const unexpectedComposer = composerRecords.filter((record) => {
@@ -626,7 +637,7 @@ test("background progress preserves pending Session-switch feedback", async () =
     assert.equal(pendingRow?.hasAttribute("data-switching"), true);
     assert.equal(
       pendingRow?.querySelector(".session-meta-content")?.textContent,
-      "Switching…",
+      "Track · Lead",
     );
 
     harness.releaseHeldCommandResponse();
@@ -1100,6 +1111,7 @@ test("a send title update preserves an open Session menu and its focus", async (
 
 test("command selects regain focus after their temporary lock", async () => {
   const state = stateFixture();
+  state.openSettingsOnLoad = false;
   const primaryProfile = profileFixture({
     models: [
       {
@@ -1181,6 +1193,7 @@ test("command selects regain focus after their temporary lock", async () => {
         approvalMode: "low-risk",
       },
     );
+    harness.click("#settingsButton");
     await expectFocusRestored(
       "#profileSelector",
       "activate_profile",
@@ -1191,6 +1204,7 @@ test("command selects regain focus after their temporary lock", async () => {
     const profileName = harness.document.querySelector<HTMLInputElement>("#profileName");
     assert.ok(approval);
     assert.ok(profileName);
+    harness.click("#settingsButton");
     approval.focus();
     const previousCallCount = commandCalls(harness).length;
     harness.holdNextCommandResponse();
@@ -1202,6 +1216,7 @@ test("command selects regain focus after their temporary lock", async () => {
       () => commandCalls(harness).length > previousCallCount,
       "Expected the second Approval command to reach the bridge.",
     );
+    harness.click("#settingsButton");
     profileName.focus();
     assert.equal(harness.document.activeElement, profileName);
     harness.releaseHeldCommandResponse();

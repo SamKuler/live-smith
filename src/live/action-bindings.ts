@@ -11,6 +11,7 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { AgentAction, AgentPlan } from "../agent/actions.js";
+import { agentActionJsonSchemas } from "../agent/action-schema.js";
 import {
   resolveDevicePath,
   resolveDeviceTarget,
@@ -35,6 +36,19 @@ import {
 import type { LiveTarget } from "./target.js";
 
 type Api = ExtensionContext<"1.0.0">;
+
+const trackTargetActionTypes = new Set(
+  agentActionJsonSchemas().flatMap((schema) => {
+    const properties = schema.properties as {
+      type: { enum: AgentAction["type"][] };
+      trackName?: unknown;
+      trackRef?: unknown;
+    };
+    return "trackName" in properties || "trackRef" in properties
+      ? properties.type.enum
+      : [];
+  }),
+);
 
 /** Host-object bindings created by preflight and consumed only by execution. */
 export interface AgentPlanBindings {
@@ -231,7 +245,7 @@ function hostObjectHandleId(
 function hasTrackTarget(
   action: AgentAction,
 ): action is AgentAction & { trackName?: string; trackRef?: string } {
-  return "trackName" in action || "trackRef" in action;
+  return trackTargetActionTypes.has(action.type);
 }
 
 function requiresMidiTrack(action: AgentAction): boolean {

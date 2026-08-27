@@ -72,9 +72,15 @@ discovery evidence, and Session model selection have separate owners.
 - Observe the relevant Live state before mutating it.
 - Execute only actions accepted by the descriptors in
   `src/agent/action-schema.ts` and the plan validator in `src/agent/actions.ts`.
+- Session Edit Scope is a hard write boundary independent of approval. Check
+  the complete plan against real bound targets before confirmation, recheck in
+  the mutation queue, and check subsequent actions against the latest saved
+  scopes. Container operations include affected content, device, and mixer
+  scopes. Missing historical metadata means All; an empty list means read-only.
 - Apply approval is an explicit three-mode policy: Manual asks for every plan,
   Low Risk asks for protected actions, and Accept Everything automatically
-  approves every validated plan, including deletes and replacement writes.
+  approves every authorized, validated plan, including deletes and replacement
+  writes within the selected Edit Scope.
   Every mode still requires observation, schema validation, preflight, the
   process-wide mutation queue, cancellation, and state-drift revalidation.
 - Send requests contain only `prompt` and `sessionId`. Session commands contain

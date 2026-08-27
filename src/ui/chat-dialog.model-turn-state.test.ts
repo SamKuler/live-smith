@@ -274,9 +274,11 @@ test("transient model-turn events enforce monotonic epochs and idempotent resets
       modelTurnEpoch: 3,
     });
     assert.equal(streamingText(harness), "");
+    assert.equal(harness.document.querySelector("#timeline > .empty"), null);
     assert.equal(
-      harness.document.querySelector("#timeline > .empty")?.textContent,
-      "No messages in this session yet.",
+      harness.document.querySelector(".timeline-item.user.local-user-message .timeline-content")
+        ?.textContent,
+      "Test model-turn recovery",
     );
     assert.deepEqual(harness.errors, []);
   } finally {

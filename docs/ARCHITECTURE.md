@@ -63,6 +63,9 @@ src/
     actions.ts
       Plan validation, confirmation summaries, the action prompt, and the
       shared action-to-observation routing used by preflight and recovery.
+    edit-scopes.ts
+      Supported Session edit categories, strict scope parsing, and permission
+      denial independent of the selected approval mode.
     loop.ts
       Provider-neutral bounded tool loop with cancellation and safety limits.
     progress.ts, system-instructions.ts
@@ -93,6 +96,9 @@ src/
     preflight.ts
       Fingerprints action-specific Live identities and overwrite-sensitive state
       for revalidation immediately before execution.
+    action-permissions.ts
+      Derives complete-plan and per-action write scopes from bound Live objects,
+      including the contents affected by container operations.
     executor.ts
       Applies validated and confirmed actions to the Live Set.
     audio-attachment-source.ts
@@ -248,14 +254,21 @@ compatibility.
 9. Before confirmation, `agent-request.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
-   tempo, mute, solo, and device parameter value. Host `bigint` values are
-   encoded deterministically at this fingerprint boundary instead of being
+   tempo, mute, solo, and device parameter value. Whole-Scene deletion
+   and duplication include every track's target-row slot identity, occupancy,
+   and Clip content; renaming a Scene only binds its metadata. Host `bigint` values
+   are encoded deterministically at this fingerprint boundary instead of being
    passed to ordinary JSON serialization; no Approval mode can bypass the
-   guard.
+   guard. The complete plan must also fit the Session's latest saved Edit Scope;
+   a denied plan never reaches approval or begins executing.
 10. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
    other action-relevant state performs no mutation and returns a failed tool
    result so the model can inspect again before proposing a new confirmation.
+   The guard also rechecks current permissions and affected contents. Before
+   each subsequent action, the app synchronously checks that action's current
+   bound contents against committed permissions; an already-started action may
+   finish.
 11. `agent/loop.ts` executes the bounded apply loop without inspecting provider
    or protocol data. Successful or partially successful Live writes and new,
    distinct observations renew a rolling no-progress budget. Repeating the same
@@ -681,6 +694,12 @@ control back. A bridge state snapshot may seed a revision, but a correlated
 event for the same value and revision replaces that synthetic provenance and is
 replayed.
 
+Session edit-scope patches have their own Session-keyed projection and are also
+replayed on reconnect. A scope command owns only `editScopes` and `updatedAt`;
+an older command or full-state response cannot replace a scope patch published
+after its captured causal cut. Scope changes never write Profile or global
+settings, and do not change the approval mode.
+
 ### Durable local storage
 
 Settings, sessions, and event logs serialize their read-modify-write operations
@@ -742,11 +761,19 @@ The UI receives only the process-local numeric auth generation, never managed
 credentials, and keeps auth, editor catalog, and active subscription runtime
 projections generation-coherent across delayed HTTP and SSE state merges.
 On window initialization, an eligible signed-in subscription with a missing
-catalog gets one client-side restoration attempt through the existing
-`load_session_model_capabilities` command. It restores same-account capability
-evidence for Settings and the composer without saving the Profile, changing the
-Session selection, or applying a new Draft model collection. A failed attempt
-can be retried through the composer model selector or Settings' Load Models.
+catalog gets one background restoration attempt through
+`POST /session-model-capabilities`. This read-only route accepts only the strict
+`load_session_model_capabilities` payload, reuses its app handler, and shares
+the state-read disconnect and shutdown cancellation lifecycle. It never acquires
+the foreground command slot or broadcasts command-state updates. The client
+coalesces pending reads for the same Profile revision and auth generation and
+uses the existing causal state merge without locking the composer or Session
+navigation. If navigation changed the response's target Session, one passive
+state read obtains the current runtime projection. It restores same-account
+capability evidence for Settings and the composer without saving the Profile,
+changing the Session selection, or applying a new Draft model collection.
+Failures retain unverified evidence without blocking ordinary UI operations;
+the composer model selector or Settings' Load Models can retry explicitly.
 Ordinary `/chat` and `/state` hydration remains passive; the restored catalog
 is still modal-only and auth-generation scoped.
 Failure reconciliation cannot promote a stale durable cache. Conservative
@@ -772,6 +799,12 @@ admission, the active saved Profile supplies those values and the selected model
 is materialized and validated as one `RuntimeProfile`. A selection from another
 Profile or a model removed from that Profile falls back to the active Profile's
 default model.
+Restoring, selecting, creating, deleting, or archiving a Session can change the
+active Session. After the successful command releases its UI lock, a missing
+subscription catalog triggers the existing background capability read. The
+saved effort therefore becomes selectable once catalog evidence confirms that
+the active model supports it; request coalescing and auth-generation guards are
+unchanged.
 
 ## Adding a model protocol
 
@@ -901,35 +934,65 @@ distinct even when their action target also retains an owning track; display
 labels never determine session identity. Because the beta SDK exposes no stable
 Set identifier across activation, historical object names are presented only as
 reference labels and never as evidence that two objects are the same. All
-unarchived prior-activation Sessions remain manageable in the Sessions pane. A
-Session whose scope kind matches the current opening scope may use Continue here; this
-does not match names or infer identity. The command sends only the Session ID,
+unarchived prior-activation Sessions with retained content
+remain visible in the Sessions pane. A Session whose scope kind matches the
+current opening scope may use Continue here; this does not match names or infer
+identity. The command sends only the Session ID,
 and `restore_session` atomically binds the history to the current server-owned
 handle while preserving the first binding as `originScope`. Rename, archive,
 unarchive, and delete operate on current or historical Sessions. `archivedAt`
 and `activeSkillIds` are optional additive fields. `approvalMode` is also
 optional for backward compatibility; a missing value resolves to `manual`,
-while new Sessions explicitly persist `manual`. Existing Session files require
-no migration. Deleting a Session removes the mode with the same metadata record.
+while new Sessions initialize `manual`. Existing Session files require
+no migration. `editScopes` is likewise additive: missing metadata resolves to all
+supported categories, while an empty list is read-only. New Sessions initialize
+every current category. Present scope lists must contain distinct,
+supported values; malformed persisted permissions fail validation rather than
+falling back to All. Deleting a Session removes these settings with the same
+metadata record.
 
-The dialog always has a real persisted active Session before the first message,
-because Approval mode, model selection, Skills, attachments, and the eventual
-Send all use the same durable Session ID. Opening a scope therefore creates one
-only when no current unarchived Session already matches that exact project and
-scope identity. Default resolution and explicit New Session creation share a
-process-wide project-and-scope creation fence, so concurrent dialogs cannot both
+The dialog reserves an active Session ID before the first message, but opening
+a scope or choosing New Session does not persist an untouched empty Session.
+The storage module shares these transient records across dialogs for the same
+canonical storage directory. Session reads include them, so Approval mode, model
+selection, Skills, attachments, and Send keep using the same ID. An explicit
+metadata change, archive/restore, or the first event or attachment write persists
+that Session under the existing storage transaction; unrelated transient records
+are never included in the write. A confirmed saved record supersedes its
+in-memory reservation, including after an uncertain commit. The persisted
+Session format is unchanged.
+
+Opening a scope reserves one only when no current unarchived Session already
+matches that exact project and scope identity. Default resolution and explicit
+New Session creation share a process-wide project-and-scope creation fence, so
+concurrent dialogs cannot both
 win the same find-or-create race. New Session reuses the current candidate first,
-then the newest matching candidate, only when its current persisted state is
+then the newest matching candidate, only when its current state is
 pristine: blank title, no origin/archive marker, no model choice, no non-default
-Approval mode, no active Skills, no events, no attachments, and no active or
-queued send. Event and attachment absence are rechecked under the candidate's
-Session mutation fence, and the final decision rejects any Session operation
-queued behind that check. Approval writes share a separate candidate-intent
-fence so they remain writable during a send without racing Session reuse. Any
-current persisted non-default state makes an empty conversation distinct and
-preserves it. No navigation or close path implicitly deletes a Session, because
+Approval mode, unrestricted Edit Scope, no active Skills, no events, no
+attachments, and no active or queued send. Event and attachment absence are
+rechecked under the candidate's Session mutation fence, and the final decision
+rejects any Session operation queued behind that check. Approval and Edit Scope
+writes share a separate
+candidate-intent fence so they remain writable during a send without racing
+Session reuse. Any current non-default state makes an empty conversation distinct
+and preserves it. No navigation or close path implicitly deletes a Session, because
 another dialog can still own local draft or running state for that ID;
-historical duplicate empties are left for explicit user deletion.
+untouched transient records do not become saved history.
+
+Current and History lists keep Sessions with a title, events, attachments, or
+window-local draft/queued/running work. The current dialog also keeps every
+Session that has been active in that dialog, so an untouched empty Session remains
+reachable after switching until the dialog closes. Unvisited empty Sessions stay
+hidden, and a new dialog does not inherit the prior dialog's visibility. Explicitly
+archived Sessions remain visible for management. Track identity, timestamps, and
+permission or model settings do not count as conversation content.
+The app derives `ChatSessionSummary.hasContent` under the storage transaction;
+this is UI metadata and is never persisted. Unreadable content remains visible
+instead of being assumed empty. The complete Session membership stays in bridge
+state because the client uses missing IDs to reconcile deleted Sessions and
+their local drafts. Only list rendering and bulk selection omit inactive empty
+records; hiding them never deletes or rewrites their saved data.
 
 ### Session context, concurrency, and Approval
 
@@ -962,19 +1025,66 @@ event log. A send never falls back to another Session when its requested ID is
 missing. Waiting operations recheck cancellation immediately after acquiring
 the lease. Different Sessions still overlap. Profile and model-discovery writes
 are locked in both the dialog and bridge while any send is active. The active
-Session's Approval mode selector is the exception: it remains writable during a
-send and is read again from that Session immediately before each new Apply
+Session's Approval mode and Edit Scope selectors are exceptions: they remain
+writable during a send and are read again from that Session before each new Apply
 decision. A committed change is broadcast to other open dialogs for the same
 storage directory. Manual requests user
 approval for every plan. Low Risk automatically approves only plans outside the protected
-action set. Accept Everything automatically approves every validated plan,
-including deletes and replacement writes. An automatic decision persists a
+action set. Accept Everything automatically approves every authorized, validated
+plan, including deletes and replacement writes within Edit Scope. An automatic decision persists a
 distinct `apply_auto_approved` Session event with the selected mode; this
 records the approval source without claiming that Live grouped the plan into a
 single Undo entry. Accept Everything changes approval only and cannot bypass
-observation, action-schema validation, preflight, the process-wide mutation
+Edit Scope, observation, action-schema validation, preflight, the process-wide mutation
 queue, cancellation, or target/state-drift revalidation. Profile,
 RuntimeProfile, attachment, and Skill state remain the request-start snapshot.
+
+### Session Edit Scope
+
+The independent categories are `midi`, `audio`, `devices`, `mixer`, and
+`structure`; their user-facing meanings are described in
+[You control the changes](../README.md#you-control-the-changes). Scope metadata
+is distinct from `ConversationScope`, which identifies a Session's context and
+does not authorize writes or restrict reads to a particular track.
+
+`live/action-permissions.ts` exhaustively maps action contracts to write scopes.
+Generic Clip actions use the actual bound MIDI or Audio Clip type, not an action
+or object name. Session Clip replacement includes any occupied slot's existing
+content category. Whole-track deletion and duplication include mixer state,
+devices, Arrangement and Session Clips, Take Lanes, and grouped descendants.
+Scene operations inspect the bound Scene's current row. Range clearing checks
+the actual overlapping Arrangement Clips; an empty range remains a no-op. Sample
+sources are reads and do not grant or require write permission for the source.
+Unidentified dynamic targets fail closed and require inspection or staged work.
+
+Devices intentionally combines instruments and effects. The beta SDK does not
+provide a reliable general device-category field or a catalog to classify an
+insertion before it happens. Never use device display names, model claims, or
+special-case name lists as authorization evidence.
+
+The app reads authoritative Session permissions before each model turn, the
+complete plan's confirmation boundary, and queued execution. Each request
+subscribes to committed scope changes before its first refresh. A local event
+generation prevents an older in-flight read from replacing a newer committed
+policy. The final Live-state check happens after asynchronous policy refresh;
+scope assertions after that check and before each action are synchronous, so
+authorization adds no disk await between the drift guard and a Live mutation.
+The subscription updates later actions when another dialog commits permissions
+during an SDK await. Like the mutation queue, this live synchronization is
+in-process; direct file edits are picked up by the next authoritative refresh.
+An unknown commit immediately invalidates running requests' authorization before
+readback begins. Readback publishes recovered permissions while holding the same
+Session intent fence; if it also fails, requests stay unauthorized until a
+successful refresh or committed update restores their permissions.
+
+Instructions inform the model of the saved policy, but enforcement remains
+outside the model. A denial before any actual mutation produces an
+explicit tool result without creating an unfinished-operation ledger. If
+permissions are narrowed after an action completes, remaining forbidden work
+stops and the normal partial-recovery ledger preserves completed mutations.
+Permission changes do not roll back changes or interrupt the middle of an SDK
+action. Only the explicit `set_session_edit_scopes` Session command changes the
+scope; Send, Skills, model tool arguments, and confirmation cannot broaden it.
 
 ### Queued follow-ups
 
@@ -1217,6 +1327,15 @@ definitely were not stored. Persisted, unknown, and HTTP-success fallback paths
 remain busy until an authoritative state refresh succeeds. If Stop initially
 reports a non-terminal send, the UI polls with the same send correlation ID and
 refreshes state only after that send reaches terminal state.
+After local Send validation, the timeline immediately projects the submitted
+prompt from the in-memory send attempt as an ordinary user message. This local
+projection has no Session event ID and is not durable history. The exact persisted
+initial user event replaces it when the correlated Session event arrives, without
+changing its visible presentation. A definitely
+`not_persisted` outcome removes the projection and follows the existing draft
+recovery rules, while an unknown outcome keeps it attached to the unresolved
+send until authoritative reconciliation. Steering and queued follow-ups retain
+their separate projections and cannot acknowledge this initial prompt.
 If cancellation arrives after one or more Live actions complete, their partial
 apply result is persisted and published before cancellation propagates; later
 actions in the plan are not executed. A simultaneous host failure remains a

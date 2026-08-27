@@ -10,6 +10,7 @@ import {
   waitForPromiseWithSignal,
 } from "../runtime/host.js";
 import { requiresExplicitConfirmation, type AgentPlan } from "../agent/actions.js";
+import { EDIT_SCOPES, resolveEditScopes } from "../agent/edit-scopes.js";
 import {
   interactionContextForScope,
   type LiveInteractionContext,
@@ -156,6 +157,11 @@ import {
   subscribeSessionApprovalModeChanges,
 } from "./session-approval-events.js";
 import {
+  invalidateSessionEditScopes,
+  publishSessionEditScopesChange,
+  subscribeSessionEditScopesChanges,
+} from "./session-edit-scope-events.js";
+import {
   publishSessionModelSelectionChange,
   subscribeSessionModelSelectionChanges,
 } from "./session-model-selection-events.js";
@@ -176,7 +182,7 @@ import {
 import {
   getOrCreateDefaultSession,
   isReusableEmptySessionMetadata,
-  previousSessionsForProject,
+  sessionSummaries,
   projectKeyForContext,
   continuableSessionsForScope,
   withSessionCreationScope,
@@ -233,6 +239,7 @@ export interface AgentFlowDependencies {
   loadSessionEvents?: typeof loadSessionEvents;
   requestModelTurn?: typeof requestModelTurn;
   saveGlobalSettings?: typeof saveGlobalSettings;
+  updateSessionInTransaction?: typeof updateSessionInTransaction;
   listModels?(
     profile: DraftProfile,
     signal: AbortSignal,
@@ -258,6 +265,8 @@ export interface AgentFlowDependencies {
   beforeSessionModelSelectionCommit?(): Promise<void> | void;
   /** Test-only synchronization point for a concurrent Session approval write. */
   beforeSessionApprovalCommit?(): Promise<void> | void;
+  /** Test-only synchronization point for a concurrent Session scope write. */
+  beforeSessionEditScopesCommit?(): Promise<void> | void;
 }
 
 export async function runAgentFlow(
@@ -731,9 +740,9 @@ export async function runAgentFlow(
         const storageSnapshot = await withStorageTransaction(
           storageDirectory,
           async (transaction) => {
-            const allSessions = await listSessionsInTransaction(
-              transaction,
+            const allSessions = await sessionSummaries(
               storageDirectory,
+              await listSessionsInTransaction(transaction, storageDirectory),
             );
             const installedSkills = await listInstalledSkillsInTransaction(
               transaction,
@@ -813,7 +822,9 @@ export async function runAgentFlow(
       const sessions = allSessions.filter(
         (session) => session.projectKey === projectKey && !session.archivedAt,
       );
-      const previousSessions = previousSessionsForProject(allSessions, projectKey);
+      const previousSessions = allSessions.filter(
+        (session) => session.projectKey !== projectKey && !session.archivedAt,
+      );
       const archivedSessions = allSessions.filter((session) => session.archivedAt);
       const continueInteraction = resolveContinueInteraction();
       if (
@@ -1173,39 +1184,83 @@ export async function runAgentFlow(
       );
     }
 
-    if (commandInput.kind === "set_session_approval_mode") {
+    if (
+      commandInput.kind === "set_session_approval_mode" ||
+      commandInput.kind === "set_session_edit_scopes"
+    ) {
       await withSessionIntent(commandInput.sessionId, signal, async () => {
-        await dependencies.beforeSessionApprovalCommit?.();
-        return withStorageTransaction(
-          storageDirectory,
-          async (transaction) => {
-            throwIfAborted(signal);
-            const session = (await listSessionsInTransaction(
-              transaction,
-              storageDirectory,
-              projectKey,
-            )).find(
-              (candidate) =>
-                candidate.id === commandInput.sessionId && !candidate.archivedAt,
-            );
-            if (!session) {
-              throw new ChatBridgeResourceNotFoundError(
-                "That Session is not available in this Live Set.",
+        if (commandInput.kind === "set_session_approval_mode") {
+          await dependencies.beforeSessionApprovalCommit?.();
+        } else {
+          await dependencies.beforeSessionEditScopesCommit?.();
+        }
+        try {
+          return await withStorageTransaction(
+            storageDirectory,
+            async (transaction) => {
+              throwIfAborted(signal);
+              const session = (await listSessionsInTransaction(
+                transaction,
+                storageDirectory,
+                projectKey,
+              )).find(
+                (candidate) =>
+                  candidate.id === commandInput.sessionId && !candidate.archivedAt,
               );
+              if (!session) {
+                throw new ChatBridgeResourceNotFoundError(
+                  "That Session is not available in this Live Set.",
+                );
+              }
+              const updatedSession = await (
+                dependencies.updateSessionInTransaction ?? updateSessionInTransaction
+              )(
+                transaction,
+                storageDirectory,
+                session.id,
+                commandInput.kind === "set_session_approval_mode"
+                  ? { approvalMode: commandInput.approvalMode }
+                  : { editScopes: commandInput.editScopes },
+              );
+              if (commandInput.kind === "set_session_approval_mode") {
+                publishSessionApprovalModeChange(storageDirectory, {
+                  sessionId: commandInput.sessionId,
+                  approvalMode: commandInput.approvalMode,
+                  updatedAt: updatedSession.updatedAt,
+                });
+              } else {
+                publishSessionEditScopesChange(storageDirectory, {
+                  sessionId: commandInput.sessionId,
+                  editScopes: resolveEditScopes(updatedSession.editScopes),
+                  updatedAt: updatedSession.updatedAt,
+                });
+              }
+            },
+          );
+        } catch (error) {
+          if (
+            commandInput.kind === "set_session_edit_scopes" &&
+            isStorageCommitOutcomeUnknownError(error)
+          ) {
+            invalidateSessionEditScopes(storageDirectory, commandInput.sessionId);
+            // Hold the intent fence through readback so a later permission
+            // command cannot be attributed to this uncertain write.
+            try {
+              const current = (await listSessions(storageDirectory, projectKey)).find(
+                (candidate) => candidate.id === commandInput.sessionId && !candidate.archivedAt,
+              );
+              if (!current) throw new Error("Session permissions are unavailable.");
+              publishSessionEditScopesChange(storageDirectory, {
+                sessionId: current.id,
+                editScopes: resolveEditScopes(current.editScopes),
+                updatedAt: current.updatedAt,
+              });
+            } catch {
+              // Keep active requests unauthorized until a later successful read.
             }
-            const updatedSession = await updateSessionInTransaction(
-              transaction,
-              storageDirectory,
-              session.id,
-              { approvalMode: commandInput.approvalMode },
-            );
-            publishSessionApprovalModeChange(storageDirectory, {
-              sessionId: commandInput.sessionId,
-              approvalMode: commandInput.approvalMode,
-              updatedAt: updatedSession.updatedAt,
-            });
-          },
-        );
+          }
+          throw error;
+        }
       });
       status = undefined;
       return buildStateAfterCommandMutation();
@@ -1453,7 +1508,8 @@ export async function runAgentFlow(
               projectKey,
               scope: targetScope,
               approvalMode: "manual",
-            }),
+              editScopes: [...EDIT_SCOPES],
+            }, { transient: true }),
             reused: false,
           };
         },
@@ -2582,6 +2638,7 @@ export async function runAgentFlow(
     (await import("../ui/dialogs.js")).chatHtml;
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
   let unsubscribeApprovalModes: (() => void) | undefined;
+  let unsubscribeEditScopes: (() => void) | undefined;
   let unsubscribeModelSelections: (() => void) | undefined;
   let unsubscribeGlobalSettings: (() => void) | undefined;
   let unsubscribeProfileSettings: (() => void) | undefined;
@@ -2614,6 +2671,12 @@ export async function runAgentFlow(
         bridge?.publishSessionApprovalMode(sessionId, approvalMode, updatedAt);
       },
     );
+    unsubscribeEditScopes = subscribeSessionEditScopesChanges(
+      storageDirectory,
+      ({ sessionId, editScopes, updatedAt }) => {
+        bridge?.publishSessionEditScopes(sessionId, editScopes, updatedAt);
+      },
+    );
     unsubscribeModelSelections = subscribeSessionModelSelectionChanges(
       storageDirectory,
       ({ sessionId, modelSelection, updatedAt }) => {
@@ -2635,6 +2698,7 @@ export async function runAgentFlow(
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
     unsubscribeApprovalModes?.();
+    unsubscribeEditScopes?.();
     unsubscribeModelSelections?.();
     unsubscribeGlobalSettings?.();
     unsubscribeProfileSettings?.();

@@ -2,11 +2,22 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
+  isEditScopes,
+  requireEditScopes,
+  resolveEditScopes,
+  type EditScope,
+} from "../agent/edit-scopes.js";
+import {
   createStorageId,
   hasUniqueStorageIds,
   isSafeStorageId,
 } from "./id.js";
 import { isMissingFileError } from "./errors.js";
+import {
+  canonicalStorageDirectory,
+  storageScopeKey,
+  type StorageScopeKey,
+} from "./scope.js";
 import {
   ensurePrivateFile,
   requireActiveStorageTransaction,
@@ -36,6 +47,7 @@ export interface AgentSession {
   archivedAt?: string | undefined;
   activeSkillIds?: string[];
   approvalMode?: ApprovalMode;
+  editScopes?: EditScope[];
   modelSelection?: SessionModelSelection;
   createdAt: string;
   updatedAt: string;
@@ -49,15 +61,16 @@ export interface SessionModelSelection {
 
 const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
+const transientSessions = new Map<StorageScopeKey, AgentSession[]>();
 
 type CreateSessionInput = Pick<AgentSession, "title" | "projectKey" | "scope"> &
   Partial<
-    Pick<AgentSession, "activeSkillIds" | "approvalMode" | "modelSelection">
+    Pick<AgentSession, "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection">
   >;
 type SessionUpdate = Partial<
   Pick<
     AgentSession,
-    "title" | "activeSkillIds" | "approvalMode" | "modelSelection"
+    "title" | "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection"
   >
 >;
 
@@ -74,9 +87,11 @@ export class SessionStorageCorruptionError extends Error {
 export async function createSession(
   storageDirectory: string | undefined,
   input: CreateSessionInput,
+  options: { transient?: boolean } = {},
 ): Promise<AgentSession> {
   const activeSkillIds = normalizedOptionalActiveSkillIds(input);
   const approvalMode = normalizedOptionalApprovalMode(input);
+  const editScopes = normalizedOptionalEditScopes(input);
   const modelSelection = normalizedOptionalModelSelection(input);
   const now = new Date().toISOString();
   const session: AgentSession = {
@@ -86,18 +101,22 @@ export async function createSession(
     scope: cloneConversationScope(input.scope),
     ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
     ...(approvalMode === undefined ? {} : { approvalMode }),
+    ...(editScopes === undefined ? {} : { editScopes }),
     ...(modelSelection === undefined ? {} : { modelSelection }),
     createdAt: now,
     updatedAt: now,
   };
 
   return withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      memorySessions = [cloneSession(session), ...memorySessions];
+    const sessions = await loadSessionsUnlocked(storageDirectory);
+    if (options.transient) {
+      const key = await transientSessionScopeKey(storageDirectory);
+      transientSessions.set(key, [
+        cloneSession(session),
+        ...(transientSessions.get(key) ?? []),
+      ]);
       return cloneSession(session);
     }
-
-    const sessions = await loadSessionsUnlocked(storageDirectory);
     await saveSessions(storageDirectory, [session, ...sessions]);
     return cloneSession(session);
   });
@@ -107,8 +126,6 @@ export async function listSessions(
   storageDirectory: string | undefined,
   projectKey?: string,
 ): Promise<AgentSession[]> {
-  if (!storageDirectory) return filterByProject(memorySessions, projectKey);
-
   return filterByProject(await loadSessionsUnlocked(storageDirectory), projectKey);
 }
 
@@ -118,13 +135,37 @@ export async function listSessionsInTransaction(
   projectKey?: string,
 ): Promise<AgentSession[]> {
   requireActiveStorageTransaction(context, storageDirectory);
-  const sessions = storageDirectory === undefined
-    ? memorySessions
-    : await loadSessionsUnlocked(storageDirectory);
+  const sessions = await loadSessionsUnlocked(storageDirectory);
   return filterByProject(sessions, projectKey);
 }
 
 async function loadSessionsUnlocked(
+  storageDirectory: string | undefined,
+): Promise<AgentSession[]> {
+  const key = await transientSessionScopeKey(storageDirectory);
+  // Capture before disk I/O: a concurrent promotion must not disappear from
+  // both the old disk snapshot and the now-retired in-memory reservations.
+  const drafts = transientSessions.get(key) ?? [];
+  const saved = storageDirectory === undefined
+    ? memorySessions
+    : await loadSavedSessions(storageDirectory);
+
+  // A write may have committed before reporting an unknown outcome. Once its
+  // durable record is observed, never let the old reservation shadow/revive it.
+  const savedIds = new Set(saved.map((session) => session.id));
+  const currentDrafts = transientSessions.get(key);
+  if (currentDrafts) {
+    const remaining = currentDrafts.filter((session) => !savedIds.has(session.id));
+    if (remaining.length) transientSessions.set(key, remaining);
+    else transientSessions.delete(key);
+  }
+  if (!drafts.length) return saved;
+  return [...drafts.filter((session) => !savedIds.has(session.id)), ...saved].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt)
+  );
+}
+
+async function loadSavedSessions(
   storageDirectory: string,
 ): Promise<AgentSession[]> {
   const target = sessionsPath(storageDirectory);
@@ -176,9 +217,7 @@ export async function updateSessionInTransaction(
 ): Promise<AgentSession> {
   requireActiveStorageTransaction(context, storageDirectory);
   const normalizedUpdate = normalizeSessionUpdate(update);
-  const sessions = storageDirectory === undefined
-    ? memorySessions
-    : await loadSessionsUnlocked(storageDirectory);
+  const sessions = await loadSessionsUnlocked(storageDirectory);
   const session = sessions.find((candidate) => candidate.id === sessionId);
   if (!session) {
     throw new Error(`Session ${sessionId} does not exist.`);
@@ -191,11 +230,7 @@ export async function updateSessionInTransaction(
   const updated = sessions.map((candidate) =>
     candidate.id === sessionId ? updatedSession : candidate
   );
-  if (storageDirectory === undefined) {
-    memorySessions = updated.map(cloneSession);
-  } else {
-    await saveSessions(storageDirectory, updated);
-  }
+  await saveSessions(storageDirectory, updated, sessionId);
   return cloneSession(updatedSession);
 }
 
@@ -205,9 +240,7 @@ export async function restoreSession(
   target: Pick<AgentSession, "projectKey" | "scope">,
 ): Promise<AgentSession> {
   return withStorageTransaction(storageDirectory, async () => {
-    const sessions = storageDirectory
-      ? await loadSessionsUnlocked(storageDirectory)
-      : memorySessions;
+    const sessions = await loadSessionsUnlocked(storageDirectory);
     const existing = sessions.find((session) => session.id === sessionId);
     if (!existing) throw new Error(`Session ${sessionId} does not exist.`);
     if (existing.projectKey === target.projectKey) {
@@ -224,8 +257,7 @@ export async function restoreSession(
     const updated = sessions.map((session) =>
       session.id === sessionId ? restored : session
     );
-    if (storageDirectory) await saveSessions(storageDirectory, updated);
-    else memorySessions = updated.map(cloneSession);
+    await saveSessions(storageDirectory, updated, sessionId);
     return cloneSession(restored);
   });
 }
@@ -236,9 +268,7 @@ export async function setSessionArchived(
   archived: boolean,
 ): Promise<AgentSession> {
   return withStorageTransaction(storageDirectory, async () => {
-    const sessions = storageDirectory
-      ? await loadSessionsUnlocked(storageDirectory)
-      : memorySessions;
+    const sessions = await loadSessionsUnlocked(storageDirectory);
     const existing = sessions.find((session) => session.id === sessionId);
     if (!existing) throw new Error(`Session ${sessionId} does not exist.`);
 
@@ -257,8 +287,7 @@ export async function setSessionArchived(
     const nextSessions = sessions.map((session) =>
       session.id === sessionId ? updated : session
     );
-    if (storageDirectory) await saveSessions(storageDirectory, nextSessions);
-    else memorySessions = nextSessions.map(cloneSession);
+    await saveSessions(storageDirectory, nextSessions, sessionId);
     return cloneSession(updated);
   });
 }
@@ -268,12 +297,12 @@ export async function deleteSession(
   sessionId: string,
 ): Promise<void> {
   await withStorageTransaction(storageDirectory, async () => {
-    if (!storageDirectory) {
-      memorySessions = memorySessions.filter((session) => session.id !== sessionId);
+    const sessions = await loadSessionsUnlocked(storageDirectory);
+    const key = await transientSessionScopeKey(storageDirectory);
+    if (transientSessions.get(key)?.some((session) => session.id === sessionId)) {
+      removeTransientSession(key, sessionId);
       return;
     }
-
-    const sessions = await loadSessionsUnlocked(storageDirectory);
     await saveSessions(
       storageDirectory,
       sessions.filter((session) => session.id !== sessionId),
@@ -281,15 +310,50 @@ export async function deleteSession(
   });
 }
 
+export async function persistTransientSessionInTransaction(
+  context: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  sessionId: string,
+): Promise<void> {
+  requireActiveStorageTransaction(context, storageDirectory);
+  const key = await transientSessionScopeKey(storageDirectory);
+  if (!transientSessions.get(key)?.some((session) => session.id === sessionId)) return;
+  const sessions = await loadSessionsUnlocked(storageDirectory);
+  if (!transientSessions.get(key)?.some((session) => session.id === sessionId)) return;
+  await saveSessions(storageDirectory, sessions, sessionId);
+}
+
 export function sessionScopeKey(scope: ConversationScope): string {
   return `${scope.kind}:${scope.identity}`;
 }
 
 async function saveSessions(
-  storageDirectory: string,
+  storageDirectory: string | undefined,
   sessions: AgentSession[],
+  persistSessionId?: string,
 ): Promise<void> {
-  await writeJsonAtomically(sessionsPath(storageDirectory), sessions);
+  const key = await transientSessionScopeKey(storageDirectory);
+  const draftIds = new Set(transientSessions.get(key)?.map((session) => session.id));
+  const saved = sessions.filter((session) =>
+    session.id === persistSessionId || !draftIds.has(session.id)
+  );
+  if (storageDirectory === undefined) memorySessions = saved.map(cloneSession);
+  else await writeJsonAtomically(sessionsPath(storageDirectory), saved);
+  if (persistSessionId !== undefined) removeTransientSession(key, persistSessionId);
+}
+
+function removeTransientSession(key: StorageScopeKey, sessionId: string): void {
+  const remaining = transientSessions.get(key)?.filter((session) => session.id !== sessionId);
+  if (remaining?.length) transientSessions.set(key, remaining);
+  else transientSessions.delete(key);
+}
+
+async function transientSessionScopeKey(
+  storageDirectory: string | undefined,
+): Promise<StorageScopeKey> {
+  return storageScopeKey(storageDirectory === undefined
+    ? undefined
+    : await canonicalStorageDirectory(storageDirectory));
 }
 
 function sessionsPath(storageDirectory: string): string {
@@ -310,6 +374,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     "archivedAt",
     "activeSkillIds",
     "approvalMode",
+    "editScopes",
     "modelSelection",
     "createdAt",
     "updatedAt",
@@ -326,6 +391,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     (record.activeSkillIds === undefined ||
       isPersistedActiveSkillIds(record.activeSkillIds)) &&
     (record.approvalMode === undefined || isApprovalMode(record.approvalMode)) &&
+    (record.editScopes === undefined || isEditScopes(record.editScopes)) &&
     (record.modelSelection === undefined ||
       isPersistedModelSelection(record.modelSelection)) &&
     typeof record.createdAt === "string" &&
@@ -342,7 +408,8 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
     Object.keys(record).some(
       (key) =>
         key !== "title" && key !== "activeSkillIds" &&
-        key !== "approvalMode" && key !== "modelSelection",
+        key !== "approvalMode" && key !== "editScopes" &&
+        key !== "modelSelection",
     ) ||
     (Object.hasOwn(record, "title") && typeof record.title !== "string") ||
     (Object.hasOwn(record, "approvalMode") &&
@@ -367,6 +434,9 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
     ...(Object.hasOwn(record, "approvalMode")
       ? { approvalMode: record.approvalMode as ApprovalMode }
       : {}),
+    ...(Object.hasOwn(record, "editScopes")
+      ? { editScopes: requireEditScopes(record.editScopes) }
+      : {}),
     ...(Object.hasOwn(record, "modelSelection")
       ? {
           modelSelection: cloneModelSelection(
@@ -385,6 +455,13 @@ function normalizedOptionalApprovalMode(
     throw new Error("Approval mode is invalid.");
   }
   return value.approvalMode;
+}
+
+function normalizedOptionalEditScopes(
+  value: Pick<AgentSession, "editScopes">,
+): EditScope[] | undefined {
+  if (!Object.hasOwn(value, "editScopes")) return undefined;
+  return requireEditScopes(value.editScopes);
 }
 
 function normalizedOptionalModelSelection(
@@ -489,6 +566,9 @@ function cloneSession(session: AgentSession): AgentSession {
     ...(session.approvalMode === undefined
       ? {}
       : { approvalMode: session.approvalMode }),
+    ...(session.editScopes === undefined
+      ? {}
+      : { editScopes: resolveEditScopes(session.editScopes) }),
     ...(session.modelSelection === undefined
       ? {}
       : { modelSelection: cloneModelSelection(session.modelSelection) }),

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { Device, MidiTrack } from "@ableton-extensions/sdk";
+import { Device, MidiClip, MidiTrack } from "@ableton-extensions/sdk";
 
 import {
   observationRequestForAction,
@@ -1649,6 +1649,41 @@ test("action preflight guard blocks a target identity change after confirmation"
 
   await assert.rejects(guard, /Live target or relevant state changed/i);
   assert.equal(observations, 2);
+});
+
+test("whole-Scene preflight guard rejects same-kind Clip replacement after confirmation", async (t) => {
+  for (const type of ["delete_scene", "duplicate_scene"] as const) {
+    await t.test(type, async () => {
+      const clip = (id: bigint) => Object.setPrototypeOf({
+        handle: { id }, name: "Phrase", startTime: 0, duration: 4,
+        startMarker: 0, endMarker: 4, looping: false, loopStart: 0, loopEnd: 4,
+        color: 0, muted: false, notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 90 }],
+      }, MidiClip.prototype);
+      const slot = { handle: { id: 201n }, clip: clip(101n) };
+      const scene = {
+        handle: { id: 401n }, name: "Verse", tempo: 120,
+        signatureNumerator: 4, signatureDenominator: 4,
+      };
+      const context = { application: { song: {
+        handle: { id: 1n }, tracks: [{
+          handle: { id: 301n }, name: "Bass", clipSlots: [slot],
+          arrangementClips: [], takeLanes: [], devices: [],
+        }],
+        scenes: [scene], cuePoints: [], tempo: 120,
+        gridQuantization: 8, gridIsTriplet: false, scaleMode: false,
+      } } } as never;
+      const guard = await preflightAgentPlan(
+        context,
+        { target: {} } as never,
+        { message: "Change Verse", actions: [{ type, sceneIndex: 0, sceneName: "Verse" }] },
+        new AbortController().signal,
+      );
+      await guard();
+      slot.clip = clip(102n);
+
+      await assert.rejects(guard, /Live target or relevant state changed/);
+    });
+  }
 });
 
 test("action preflight guard blocks a value overwritten by another queued Session", async () => {

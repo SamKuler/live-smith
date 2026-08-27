@@ -19,6 +19,7 @@ import {
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
+import { isEditScopes, resolveEditScopes, type EditScope } from "../agent/edit-scopes.js";
 
 interface BridgeCall {
   path: string;
@@ -390,6 +391,7 @@ async function createDialogHarness(
     webCryptoDigestFails?: boolean;
     serverState?: ChatBridgeState;
     initialCommandError?: string;
+    holdInitialCommandResponse?: boolean;
   } = {},
 ): Promise<DialogHarness> {
   const calls: BridgeCall[] = [];
@@ -466,6 +468,11 @@ async function createDialogHarness(
   let heldAttachment: Promise<void> | null = null;
   let releaseCommand: (() => void) | null = null;
   let releaseCommandResponse: (() => void) | null = null;
+  if (options.holdInitialCommandResponse) {
+    heldCommandResponse = new Promise<void>((resolve) => {
+      releaseCommandResponse = resolve;
+    });
+  }
   let releaseConfirmation: (() => void) | null = null;
   const releaseSends: Array<() => void> = [];
   let releaseSteer: (() => void) | null = null;
@@ -671,6 +678,7 @@ async function createDialogHarness(
 
   const stateChangeEventTypes = new Set([
     "approval_mode_changed",
+    "session_edit_scopes_changed",
     "confirm_request",
     "confirm_resolved",
     "default_follow_up_behavior_changed",
@@ -682,6 +690,26 @@ async function createDialogHarness(
   ]);
 
   const applyServerProjectionPatch = (event: Record<string, unknown>): void => {
+    if (
+      event.type === "session_edit_scopes_changed" &&
+      typeof event.sessionId === "string" &&
+      isEditScopes(event.editScopes)
+    ) {
+      for (const sessions of [
+        serverState.sessions,
+        serverState.previousSessions,
+        serverState.archivedSessions,
+      ]) {
+        const session = sessions.find((entry) => entry.id === event.sessionId);
+        if (session) {
+          session.editScopes = resolveEditScopes(event.editScopes);
+          if (typeof event.updatedAt === "string") {
+            session.updatedAt = event.updatedAt;
+          }
+        }
+      }
+      return;
+    }
     if (
       event.type === "approval_mode_changed" &&
       typeof event.sessionId === "string" &&
@@ -845,6 +873,7 @@ async function createDialogHarness(
       if (
         [
           "approval_mode_changed",
+          "session_edit_scopes_changed",
           "session_model_selection_changed",
         ].includes(event.type) &&
         event.updatedAt === undefined
@@ -1222,7 +1251,10 @@ async function createDialogHarness(
               ));
             }
 
-            if (url.pathname === "/command") {
+            if (
+              url.pathname === "/command" ||
+              url.pathname === "/session-model-capabilities"
+            ) {
               if (nextCommandRejection) {
                 const error = nextCommandRejection;
                 nextCommandRejection = null;
@@ -1254,6 +1286,7 @@ async function createDialogHarness(
               const command = body as {
                 kind?: string;
                 approvalMode?: "manual" | "low-risk" | "everything";
+                editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
                 profile?: SavedProfile;
                 profileId?: string;
@@ -1288,6 +1321,17 @@ async function createDialogHarness(
                 if (serverState.activeSessionId === command.sessionId) {
                   serverState.approvalMode = command.approvalMode;
                 }
+              } else if (
+                command.kind === "set_session_edit_scopes" &&
+                typeof command.sessionId === "string" &&
+                isEditScopes(command.editScopes)
+              ) {
+                const session = [
+                  ...serverState.sessions,
+                  ...serverState.previousSessions,
+                  ...serverState.archivedSessions,
+                ].find((entry) => entry.id === command.sessionId);
+                if (session) session.editScopes = resolveEditScopes(command.editScopes);
               } else if (command.kind === "start_codex_login") {
                 serverState.codexAuthGeneration += 1;
                 serverState.codexAuth = {
@@ -1555,6 +1599,9 @@ async function createDialogHarness(
                 serverState.activeSessionId = serverState.sessions[0]?.id ?? "";
                 synchronizeActiveSessionProjection();
               }
+              const capabilityState = url.pathname === "/session-model-capabilities"
+                ? publishBridgeState(serverState, stateSnapshotCutRevision)
+                : null;
               if (heldCommandResponse) {
                 const wait = heldCommandResponse;
                 heldCommandResponse = null;
@@ -1569,7 +1616,7 @@ async function createDialogHarness(
                 truncatedCommandResponses -= 1;
                 return truncatedJsonResponse();
               }
-              return response(publishBridgeState(
+              return response(capabilityState ?? publishBridgeState(
                 serverState,
                 stateSnapshotCutRevision,
               ));

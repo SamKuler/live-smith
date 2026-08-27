@@ -4,6 +4,7 @@ import type {
   ModelHostedWebSearch,
   ModelInputPart,
 } from "../model/contracts.js";
+import type { EditScope } from "../agent/edit-scopes.js";
 import { resolveModelCapabilitiesWithEvidence } from "../model/capabilities.js";
 import { cloneJsonValue } from "../model/json-clone.js";
 import type {
@@ -61,6 +62,7 @@ export interface ModelTurnRequestInput {
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
   skillContext?: ResolvedSkillContext;
+  editScopes?: readonly EditScope[];
   agentMessages: ModelConversationMessage[];
   tools: ModelTool[];
   signal: AbortSignal;
@@ -82,6 +84,7 @@ export function buildModelRequest(input: {
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
   skillContext?: ResolvedSkillContext;
+  editScopes?: readonly EditScope[];
   agentMessages: ModelConversationMessage[];
   runtimeProfile: RuntimeProfile;
   tools: ModelTool[];
@@ -96,6 +99,7 @@ export function buildModelRequest(input: {
   );
   const baseSystemInstructions = agentSystemInstructionsForSkills(
     input.skillContext ?? emptySkillContext,
+    input.editScopes,
   );
   const request: TransportRequest = {
     currentUserContent: [

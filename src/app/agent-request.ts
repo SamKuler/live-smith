@@ -18,6 +18,12 @@ import {
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import {
+  assertEditScopesAllow,
+  EditScopeDeniedError,
+  resolveEditScopes,
+  type EditScope,
+} from "../agent/edit-scopes.js";
+import {
   HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
   HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
   modelToolsForProfile,
@@ -36,6 +42,10 @@ import {
 import type { LiveInteractionContext } from "../live/context.js";
 import { observeLive } from "../live/observer.js";
 import { captureLiveActionPreflightSnapshot } from "../live/preflight.js";
+import {
+  requiredEditScopesForAction,
+  requiredEditScopesForPlan,
+} from "../live/action-permissions.js";
 import {
   assertSameExistingPlanTargets,
   bindAgentPlanTargets,
@@ -56,8 +66,15 @@ import {
   type SessionEventInput,
   type SessionSteeringReceipt,
 } from "../storage/events.js";
-import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
-import { listSessions, updateSession } from "../storage/sessions.js";
+import {
+  isStorageCommitOutcomeUnknownError,
+  withStorageTransaction,
+} from "../storage/persistence.js";
+import {
+  listSessions,
+  listSessionsInTransaction,
+  updateSession,
+} from "../storage/sessions.js";
 import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
@@ -81,6 +98,10 @@ import {
   sessionTitleForPrompt,
 } from "./session-context.js";
 import { resolveSkillContext } from "./skill-context.js";
+import {
+  subscribeSessionEditScopesChanges,
+  subscribeSessionEditScopesInvalidations,
+} from "./session-edit-scope-events.js";
 import {
   SteeringPersistenceOutcomeUnknownError,
   type SteeringChannel,
@@ -119,6 +140,27 @@ export async function handleAgentRequest(
   if (!session) {
     throw new Error("That Session is not available in this Live Set.");
   }
+  let activeEditScopes: EditScope[] | undefined = resolveEditScopes(session.editScopes);
+  let editScopesGeneration = 0;
+  const currentEditScopes = () => {
+    if (!activeEditScopes) throw new EditScopeDeniedError([]);
+    return activeEditScopes;
+  };
+  const readEditScopes = async () => {
+    const generation = editScopesGeneration;
+    const current = await withStorageTransaction(
+      storageDirectory,
+      async (transaction) => (await listSessionsInTransaction(
+        transaction, storageDirectory, projectKey,
+      )).find((candidate) => candidate.id === session.id && !candidate.archivedAt),
+    );
+    if (!current) throw new Error("That Session is not available in this Live Set.");
+    throwIfAborted(callbacks.signal);
+    if (generation === editScopesGeneration) {
+      activeEditScopes = resolveEditScopes(current.editScopes);
+    }
+    return [...currentEditScopes()];
+  };
   const prepareRequest = async () => {
     const priorEvents = await loadSessionEvents(
       storageDirectory,
@@ -246,6 +288,24 @@ export async function handleAgentRequest(
   const requestLiveContext = prepared.recoveryContext
     ? `${interaction.summary}\n\n${prepared.recoveryContext}`
     : interaction.summary;
+  // Committed changes update the synchronous action boundary without inserting
+  // a disk await after the final Live-state drift check.
+  const unsubscribeEditScopes = subscribeSessionEditScopesChanges(
+    storageDirectory,
+    (change) => {
+      if (change.sessionId !== session.id) return;
+      editScopesGeneration += 1;
+      activeEditScopes = resolveEditScopes(change.editScopes);
+    },
+  );
+  const unsubscribeEditScopesInvalidations = subscribeSessionEditScopesInvalidations(
+    storageDirectory,
+    (changedSessionId) => {
+      if (changedSessionId !== session.id) return;
+      editScopesGeneration += 1;
+      activeEditScopes = undefined;
+    },
+  );
   try {
     await callbacks.onProgress("Starting agent loop");
     const loopResult = await runAgentLoop({
@@ -347,6 +407,7 @@ export async function handleAgentRequest(
                 history: prepared.history,
                 attachmentParts: prepared.attachmentParts,
                 skillContext: prepared.skillContext,
+                editScopes: await readEditScopes(),
                 agentMessages: input.messages,
                 tools: modelToolsForProfile(
                   runtimeProfile,
@@ -413,7 +474,16 @@ export async function handleAgentRequest(
         return observation;
       },
       preflightActions: (plan) =>
-        preflightAgentPlan(context, interaction, plan, callbacks.signal),
+        preflightAgentPlan(
+          context, interaction, plan, callbacks.signal,
+          undefined, undefined, {
+            refresh: readEditScopes,
+            assert: (requestedPlan, bindings) => assertEditScopesAllow(
+              requiredEditScopesForPlan(context, requestedPlan, bindings),
+              currentEditScopes(),
+            ),
+          },
+        ),
       confirmActions: callbacks.confirmActions,
       executeActions: async (plan, rawBindings) => {
         const bindings = rawBindings as AgentPlanBindings;
@@ -425,7 +495,11 @@ export async function handleAgentRequest(
             interaction.target,
             callbacks.signal,
             bindings,
-            () => {
+            (actionIndex, action) => {
+              assertEditScopesAllow(
+                requiredEditScopesForAction(context, action, actionIndex, bindings),
+                currentEditScopes(),
+              );
               if (callbacks.steering?.hasPending()) {
                 throw new AgentSteeringBeforeApplyError(
                   "Newer user guidance arrived before the next Live action began. " +
@@ -521,6 +595,9 @@ export async function handleAgentRequest(
       console.error("Failed to persist the agent request error.", persistenceError);
     }
     throw error;
+  } finally {
+    unsubscribeEditScopes();
+    unsubscribeEditScopesInvalidations();
   }
 }
 
@@ -541,7 +618,12 @@ export async function preflightAgentPlan(
     action: AgentPlan["actions"][number],
     target: LiveInteractionContext["target"],
   ) => string | Promise<string> = captureLiveActionPreflightSnapshot,
+  authorization?: {
+    refresh(): Promise<unknown>;
+    assert(plan: AgentPlan, bindings: AgentPlanBindings): void;
+  },
 ): Promise<AgentActionPreflightGuard<AgentPlanBindings>> {
+  await authorization?.refresh();
   const initialBindings = bindAgentPlanTargets(
     context,
     plan,
@@ -556,8 +638,10 @@ export async function preflightAgentPlan(
     snapshotter,
     initialBindings,
   );
+  authorization?.assert(plan, initialBindings);
 
   const guard: AgentActionPreflightGuard<AgentPlanBindings> = async () => {
+    await authorization?.refresh();
     const currentBindings = bindAgentPlanTargets(
       context,
       plan,
@@ -585,6 +669,7 @@ export async function preflightAgentPlan(
         `Live target or relevant state changed for action ${actionNumber} while confirmation was open. Inspect the current Live state and try again.`,
       );
     }
+    authorization?.assert(plan, currentBindings);
     return currentBindings;
   };
   Object.defineProperty(guard, "actionKeys", {

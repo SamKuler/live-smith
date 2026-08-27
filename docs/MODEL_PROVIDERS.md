@@ -230,11 +230,20 @@ projection, and send readiness request credential refresh, while ordinary
 signed-in or signed-out state hydration is passive.
 
 When a window opens with an active saved subscription Profile, an eligible
-signed-in account, and no catalog, the client makes one capability-restoration
-attempt. It restores Settings and composer evidence for the configured models
-without saving Profile settings or changing the Session model selection. If it
-fails, opening the composer model selector or choosing Settings' **Load Models**
-retries explicitly. Passive `/state` reads do not list models.
+signed-in account, and no catalog, the client makes one background capability
+read. Typing, Session navigation, and ordinary Send admission do not wait for
+this read; Send still performs the readiness checks below. Repeated requests
+for the same Profile revision and auth generation share the pending read.
+It restores Settings and composer evidence for the configured models without
+saving Profile settings or changing the Session model selection. Late results
+cannot restore a previous Profile or account, or switch the active Session.
+If the read fails, the interface stays usable with unverified capabilities;
+opening the composer model selector or choosing Settings' **Load Models** retries
+explicitly. Passive `/state` reads do not list models.
+After any successful Session command changes the active Session, the client
+starts the same background read when the current subscription catalog is still
+missing. This lets a restored Session materialize its saved model and reasoning
+override without waiting for focus on the model selector.
 
 Before persisting every new subscription prompt, the server confirms an eligible
 signed-in account, reads the current App Server model catalog, and requires the
@@ -375,6 +384,10 @@ copies connection fields, credentials, discovery metadata, or request JSON into
 the Session. Subscription selections hold the managed-auth fence through their
 commit, and every selection is re-materialized and validated from the current
 saved model configuration inside the final storage transaction.
+Restoring a Session preserves that selection but does not activate its saved
+Profile. If the current active Profile differs, or no longer contains the saved
+model, runtime resolution uses the active Profile's default model and omits the
+historical reasoning override until its matching Profile is active again.
 
 The implementation keeps three Profile representations explicit:
 

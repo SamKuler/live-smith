@@ -19,6 +19,7 @@
         __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
       const maximumTransientAssistantDraftBytes =
         __MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES__;
+      const editScopeIds = __EDIT_SCOPES__;
       if (!isWireChatBridgeState(getState())) {
         throw new Error("Initial Live Smith state is invalid.");
       }
@@ -66,6 +67,7 @@
       const pendingConfirmationsBySession = new Map();
       const confirmationResolutionsBySession = new Map();
       const approvalModeProjectionsBySession = new Map();
+      const editScopesProjectionsBySession = new Map();
       const modelSelectionProjectionsBySession = new Map();
       const sessionUpdatedAtProjectionsBySession = new Map();
       const modelSelectionRefreshesBySession = new Map();
@@ -90,6 +92,7 @@
         "attach_selected_audio_source",
         "set_session_skills",
         "set_session_approval_mode",
+        "set_session_edit_scopes",
         "set_session_model_selection",
         "load_session_model_capabilities",
       ]);
@@ -114,6 +117,7 @@
       let closeDecisionPending = false;
       let retainedCanceledFollowUpCount = 0;
       let activeCommandAttempt = null;
+      let sessionModelCapabilityLoad = null;
       let nextComposerDraftRevision = 1;
       const sseReconciliationTimeoutMs = 5000;
       const stopPollIntervalMs = 250;
@@ -202,6 +206,12 @@
 
       function activeSendAttempt() {
         return sendAttemptsBySession.get(activeSessionId()) || null;
+      }
+
+      function activePendingUserMessage() {
+        const attempt = activeSendAttempt();
+        if (!attempt || attempt.promptEventPersisted) return null;
+        return { prompt: attempt.payload.prompt };
       }
 
       function clearConfirmationResolution(sessionId) {
@@ -465,6 +475,7 @@
         incomingCoveredThroughRevision,
       ) {
         const approvalProjection = approvalModeProjectionsBySession.get(sessionId);
+        const editScopesProjection = editScopesProjectionsBySession.get(sessionId);
         const modelSelectionProjection = modelSelectionProjectionsBySession.get(
           sessionId,
         );
@@ -492,6 +503,14 @@
               updatedAtProjection.revision,
               incomingCoveredThroughRevision,
             ) > 0;
+          const editScopesPatchIsUncovered =
+            !current &&
+            authoritative &&
+            editScopesProjection?.editScopes !== undefined &&
+            compareDecimalRevisions(
+              editScopesProjection.revision,
+              incomingCoveredThroughRevision,
+            ) > 0;
           const modelSelectionPatchIsUncovered =
             !current &&
             authoritative &&
@@ -502,6 +521,7 @@
             ) > 0;
           if (
             !approvalPatchIsUncovered &&
+            !editScopesPatchIsUncovered &&
             !updatedAtPatchIsUncovered &&
             !modelSelectionPatchIsUncovered
           ) {
@@ -513,6 +533,9 @@
               ...selected.session,
               ...(approvalPatchIsUncovered
                 ? { approvalMode: approvalProjection.approvalMode }
+                : {}),
+              ...(editScopesPatchIsUncovered
+                ? { editScopes: [...editScopesProjection.editScopes] }
                 : {}),
               ...(updatedAtPatchIsUncovered
                 ? { updatedAt: updatedAtProjection.updatedAt }
@@ -540,6 +563,12 @@
             current.session[key],
             baseline?.session?.[key],
           );
+          const editScopesPatchOrder = key === "editScopes"
+            ? compareDecimalRevisions(
+                editScopesProjection?.revision || "0",
+                incomingCoveredThroughRevision,
+              )
+            : null;
           const modelSelectionPatchOrder = key === "modelSelection"
             ? compareDecimalRevisions(
                 modelSelectionProjection?.revision || "0",
@@ -567,6 +596,12 @@
               : authoritativeOwnedFields?.has(key)
                 ? approvalPatchOrder <= 0
                 : approvalPatchOrder < 0 || !currentFieldChanged
+            : editScopesPatchOrder !== null
+            ? editScopesProjection?.editScopes !== undefined
+              ? editScopesPatchOrder <= 0
+              : authoritativeOwnedFields?.has(key)
+                ? editScopesPatchOrder <= 0
+                : editScopesPatchOrder < 0 || !currentFieldChanged
             : authoritativeOwnedFields?.has(key) || !currentFieldChanged;
           const source = useAuthoritative
             ? authoritative.session
@@ -1081,6 +1116,17 @@
         });
       }
 
+      function recordEditScopesProjectionCoverage(sessionId, coveredThrough) {
+        const projection = editScopesProjectionsBySession.get(sessionId);
+        if (
+          projection &&
+          compareDecimalRevisions(coveredThrough, projection.revision) < 0
+        ) return;
+        editScopesProjectionsBySession.set(sessionId, {
+          revision: coveredThrough,
+        });
+      }
+
       function recordModelSelectionProjectionCoverage(sessionId, coveredThrough) {
         const projection = modelSelectionProjectionsBySession.get(sessionId);
         if (
@@ -1133,6 +1179,15 @@
 
       function recordFullStateProjectionCoverage(state) {
         const coveredSessionIds = sessionStateIds(state);
+        for (const [sessionId, projection] of editScopesProjectionsBySession) {
+          if (
+            !coveredSessionIds.has(sessionId) &&
+            compareDecimalRevisions(
+              state.bridgeStateCoveredThroughRevision,
+              projection.revision,
+            ) >= 0
+          ) editScopesProjectionsBySession.delete(sessionId);
+        }
         for (const [sessionId, projection] of approvalModeProjectionsBySession) {
           if (
             !coveredSessionIds.has(sessionId) &&
@@ -1152,6 +1207,10 @@
           ) sessionUpdatedAtProjectionsBySession.delete(sessionId);
         }
         for (const sessionId of coveredSessionIds) {
+          recordEditScopesProjectionCoverage(
+            sessionId,
+            state.bridgeStateCoveredThroughRevision,
+          );
           recordApprovalModeProjectionCoverage(
             sessionId,
             state.bridgeStateCoveredThroughRevision,
@@ -1184,6 +1243,10 @@
       }
 
       function recordSessionProjectionCoverage(state, sessionId) {
+        recordEditScopesProjectionCoverage(
+          sessionId,
+          state.bridgeStateCoveredThroughRevision,
+        );
         recordApprovalModeProjectionCoverage(
           sessionId,
           state.bridgeStateCoveredThroughRevision,
@@ -1616,6 +1679,13 @@
         return ["manual", "low-risk", "everything"].includes(value);
       }
 
+      function isWireEditScopes(value) {
+        return Array.isArray(value) &&
+          value.length <= editScopeIds.length &&
+          value.every((scope) => editScopeIds.includes(scope)) &&
+          new Set(value).size === value.length;
+      }
+
       function isWireConversationScope(value) {
         return isWireRecord(value) &&
           hasOnlyWireKeys(value, ["kind", "identity", "label"]) &&
@@ -1652,7 +1722,9 @@
             "archivedAt",
             "activeSkillIds",
             "approvalMode",
+            "editScopes",
             "modelSelection",
+            "hasContent",
             "createdAt",
             "updatedAt",
           ]) &&
@@ -1667,8 +1739,10 @@
             isWireSkillIds(value.activeSkillIds)) &&
           (value.approvalMode === undefined ||
             isWireApprovalMode(value.approvalMode)) &&
+          (value.editScopes === undefined || isWireEditScopes(value.editScopes)) &&
           (value.modelSelection === undefined ||
             isWireSessionModelSelection(value.modelSelection)) &&
+          (value.hasContent === undefined || typeof value.hasContent === "boolean") &&
           typeof value.createdAt === "string" &&
           typeof value.updatedAt === "string";
       }
@@ -2451,7 +2525,7 @@
       }
 
       function decodeBridgeHttpSuccess(path, value, context) {
-        if (path === "/command") {
+        if (path === "/command" || path === "/session-model-capabilities") {
           if (isWireChatBridgeState(value)) return value;
           throw invalidBridgeHttpResponse(path);
         }
@@ -2535,7 +2609,7 @@
         if (typeof value.error !== "string" || !value.error) {
           throw invalidBridgeHttpResponse(path);
         }
-        if (path === "/command") {
+        if (path === "/command" || path === "/session-model-capabilities") {
           const hasOutcomeProjection = value.commandOutcome !== undefined ||
             value.state !== undefined ||
             value.reconciliationRequired !== undefined;
@@ -2768,6 +2842,15 @@
         if (prompt) recordComposerDraft(activeSessionId(), prompt.value);
       }
 
+      function hasSessionLocalWork(sessionId) {
+        return Boolean(
+          composerDraftsBySession.get(sessionId)?.trim() ||
+          queuedFollowUpsBySession.get(sessionId)?.length ||
+          failedSendRecoveriesBySession.has(sessionId) ||
+          sendAttemptsBySession.has(sessionId),
+        );
+      }
+
       function captureAttemptComposerBaseline(attempt) {
         if (!attempt) return;
         attempt.composerDraftRevisionAtStart =
@@ -2962,6 +3045,59 @@
         return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token || "")}`;
       }
 
+      function loadSessionModelCapabilities(input) {
+        const initial = getState();
+        const profileRevision = initial.activeProfileRevision;
+        const authGeneration = initial.codexAuthGeneration;
+        const key = JSON.stringify([
+          input.profileId, profileRevision, authGeneration,
+        ]);
+        if (sessionModelCapabilityLoad?.key === key) {
+          return sessionModelCapabilityLoad.promise;
+        }
+        const attempt = {
+          key,
+          id: createCorrelationId("capabilities"),
+          kind: "load_session_model_capabilities",
+          ownsActiveRuntimeProjection: true,
+          ownsGlobalState: false,
+          causalStateSnapshot: captureCausalState(),
+        };
+        const isCurrent = () => sessionModelCapabilityLoad === attempt &&
+          getState().settings.activeProfileId === input.profileId &&
+          getState().activeProfileRevision === profileRevision &&
+          getState().codexAuthGeneration === authGeneration;
+        sessionModelCapabilityLoad = attempt;
+        attempt.promise = (async () => {
+          try {
+            const state = await postBridge(
+              "/session-model-capabilities",
+              { kind: attempt.kind, ...input },
+              { "X-Live-Smith-Command-Id": attempt.id },
+            );
+            if (!isCurrent()) return false;
+            if (state.activeSessionId !== activeSessionId()) {
+              // The catalog is shared by the Profile, but the runtime summary
+              // belongs to the currently selected Session.
+              const response = await fetch(bridgeUrl("/state"));
+              if (!response.ok) return false;
+              const currentState = await response.json();
+              return isCurrent() && applyCommandState(attempt.kind, currentState, attempt);
+            }
+            return applyCommandState(attempt.kind, state, attempt);
+          } catch (error) {
+            if (
+              isCurrent() && activeSessionId() === input.sessionId &&
+              !isOperationInProgress()
+            ) showStatus(error.message || String(error), true);
+            return false;
+          } finally {
+            if (sessionModelCapabilityLoad === attempt) sessionModelCapabilityLoad = null;
+          }
+        })();
+        return attempt.promise;
+      }
+
       async function runCommand(kind, extra, options) {
         if (attachmentOperationInProgress || skillOperationInProgress) {
           showStatus("Wait for the current file or Skill operation to finish.", true);
@@ -2983,6 +3119,7 @@
           return false;
         }
         const payload = { kind, ...(extra || {}) };
+        const activeSessionIdBeforeCommand = activeSessionId();
         const profileMutationTarget = kind === "save_profile"
           ? { profile: normalizedProfileCommandTarget(payload.profile) }
           : kind === "delete_profile"
@@ -3008,15 +3145,17 @@
           ? ["title", "updatedAt"]
           : kind === "set_session_approval_mode"
             ? ["approvalMode", "updatedAt"]
-            : kind === "set_session_skills"
-              ? ["activeSkillIds", "updatedAt"]
-              : kind === "set_session_model_selection"
-                ? ["modelSelection", "updatedAt"]
-                : kind === "restore_session"
-                  ? ["projectKey", "scope", "originScope", "updatedAt"]
-                  : ["archive_session", "unarchive_session"].includes(kind)
-                    ? ["archivedAt", "updatedAt"]
-                    : [];
+            : kind === "set_session_edit_scopes"
+              ? ["editScopes", "updatedAt"]
+              : kind === "set_session_skills"
+                ? ["activeSkillIds", "updatedAt"]
+                : kind === "set_session_model_selection"
+                  ? ["modelSelection", "updatedAt"]
+                  : kind === "restore_session"
+                    ? ["projectKey", "scope", "originScope", "updatedAt"]
+                    : ["archive_session", "unarchive_session"].includes(kind)
+                      ? ["archivedAt", "updatedAt"]
+                      : [];
         if (targetSessionId && fieldNames.length > 0) {
           ownedSessionFields.set(targetSessionId, new Set(fieldNames));
         }
@@ -3180,7 +3319,12 @@
           syncOperationState();
           startQueuedFollowUpsForIdleSessions();
         }
-        if (commandSucceeded) syncActiveSessionUi();
+        if (commandSucceeded) {
+          syncActiveSessionUi();
+          if (activeSessionId() !== activeSessionIdBeforeCommand) {
+            void requireView().ensureSessionModelCapabilities();
+          }
+        }
         if (commandWarning) {
           showStatus(commandWarning, true, {
             canceledFollowUpCount: attempt.canceledFollowUpCount || 0,
@@ -3525,6 +3669,7 @@
             : null;
         if (visible) reconcileLocalFollowUpsIntoState(reconciledState);
         if (visible) reconcileWebSearchUpdatesFromState(reconciledState);
+        if (visible) reconcilePendingUserMessageFromState(attempt, reconciledState);
         if (!reconcileSteeringAck(attempt, state)) {
           setAttemptStatus(
             attempt,
@@ -3771,6 +3916,10 @@
           modelTurnEpoch: 0,
           resolvedConfirmationGeneration: 0,
           payload,
+          eventIdsAtStart: visible
+            ? new Set((getState().events || []).map((event) => event.id))
+            : null,
+          promptEventPersisted: false,
           queueId,
           progress: "Starting Live Smith…",
           progressIsError: false,
@@ -3790,6 +3939,7 @@
         }
         captureAttemptComposerBaseline(attempt);
         syncSendPresentation(sessionId);
+        if (visible) requireView().renderTimeline();
         setAttemptStatus(attempt, "Starting Live Smith…", false);
 
         try {
@@ -5363,6 +5513,12 @@
       }
 
       function appendSessionEvent(sessionId, event, reconcileTransient) {
+        const session = sessionStateEntry(getState(), sessionId)?.session;
+        if (session) session.hasContent = true;
+        reconcilePendingUserMessage(
+          sendAttemptsBySession.get(sessionId),
+          event,
+        );
         if (event.kind === "assistant" && reconcileTransient) {
           const draft = assistantDraftsBySession.get(sessionId) || "";
           if (draft.trim() && draft.trim() === event.content.trim()) {
@@ -5390,6 +5546,24 @@
           requireView().announceAssistantMessage(event.content);
         }
         requireView().renderTimeline();
+      }
+
+      function reconcilePendingUserMessage(attempt, event) {
+        if (
+          !attempt ||
+          attempt.promptEventPersisted ||
+          event.kind !== "user" ||
+          event.steeringAck !== undefined ||
+          event.content !== attempt.payload.prompt ||
+          attempt.eventIdsAtStart?.has(event.id)
+        ) return false;
+        attempt.promptEventPersisted = true;
+        return true;
+      }
+
+      function reconcilePendingUserMessageFromState(attempt, state) {
+        if (attempt?.promptEventPersisted || !Array.isArray(state?.events)) return;
+        state.events.some((event) => reconcilePendingUserMessage(attempt, event));
       }
 
       function applySessionModelSelectionMetadata(sessionId, selection, updatedAt) {
@@ -5603,6 +5777,53 @@
             if (activeSessionId() === payload.sessionId) {
               state.approvalMode = payload.approvalMode;
               requireView().renderApprovalMode();
+            }
+            return;
+          }
+          if (payload.type === "session_edit_scopes_changed") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sessionId",
+                "editScopes",
+                "updatedAt",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireStorageId(payload.sessionId) ||
+              typeof payload.updatedAt !== "string" ||
+              !isWireEditScopes(payload.editScopes)
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const projection = editScopesProjectionsBySession.get(payload.sessionId);
+            if (received.covered || compareDecimalRevisions(
+              received.revision,
+              projection?.revision || "0",
+            ) <= 0) return;
+            editScopesProjectionsBySession.set(payload.sessionId, {
+              editScopes: [...payload.editScopes],
+              revision: received.revision,
+            });
+            const effectiveUpdatedAt = recordSessionUpdatedAtProjection(
+              payload.sessionId,
+              payload.updatedAt,
+              received.revision,
+            );
+            const state = getState();
+            for (const collection of sessionStateCollections) {
+              const session = state[collection].find(
+                (entry) => entry.id === payload.sessionId,
+              );
+              if (session) {
+                session.editScopes = [...payload.editScopes];
+                if (effectiveUpdatedAt !== undefined) {
+                  session.updatedAt = effectiveUpdatedAt;
+                }
+              }
+            }
+            requireView().syncSessionPresentation(payload.sessionId);
+            if (activeSessionId() === payload.sessionId) {
+              requireView().renderEditScopes();
             }
             return;
           }
@@ -6242,6 +6463,8 @@
         getQueuedFollowUpCount: queuedFollowUpCount,
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
+        getPendingUserMessage: activePendingUserMessage,
+        hasSessionLocalWork,
         getSubscriptionSendGateMessage: subscriptionSendGateMessage,
         handleComposerInput,
         handleSendButton,
@@ -6257,6 +6480,7 @@
           profileSettingsRefresh !== null ||
           modelSelectionRefreshesBySession.has(activeSessionId()),
         isConfirmationLocked: activeConfirmationIsLocked,
+        loadSessionModelCapabilities,
         resolveConfirm,
         renderDefaultFollowUpBehavior,
         runCommand,

@@ -8,6 +8,7 @@ import {
 import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 
+import { resolveEditScopes, type EditScope } from "../agent/edit-scopes.js";
 import type { SessionEvent } from "../storage/events.js";
 import type { SessionModelSelection } from "../storage/sessions.js";
 import { isStorageCommitOutcomeUnknownError } from "../storage/persistence.js";
@@ -235,6 +236,11 @@ export interface ChatBridge {
     approvalMode: ApprovalMode,
     updatedAt: string,
   ): void;
+  publishSessionEditScopes(
+    sessionId: string,
+    editScopes: EditScope[],
+    updatedAt: string,
+  ): void;
   publishSessionModelSelection(
     sessionId: string,
     modelSelection: SessionModelSelection,
@@ -378,6 +384,12 @@ type StateChangeSsePayloadBase =
       updatedAt: string;
     }
   | {
+      type: "session_edit_scopes_changed";
+      sessionId: string;
+      editScopes: EditScope[];
+      updatedAt: string;
+    }
+  | {
       type: "session_model_selection_changed";
       sessionId: string;
       modelSelection: SessionModelSelection;
@@ -406,6 +418,11 @@ type ApprovalModeChangedSsePayload = Extract<
 type SessionModelSelectionChangedSsePayload = Extract<
   StateChangeSsePayload,
   { type: "session_model_selection_changed" }
+>;
+
+type SessionEditScopesChangedSsePayload = Extract<
+  StateChangeSsePayload,
+  { type: "session_edit_scopes_changed" }
 >;
 
 type ProfileSettingsChangedSsePayload = Extract<
@@ -497,6 +514,10 @@ export async function createChatBridge(
   const latestSessionModelSelectionChanges = new Map<
     string,
     SessionModelSelectionChangedSsePayload
+  >();
+  const latestSessionEditScopesChanges = new Map<
+    string,
+    SessionEditScopesChangedSsePayload
   >();
   let latestProfileSettingsChange: ProfileSettingsChangedSsePayload | undefined;
   const sendStopTombstones = new Map<string, PromptPersistence>();
@@ -703,11 +724,37 @@ export async function createChatBridge(
       : reconciled;
   };
 
+  const reconcileSessionEditScopes = (
+    state: ChatDialogState,
+    bridgeStateCoveredThroughRevision: string,
+  ): ChatDialogState => {
+    const reconciled = { ...state };
+    const coveredRevision = BigInt(bridgeStateCoveredThroughRevision);
+    for (const key of ["sessions", "previousSessions", "archivedSessions"] as const) {
+      const sessions = state[key];
+      if (!Array.isArray(sessions)) continue;
+      reconciled[key] = sessions.map((session) => {
+        const change = latestSessionEditScopesChanges.get(session.id);
+        if (!change || BigInt(change.bridgeStateRevision) <= coveredRevision) {
+          return session;
+        }
+        return {
+          ...session,
+          editScopes: [...change.editScopes],
+          updatedAt: change.updatedAt,
+        };
+      });
+    }
+    return reconciled;
+  };
+
   const finalizeBridgeState = (
     state: ChatDialogState,
     bridgeStateCoveredThroughRevision: string,
   ): ChatBridgeState => {
-    const projected = chatDialogStateForWire(stateWithActivities(state));
+    const projected = chatDialogStateForWire(stateWithActivities(
+      reconcileSessionEditScopes(state, bridgeStateCoveredThroughRevision),
+    ));
     return {
       ...projected,
       bridgeStateRevision: nextStateRevision(),
@@ -985,6 +1032,7 @@ export async function createChatBridge(
         requestPath === "/skills";
       const jsonBodyMayBeUnread = request.method === "POST" && [
         "/command",
+        "/session-model-capabilities",
         "/confirm",
         "/send",
         "/steer",
@@ -1043,6 +1091,25 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/session-model-capabilities") {
+        assertExactQueryParameters(url, ["token"], "Session model capability request");
+        assertJsonContentType(request);
+        commandId = commandIdForRequest(request);
+        response.setHeader("X-Live-Smith-Command-Id", commandId);
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const input = parseCommandInput(await readRequestBody<unknown>(request));
+        if (input.kind !== "load_session_model_capabilities") {
+          throw new ChatBridgeRequestValidationError(
+            "Session model capability requests only support load_session_model_capabilities.",
+          );
+        }
+        throwIfBridgeAborted(signal);
+        const state = await options.handleCommand(input, signal, { commandId });
+        if (closing || response.destroyed) return;
+        sendJson(response, finalizeBridgeState(state, stateSnapshotCutRevision));
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/events") {
         assertExactQueryParameters(url, ["token"], "Event stream request");
         response.writeHead(200, {
@@ -1062,6 +1129,9 @@ export async function createChatBridge(
           writeSse(response, published);
         }
         for (const published of latestSessionModelSelectionChanges.values()) {
+          writeSse(response, published);
+        }
+        for (const published of latestSessionEditScopesChanges.values()) {
           writeSse(response, published);
         }
         if (latestProfileSettingsChange) {
@@ -1698,7 +1768,7 @@ export async function createChatBridge(
       if (attachmentBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/confirm", "/send", "/steer", "/stop"].includes(
+        ["/command", "/session-model-capabilities", "/confirm", "/send", "/steer", "/stop"].includes(
           requestPath,
         )
       ) request.resume();
@@ -1776,6 +1846,7 @@ export async function createChatBridge(
       }
       if (
         !attachmentMutation &&
+        requestPath !== "/session-model-capabilities" &&
         (
           (requestPath === "/send" && sendId !== undefined) ||
           (requestPath !== "/send" && commandId !== undefined)
@@ -1874,6 +1945,17 @@ export async function createChatBridge(
       });
       if (published?.type === "approval_mode_changed") {
         latestApprovalModeChanges.set(sessionId, published);
+      }
+    },
+    publishSessionEditScopes: (sessionId, editScopes, updatedAt) => {
+      const published = broadcastStateChange({
+        type: "session_edit_scopes_changed",
+        sessionId,
+        editScopes: resolveEditScopes(editScopes),
+        updatedAt,
+      });
+      if (published?.type === "session_edit_scopes_changed") {
+        latestSessionEditScopesChanges.set(sessionId, published);
       }
     },
     publishSessionModelSelection: (sessionId, modelSelection, updatedAt) => {
@@ -2066,6 +2148,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "unarchive_session" ||
     input.kind === "attach_selected_audio_source" ||
     input.kind === "set_session_approval_mode" ||
+    input.kind === "set_session_edit_scopes" ||
     input.kind === "set_session_model_selection" ||
     input.kind === "load_session_model_capabilities" ||
     input.kind === "set_session_skills";
