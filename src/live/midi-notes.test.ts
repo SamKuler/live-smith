@@ -20,6 +20,24 @@ test("summarizeMidiNotes includes pitch names and timing", () => {
   assert.match(summary, /pitch=69, name=A4, start=48/);
 });
 
+test("summarizeMidiNotes includes available note expression fields", () => {
+  const summary = summarizeMidiNotes([{
+    pitch: 60,
+    startTime: 0,
+    duration: 1,
+    velocity: 96,
+    muted: true,
+    probability: 0.75,
+    velocityDeviation: -8,
+    releaseVelocity: 72,
+  }]);
+
+  assert.match(
+    summary,
+    /velocity=96, muted=true, probability=0\.75, velocityDeviation=-8, releaseVelocity=72/,
+  );
+});
+
 test("summarizeMidiNotes paginates long clips without losing absolute note indexes", () => {
   const notes = Array.from({ length: 300 }, (_, index) => ({
     pitch: 60 + (index % 12),

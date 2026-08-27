@@ -810,6 +810,101 @@ test("Session MIDI creation explicitly replaces an occupied slot and configures 
   assert.match(results[0] ?? "", /Session MIDI clip.*slot 0/i);
 });
 
+test("Session MIDI creation updates changes to note expression fields", async () => {
+  let noteWrites = 0;
+  let currentNotes = [{
+    pitch: 60,
+    startTime: 0,
+    duration: 1,
+    velocity: 96,
+    probability: 0.5,
+  }];
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    name: "Lead Loop",
+    duration: 8,
+  });
+  Object.defineProperty(clip, "notes", {
+    enumerable: true,
+    get: () => currentNotes,
+    set: (notes) => {
+      noteWrites += 1;
+      currentNotes = notes;
+    },
+  });
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, { clip });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    clipSlots: [slot],
+  });
+  const requestedNotes = [{
+    pitch: 60,
+    startTime: 0,
+    duration: 1,
+    velocity: 96,
+    probability: 0.8,
+  }];
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Raise note probability",
+      actions: [{
+        type: "create_session_midi_clip",
+        trackName: "Lead",
+        slotIndex: 0,
+        durationBeats: 8,
+        name: "Lead Loop",
+        notes: requestedNotes,
+      }],
+    },
+    {},
+  );
+
+  assert.equal(noteWrites, 1);
+  assert.deepEqual(currentNotes, requestedNotes);
+  assert.equal(outcome.mutationCount, 1);
+});
+
+test("Session MIDI creation treats reordered expressive duplicates as matching", async () => {
+  const notes = [
+    { pitch: 60, startTime: 0, duration: 1, velocity: 96, probability: 0.25 },
+    { pitch: 60, startTime: 0, duration: 1, velocity: 96, probability: 0.75 },
+  ];
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    name: "Lead Loop",
+    duration: 8,
+    notes,
+  });
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, { clip });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    clipSlots: [slot],
+  });
+
+  const outcome = await executeAgentPlanWithProgress(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      message: "Keep the same expressive notes",
+      actions: [{
+        type: "create_session_midi_clip",
+        trackName: "Lead",
+        slotIndex: 0,
+        durationBeats: 8,
+        name: "Lead Loop",
+        notes: [...notes].reverse(),
+      }],
+    },
+    {},
+  );
+
+  assert.equal(outcome.mutationCount, 0);
+  assert.equal(clip.notes, notes);
+});
+
 test("delete_session_clip refuses to delete a replacement created earlier in the plan", async () => {
   const original = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
     handle: { id: "clip-original" },

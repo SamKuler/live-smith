@@ -10,6 +10,7 @@ import {
   WarpMode,
   type Clip,
   type ClipSlot,
+  type NoteDescription,
   type Track,
   type ExtensionContext,
 } from "@ableton-extensions/sdk";
@@ -1430,66 +1431,72 @@ function createdMidiClipResult(
   return `Created MIDI clip "${clipName}" on track "${trackName}" at beat ${startBeat} for ${durationBeats} beats ${detail}.`;
 }
 
-function compareMidiNotes(
-  left: { startTime: number; pitch: number; duration: number; velocity?: number },
-  right: { startTime: number; pitch: number; duration: number; velocity?: number },
-): number {
+function compareMidiNotes(left: NoteDescription, right: NoteDescription): number {
   return left.startTime - right.startTime ||
     left.pitch - right.pitch ||
     left.duration - right.duration ||
-    (left.velocity ?? 0) - (right.velocity ?? 0);
+    compareOptionalNumbers(left.velocity, right.velocity) ||
+    compareOptionalBooleans(left.muted, right.muted) ||
+    compareOptionalNumbers(left.probability, right.probability) ||
+    compareOptionalNumbers(left.velocityDeviation, right.velocityDeviation) ||
+    compareOptionalNumbers(left.releaseVelocity, right.releaseVelocity);
 }
 
 function midiNotesEqual(
-  left: readonly {
-    pitch: number;
-    startTime: number;
-    duration: number;
-    velocity?: number;
-  }[],
-  right: readonly {
-    pitch: number;
-    startTime: number;
-    duration: number;
-    velocity?: number;
-  }[],
+  left: readonly NoteDescription[],
+  right: readonly NoteDescription[],
 ): boolean {
   if (left.length !== right.length) return false;
   const sortedLeft = [...left].sort(compareMidiNotes);
   const sortedRight = [...right].sort(compareMidiNotes);
-  return sortedLeft.every((note, index) => {
-    const candidate = sortedRight[index]!;
-    return note.pitch === candidate.pitch &&
-      sameNumericValue(note.startTime, candidate.startTime) &&
-      sameNumericValue(note.duration, candidate.duration) &&
-      (note.velocity === undefined
-        ? candidate.velocity === undefined
-        : candidate.velocity !== undefined &&
-          sameNumericValue(note.velocity, candidate.velocity));
-  });
+  return sortedLeft.every((note, index) => midiNoteEqual(note, sortedRight[index]!));
 }
 
 function transformedMidiNotesEqual(
-  current: readonly {
-    pitch: number;
-    startTime: number;
-    duration: number;
-    velocity?: number;
-  }[],
-  transformed: readonly {
-    pitch: number;
-    startTime: number;
-    duration: number;
-    velocity?: number;
-  }[],
+  current: readonly NoteDescription[],
+  transformed: readonly NoteDescription[],
 ): boolean {
   return current.length === transformed.length && current.every((note, index) => {
     const candidate = transformed[index]!;
     return note.pitch === candidate.pitch &&
       note.startTime === candidate.startTime &&
       note.duration === candidate.duration &&
-      note.velocity === candidate.velocity;
+      note.velocity === candidate.velocity &&
+      note.muted === candidate.muted &&
+      note.probability === candidate.probability &&
+      note.velocityDeviation === candidate.velocityDeviation &&
+      note.releaseVelocity === candidate.releaseVelocity;
   });
+}
+
+function midiNoteEqual(left: NoteDescription, right: NoteDescription): boolean {
+  return left.pitch === right.pitch &&
+    sameNumericValue(left.startTime, right.startTime) &&
+    sameNumericValue(left.duration, right.duration) &&
+    optionalNumbersEqual(left.velocity, right.velocity) &&
+    left.muted === right.muted &&
+    optionalNumbersEqual(left.probability, right.probability) &&
+    optionalNumbersEqual(left.velocityDeviation, right.velocityDeviation) &&
+    optionalNumbersEqual(left.releaseVelocity, right.releaseVelocity);
+}
+
+function optionalNumbersEqual(left?: number, right?: number): boolean {
+  return left === undefined || right === undefined
+    ? left === right
+    : sameNumericValue(left, right);
+}
+
+function compareOptionalNumbers(left?: number, right?: number): number {
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  return left - right;
+}
+
+function compareOptionalBooleans(left?: boolean, right?: boolean): number {
+  if (left === right) return 0;
+  if (left === undefined) return -1;
+  if (right === undefined) return 1;
+  return left ? 1 : -1;
 }
 
 function safeObjectName(value: { readonly name: string }, fallback: string): string {

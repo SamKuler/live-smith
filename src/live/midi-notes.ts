@@ -27,13 +27,22 @@ export function summarizeMidiNotes(
 }
 
 function describeMidiNote(note: NoteDescription): string {
-  return [
+  const fields = [
     `pitch=${note.pitch}`,
     `name=${midiNoteName(note.pitch)}`,
     `start=${note.startTime}`,
     `duration=${note.duration}`,
     `velocity=${note.velocity ?? 100}`,
-  ].join(", ");
+  ];
+  if (note.muted !== undefined) fields.push(`muted=${note.muted}`);
+  if (note.probability !== undefined) fields.push(`probability=${note.probability}`);
+  if (note.velocityDeviation !== undefined) {
+    fields.push(`velocityDeviation=${note.velocityDeviation}`);
+  }
+  if (note.releaseVelocity !== undefined) {
+    fields.push(`releaseVelocity=${note.releaseVelocity}`);
+  }
+  return fields.join(", ");
 }
 
 export function midiNoteName(pitch: number): string {
