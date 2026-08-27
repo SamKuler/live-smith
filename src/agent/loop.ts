@@ -19,6 +19,7 @@ import {
   type ModelCitation,
   type ModelContextUsage,
   type ModelConversationMessage,
+  type ModelToolInputPart,
   type ModelHostedWebSearch,
   type ModelToolCall,
   type ModelTurn,
@@ -112,8 +113,15 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   onSteeringApplied?(messageCount: number): Promise<void> | void;
   /** Advances transient output after one complete, non-continuation model turn. */
   onModelTurnAccepted?(usage: ModelContextUsage | undefined): Promise<void> | void;
+  /** Runs only after the text tool result has been accepted by the trace owner. */
+  onModelInputPartAccepted?(part: ModelToolInputPart): void;
   askModel(input: AgentLoopModelInput): Promise<ModelTurn>;
-  observe(request: AgentObservationRequest): Promise<string>;
+  observe(request: AgentObservationRequest): Promise<
+    string | {
+      content: string;
+      modelInputPart: ModelToolInputPart;
+    }
+  >;
   preflightActions?(
     plan: AgentPlan,
   ): Promise<AgentActionPreflightGuard<ExecutionBindings>>;
@@ -209,6 +217,7 @@ interface AgentRecoveryState {
 interface ToolCallExecutionResult {
   toolContent: string;
   userMessage: string;
+  modelInputPart?: ModelToolInputPart;
   cancelled: boolean;
   failed: boolean;
   mutationProgress: boolean;
@@ -519,6 +528,9 @@ export async function runAgentLoop(
         role: "tool",
         toolCallId: toolCall.id,
         content: result.toolContent,
+        ...(result.modelInputPart
+          ? { modelInputPart: result.modelInputPart }
+          : {}),
       });
 
       if (options.hasPendingSteering?.()) {
@@ -728,12 +740,18 @@ async function executeToolCall(
         throw new AgentToolArgumentsError(error);
       }
       throwIfAborted(options.signal);
-      let observation: string;
+      let rawObservation: Awaited<ReturnType<typeof options.observe>>;
       try {
-        observation = await options.observe(request);
+        rawObservation = await options.observe(request);
       } catch (error) {
         throw new AgentObservationError(request, error);
       }
+      const observation = typeof rawObservation === "string"
+        ? rawObservation
+        : rawObservation.content;
+      const modelInputPart = typeof rawObservation === "string"
+        ? undefined
+        : rawObservation.modelInputPart;
       throwIfAborted(options.signal);
       if (
         recoveryState.requiredObservation &&
@@ -746,9 +764,11 @@ async function executeToolCall(
         name: toolCall.name,
         content: observation,
       });
+      if (modelInputPart) options.onModelInputPartAccepted?.(modelInputPart);
       return {
         toolContent: observation,
         userMessage: observation,
+        ...(modelInputPart ? { modelInputPart } : {}),
         cancelled: false,
         failed: false,
         mutationProgress: false,
@@ -1097,7 +1117,10 @@ async function executeToolCall(
       let recoveryObservation = "";
       let recoveryObservationAvailable = false;
       try {
-        recoveryObservation = await options.observe(requiredObservation);
+        const observed = await options.observe(requiredObservation);
+        recoveryObservation = typeof observed === "string"
+          ? observed
+          : observed.content;
         throwIfAborted(options.signal);
         recoveryState.requiredObservation = undefined;
         recoveryObservationAvailable = true;
@@ -1283,6 +1306,8 @@ function observationCoversRecovery(
     case "inspect_live_set":
     case "inspect_current_object":
       return true;
+    case "read_arrangement_audio":
+      return false;
     case "inspect_song_info":
       return actual.type === "inspect_song_info" && (
         required.itemOffset === undefined ||
@@ -1466,6 +1491,29 @@ function observationRequestFromToolCall(
         ...optionalStringProp(args.clipName, "clipName"),
         ...optionalNumberProp(args.startBeat, "startBeat"),
       };
+    case "read_arrangement_audio": {
+      assertOnlyKeys(
+        args,
+        ["trackName", "clipName", "clipStartBeat", "startBeat", "endBeat"],
+        `${toolCall.name} arguments`,
+      );
+      const request: Extract<AgentObservationRequest, {
+        type: "read_arrangement_audio";
+      }> = {
+        type: "read_arrangement_audio" as const,
+        ...optionalStringProp(args.trackName, "trackName"),
+        ...optionalStringProp(args.clipName, "clipName"),
+        ...optionalNumberProp(args.clipStartBeat, "clipStartBeat"),
+        startBeat: requiredNumber(args.startBeat, "startBeat"),
+        endBeat: requiredNumber(args.endBeat, "endBeat"),
+      };
+      if (request.endBeat <= request.startBeat) {
+        throw new Error(
+          "read_arrangement_audio requires endBeat greater than startBeat.",
+        );
+      }
+      return request;
+    }
     case "inspect_song_info":
       assertOnlyKeys(args, observationItemPageKeys, `${toolCall.name} arguments`);
       return { type: "inspect_song_info", ...observationItemPageProps(args) };
@@ -1534,6 +1582,7 @@ function isObservationTool(name: string): boolean {
     name === "inspect_clip" ||
     name === "inspect_midi_clip" ||
     name === "analyze_audio_clip" ||
+    name === "read_arrangement_audio" ||
     name === "inspect_song_info"
   );
 }
@@ -1598,6 +1647,13 @@ function requiredString(value: unknown, key: string): string {
     throw new Error(`Tool call requires string ${key}.`);
   }
   return value.trim();
+}
+
+function requiredNumber(value: unknown, key: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Tool call requires finite number ${key}.`);
+  }
+  return value;
 }
 
 function optionalStringProp(value: unknown, key: string): Record<string, string> {

@@ -941,6 +941,74 @@ test("Codex turns pass images and audio as data URLs but reject PDF", async () =
   );
 });
 
+test("Codex turns bind tool-produced audio by reference without embedding it in transcript JSON", async () => {
+  const rpc = new FakeCodexRpc();
+  const backend = createCodexAppServerBackend({ rpc });
+  const fixture = request(rpc, {
+    agentMessages: [
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "read-audio",
+          name: "read_arrangement_audio",
+          arguments: "{}",
+        }],
+      },
+      {
+        role: "tool",
+        toolCallId: "read-audio",
+        content: "Rendered beats 0-108.",
+        modelInputPart: {
+          type: "audio",
+          fileName: "live-render.wav",
+          mediaType: "audio/wav",
+          base64: "YXVkaW8=",
+        },
+      },
+    ],
+  });
+
+  await backend.createToolTurn(fixture.value);
+  const input = (rpc.requests.find((entry) => entry.method === "turn/start")
+    ?.params as { input: Array<{ type?: string; text?: string; url?: string }> }).input;
+  assert.doesNotMatch(input[0]?.text ?? "", /YXVkaW8=|data:audio/);
+  assert.match(input[0]?.text ?? "", /attachmentReference/);
+  assert.equal(
+    input.some((part) =>
+      part.type === "audio" && part.url === "data:audio/wav;base64,YXVkaW8="
+    ),
+    true,
+  );
+});
+
+test("Codex applies the shared audio count limit to tool-produced input", async () => {
+  const rpc = new FakeCodexRpc();
+  const audio = (index: number) => ({
+    type: "audio" as const,
+    fileName: `render-${index}.wav`,
+    mediaType: "audio/wav" as const,
+    base64: "AAAA",
+  });
+  const fixture = request(rpc, {
+    agentMessages: [1, 2, 3].map((index) => ({
+      role: "tool" as const,
+      toolCallId: `read-audio-${index}`,
+      content: "Rendered audio.",
+      modelInputPart: audio(index),
+    })),
+  });
+
+  await assert.rejects(
+    createCodexAppServerBackend({ rpc }).createToolTurn(fixture.value),
+    /at most 2 audio attachments/i,
+  );
+  assert.equal(
+    rpc.requests.some((entry) => entry.method === "thread/start"),
+    false,
+  );
+});
+
 test("Codex turns require catalog evidence before sending image or audio", async () => {
   for (const kind of ["image", "audio"] as const) {
     const rpc = new FakeCodexRpc();

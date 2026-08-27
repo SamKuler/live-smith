@@ -16,7 +16,8 @@ import type {
   ModelInputPart,
 } from "../model/contracts.js";
 import type { RuntimeProfile } from "../model/provider.js";
-import { profileApiMode, profileProvider } from "../model/profile.js";
+import { profileApiMode } from "../model/profile.js";
+import { supportsAudioInputDelivery } from "../model/tools.js";
 import { throwIfAborted } from "../runtime/host.js";
 import {
   isImageAttachmentMediaType,
@@ -226,7 +227,7 @@ async function resolveCurrentAttachmentPart(
     return { type: "binary", part: imagePart(ref, bytes) };
   }
   if (ref.kind === "audio") {
-    if (!audioProfileCompatible(runtimeProfile)) {
+    if (!supportsAudioInputDelivery(runtimeProfile)) {
       throw audioProfileIncompatibleError();
     }
     if (!isAudioAttachmentInspection(ref)) {
@@ -446,7 +447,7 @@ function historicalPreflightMarker(
     if (!isAudioAttachmentInspection(ref)) {
       return historicalMarker("unavailable", fileName);
     }
-    if (!audioProfileCompatible(runtimeProfile)) {
+    if (!supportsAudioInputDelivery(runtimeProfile)) {
       return historicalMarker("profile_incompatible", fileName);
     }
     return undefined;
@@ -476,7 +477,7 @@ function assertCurrentProfileCompatibility(
     }
     if (
       ref.kind === "audio" &&
-      !audioProfileCompatible(runtimeProfile)
+      !supportsAudioInputDelivery(runtimeProfile)
     ) {
       throw audioProfileIncompatibleError();
     }
@@ -511,16 +512,6 @@ function attachmentQuotaItem(
   ref: SessionAttachmentRef,
 ): AttachmentQuotaItem {
   return { kind: ref.kind, byteLength: ref.byteLength };
-}
-
-function audioProfileCompatible(runtimeProfile: RuntimeProfile): boolean {
-  const profile = runtimeProfile.profile;
-  const backendSupportsAudio = profile.connection.kind === "codex-subscription" ||
-    (profileProvider(profile) === "openai" &&
-      profileApiMode(profile) === "chat-completions");
-  return backendSupportsAudio &&
-    runtimeProfile.capabilities.inputs.audio &&
-    runtimeProfile.inputCapabilityEvidence.audio === "supported";
 }
 
 function audioProfileIncompatibleError(): AttachmentProcessingError {

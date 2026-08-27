@@ -1,7 +1,9 @@
 import type { ModelFunctionTool } from "../model/provider.js";
 import { agentActionJsonSchemas } from "./action-schema.js";
 
-export function liveSmithTools(): ModelFunctionTool[] {
+export function liveSmithTools(options: {
+  readArrangementAudio?: boolean;
+} = {}): ModelFunctionTool[] {
   return [
     observationTool(
       "inspect_current_object",
@@ -152,6 +154,40 @@ export function liveSmithTools(): ModelFunctionTool[] {
         },
       },
     ),
+    ...(options.readArrangementAudio
+      ? [observationTool(
+          "read_arrangement_audio",
+          "Render one bounded range inside an isolated Arrangement Audio Clip as pre-effects audio and provide it to the next model turn. Use this when the user's request requires hearing or transcribing audio. This does not include the track device chain and is not available for Session View Clips.",
+          {
+            trackName: {
+              type: "string",
+              description:
+                "Optional audio track name. Omit it to use the current target track.",
+            },
+            clipName: {
+              type: "string",
+              description:
+                "Optional exact Arrangement Audio Clip name for disambiguation.",
+            },
+            clipStartBeat: {
+              type: "number",
+              description:
+                "Optional exact Arrangement Clip start beat for disambiguation.",
+            },
+            startBeat: {
+              type: "number",
+              description:
+                "Requested Arrangement start beat inside the Clip.",
+            },
+            endBeat: {
+              type: "number",
+              description:
+                "Requested Arrangement end beat inside the Clip.",
+            },
+          },
+          ["startBeat", "endBeat"],
+        )]
+      : []),
     observationTool(
       "inspect_song_info",
       "Inspect song-level settings plus a paged list of zero-based Session View Scene indexes and Arrangement Cue Points. Follow nextOffset until the target Scene or Cue Point is visible.",

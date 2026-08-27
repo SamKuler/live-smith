@@ -563,9 +563,9 @@ user event.
 
 ### Image, document, and audio input mapping
 
-Live Smith assembles attachment context once as provider-neutral user input
-parts. Assistant history remains text-only, while current and historical user
-images are mapped to each protocol's native blocks:
+Live Smith assembles user-added attachment context as provider-neutral input
+parts before the first model turn. Assistant history remains text-only, while
+current and historical user images are mapped to each protocol's native blocks:
 
 - OpenAI Responses uses `input_text` and `input_image` with a base64 data URL.
 - OpenAI Chat Completions uses `text` and `image_url` with a base64 data URL.
@@ -595,6 +595,18 @@ managed capability overrides are disabled. An unverified fallback cannot.
 `capabilities.tools` is not an audio-input gate. OpenAI Responses and Anthropic
 Messages reject audio locally before making a provider request.
 
+When tools are also enabled, Live Smith exposes `read_arrangement_audio` only
+for the same verified audio-capable OpenAI Chat or subscription protocols. A
+successful call adds a bounded, temporary pre-effects Arrangement render to the
+next model turn without creating a Session attachment. OpenAI Chat emits every
+text tool result in the assistant's batch first, then adds the audio in a
+separate untrusted user content block. The subscription backend keeps only an
+attachment reference in its JSON transcript and sends the binary as a separate
+audio input. Tool-produced parts participate in the same binary count and byte
+limits as current and historical attachments. OpenAI Responses and Anthropic
+Messages reject tool-produced audio before provider I/O as well as omitting the
+tool.
+
 DOCX, XLSX, and PPTX never reach a provider as binary document parts. Live
 Smith validates and extracts them locally, then sends their bounded text in a
 JSON-escaped block labelled as untrusted data. This is semantic text extraction,
@@ -617,11 +629,13 @@ feedback. PDF checks do not promise sanitization, page-count validation, or
 visual rendering.
 
 Supported audio is narrowly defined as RIFF/WAVE containing PCM or IEEE-float
-samples, or MP3 containing MPEG-1 or MPEG-2 Layer III frames. Live Smith sends
-the complete original file bytes, including embedded metadata. It does not
-upload Live's warped, processed, rendered, or mixed output. ID3 metadata is not
-executed locally, but the parser is not a cleaning or sanitization step. File
-names, embedded metadata, and audio content are untrusted model input.
+samples, or MP3 containing MPEG-1 or MPEG-2 Layer III frames. A user-added audio
+attachment sends the complete original file bytes, including embedded metadata;
+it is not Live's warped, processed, rendered, or mixed output. In contrast,
+`read_arrangement_audio` sends only its reported pre-effects Arrangement range
+and does not include the track device chain. ID3 metadata is not executed
+locally, but the parser is not a cleaning or sanitization step. File names,
+embedded metadata, and audio content are untrusted model input.
 
 Audio may enter pending state through ordinary file upload or by copying the
 file backing a selected Live Audio Clip, Sample, or Simpler. Neither path is

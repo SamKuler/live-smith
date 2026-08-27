@@ -44,7 +44,7 @@ export async function copySelectedAudioAttachmentSource(input: {
     throw unavailableAudioSource();
   }
 
-  const bytes = await copyRegularFileSafely(initialSource.filePath, input.signal);
+  const bytes = await copyAudioFileSafely(initialSource.filePath, input.signal);
   const finalSource = resolveSelectedSourceSafely(
     input.context,
     input.target,
@@ -85,7 +85,7 @@ function resolveSelectedSourceSafely(
   }
 }
 
-async function copyRegularFileSafely(
+export async function copyAudioFileSafely(
   filePath: string,
   signal: AbortSignal,
 ): Promise<Uint8Array> {

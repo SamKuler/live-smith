@@ -1,6 +1,7 @@
 import type {
   ModelFunctionTool,
   ModelTool,
+  RuntimeProfile,
   RuntimeModelSource,
 } from "./provider.js";
 
@@ -34,4 +35,14 @@ export function isHostedWebSearchRequestMaxUses(value: number): boolean {
   return Number.isInteger(value) &&
     value >= 1 &&
     value <= HOSTED_WEB_SEARCH_REQUEST_MAX_USES;
+}
+
+export function supportsAudioInputDelivery(runtime: RuntimeProfile): boolean {
+  const connection = runtime.profile.connection;
+  const protocolSupportsAudio = connection.kind === "codex-subscription" ||
+    (connection.apiFamily === "openai" &&
+      connection.apiMode === "chat-completions");
+  return protocolSupportsAudio &&
+    runtime.capabilities.inputs.audio &&
+    runtime.inputCapabilityEvidence.audio === "supported";
 }

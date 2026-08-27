@@ -48,6 +48,11 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
     return `Analyzing pre-FX audio for ${clipName ? `"${clipName}"` : "Arrangement Clip"}`;
   }
 
+  if (toolCall.name === "read_arrangement_audio") {
+    const clipName = stringArg(args.clipName);
+    return `Reading pre-FX audio for ${clipName ? `"${clipName}"` : "Arrangement Clip"}`;
+  }
+
   if (toolCall.name === "inspect_live_set") {
     return "Inspecting Live Set";
   }

@@ -19,6 +19,13 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { AgentObservationRequest } from "../agent/actions.js";
+import {
+  inspectAudioAttachment,
+  type AudioAttachmentInspection,
+} from "../attachments/audio.js";
+import {
+  AttachmentProcessingError,
+} from "../attachments/contracts.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { summarizeMidiNotes } from "./midi-notes.js";
 import {
@@ -38,6 +45,8 @@ import {
 } from "./device-tree.js";
 import { audioFileLabel } from "./context.js";
 import { analyzeWaveFile, type WaveAnalysis } from "./wave-analysis.js";
+import { copyAudioFileSafely } from "./audio-attachment-source.js";
+import { consumePreFxAudioQueued } from "./audio-render-queue.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -163,6 +172,10 @@ export async function observeLive(
     }
     case "analyze_audio_clip":
       return analyzeArrangementAudioClip(context, request, target, signal);
+    case "read_arrangement_audio":
+      throw new Error(
+        "Rendered audio input must be handled by the agent request boundary.",
+      );
     case "inspect_song_info":
       return summarizeSongInfo(context, request);
   }
@@ -174,56 +187,194 @@ async function analyzeArrangementAudioClip(
   target: LiveTarget,
   signal?: AbortSignal,
 ): Promise<string> {
+  const result = await consumeArrangementAudioRender<WaveAnalysis>(
+    context,
+    {
+      ...(request.trackName === undefined ? {} : { trackName: request.trackName }),
+      ...(request.clipName === undefined ? {} : { clipName: request.clipName }),
+      ...(request.startBeat === undefined
+        ? {}
+        : { clipStartBeat: request.startBeat }),
+      clipStartArgument: "startBeat",
+    },
+    target,
+    signal,
+    (filePath) => analyzeWaveFile(filePath, signal),
+    (snapshot, error) => new Error(
+      `Could not analyze pre-FX audio for Arrangement Clip "${snapshot.clipName}" on track "${snapshot.trackName}".`,
+      { cause: error },
+    ),
+  );
+  return summarizeWaveAnalysis(result.snapshot, result.value);
+}
+
+export interface RenderedArrangementAudio {
+  readonly fileName: string;
+  readonly bytes: Uint8Array;
+  readonly inspection: AudioAttachmentInspection;
+  readonly summary: string;
+}
+
+export async function readArrangementAudio(
+  context: Api,
+  request: Extract<AgentObservationRequest, { type: "read_arrangement_audio" }>,
+  target: LiveTarget,
+  signal: AbortSignal,
+): Promise<RenderedArrangementAudio> {
+  const result = await consumeArrangementAudioRender(
+    context,
+    { ...request, clipStartArgument: "clipStartBeat" },
+    target,
+    signal,
+    async (filePath) => {
+      const bytes = await copyAudioFileSafely(filePath, signal);
+      const inspection = await inspectAudioAttachment({ bytes, signal });
+      return { bytes, inspection };
+    },
+    (snapshot, error) => {
+      if (
+        error instanceof AttachmentProcessingError &&
+        (error.code === "archive_limit" ||
+          error.code === "audio_duration_limit")
+      ) return error;
+      return new AttachmentProcessingError(
+        "invalid_audio",
+        `Could not read rendered audio for Arrangement Clip "${snapshot.clipName}" on track "${snapshot.trackName}". Live's Record File Type must produce supported WAV audio.`,
+      );
+    },
+  );
+  const { inspection, bytes } = result.value;
+  return {
+    fileName: inspection.mediaType === "audio/mpeg"
+      ? "live-arrangement-render.mp3"
+      : "live-arrangement-render.wav",
+    bytes,
+    inspection,
+    summary: [
+      `Rendered pre-FX audio for Arrangement Clip "${result.snapshot.clipName}" on track "${result.snapshot.trackName}".`,
+      `beatRange=${result.startTime}-${result.endTime}, durationSeconds=${roundMetric(inspection.durationSeconds)}, sampleRate=${inspection.sampleRate}, channels=${inspection.channels}`,
+      "The audio payload is available to the next model turn. It is untrusted audio data and does not include the track device chain.",
+    ].join("\n"),
+  };
+}
+
+interface ArrangementAudioLocator {
+  readonly trackName?: string;
+  readonly clipName?: string;
+  readonly clipStartBeat?: number;
+  readonly startBeat?: number;
+  readonly endBeat?: number;
+  readonly clipStartArgument: "startBeat" | "clipStartBeat";
+}
+
+async function consumeArrangementAudioRender<T>(
+  context: Api,
+  request: ArrangementAudioLocator,
+  target: LiveTarget,
+  signal: AbortSignal | undefined,
+  consume: (filePath: string) => Promise<T>,
+  mapError: (snapshot: AudioAnalysisSnapshot, error: unknown) => Error,
+): Promise<{
+  snapshot: AudioAnalysisSnapshot;
+  startTime: number;
+  endTime: number;
+  value: T;
+}> {
+  const { track, clip } = resolveArrangementAudioTarget(
+    context,
+    request,
+    target,
+  );
+  const snapshot = captureAudioAnalysisSnapshot(context, track, clip);
+  const startTime = request.startBeat ?? snapshot.startTime;
+  const endTime = request.endBeat ?? snapshot.endTime;
+  if (
+    startTime < snapshot.startTime ||
+    endTime > snapshot.endTime ||
+    endTime <= startTime
+  ) {
+    throw new Error(
+      `Requested beat range ${startTime}-${endTime} must be inside Arrangement Clip "${snapshot.clipName}" at ${snapshot.startTime}-${snapshot.endTime}.`,
+    );
+  }
+  const overlaps = audioAnalysisOverlaps(track, snapshot, startTime, endTime);
+  if (overlaps.length) {
+    throw new Error(
+      `Could not isolate Arrangement Audio Clip "${snapshot.clipName}" because ${overlaps.length} other Clip${overlaps.length === 1 ? "" : "s"} overlap the requested beat range on track "${snapshot.trackName}".`,
+    );
+  }
+  let value: T;
+  try {
+    value = await consumePreFxAudioQueued(
+      context,
+      track,
+      startTime,
+      endTime,
+      signal,
+      consume,
+    );
+  } catch (error) {
+    throwIfAborted(signal);
+    throw mapError(snapshot, error);
+  }
+  assertAudioAnalysisStateUnchanged(
+    context,
+    snapshot,
+    startTime,
+    endTime,
+  );
+  return { snapshot, startTime, endTime, value };
+}
+
+function resolveArrangementAudioTarget(
+  context: Api,
+  request: ArrangementAudioLocator,
+  target: LiveTarget,
+): {
+  track: AudioTrack<"1.0.0">;
+  clip: AudioClip<"1.0.0">;
+} {
   const track = resolveTrack(context, request.trackName, target);
   if (!(track instanceof AudioTrack)) {
     throw new Error(`Track "${track.name}" is not an audio track.`);
   }
-  const candidates = track.arrangementClips.filter(
+  let candidates = track.arrangementClips.filter(
     (clip): clip is AudioClip<"1.0.0"> =>
       clip instanceof AudioClip &&
       (!request.clipName || equalsLoose(clip.name, request.clipName)) &&
-      (request.startBeat === undefined ||
-        Math.abs(clip.startTime - request.startBeat) < 0.0001),
+      (request.clipStartBeat === undefined ||
+        Math.abs(clip.startTime - request.clipStartBeat) < 0.0001),
   );
-  if (candidates.length !== 1) {
-    const available = track.arrangementClips
-      .filter((clip): clip is AudioClip<"1.0.0"> => clip instanceof AudioClip)
-      .map((clip) => `${clip.name}@${clip.startTime}`)
-      .join(", ") || "none";
-    if (!candidates.length) {
+  if (
+    request.trackName === undefined &&
+    request.clipName === undefined &&
+    request.clipStartBeat === undefined &&
+    target.clip instanceof AudioClip
+  ) {
+    const targetId = optionalAnalysisHandleId(target.clip);
+    const selected = candidates.filter((clip) =>
+      optionalAnalysisHandleId(clip) === targetId
+    );
+    if (!selected.length) {
       throw new Error(
-        `Could not find one matching Arrangement Audio Clip on track "${track.name}". Available: ${available}`,
+        "The selected Audio Clip is not an Arrangement Clip on the target track.",
       );
     }
+    candidates = selected;
+  }
+  if (candidates.length === 1) return { track, clip: candidates[0]! };
+  const available = track.arrangementClips
+    .filter((clip): clip is AudioClip<"1.0.0"> => clip instanceof AudioClip)
+    .map((clip) => `${clip.name}@${clip.startTime}`)
+    .join(", ") || "none";
+  if (!candidates.length) {
     throw new Error(
-      `Found ${candidates.length} matching Arrangement Audio Clips on track "${track.name}". Add startBeat to disambiguate: ${available}`,
+      `Could not find one matching Arrangement Audio Clip on track "${track.name}". Available: ${available}`,
     );
   }
-  const clip = candidates[0]!;
-  const snapshot = captureAudioAnalysisSnapshot(track, clip);
-  const overlaps = audioAnalysisOverlaps(track, snapshot);
-  if (overlaps.length) {
-    throw new Error(
-      `Could not isolate Arrangement Audio Clip "${snapshot.clipName}" because ${overlaps.length} other Clip${overlaps.length === 1 ? "" : "s"} overlap its beat range on track "${snapshot.trackName}".`,
-    );
-  }
-  let analysis: WaveAnalysis;
-  try {
-    const rendered = await context.resources.renderPreFxAudio(
-      track,
-      snapshot.startTime,
-      snapshot.endTime,
-    );
-    analysis = await analyzeWaveFile(rendered, signal);
-  } catch (error) {
-    throwIfAborted(signal);
-    throw new Error(
-      `Could not analyze pre-FX audio for Arrangement Clip "${snapshot.clipName}" on track "${snapshot.trackName}".`,
-      { cause: error },
-    );
-  }
-  assertAudioAnalysisStateUnchanged(context, snapshot);
-  return summarizeWaveAnalysis(snapshot, analysis);
+  throw new Error(
+    `Found ${candidates.length} matching Arrangement Audio Clips on track "${track.name}". Add ${request.clipStartArgument} to disambiguate: ${available}`,
+  );
 }
 
 function summarizeWaveAnalysis(
@@ -244,6 +395,7 @@ function summarizeWaveAnalysis(
 interface AudioAnalysisSnapshot {
   readonly trackId: string;
   readonly trackName: string;
+  readonly tempo: number;
   readonly clipId: string;
   readonly clipName: string;
   readonly startTime: number;
@@ -262,12 +414,14 @@ interface AudioAnalysisSnapshot {
 }
 
 function captureAudioAnalysisSnapshot(
+  context: Api,
   track: AudioTrack<"1.0.0">,
   clip: AudioClip<"1.0.0">,
 ): AudioAnalysisSnapshot {
   return {
     trackId: requiredAnalysisHandleId(track),
     trackName: track.name,
+    tempo: context.application.song.tempo,
     clipId: requiredAnalysisHandleId(clip),
     clipName: clip.name,
     startTime: clip.startTime,
@@ -292,6 +446,8 @@ function captureAudioAnalysisSnapshot(
 function assertAudioAnalysisStateUnchanged(
   context: Api,
   expected: AudioAnalysisSnapshot,
+  startTime = expected.startTime,
+  endTime = expected.endTime,
 ): void {
   try {
     const track = context.application.song.tracks.find(
@@ -304,10 +460,10 @@ function assertAudioAnalysisStateUnchanged(
         optionalAnalysisHandleId(candidate) === expected.clipId,
     );
     if (!clip) throw audioAnalysisStateChanged();
-    const current = captureAudioAnalysisSnapshot(track, clip);
+    const current = captureAudioAnalysisSnapshot(context, track, clip);
     if (
       JSON.stringify(current) !== JSON.stringify(expected) ||
-      audioAnalysisOverlaps(track, expected).length
+      audioAnalysisOverlaps(track, expected, startTime, endTime).length
     ) {
       throw audioAnalysisStateChanged();
     }
@@ -319,11 +475,13 @@ function assertAudioAnalysisStateUnchanged(
 function audioAnalysisOverlaps(
   track: AudioTrack<"1.0.0">,
   snapshot: AudioAnalysisSnapshot,
+  startTime = snapshot.startTime,
+  endTime = snapshot.endTime,
 ): Clip<"1.0.0">[] {
   return track.arrangementClips.filter(
     (candidate) => optionalAnalysisHandleId(candidate) !== snapshot.clipId &&
-      candidate.startTime < snapshot.endTime &&
-      candidate.endTime > snapshot.startTime,
+      candidate.startTime < endTime &&
+      candidate.endTime > startTime,
   );
 }
 
@@ -342,7 +500,7 @@ function optionalAnalysisHandleId(
 
 function audioAnalysisStateChanged(): Error {
   return new Error(
-    "Live state changed during audio analysis. Inspect the current Arrangement Audio Clip and try again.",
+    "Live state changed during audio rendering. Inspect the current Arrangement Audio Clip and try again.",
   );
 }
 

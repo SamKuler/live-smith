@@ -25,7 +25,12 @@ export function assertBinaryInputWithinLimits(
   let audioBytes = 0;
   let audioCount = 0;
 
-  for (const part of binaryUserInputParts(request)) {
+  for (const part of allModelInputParts(request)) {
+    if (
+      part.type !== "image" &&
+      part.type !== "document" &&
+      part.type !== "audio"
+    ) continue;
     count += 1;
     if (count > MAX_REQUEST_BINARY_ATTACHMENT_COUNT) {
       throw new Error(
@@ -89,9 +94,9 @@ function assertBinaryPartMediaType(
   }
 }
 
-function* binaryUserInputParts(
+export function* allModelInputParts(
   request: TransportRequest,
-): Generator<Extract<ModelInputPart, { type: "image" | "document" | "audio" }>> {
+): Generator<ModelInputPart> {
   for (const message of request.history) {
     if (message.role !== "user") continue;
     for (const part of message.content) {
@@ -103,11 +108,11 @@ function* binaryUserInputParts(
     }
   }
   for (const part of request.currentUserContent) {
-    if (
-      part.type === "image" ||
-      part.type === "document" ||
-      part.type === "audio"
-    ) yield part;
+    yield part;
+  }
+  for (const message of request.agentMessages) {
+    if (message.role !== "tool") continue;
+    if (message.modelInputPart) yield message.modelInputPart;
   }
 }
 
@@ -193,7 +198,7 @@ export function assertNoUnsupportedAudioInput(
   request: TransportRequest,
   transportLabel: "OpenAI Responses" | "Anthropic Messages",
 ): void {
-  for (const part of allUserInputParts(request)) {
+  for (const part of allModelInputParts(request)) {
     if (part.type !== "audio") continue;
     throw new Error(
       `Audio input is not supported by ${transportLabel} in Live Smith.`,
@@ -219,16 +224,6 @@ export function openAIChatAudioPart(
       format: part.mediaType === "audio/wav" ? "wav" : "mp3",
     },
   };
-}
-
-function* allUserInputParts(
-  request: TransportRequest,
-): Generator<ModelInputPart> {
-  for (const message of request.history) {
-    if (message.role !== "user") continue;
-    yield* message.content;
-  }
-  yield* request.currentUserContent;
 }
 
 export function imageDataUrl(

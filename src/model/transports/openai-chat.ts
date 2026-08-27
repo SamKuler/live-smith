@@ -26,6 +26,7 @@ import {
   listOpenAIModels,
 } from "./openai-shared.js";
 import {
+  allModelInputParts,
   assertBinaryInputWithinLimits,
   unsupportedOpenAIChatPdfInput,
 } from "./input-parts.js";
@@ -109,11 +110,8 @@ function assertNoHostedWebSearch(request: TransportRequest): void {
 }
 
 function assertNoPdfInput(request: TransportRequest): void {
-  const containsPdf = request.currentUserContent.some((part) =>
-    part.type === "document"
-  ) || request.history.some((message) =>
-    message.role === "user" &&
-    message.content.some((part) => part.type === "document")
+  const containsPdf = [...allModelInputParts(request)].some(
+    (part) => part.type === "document",
   );
   if (containsPdf) unsupportedOpenAIChatPdfInput();
 }

@@ -26,7 +26,9 @@ Select a track, Clip, device, or another supported Live object and choose
 - **Work with your Set.** Inspect tracks, Clips, devices, and MIDI notes, then
   create or edit MIDI parts, organize tracks and Scenes, adjust mixer settings,
   and work with observed samples and native Live devices. Analyze isolated
-  Arrangement audio ranges for level measurements.
+  Arrangement audio ranges for level measurements. With a verified audio-input
+  model, Live Smith can also render a requested Arrangement Clip range directly
+  into the active request for listening or transcription.
 - **Keep conversations organized.** Use separate Sessions for different parts
   of your Set, revisit their history, or collapse the Sessions panel for more space.
 - **Choose models in the composer.** Save several models in one connection
@@ -160,6 +162,10 @@ Skills do not grant additional permissions or tools.
 Office documents are read as text. Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
 sent to every model. Use paste or drag-and-drop rather than a system file picker.
+For compatible audio models, the agent can instead call `read_arrangement_audio`
+to read an isolated Arrangement Audio Clip range without creating a saved
+attachment. This sends a temporary pre-effects render for the current request;
+Session View Clips and the track device chain are not included.
 
 Queue and Steer are configured under **Settings → Conversation Behavior**.
 Queued follow-ups belong to the open window; Live Smith warns before closing
@@ -168,8 +174,9 @@ with pending work.
 ## Privacy
 
 Profiles, Sessions, attachments, and imported Skills are stored locally.
-Prompts, relevant Live context, selected Skill guidance, and supported attachment
-content are sent to the model provider you choose.
+Prompts, relevant Live context, selected Skill guidance, supported attachment
+content, and any Arrangement audio range read by the agent are sent to the model
+provider you choose.
 
 Direct API keys are stored in local Profile settings as plain text. The
 subscription connection keeps its login in a separate local Codex home. Do not

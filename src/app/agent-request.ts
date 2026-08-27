@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
 import {
@@ -27,8 +28,11 @@ import {
   HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND,
   HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
   modelToolsForProfile,
+  supportsAudioInputDelivery,
 } from "../model/tools.js";
 import type {
+  ConversationMessage,
+  ModelInputPart,
   ModelContextUsage,
   ModelHostedWebSearch,
   ModelTurn,
@@ -40,7 +44,12 @@ import {
   executeAgentPlanWithProgress,
 } from "../live/executor.js";
 import type { LiveInteractionContext } from "../live/context.js";
-import { observeLive } from "../live/observer.js";
+import { observeLive, readArrangementAudio } from "../live/observer.js";
+import {
+  attachmentRequestQuotaIsWithinLimits,
+  AttachmentProcessingError,
+  type AttachmentQuotaItem,
+} from "../attachments/contracts.js";
 import { captureLiveActionPreflightSnapshot } from "../live/preflight.js";
 import {
   requiredEditScopesForAction,
@@ -140,6 +149,8 @@ export async function handleAgentRequest(
   if (!session) {
     throw new Error("That Session is not available in this Live Set.");
   }
+  const supportsArrangementAudioInput = runtimeProfile.capabilities.tools &&
+    supportsAudioInputDelivery(runtimeProfile);
   let activeEditScopes: EditScope[] | undefined = resolveEditScopes(session.editScopes);
   let editScopesGeneration = 0;
   const currentEditScopes = () => {
@@ -225,6 +236,15 @@ export async function handleAgentRequest(
     };
   };
   const prepared = await prepareRequest();
+  const requestAttachmentQuota = binaryQuotaItems(
+    prepared.history,
+    prepared.attachmentParts,
+  );
+  const canReadArrangementAudio = () => supportsArrangementAudioInput &&
+    attachmentRequestQuotaIsWithinLimits([
+      ...requestAttachmentQuota,
+      { kind: "audio", byteLength: 1 },
+    ]);
   const knownEventIds = new Set([
     ...prepared.priorEventIds,
     prepared.userEvent.id,
@@ -411,7 +431,9 @@ export async function handleAgentRequest(
                 agentMessages: input.messages,
                 tools: modelToolsForProfile(
                   runtimeProfile,
-                  liveSmithTools(),
+                  liveSmithTools({
+                    readArrangementAudio: canReadArrangementAudio(),
+                  }),
                   Math.min(
                     HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
                     remainingWebSearchEvents,
@@ -464,6 +486,50 @@ export async function handleAgentRequest(
         return turn;
       },
       observe: async (request) => {
+        if (request.type === "read_arrangement_audio") {
+          if (!supportsArrangementAudioInput) {
+            throw new Error(
+              "read_arrangement_audio is not available for the active model Profile.",
+            );
+          }
+          if (!attachmentRequestQuotaIsWithinLimits([
+            ...requestAttachmentQuota,
+            { kind: "audio", byteLength: 1 },
+          ])) {
+            throw new AttachmentProcessingError(
+              "archive_limit",
+              "Rendered audio would exceed the model request attachment limits.",
+            );
+          }
+          const rendered = await readArrangementAudio(
+            context,
+            request,
+            interaction.target,
+            callbacks.signal,
+          );
+          const quotaItem: AttachmentQuotaItem = {
+            kind: "audio",
+            byteLength: rendered.bytes.byteLength,
+          };
+          if (!attachmentRequestQuotaIsWithinLimits([
+            ...requestAttachmentQuota,
+            quotaItem,
+          ])) {
+            throw new AttachmentProcessingError(
+              "archive_limit",
+              "Rendered audio would exceed the model request attachment limits.",
+            );
+          }
+          return {
+            content: rendered.summary,
+            modelInputPart: {
+              type: "audio",
+              fileName: rendered.fileName,
+              mediaType: rendered.inspection.mediaType,
+              base64: Buffer.from(rendered.bytes).toString("base64"),
+            },
+          };
+        }
         const observation = await observeLive(
           context,
           request,
@@ -472,6 +538,12 @@ export async function handleAgentRequest(
         );
         throwIfAborted(callbacks.signal);
         return observation;
+      },
+      onModelInputPartAccepted: (part) => {
+        requestAttachmentQuota.push({
+          kind: "audio",
+          byteLength: decodedBase64ByteLength(part.base64),
+        });
       },
       preflightActions: (plan) =>
         preflightAgentPlan(
@@ -599,6 +671,38 @@ export async function handleAgentRequest(
     unsubscribeEditScopes();
     unsubscribeEditScopesInvalidations();
   }
+}
+
+function binaryQuotaItems(
+  history: readonly ConversationMessage[],
+  current: readonly ModelInputPart[],
+): AttachmentQuotaItem[] {
+  const parts = [
+    ...history.flatMap((message) =>
+      message.role === "user" ? message.content : []
+    ),
+    ...current,
+  ];
+  return parts.flatMap((part): AttachmentQuotaItem[] => {
+    if (
+      part.type !== "image" &&
+      part.type !== "document" &&
+      part.type !== "audio"
+    ) return [];
+    return [{
+      kind: part.type === "image"
+        ? "image"
+        : part.type === "document"
+          ? "document"
+          : "audio",
+      byteLength: decodedBase64ByteLength(part.base64),
+    }];
+  });
+}
+
+function decodedBase64ByteLength(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return value.length / 4 * 3 - padding;
 }
 
 function isAbortCause(error: unknown, signal: AbortSignal): boolean {

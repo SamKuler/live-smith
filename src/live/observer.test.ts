@@ -13,7 +13,7 @@ import {
   TakeLane,
 } from "@ableton-extensions/sdk";
 
-import { observeLive } from "./observer.js";
+import { observeLive, readArrangementAudio } from "./observer.js";
 
 test("analyze_audio_clip renders the exact isolated Arrangement Clip pre-FX range", async () => {
   const directory = await fs.mkdtemp("/tmp/live-smith-observer-audio-");
@@ -36,7 +36,7 @@ test("analyze_audio_clip renders the exact isolated Arrangement Clip pre-FX rang
   try {
     const result = await observeLive(
       {
-        application: { song: { tracks: [track] } },
+        application: { song: { tempo: 120, tracks: [track] } },
         resources: {
           renderPreFxAudio: async (...args: unknown[]) => {
             renderedRanges.push(args);
@@ -61,6 +61,260 @@ test("analyze_audio_clip renders the exact isolated Arrangement Clip pre-FX rang
   } finally {
     await fs.rm(directory, { recursive: true });
   }
+});
+
+test("read_arrangement_audio returns a bounded isolated subrange without exposing its path", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-read-audio-");
+  const rendered = `${directory}/private-render.wav`;
+  const renderedBytes = monoPcm16Wave([0, 0.5, -0.5, 0], 48_000);
+  await fs.writeFile(rendered, renderedBytes);
+  const clip = analysisAudioClip({
+    handle: { id: "clip-read" },
+    name: "Reference",
+    startTime: 0,
+    endTime: 16,
+    duration: 16,
+  });
+  const outsideRange = analysisAudioClip({
+    handle: { id: "clip-outside" },
+    name: "Later",
+    startTime: 8,
+    endTime: 12,
+    duration: 4,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-read" },
+    name: "Audio",
+    arrangementClips: [clip, outsideRange],
+  });
+  const renderedRanges: unknown[] = [];
+  const controller = new AbortController();
+
+  try {
+    const result = await readArrangementAudio(
+      {
+        application: { song: { tempo: 120, tracks: [track] } },
+        resources: {
+          renderPreFxAudio: async (...args: unknown[]) => {
+            renderedRanges.push(args);
+            return rendered;
+          },
+        },
+      } as never,
+      {
+        type: "read_arrangement_audio",
+        trackName: "Audio",
+        clipName: "Reference",
+        clipStartBeat: 0,
+        startBeat: 4,
+        endBeat: 8,
+      },
+      { track, clip },
+      controller.signal,
+    );
+
+    assert.deepEqual(renderedRanges, [[track, 4, 8]]);
+    assert.deepEqual([...result.bytes], [...renderedBytes]);
+    assert.equal(result.inspection.mediaType, "audio/wav");
+    assert.match(result.summary, /beatRange=4-8/);
+    assert.doesNotMatch(result.summary, /private-render|\/tmp\//);
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("read_arrangement_audio does not substitute an unrelated Arrangement Clip for a selected Session Clip", async () => {
+  const arrangementClip = analysisAudioClip({
+    handle: { id: "arrangement" },
+    name: "Arrangement",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const sessionClip = analysisAudioClip({
+    handle: { id: "session" },
+    name: "Session",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track" },
+    name: "Audio",
+    arrangementClips: [arrangementClip],
+  });
+  let renderCalls = 0;
+
+  await assert.rejects(
+    readArrangementAudio(
+      {
+        application: { song: { tracks: [track] } },
+        resources: {
+          renderPreFxAudio: async () => {
+            renderCalls += 1;
+            return "/private/never.wav";
+          },
+        },
+      } as never,
+      { type: "read_arrangement_audio", startBeat: 0, endBeat: 8 },
+      { track, clip: sessionClip },
+      new AbortController().signal,
+    ),
+    /selected Audio Clip is not an Arrangement Clip/i,
+  );
+  assert.equal(renderCalls, 0);
+});
+
+test("read_arrangement_audio rejects a non-WAV host render without exposing its path", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-aiff-");
+  const rendered = `${directory}/secret-render.aiff`;
+  await fs.writeFile(rendered, Buffer.from("FORM unsupported AIFF", "ascii"));
+  const clip = analysisAudioClip({
+    handle: { id: "clip-aiff" },
+    name: "Reference",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-aiff" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+
+  try {
+    await assert.rejects(
+      readArrangementAudio(
+        {
+          application: { song: { tempo: 120, tracks: [track] } },
+          resources: { renderPreFxAudio: async () => rendered },
+        } as never,
+        {
+          type: "read_arrangement_audio",
+          trackName: "Audio",
+          startBeat: 0,
+          endBeat: 8,
+        },
+        { track, clip },
+        new AbortController().signal,
+      ),
+      (error: unknown) => {
+        assert.match(String(error), /Record File Type.*WAV/i);
+        assert.doesNotMatch(String(error), /secret-render|\/tmp\//);
+        return true;
+      },
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("read_arrangement_audio stops waiting for an in-flight SDK render", async () => {
+  const clip = analysisAudioClip({
+    handle: { id: "clip-cancel" },
+    name: "Cancel",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-cancel" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+  const controller = new AbortController();
+  const cancellation = new Error("Stopped by user");
+  const reading = readArrangementAudio(
+    {
+      application: { song: { tempo: 120, tracks: [track] } },
+      resources: { renderPreFxAudio: () => new Promise<string>(() => {}) },
+    } as never,
+    {
+      type: "read_arrangement_audio",
+      trackName: "Audio",
+      startBeat: 0,
+      endBeat: 8,
+    },
+    { track, clip },
+    controller.signal,
+  );
+
+  controller.abort(cancellation);
+  await assert.rejects(reading, (error: unknown) => error === cancellation);
+});
+
+test("read_arrangement_audio rejects a tempo change during rendering", async () => {
+  const directory = await fs.mkdtemp("/tmp/live-smith-observer-tempo-");
+  const rendered = `${directory}/render.wav`;
+  await fs.writeFile(rendered, monoPcm16Wave([0, 0.5], 48_000));
+  const clip = analysisAudioClip({
+    handle: { id: "clip-tempo" },
+    name: "Tempo",
+    startTime: 0,
+    endTime: 8,
+    duration: 8,
+  });
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-tempo" },
+    name: "Audio",
+    arrangementClips: [clip],
+  });
+  const song = { tempo: 120, tracks: [track] };
+
+  try {
+    await assert.rejects(
+      readArrangementAudio(
+        {
+          application: { song },
+          resources: {
+            renderPreFxAudio: async () => {
+              song.tempo = 90;
+              return rendered;
+            },
+          },
+        } as never,
+        {
+          type: "read_arrangement_audio",
+          trackName: "Audio",
+          startBeat: 0,
+          endBeat: 8,
+        },
+        { track, clip },
+        new AbortController().signal,
+      ),
+      /Live state changed during audio rendering/i,
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("analyze_audio_clip ambiguity reports its public startBeat locator", async () => {
+  const clips = [1, 2].map((id) => analysisAudioClip({
+    handle: { id: `clip-${id}` },
+    name: "Duplicate",
+    startTime: id * 8,
+    endTime: id * 8 + 4,
+    duration: 4,
+  }));
+  const track = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "track-duplicate" },
+    name: "Audio",
+    arrangementClips: clips,
+  });
+
+  await assert.rejects(
+    observeLive(
+      { application: { song: { tempo: 120, tracks: [track] } } } as never,
+      { type: "analyze_audio_clip", trackName: "Audio", clipName: "Duplicate" },
+      { track },
+    ),
+    (error: unknown) => {
+      assert.match(String(error), /Add startBeat to disambiguate/i);
+      assert.doesNotMatch(String(error), /clipStartBeat/);
+      return true;
+    },
+  );
 });
 
 function monoPcm16Wave(samples: number[], sampleRate: number): Buffer {
@@ -204,7 +458,7 @@ test("analyze_audio_clip rejects target state drift during rendering", async () 
         { track, clip },
       ),
       (error: unknown) => {
-        assert.match(String(error), /Live state changed during audio analysis/i);
+        assert.match(String(error), /Live state changed during audio rendering/i);
         assert.doesNotMatch(String(error), /render\.wav|\/tmp\//);
         return true;
       },
@@ -253,7 +507,7 @@ test("analyze_audio_clip rejects a new overlap introduced during rendering", asy
         { type: "analyze_audio_clip", trackName: "Audio", startBeat: 0 },
         { track, clip },
       ),
-      /Live state changed during audio analysis/i,
+      /Live state changed during audio rendering/i,
     );
   } finally {
     await fs.rm(directory, { recursive: true });

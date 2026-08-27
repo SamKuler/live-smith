@@ -19,6 +19,8 @@ export type ModelInputPart =
       base64: string;
     };
 
+export type ModelToolInputPart = Extract<ModelInputPart, { type: "audio" }>;
+
 export type ConversationMessage =
   | { role: "user"; content: ModelInputPart[] }
   | { role: "assistant"; content: string };
@@ -100,4 +102,10 @@ export type ModelConversationMessage =
       toolCalls: ModelToolCall[];
       providerState?: unknown;
     }
-  | { role: "tool"; toolCallId: string; content: string };
+  | {
+      role: "tool";
+      toolCallId: string;
+      content: string;
+      /** Ephemeral audio produced by this tool; never persisted in trace text. */
+      modelInputPart?: ModelToolInputPart;
+    };

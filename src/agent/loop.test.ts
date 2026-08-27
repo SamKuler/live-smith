@@ -598,6 +598,107 @@ test("runAgentLoop supports strict analyze_audio_clip tool calls", async () => {
   assert.match(result.message, /-18 dBFS/);
 });
 
+test("runAgentLoop binds rendered audio to its tool result for the next model turn", async () => {
+  const observedRequests: unknown[] = [];
+  const audio = {
+    type: "audio" as const,
+    fileName: "live-render.wav",
+    mediaType: "audio/wav" as const,
+    base64: "AAAA",
+  };
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => {
+      if (input.messages.length === 0) {
+        return {
+          content: "I will read the requested Arrangement audio.",
+          toolCalls: [{
+            id: "read_audio",
+            name: "read_arrangement_audio",
+            arguments: JSON.stringify({
+              trackName: "Reference",
+              clipName: "track.mp3",
+              clipStartBeat: 0,
+              startBeat: 0,
+              endBeat: 108,
+            }),
+          }],
+        };
+      }
+      const tool = input.messages.find((message) => message.role === "tool");
+      assert.equal(tool?.role, "tool");
+      assert.deepEqual(tool?.modelInputPart, audio);
+      return { content: "I can now hear the rendered range.", toolCalls: [] };
+    },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return {
+        content:
+          'Rendered pre-FX audio for Clip "track.mp3" on track "Reference", beatRange=0-108.',
+        modelInputPart: audio,
+      };
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "read_arrangement_audio",
+    trackName: "Reference",
+    clipName: "track.mp3",
+    clipStartBeat: 0,
+    startBeat: 0,
+    endBeat: 108,
+  }]);
+  assert.match(result.message, /now hear/);
+});
+
+test("tool-produced audio is accepted only after its trace result succeeds", async () => {
+  const audio = {
+    type: "audio" as const,
+    fileName: "live-render.wav",
+    mediaType: "audio/wav" as const,
+    base64: "AAAA",
+  };
+  let accepted = 0;
+  let rejectFirstTrace = true;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => input.messages.length === 0
+      ? {
+          content: null,
+          toolCalls: [{
+            id: "read-audio",
+            name: "read_arrangement_audio",
+            arguments: JSON.stringify({ startBeat: 0, endBeat: 4 }),
+          }],
+        }
+      : { content: "The audio result could not be recorded.", toolCalls: [] },
+    observe: async () => ({
+      content: "Rendered beats 0-4.",
+      modelInputPart: audio,
+    }),
+    onEvent: async (event) => {
+      if (
+        rejectFirstTrace &&
+        event.kind === "tool_result" &&
+        event.content === "Rendered beats 0-4."
+      ) {
+        rejectFirstTrace = false;
+        throw new Error("trace persistence failed");
+      }
+    },
+    onModelInputPartAccepted: () => {
+      accepted += 1;
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.equal(accepted, 0);
+  assert.match(result.message, /could not be recorded/i);
+});
+
 test("runAgentLoop emits callbacks for assistant, tool call, and tool result", async () => {
   const eventKinds: string[] = [];
 

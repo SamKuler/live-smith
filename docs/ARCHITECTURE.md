@@ -877,19 +877,44 @@ mutation. Optional SDK note fields are preserved unchanged.
 `analyze_audio_clip` is a client-executed read-only observation. It resolves one
 Arrangement Audio Clip on an Audio Track and refuses same-track overlap in the
 Clip beat range. The SDK `Resources.renderPreFxAudio` service renders that range
-to its extension temp directory. Live Smith opens the returned WAV without
-following symlinks, validates one stable bounded regular-file snapshot, streams
+to its extension temp directory using Live's configured Record File Type. Live
+Smith opens a supported returned WAV without following symlinks, validates one
+stable bounded regular-file snapshot, streams
 PCM or IEEE-float samples with cancellation and cooperative yielding, and
 returns path-free sample peak, RMS, crest factor, per-channel DC offset,
 maximum absolute channel DC offset, silent-frame ratio at a 0.001 amplitude
 threshold, and clipped-sample metrics. These are pre-effects track statistics,
 not realtime monitoring or integrated LUFS. The Track, Clip, audible-content
 settings, beat range, and overlap isolation are snapshotted before rendering
-and revalidated afterward; the summary uses only the verified snapshot. The
-SDK creates the WAV in its extension temp directory. Live Smith closes the
-verified file handle but does not unlink the pathname afterward because the
+and revalidated afterward; the summary uses only the verified snapshot. An AIFF
+render is rejected because the current bounded parser and model input contract
+accept WAV but do not transcode host files. Live Smith closes the verified file
+handle but does not unlink the pathname afterward because the
 beta SDK exposes no atomic handle-based cleanup contract; pathname lifecycle
 therefore remains with the SDK temp directory.
+
+`read_arrangement_audio` reuses the same isolated Arrangement Clip resolution,
+range render, overlap check, cancellation, and post-render state revalidation.
+It is exposed only when the runtime has tools plus verified audio input and the
+active protocol can carry audio after a client tool result. The rendered WAV is
+requested with explicit Arrangement start/end beats. The actual WAV is checked
+against the ordinary per-file duration and byte
+limits and the combined request quota. Its bytes are bound to the text tool
+result only in the current in-memory agent transcript; trace events and Session
+history persist no base64 or local path. OpenAI Chat serializes the complete
+tool-result batch before a synthetic untrusted user audio part. The subscription
+backend places a
+reference in its transcript and sends the bytes as a separate audio input.
+OpenAI Responses and Anthropic Messages do not expose the tool and reject any
+such part defensively. The render is pre-effects Arrangement audio and excludes
+the track device chain, sends, and master mix. The SDK has no equivalent render
+for Session View Clips or Take Lanes.
+
+The beta SDK render call has no cancellation parameter. Live Smith cancels the
+caller's wait immediately, but keeps the unresolved host render and any returned
+temp-file consumption as owner of an activation-scoped queue. Later renders wait
+for that work to settle instead of accumulating orphan SDK work or racing a
+reused temp path. Waiting callers remain independently cancellable.
 
 SDK `1.0.0-beta.1` exposes no Automation Envelope object or automation-point
 read/write operation. Automation is therefore outside the current action and

@@ -383,6 +383,79 @@ test("OpenAI Chat serializes current and historical WAV/MP3 input without local 
   );
 });
 
+test("OpenAI Chat emits tool-produced audio only after the complete tool-result batch", async () => {
+  let messages: Array<Record<string, unknown>> = [];
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async (_input, init) => {
+      messages = (JSON.parse(String(init?.body)) as {
+        messages: Array<Record<string, unknown>>;
+      }).messages;
+      return completedChatResponse();
+    },
+  });
+  const req = request(profile(), [
+    {
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        { id: "read-a", name: "read_arrangement_audio", arguments: "{}" },
+        { id: "inspect-b", name: "inspect_track", arguments: "{}" },
+      ],
+    },
+    {
+      role: "tool",
+      toolCallId: "read-a",
+      content: "Rendered beats 0-108.",
+      modelInputPart: audioPart(3, "/private/render-secret.wav"),
+    },
+    {
+      role: "tool",
+      toolCallId: "inspect-b",
+      content: "Track inspection complete.",
+      modelInputPart: audioPart(3, "/private/second-render-secret.wav"),
+    },
+    { role: "user", content: "Use the rendered melody." },
+  ]);
+  req.runtimeProfile.capabilities.inputs.audio = true;
+  req.runtimeProfile.inputCapabilityEvidence.audio = "supported";
+
+  await transport.createToolTurn(req);
+
+  const toolIndexes = messages
+    .map((message, index) => message.role === "tool" ? index : -1)
+    .filter((index) => index >= 0);
+  assert.equal(toolIndexes.length, 2);
+  const audioIndex = messages.findIndex((message) =>
+    Array.isArray(message.content) &&
+    message.content.some((part) =>
+      typeof part === "object" && part !== null &&
+      (part as { type?: unknown }).type === "input_audio"
+    )
+  );
+  const steeringIndex = messages.findIndex((message) =>
+    message.role === "user" && message.content === "Use the rendered melody."
+  );
+  assert.ok(audioIndex > Math.max(...toolIndexes));
+  assert.ok(steeringIndex > audioIndex);
+  const audioContent = messages[audioIndex]?.content as Array<{
+    type?: string;
+    text?: string;
+  }>;
+  assert.deepEqual(
+    audioContent.filter((part) => part.text?.startsWith("Audio payload"))
+      .map((part) => part.text),
+    [
+      "Audio payload produced by tool result read-a:",
+      "Audio payload produced by tool result inspect-b:",
+    ],
+  );
+  assert.equal(
+    audioContent.filter((part) => part.type === "input_audio").length,
+    2,
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /render-secret|\/private/);
+});
+
 test("OpenAI Chat rejects disabled or unverified audio before HTTP", async () => {
   let fetchCalls = 0;
   const transport = createOpenAIChatTransport({

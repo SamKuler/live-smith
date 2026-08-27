@@ -113,3 +113,31 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
     "trackName",
   ]);
 });
+
+test("audio-capable Live tools expose bounded Arrangement audio input", () => {
+  const ordinary = new Set(
+    liveSmithTools().map((tool) => tool.function.name),
+  );
+  assert.equal(ordinary.has("read_arrangement_audio"), false);
+
+  const tools = new Map(
+    liveSmithTools({ readArrangementAudio: true }).map((tool) => [
+      tool.function.name,
+      tool.function,
+    ]),
+  );
+  const readAudio = tools.get("read_arrangement_audio")?.parameters as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  assert.ok(readAudio);
+  assert.deepEqual(Object.keys(readAudio.properties ?? {}).sort(), [
+    "clipName",
+    "clipStartBeat",
+    "endBeat",
+    "startBeat",
+    "trackName",
+  ]);
+  assert.doesNotMatch(JSON.stringify(readAudio), /filePath|absolute path/i);
+  assert.deepEqual(readAudio.required, ["startBeat", "endBeat"]);
+});

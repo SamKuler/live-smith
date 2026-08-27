@@ -53,4 +53,12 @@ test("progress labels identify object-aware inspections", () => {
     }),
     'Analyzing pre-FX audio for "Vocal"',
   );
+  assert.equal(
+    progressLabelForToolCall({
+      id: "read-audio",
+      name: "read_arrangement_audio",
+      arguments: '{"clipName":"Reference"}',
+    }),
+    'Reading pre-FX audio for "Reference"',
+  );
 });

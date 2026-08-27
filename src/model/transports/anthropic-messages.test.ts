@@ -1159,8 +1159,8 @@ test("Anthropic Messages rejects PDF input before HTTP when PDF capability is di
   assert.equal(fetchCalls, 0);
 });
 
-test("Anthropic Messages rejects current and historical audio before quotas, body construction, or HTTP", async () => {
-  for (const location of ["current", "history"] as const) {
+test("Anthropic Messages rejects current, historical, and tool-produced audio before HTTP", async () => {
+  for (const location of ["current", "history", "tool"] as const) {
     let fetchCalls = 0;
     const transport = createAnthropicMessagesTransport({
       fetchImpl: async () => {
@@ -1179,7 +1179,16 @@ test("Anthropic Messages rejects current and historical audio before quotas, bod
     };
     const part = audioPart("/private/audio-secret.wav");
     if (location === "current") req.currentUserContent = [part];
-    else req.history = [{ role: "user", content: [part] }];
+    else if (location === "history") {
+      req.history = [{ role: "user", content: [part] }];
+    } else {
+      req.agentMessages = [{
+        role: "tool",
+        toolCallId: "read-audio",
+        content: "Rendered audio.",
+        modelInputPart: part,
+      }];
+    }
 
     await assert.rejects(
       transport.createToolTurn(req),
