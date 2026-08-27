@@ -268,6 +268,92 @@ test("a pending startup capability read leaves drafts and Session switching usab
   }
 });
 
+test("startup capability loading applies the runtime after an immediate Session switch", async () => {
+  const selection = {
+    profileId: "profile-1",
+    model: "model-b",
+    reasoningEffort: "high" as const,
+  };
+  const initial = subscriptionState();
+  initial.openSettingsOnLoad = false;
+  initial.sessions[1]!.modelSelection = { ...selection };
+  const server = subscriptionState();
+  server.openSettingsOnLoad = false;
+  server.sessions[1]!.modelSelection = { ...selection };
+
+  const loadedCatalog: DiscoveredModelInfo[] = catalog.map((model) =>
+    model.id === "model-b"
+      ? {
+          ...model,
+          capabilities: {
+            ...model.capabilities,
+            reasoning: {
+              supported: true,
+              canDisable: false,
+              efforts: ["low", "high"],
+              budgetTokens: false,
+              strategy: "effort",
+            },
+          },
+        }
+      : model
+  );
+  const loaded = subscriptionState(true);
+  const profile = loaded.settings.profiles[0]!;
+  loaded.sessions[1]!.modelSelection = { ...selection };
+  loaded.activeSessionId = "session-2";
+  loaded.approvalMode = loaded.sessions[1]!.approvalMode ?? "manual";
+  Object.assign(loaded, capabilityPreviewForProfile(profile, loadedCatalog));
+  loaded.availableModels = resolveDiscoveredModels(profile, loadedCatalog);
+  loaded.configuredModels = chatConfiguredModels(profile, loadedCatalog);
+  loaded.configuredModelsReady = true;
+  loaded.runtimeProfile = chatRuntimeSummary(runtimeProfileForSavedProfile(
+    profile,
+    loadedCatalog,
+    { model: selection.model, reasoningEffort: selection.reasoningEffort },
+  ));
+
+  const harness = await createDialogHarness(initial, undefined, {
+    serverState: server,
+    holdInitialCommand: true,
+  });
+  let released = false;
+  try {
+    await waitForCondition(() => capabilityCalls(harness).length === 1,
+      "Expected startup capability loading to wait before server mutation.");
+    harness.click('.session-entry[data-session-id="session-2"] .session-row');
+    await waitForCondition(() => commandCalls(harness).length === 1,
+      "Expected the Session switch to complete while capability loading waits.");
+    await waitForCondition(() => harness.document.querySelector(
+      '.session-entry[data-session-id="session-2"] .session-row',
+    )?.getAttribute("aria-pressed") === "true", "Expected Session 2 to become active.");
+
+    const model = harness.document.querySelector<HTMLSelectElement>("#composerModel")!;
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    )!;
+    assert.equal(model.value, "model-b");
+    assert.equal(reasoning.closest<HTMLElement>(".composer-runtime-field")?.hidden, true);
+
+    harness.setServerState(loaded);
+    harness.releaseHeldCommand();
+    released = true;
+    await harness.settle();
+
+    assert.equal(model.value, "model-b");
+    assert.equal(reasoning.closest<HTMLElement>(".composer-runtime-field")?.hidden, false);
+    assert.deepEqual([...reasoning.options].map((option) => option.value), [
+      "", "low", "high",
+    ]);
+    assert.equal(reasoning.value, "high");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommand();
+    await harness.settle();
+    harness.close();
+  }
+});
+
 test("Send is admitted while the startup capability response is still pending", async () => {
   const harness = await createDialogHarness(subscriptionState(), undefined, {
     serverState: subscriptionState(true),

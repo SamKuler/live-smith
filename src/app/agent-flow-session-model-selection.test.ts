@@ -11,6 +11,7 @@ import type {
   ManagedAuthState,
   RuntimeProfile,
 } from "../model/provider.js";
+import { loadSessionEvents } from "../storage/events.js";
 import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
@@ -23,6 +24,16 @@ function commandHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json",
     "X-Live-Smith-Command-Id": `model-selection-${commandSequence}`,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  return {
+    promise: new Promise<T>((nextResolve) => {
+      resolve = nextResolve;
+    }),
+    resolve,
   };
 }
 
@@ -419,4 +430,197 @@ test("subscription model capabilities load explicitly and remain auth-generation
   });
 
   assert.ok(passiveReads > 0);
+});
+
+test("concurrent catalog loading cannot mark a fallback Session runtime ready", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-session-catalog-snapshot-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const profile: SavedProfile = {
+    id: "subscription-catalog-snapshot",
+    name: "Subscription catalog snapshot",
+    connection: { kind: "codex-subscription", provider: "openai" },
+    defaultModel: "gpt-capable",
+    models: [{
+      model: "gpt-capable",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+  };
+  await saveSavedProfile(directory, profile);
+
+  const auth: ManagedAuthState = {
+    status: "signed-in",
+    accountLabel: "studio@example.test",
+    planType: "pro",
+    subscriptionEligible: true,
+  };
+  const backend: CodexSubscriptionBackend = {
+    kind: "codex-subscription",
+    async listModels() {
+      return [{
+        id: "gpt-capable",
+        displayName: "GPT Capable",
+        capabilities: {
+          tools: true,
+          streaming: false,
+          temperature: "unsupported",
+          reasoning: {
+            supported: true,
+            canDisable: false,
+            efforts: ["low", "high"],
+            budgetTokens: false,
+            strategy: "effort",
+          },
+        },
+      }];
+    },
+    async createToolTurn() {
+      return { content: null, toolCalls: [] };
+    },
+    onTerminal() {
+      return () => undefined;
+    },
+    reserveToolTurn() {
+      return {
+        async createToolTurn() {
+          return { content: null, toolCalls: [] };
+        },
+        async release() {},
+      };
+    },
+    async readAuthState() {
+      return auth;
+    },
+    async beginLogin() {
+      return auth;
+    },
+    async logout() {
+      return { status: "signed-out" };
+    },
+    async close() {},
+  };
+  const modelBackendManager = {
+    async forProfile() { return backend; },
+    async codex() { return backend; },
+    async codexLease() {
+      return { backend, async retire() { return true; } };
+    },
+    async invalidateCodex() {},
+    async close() {},
+  };
+  const selectStateReadStarted = deferred<void>();
+  const releaseSelectStateRead = deferred<void>();
+  let blockNextSessionStateRead = false;
+  let blockedSessionStateRead = false;
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 3n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const token = chatUrl.searchParams.get("token");
+        assert.ok(token);
+        const endpoint = (pathname: string) =>
+          `${chatUrl.origin}${pathname}?token=${token}`;
+        const state = async (): Promise<ChatDialogState> => {
+          const response = await fetch(endpoint("/state"));
+          assert.equal(response.status, 200);
+          return response.json() as Promise<ChatDialogState>;
+        };
+        const postCommand = async (body: unknown): Promise<ChatDialogState> => {
+          const response = await fetch(endpoint("/command"), {
+            method: "POST",
+            headers: commandHeaders(),
+            body: JSON.stringify(body),
+          });
+          const responseBody = await response.text();
+          assert.equal(response.status, 200, responseBody);
+          return JSON.parse(responseBody) as ChatDialogState;
+        };
+
+        const initial = await state();
+        const firstSessionId = initial.activeSessionId;
+        await postCommand({
+          kind: "rename_session",
+          sessionId: firstSessionId,
+          title: "First Session",
+        });
+        const created = await postCommand({ kind: "new_session" });
+        const secondSessionId = created.activeSessionId;
+        assert.notEqual(secondSessionId, firstSessionId);
+        await postCommand({ kind: "select_session", sessionId: firstSessionId });
+
+        blockNextSessionStateRead = true;
+        const selecting = fetch(endpoint("/command"), {
+          method: "POST",
+          headers: commandHeaders(),
+          body: JSON.stringify({
+            kind: "select_session",
+            sessionId: secondSessionId,
+          }),
+        });
+        await selectStateReadStarted.promise;
+
+        try {
+          const capabilityResponse = await fetch(endpoint("/session-model-capabilities"), {
+            method: "POST",
+            headers: commandHeaders(),
+            body: JSON.stringify({
+              kind: "load_session_model_capabilities",
+              sessionId: secondSessionId,
+              profileId: profile.id,
+            }),
+          });
+          const capabilityBody = await capabilityResponse.text();
+          assert.equal(capabilityResponse.status, 200, capabilityBody);
+          const capabilityState = JSON.parse(capabilityBody) as ChatDialogState;
+          assert.equal(capabilityState.configuredModelsReady, true);
+          assert.equal(
+            capabilityState.runtimeProfile?.capabilities.reasoning.supported,
+            true,
+          );
+        } finally {
+          releaseSelectStateRead.resolve();
+        }
+        const selectResponse = await selecting;
+        const selectBody = await selectResponse.text();
+        assert.equal(selectResponse.status, 200, selectBody);
+        const selectedState = JSON.parse(selectBody) as ChatDialogState;
+        assert.equal(selectedState.activeSessionId, secondSessionId);
+        assert.equal(
+          selectedState.runtimeProfile?.capabilities.reasoning.supported,
+          false,
+          "the select response must retain its pre-catalog runtime snapshot",
+        );
+        assert.equal(
+          selectedState.configuredModelsReady,
+          false,
+          "a fallback runtime snapshot must not claim that the catalog is ready",
+        );
+
+        const current = await state();
+        assert.equal(current.configuredModelsReady, true);
+        assert.equal(current.runtimeProfile?.capabilities.reasoning.supported, true);
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager,
+    loadSessionEvents: async (storageDirectory, sessionId) => {
+      if (blockNextSessionStateRead && !blockedSessionStateRead) {
+        blockedSessionStateRead = true;
+        selectStateReadStarted.resolve();
+        await releaseSelectStateRead.promise;
+      }
+      return loadSessionEvents(storageDirectory, sessionId);
+    },
+  });
 });

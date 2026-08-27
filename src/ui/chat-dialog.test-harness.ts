@@ -391,6 +391,7 @@ async function createDialogHarness(
     webCryptoDigestFails?: boolean;
     serverState?: ChatBridgeState;
     initialCommandError?: string;
+    holdInitialCommand?: boolean;
     holdInitialCommandResponse?: boolean;
   } = {},
 ): Promise<DialogHarness> {
@@ -468,6 +469,11 @@ async function createDialogHarness(
   let heldAttachment: Promise<void> | null = null;
   let releaseCommand: (() => void) | null = null;
   let releaseCommandResponse: (() => void) | null = null;
+  if (options.holdInitialCommand) {
+    heldCommand = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+  }
   if (options.holdInitialCommandResponse) {
     heldCommandResponse = new Promise<void>((resolve) => {
       releaseCommandResponse = resolve;

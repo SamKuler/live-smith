@@ -444,29 +444,28 @@ export async function runAgentFlow(
     }
   };
 
-  const modelsForProfile = async (
+  const modelProjectionForProfile = async (
     profile: DraftProfile | SavedProfile,
     signal?: AbortSignal,
   ) => {
     throwIfAborted(signal);
     const fingerprint = connectionFingerprint(profile);
-    const cachedModels = modelsByConnection.get(fingerprint);
     if (profile.connection.kind === "direct-api") {
-      if (cachedModels) return cachedModels;
+      const cachedModels = modelsByConnection.get(fingerprint);
+      if (cachedModels) return { models: cachedModels, ready: true };
       const models = await loadModelCache(
         storageDirectory,
         profile,
       );
       throwIfAborted(signal);
       modelsByConnection.set(fingerprint, models);
-      return models;
+      return { models, ready: true };
     }
     const generation = await synchronizeAuthGeneration(signal);
-    if (
-      cachedModels &&
-      codexCatalogGenerationByConnection.get(fingerprint) === generation
-    ) return cachedModels;
-    return [];
+    const models = modelsByConnection.get(fingerprint);
+    const ready = models !== undefined &&
+      codexCatalogGenerationByConnection.get(fingerprint) === generation;
+    return { models: ready ? models : [], ready };
   };
 
   const requireDiscoveredModelCatalog = (
@@ -711,15 +710,17 @@ export async function runAgentFlow(
         await readCodexAuth(signal);
       }
     }
-    const models = modelProfile
-      ? await modelsForProfile(modelProfile, signal)
-      : [];
-    const activeProfileModels = activeProfile
+    const modelProjection = modelProfile
+      ? await modelProjectionForProfile(modelProfile, signal)
+      : { models: [], ready: true };
+    const activeProfileProjection = activeProfile
       ? modelProfile?.id === activeProfile.id &&
           connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile)
-        ? models
-        : await modelsForProfile(activeProfile, signal)
-      : [];
+        ? modelProjection
+        : await modelProjectionForProfile(activeProfile, signal)
+      : { models: [], ready: true };
+    const models = modelProjection.models;
+    const activeProfileModels = activeProfileProjection.models;
     const capabilityPreview = modelProfile
       ? capabilityPreviewForProfile(modelProfile, models)
       : {
@@ -874,14 +875,7 @@ export async function runAgentFlow(
         configuredModels: activeProfile
           ? chatConfiguredModels(activeProfile, activeProfileModels)
           : [],
-        configuredModelsReady: activeProfile === null ||
-          activeProfile.connection.kind === "direct-api" ||
-          (
-            modelsByConnection.has(connectionFingerprint(activeProfile)) &&
-            codexCatalogGenerationByConnection.get(
-              connectionFingerprint(activeProfile),
-            ) === modelAuthSendFence.authGeneration()
-          ),
+        configuredModelsReady: activeProfileProjection.ready,
         modelStateSource: modelProfile
           ? modelStateSourceForProfile(modelProfile)
           : null,
@@ -1371,7 +1365,7 @@ export async function runAgentFlow(
             managedGeneration = await synchronizeAuthGeneration(signal);
           }
 
-          const models = await modelsForProfile(initialProfile, signal);
+          const { models } = await modelProjectionForProfile(initialProfile, signal);
           if (
             initialProfile.connection.kind === "codex-subscription" &&
             !models.some((model) => model.id === commandInput.model)

@@ -244,6 +244,9 @@ After any successful Session command changes the active Session, the client
 starts the same background read when the current subscription catalog is still
 missing. This lets a restored Session materialize its saved model and reasoning
 override without waiting for focus on the model selector.
+Each state response derives its runtime summary and catalog-ready flag from one
+auth-generation catalog snapshot, so concurrent Session navigation cannot pair
+a fallback runtime with a later ready flag.
 
 Before persisting every new subscription prompt, the server confirms an eligible
 signed-in account, reads the current App Server model catalog, and requires the
