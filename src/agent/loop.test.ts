@@ -1172,7 +1172,7 @@ test("runAgentLoop refuses apply actions when action preflight is not configured
   assert.equal(executeCalls, 0);
 });
 
-test("runAgentLoop completes action preflight before confirmation and execution", async () => {
+test("runAgentLoop passes the confirmed plan guard to execution for post-prepare revalidation", async () => {
   const order: string[] = [];
   let modelCalls = 0;
 
@@ -1206,14 +1206,21 @@ test("runAgentLoop completes action preflight before confirmation and execution"
       order.push("confirm");
       return true;
     },
-    executeActions: async (_plan, bindings) => {
+    executeActions: async (_plan, bindings, revalidate) => {
       assert.deepEqual(bindings, { track: "bound-handle" });
       order.push("execute");
+      assert.deepEqual(await revalidate(), { track: "bound-handle" });
       return mutationOutcome(['Created MIDI track "Bass".']);
     },
   });
 
-  assert.deepEqual(order, ["preflight", "confirm", "revalidate", "execute"]);
+  assert.deepEqual(order, [
+    "preflight",
+    "confirm",
+    "revalidate",
+    "execute",
+    "revalidate",
+  ]);
 });
 
 test("runAgentLoop returns post-confirmation target changes to the model without executing", async () => {

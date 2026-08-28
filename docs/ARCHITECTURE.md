@@ -38,6 +38,9 @@ src/
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
+    request-audio-sources.ts
+      Owns send-scoped audio SampleSource locators, verified staging, Live Project
+      import, and partial import progress.
     skill-context.ts
       Resolves persistent and one-turn Skill activation from bundled definitions
       and one immutable, hash-validated User Skill snapshot without changing
@@ -640,12 +643,46 @@ tool support is unrelated and is not a gate. OpenAI Responses and Anthropic
 Messages reject audio locally. Office content is locally
 extracted and encoded with its filename and media type in a JSON-escaped block
 explicitly labelled untrusted. File names, embedded metadata, document text,
-audio, and other binary content have no instruction authority; attachment IDs
-and local paths are not exposed, and the action schema has no attachment or
-arbitrary-path sample source. A file may inform the model but cannot directly
-become a Live sample or filesystem capability. See
+audio, and other binary content have no instruction authority. Attachment IDs
+and local paths are not exposed. A current audio attachment may become a Live
+sample only through the separate host-created request locator described below;
+the model cannot turn attachment content or an arbitrary path into that
+capability. See
 [Image, document, and audio input mapping](MODEL_PROVIDERS.md#image-document-and-audio-input-mapping)
 for protocol encodings and capability evidence.
+
+### Current-request audio SampleSources
+
+After the current user event is committed, `request-audio-sources.ts` assigns
+each current audio attachment a locator containing that event ID and its stable
+audio-only index. The locator is placed in trusted request instructions, while
+the file bytes, filename, and embedded metadata remain untrusted model input.
+Only the current send owns the locator registry: historical attachments never
+enter it, and an old locator fails on the next send. The locator exposes no
+attachment storage ID, blob path, staging path, or Live-managed path to model
+context, confirmation text, or Apply results. The committed user event retains
+its exact internal attachment references for history and ownership checks.
+
+Preflight binds the locator to its exact immutable audio reference without
+reading a filesystem path. After confirmation and after the Live mutation queue
+is acquired, the app prepares every unique request audio source used by the
+plan before executing any Live action. Preparation re-reads the blob with the
+exact expected reference, which rechecks ownership, metadata, size, audio
+inspection fields, and SHA-256. Verified bytes are written to a private
+temporary `.wav` or `.mp3` chosen from the detected media type, passed to
+`resources.importIntoProject`, followed by immediate best-effort staging
+cleanup. Only the path returned by Live is given to Clip, Simpler, or Drum Pad
+SDK calls.
+
+If at least one new file was imported, the complete confirmed plan is
+revalidated again before its first Live action. This places imports before all
+plan mutations and avoids treating an earlier action in the same plan as
+external drift. Cancellation, new steering, scope changes, drift, or a later
+action failure after import records the project copy as partial progress. The
+managed path is cached only for the current send, so multiple actions using the
+same source import it once. Session deletion removes the private attachment but
+not the Live Project copy. The beta SDK exposes neither rollback nor deletion
+for imported files, so a failed later step may leave an unused project copy.
 
 ## Configuration boundaries
 
@@ -832,9 +869,10 @@ or created earlier in that call, express the dependency with top-level
 `targets`, creator `ref`, and consumer `trackRef`. Top-level targets and every
 name-based action target bind to existing SDK handles. Existing Scenes, Cue
 Points, Devices and their parents, Rack Chains, Clips, Clip Slots, Take Lanes, mixer
-parameters, and sample sources are bound per action as well. Execution uses
-those objects directly, so an earlier delete or insertion cannot make a later
-index/path resolve to a different object. Because the SDK deletes a Session Clip
+parameters, and Live sample sources are bound per action as well. Current-request
+audio sources instead bind their exact send-scoped locator and immutable
+attachment reference. Execution uses those bindings directly, so an earlier
+delete or insertion cannot make a later index/path resolve to a different object. Because the SDK deletes a Session Clip
 through its Slot rather than through a Clip argument, execution also verifies
 that the Slot still contains the bound Clip before deleting. A creator `ref` never
 binds to a same-name existing track: execution always creates a new track and
@@ -1083,7 +1121,7 @@ Concurrency boundaries have distinct ownership:
 | Storage transaction | Canonical storage directory | Serialize durable settings, Session, event, attachment, and Skill mutations. |
 | Session mutation fence | Storage directory and Session ID | Hold one Session's send, attachment, Skill activation, and lifecycle boundary through reconciliation. |
 | Managed auth/send fence | Canonical storage directory | Keep auth changes, generations, and pending-login ownership coherent with subscription sends. |
-| Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, with revalidation after queue acquisition. |
+| Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, including request-audio import and revalidation after import. |
 
 These are in-process coordination boundaries, not locks between independent
 Extension Host processes. Different Sessions may observe and plan in parallel;

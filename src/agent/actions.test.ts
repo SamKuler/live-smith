@@ -920,6 +920,21 @@ test("device paths reject malformed segments and legacy index conflicts", () => 
 });
 
 test("sample sources never accept model-provided filesystem paths", () => {
+  const plan = validateAgentPlan({
+    message: "Use the second attached reference",
+    actions: [{
+      type: "replace_simpler_sample",
+      trackName: "Bass",
+      simplerName: "Simpler",
+      source: {
+        kind: "request_audio_attachment",
+        requestId: "event-current",
+        audioIndex: 1,
+      },
+    }],
+  });
+  assert.match(summarizeActionPlan(plan), /current request audio input 2/i);
+
   assert.throws(
     () => validateAgentPlan({
       message: "Unsafe sample",
@@ -931,6 +946,38 @@ test("sample sources never accept model-provided filesystem paths", () => {
       }],
     }),
     /does not support property filePath/i,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Do not expose storage IDs",
+      actions: [{
+        type: "replace_simpler_sample",
+        trackName: "Bass",
+        simplerName: "Simpler",
+        source: {
+          kind: "request_audio_attachment",
+          attachmentId: "attachment-private",
+          audioIndex: 0,
+        },
+      }],
+    }),
+    /does not support property attachmentId/i,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Reject an invalid audio index",
+      actions: [{
+        type: "replace_simpler_sample",
+        trackName: "Bass",
+        simplerName: "Simpler",
+        source: {
+          kind: "request_audio_attachment",
+          requestId: "event-current",
+          audioIndex: -1,
+        },
+      }],
+    }),
+    /audioIndex/i,
   );
 });
 

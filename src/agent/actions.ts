@@ -444,7 +444,7 @@ export function actionSystemPrompt(): string {
     "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
     "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
     "create_rack_chain appends one empty Chain to an existing non-Drum Rack. Use at most one such creation per Rack target in an apply_live_actions call, then inspect the returned Chain index with inspect_rack_chain before inserting devices or changing its mixer in a later staged call. The SDK does not expose Chain names, deletion, duplication, or reordering. Drum Rack pad creation remains configure_drum_pad so receiving-note uniqueness and partial completion stay explicit.",
-    "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
+    "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, an observed Simpler, or an exact current-request audio attachment locator supplied by the host. Attachment locators expire after the current send; never invent or reuse one from history. Never request, infer, or emit a filesystem path.",
     "Arrangement and Session are different locations. Use startBeat for Arrangement Clips and slotIndex for Session Clips, inspect the exact location before editing, and disclose replacement or deletion behavior in the plan.",
     "Scenes are Session View rows even when Live currently shows Arrangement. Only create, rename, duplicate, or delete Scenes when the user requested Session View structure or the observed workflow requires it; use Cue Points for Arrangement song-section markers. For rename_scene, sceneIndex identifies the target and newName is the desired name. sceneName is only an optional exact observed current-name guard; omit sceneName when it is unknown or blank.",
     "The SDK cannot browse preset packs, search the Live Browser, or insert a VST by plug-in identifier. Existing VST devices can still be inspected, have exposed parameters edited, and be duplicated or deleted through the generic device tools. Never claim that an unavailable preset, browser result, or VST was loaded.",
@@ -584,6 +584,8 @@ function sampleSourceText(source: import("./action-schema.js").SampleSource): st
   switch (source.kind) {
     case "selected":
       return "the selected Live sample source";
+    case "request_audio_attachment":
+      return `current request audio input ${source.audioIndex + 1}`;
     case "arrangement_audio_clip":
       return `arrangement audio clip${source.clipName ? ` "${source.clipName}"` : ""} on track "${source.trackName}" at beat ${source.startBeat}`;
     case "session_audio_clip":

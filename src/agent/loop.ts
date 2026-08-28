@@ -132,9 +132,11 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;
+  /** The same confirmed-plan guard may be rerun after preparation side effects. */
   executeActions(
     plan: AgentPlan,
     bindings: ExecutionBindings,
+    revalidateActions: AgentActionPreflightGuard<ExecutionBindings>,
   ): Promise<AgentActionExecutionOutcome>;
   onProgress?(message: string): Promise<void> | void;
   onEvent?(event: AgentLoopTraceEvent): Promise<void> | void;
@@ -917,7 +919,11 @@ async function executeToolCall(
             true,
           );
         }
-        return options.executeActions(plan, bindings);
+        return options.executeActions(
+          plan,
+          bindings,
+          revalidateActions,
+        );
       };
       const outcome = options.withActionExecutionLock
         ? await options.withActionExecutionLock(executeConfirmedActions)

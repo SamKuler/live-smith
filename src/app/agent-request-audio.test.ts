@@ -5,9 +5,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { AudioClip, AudioTrack, MidiTrack } from "@ableton-extensions/sdk";
+import { AudioClip, AudioTrack, MidiTrack, Simpler } from "@ableton-extensions/sdk";
 
 import type { DirectApiProfile } from "../model/profile.js";
+import { saveSessionAttachment } from "../storage/attachments.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { createSession } from "../storage/sessions.js";
 import { handleAgentRequest } from "./agent-request.js";
@@ -204,6 +205,264 @@ test("a hidden audio tool call cannot read Live audio for an unsupported protoco
     assert.equal(renderCalls, 0);
   } finally {
     await fs.rm(directory, { recursive: true });
+  }
+});
+
+test("request audio is imported and revalidated before every Live action in the plan", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-request-audio-plan-"));
+  const session = await createSession(directory, {
+    title: "Use attached sample",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "2", label: "Instrument" },
+  });
+  await saveSessionAttachment(directory, session.id, {
+    fileName: "reference.wav",
+    bytes: waveBytes(),
+  }, { preSavePendingAttachmentRefs: [] });
+
+  const order: string[] = [];
+  let tempo = 120;
+  let replacedPath = "";
+  const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
+    handle: { id: 3n },
+    name: "Simpler",
+    parameters: [],
+    sample: null,
+    replaceSample: async (filePath: string) => {
+      order.push("replace");
+      replacedPath = filePath;
+      return {};
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: 2n },
+    name: "Instrument",
+    devices: [simpler],
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+  });
+  const song = Object.defineProperties({
+    handle: { id: 1n },
+    tracks: [track],
+    returnTracks: [],
+    scenes: [],
+    cuePoints: [],
+    gridQuantization: 6,
+    gridIsTriplet: false,
+    scaleMode: false,
+    scaleName: "",
+    rootNote: 0,
+    scaleIntervals: [],
+  }, {
+    tempo: {
+      enumerable: true,
+      get: () => tempo,
+      set: (value: number) => {
+        order.push("tempo");
+        tempo = value;
+      },
+    },
+  });
+  let modelCalls = 0;
+
+  try {
+    const result = await handleAgentRequest(
+      {
+        environment: { storageDirectory: directory, tempDirectory: directory },
+        application: { song },
+        resources: {
+          importIntoProject: async (stagingPath: string) => {
+            order.push("import");
+            assert.equal(
+              Buffer.compare(await fs.readFile(stagingPath), Buffer.from(waveBytes())),
+              0,
+            );
+            return "/Live Project/Samples/Imported/reference.wav";
+          },
+        },
+      } as never,
+      directory,
+      {
+        summary: 'MIDI track "Instrument" with Simpler',
+        target: { track },
+        scope: { kind: "track", identity: "2", label: "Instrument" },
+      },
+      "Set the tempo and load the attached audio into Simpler.",
+      runtimeProfileForSavedProfile(audioProfile()),
+      "project-a",
+      session.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => {
+          order.push("confirm");
+          return true;
+        },
+        withActionExecutionLock: async (operation) => {
+          order.push("lock");
+          return operation();
+        },
+      },
+      async (request) => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          const locatorText = request.requestAudioSampleSourceInstructions?.match(
+            /Audio input 1: (\{[^\n]+\})/,
+          )?.[1];
+          assert.ok(locatorText);
+          const locator = JSON.parse(locatorText);
+          return {
+            content: "Applying both changes.",
+            toolCalls: [{
+              id: "apply-attached-sample",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Set tempo and load current audio input 1",
+                actions: [
+                  { type: "set_tempo", tempo: 128 },
+                  {
+                    type: "replace_simpler_sample",
+                    trackName: "Instrument",
+                    simplerName: "Simpler",
+                    source: locator,
+                  },
+                ],
+              }),
+            }],
+          };
+        }
+        assert.match(
+          request.agentMessages.at(-1)?.content ?? "",
+          /Imported current request audio input 1.*Set tempo.*Loaded sample/s,
+        );
+        return { content: "The attached sample is loaded.", toolCalls: [] };
+      },
+    );
+
+    assert.equal(result, "The attached sample is loaded.");
+    assert.equal(tempo, 128);
+    assert.equal(replacedPath, "/Live Project/Samples/Imported/reference.wav");
+    assert.deepEqual(order, ["confirm", "lock", "import", "tempo", "replace"]);
+    const serializedEvents = JSON.stringify(await loadSessionEvents(directory, session.id));
+    assert.doesNotMatch(serializedEvents, /live-smith-request-audio-|\/Live Project\//);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("post-import target drift records the project copy and blocks every Live action", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-request-audio-drift-"));
+  const session = await createSession(directory, {
+    title: "Reject changed target",
+    projectKey: "project-a",
+    scope: { kind: "track", identity: "12", label: "Instrument" },
+  });
+  await saveSessionAttachment(directory, session.id, {
+    fileName: "reference.wav",
+    bytes: waveBytes(),
+  }, { preSavePendingAttachmentRefs: [] });
+
+  let replaceCalls = 0;
+  let modelCalls = 0;
+  const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
+    handle: { id: 13n },
+    name: "Simpler",
+    parameters: [],
+    sample: null,
+    replaceSample: async () => {
+      replaceCalls += 1;
+      return {};
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: 12n },
+    name: "Instrument",
+    devices: [simpler],
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+    mute: false,
+    solo: false,
+    mutedViaSolo: false,
+    arm: false,
+    groupTrack: null,
+  });
+
+  try {
+    const result = await handleAgentRequest(
+      {
+        environment: { storageDirectory: directory, tempDirectory: directory },
+        application: {
+          song: { handle: { id: 11n }, tracks: [track], returnTracks: [] },
+        },
+        resources: {
+          importIntoProject: async () => {
+            track.name = "Changed Instrument";
+            return "/Live Project/Secret/reference.wav";
+          },
+        },
+      } as never,
+      directory,
+      {
+        summary: 'MIDI track "Instrument" with Simpler',
+        target: { track },
+        scope: { kind: "track", identity: "12", label: "Instrument" },
+      },
+      "Load the attached audio into Simpler.",
+      runtimeProfileForSavedProfile(audioProfile()),
+      "project-a",
+      session.id,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onProgress: () => {},
+        onSessionEvent: () => {},
+        confirmActions: async () => true,
+        withActionExecutionLock: (operation) => operation(),
+      },
+      async (request) => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          const locatorText = request.requestAudioSampleSourceInstructions?.match(
+            /Audio input 1: (\{[^\n]+\})/,
+          )?.[1];
+          assert.ok(locatorText);
+          return {
+            content: "Loading the attachment.",
+            toolCalls: [{
+              id: "apply-drifted-sample",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Load current audio input 1",
+                actions: [{
+                  type: "replace_simpler_sample",
+                  trackName: "Instrument",
+                  simplerName: "Simpler",
+                  source: JSON.parse(locatorText),
+                }],
+              }),
+            }],
+          };
+        }
+        return { content: "The target changed, so I stopped.", toolCalls: [] };
+      },
+    );
+
+    assert.match(result, /unfinished Live work/i);
+    assert.equal(modelCalls, 2);
+    assert.equal(replaceCalls, 0);
+    const serializedEvents = JSON.stringify(await loadSessionEvents(directory, session.id));
+    assert.match(serializedEvents, /Imported current request audio input 1/);
+    assert.match(serializedEvents, /partially completed/i);
+    assert.doesNotMatch(
+      serializedEvents,
+      /live-smith-request-audio-|\/Live Project\/Secret/,
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 

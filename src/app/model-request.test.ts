@@ -46,6 +46,8 @@ test("requestModelTurn dispatches through one explicit turn executor", async () 
     async createToolTurn(request: Parameters<ModelBackend["createToolTurn"]>[0]) {
       executorTurns += 1;
       assert.equal(request.runtimeProfile, runtimeProfile);
+      assert.match(request.systemInstructions, /current request audio input 1/i);
+      assert.doesNotMatch(JSON.stringify(request.currentUserContent), /event-current/);
       return { content: "dispatched", toolCalls: [] };
     },
   };
@@ -54,6 +56,8 @@ test("requestModelTurn dispatches through one explicit turn executor", async () 
     prompt: "Inspect the track",
     liveContext: "Track: Lead",
     runtimeProfile,
+    requestAudioSampleSourceInstructions:
+      'Current request audio input 1: {"kind":"request_audio_attachment","requestId":"event-current","audioIndex":0}',
     history: [],
     agentMessages: [],
     tools: [],

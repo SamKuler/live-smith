@@ -259,6 +259,8 @@ function sourceLabel(source: import("../agent/action-schema.js").SampleSource): 
   switch (source.kind) {
     case "selected":
       return "selected Live object";
+    case "request_audio_attachment":
+      return `current request audio input ${source.audioIndex + 1}`;
     case "arrangement_audio_clip":
       return `arrangement clip${source.clipName ? ` "${source.clipName}"` : ""} at beat ${source.startBeat} on ${source.trackName}`;
     case "session_audio_clip":

@@ -34,7 +34,10 @@ import {
   resolveTrackMixerParameter,
   resolveTrack,
 } from "./resolve.js";
-import { resolveSampleSource } from "./sample-source.js";
+import {
+  resolveSampleSource,
+  type RequestAudioSampleSources,
+} from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
 
 type Api = ExtensionContext<"1.0.0">;
@@ -43,6 +46,7 @@ export async function captureLiveActionPreflightSnapshot(
   context: Api,
   action: AgentAction,
   target: LiveTarget,
+  requestAudioSources?: RequestAudioSampleSources,
 ): Promise<string> {
   const song = context.application.song;
   const songIdentity = requireHandleIdentity(song, "Live Set");
@@ -313,7 +317,12 @@ export async function captureLiveActionPreflightSnapshot(
       if (!(resolved.device instanceof Simpler)) {
         throw new Error(`Device "${resolved.device.name}" is not Simpler.`);
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = resolveSampleSource(
+        context,
+        action.source,
+        target,
+        requestAudioSources,
+      );
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
@@ -363,7 +372,12 @@ export async function captureLiveActionPreflightSnapshot(
         }
         targetSimpler = simpler;
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = resolveSampleSource(
+        context,
+        action.source,
+        target,
+        requestAudioSources,
+      );
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
@@ -389,7 +403,12 @@ export async function captureLiveActionPreflightSnapshot(
       if (!(track instanceof AudioTrack)) {
         throw new Error(`Track "${track.name}" is not an audio track.`);
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = resolveSampleSource(
+        context,
+        action.source,
+        target,
+        requestAudioSources,
+      );
       const lane = action.laneIndex === undefined
         ? undefined
         : resolveTakeLane(track, action.laneIndex, action.laneName);
@@ -424,7 +443,12 @@ export async function captureLiveActionPreflightSnapshot(
           `Could not find Session slot ${action.slotIndex} on track "${track.name}".`,
         );
       }
-      const source = resolveSampleSource(context, action.source, target);
+      const source = resolveSampleSource(
+        context,
+        action.source,
+        target,
+        requestAudioSources,
+      );
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
@@ -773,10 +797,9 @@ async function deviceContentIdentity(device: Device<"1.0.0">): Promise<object> {
 function sampleSourceIdentity(
   source: ReturnType<typeof resolveSampleSource>,
 ): object {
-  return {
-    id: requireHandleIdentity(source.object, "sample source"),
-    filePath: source.filePath,
-  };
+  return source.kind === "live"
+    ? { id: source.identity, filePath: source.filePath }
+    : { id: source.identity };
 }
 
 function trackIdentity(track: Track<"1.0.0">): object {

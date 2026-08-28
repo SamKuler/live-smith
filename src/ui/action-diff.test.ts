@@ -399,11 +399,23 @@ test("actionDiffGroups shows exact arrangement and Simpler sample-source locator
         },
       },
     },
+    {
+      type: "replace_simpler_sample",
+      trackName: "Drums",
+      simplerName: "Target Simpler",
+      source: {
+        kind: "request_audio_attachment",
+        requestId: "event-current",
+        audioIndex: 1,
+      },
+    },
   ]);
 
   const rows = groups.find((group) => group.title === "Rack & Samples")?.rows ?? [];
   assert.match(rows[0] ?? "", /Kick Source.*beat 64.*Audio/i);
   assert.match(rows[1] ?? "", /Source Simpler.*deviceIndex.*2.*chainIndex.*0/i);
+  assert.match(rows[2] ?? "", /current request audio input 2/i);
+  assert.doesNotMatch(rows[2] ?? "", /event-current/);
 });
 
 test("actionDiffGroups distinguishes Session View Scenes from Arrangement Cue Points", () => {

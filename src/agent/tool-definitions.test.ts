@@ -80,6 +80,23 @@ test("apply_live_actions exposes every validated action schema", () => {
     assert.equal(properties.laneIndex?.maximum, 4095);
     assert.equal(properties.laneName?.type, "string");
   }
+
+  const replaceSampleSchema = agentActionJsonSchemas().find(
+    (candidate) =>
+      (candidate.properties as { type?: { enum?: string[] } }).type?.enum?.[0] ===
+        "replace_simpler_sample",
+  );
+  const sampleSource = (replaceSampleSchema?.properties as {
+    source?: { oneOf?: Array<{ properties?: Record<string, unknown>; required?: string[] }> };
+  }).source?.oneOf?.find((candidate) =>
+    JSON.stringify(candidate.properties?.kind).includes("request_audio_attachment")
+  );
+  assert.deepEqual(sampleSource?.required, ["kind", "requestId", "audioIndex"]);
+  assert.deepEqual(Object.keys(sampleSource?.properties ?? {}).sort(), [
+    "audioIndex",
+    "kind",
+    "requestId",
+  ]);
 });
 
 test("Live tools expose object-aware inspection without raw filesystem inputs", () => {

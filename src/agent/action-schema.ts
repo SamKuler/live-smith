@@ -4,6 +4,11 @@ import type { DevicePath } from "../live/device-tree.js";
 export type SampleSource =
   | { kind: "selected" }
   | {
+      kind: "request_audio_attachment";
+      requestId: string;
+      audioIndex: number;
+    }
+  | {
       kind: "arrangement_audio_clip";
       trackName: string;
       startBeat: number;
@@ -920,6 +925,24 @@ function requiredSampleSource(): ActionField<SampleSource, true> {
         {
           type: "object",
           properties: {
+            kind: { type: "string", enum: ["request_audio_attachment"] },
+            requestId: {
+              type: "string",
+              minLength: 1,
+              description: "Exact request ID listed in the current request instructions.",
+            },
+            audioIndex: {
+              type: "integer",
+              minimum: 0,
+              description: "Exact 0-based audio-only attachment index listed for that request.",
+            },
+          },
+          required: ["kind", "requestId", "audioIndex"],
+          additionalProperties: false,
+        },
+        {
+          type: "object",
+          properties: {
             kind: { type: "string", enum: ["arrangement_audio_clip"] },
             trackName: { type: "string", minLength: 1 },
             startBeat: { type: "number" },
@@ -1077,6 +1100,21 @@ function parseSampleSource(value: unknown, key: string): SampleSource {
     case "selected":
       assertRecordKeys(value, ["kind"], key);
       return { kind: "selected" };
+    case "request_audio_attachment":
+      assertRecordKeys(value, ["kind", "requestId", "audioIndex"], key);
+      return {
+        kind: "request_audio_attachment",
+        requestId: parseInlineString(
+          value.requestId,
+          `${key}.requestId`,
+        ),
+        audioIndex: integerInRange(
+          value.audioIndex,
+          `${key}.audioIndex`,
+          0,
+          Number.MAX_SAFE_INTEGER,
+        ),
+      };
     case "arrangement_audio_clip": {
       assertRecordKeys(value, ["kind", "trackName", "startBeat", "clipName"], key);
       return {

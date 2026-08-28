@@ -183,10 +183,22 @@ Skills do not grant additional permissions or tools.
 Office documents are read as text. Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
 sent to every model. Use paste or drag-and-drop rather than a system file picker.
+During that send, a compatible audio attachment can also be used as the source
+for an Arrangement, Session, or Take Lane Audio Clip, a Simpler sample, or a
+Drum Rack pad. When a confirmed plan first uses it, Live Smith copies the file
+into the Live Project and uses Live's managed copy. The source locator expires
+when the send ends.
 For compatible audio models, the agent can instead call `read_arrangement_audio`
 to read an isolated Arrangement Audio Clip range without creating a saved
 attachment. This sends a temporary pre-effects render for the current request;
-Session View Clips and the track device chain are not included.
+Session View Clips and the track device chain are not included. That temporary
+render is model input only and is not an attachment SampleSource.
+
+Deleting a Session removes its private chat attachments, but it does not remove
+audio already imported into the Live Project. If import succeeds and post-import
+validation or a later Live action stops the plan, an unused project copy may
+remain because the beta SDK does not expose deletion or rollback for imported
+files.
 
 Queue and Steer are configured under **Settings → Conversation Behavior**.
 Queued follow-ups belong to the open window; Live Smith warns before closing

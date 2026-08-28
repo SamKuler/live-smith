@@ -61,6 +61,7 @@ export interface ModelTurnRequestInput {
   runtimeProfile: RuntimeProfile;
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
+  requestAudioSampleSourceInstructions?: string;
   skillContext?: ResolvedSkillContext;
   editScopes?: readonly EditScope[];
   agentMessages: ModelConversationMessage[];
@@ -83,6 +84,7 @@ export function buildModelRequest(input: {
   liveContext: string;
   history: ConversationMessage[];
   attachmentParts?: ModelInputPart[];
+  requestAudioSampleSourceInstructions?: string;
   skillContext?: ResolvedSkillContext;
   editScopes?: readonly EditScope[];
   agentMessages: ModelConversationMessage[];
@@ -118,11 +120,13 @@ export function buildModelRequest(input: {
       },
       ...(input.attachmentParts ?? []),
     ],
-    systemInstructions: `${
+    systemInstructions: [
       hasHostedWebSearch
         ? automaticWebSearchInstructions
-        : unavailableWebSearchInstructions
-    }\n\n${baseSystemInstructions}`,
+        : unavailableWebSearchInstructions,
+      baseSystemInstructions,
+      input.requestAudioSampleSourceInstructions?.trim() ?? "",
+    ].filter(Boolean).join("\n\n"),
     history: input.history,
     agentMessages: input.agentMessages,
     tools: input.tools,

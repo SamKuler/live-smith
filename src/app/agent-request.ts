@@ -62,10 +62,12 @@ import {
   liveActionIdentityKeys,
   type AgentPlanBindings,
 } from "../live/action-bindings.js";
+import type { RequestAudioSampleSources } from "../live/sample-source.js";
 import { throwIfAborted } from "../runtime/host.js";
 import {
   listPendingSessionAttachments,
   sessionAttachmentRefFromStored,
+  type AudioSessionAttachmentRef,
 } from "../storage/attachments.js";
 import {
   appendSessionEvent,
@@ -100,6 +102,13 @@ import {
   requestModelWithReconnect,
   type ModelReconnectWait,
 } from "./model-reconnect.js";
+import {
+  createRequestAudioSampleSources,
+  mergeRequestAudioImportProgress,
+  prepareRequestAudioSampleSources,
+  requestAudioSampleSourceInstructions,
+  type RequestAudioImportProgress,
+} from "./request-audio-sources.js";
 import {
   activeRecoveryLedgerFromEvents,
   getOrCreateDefaultSession,
@@ -226,6 +235,7 @@ export async function handleAgentRequest(
       throw error;
     }
     return {
+      attachmentRefs,
       attachmentParts: resolvedAttachments.parts,
       history,
       initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
@@ -236,6 +246,19 @@ export async function handleAgentRequest(
     };
   };
   const prepared = await prepareRequest();
+  const requestAudioSources = createRequestAudioSampleSources({
+    context,
+    storageDirectory,
+    sessionId: session.id,
+    requestId: prepared.userEvent.id,
+    refs: prepared.attachmentRefs.filter(
+      (ref): ref is AudioSessionAttachmentRef => ref.kind === "audio",
+    ),
+    signal: callbacks.signal,
+  });
+  const audioSampleSourceInstructions = requestAudioSampleSourceInstructions(
+    requestAudioSources,
+  );
   const requestAttachmentQuota = binaryQuotaItems(
     prepared.history,
     prepared.attachmentParts,
@@ -426,6 +449,12 @@ export async function handleAgentRequest(
                 runtimeProfile,
                 history: prepared.history,
                 attachmentParts: prepared.attachmentParts,
+                ...(audioSampleSourceInstructions
+                  ? {
+                    requestAudioSampleSourceInstructions:
+                      audioSampleSourceInstructions,
+                  }
+                  : {}),
                 skillContext: prepared.skillContext,
                 editScopes: await readEditScopes(),
                 agentMessages: input.messages,
@@ -555,36 +584,65 @@ export async function handleAgentRequest(
               currentEditScopes(),
             ),
           },
+          requestAudioSources,
         ),
       confirmActions: callbacks.confirmActions,
-      executeActions: async (plan, rawBindings) => {
-        const bindings = rawBindings as AgentPlanBindings;
+      executeActions: async (plan, rawBindings, revalidateAfterImport) => {
+        let bindings = rawBindings as AgentPlanBindings;
+        const assertActionBoundary = (actionIndex: number, action: AgentPlan["actions"][number]) => {
+          assertEditScopesAllow(
+            requiredEditScopesForAction(context, action, actionIndex, bindings),
+            currentEditScopes(),
+          );
+          if (callbacks.steering?.hasPending()) {
+            throw new AgentSteeringBeforeApplyError(
+              "Newer user guidance arrived before the next Live action began. " +
+                "The remaining actions in this plan were not executed.",
+            );
+          }
+        };
+        let importProgress: RequestAudioImportProgress = {
+          results: [],
+          keys: [],
+        };
         let outcome: AgentActionExecutionOutcome;
         try {
+          importProgress = await prepareRequestAudioSampleSources(
+            bindings,
+            callbacks.signal,
+            () => {
+              assertEditScopesAllow(
+                requiredEditScopesForPlan(context, plan, bindings),
+                currentEditScopes(),
+              );
+              if (callbacks.steering?.hasPending()) {
+                throw new AgentSteeringBeforeApplyError(
+                  "Newer user guidance arrived while the audio attachment was being imported. " +
+                    "The remaining Live actions were not executed.",
+                );
+              }
+            },
+          );
+          if (importProgress.results.length > 0) {
+            bindings = await revalidateAfterImport() as AgentPlanBindings;
+          }
           outcome = await executeAgentPlanWithProgress(
             context,
             plan,
             interaction.target,
             callbacks.signal,
             bindings,
-            (actionIndex, action) => {
-              assertEditScopesAllow(
-                requiredEditScopesForAction(context, action, actionIndex, bindings),
-                currentEditScopes(),
-              );
-              if (callbacks.steering?.hasPending()) {
-                throw new AgentSteeringBeforeApplyError(
-                  "Newer user guidance arrived before the next Live action began. " +
-                    "The remaining actions in this plan were not executed.",
-                );
-              }
-            },
+            assertActionBoundary,
           );
-        } catch (error) {
+          outcome = {
+            results: [...importProgress.results, ...outcome.results],
+            mutationCount: importProgress.results.length + outcome.mutationCount,
+          };
+        } catch (caught) {
+          const error = mergeRequestAudioImportProgress(importProgress, caught);
           if (
             error instanceof AgentPlanExecutionError &&
             error.cause instanceof AgentSteeringBeforeApplyError &&
-            error.failedActionIndex === 0 &&
             error.completedResults.length === 0 &&
             error.completedMutationCount === 0
           ) {
@@ -722,17 +780,20 @@ export async function preflightAgentPlan(
     context: Api,
     action: AgentPlan["actions"][number],
     target: LiveInteractionContext["target"],
+    requestAudioSources?: RequestAudioSampleSources,
   ) => string | Promise<string> = captureLiveActionPreflightSnapshot,
   authorization?: {
     refresh(): Promise<unknown>;
     assert(plan: AgentPlan, bindings: AgentPlanBindings): void;
   },
+  requestAudioSources?: RequestAudioSampleSources,
 ): Promise<AgentActionPreflightGuard<AgentPlanBindings>> {
   await authorization?.refresh();
   const initialBindings = bindAgentPlanTargets(
     context,
     plan,
     interaction.target,
+    requestAudioSources,
   );
   const initialSnapshots = await captureAgentPlanPreflightSnapshots(
     context,
@@ -742,6 +803,7 @@ export async function preflightAgentPlan(
     observer,
     snapshotter,
     initialBindings,
+    requestAudioSources,
   );
   authorization?.assert(plan, initialBindings);
 
@@ -751,6 +813,7 @@ export async function preflightAgentPlan(
       context,
       plan,
       interaction.target,
+      requestAudioSources,
     );
     assertSameExistingPlanTargets(initialBindings, currentBindings);
     const currentSnapshots = await captureAgentPlanPreflightSnapshots(
@@ -761,6 +824,7 @@ export async function preflightAgentPlan(
       observer,
       snapshotter,
       currentBindings,
+      requestAudioSources,
     );
     const changedIndex = currentSnapshots.findIndex(
       (snapshot, index) => snapshot !== initialSnapshots[index],
@@ -850,8 +914,10 @@ async function captureAgentPlanPreflightSnapshots(
     context: Api,
     action: AgentPlan["actions"][number],
     target: LiveInteractionContext["target"],
+    requestAudioSources?: RequestAudioSampleSources,
   ) => string | Promise<string>,
   bindings: AgentPlanBindings,
+  requestAudioSources?: RequestAudioSampleSources,
 ): Promise<string[]> {
   const snapshots: string[] = [];
   for (const [actionIndex, action] of plan.actions.entries()) {
@@ -870,7 +936,12 @@ async function captureAgentPlanPreflightSnapshots(
       actionTarget,
     );
     throwIfAborted(signal);
-    snapshots.push(await snapshotter(context, action, actionTarget));
+    snapshots.push(await snapshotter(
+      context,
+      action,
+      actionTarget,
+      requestAudioSources,
+    ));
     throwIfAborted(signal);
   }
   return snapshots;

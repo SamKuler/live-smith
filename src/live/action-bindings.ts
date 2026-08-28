@@ -41,6 +41,7 @@ import {
 } from "./resolve.js";
 import {
   resolveSampleSource,
+  type RequestAudioSampleSources,
   type ResolvedSampleSource,
 } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
@@ -89,6 +90,7 @@ export function bindAgentPlanTargets(
   context: Api,
   plan: AgentPlan,
   target: LiveTarget = {},
+  requestAudioSources?: RequestAudioSampleSources,
 ): AgentPlanBindings {
   const tracks = new Map<string, Track<"1.0.0">>();
   for (const [ref, target] of Object.entries(plan.targets ?? {})) {
@@ -117,6 +119,7 @@ export function bindAgentPlanTargets(
     target,
     tracks,
     actionTracks,
+    requestAudioSources,
   );
   assertRackChainCreationsAreDistinct(plan, actionObjects);
   assertTakeLaneCreationRangesDoNotOverlap(plan, actionObjects);
@@ -324,12 +327,18 @@ function bindActionObjects(
   target: LiveTarget,
   tracks: ReadonlyMap<string, Track<"1.0.0">>,
   actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+  requestAudioSources: RequestAudioSampleSources | undefined,
 ): ReadonlyMap<number, BoundActionObjects> {
   const result = new Map<number, BoundActionObjects>();
   plan.actions.forEach((action, index) => {
     const binding: WritableBoundActionObjects = {};
     if (hasSampleSource(action)) {
-      binding.sampleSource = resolveSampleSource(context, action.source, target);
+      binding.sampleSource = resolveSampleSource(
+        context,
+        action.source,
+        target,
+        requestAudioSources,
+      );
     }
 
     const track = boundTrackFromMaps(action, index, tracks, actionTracks);
@@ -642,10 +651,7 @@ function boundObjectIdentity(binding: BoundActionObjects): Record<string, unknow
       : {}),
     ...(binding.sampleSource
       ? {
-          sampleSource: hostObjectHandleId(
-            binding.sampleSource.object,
-            "sample source",
-          ),
+          sampleSource: binding.sampleSource.identity,
         }
       : {}),
   };

@@ -618,7 +618,10 @@ not Office visual rendering. Packages with detected macro, VBA, ActiveX, or
 macrosheet signals are rejected; this is not general OOXML sanitization, and
 unrecognized embedded binary parts are discarded. File names and extracted
 content remain untrusted and cannot authorize tools, filesystem access, or a
-Live sample source.
+Live sample source. A separate host-generated locator can make a current audio
+input available as a SampleSource for that send; the locator contains the
+current user-event ID and audio-only index, not a filename, attachment storage
+ID, or path. It grants no mutation approval and expires with the send.
 
 The shared policy accepts PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 It permits at most 4 attachments and 30 MiB of raw attachment bytes in pending

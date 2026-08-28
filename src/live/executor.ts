@@ -765,18 +765,19 @@ async function executeAction(
       if (!(resolved.device instanceof Simpler)) {
         throw new Error(`Device "${resolved.device.name}" is not Simpler.`);
       }
+      const simpler = resolved.device;
       const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
-      if (resolved.device.sample?.filePath === source.filePath) {
+      if (simpler.sample?.filePath === source.filePath) {
         return noMutation(
-          `Reused sample "${source.label}" in Simpler "${resolved.device.name}" on track "${track.name}".`,
+          `Reused sample "${source.label}" in Simpler "${simpler.name}" on track "${track.name}".`,
         );
       }
       try {
-        await resolved.device.replaceSample(source.filePath);
+        await simpler.replaceSample(source.filePath);
       } catch (error) {
         throw sanitizeSampleError(error, source.filePath);
       }
-      return `Loaded sample "${source.label}" into Simpler "${resolved.device.name}" on track "${track.name}".`;
+      return `Loaded sample "${source.label}" into Simpler "${simpler.name}" on track "${track.name}".`;
     }
     case "configure_drum_pad": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
@@ -789,10 +790,11 @@ async function executeAction(
       if (!(resolved.device instanceof DrumRack)) {
         throw new Error(`Device "${resolved.device.name}" is not a Drum Rack.`);
       }
+      const rack = resolved.device;
       const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
       return configureDrumPad(
         track,
-        resolved.device,
+        rack,
         action.receivingNote,
         source.filePath,
         source.label,

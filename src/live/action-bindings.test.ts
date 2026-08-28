@@ -695,7 +695,9 @@ test("Take Lane Clip actions bind the lane and reject lane drift or overlapping 
     { object: sample },
   );
   assert.equal(audioBindings.actionObjects.get(0)?.takeLane, audioLane);
-  assert.equal(audioBindings.actionObjects.get(0)?.sampleSource?.object, sample);
+  const boundSample = audioBindings.actionObjects.get(0)?.sampleSource;
+  assert.equal(boundSample?.kind, "live");
+  if (boundSample?.kind === "live") assert.equal(boundSample.object, sample);
   assert.deepEqual(
     requiredEditScopesForPlan(
       { application: { song: { tracks: [audioTrack] } } } as never,
