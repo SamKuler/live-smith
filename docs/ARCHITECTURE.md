@@ -831,7 +831,7 @@ When actions in one `apply_live_actions` call depend on a track that is renamed
 or created earlier in that call, express the dependency with top-level
 `targets`, creator `ref`, and consumer `trackRef`. Top-level targets and every
 name-based action target bind to existing SDK handles. Existing Scenes, Cue
-Points, Devices and their parents, Clips, Clip Slots, Take Lanes, mixer
+Points, Devices and their parents, Rack Chains, Clips, Clip Slots, Take Lanes, mixer
 parameters, and sample sources are bound per action as well. Execution uses
 those objects directly, so an earlier delete or insertion cannot make a later
 index/path resolve to a different object. Because the SDK deletes a Session Clip
@@ -847,9 +847,9 @@ require state only Live can return.
 Regular Track targets use an unambiguous `trackName`. Return targets use the
 role-relative zero-based index plus an optional current-name guard; Main uses its
 unique role plus an optional name guard. Return and Main targets still bind and
-revalidate opaque Track handles. They are accepted only by top-level device
-insert, exact device parameter, device duplicate/delete, and exact mixer
-parameter actions. Their observations and Session-scope restoration enumerate
+revalidate opaque Track handles. They are accepted only by device-chain actions,
+exact device parameter or device duplicate/delete actions, and exact Track or
+Rack Chain mixer parameter actions. Their observations and Session-scope restoration enumerate
 the separate Song collections without treating them as regular Tracks or reading
 regular-only Clip, Take Lane, Arm, group, or structural state.
 
@@ -971,6 +971,24 @@ placement, or target only when observed evidence supports that repair. Repeating
 an insertion is a literal request for another instance; the executor never
 silently reuses a same-name device. Device parameters resolve by exact observed
 name after case/whitespace normalization, never by substring guessing.
+
+Rack Chains use the existing Track plus Rack `devicePath` locator followed by a
+zero-based Chain index. `inspect_rack_chain` makes empty Chains observable and
+returns direct device indexes and paths, a Drum receiving note when present,
+and exact Chain Volume, Panning, and Send parameters. Preflight binds the Rack,
+Chain, and target mixer parameter handles; `insert_chain_device` also consumes
+the bound Chain instead of resolving its index again during execution.
+
+`create_rack_chain` appends one empty Chain to an existing non-Drum
+`RackDevice`. Append-only creation preserves existing Chain indexes. The new
+Chain does not exist at plan admission, so later work uses an explicit
+apply/inspect/apply stage. A plan creates at most one Chain per Rack locator so
+its replay identity remains unambiguous after a later partial failure. Drum Rack
+creation stays in `configure_drum_pad`,
+where receiving-note uniqueness and composite partial completion already have a
+dedicated contract. SDK 1.0.0-beta.1 exposes no Chain name, delete, duplicate,
+move, zone, routing, activator, or selection API; Live Smith does not simulate
+those operations through child devices.
 
 Drum Pad configuration also has explicit intent. Filling an empty pad refuses to
 overwrite a chain that already contains devices. Replacing a sample requires an
@@ -1118,6 +1136,12 @@ Scene operations inspect the bound Scene's current row. Range clearing checks
 the actual overlapping Arrangement Clips; an empty range remains a no-op. Sample
 sources are reads and do not grant or require write permission for the source.
 Unidentified dynamic targets fail closed and require inspection or staged work.
+
+A new Rack Chain requires both `devices` and `mixer`, because creation adds a
+device container with its own mixer. Duplicating or deleting a Rack that owns
+Chains also requires both categories. Drum Pad filling adds `mixer` only when it
+must create a new Drum Chain; editing an existing pad does not claim a mixer
+write. Exact Chain mixer parameter changes require only `mixer`.
 
 Devices intentionally combines instruments and effects. The beta SDK does not
 provide a reliable general device-category field or a catalog to classify an

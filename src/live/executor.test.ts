@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AudioClip,
   AudioTrack,
+  Chain,
   ClipSlot,
   CuePoint,
   Device,
@@ -20,6 +21,7 @@ import {
 } from "@ableton-extensions/sdk";
 
 import { validateAgentPlan } from "../agent/actions.js";
+import { bindAgentPlanTargets } from "./action-bindings.js";
 import {
   AgentPlanExecutionError,
   executeAgentPlan,
@@ -420,6 +422,188 @@ test("nested and third-party devices duplicate and delete through their owning c
   assert.deepEqual(deleted, [plugin]);
   assert.match(results[0] ?? "", /Serum Copy/);
   assert.ok(rack instanceof RackDevice);
+});
+
+test("Rack Chain creation appends ordinary Racks and rejects generic Drum Rack creation", async () => {
+  const chains: Chain<"1.0.0">[] = [sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: "chain-0" },
+    devices: [],
+  })];
+  const insertedIndexes: number[] = [];
+  const rack = sdkObject<RackDevice<"1.0.0">>(RackDevice.prototype, {
+    handle: { id: "rack-1" },
+    name: "Instrument Rack",
+    chains,
+    insertChain: async (index: number) => {
+      insertedIndexes.push(index);
+      const chain = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+        handle: { id: `chain-${index}` },
+        devices: [],
+      });
+      chains.splice(index, 0, chain);
+      return chain;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [rack],
+  });
+  const action = {
+    type: "create_rack_chain" as const,
+    trackName: "Lead",
+    rackName: "Instrument Rack",
+    rackPath: { deviceIndex: 0 },
+  };
+
+  const result = await executeAgentPlan(
+    { application: { song: { tracks: [track] } } } as never,
+    { message: "Append a Chain", actions: [action] },
+    {},
+  );
+  assert.deepEqual(insertedIndexes, [1]);
+  assert.match(result[0] ?? "", /empty Chain 1.*Instrument Rack/i);
+
+  let drumInsertCalls = 0;
+  const drumRack = sdkObject<DrumRack<"1.0.0">>(DrumRack.prototype, {
+    handle: { id: "drum-rack" },
+    name: "Drum Rack",
+    chains: [],
+    insertChain: async () => {
+      drumInsertCalls += 1;
+      throw new Error("should not run");
+    },
+  });
+  const drumTrack = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "drum-track" },
+    name: "Drums",
+    devices: [drumRack],
+  });
+  await assert.rejects(
+    executeAgentPlan(
+      { application: { song: { tracks: [drumTrack] } } } as never,
+      {
+        message: "Create a pad Chain",
+        actions: [{ ...action, trackName: "Drums", rackName: "Drum Rack" }],
+      },
+      {},
+    ),
+    /Use configure_drum_pad/i,
+  );
+  assert.equal(drumInsertCalls, 0);
+});
+
+test("Chain device insertion and mixer edits consume their preflight-bound Chain", async () => {
+  const inserted: string[] = [];
+  let mixerValue = 0.2;
+  let setValueCalls = 0;
+  const parameter = {
+    handle: { id: "chain-volume" },
+    name: "Volume",
+    min: 0,
+    max: 1,
+    getValue: async () => mixerValue,
+    setValue: async (value: number) => {
+      setValueCalls += 1;
+      mixerValue = value;
+    },
+  };
+  const original = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: "chain-original" },
+    devices: [],
+    mixer: { volume: parameter, panning: parameter, sends: [] },
+    insertDevice: async (name: string) => {
+      inserted.push(name);
+      return { name };
+    },
+  });
+  const replacement = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: "chain-replacement" },
+    devices: [],
+    mixer: { volume: parameter, panning: parameter, sends: [] },
+    insertDevice: async () => {
+      throw new Error("replacement Chain must not be used");
+    },
+  });
+  const rack = sdkObject<RackDevice<"1.0.0">>(RackDevice.prototype, {
+    handle: { id: "rack-1" },
+    name: "Instrument Rack",
+    chains: [original],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [rack],
+  });
+  const plan = validateAgentPlan({
+    message: "Edit Chain 0",
+    actions: [
+      {
+        type: "insert_chain_device",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        deviceName: "Utility",
+      },
+      {
+        type: "set_chain_mixer_parameter",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        parameter: "volume",
+        value: 0.6,
+      },
+    ],
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+  const bindings = bindAgentPlanTargets(context, plan);
+  Reflect.set(rack, "chains", [replacement]);
+
+  const result = await executeAgentPlan(
+    context,
+    plan,
+    {},
+    undefined,
+    bindings,
+  );
+  assert.deepEqual(inserted, ["Utility"]);
+  assert.equal(setValueCalls, 1);
+  assert.equal(mixerValue, 0.6);
+  assert.match(result[1] ?? "", /Chain 0 mixer parameter "Volume"/i);
+
+  Reflect.set(rack, "chains", [original]);
+  const mixerOnly = validateAgentPlan({
+    message: "Keep the matching Chain level",
+    actions: [plan.actions[1]!],
+  });
+  const mixerBindings = bindAgentPlanTargets(context, mixerOnly);
+  const noOp = await executeAgentPlanWithProgress(
+    context,
+    mixerOnly,
+    {},
+    undefined,
+    mixerBindings,
+  );
+  assert.equal(noOp.mutationCount, 0);
+  assert.equal(setValueCalls, 1);
+
+  const outOfRange = validateAgentPlan({
+    message: "Reject an invalid Chain level",
+    actions: [{ ...plan.actions[1]!, value: 1.5 }],
+  });
+  await assert.rejects(
+    executeAgentPlan(
+      context,
+      outOfRange,
+      {},
+      undefined,
+      bindAgentPlanTargets(context, outOfRange),
+    ),
+    /outside observed range 0-1/i,
+  );
+  assert.equal(setValueCalls, 1);
 });
 
 test("Simpler, mixer, and arm actions use observed Live objects without exposing sample paths", async () => {

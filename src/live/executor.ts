@@ -29,6 +29,8 @@ import {
   devicePathLabel,
   resolveDevicePath,
   resolveDeviceTarget,
+  resolveRackChainTarget,
+  resolveRackDeviceTarget,
 } from "./device-tree.js";
 import {
   equalsLoose,
@@ -40,6 +42,7 @@ import {
   resolveScene,
   resolveSessionClip,
   resolveTakeLane,
+  resolveChainMixerParameter,
   resolveTrackMixerParameter,
   resolveTrack,
   songTrackEntryForTrack,
@@ -652,7 +655,31 @@ async function executeAction(
     }
     case "insert_chain_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
-      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
+      const current = bound?.deviceTarget && bound.chain
+        ? { rackTarget: bound.deviceTarget, chain: bound.chain }
+        : resolveRackChainTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+            action.chainIndex,
+          );
+      if (!(current.rackTarget.device instanceof RackDevice)) {
+        throw new Error(`Device "${current.rackTarget.device.name}" is not a Rack device.`);
+      }
+      const chain = current.chain;
+      const index = action.index ?? chain.devices.length;
+      if (index > chain.devices.length) {
+        throw new Error(
+          `Chain ${action.chainIndex} in Rack "${current.rackTarget.device.name}" has ${chain.devices.length} devices; insertion index ${index} is out of range.`,
+        );
+      }
+      const device = await chain.insertDevice(action.deviceName, index);
+      return `Inserted "${device.name}" in chain ${action.chainIndex} of Rack "${current.rackTarget.device.name}" on track "${track.name}".`;
+    }
+    case "create_rack_chain": {
+      const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      const resolved = bound?.deviceTarget ?? resolveRackDeviceTarget(
         track,
         target,
         action.rackName,
@@ -661,15 +688,16 @@ async function executeAction(
       if (!(resolved.device instanceof RackDevice)) {
         throw new Error(`Device "${resolved.device.name}" is not a Rack device.`);
       }
-      const chain = resolved.device.chains[action.chainIndex];
-      if (!chain) {
+      if (resolved.device instanceof DrumRack) {
         throw new Error(
-          `Rack "${resolved.device.name}" has ${resolved.device.chains.length} chains; chain ${action.chainIndex} does not exist.`,
+          `Rack "${resolved.device.name}" is a Drum Rack. Use configure_drum_pad so the receiving note and partial completion are explicit.`,
         );
       }
-      const index = action.index ?? chain.devices.length;
-      const device = await chain.insertDevice(action.deviceName, index);
-      return `Inserted "${device.name}" in chain ${action.chainIndex} of Rack "${resolved.device.name}" on track "${track.name}".`;
+      const trackName = track.name;
+      const rackName = resolved.device.name;
+      const chainIndex = resolved.device.chains.length;
+      await resolved.device.insertChain(chainIndex);
+      return `Appended an empty Chain ${chainIndex} to Rack "${rackName}" on track "${trackName}".`;
     }
     case "set_device_parameter": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
@@ -922,6 +950,35 @@ async function executeAction(
       }
       await parameter.setValue(action.value);
       return `Set mixer parameter "${parameter.name}" on track "${track.name}" to ${action.value}.`;
+    }
+    case "set_chain_mixer_parameter": {
+      const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      const current = bound?.deviceTarget && bound.chain
+        ? { rackTarget: bound.deviceTarget, chain: bound.chain }
+        : resolveRackChainTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+            action.chainIndex,
+          );
+      const parameter = bound?.mixerParameter ?? resolveChainMixerParameter(
+        current.chain,
+        action.parameter,
+        action.sendIndex,
+      );
+      if (action.value < parameter.min || action.value > parameter.max) {
+        throw new Error(
+          `Value ${action.value} for Chain mixer parameter "${parameter.name}" in Rack "${current.rackTarget.device.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the Rack Chain again and use a value inside that range.`,
+        );
+      }
+      if (sameNumericValue(await parameter.getValue(), action.value)) {
+        return noMutation(
+          `Kept Chain ${action.chainIndex} mixer parameter "${parameter.name}" in Rack "${current.rackTarget.device.name}" on track "${track.name}" at ${action.value} because it already matches.`,
+        );
+      }
+      await parameter.setValue(action.value);
+      return `Set Chain ${action.chainIndex} mixer parameter "${parameter.name}" in Rack "${current.rackTarget.device.name}" on track "${track.name}" to ${action.value}.`;
     }
     case "create_take_lane": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);

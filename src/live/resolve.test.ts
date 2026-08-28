@@ -9,6 +9,7 @@ import {
   resolveTrack,
   resolveTrackSelector,
 } from "./resolve.js";
+import { resolveRackChainTarget } from "./device-tree.js";
 
 test("resolveTrack never falls back when an explicit name is missing", () => {
   assert.throws(
@@ -222,6 +223,36 @@ test("resolveDeviceTarget rejects a mismatched nested Device name", () => {
       { deviceIndex: 0, nested: [{ chainIndex: 0, deviceIndex: 0 }] },
     ),
     /is "Actual Simpler", not "Wrong Simpler"/,
+  );
+});
+
+test("resolveRackChainTarget resolves an exact existing empty Chain", () => {
+  const chain = { handle: { id: "chain-1" }, devices: [] };
+  const rack = Object.defineProperties(Object.create(RackDevice.prototype), {
+    name: { enumerable: true, value: "Instrument Rack" },
+    chains: { enumerable: true, value: [chain] },
+  });
+  const track = fakeTrack("Lead", [rack]);
+
+  const resolved = resolveRackChainTarget(
+    track,
+    {},
+    "Instrument Rack",
+    { deviceIndex: 0 },
+    0,
+  );
+
+  assert.equal(resolved.rackTarget.device, rack);
+  assert.equal(resolved.chain, chain);
+  assert.throws(
+    () => resolveRackChainTarget(
+      track,
+      {},
+      "Instrument Rack",
+      { deviceIndex: 0 },
+      1,
+    ),
+    /has 1 chains; chain 1 does not exist/i,
   );
 });
 

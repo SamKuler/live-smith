@@ -17,6 +17,13 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
     return `Inspecting ${deviceName} device tree${track ? ` on ${track}` : ""}`;
   }
 
+  if (toolCall.name === "inspect_rack_chain") {
+    const rackName = stringArg(args.rackName, "Rack");
+    const chainIndex = typeof args.chainIndex === "number" ? args.chainIndex : "?";
+    const track = trackInspectionTarget(args);
+    return `Inspecting Chain ${chainIndex} in ${rackName}${track ? ` on ${track}` : ""}`;
+  }
+
   if (toolCall.name === "inspect_mixer") {
     const track = trackInspectionTarget(args);
     return track

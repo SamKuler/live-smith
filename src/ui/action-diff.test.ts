@@ -190,6 +190,12 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
       deviceName: "Simpler",
     },
     {
+      type: "create_rack_chain",
+      trackName: "Drums",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 1 },
+    },
+    {
       type: "configure_drum_pad",
       trackName: "Drums",
       rackName: "Drum Rack",
@@ -204,6 +210,15 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
       parameter: "send",
       sendIndex: 0,
       value: 0.5,
+    },
+    {
+      type: "set_chain_mixer_parameter",
+      trackName: "Drums",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 1 },
+      chainIndex: 2,
+      parameter: "panning",
+      value: 0.4,
     },
     { type: "set_track_arm", trackName: "Drums", arm: true },
     {
@@ -220,11 +235,19 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
   );
   assert.match(
     groups.find((group) => group.title === "Rack & Samples")?.rows[0] ?? "",
+    /Append empty Chain.*Instrument Rack.*deviceIndex.*1/i,
+  );
+  assert.match(
+    groups.find((group) => group.title === "Rack & Samples")?.rows[1] ?? "",
     /fill empty.*pad 36.*selected Live object/i,
   );
   assert.match(
     groups.find((group) => group.title === "Set Parameters")?.rows[0] ?? "",
     /send\[0\].*0\.5/i,
+  );
+  assert.match(
+    groups.find((group) => group.title === "Set Parameters")?.rows[1] ?? "",
+    /Instrument Rack.*chain 2 mixer panning.*0\.4/i,
   );
   assert.match(
     groups.find((group) => group.title === "Track Changes")?.rows[0] ?? "",

@@ -95,6 +95,30 @@ export function liveSmithTools(options: {
       },
     ),
     observationTool(
+      "inspect_rack_chain",
+      "Inspect one exact existing Rack Chain, including empty Chains, direct device indexes and paths, an optional Drum receiving note, and exact Chain Volume, Panning, and Send values. Direct devices are paged; follow nextOffset until the needed device is visible.",
+      {
+        trackName: {
+          type: "string",
+          description: "Optional regular Track name, or an expected current name guard when trackRole is return or main. Omit it to use the selected object's owning Track.",
+        },
+        ...specialTrackProperties(),
+        rackName: {
+          type: "string",
+          description: "Exact Rack name from inspect_device_tree.",
+        },
+        rackPath: devicePathSchema(),
+        chainIndex: {
+          type: "integer",
+          minimum: 0,
+          maximum: 4095,
+          description: "Exact 0-based Chain index in the Rack.",
+        },
+        ...itemPageProperties(),
+      },
+      ["rackName", "chainIndex"],
+    ),
+    observationTool(
       "inspect_mixer",
       "Inspect the selected or named Track mixer and return exact Volume, Panning, and Send parameter ranges and current values.",
       {

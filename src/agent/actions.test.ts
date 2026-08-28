@@ -547,6 +547,21 @@ test("plan targets accept exact Return and Main track locators", () => {
         trackRef: "main",
         deviceName: "Limiter",
       },
+      {
+        type: "create_rack_chain",
+        trackRef: "main",
+        rackName: "Audio Effect Rack",
+        rackPath: { deviceIndex: 0 },
+      },
+      {
+        type: "set_chain_mixer_parameter",
+        trackRef: "reverb",
+        rackName: "Audio Effect Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        parameter: "panning",
+        value: 0.5,
+      },
     ],
   });
 
@@ -768,6 +783,48 @@ test("device actions accept nested paths and safe observed sample sources", () =
 
   assert.equal(plan.actions[0]?.type, "configure_drum_pad");
   assert.match(summarizeActionPlan(plan), /MIDI note 36/i);
+});
+
+test("Rack Chain creation and mixer edits use one exact existing Rack locator", () => {
+  const plan = validateAgentPlan({
+    message: "Add and balance Rack Chains",
+    actions: [
+      {
+        type: "create_rack_chain",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+      },
+      {
+        type: "set_chain_mixer_parameter",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        parameter: "send",
+        sendIndex: 1,
+        value: 0.4,
+      },
+    ],
+  });
+
+  assert.equal(requiresExplicitConfirmation(plan), false);
+  assert.match(summarizeActionPlan(plan), /Append one empty Chain.*Instrument Rack/i);
+  assert.match(summarizeActionPlan(plan), /send 1.*Chain 0.*0\.4/i);
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Missing Send index",
+      actions: [{
+        type: "set_chain_mixer_parameter",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        chainIndex: 0,
+        parameter: "send",
+        value: 0.4,
+      }],
+    }),
+    /set_chain_mixer_parameter requires sendIndex/i,
+  );
 });
 
 test("Drum Pad configuration makes replacement policy explicit", () => {

@@ -603,6 +603,52 @@ test("runAgentLoop passes an exact paged Take Lane inspection", async () => {
   }]);
 });
 
+test("runAgentLoop passes an exact paged Rack Chain inspection", async () => {
+  const observedRequests: unknown[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> =>
+      input.messages.length === 0
+        ? {
+            content: "I will inspect the Rack Chain.",
+            toolCalls: [{
+              id: "rack-chain",
+              name: "inspect_rack_chain",
+              arguments: JSON.stringify({
+                trackRole: "return",
+                trackIndex: 0,
+                trackName: "A-Reverb",
+                rackName: "Audio Effect Rack",
+                rackPath: { deviceIndex: 1 },
+                chainIndex: 2,
+                itemOffset: 48,
+                itemLimit: 24,
+              }),
+            }],
+          }
+        : { content: "The Chain is empty.", toolCalls: [] },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return "devices page: offset=48, shown=0, total=48, nextOffset=none";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "inspect_rack_chain",
+    trackRole: "return",
+    trackIndex: 0,
+    trackName: "A-Reverb",
+    rackName: "Audio Effect Rack",
+    rackPath: { deviceIndex: 1 },
+    chainIndex: 2,
+    itemOffset: 48,
+    itemLimit: 24,
+  }]);
+});
+
 test("runAgentLoop passes Warp Marker pagination to inspect_clip", async () => {
   const observedRequests: unknown[] = [];
 
@@ -1353,13 +1399,17 @@ test("observation failures are reported as host failures, not argument or payloa
 });
 
 test("observation tools reject unknown fields and invalid optional values", async () => {
-  for (const argumentsValue of [
-    { trackName: "Lead", itemOffest: 1 },
-    { trackName: 42 },
-    { trackRole: "return" },
-    { trackRole: "main", trackIndex: 0 },
-    { trackIndex: 0 },
-  ]) {
+  for (const [toolName, argumentsValue] of [
+    ["inspect_track", { trackName: "Lead", itemOffest: 1 }],
+    ["inspect_track", { trackName: 42 }],
+    ["inspect_track", { trackRole: "return" }],
+    ["inspect_track", { trackRole: "main", trackIndex: 0 }],
+    ["inspect_track", { trackIndex: 0 }],
+    ["inspect_rack_chain", {
+      rackName: "Instrument Rack",
+      chainIndex: 4096,
+    }],
+  ] as const) {
     let observed = false;
     const result = await runAgentLoop({
       maxConsecutiveFailures: 1,
@@ -1367,7 +1417,7 @@ test("observation tools reject unknown fields and invalid optional values", asyn
         content: "Inspecting the track.",
         toolCalls: [{
           id: "inspect",
-          name: "inspect_track",
+          name: toolName,
           arguments: JSON.stringify(argumentsValue),
         }],
       }),
@@ -3416,6 +3466,26 @@ test("extended action failures refresh the narrow affected Live object", async (
       },
       trackName: "Lead",
       expected: { type: "inspect_mixer", trackName: "Lead" },
+    },
+    {
+      name: "Rack Chain mixer",
+      action: {
+        type: "set_chain_mixer_parameter",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 1,
+        parameter: "volume",
+        value: 0.6,
+      },
+      trackName: "Lead",
+      expected: {
+        type: "inspect_rack_chain",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 1,
+      },
     },
     {
       name: "Session Clip slot",

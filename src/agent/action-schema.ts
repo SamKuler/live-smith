@@ -309,6 +309,21 @@ const actionDescriptors = {
       deviceName: "Simpler",
     },
   ),
+  create_rack_chain: defineAction(
+    "create_rack_chain",
+    {
+      trackName: optionalString(),
+      trackRef: optionalRef(),
+      rackName: requiredString("Exact non-Drum Rack name from inspect_device_tree."),
+      rackPath: optionalDevicePath(),
+    },
+    {
+      type: "create_rack_chain",
+      trackName: "Lead",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 0 },
+    },
+  ),
   set_device_parameter: defineAction(
     "set_device_parameter",
     {
@@ -509,6 +524,32 @@ const actionDescriptors = {
       trackName: "Lead",
       parameter: "volume",
       value: 0.75,
+    },
+  ),
+  set_chain_mixer_parameter: defineAction(
+    "set_chain_mixer_parameter",
+    {
+      trackName: optionalString(),
+      trackRef: optionalRef(),
+      rackName: requiredString("Exact Rack name from inspect_rack_chain."),
+      rackPath: optionalDevicePath(),
+      chainIndex: requiredIntegerInRange(
+        0,
+        4095,
+        "Exact 0-based Chain index from inspect_rack_chain.",
+      ),
+      parameter: requiredEnum(["volume", "panning", "send"] as const),
+      sendIndex: optionalInteger(0),
+      value: requiredNumber(),
+    },
+    {
+      type: "set_chain_mixer_parameter",
+      trackName: "Lead",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 0 },
+      chainIndex: 0,
+      parameter: "volume",
+      value: 0.5,
     },
   ),
   create_take_lane: defineAction(

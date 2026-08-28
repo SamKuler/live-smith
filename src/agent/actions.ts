@@ -22,10 +22,13 @@ export interface AgentPlan {
 
 const NON_REGULAR_TRACK_ACTION_TYPES = new Set<AgentAction["type"]>([
   "insert_device",
+  "insert_chain_device",
+  "create_rack_chain",
   "set_device_parameter",
   "duplicate_device",
   "delete_device",
   "set_track_mixer_parameter",
+  "set_chain_mixer_parameter",
 ]);
 
 export function supportsNonRegularTrackAction(action: AgentAction): boolean {
@@ -99,6 +102,12 @@ export type AgentObservationRequest =
       deviceName?: string;
       devicePath?: DevicePath;
     } & ObservationTrackSelector & ObservationItemPage & ObservationParameterPage)
+  | ({
+      type: "inspect_rack_chain";
+      rackName: string;
+      rackPath?: DevicePath;
+      chainIndex: number;
+    } & ObservationTrackSelector & ObservationItemPage)
   | ({ type: "inspect_mixer" } & ObservationTrackSelector)
   | ({
       type: "inspect_take_lane";
@@ -277,8 +286,19 @@ export function observationRequestForAction(
           };
     case "insert_chain_device":
       return {
+        type: "inspect_rack_chain",
+        ...optionalRoleTrack,
+        rackName: action.rackName,
+        ...(action.rackPath ? { rackPath: action.rackPath } : {}),
+        chainIndex: action.chainIndex,
+        ...(action.index === undefined
+          ? {}
+          : { itemOffset: action.index, itemLimit: 1 }),
+      };
+    case "create_rack_chain":
+      return {
         type: "inspect_device_tree",
-        ...optionalTrackName,
+        ...optionalRoleTrack,
         deviceName: action.rackName,
         ...(action.rackPath ? { devicePath: action.rackPath } : {}),
       };
@@ -298,6 +318,14 @@ export function observationRequestForAction(
       };
     case "set_track_mixer_parameter":
       return { type: "inspect_mixer", ...optionalRoleTrack };
+    case "set_chain_mixer_parameter":
+      return {
+        type: "inspect_rack_chain",
+        ...optionalRoleTrack,
+        rackName: action.rackName,
+        ...(action.rackPath ? { rackPath: action.rackPath } : {}),
+        chainIndex: action.chainIndex,
+      };
     case "set_clip_properties":
     case "set_audio_clip_warp":
       return {
@@ -399,14 +427,14 @@ export function summarizeActionPlan(plan: AgentPlan): string {
 export function actionSystemPrompt(): string {
   return [
     "You are Live Smith, running inside Ableton Live with tools.",
-    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_take_lane, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, inspect_midi_clip, and analyze_audio_clip to inspect the exact current Live state needed by the next edit.",
+    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_take_lane, inspect_device_tree, inspect_rack_chain, inspect_device, inspect_mixer, inspect_clip, inspect_midi_clip, and analyze_audio_clip to inspect the exact current Live state needed by the next edit.",
     "Observation collections and device parameters are paged. When a result reports nextOffset, call the same inspection again with the corresponding itemOffset, parameterOffset, or valueItemOffset until the exact target is visible. Never infer an omitted item.",
     "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it, and the beta SDK does not expose the rejection cause. If insertion fails, preserve the failure as cause-unknown, inspect the current device chain, and decide from observed state whether to adjust placement, retry after a state repair, choose another exact name, or explain that no safe repair is known.",
     "Use inspect_midi_clip before analyzing or rewriting MIDI harmony, melody, voicing, or chord correctness unless the exact notes are already in context. For long clips, follow noteOffset pagination until every note has been inspected.",
-    "If a user asks you to modify a device and you do not have the exact exposed parameter names in the current context, call inspect_device for a top-level device or inspect_device_tree for a nested Rack device first. Preserve and reuse the observed devicePath; do not guess Rack or chain indexes.",
+    "If a user asks you to modify a device and you do not have the exact exposed parameter names in the current context, call inspect_device for a top-level device or inspect_device_tree for a nested Rack device first. Use inspect_rack_chain for an existing Rack Chain and its Volume, Panning, and Sends. Preserve and reuse the observed devicePath; do not guess Rack or chain indexes.",
     "For newly inserted devices, first call apply_live_actions to create the track/device chain, then inspect the inserted devices, then call apply_live_actions again to set exact observed parameters. This staged workflow and a single complete confirmed plan are both supported; choose based on whether later steps require newly observed state.",
     "Within one apply_live_actions call, use targets plus trackRef for existing tracks that may be renamed. Track-creating actions may declare ref for later actions in the same call. Never target a later action by a name created by an earlier rename.",
-    'Return and Main tracks use explicit plan targets plus trackRef: {"trackRole":"return","trackIndex":0,"trackName":"A-Reverb"} or {"trackRole":"main","trackName":"Main"}. The name is an optional stale-state guard. These targets support only insert_device, set_device_parameter, duplicate_device, delete_device, and set_track_mixer_parameter; never use them for Clips, Take Lanes, Arm, mute/solo, rename, duplicate, or delete Track actions.',
+    'Return and Main tracks use explicit plan targets plus trackRef: {"trackRole":"return","trackIndex":0,"trackName":"A-Reverb"} or {"trackRole":"main","trackName":"Main"}. The name is an optional stale-state guard. These targets support device-chain actions and Track or Rack Chain mixer parameters; never use them for Clips, Take Lanes, Arm, mute/solo, rename, duplicate, or delete Track actions.',
     'Example for rename then edit in one call: {"message":"Build pads","targets":{"pads":{"trackName":"1-MIDI"}},"actions":[{"type":"rename_track","trackRef":"pads","newName":"Dream Pads"},{"type":"insert_device","trackRef":"pads","deviceName":"Auto Filter"}]}.',
     "Use one apply_live_actions call when every note and device choice is already known and one confirmation is appropriate.",
     "For main Arrangement-lane MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
@@ -415,6 +443,7 @@ export function actionSystemPrompt(): string {
     "Use transpose_midi_notes, quantize_midi_notes, scale_midi_velocity, or shift_midi_notes for deterministic whole-Clip edits of main Arrangement or Session Clips instead of regenerating unchanged notes. Each transform fails without mutation if any resulting pitch or note interval would leave the valid MIDI or Clip bounds.",
     "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
     "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
+    "create_rack_chain appends one empty Chain to an existing non-Drum Rack. Use at most one such creation per Rack target in an apply_live_actions call, then inspect the returned Chain index with inspect_rack_chain before inserting devices or changing its mixer in a later staged call. The SDK does not expose Chain names, deletion, duplication, or reordering. Drum Rack pad creation remains configure_drum_pad so receiving-note uniqueness and partial completion stay explicit.",
     "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
     "Arrangement and Session are different locations. Use startBeat for Arrangement Clips and slotIndex for Session Clips, inspect the exact location before editing, and disclose replacement or deletion behavior in the plan.",
     "Scenes are Session View rows even when Live currently shows Arrangement. Only create, rename, duplicate, or delete Scenes when the user requested Session View structure or the observed workflow requires it; use Cue Points for Arrangement song-section markers. For rename_scene, sceneIndex identifies the target and newName is the desired name. sceneName is only an optional exact observed current-name guard; omit sceneName when it is unknown or blank.",
@@ -475,6 +504,8 @@ export function summarizeAgentAction(action: AgentAction): string {
       return `Insert Live device "${action.deviceName}" on ${targetTrack(action)} ${action.index === undefined ? "at end" : `at index ${action.index}`}.`;
     case "insert_chain_device":
       return `Insert Live device "${action.deviceName}" in chain ${action.chainIndex} of Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} ${action.index === undefined ? "at end" : `at index ${action.index}`}.`;
+    case "create_rack_chain":
+      return `Append one empty Chain to non-Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)}.`;
     case "set_device_parameter":
       return `Set "${action.parameterName}" on "${action.deviceName}"${deviceLocatorText(action.devicePath, action.deviceIndex)} in ${targetTrack(action)} to ${action.value}.`;
     case "duplicate_device":
@@ -507,6 +538,8 @@ export function summarizeAgentAction(action: AgentAction): string {
       return `${action.arm ? "Arm" : "Disarm"} ${targetTrack(action)}.`;
     case "set_track_mixer_parameter":
       return `Set ${action.parameter === "send" ? `send ${action.sendIndex}` : action.parameter} on ${targetTrack(action)} to ${action.value}.`;
+    case "set_chain_mixer_parameter":
+      return `Set ${action.parameter === "send" ? `send ${action.sendIndex}` : action.parameter} on Chain ${action.chainIndex} of Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} to ${action.value}.`;
     case "create_take_lane":
       return `Create Take Lane${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)}.`;
     case "rename_take_lane":
@@ -641,9 +674,12 @@ function validateActionLocators(action: AgentAction): void {
       );
     }
   }
-  if (action.type === "set_track_mixer_parameter") {
+  if (
+    action.type === "set_track_mixer_parameter" ||
+    action.type === "set_chain_mixer_parameter"
+  ) {
     if (action.parameter === "send" && action.sendIndex === undefined) {
-      throw new Error("set_track_mixer_parameter requires sendIndex when parameter is send.");
+      throw new Error(`${action.type} requires sendIndex when parameter is send.`);
     }
     if (action.parameter !== "send" && action.sendIndex !== undefined) {
       throw new Error("sendIndex is only supported when parameter is send.");
@@ -998,7 +1034,7 @@ function validateTrackReferenceGraph(
           !supportsNonRegularTrackAction(action)
         ) {
           throw new Error(
-            `Action ${actionNumber} cannot use ${kind} trackRef "${action.trackRef}" for ${action.type}. Return and Main targets support only device-chain actions and set_track_mixer_parameter.`,
+            `Action ${actionNumber} cannot use ${kind} trackRef "${action.trackRef}" for ${action.type}. Return and Main targets support only device-chain actions and Track or Rack Chain mixer parameters.`,
           );
         }
         if (
@@ -1144,9 +1180,11 @@ function requiresObservedExistingTrack(action: AgentAction): boolean {
     action.type === "duplicate_device" ||
     action.type === "delete_device" ||
     action.type === "insert_chain_device" ||
+    action.type === "create_rack_chain" ||
     action.type === "replace_simpler_sample" ||
     action.type === "configure_drum_pad" ||
     action.type === "set_track_mixer_parameter" ||
+    action.type === "set_chain_mixer_parameter" ||
     action.type === "set_clip_properties" ||
     action.type === "set_audio_clip_warp" ||
     isMidiTransformAction(action) ||

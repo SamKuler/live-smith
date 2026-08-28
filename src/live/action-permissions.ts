@@ -1,6 +1,8 @@
 import {
   AudioClip,
+  DrumRack,
   MidiClip,
+  RackDevice,
   type Clip,
   type ExtensionContext,
   type Scene,
@@ -61,15 +63,30 @@ export function requiredEditScopesForAction(
     case "insert_device":
     case "insert_chain_device":
     case "set_device_parameter":
-    case "duplicate_device":
-    case "delete_device":
     case "replace_simpler_sample":
-    case "configure_drum_pad":
       return ["devices"];
+    case "create_rack_chain":
+      return ["devices", "mixer"];
+    case "duplicate_device":
+    case "delete_device": {
+      const device = bindings.actionObjects.get(actionIndex)?.deviceTarget?.device;
+      if (!device) throw unidentifiedTarget("Device");
+      return device instanceof RackDevice && device.chains.length
+        ? ["devices", "mixer"]
+        : ["devices"];
+    }
+    case "configure_drum_pad": {
+      const rack = bindings.actionObjects.get(actionIndex)?.deviceTarget?.device;
+      if (!(rack instanceof DrumRack)) throw unidentifiedTarget("Drum Rack");
+      const createsChain = action.mode === "fill_empty_pad" &&
+        !rack.chains.some((chain) => chain.receivingNote === action.receivingNote);
+      return createsChain ? ["devices", "mixer"] : ["devices"];
+    }
     case "set_track_mute":
     case "set_track_solo":
     case "set_track_arm":
     case "set_track_mixer_parameter":
+    case "set_chain_mixer_parameter":
       return ["mixer"];
     case "create_midi_track":
     case "create_audio_track":

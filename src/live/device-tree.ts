@@ -24,6 +24,15 @@ export interface ResolvedDeviceTarget {
   path: DevicePath;
 }
 
+export interface ResolvedRackDeviceTarget extends ResolvedDeviceTarget {
+  device: RackDevice<"1.0.0">;
+}
+
+export interface ResolvedRackChainTarget {
+  rackTarget: ResolvedRackDeviceTarget;
+  chain: Chain<"1.0.0">;
+}
+
 export interface DeviceTreeEntry extends ResolvedDeviceTarget {
   depth: number;
 }
@@ -131,6 +140,43 @@ export function resolveDevicePath(
       ...(normalizedNested.length ? { nested: normalizedNested } : {}),
     },
   };
+}
+
+export function resolveRackDeviceTarget(
+  track: Track<"1.0.0">,
+  target: LiveTarget,
+  expectedName: string,
+  path?: DevicePath,
+): ResolvedRackDeviceTarget {
+  const resolved = resolveDeviceTarget(track, target, expectedName, path);
+  if (!(resolved.device instanceof RackDevice)) {
+    throw new Error(`Device "${safeDeviceName(resolved.device)}" is not a Rack device.`);
+  }
+  return { ...resolved, device: resolved.device };
+}
+
+export function resolveRackChainTarget(
+  track: Track<"1.0.0">,
+  target: LiveTarget,
+  expectedRackName: string,
+  rackPath: DevicePath | undefined,
+  chainIndex: number,
+): ResolvedRackChainTarget {
+  assertIndex(chainIndex, "chainIndex");
+  const rackTarget = resolveRackDeviceTarget(
+    track,
+    target,
+    expectedRackName,
+    rackPath,
+  );
+  const chains = rackTarget.device.chains;
+  const chain = chains[chainIndex];
+  if (!chain) {
+    throw new Error(
+      `Rack "${safeDeviceName(rackTarget.device)}" has ${chains.length} chains; chain ${chainIndex} does not exist.`,
+    );
+  }
+  return { rackTarget, chain };
 }
 
 export function findDevicePath(

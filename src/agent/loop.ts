@@ -1338,6 +1338,14 @@ function observationCoversRecovery(
         trackSelectorMatches(actual, required) &&
         optionalTextMatches(actual.deviceName, required.deviceName) &&
         JSON.stringify(actual.devicePath) === JSON.stringify(required.devicePath);
+    case "inspect_rack_chain":
+      return actual.type === "inspect_rack_chain" &&
+        trackSelectorMatches(actual, required) &&
+        normalizedText(actual.rackName) === normalizedText(required.rackName) &&
+        JSON.stringify(actual.rackPath) === JSON.stringify(required.rackPath) &&
+        actual.chainIndex === required.chainIndex &&
+        (required.itemOffset === undefined ||
+          (actual.itemOffset ?? 0) === required.itemOffset);
     case "inspect_mixer":
       return actual.type === "inspect_mixer" &&
         trackSelectorMatches(actual, required);
@@ -1482,6 +1490,36 @@ function observationRequestFromToolCall(
         ...observationItemPageProps(args),
         ...observationParameterPageProps(args),
       };
+    case "inspect_rack_chain": {
+      assertOnlyKeys(
+        args,
+        [
+          ...observationTrackSelectorKeys,
+          "rackName",
+          "rackPath",
+          "chainIndex",
+          ...observationItemPageKeys,
+        ],
+        `${toolCall.name} arguments`,
+      );
+      const chainIndex = optionalIntegerProp(
+        args.chainIndex,
+        "chainIndex",
+        0,
+        4095,
+      );
+      if (chainIndex.chainIndex === undefined) {
+        throw new Error("inspect_rack_chain requires chainIndex.");
+      }
+      return {
+        type: "inspect_rack_chain",
+        ...observationTrackSelectorProps(args),
+        rackName: requiredString(args.rackName, "rackName"),
+        ...optionalRackPathProp(args.rackPath),
+        chainIndex: chainIndex.chainIndex,
+        ...observationItemPageProps(args),
+      };
+    }
     case "inspect_mixer":
       assertOnlyKeys(args, observationTrackSelectorKeys, `${toolCall.name} arguments`);
       return {
@@ -1657,6 +1695,7 @@ function isObservationTool(name: string): boolean {
     name === "inspect_take_lane" ||
     name === "inspect_device" ||
     name === "inspect_device_tree" ||
+    name === "inspect_rack_chain" ||
     name === "inspect_mixer" ||
     name === "inspect_clip" ||
     name === "inspect_midi_clip" ||
@@ -1669,38 +1708,51 @@ function isObservationTool(name: string): boolean {
 function optionalDevicePathProp(
   value: unknown,
 ): { devicePath?: import("../live/device-tree.js").DevicePath } {
-  if (value === undefined) return {};
+  const path = optionalPath(value, "devicePath");
+  return path ? { devicePath: path } : {};
+}
+
+function optionalRackPathProp(
+  value: unknown,
+): { rackPath?: import("../live/device-tree.js").DevicePath } {
+  const path = optionalPath(value, "rackPath");
+  return path ? { rackPath: path } : {};
+}
+
+function optionalPath(
+  value: unknown,
+  key: "devicePath" | "rackPath",
+): import("../live/device-tree.js").DevicePath | undefined {
+  if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("devicePath must be an object.");
+    throw new Error(`${key} must be an object.`);
   }
   const record = value as Record<string, unknown>;
-  assertOnlyKeys(record, ["deviceIndex", "nested"], "devicePath");
-  const deviceIndex = requiredNonNegativeInteger(record.deviceIndex, "devicePath.deviceIndex");
+  assertOnlyKeys(record, ["deviceIndex", "nested"], key);
+  const deviceIndex = requiredNonNegativeInteger(record.deviceIndex, `${key}.deviceIndex`);
   if (record.nested !== undefined && !Array.isArray(record.nested)) {
-    throw new Error("devicePath.nested must be an array.");
+    throw new Error(`${key}.nested must be an array.`);
   }
   const nested = (record.nested ?? []).map((item, index) => {
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
-      throw new Error(`devicePath.nested[${index}] must be an object.`);
+      throw new Error(`${key}.nested[${index}] must be an object.`);
     }
     const segment = item as Record<string, unknown>;
-    assertOnlyKeys(segment, ["chainIndex", "deviceIndex"], `devicePath.nested[${index}]`);
+    assertOnlyKeys(segment, ["chainIndex", "deviceIndex"], `${key}.nested[${index}]`);
     return {
       chainIndex: requiredNonNegativeInteger(
         segment.chainIndex,
-        `devicePath.nested[${index}].chainIndex`,
+        `${key}.nested[${index}].chainIndex`,
       ),
       deviceIndex: requiredNonNegativeInteger(
         segment.deviceIndex,
-        `devicePath.nested[${index}].deviceIndex`,
+        `${key}.nested[${index}].deviceIndex`,
       ),
     };
   });
   return {
-    devicePath: {
-      deviceIndex,
-      ...(nested.length ? { nested } : {}),
-    },
+    deviceIndex,
+    ...(nested.length ? { nested } : {}),
   };
 }
 

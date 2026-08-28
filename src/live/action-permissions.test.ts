@@ -7,6 +7,8 @@ import {
   Clip,
   ClipSlot,
   Device,
+  DrumChain,
+  DrumRack,
   MidiClip,
   MidiTrack,
   RackDevice,
@@ -33,10 +35,12 @@ const fixedScopes: Record<EditScope, AgentAction["type"][]> = {
   ],
   audio: ["create_arrangement_audio_clip", "create_session_audio_clip", "set_audio_clip_warp"],
   devices: [
-    "insert_device", "insert_chain_device", "set_device_parameter", "duplicate_device",
-    "delete_device", "replace_simpler_sample", "configure_drum_pad",
+    "insert_device", "insert_chain_device", "set_device_parameter", "replace_simpler_sample",
   ],
-  mixer: ["set_track_mute", "set_track_solo", "set_track_arm", "set_track_mixer_parameter"],
+  mixer: [
+    "set_track_mute", "set_track_solo", "set_track_arm",
+    "set_track_mixer_parameter", "set_chain_mixer_parameter",
+  ],
   structure: [
     "create_midi_track", "create_audio_track", "rename_track", "create_scene", "rename_scene",
     "create_cue_point", "rename_cue_point", "delete_cue_point", "create_take_lane",
@@ -53,6 +57,74 @@ test("fixed action contracts require their category even for idempotent writes",
       assert.throws(() => assertEditScopesAllow(required, []), /exceeds the Session's edit scope/);
     }
   }
+});
+
+test("Rack container operations include their Chain mixer scope", () => {
+  const ordinary = sdkObject(Device.prototype, { name: "Utility" });
+  const chain = sdkObject(DrumChain.prototype, { receivingNote: 36, devices: [] });
+  const rack = sdkObject(RackDevice.prototype, { name: "Rack", chains: [chain] });
+  const emptyRack = sdkObject(RackDevice.prototype, { name: "Empty Rack", chains: [] });
+  for (const type of ["duplicate_device", "delete_device"] as const) {
+    assert.deepEqual(
+      requiredEditScopesForAction(
+        liveContext(),
+        example(type),
+        0,
+        bindings(undefined, { deviceTarget: { device: ordinary } as never }),
+      ),
+      ["devices"],
+    );
+    assert.deepEqual(
+      requiredEditScopesForAction(
+        liveContext(),
+        example(type),
+        0,
+        bindings(undefined, { deviceTarget: { device: rack } as never }),
+      ),
+      ["devices", "mixer"],
+    );
+    assert.deepEqual(
+      requiredEditScopesForAction(
+        liveContext(),
+        example(type),
+        0,
+        bindings(undefined, { deviceTarget: { device: emptyRack } as never }),
+      ),
+      ["devices"],
+    );
+  }
+
+  assert.deepEqual(
+    requiredEditScopesForAction(
+      liveContext(),
+      example("create_rack_chain"),
+      0,
+      bindings(),
+    ),
+    ["devices", "mixer"],
+  );
+
+  const drumRack = sdkObject(DrumRack.prototype, { name: "Drum Rack", chains: [] });
+  const fill = example("configure_drum_pad");
+  assert.deepEqual(
+    requiredEditScopesForAction(
+      liveContext(),
+      fill,
+      0,
+      bindings(undefined, { deviceTarget: { device: drumRack } as never }),
+    ),
+    ["devices", "mixer"],
+  );
+  Reflect.set(drumRack, "chains", [chain]);
+  assert.deepEqual(
+    requiredEditScopesForAction(
+      liveContext(),
+      fill,
+      0,
+      bindings(undefined, { deviceTarget: { device: drumRack } as never }),
+    ),
+    ["devices"],
+  );
 });
 
 test("generic Clip writes use actual MIDI or Audio instances rather than names", () => {

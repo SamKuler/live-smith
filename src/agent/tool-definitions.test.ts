@@ -18,6 +18,7 @@ test("apply_live_actions exposes every validated action schema", () => {
     "create_cue_point",
     "create_midi_clip",
     "create_midi_track",
+    "create_rack_chain",
     "create_scene",
     "create_session_audio_clip",
     "create_session_midi_clip",
@@ -42,6 +43,7 @@ test("apply_live_actions exposes every validated action schema", () => {
     "replace_simpler_sample",
     "scale_midi_velocity",
     "set_audio_clip_warp",
+    "set_chain_mixer_parameter",
     "set_clip_properties",
     "set_device_parameter",
     "set_tempo",
@@ -89,6 +91,7 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
     "inspect_current_object",
     "inspect_take_lane",
     "inspect_device_tree",
+    "inspect_rack_chain",
     "inspect_mixer",
     "inspect_clip",
     "analyze_audio_clip",
@@ -110,6 +113,14 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
   };
   assert.ok(inspectTree.properties?.itemOffset);
   assert.ok(inspectTree.properties?.parameterLimit);
+
+  const inspectChain = tools.get("inspect_rack_chain")?.parameters as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  assert.ok(inspectChain.properties?.rackPath);
+  assert.ok(inspectChain.properties?.itemOffset);
+  assert.deepEqual(inspectChain.required, ["rackName", "chainIndex"]);
 
   const inspectLane = tools.get("inspect_take_lane")?.parameters as {
     properties?: Record<string, unknown>;
@@ -134,6 +145,7 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
     "inspect_track",
     "inspect_device",
     "inspect_device_tree",
+    "inspect_rack_chain",
     "inspect_mixer",
   ]) {
     const parameters = tools.get(name)?.parameters as {

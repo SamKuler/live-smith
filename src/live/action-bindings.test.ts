@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   AudioClip,
   AudioTrack,
+  Chain,
   MidiClip,
   MidiTrack,
+  RackDevice,
   Sample,
   TakeLane,
   Track,
@@ -448,6 +450,118 @@ test("Device bindings reject an indexed object replacement after confirmation", 
   assert.throws(
     () => assertSameExistingPlanTargets(before, after),
     /object bound to action 1 changed/i,
+  );
+});
+
+test("Rack Chain actions bind the exact Chain and mixer parameter handles", () => {
+  const mixerParameter = sdkObject(Object.prototype, {
+    handle: { id: "volume-1" },
+    name: "Volume",
+    min: 0,
+    max: 1,
+  });
+  const chain = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: "chain-1" },
+    devices: [],
+    mixer: { volume: mixerParameter, panning: mixerParameter, sends: [] },
+  });
+  const rack = sdkObject<RackDevice<"1.0.0">>(RackDevice.prototype, {
+    handle: { id: "rack-1" },
+    name: "Instrument Rack",
+    chains: [chain],
+  });
+  const track = sdkObject<Track<"1.0.0">>(Track.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [rack],
+  });
+  const plan = validateAgentPlan({
+    message: "Edit the existing Chain",
+    targets: {
+      bus: { trackRole: "return", trackIndex: 0, trackName: "Lead" },
+    },
+    actions: [
+      {
+        type: "insert_chain_device",
+        trackRef: "bus",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        deviceName: "Utility",
+      },
+      {
+        type: "set_chain_mixer_parameter",
+        trackRef: "bus",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+        chainIndex: 0,
+        parameter: "volume",
+        value: 0.5,
+      },
+    ],
+  });
+  const context = {
+    application: { song: { tracks: [], returnTracks: [track] } },
+  } as never;
+  const before = bindAgentPlanTargets(context, plan);
+
+  assert.equal(before.actionObjects.get(0)?.chain, chain);
+  assert.equal(before.actionObjects.get(1)?.chain, chain);
+  assert.equal(before.actionObjects.get(1)?.mixerParameter, mixerParameter);
+
+  const replacement = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: "chain-2" },
+    devices: [],
+    mixer: { volume: mixerParameter, panning: mixerParameter, sends: [] },
+  });
+  Reflect.set(rack, "chains", [replacement]);
+  const after = bindAgentPlanTargets(context, plan);
+  assert.throws(
+    () => assertSameExistingPlanTargets(before, after),
+    /object bound to action 1 changed/i,
+  );
+
+  Reflect.set(rack, "chains", [chain]);
+  const replacementParameter = sdkObject(Object.prototype, {
+    handle: { id: "volume-2" },
+    name: "Volume",
+    min: 0,
+    max: 1,
+  });
+  Reflect.set(chain, "mixer", {
+    volume: replacementParameter,
+    panning: mixerParameter,
+    sends: [],
+  });
+  const parameterAfter = bindAgentPlanTargets(context, plan);
+  assert.throws(
+    () => assertSameExistingPlanTargets(before, parameterAfter),
+    /object bound to action 2 changed/i,
+  );
+
+  const duplicateCreation = validateAgentPlan({
+    message: "Do not create two indistinguishable Chains",
+    actions: [
+      {
+        type: "create_rack_chain",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+      },
+      {
+        type: "create_rack_chain",
+        trackName: "Lead",
+        rackName: "Instrument Rack",
+        rackPath: { deviceIndex: 0 },
+      },
+    ],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(
+      { application: { song: { tracks: [track] } } } as never,
+      duplicateCreation,
+      { track },
+    ),
+    /same Rack.*one create_rack_chain per confirmed stage/i,
   );
 });
 

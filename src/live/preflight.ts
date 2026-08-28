@@ -15,7 +15,12 @@ import {
 
 import type { AgentAction } from "../agent/actions.js";
 import { findExactParameterMatch } from "./parameter-match.js";
-import { resolveDevicePath, resolveDeviceTarget } from "./device-tree.js";
+import {
+  resolveDevicePath,
+  resolveDeviceTarget,
+  resolveRackChainTarget,
+  resolveRackDeviceTarget,
+} from "./device-tree.js";
 import {
   findReusableMidiClip,
   resolveArrangementClip,
@@ -25,6 +30,7 @@ import {
   resolveScene,
   resolveSessionClip,
   resolveTakeLane,
+  resolveChainMixerParameter,
   resolveTrackMixerParameter,
   resolveTrack,
 } from "./resolve.js";
@@ -194,26 +200,45 @@ export async function captureLiveActionPreflightSnapshot(
     }
     case "insert_chain_device": {
       const track = resolveTrack(context, action.trackName, target);
-      const resolved = resolveDeviceTarget(
+      const resolved = resolveRackChainTarget(
+        track,
+        target,
+        action.rackName,
+        action.rackPath,
+        action.chainIndex,
+      );
+      const devices = resolved.chain.devices;
+      if (action.index !== undefined && action.index > devices.length) {
+        throw new Error(
+          `Chain ${action.chainIndex} in Rack "${resolved.rackTarget.device.name}" has ${devices.length} devices; insertion index ${action.index} is out of range.`,
+        );
+      }
+      return fingerprint(action.type, {
+        song: songIdentity,
+        track: trackIdentity(track),
+        rackPath: resolved.rackTarget.path,
+        rack: deviceTargetIdentity(resolved.rackTarget.device),
+        chain: chainDeviceStructureIdentity(resolved.chain),
+      });
+    }
+    case "create_rack_chain": {
+      const track = resolveTrack(context, action.trackName, target);
+      const resolved = resolveRackDeviceTarget(
         track,
         target,
         action.rackName,
         action.rackPath,
       );
-      if (!(resolved.device instanceof RackDevice)) {
-        throw new Error(`Device "${resolved.device.name}" is not a Rack device.`);
-      }
-      const chain = resolved.device.chains[action.chainIndex];
-      if (!chain) {
+      if (resolved.device instanceof DrumRack) {
         throw new Error(
-          `Rack "${resolved.device.name}" has ${resolved.device.chains.length} chains; chain ${action.chainIndex} does not exist.`,
+          `Rack "${resolved.device.name}" is a Drum Rack. Use configure_drum_pad so the receiving note and partial completion are explicit.`,
         );
       }
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
         rackPath: resolved.path,
-        rack: await deviceContentIdentity(resolved.device),
+        rack: deviceTargetIdentity(resolved.device),
       });
     }
     case "set_device_parameter": {
@@ -273,7 +298,7 @@ export async function captureLiveActionPreflightSnapshot(
         song: songIdentity,
         track: trackIdentity(track),
         path: resolved.path,
-        parent: await deviceContainerIdentity(resolved.parent),
+        parent: deviceContainerIdentity(resolved.parent),
         device: await deviceContentIdentity(resolved.device),
       });
     }
@@ -308,7 +333,8 @@ export async function captureLiveActionPreflightSnapshot(
       if (!(resolved.device instanceof DrumRack)) {
         throw new Error(`Device "${resolved.device.name}" is not a Drum Rack.`);
       }
-      const matchingChains = resolved.device.chains.filter(
+      const chains = resolved.device.chains;
+      const matchingChains = chains.filter(
         (chain) => chain.receivingNote === action.receivingNote,
       );
       if (matchingChains.length > 1) {
@@ -316,9 +342,10 @@ export async function captureLiveActionPreflightSnapshot(
           `Drum Rack "${resolved.device.name}" has ${matchingChains.length} chains receiving MIDI note ${action.receivingNote}; resolve the duplicate pads in Live first.`,
         );
       }
+      const targetChain = matchingChains[0];
+      let targetSimpler: ReturnType<typeof resolveDevicePath> | undefined;
       if (action.mode === "replace_existing_simpler") {
-        const chain = matchingChains[0];
-        if (!chain) {
+        if (!targetChain) {
           throw new Error(
             `Drum Rack "${resolved.device.name}" has no pad receiving MIDI note ${action.receivingNote}. Use mode fill_empty_pad to create it.`,
           );
@@ -329,18 +356,31 @@ export async function captureLiveActionPreflightSnapshot(
             `${JSON.stringify(action.simplerPath)} is "${simpler.device.name}", not Simpler.`,
           );
         }
-        if (simpler.parent !== chain) {
+        if (simpler.parent !== targetChain) {
           throw new Error(
             `The Simpler at ${JSON.stringify(action.simplerPath)} is not directly on Drum Rack pad ${action.receivingNote}.`,
           );
         }
+        targetSimpler = simpler;
       }
       const source = resolveSampleSource(context, action.source, target);
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
         path: resolved.path,
-        rack: await deviceContentIdentity(resolved.device),
+        rack: {
+          ...deviceTargetIdentity(resolved.device),
+          chains: chains.map(chainTargetIdentity),
+          targetChain: targetChain
+            ? chainDeviceStructureIdentity(targetChain)
+            : null,
+        },
+        ...(targetSimpler
+          ? {
+              simplerPath: targetSimpler.path,
+              simpler: await deviceContentIdentity(targetSimpler.device),
+            }
+          : {}),
         source: sampleSourceIdentity(source),
       });
     }
@@ -445,6 +485,30 @@ export async function captureLiveActionPreflightSnapshot(
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
+        parameter: parameterIdentity(parameter, currentValue),
+      });
+    }
+    case "set_chain_mixer_parameter": {
+      const track = resolveTrack(context, action.trackName, target);
+      const resolved = resolveRackChainTarget(
+        track,
+        target,
+        action.rackName,
+        action.rackPath,
+        action.chainIndex,
+      );
+      const parameter = resolveChainMixerParameter(
+        resolved.chain,
+        action.parameter,
+        action.sendIndex,
+      );
+      const currentValue = await verifiedParameterValue(parameter, "Rack Chain mixer");
+      return fingerprint(action.type, {
+        song: songIdentity,
+        track: trackIdentity(track),
+        rackPath: resolved.rackTarget.path,
+        rack: deviceTargetIdentity(resolved.rackTarget.device),
+        chain: chainTargetIdentity(resolved.chain),
         parameter: parameterIdentity(parameter, currentValue),
       });
     }
@@ -615,25 +679,65 @@ function parameterIdentity(
   };
 }
 
-async function deviceContainerIdentity(
+function deviceTargetIdentity(device: Device<"1.0.0">): object {
+  return {
+    id: requireHandleIdentity(device, "Rack device"),
+    name: device.name,
+  };
+}
+
+function chainTargetIdentity(chain: Chain<"1.0.0">): object {
+  return {
+    id: requireHandleIdentity(chain, "Rack Chain"),
+    ...("receivingNote" in chain
+      ? { receivingNote: (chain as { receivingNote: number }).receivingNote }
+      : {}),
+  };
+}
+
+function chainDeviceStructureIdentity(chain: Chain<"1.0.0">): object {
+  return {
+    ...chainTargetIdentity(chain),
+    devices: chain.devices.map((device) =>
+      requireHandleIdentity(device, "Chain device")
+    ),
+  };
+}
+
+function deviceContainerIdentity(
   parent: Track<"1.0.0"> | Chain<"1.0.0">,
-): Promise<object> {
+): object {
   return "name" in parent
     ? {
         id: requireHandleIdentity(parent, "device container"),
         name: parent.name,
-        devices: await Promise.all(parent.devices.map(deviceContentIdentity)),
+        devices: parent.devices.map((device) =>
+          requireHandleIdentity(device, "container device")
+        ),
       }
-    : chainContentIdentity(parent);
+    : chainDeviceStructureIdentity(parent);
 }
 
 async function chainContentIdentity(chain: Chain<"1.0.0">): Promise<object> {
   return {
-    id: requireHandleIdentity(chain, "device chain"),
-    ...("receivingNote" in chain
-      ? { receivingNote: (chain as { receivingNote: number }).receivingNote }
-      : {}),
+    ...chainTargetIdentity(chain),
+    mixer: await mixerContentIdentity(chain),
     devices: await Promise.all(chain.devices.map(deviceContentIdentity)),
+  };
+}
+
+async function mixerContentIdentity(chain: Chain<"1.0.0">): Promise<object> {
+  const mixer = chain.mixer;
+  const sends = mixer.sends;
+  const parameters = [mixer.volume, mixer.panning, ...sends];
+  return {
+    id: requireHandleIdentity(mixer, "Rack Chain mixer"),
+    parameters: await Promise.all(parameters.map(async (parameter) =>
+      parameterIdentity(
+        parameter,
+        await verifiedParameterValue(parameter, "Rack Chain mixer"),
+      )
+    )),
   };
 }
 

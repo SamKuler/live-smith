@@ -15,6 +15,7 @@ import {
   Simpler,
   TakeLane,
   Track,
+  type Chain,
   type ExtensionContext,
 } from "@ableton-extensions/sdk";
 
@@ -46,6 +47,7 @@ import {
   findDevicePath,
   resolveDevicePath,
   resolveDeviceTarget,
+  resolveRackChainTarget,
   type DevicePath,
 } from "./device-tree.js";
 import {
@@ -176,6 +178,8 @@ export async function observeLive(
     }
     case "inspect_device_tree":
       return summarizeDeviceTree(context, request, target);
+    case "inspect_rack_chain":
+      return summarizeRackChain(context, request, target);
     case "inspect_mixer": {
       const track = resolveTrackSelector(context, request, target);
       return summarizeMixer(context, track);
@@ -630,15 +634,7 @@ async function summarizeDeviceTree(
     pageHeader("devices", devicePage),
   ];
   for (const { device, parent, path, depth } of devicePage.items) {
-    const details = [
-      `type=${deviceTypeName(device)}`,
-      `parameters=${device.parameters.length}`,
-      ...(parent instanceof DrumChain ? [`receivingNote=${parent.receivingNote}`] : []),
-      ...(device instanceof RackDevice ? [`chains=${device.chains.length}`] : []),
-      ...(device instanceof Simpler
-        ? [`sample=${device.sample ? audioFileLabel(device.sample.filePath) : "none"}`]
-        : []),
-    ];
+    const details = deviceReferenceDetails(device, parent);
     lines.push(
       `${"  ".repeat(depth)}- ${devicePathLabel(path)} Device "${device.name}" ${details.join(" ")}`,
     );
@@ -665,21 +661,69 @@ async function summarizeDeviceTree(
   return lines.join("\n");
 }
 
+async function summarizeRackChain(
+  context: Api,
+  request: Extract<AgentObservationRequest, { type: "inspect_rack_chain" }>,
+  target: LiveTarget,
+): Promise<string> {
+  const track = resolveTrackSelector(context, request, target);
+  const { rackTarget, chain } = resolveRackChainTarget(
+    track,
+    target,
+    request.rackName,
+    request.rackPath,
+    request.chainIndex,
+  );
+  const devices = chain.devices;
+  const devicePage = pageOf(devices, request.itemOffset, request.itemLimit, 48);
+  const mixerParameters = mixerParameterList(chain.mixer);
+  const lines = [
+    `Chain ${request.chainIndex} in Rack "${rackTarget.device.name}" at ${devicePathLabel(rackTarget.path)} on ${trackHeading(context.application.song, track)} "${track.name}"`,
+    `type=${chain instanceof DrumChain ? "Drum Chain" : "Chain"}${chain instanceof DrumChain ? ` receivingNote=${chain.receivingNote}` : ""} devices=${devices.length}`,
+    pageHeader("devices", devicePage),
+  ];
+  for (const [index, device] of devicePage.items.entries()) {
+    const deviceIndex = devicePage.offset + index;
+    const path: DevicePath = {
+      deviceIndex: rackTarget.path.deviceIndex,
+      nested: [
+        ...(rackTarget.path.nested ?? []),
+        { chainIndex: request.chainIndex, deviceIndex },
+      ],
+    };
+    lines.push(
+      `  - ${devicePathLabel(path)} Device "${device.name}" ${deviceReferenceDetails(device).join(" ")}`,
+    );
+  }
+  lines.push(
+    `Chain mixer has ${mixerParameters.length} parameters:`,
+    ...(await Promise.all(mixerParameters.map((parameter, index) =>
+      describeParameter(parameter, index)
+    ))),
+  );
+  return lines.join("\n");
+}
+
 async function summarizeMixer(
   context: Api,
   track: Track<"1.0.0">,
 ): Promise<string> {
-  const parameters = [
-    track.mixer.volume,
-    track.mixer.panning,
-    ...track.mixer.sends,
-  ];
+  const parameters = mixerParameterList(track.mixer);
   return [
     `Mixer on ${trackHeading(context.application.song, track)} "${track.name}" has ${parameters.length} parameters:`,
     ...(await Promise.all(parameters.map((parameter, index) =>
       describeParameter(parameter, index)
     ))),
   ].join("\n");
+}
+
+function mixerParameterList(mixer: {
+  volume: DeviceParameter<"1.0.0">;
+  panning: DeviceParameter<"1.0.0">;
+  sends: DeviceParameter<"1.0.0">[];
+}): DeviceParameter<"1.0.0">[] {
+  const sends = mixer.sends;
+  return [mixer.volume, mixer.panning, ...sends];
 }
 
 function resolveObservedClip(
@@ -782,6 +826,21 @@ function deviceTypeName(device: Device<"1.0.0">): string {
   if (device instanceof Simpler) return "Simpler";
   if (device instanceof RackDevice) return device.constructor.name;
   return device.constructor.name || "Device";
+}
+
+function deviceReferenceDetails(
+  device: Device<"1.0.0">,
+  parent?: Track<"1.0.0"> | Chain<"1.0.0">,
+): string[] {
+  return [
+    `type=${deviceTypeName(device)}`,
+    `parameters=${device.parameters.length}`,
+    ...(parent instanceof DrumChain ? [`receivingNote=${parent.receivingNote}`] : []),
+    ...(device instanceof RackDevice ? [`chains=${device.chains.length}`] : []),
+    ...(device instanceof Simpler
+      ? [`sample=${device.sample ? audioFileLabel(device.sample.filePath) : "none"}`]
+      : []),
+  ];
 }
 
 function summarizeSongInfo(

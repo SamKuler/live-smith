@@ -1,5 +1,6 @@
 import {
   MidiTrack,
+  type Chain,
   type Clip,
   type ClipSlot,
   type CuePoint,
@@ -19,6 +20,8 @@ import { agentActionJsonSchemas } from "../agent/action-schema.js";
 import {
   resolveDevicePath,
   resolveDeviceTarget,
+  resolveRackChainTarget,
+  resolveRackDeviceTarget,
   type ResolvedDeviceTarget,
 } from "./device-tree.js";
 import {
@@ -31,6 +34,7 @@ import {
   resolveTakeLane,
   resolveMidiTrack,
   resolveTrackSelector,
+  resolveChainMixerParameter,
   resolveTrackMixerParameter,
   resolveTrack,
   songTrackEntryForTrack,
@@ -69,6 +73,7 @@ export interface BoundActionObjects {
   readonly cuePoint?: CuePoint<"1.0.0">;
   readonly deviceTarget?: ResolvedDeviceTarget;
   readonly secondaryDeviceTarget?: ResolvedDeviceTarget;
+  readonly chain?: Chain<"1.0.0">;
   readonly clip?: Clip<"1.0.0">;
   readonly slot?: ClipSlot<"1.0.0">;
   readonly takeLane?: TakeLane<"1.0.0">;
@@ -113,6 +118,7 @@ export function bindAgentPlanTargets(
     tracks,
     actionTracks,
   );
+  assertRackChainCreationsAreDistinct(plan, actionObjects);
   assertTakeLaneCreationRangesDoNotOverlap(plan, actionObjects);
   return { tracks, actionTracks, actionObjects };
 }
@@ -308,7 +314,7 @@ function assertActionTrackRole(
   }
   if (supportsNonRegularTrackAction(action)) return;
   throw new Error(
-    `${role} "${track.name}" does not support action ${action.type}. Return and Main tracks support only device-chain actions and set_track_mixer_parameter.`,
+    `${role} "${track.name}" does not support action ${action.type}. Return and Main tracks support only device-chain actions and Track or Rack Chain mixer parameters.`,
   );
 }
 
@@ -392,7 +398,20 @@ function bindActionObjects(
         break;
       case "insert_chain_device":
         if (track) {
-          binding.deviceTarget = resolveDeviceTarget(
+          const resolved = resolveRackChainTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+            action.chainIndex,
+          );
+          binding.deviceTarget = resolved.rackTarget;
+          binding.chain = resolved.chain;
+        }
+        break;
+      case "create_rack_chain":
+        if (track) {
+          binding.deviceTarget = resolveRackDeviceTarget(
             track,
             target,
             action.rackName,
@@ -443,6 +462,24 @@ function bindActionObjects(
         if (track) {
           binding.mixerParameter = resolveTrackMixerParameter(
             track,
+            action.parameter,
+            action.sendIndex,
+          );
+        }
+        break;
+      case "set_chain_mixer_parameter":
+        if (track) {
+          const resolved = resolveRackChainTarget(
+            track,
+            target,
+            action.rackName,
+            action.rackPath,
+            action.chainIndex,
+          );
+          binding.deviceTarget = resolved.rackTarget;
+          binding.chain = resolved.chain;
+          binding.mixerParameter = resolveChainMixerParameter(
+            resolved.chain,
             action.parameter,
             action.sendIndex,
           );
@@ -526,6 +563,26 @@ function assertTakeLaneCreationRangesDoNotOverlap(
   });
 }
 
+function assertRackChainCreationsAreDistinct(
+  plan: AgentPlan,
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): void {
+  const seen = new Map<string, number>();
+  plan.actions.forEach((action, index) => {
+    if (action.type !== "create_rack_chain") return;
+    const rack = actionObjects.get(index)?.deviceTarget?.device;
+    if (!rack) throw new Error(`Could not bind the Rack for action ${index + 1}.`);
+    const key = hostObjectHandleId(rack, "Rack device");
+    const prior = seen.get(key);
+    if (prior !== undefined) {
+      throw new Error(
+        `Actions ${prior + 1} and ${index + 1} create a Chain in the same Rack. Use one create_rack_chain per confirmed stage so partial recovery can identify it unambiguously.`,
+      );
+    }
+    seen.set(key, index);
+  });
+}
+
 type WritableBoundActionObjects = {
   -readonly [Key in keyof BoundActionObjects]?: BoundActionObjects[Key];
 };
@@ -562,6 +619,9 @@ function boundObjectIdentity(binding: BoundActionObjects): Record<string, unknow
       : {}),
     ...(binding.secondaryDeviceTarget
       ? { secondaryDeviceTarget: deviceTargetIdentity(binding.secondaryDeviceTarget) }
+      : {}),
+    ...(binding.chain
+      ? { chain: hostObjectHandleId(binding.chain, "Rack Chain") }
       : {}),
     ...(binding.clip
       ? { clip: hostObjectHandleId(binding.clip, "Clip") }

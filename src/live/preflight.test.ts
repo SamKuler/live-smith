@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AudioClip,
   AudioTrack,
+  Chain,
   ClipSlot,
   CuePoint,
   DrumChain,
@@ -342,6 +343,201 @@ test("nested device and Rack snapshots bind structural handles", async () => {
   assert.notEqual(afterValue, before);
   assert.notEqual(afterHandle, afterValue);
   assert.ok(rack instanceof RackDevice);
+});
+
+test("Rack Chain snapshots track only the structure or mixer state each action uses", async () => {
+  let mixerValue = 0.25;
+  const mixerParameter = {
+    handle: { id: 351n },
+    name: "Volume",
+    min: 0,
+    max: 1,
+    getValue: async () => mixerValue,
+  };
+  const devices: Array<{
+    handle: { id: bigint };
+    name: string;
+    parameters: never[];
+  }> = [];
+  const chain = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: 350n },
+    devices,
+    mixer: {
+      handle: { id: 354n },
+      volume: mixerParameter,
+      panning: mixerParameter,
+      sends: [],
+    },
+  });
+  const chains: Chain<"1.0.0">[] = [chain];
+  const rack = sdkObject<RackDevice<"1.0.0">>(RackDevice.prototype, {
+    handle: { id: 349n },
+    name: "Instrument Rack",
+    parameters: [],
+    chains,
+  });
+  const track = midiTrack(11n, [], [rack]);
+  const context = liveContext(track);
+  const rackLocator = {
+    trackName: "Bass",
+    rackName: "Instrument Rack",
+    rackPath: { deviceIndex: 0 },
+  };
+
+  const createBefore = await captureLiveActionPreflightSnapshot(
+    context,
+    { type: "create_rack_chain", ...rackLocator },
+    {},
+  );
+  devices.push({ handle: { id: 352n }, name: "Utility", parameters: [] });
+  const deviceContentChanged = await captureLiveActionPreflightSnapshot(
+    context,
+    { type: "create_rack_chain", ...rackLocator },
+    {},
+  );
+  assert.equal(deviceContentChanged, createBefore);
+  const insertionAction = {
+    type: "insert_chain_device" as const,
+    ...rackLocator,
+    chainIndex: 0,
+    deviceName: "Auto Filter",
+    index: 1,
+  };
+  const insertionBefore = await captureLiveActionPreflightSnapshot(
+    context,
+    insertionAction,
+    {},
+  );
+  devices[0]!.name = "Renamed Utility";
+  const siblingRenamed = await captureLiveActionPreflightSnapshot(
+    context,
+    insertionAction,
+    {},
+  );
+  assert.equal(siblingRenamed, insertionBefore);
+  await assert.rejects(
+    captureLiveActionPreflightSnapshot(
+      context,
+      {
+        type: "insert_chain_device",
+        ...rackLocator,
+        chainIndex: 0,
+        deviceName: "Auto Filter",
+        index: 2,
+      },
+      {},
+    ),
+    /has 1 devices; insertion index 2 is out of range/i,
+  );
+  chains.push(sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: 353n },
+    devices: [],
+    mixer: {
+      handle: { id: 355n },
+      volume: mixerParameter,
+      panning: mixerParameter,
+      sends: [],
+    },
+  }));
+  const unrelatedChainAdded = await captureLiveActionPreflightSnapshot(
+    context,
+    { type: "create_rack_chain", ...rackLocator },
+    {},
+  );
+  assert.equal(unrelatedChainAdded, createBefore);
+
+  const mixerAction = {
+    type: "set_chain_mixer_parameter" as const,
+    ...rackLocator,
+    chainIndex: 0,
+    parameter: "volume" as const,
+    value: 0.5,
+  };
+  const mixerBefore = await captureLiveActionPreflightSnapshot(
+    context,
+    mixerAction,
+    {},
+  );
+  mixerValue = 0.75;
+  const mixerAfter = await captureLiveActionPreflightSnapshot(
+    context,
+    mixerAction,
+    {},
+  );
+  assert.notEqual(mixerAfter, mixerBefore);
+
+  const duplicateAction = {
+    type: "duplicate_device" as const,
+    trackName: "Bass",
+    deviceName: "Instrument Rack",
+    devicePath: { deviceIndex: 0 },
+  };
+  const duplicateBefore = await captureLiveActionPreflightSnapshot(
+    context,
+    duplicateAction,
+    {},
+  );
+  mixerValue = 0.9;
+  const duplicateAfter = await captureLiveActionPreflightSnapshot(
+    context,
+    duplicateAction,
+    {},
+  );
+  assert.notEqual(duplicateAfter, duplicateBefore);
+});
+
+test("Drum Pad preflight derives matching and fingerprint state from one Chain snapshot", async () => {
+  const chain = sdkObject<DrumChain<"1.0.0">>(DrumChain.prototype, {
+    handle: { id: 451n },
+    receivingNote: 36,
+    devices: [],
+  });
+  const rackProperties = {
+    handle: { enumerable: true, value: { id: 450n } },
+    name: { enumerable: true, value: "Drum Rack" },
+    parameters: { enumerable: true, value: [] },
+  };
+  let firstSnapshot = true;
+  const changingRack = Object.defineProperties(Object.create(DrumRack.prototype), {
+    ...rackProperties,
+    chains: {
+      enumerable: true,
+      get: () => {
+        const snapshot = firstSnapshot ? [chain] : [];
+        firstSnapshot = false;
+        return snapshot;
+      },
+    },
+  }) as DrumRack<"1.0.0">;
+  const stableRack = Object.defineProperties(Object.create(DrumRack.prototype), {
+    ...rackProperties,
+    chains: { enumerable: true, value: [chain] },
+  }) as DrumRack<"1.0.0">;
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: 452n },
+    filePath: "/private/samples/kick.wav",
+  });
+  const action = {
+    type: "configure_drum_pad" as const,
+    trackName: "Bass",
+    rackName: "Drum Rack",
+    rackPath: { deviceIndex: 0 },
+    receivingNote: 36,
+    mode: "fill_empty_pad" as const,
+    source: { kind: "selected" as const },
+  };
+
+  const changing = await captureLiveActionPreflightSnapshot(
+    liveContext(midiTrack(11n, [], [changingRack])),
+    action,
+    { object: source },
+  );
+  const stable = await captureLiveActionPreflightSnapshot(
+    liveContext(midiTrack(11n, [], [stableRack])),
+    action,
+    { object: source },
+  );
+  assert.equal(changing, stable);
 });
 
 test("Drum Pad replacement snapshot detects an existing Simpler sample change", async () => {

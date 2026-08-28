@@ -1488,6 +1488,13 @@ test("shared action routing covers every extended Live object action", () => {
           rackPath: { deviceIndex: 0 },
           chainIndex: 0,
           deviceName: "Simpler",
+          index: 3,
+        },
+        {
+          type: "create_rack_chain",
+          trackName: "Lead",
+          rackName: "Instrument Rack",
+          rackPath: { deviceIndex: 0 },
         },
         {
           type: "duplicate_device",
@@ -1537,6 +1544,15 @@ test("shared action routing covers every extended Live object action", () => {
           sendIndex: 0,
           value: 0.5,
         },
+        {
+          type: "set_chain_mixer_parameter",
+          trackName: "Lead",
+          rackName: "Instrument Rack",
+          rackPath: { deviceIndex: 0 },
+          chainIndex: 1,
+          parameter: "volume",
+          value: 0.6,
+        },
         { type: "create_take_lane", trackName: "Vocals", name: "Take 2" },
         {
           type: "rename_take_lane",
@@ -1579,9 +1595,18 @@ test("shared action routing covers every extended Live object action", () => {
     { type: "inspect_song_info" },
     { type: "inspect_clip", trackName: "Lead", slotIndex: 0 },
     {
-      type: "inspect_device_tree",
+      type: "inspect_rack_chain",
       trackName: "Drums",
-      deviceName: "Drum Rack",
+      rackName: "Drum Rack",
+      rackPath: { deviceIndex: 0 },
+      chainIndex: 0,
+      itemOffset: 3,
+      itemLimit: 1,
+    },
+    {
+      type: "inspect_device_tree",
+      trackName: "Lead",
+      deviceName: "Instrument Rack",
       devicePath: { deviceIndex: 0 },
     },
     {
@@ -1612,6 +1637,13 @@ test("shared action routing covers every extended Live object action", () => {
     { type: "inspect_clip", trackName: "Audio", slotIndex: 1 },
     { type: "inspect_track", trackName: "Lead" },
     { type: "inspect_mixer", trackName: "Lead" },
+    {
+      type: "inspect_rack_chain",
+      trackName: "Lead",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 0 },
+      chainIndex: 1,
+    },
     { type: "inspect_track", trackName: "Vocals" },
     {
       type: "inspect_take_lane",

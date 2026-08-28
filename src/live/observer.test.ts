@@ -5,10 +5,12 @@ import test from "node:test";
 import {
   AudioClip,
   AudioTrack,
+  Chain,
   DrumChain,
   DrumRack,
   MidiClip,
   MidiTrack,
+  RackDevice,
   Scene,
   Simpler,
   TakeLane,
@@ -729,6 +731,88 @@ test("inspect_mixer returns exact current values and ranges", async () => {
   assert.match(result, /Volume.*current=0\.75/);
   assert.match(result, /Panning.*current=0\.5/);
   assert.match(result, /Send A.*current=0\.2/);
+});
+
+test("inspect_rack_chain exposes empty Chains, Drum routing, direct paths, and mixer values", async () => {
+  const parameter = (id: string, name: string, value: number) => ({
+    handle: { id },
+    name,
+    min: 0,
+    max: 1,
+    defaultValue: 0.5,
+    isQuantized: false,
+    valueItems: [],
+    getValue: async () => value,
+  });
+  const mixer = (prefix: string) => ({
+    volume: parameter(`${prefix}-volume`, "Volume", 0.7),
+    panning: parameter(`${prefix}-pan`, "Panning", 0.5),
+    sends: [parameter(`${prefix}-send`, "Send A", 0.2)],
+  });
+  const emptyChain = Object.defineProperties(Object.create(Chain.prototype), {
+    handle: { enumerable: true, value: { id: "chain-empty" } },
+    devices: { enumerable: true, value: [] },
+    mixer: { enumerable: true, value: mixer("empty") },
+  });
+  const simpler = Object.defineProperties(Object.create(Simpler.prototype), {
+    name: { enumerable: true, value: "Nested Simpler" },
+    parameters: { enumerable: true, value: [] },
+    sample: { enumerable: true, value: null },
+  });
+  const populatedChain = Object.defineProperties(Object.create(DrumChain.prototype), {
+    handle: { enumerable: true, value: { id: "chain-populated" } },
+    receivingNote: { enumerable: true, value: 38 },
+    devices: { enumerable: true, value: [simpler] },
+    mixer: { enumerable: true, value: mixer("populated") },
+  });
+  const rack = Object.defineProperties(Object.create(RackDevice.prototype), {
+    name: { enumerable: true, value: "Instrument Rack" },
+    chains: { enumerable: true, value: [emptyChain] },
+  });
+  const drumRack = Object.defineProperties(Object.create(DrumRack.prototype), {
+    name: { enumerable: true, value: "Drum Rack" },
+    chains: { enumerable: true, value: [populatedChain] },
+  });
+  const track = Object.defineProperties(Object.create(Track.prototype), {
+    handle: { enumerable: true, value: { id: "track-1" } },
+    name: { enumerable: true, value: "Lead" },
+    devices: { enumerable: true, value: [rack, drumRack] },
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+
+  const empty = await observeLive(
+    context,
+    {
+      type: "inspect_rack_chain",
+      trackName: "Lead",
+      rackName: "Instrument Rack",
+      rackPath: { deviceIndex: 0 },
+      chainIndex: 0,
+    },
+    {},
+  );
+  assert.match(empty, /Chain 0.*Instrument Rack.*devicePath.*deviceIndex.*0/i);
+  assert.match(empty, /type=Chain devices=0/);
+  assert.match(empty, /devices page: offset=0, shown=0, total=0, nextOffset=none/);
+  assert.match(empty, /Volume.*current=0\.7/);
+  assert.match(empty, /Send A.*current=0\.2/);
+
+  const populated = await observeLive(
+    context,
+    {
+      type: "inspect_rack_chain",
+      trackName: "Lead",
+      rackName: "Drum Rack",
+      rackPath: { deviceIndex: 1 },
+      chainIndex: 0,
+    },
+    {},
+  );
+  assert.match(populated, /receivingNote=38 devices=1/);
+  assert.match(
+    populated,
+    /devicePath.*deviceIndex.*1.*chainIndex.*0.*deviceIndex.*0.*Nested Simpler/i,
+  );
 });
 
 test("inspect_clip reports an empty Session slot as observable state", async () => {

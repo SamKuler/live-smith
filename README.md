@@ -30,6 +30,8 @@ Select a track, Clip, device, or another supported Live object and choose
   model, Live Smith can also render a requested Arrangement Clip range directly
   into the active request for listening or transcription. Return and Main tracks
   can be inspected and used for bounded device-chain and mixer-parameter edits.
+  Existing Rack Chains, including empty Chains, expose their direct devices and
+  Volume, Panning, and Sends; ordinary Racks can append new empty Chains.
 - **Keep conversations organized.** Use separate Sessions for different parts
   of your Set, revisit their history, or collapse the Sessions panel for more space.
 - **Choose models in the composer.** Save several models in one connection
@@ -123,6 +125,12 @@ has inspected that lane. Take Lane Clip content uses the MIDI or Audio scope;
 creating or renaming the lane itself uses Structure. A newly created lane must
 be inspected before a later request writes into it, and Live Smith refuses to
 create over an occupied range whose overlap behavior cannot be verified.
+
+Rack Chain creation uses the Devices and Mixer scopes because each new Chain
+owns both a device container and a Chain mixer. Existing Chain mixer parameter
+edits use Mixer. Drum Rack pad creation remains the dedicated Drum Pad workflow,
+which verifies the receiving note and reports partial completion. The current
+SDK does not expose Chain names, deletion, duplication, or reordering.
 
 Plans outside the selected scope are rejected before any action runs. Container
 operations also need permissions for their contents: deleting or duplicating a

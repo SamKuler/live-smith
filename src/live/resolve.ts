@@ -1,4 +1,5 @@
 import {
+  type Chain,
   Clip,
   Device,
   MidiClip,
@@ -312,15 +313,42 @@ export function resolveTrackMixerParameter(
   kind: "volume" | "panning" | "send",
   sendIndex?: number,
 ): DeviceParameter<"1.0.0"> {
-  if (kind === "volume") return track.mixer.volume;
-  if (kind === "panning") return track.mixer.panning;
+  return resolveMixerParameter(
+    track.mixer,
+    kind,
+    sendIndex,
+    `Track "${track.name}"`,
+  );
+}
+
+export function resolveChainMixerParameter(
+  chain: Chain<"1.0.0">,
+  kind: "volume" | "panning" | "send",
+  sendIndex?: number,
+): DeviceParameter<"1.0.0"> {
+  return resolveMixerParameter(chain.mixer, kind, sendIndex, "Rack Chain");
+}
+
+function resolveMixerParameter(
+  mixer: {
+    volume: DeviceParameter<"1.0.0">;
+    panning: DeviceParameter<"1.0.0">;
+    sends: DeviceParameter<"1.0.0">[];
+  },
+  kind: "volume" | "panning" | "send",
+  sendIndex: number | undefined,
+  owner: string,
+): DeviceParameter<"1.0.0"> {
+  if (kind === "volume") return mixer.volume;
+  if (kind === "panning") return mixer.panning;
   if (sendIndex === undefined) {
     throw new Error("Mixer send actions require sendIndex.");
   }
-  const parameter = track.mixer.sends[sendIndex];
+  const sends = mixer.sends;
+  const parameter = sends[sendIndex];
   if (!parameter) {
     throw new Error(
-      `Track "${track.name}" has ${track.mixer.sends.length} sends; send ${sendIndex} does not exist.`,
+      `${owner} has ${sends.length} sends; send ${sendIndex} does not exist.`,
     );
   }
   return parameter;

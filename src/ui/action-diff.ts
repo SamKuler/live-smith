@@ -100,6 +100,11 @@ function actionDiffRow(
         title: "Insert Devices",
         row: `+ [${action.index ?? "end"}] ${action.deviceName} in chain ${action.chainIndex} of ${action.rackName}${action.rackPath ? ` ${pathLabel(action.rackPath)}` : ""} on ${trackLabel(action, refLabels)}`,
       };
+    case "create_rack_chain":
+      return {
+        title: "Rack & Samples",
+        row: `+ Append empty Chain to ${action.rackName}${action.rackPath ? ` ${pathLabel(action.rackPath)}` : ""} on ${trackLabel(action, refLabels)}`,
+      };
     case "set_device_parameter":
       return {
         title: "Set Parameters",
@@ -203,6 +208,11 @@ function actionDiffRow(
       return {
         title: "Set Parameters",
         row: `~ ${trackLabel(action, refLabels)} mixer ${action.parameter === "send" ? `send[${action.sendIndex}]` : action.parameter} = ${action.value}`,
+      };
+    case "set_chain_mixer_parameter":
+      return {
+        title: "Set Parameters",
+        row: `~ ${trackLabel(action, refLabels)} ${action.rackName}${action.rackPath ? ` ${pathLabel(action.rackPath)}` : ""} chain ${action.chainIndex} mixer ${action.parameter === "send" ? `send[${action.sendIndex}]` : action.parameter} = ${action.value}`,
       };
     case "delete_clip":
       return {
