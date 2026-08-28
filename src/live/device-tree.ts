@@ -6,6 +6,7 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { LiveTarget } from "./target.js";
+import { findTrackAncestor } from "./target.js";
 
 export interface NestedDevicePathSegment {
   chainIndex: number;
@@ -53,14 +54,17 @@ export function resolveDeviceTarget(
 
   if (target.object instanceof Device) {
     const selectedPath = findDevicePath(track, target.object);
-    if (!selectedPath) {
+    if (selectedPath) {
+      const resolved = resolveDevicePath(track, selectedPath);
+      assertExpectedDeviceName(resolved.device, expectedName, "the selected device");
+      return resolved;
+    }
+    const selectedTrack = findTrackAncestor(target.object);
+    if (selectedTrack && sameObject(track, selectedTrack)) {
       throw new Error(
         `Selected device "${safeDeviceName(target.object)}" is not inside track "${track.name}".`,
       );
     }
-    const resolved = resolveDevicePath(track, selectedPath);
-    assertExpectedDeviceName(resolved.device, expectedName, "the selected device");
-    return resolved;
   }
 
   const matches = collectDeviceTree(track).filter(
@@ -199,8 +203,8 @@ function sameName(left: string, right: string): boolean {
 }
 
 function sameObject(
-  left: Device<"1.0.0">,
-  right: Device<"1.0.0">,
+  left: object,
+  right: object,
 ): boolean {
   if (left === right) return true;
   const leftId = objectHandleId(left);

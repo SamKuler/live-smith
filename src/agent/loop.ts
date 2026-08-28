@@ -9,6 +9,7 @@ import {
   type AgentAction,
   type AgentObservationRequest,
   type AgentPlan,
+  type ObservationTrackSelector,
 } from "./actions.js";
 import {
   progressLabelForActionPlan,
@@ -187,6 +188,7 @@ export class AgentPartialCompletionError extends Error {
     readonly failedTrackName?: string,
     readonly completedActionKeys: readonly (readonly string[])[] = [],
     readonly completedMutationCount: number = completedResults.length,
+    readonly failedTrackSelector?: ObservationTrackSelector | null,
   ) {
     super([
       completedResults.length
@@ -1247,7 +1249,11 @@ function recoveryRequestForFailure(
 ): AgentObservationRequest {
   const action = error.failedAction;
   if (!action) return { type: "inspect_live_set" };
-  return observationRequestForAction(action, error.failedTrackName);
+  if (error.failedTrackSelector === null) return { type: "inspect_live_set" };
+  return observationRequestForAction(
+    action,
+    error.failedTrackSelector ?? error.failedTrackName,
+  );
 }
 
 function recoveryProgressKey(
@@ -1315,20 +1321,20 @@ function observationCoversRecovery(
       );
     case "inspect_track":
       return actual.type === "inspect_track" &&
-        optionalTextMatches(actual.trackName, required.trackName);
+        trackSelectorMatches(actual, required);
     case "inspect_device":
       return actual.type === "inspect_device" &&
-        optionalTextMatches(actual.trackName, required.trackName) &&
+        trackSelectorMatches(actual, required) &&
         normalizedText(actual.deviceName) === normalizedText(required.deviceName) &&
         actual.deviceIndex === required.deviceIndex;
     case "inspect_device_tree":
       return actual.type === "inspect_device_tree" &&
-        optionalTextMatches(actual.trackName, required.trackName) &&
+        trackSelectorMatches(actual, required) &&
         optionalTextMatches(actual.deviceName, required.deviceName) &&
         JSON.stringify(actual.devicePath) === JSON.stringify(required.devicePath);
     case "inspect_mixer":
       return actual.type === "inspect_mixer" &&
-        optionalTextMatches(actual.trackName, required.trackName);
+        trackSelectorMatches(actual, required);
     case "inspect_clip":
       return actual.type === "inspect_clip" &&
         optionalTextMatches(actual.trackName, required.trackName) &&
@@ -1347,6 +1353,15 @@ function observationCoversRecovery(
         optionalTextMatches(actual.clipName, required.clipName) &&
         actual.startBeat === required.startBeat;
   }
+}
+
+function trackSelectorMatches(
+  actual: { trackName?: string; trackRole?: "return" | "main"; trackIndex?: number },
+  required: { trackName?: string; trackRole?: "return" | "main"; trackIndex?: number },
+): boolean {
+  return optionalTextMatches(actual.trackName, required.trackName) &&
+    actual.trackRole === required.trackRole &&
+    actual.trackIndex === required.trackIndex;
 }
 
 function optionalTextMatches(actual?: string, required?: string): boolean {
@@ -1392,24 +1407,33 @@ function observationRequestFromToolCall(
     case "inspect_track":
       assertOnlyKeys(
         args,
-        ["trackName", ...observationItemPageKeys, ...observationParameterPageKeys],
+        [
+          ...observationTrackSelectorKeys,
+          ...observationItemPageKeys,
+          ...observationParameterPageKeys,
+        ],
         `${toolCall.name} arguments`,
       );
       return {
         type: "inspect_track",
-        ...optionalStringProp(args.trackName, "trackName"),
+        ...observationTrackSelectorProps(args),
         ...observationItemPageProps(args),
         ...observationParameterPageProps(args),
       };
     case "inspect_device":
       assertOnlyKeys(
         args,
-        ["trackName", "deviceName", "deviceIndex", ...observationParameterPageKeys],
+        [
+          ...observationTrackSelectorKeys,
+          "deviceName",
+          "deviceIndex",
+          ...observationParameterPageKeys,
+        ],
         `${toolCall.name} arguments`,
       );
       return {
         type: "inspect_device",
-        ...optionalStringProp(args.trackName, "trackName"),
+        ...observationTrackSelectorProps(args),
         deviceName: requiredString(args.deviceName, "deviceName"),
         ...optionalIntegerProp(args.deviceIndex, "deviceIndex", 0),
         ...observationParameterPageProps(args),
@@ -1418,7 +1442,7 @@ function observationRequestFromToolCall(
       assertOnlyKeys(
         args,
         [
-          "trackName",
+          ...observationTrackSelectorKeys,
           "deviceName",
           "devicePath",
           ...observationItemPageKeys,
@@ -1428,17 +1452,17 @@ function observationRequestFromToolCall(
       );
       return {
         type: "inspect_device_tree",
-        ...optionalStringProp(args.trackName, "trackName"),
+        ...observationTrackSelectorProps(args),
         ...optionalStringProp(args.deviceName, "deviceName"),
         ...optionalDevicePathProp(args.devicePath),
         ...observationItemPageProps(args),
         ...observationParameterPageProps(args),
       };
     case "inspect_mixer":
-      assertOnlyKeys(args, ["trackName"], `${toolCall.name} arguments`);
+      assertOnlyKeys(args, observationTrackSelectorKeys, `${toolCall.name} arguments`);
       return {
         type: "inspect_mixer",
-        ...optionalStringProp(args.trackName, "trackName"),
+        ...observationTrackSelectorProps(args),
       };
     case "inspect_clip": {
       assertOnlyKeys(
@@ -1524,6 +1548,7 @@ function observationRequestFromToolCall(
 }
 
 const observationItemPageKeys = ["itemOffset", "itemLimit"] as const;
+const observationTrackSelectorKeys = ["trackName", "trackRole", "trackIndex"] as const;
 const observationParameterPageKeys = [
   "parameterOffset",
   "parameterLimit",
@@ -1539,6 +1564,34 @@ function observationItemPageProps(args: Record<string, unknown>): {
     ...optionalIntegerProp(args.itemOffset, "itemOffset", 0),
     ...optionalIntegerProp(args.itemLimit, "itemLimit", 1, 100),
   };
+}
+
+function observationTrackSelectorProps(args: Record<string, unknown>): {
+  trackName?: string;
+  trackRole?: "return" | "main";
+  trackIndex?: number;
+} {
+  const trackName = optionalStringProp(args.trackName, "trackName");
+  if (args.trackRole === undefined) {
+    if (args.trackIndex !== undefined) {
+      throw new Error("trackIndex requires trackRole return.");
+    }
+    return trackName;
+  }
+  if (args.trackRole !== "return" && args.trackRole !== "main") {
+    throw new Error("trackRole must be return or main.");
+  }
+  if (args.trackRole === "main") {
+    if (args.trackIndex !== undefined) {
+      throw new Error("trackRole main does not use trackIndex.");
+    }
+    return { ...trackName, trackRole: "main" };
+  }
+  const trackIndex = optionalIntegerProp(args.trackIndex, "trackIndex", 0);
+  if (trackIndex.trackIndex === undefined) {
+    throw new Error("trackRole return requires trackIndex.");
+  }
+  return { ...trackName, trackRole: "return", trackIndex: trackIndex.trackIndex };
 }
 
 function observationParameterPageProps(args: Record<string, unknown>): {

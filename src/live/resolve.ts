@@ -12,7 +12,7 @@ import {
   type TakeLane,
 } from "@ableton-extensions/sdk";
 
-import type { LiveTarget } from "./target.js";
+import { trackTypeLabel, type LiveTarget } from "./target.js";
 export {
   resolveDeviceTarget,
   type DevicePath,
@@ -20,6 +20,88 @@ export {
 } from "./device-tree.js";
 
 type Api = ExtensionContext<"1.0.0">;
+
+export type ExplicitTrackRole = "return" | "main";
+
+export interface TrackSelector {
+  trackName?: string;
+  trackRole?: ExplicitTrackRole;
+  trackIndex?: number;
+}
+
+export type SongTrackEntry =
+  | { role: "regular"; index: number; track: Track<"1.0.0"> }
+  | { role: "return"; index: number; track: Track<"1.0.0"> }
+  | { role: "main"; track: Track<"1.0.0"> };
+
+export function songTrackEntries(song: Song<"1.0.0">): SongTrackEntry[] {
+  const mainTrack = song.mainTrack;
+  return [
+    ...(song.tracks ?? []).map((track, index) => ({
+      role: "regular" as const,
+      index,
+      track,
+    })),
+    ...(song.returnTracks ?? []).map((track, index) => ({
+      role: "return" as const,
+      index,
+      track,
+    })),
+    ...(mainTrack ? [{ role: "main" as const, track: mainTrack }] : []),
+  ];
+}
+
+export function songTrackEntryForTrack(
+  song: Song<"1.0.0">,
+  track: Track<"1.0.0">,
+): SongTrackEntry | undefined {
+  return songTrackEntries(song).find((entry) => sameTrack(entry.track, track));
+}
+
+export function trackHeading(
+  song: Song<"1.0.0">,
+  track: Track<"1.0.0">,
+): string {
+  const entry = songTrackEntryForTrack(song, track);
+  if (entry?.role === "return") return `Return track index ${entry.index}`;
+  if (entry?.role === "main") return "Main track";
+  return `${trackTypeLabel(track)} track`;
+}
+
+export function resolveTrackSelector(
+  context: Api,
+  selector: TrackSelector,
+  target: LiveTarget,
+): Track<"1.0.0"> {
+  const song = context.application.song;
+  if (selector.trackRole === "return") {
+    if (!Number.isSafeInteger(selector.trackIndex) || (selector.trackIndex ?? -1) < 0) {
+      throw new Error("Return track selection requires a non-negative trackIndex.");
+    }
+    const returnTracks = song.returnTracks ?? [];
+    const track = returnTracks[selector.trackIndex!];
+    if (!track) {
+      throw new Error(
+        `Could not find Return track index ${selector.trackIndex}. The Live Set has ${returnTracks.length} Return tracks.`,
+      );
+    }
+    assertExpectedTrackName(track, selector.trackName, `Return track index ${selector.trackIndex}`);
+    return track;
+  }
+  if (selector.trackRole === "main") {
+    if (selector.trackIndex !== undefined) {
+      throw new Error("Main track selection does not use trackIndex.");
+    }
+    const track = song.mainTrack;
+    if (!track) throw new Error("Could not find the Main track.");
+    assertExpectedTrackName(track, selector.trackName, "Main track");
+    return track;
+  }
+  if (selector.trackIndex !== undefined) {
+    throw new Error("trackIndex is valid only with trackRole return.");
+  }
+  return resolveTrack(context, selector.trackName, target);
+}
 
 export function resolveTrack(
   context: Api,
@@ -204,6 +286,25 @@ export function findDevice(
 
 export function equalsLoose(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function assertExpectedTrackName(
+  track: Track<"1.0.0">,
+  expectedName: string | undefined,
+  locator: string,
+): void {
+  if (expectedName && !equalsLoose(track.name, expectedName)) {
+    throw new Error(`${locator} is "${track.name}", not "${expectedName}".`);
+  }
+}
+
+function sameTrack(left: Track<"1.0.0">, right: Track<"1.0.0">): boolean {
+  if (left === right) return true;
+  const leftId = left.handle?.id;
+  const rightId = right.handle?.id;
+  return leftId !== undefined && leftId !== null &&
+    rightId !== undefined && rightId !== null &&
+    String(leftId) === String(rightId);
 }
 
 export function resolveTrackMixerParameter(

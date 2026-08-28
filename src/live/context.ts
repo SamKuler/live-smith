@@ -26,6 +26,11 @@ import {
   type LiveTarget,
 } from "./target.js";
 import { summarizeMidiNotes } from "./midi-notes.js";
+import {
+  songTrackEntries,
+  songTrackEntryForTrack,
+  trackHeading,
+} from "./resolve.js";
 import type { ConversationScope } from "../model/contracts.js";
 
 type Api = ExtensionContext<"1.0.0">;
@@ -45,7 +50,7 @@ export function objectInteractionContext(
   handle: Handle,
 ): LiveInteractionContext {
   const object = context.getObjectFromHandle(handle, DataModelObject);
-  return interactionContextForObject(object);
+  return interactionContextForObject(object, context.application?.song);
 }
 
 export function interactionContextForScope(
@@ -53,16 +58,19 @@ export function interactionContextForScope(
   scope: ConversationScope,
 ): LiveInteractionContext | undefined {
   const object = findObjectForScope(context, scope);
-  return object ? interactionContextForObject(object) : undefined;
+  return object
+    ? interactionContextForObject(object, context.application.song)
+    : undefined;
 }
 
 function interactionContextForObject(
   object: DataModelObject<"1.0.0">,
+  song?: Api["application"]["song"],
 ): LiveInteractionContext {
   const clip = object instanceof Clip ? object : undefined;
   const track = findTrackAncestor(object);
   return {
-    summary: summarizeObject(object),
+    summary: summarizeObject(object, song),
     target: makeTarget(track, clip, object),
     scope: scopeForObject(object, track, clip),
   };
@@ -77,20 +85,23 @@ function findObjectForScope(
     object.handle.id.toString() === scope.identity;
   const song = context.application.song;
 
-  for (const track of song.tracks ?? []) {
+  for (const entry of songTrackEntries(song)) {
+    const { track } = entry;
     if (matches(track)) return track;
-    for (const clip of track.arrangementClips) {
-      if (matches(clip)) return clip;
-    }
-    for (const takeLane of track.takeLanes) {
-      if (matches(takeLane)) return takeLane;
-      for (const clip of takeLane.clips) {
+    if (entry.role === "regular") {
+      for (const clip of track.arrangementClips) {
         if (matches(clip)) return clip;
       }
-    }
-    for (const slot of track.clipSlots) {
-      if (matches(slot)) return slot;
-      if (slot.clip && matches(slot.clip)) return slot.clip;
+      for (const takeLane of track.takeLanes) {
+        if (matches(takeLane)) return takeLane;
+        for (const clip of takeLane.clips) {
+          if (matches(clip)) return clip;
+        }
+      }
+      for (const slot of track.clipSlots) {
+        if (matches(slot)) return slot;
+        if (slot.clip && matches(slot.clip)) return slot.clip;
+      }
     }
     for (const device of track.devices) {
       const match = findDeviceObject(device, matches);
@@ -305,9 +316,12 @@ function summarizeArrangementSelection(
   ].join("\n");
 }
 
-function summarizeObject(object: DataModelObject<"1.0.0">): string {
+function summarizeObject(
+  object: DataModelObject<"1.0.0">,
+  song?: Api["application"]["song"],
+): string {
   if (object instanceof Clip) return summarizeClip(object);
-  if (object instanceof Track) return summarizeTrack(object);
+  if (object instanceof Track) return summarizeTrack(object, song);
   if (object instanceof ClipSlot) {
     return object.clip
       ? `Clip slot containing:\n${summarizeClip(object.clip)}`
@@ -326,7 +340,17 @@ function summarizeObject(object: DataModelObject<"1.0.0">): string {
   return `Live object: ${object.constructor.name}`;
 }
 
-function summarizeTrack(track: Track<"1.0.0">): string {
+function summarizeTrack(
+  track: Track<"1.0.0">,
+  song?: Api["application"]["song"],
+): string {
+  const entry = song ? songTrackEntryForTrack(song, track) : undefined;
+  if (entry?.role === "return" || entry?.role === "main") {
+    return [
+      `${trackHeading(song!, track)} "${track.name}"`,
+      `devices=${track.devices.map((device) => device.name).join(", ") || "none"}`,
+    ].join("\n");
+  }
   return [
     `${trackTypeLabel(track)} track "${track.name}"`,
     trackStateSummary(track),

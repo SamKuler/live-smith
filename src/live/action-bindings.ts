@@ -10,7 +10,11 @@ import {
   type Track,
 } from "@ableton-extensions/sdk";
 
-import type { AgentAction, AgentPlan } from "../agent/actions.js";
+import {
+  supportsNonRegularTrackAction,
+  type AgentAction,
+  type AgentPlan,
+} from "../agent/actions.js";
 import { agentActionJsonSchemas } from "../agent/action-schema.js";
 import {
   resolveDevicePath,
@@ -26,8 +30,10 @@ import {
   resolveSessionClip,
   resolveTakeLane,
   resolveMidiTrack,
+  resolveTrackSelector,
   resolveTrackMixerParameter,
   resolveTrack,
+  songTrackEntryForTrack,
 } from "./resolve.js";
 import {
   resolveSampleSource,
@@ -70,6 +76,10 @@ export interface BoundActionObjects {
   readonly sampleSource?: ResolvedSampleSource;
 }
 
+export type NonRegularTrackIdentity =
+  | { role: "return" }
+  | { role: "main" };
+
 export function bindAgentPlanTargets(
   context: Api,
   plan: AgentPlan,
@@ -77,22 +87,24 @@ export function bindAgentPlanTargets(
 ): AgentPlanBindings {
   const tracks = new Map<string, Track<"1.0.0">>();
   for (const [ref, target] of Object.entries(plan.targets ?? {})) {
-    tracks.set(ref, resolveTrack(context, target.trackName, {}));
+    tracks.set(ref, resolveTrackSelector(context, target, {}));
   }
   const actionTracks = new Map<number, Track<"1.0.0">>();
   plan.actions.forEach((action, index) => {
     if (!hasTrackTarget(action)) return;
     if (action.trackRef) {
       const track = tracks.get(action.trackRef);
-      if (track) actionTracks.set(index, track);
+      if (track) {
+        assertActionTrackRole(context, action, track);
+        actionTracks.set(index, track);
+      }
       return;
     }
-    actionTracks.set(
-      index,
-      requiresMidiTrack(action)
-        ? resolveMidiTrack(context, action.trackName, target)
-        : resolveTrack(context, action.trackName, target),
-    );
+    const track = requiresMidiTrack(action)
+      ? resolveMidiTrack(context, action.trackName, target)
+      : resolveTrack(context, action.trackName, target);
+    assertActionTrackRole(context, action, track);
+    actionTracks.set(index, track);
   });
   const actionObjects = bindActionObjects(
     context,
@@ -170,6 +182,7 @@ export function liveActionIdentityKeys(
   action: AgentAction,
   track?: Track<"1.0.0">,
   trackAliases: readonly string[] = [],
+  nonRegularTrack?: NonRegularTrackIdentity,
 ): string[] {
   const payload = { ...action } as Record<string, unknown>;
   delete payload.trackName;
@@ -197,12 +210,28 @@ export function liveActionIdentityKeys(
     targets.add("song-or-creator");
   }
   const handleId = (track as { handle?: { id?: unknown } } | undefined)?.handle?.id;
-  if (handleId !== undefined && handleId !== null) {
-    targets.add(`track-handle:${String(handleId)}`);
-  }
-  if (track?.name) targets.add(`track-name:${normalizeIdentityText(track.name)}`);
-  for (const alias of trackAliases) {
-    if (alias) targets.add(`track-name:${normalizeIdentityText(alias)}`);
+  if (nonRegularTrack) {
+    if (!track || handleId === undefined || handleId === null) {
+      throw new Error(
+        `Could not identify the ${nonRegularTrack.role === "return" ? "Return" : "Main"} track for replay protection.`,
+      );
+    }
+    targets.add(`track-role:${nonRegularTrack.role}:handle:${String(handleId)}`);
+    if (nonRegularTrack.role === "main") {
+      targets.add("track-role:main");
+    } else {
+      targets.add(
+        `track-role:return:name:${normalizeIdentityText(track.name)}`,
+      );
+    }
+  } else {
+    if (handleId !== undefined && handleId !== null) {
+      targets.add(`track-handle:${String(handleId)}`);
+    }
+    if (track?.name) targets.add(`track-name:${normalizeIdentityText(track.name)}`);
+    for (const alias of trackAliases) {
+      if (alias) targets.add(`track-name:${normalizeIdentityText(alias)}`);
+    }
   }
   if (!targets.size) targets.add("song-or-creator");
 
@@ -256,6 +285,30 @@ function requiresMidiTrack(action: AgentAction): boolean {
     action.type === "quantize_midi_notes" ||
     action.type === "scale_midi_velocity" ||
     action.type === "shift_midi_notes";
+}
+
+function assertActionTrackRole(
+  context: Api,
+  action: AgentAction,
+  track: Track<"1.0.0">,
+): void {
+  const entry = songTrackEntryForTrack(context.application.song, track);
+  if (!entry) {
+    throw new Error(`Could not verify the role of track "${track.name}".`);
+  }
+  if (entry.role === "regular") return;
+  const role = entry.role === "return"
+    ? `Return track index ${entry.index}`
+    : "Main track";
+  if (!("trackRef" in action) || !action.trackRef) {
+    throw new Error(
+      `${role} "${track.name}" requires an explicit role target in plan.targets and trackRef on the action.`,
+    );
+  }
+  if (supportsNonRegularTrackAction(action)) return;
+  throw new Error(
+    `${role} "${track.name}" does not support action ${action.type}. Return and Main tracks support only device-chain actions and set_track_mixer_parameter.`,
+  );
 }
 
 function bindActionObjects(

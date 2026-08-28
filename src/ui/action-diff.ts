@@ -8,13 +8,19 @@ export interface ActionDiffGroup {
   rows: string[];
 }
 
+interface TrackRefLabel {
+  name?: string;
+  role?: "return" | "main";
+  index?: number;
+}
+
 export function actionDiffGroups(
   actions: AgentAction[],
   targets: Record<string, AgentPlanTarget> = {},
 ): ActionDiffGroup[] {
   const groups: ActionDiffGroup[] = [];
   const refLabels = new Map(
-    Object.entries(targets).map(([ref, target]) => [ref, target.trackName]),
+    Object.entries(targets).map(([ref, target]) => [ref, planTargetLabel(target)]),
   );
 
   for (const [index, action] of actions.entries()) {
@@ -32,20 +38,37 @@ export function actionDiffGroups(
     ) {
       refLabels.set(
         action.ref,
-        action.name ?? (action.type === "create_midi_track" ? "AI MIDI" : "AI Audio"),
+        { name: action.name ?? (action.type === "create_midi_track" ? "AI MIDI" : "AI Audio") },
       );
     }
     if (action.type === "rename_track" && action.trackRef) {
-      refLabels.set(action.trackRef, action.newName);
+      refLabels.set(action.trackRef, {
+        ...refLabels.get(action.trackRef),
+        name: action.newName,
+      });
     }
   }
 
   return groups;
 }
 
+function planTargetLabel(target: AgentPlanTarget): TrackRefLabel {
+  if (target.trackRole === "return") {
+    return {
+      role: "return",
+      index: target.trackIndex,
+      ...(target.trackName ? { name: target.trackName } : {}),
+    };
+  }
+  if (target.trackRole === "main") {
+    return { role: "main", ...(target.trackName ? { name: target.trackName } : {}) };
+  }
+  return { name: target.trackName };
+}
+
 function actionDiffRow(
   action: AgentAction,
-  refLabels: ReadonlyMap<string, string>,
+  refLabels: ReadonlyMap<string, TrackRefLabel>,
 ): { title: string; row: string } {
   switch (action.type) {
     case "create_midi_track":
@@ -258,13 +281,18 @@ function clipLocation(action: {
 
 function trackLabel(
   action: { trackName?: string; trackRef?: string },
-  refLabels: ReadonlyMap<string, string>,
+  refLabels: ReadonlyMap<string, TrackRefLabel>,
 ): string {
   if (action.trackRef) {
-    const currentName = refLabels.get(action.trackRef);
-    return currentName
-      ? `track "${currentName}" (ref ${action.trackRef})`
-      : `track ref "${action.trackRef}"`;
+    const target = refLabels.get(action.trackRef);
+    if (target?.role === "return") {
+      return `Return track index ${target.index}${target.name ? ` "${target.name}"` : ""} (ref ${action.trackRef})`;
+    }
+    if (target?.role === "main") {
+      return `Main track${target.name ? ` "${target.name}"` : ""} (ref ${action.trackRef})`;
+    }
+    if (target?.name) return `track "${target.name}" (ref ${action.trackRef})`;
+    return `track ref "${action.trackRef}"`;
   }
   return action.trackName ? `track "${action.trackName}"` : "target track";
 }

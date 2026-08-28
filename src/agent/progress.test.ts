@@ -38,6 +38,14 @@ test("progress labels identify object-aware inspections", () => {
     "Inspecting selected track mixer",
   );
   assert.equal(
+    progressLabelForToolCall({
+      id: "return-mixer",
+      name: "inspect_mixer",
+      arguments: '{"trackRole":"return","trackIndex":1,"trackName":"B-Reverb"}',
+    }),
+    'Inspecting mixer on Return track index 1 "B-Reverb"',
+  );
+  assert.equal(
     progressLabelForToolCall({ id: "object", name: "inspect_current_object", arguments: "{}" }),
     "Inspecting selected Live object",
   );

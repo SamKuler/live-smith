@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RackDevice, Simpler } from "@ableton-extensions/sdk";
+import { RackDevice, Simpler, Track } from "@ableton-extensions/sdk";
 
 import {
   findDevice,
   resolveDeviceTarget,
   resolveTrack,
+  resolveTrackSelector,
 } from "./resolve.js";
 
 test("resolveTrack never falls back when an explicit name is missing", () => {
@@ -30,6 +31,47 @@ test("resolveTrack rejects duplicate explicit track names", () => {
         {},
       ),
     /Found 2 tracks named "Bass"/,
+  );
+});
+
+test("resolveTrackSelector keeps regular, Return, and Main namespaces distinct", () => {
+  const regular = { name: "Shared", devices: [] };
+  const firstReturn = { name: "Shared", devices: [] };
+  const secondReturn = { name: "B-Delay", devices: [] };
+  const mainTrack = { name: "Main", devices: [] };
+  const context = {
+    application: {
+      song: {
+        tracks: [regular],
+        returnTracks: [firstReturn, secondReturn],
+        mainTrack,
+      },
+    },
+  } as never;
+
+  assert.equal(
+    resolveTrackSelector(context, { trackName: "Shared" }, {}),
+    regular,
+  );
+  assert.equal(
+    resolveTrackSelector(
+      context,
+      { trackRole: "return", trackIndex: 0, trackName: "Shared" },
+      {},
+    ),
+    firstReturn,
+  );
+  assert.equal(
+    resolveTrackSelector(context, { trackRole: "main", trackName: "Main" }, {}),
+    mainTrack,
+  );
+  assert.throws(
+    () => resolveTrackSelector(
+      context,
+      { trackRole: "return", trackIndex: 1, trackName: "Shared" },
+      {},
+    ),
+    /Return track index 1 is "B-Delay", not "Shared"/,
   );
 });
 
@@ -131,6 +173,35 @@ test("an explicit deviceIndex takes precedence over the selected Device", () => 
   );
 
   assert.equal(resolved.device, indexed);
+});
+
+test("an explicit Track ignores a Device selected on another Track", () => {
+  const selectedTrack = Object.defineProperties(Object.create(Track.prototype), {
+    name: { enumerable: true, value: "Lead" },
+    devices: { enumerable: true, value: [] },
+  });
+  const returnTrack = Object.defineProperties(Object.create(Track.prototype), {
+    name: { enumerable: true, value: "A-Reverb" },
+    devices: { enumerable: true, value: [] },
+  });
+  const selected = Object.defineProperties(Object.create(Simpler.prototype), {
+    name: { enumerable: true, value: "Utility" },
+    parent: { enumerable: true, value: selectedTrack },
+  });
+  const explicit = Object.defineProperties(Object.create(Simpler.prototype), {
+    name: { enumerable: true, value: "Utility" },
+    parent: { enumerable: true, value: returnTrack },
+  });
+  selectedTrack.devices.push(selected);
+  returnTrack.devices.push(explicit);
+
+  const resolved = resolveDeviceTarget(
+    returnTrack as never,
+    { track: selectedTrack as never, object: selected },
+    "Utility",
+  );
+
+  assert.equal(resolved.device, explicit);
 });
 
 test("resolveDeviceTarget rejects a mismatched nested Device name", () => {

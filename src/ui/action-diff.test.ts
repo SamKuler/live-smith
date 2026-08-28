@@ -112,6 +112,40 @@ test("actionDiffGroups resolves existing refs to readable current labels", () =>
   );
 });
 
+test("actionDiffGroups labels Return and Main target refs", () => {
+  const groups = actionDiffGroups(
+    [
+      { type: "insert_device", trackRef: "bus", deviceName: "Utility" },
+      {
+        type: "set_track_mixer_parameter",
+        trackRef: "main",
+        parameter: "volume",
+        value: 0.8,
+      },
+    ],
+    {
+      bus: { trackRole: "return", trackIndex: 0, trackName: "A-Reverb" },
+      main: { trackRole: "main", trackName: "Master Bus" },
+    },
+  );
+
+  assert.match(groups[0]?.rows[0] ?? "", /Return track index 0.*A-Reverb.*ref bus/i);
+  assert.match(groups[1]?.rows[0] ?? "", /Main track.*Master Bus.*ref main/i);
+
+  const unnamed = actionDiffGroups(
+    [
+      { type: "insert_device", trackRef: "bus", deviceName: "Utility" },
+      { type: "insert_device", trackRef: "main", deviceName: "Limiter" },
+    ],
+    {
+      bus: { trackRole: "return", trackIndex: 0 },
+      main: { trackRole: "main" },
+    },
+  );
+  assert.match(unnamed[0]?.rows[0] ?? "", /Return track index 0 \(ref bus\)/);
+  assert.match(unnamed[0]?.rows[1] ?? "", /Main track \(ref main\)/);
+});
+
 test("actionDiffGroups labels actions that consume a creator ref", () => {
   const groups = actionDiffGroups([
     { type: "create_midi_track", ref: "instrument", name: "AI Instrument" },

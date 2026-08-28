@@ -601,6 +601,42 @@ test("runAgentLoop passes Warp Marker pagination to inspect_clip", async () => {
   }]);
 });
 
+test("runAgentLoop passes an exact Return track locator to inspection", async () => {
+  const observedRequests: unknown[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> =>
+      input.messages.length === 0
+        ? {
+            content: "I will inspect Return B.",
+            toolCalls: [{
+              id: "return-mixer",
+              name: "inspect_mixer",
+              arguments: JSON.stringify({
+                trackRole: "return",
+                trackIndex: 1,
+                trackName: "B-Reverb",
+              }),
+            }],
+          }
+        : { content: "Return B is configured.", toolCalls: [] },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return "Return track index 1 mixer";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "inspect_mixer",
+    trackRole: "return",
+    trackIndex: 1,
+    trackName: "B-Reverb",
+  }]);
+});
+
 test("runAgentLoop supports strict analyze_audio_clip tool calls", async () => {
   const observedRequests: unknown[] = [];
   const result = await runAgentLoop({
@@ -1280,6 +1316,9 @@ test("observation tools reject unknown fields and invalid optional values", asyn
   for (const argumentsValue of [
     { trackName: "Lead", itemOffest: 1 },
     { trackName: 42 },
+    { trackRole: "return" },
+    { trackRole: "main", trackIndex: 0 },
+    { trackIndex: 0 },
   ]) {
     let observed = false;
     const result = await runAgentLoop({
@@ -1666,6 +1705,104 @@ test("automatic recovery progress is scoped to the failure even when the state t
   assert.equal(modelCalls, 3);
   assert.match(result.message, /unfinished Live work/i);
   assert.equal(assistantContents.at(-1), "I received the post-failure refresh.");
+});
+
+test("automatic recovery preserves the failed Return track locator", async () => {
+  let modelCalls = 0;
+  const observations: unknown[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxIterations: 2,
+    askModel: async (): Promise<ModelTurn> => {
+      modelCalls += 1;
+      return modelCalls === 1
+        ? {
+            content: "Adjusting Return B.",
+            toolCalls: [{
+              id: "apply-return",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Adjust Return B",
+                actions: [{
+                  type: "set_track_mixer_parameter",
+                  trackRef: "bus",
+                  parameter: "volume",
+                  value: 0.7,
+                }],
+                targets: {
+                  bus: { trackRole: "return", trackIndex: 1, trackName: "B-Reverb" },
+                },
+              }),
+            }],
+          }
+        : { content: "I inspected the failed Return.", toolCalls: [] };
+    },
+    observe: async (request) => {
+      observations.push(request);
+      return "Return B mixer";
+    },
+    preflightActions: async () => async () => {},
+    confirmActions: async () => true,
+    executeActions: async (plan) => {
+      throw new AgentPartialCompletionError(
+        [],
+        new Error("Mixer rejected value"),
+        0,
+        plan.actions[0],
+        "B-Reverb",
+        [],
+        0,
+        { trackRole: "return", trackIndex: 1, trackName: "B-Reverb" },
+      );
+    },
+  });
+
+  assert.deepEqual(observations, [{
+    type: "inspect_mixer",
+    trackRole: "return",
+    trackIndex: 1,
+    trackName: "B-Reverb",
+  }]);
+});
+
+test("automatic recovery reinspects the Set when a failed role is no longer verifiable", async () => {
+  let modelCalls = 0;
+  const observations: unknown[] = [];
+  await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxIterations: 2,
+    askModel: async (): Promise<ModelTurn> => {
+      modelCalls += 1;
+      return modelCalls === 1
+        ? {
+            content: "Editing Return B.",
+            toolCalls: [{
+              id: "apply-return",
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Edit Return B",
+                targets: { bus: { trackRole: "return", trackIndex: 1 } },
+                actions: [{ type: "insert_device", trackRef: "bus", deviceName: "Utility" }],
+              }),
+            }],
+          }
+        : { content: "I reinspected the Set.", toolCalls: [] };
+    },
+    observe: async (request) => {
+      observations.push(request);
+      return "Current Live Set";
+    },
+    preflightActions: async () => async () => {},
+    confirmActions: async () => true,
+    executeActions: async (plan) => {
+      throw new AgentPartialCompletionError(
+        [], new Error("Return disappeared"), 0, plan.actions[0],
+        "Shared", [], 0, null,
+      );
+    },
+  });
+
+  assert.deepEqual(observations, [{ type: "inspect_live_set" }]);
 });
 
 test("runAgentLoop aborts before executing tools after a stopped model request", async () => {

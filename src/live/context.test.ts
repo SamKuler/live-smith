@@ -9,6 +9,7 @@ import {
   RackDevice,
   Simpler,
   TakeLane,
+  Track,
   WarpMode,
 } from "@ableton-extensions/sdk";
 
@@ -233,6 +234,48 @@ test("interactionContextForScope resolves devices nested in any RackDevice", () 
     label: "Nested Simpler",
   });
   assert.match(resolved?.summary ?? "", /Nested Simpler/);
+});
+
+test("interactionContextForScope restores a device Session on Return and Main tracks", () => {
+  for (const role of ["return", "main"] as const) {
+    const track = Object.defineProperties(Object.create(Track.prototype), {
+      handle: { enumerable: true, value: { id: role === "return" ? 70n : 80n } },
+      name: { enumerable: true, value: role === "return" ? "A-Reverb" : "Main" },
+    }) as Track<"1.0.0">;
+    const simpler = Object.defineProperties(Object.create(Simpler.prototype), {
+      handle: { enumerable: true, value: { id: role === "return" ? 71n : 81n } },
+      name: { enumerable: true, value: `${role} Simpler` },
+      sample: { enumerable: true, value: null },
+      parent: { enumerable: true, value: track },
+    }) as Simpler<"1.0.0">;
+    Object.defineProperty(track, "devices", { enumerable: true, value: [simpler] });
+    const mainTrack = role === "main"
+      ? track
+      : Object.defineProperties(Object.create(Track.prototype), {
+          handle: { enumerable: true, value: { id: 80n } },
+          name: { enumerable: true, value: "Main" },
+          devices: { enumerable: true, value: [] },
+        }) as Track<"1.0.0">;
+    const context = {
+      application: {
+        song: {
+          tracks: [],
+          returnTracks: role === "return" ? [track] : [],
+          mainTrack,
+          scenes: [],
+        },
+      },
+    } as never;
+
+    const resolved = interactionContextForScope(context, {
+      kind: "object",
+      identity: simpler.handle.id.toString(),
+      label: simpler.name,
+    });
+
+    assert.equal(resolved?.target.track, track);
+    assert.equal(resolved?.target.object, simpler);
+  }
 });
 
 function fakeMidiTrackWithSlots(

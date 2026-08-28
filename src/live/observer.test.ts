@@ -12,6 +12,7 @@ import {
   Scene,
   Simpler,
   TakeLane,
+  Track,
   WarpMode,
 } from "@ableton-extensions/sdk";
 
@@ -867,6 +868,102 @@ test("inspect_live_set and inspect_track expose grouping and effective mute stat
       /mute=false, solo=false, mutedViaSolo=true, armed=true, groupTrack="Music"/,
     );
   }
+});
+
+test("Return and Main tracks are role-addressable without reading Clip or Arm state", async () => {
+  const mixerParameter = (name: string, value: number) => ({
+    name,
+    min: 0,
+    max: 1,
+    defaultValue: 0.5,
+    isQuantized: false,
+    valueItems: [],
+    getValue: async () => value,
+  });
+  const regular = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "regular" },
+    name: "Lead",
+    mute: false,
+    solo: false,
+    mutedViaSolo: false,
+    arm: false,
+    groupTrack: null,
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+    devices: [],
+  });
+  const utility = {
+    name: "Utility",
+    parameters: [mixerParameter("Gain", 0.4)],
+  };
+  const returnTrack = sdkObject<Track<"1.0.0">>(Track.prototype, {
+    handle: { id: "return-a" },
+    name: "A-Reverb",
+    devices: [utility],
+    mixer: {
+      volume: mixerParameter("Volume", 0.6),
+      panning: mixerParameter("Panning", 0.5),
+      sends: [],
+    },
+  });
+  const mainTrack = sdkObject<Track<"1.0.0">>(Track.prototype, {
+    handle: { id: "main" },
+    name: "Main",
+    devices: [],
+    mixer: {
+      volume: mixerParameter("Volume", 0.8),
+      panning: mixerParameter("Panning", 0.5),
+      sends: [],
+    },
+  });
+  const context = {
+    application: {
+      song: { tracks: [regular], returnTracks: [returnTrack], mainTrack },
+    },
+  } as never;
+
+  const setResult = await observeLive(context, { type: "inspect_live_set" }, {});
+  assert.match(setResult, /Regular track index 0: MIDI "Lead"/);
+  assert.match(setResult, /Return track index 0: "A-Reverb"/);
+  assert.match(setResult, /Main track: "Main"/);
+
+  const returnResult = await observeLive(
+    context,
+    {
+      type: "inspect_track",
+      trackRole: "return",
+      trackIndex: 0,
+      trackName: "A-Reverb",
+    } as never,
+    {},
+  );
+  assert.match(returnResult, /^Return track index 0 "A-Reverb"/);
+  assert.match(returnResult, /devices=0: Utility/);
+  assert.doesNotMatch(returnResult, /armed|clip slots|take lanes/i);
+
+  const deviceResult = await observeLive(
+    context,
+    {
+      type: "inspect_device",
+      trackRole: "return",
+      trackIndex: 0,
+      deviceName: "Utility",
+    } as never,
+    {},
+  );
+  assert.match(
+    deviceResult,
+    /Utility.*Return track index 0 "A-Reverb".*Gain.*current=0\.4/s,
+  );
+
+  const mainMixer = await observeLive(
+    context,
+    { type: "inspect_mixer", trackRole: "main", trackName: "Main" } as never,
+    {},
+  );
+  assert.match(mainMixer, /Mixer on Main track "Main"/);
+  assert.match(mainMixer, /Volume.*current=0\.8/);
 });
 
 test("inspect_current_object preserves a Scene tempo value of zero", async () => {

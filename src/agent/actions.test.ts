@@ -523,6 +523,70 @@ test("one plan can rename an existing target and keep using its stable trackRef"
   assert.match(summarizeActionPlan(plan), /track ref "pads"/i);
 });
 
+test("plan targets accept exact Return and Main track locators", () => {
+  const plan = validateAgentPlan({
+    message: "Edit buses",
+    targets: {
+      reverb: {
+        trackRole: "return",
+        trackIndex: 1,
+        trackName: "B-Reverb",
+      },
+      main: { trackRole: "main", trackName: "Main" },
+    },
+    actions: [
+      {
+        type: "set_track_mixer_parameter",
+        trackRef: "reverb",
+        parameter: "volume",
+        value: 0.7,
+      },
+      {
+        type: "insert_device",
+        trackRef: "main",
+        deviceName: "Limiter",
+      },
+    ],
+  });
+
+  assert.deepEqual(plan.targets, {
+    reverb: {
+      trackRole: "return",
+      trackIndex: 1,
+      trackName: "B-Reverb",
+    },
+    main: { trackRole: "main", trackName: "Main" },
+  });
+
+  for (const target of [
+    { trackRole: "return" },
+    { trackRole: "main", trackIndex: 0 },
+    { trackName: "Lead", trackIndex: 0 },
+  ]) {
+    assert.throws(
+      () => validateAgentPlan({
+        message: "Invalid locator",
+        targets: { target },
+        actions: [{
+          type: "insert_device",
+          trackRef: "target",
+          deviceName: "Utility",
+        }],
+      }),
+      /plan target.*(?:trackIndex|return|main)/i,
+    );
+  }
+
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Arm Main",
+      targets: { main: { trackRole: "main" } },
+      actions: [{ type: "set_track_arm", trackRef: "main", arm: true }],
+    }),
+    /action 1.*cannot use main trackRef.*set_track_arm/i,
+  );
+});
+
 test("one plan can bind a created MIDI track for later clip and device actions", () => {
   const plan = validateAgentPlan({
     message: "Create a complete instrument track",

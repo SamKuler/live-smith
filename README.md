@@ -28,7 +28,8 @@ Select a track, Clip, device, or another supported Live object and choose
   and work with observed samples and native Live devices. Analyze isolated
   Arrangement audio ranges for level measurements. With a verified audio-input
   model, Live Smith can also render a requested Arrangement Clip range directly
-  into the active request for listening or transcription.
+  into the active request for listening or transcription. Return and Main tracks
+  can be inspected and used for bounded device-chain and mixer-parameter edits.
 - **Keep conversations organized.** Use separate Sessions for different parts
   of your Set, revisit their history, or collapse the Sessions panel for more space.
 - **Choose models in the composer.** Save several models in one connection
@@ -142,6 +143,8 @@ changes are not rolled back when permissions are narrowed.
 Live Smith does not run arbitrary model-generated code. It does not inspect or
 edit Automation, browse installed presets, or load a VST by plug-in identifier.
 Existing devices can be inspected and edited where Live exposes their parameters.
+Return and Main tracks intentionally exclude Clip, Take Lane, Arm, mute/solo,
+rename, duplicate, and delete-track actions.
 
 ## Sessions, Skills, and attachments
 

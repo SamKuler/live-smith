@@ -8,15 +8,28 @@ import type { DevicePath } from "../live/device-tree.js";
 
 export type { AgentAction } from "./action-schema.js";
 
-export interface AgentPlanTarget {
-  trackName: string;
-}
+export type AgentPlanTarget =
+  | { trackName: string; trackRole?: never; trackIndex?: never }
+  | { trackRole: "return"; trackIndex: number; trackName?: string }
+  | { trackRole: "main"; trackName?: string; trackIndex?: never };
 
 export interface AgentPlan {
   message: string;
   targets?: Record<string, AgentPlanTarget>;
   resolvesPriorFailure?: boolean;
   actions: AgentAction[];
+}
+
+const NON_REGULAR_TRACK_ACTION_TYPES = new Set<AgentAction["type"]>([
+  "insert_device",
+  "set_device_parameter",
+  "duplicate_device",
+  "delete_device",
+  "set_track_mixer_parameter",
+]);
+
+export function supportsNonRegularTrackAction(action: AgentAction): boolean {
+  return NON_REGULAR_TRACK_ACTION_TYPES.has(action.type);
 }
 
 export interface ObservationItemPage {
@@ -29,6 +42,12 @@ export interface ObservationParameterPage {
   parameterLimit?: number;
   valueItemOffset?: number;
   valueItemLimit?: number;
+}
+
+export interface ObservationTrackSelector {
+  trackName?: string;
+  trackRole?: "return" | "main";
+  trackIndex?: number;
 }
 
 type MidiTransformAction = Extract<AgentAction, {
@@ -69,20 +88,18 @@ export function requiresExplicitConfirmation(plan: AgentPlan): boolean {
 export type AgentObservationRequest =
   | { type: "inspect_live_set" }
   | ({ type: "inspect_current_object" } & ObservationItemPage & ObservationParameterPage)
-  | ({ type: "inspect_track"; trackName?: string } & ObservationItemPage & ObservationParameterPage)
+  | ({ type: "inspect_track" } & ObservationTrackSelector & ObservationItemPage & ObservationParameterPage)
   | ({
       type: "inspect_device";
-      trackName?: string;
       deviceName: string;
       deviceIndex?: number;
-    } & ObservationParameterPage)
+    } & ObservationTrackSelector & ObservationParameterPage)
   | ({
       type: "inspect_device_tree";
-      trackName?: string;
       deviceName?: string;
       devicePath?: DevicePath;
-    } & ObservationItemPage & ObservationParameterPage)
-  | { type: "inspect_mixer"; trackName?: string }
+    } & ObservationTrackSelector & ObservationItemPage & ObservationParameterPage)
+  | ({ type: "inspect_mixer" } & ObservationTrackSelector)
   | ({
       type: "inspect_clip";
       trackName?: string;
@@ -117,18 +134,30 @@ export type AgentObservationRequest =
 
 export function observationRequestForAction(
   action: AgentAction,
-  trackNameOverride?: string,
+  trackOverride?: string | ObservationTrackSelector,
 ): AgentObservationRequest {
-  const trackName = trackNameOverride ?? (
+  const selectorOverride = typeof trackOverride === "string"
+    ? { trackName: trackOverride }
+    : trackOverride;
+  const trackName = selectorOverride?.trackName ?? (
     "trackName" in action ? action.trackName : undefined
   );
   const optionalTrackName = trackName ? { trackName } : {};
+  const optionalRoleTrack = selectorOverride?.trackRole
+    ? {
+        ...optionalTrackName,
+        trackRole: selectorOverride.trackRole,
+        ...(selectorOverride.trackIndex === undefined
+          ? {}
+          : { trackIndex: selectorOverride.trackIndex }),
+      }
+    : optionalTrackName;
 
   switch (action.type) {
     case "create_midi_track":
     case "create_audio_track":
-      return trackNameOverride
-        ? { type: "inspect_track", trackName: trackNameOverride }
+      return trackName
+        ? { type: "inspect_track", trackName }
         : { type: "inspect_live_set" };
     case "create_scene":
       return action.index !== undefined && action.index >= 0
@@ -167,7 +196,7 @@ export function observationRequestForAction(
     case "insert_device":
       return {
         type: "inspect_track",
-        ...optionalTrackName,
+        ...optionalRoleTrack,
         ...(action.index === undefined
           ? {}
           : { itemOffset: action.index, itemLimit: 1 }),
@@ -205,13 +234,13 @@ export function observationRequestForAction(
       return action.devicePath
         ? {
             type: "inspect_device_tree",
-            ...optionalTrackName,
+            ...optionalRoleTrack,
             deviceName: action.deviceName,
             devicePath: action.devicePath,
           }
         : {
             type: "inspect_device",
-            ...optionalTrackName,
+            ...optionalRoleTrack,
             deviceName: action.deviceName,
             ...(action.deviceIndex === undefined
               ? {}
@@ -222,13 +251,13 @@ export function observationRequestForAction(
       return !action.devicePath && action.deviceIndex !== undefined
         ? {
             type: "inspect_device",
-            ...optionalTrackName,
+            ...optionalRoleTrack,
             deviceName: action.deviceName,
             deviceIndex: action.deviceIndex,
           }
         : {
             type: "inspect_device_tree",
-            ...optionalTrackName,
+            ...optionalRoleTrack,
             deviceName: action.deviceName,
             ...(action.devicePath ? { devicePath: action.devicePath } : {}),
           };
@@ -254,7 +283,7 @@ export function observationRequestForAction(
         ...(action.rackPath ? { devicePath: action.rackPath } : {}),
       };
     case "set_track_mixer_parameter":
-      return { type: "inspect_mixer", ...optionalTrackName };
+      return { type: "inspect_mixer", ...optionalRoleTrack };
     case "set_clip_properties":
     case "set_audio_clip_warp":
       return {
@@ -363,6 +392,7 @@ export function actionSystemPrompt(): string {
     "If a user asks you to modify a device and you do not have the exact exposed parameter names in the current context, call inspect_device for a top-level device or inspect_device_tree for a nested Rack device first. Preserve and reuse the observed devicePath; do not guess Rack or chain indexes.",
     "For newly inserted devices, first call apply_live_actions to create the track/device chain, then inspect the inserted devices, then call apply_live_actions again to set exact observed parameters. This staged workflow and a single complete confirmed plan are both supported; choose based on whether later steps require newly observed state.",
     "Within one apply_live_actions call, use targets plus trackRef for existing tracks that may be renamed. Track-creating actions may declare ref for later actions in the same call. Never target a later action by a name created by an earlier rename.",
+    'Return and Main tracks use explicit plan targets plus trackRef: {"trackRole":"return","trackIndex":0,"trackName":"A-Reverb"} or {"trackRole":"main","trackName":"Main"}. The name is an optional stale-state guard. These targets support only insert_device, set_device_parameter, duplicate_device, delete_device, and set_track_mixer_parameter; never use them for Clips, Take Lanes, Arm, mute/solo, rename, duplicate, or delete Track actions.',
     'Example for rename then edit in one call: {"message":"Build pads","targets":{"pads":{"trackName":"1-MIDI"}},"actions":[{"type":"rename_track","trackRef":"pads","newName":"Dream Pads"},{"type":"insert_device","trackRef":"pads","deviceName":"Auto Filter"}]}.',
     "Use one apply_live_actions call when every note and device choice is already known and one confirmation is appropriate.",
     "For MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
@@ -796,7 +826,7 @@ function parsePlanTargets(value: unknown): Record<string, AgentPlanTarget> {
   if (value === undefined) return {};
   if (!isRecord(value)) throw new Error("Action plan targets must be an object.");
   const targets: Record<string, AgentPlanTarget> = {};
-  const trackNames = new Set<string>();
+  const targetKeys = new Set<string>();
   for (const [ref, rawTarget] of Object.entries(value)) {
     if (!referencePattern.test(ref)) {
       throw new Error(`Plan target ref "${ref}" is invalid.`);
@@ -804,30 +834,79 @@ function parsePlanTargets(value: unknown): Record<string, AgentPlanTarget> {
     if (!isRecord(rawTarget)) {
       throw new Error(`Plan target "${ref}" must be an object.`);
     }
-    const keys = Object.keys(rawTarget);
-    if (keys.length !== 1 || keys[0] !== "trackName") {
-      throw new Error(`Plan target "${ref}" requires only trackName.`);
-    }
-    const trackName = requiredPlanTargetName(rawTarget.trackName, ref);
-    const normalizedName = trackName.toLocaleLowerCase();
-    if (trackNames.has(normalizedName)) {
+    const target = parsePlanTarget(rawTarget, ref);
+    const targetKey = target.trackRole === "return"
+      ? `return:${target.trackIndex}`
+      : target.trackRole === "main"
+        ? "main"
+        : `regular:${target.trackName.toLocaleLowerCase()}`;
+    if (targetKeys.has(targetKey)) {
       throw new Error(
-        `Plan targets are ambiguous: track "${trackName}" is declared more than once.`,
+        `Plan targets are ambiguous: ${targetKey.replace(":", " ")} is declared more than once.`,
       );
     }
-    trackNames.add(normalizedName);
-    targets[ref] = { trackName };
+    targetKeys.add(targetKey);
+    targets[ref] = target;
   }
   return targets;
+}
+
+function parsePlanTarget(
+  value: Record<string, unknown>,
+  ref: string,
+): AgentPlanTarget {
+  const role = value.trackRole;
+  if (role === undefined) {
+    const keys = Object.keys(value);
+    if (keys.length !== 1 || keys[0] !== "trackName") {
+      throw new Error(
+        `Plan target "${ref}" for a regular track requires only trackName; trackIndex requires trackRole return.`,
+      );
+    }
+    return { trackName: requiredPlanTargetName(value.trackName, ref) };
+  }
+  if (role !== "return" && role !== "main") {
+    throw new Error(`Plan target "${ref}" trackRole must be return or main.`);
+  }
+  const allowed = role === "return"
+    ? new Set(["trackRole", "trackIndex", "trackName"])
+    : new Set(["trackRole", "trackName"]);
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown) {
+    throw new Error(`Plan target "${ref}" with trackRole ${role} does not support ${unknown}.`);
+  }
+  const trackName = value.trackName === undefined
+    ? undefined
+    : requiredPlanTargetName(value.trackName, ref);
+  if (role === "main") {
+    return { trackRole: "main", ...(trackName ? { trackName } : {}) };
+  }
+  if (
+    typeof value.trackIndex !== "number" ||
+    !Number.isSafeInteger(value.trackIndex) ||
+    value.trackIndex < 0
+  ) {
+    throw new Error(
+      `Plan target "${ref}" with trackRole return requires a non-negative integer trackIndex.`,
+    );
+  }
+  return {
+    trackRole: "return",
+    trackIndex: value.trackIndex,
+    ...(trackName ? { trackName } : {}),
+  };
 }
 
 function validateTrackReferenceGraph(
   targets: Record<string, AgentPlanTarget>,
   actions: AgentAction[],
 ): void {
-  type TrackKind = "existing" | "midi" | "audio";
+  type TrackKind = "existing" | "return" | "main" | "midi" | "audio";
   const declared = new Map<string, TrackKind>(
-    Object.keys(targets).map((ref) => [ref, "existing"]),
+    Object.entries(targets).map(([ref, target]) => [
+      ref,
+      target.trackRole ?? "existing",
+    ]),
   );
   const declaredRefs = new Set(Object.keys(targets));
   const futureRefs = new Set(
@@ -883,6 +962,14 @@ function validateTrackReferenceGraph(
           );
         }
         if (
+          (kind === "return" || kind === "main") &&
+          !supportsNonRegularTrackAction(action)
+        ) {
+          throw new Error(
+            `Action ${actionNumber} cannot use ${kind} trackRef "${action.trackRef}" for ${action.type}. Return and Main targets support only device-chain actions and set_track_mixer_parameter.`,
+          );
+        }
+        if (
           (action.type === "create_midi_clip" ||
             action.type === "create_session_midi_clip" ||
             action.type === "replace_midi_clip_segment") &&
@@ -901,7 +988,10 @@ function validateTrackReferenceGraph(
             `Action ${actionNumber} cannot use MIDI trackRef "${action.trackRef}" for an audio clip.`,
           );
         }
-        if (requiresObservedExistingTrack(action) && kind !== "existing") {
+        if (
+          requiresObservedExistingTrack(action) &&
+          kind !== "existing" && kind !== "return" && kind !== "main"
+        ) {
           throw new Error(
             `Action ${actionNumber} cannot perform this observed-state edit on newly created trackRef "${action.trackRef}" in the same call. Apply the creation, inspect the affected device or mixer, then use a staged apply call.`,
           );

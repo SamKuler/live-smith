@@ -110,6 +110,19 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
   assert.ok(inspectClip.properties?.itemOffset);
   assert.ok(inspectClip.properties?.itemLimit);
 
+  for (const name of [
+    "inspect_track",
+    "inspect_device",
+    "inspect_device_tree",
+    "inspect_mixer",
+  ]) {
+    const parameters = tools.get(name)?.parameters as {
+      properties?: Record<string, unknown>;
+    };
+    assert.ok(parameters.properties?.trackRole, `${name} trackRole`);
+    assert.ok(parameters.properties?.trackIndex, `${name} trackIndex`);
+  }
+
   const analyzeAudio = tools.get("analyze_audio_clip")?.parameters as {
     properties?: Record<string, unknown>;
   };

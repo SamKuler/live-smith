@@ -844,6 +844,15 @@ All dialogs opened by that activation share the queue. Do not infer aliases from
 display-name changes. Use staged apply/inspect/apply calls when later actions
 require state only Live can return.
 
+Regular Track targets use an unambiguous `trackName`. Return targets use the
+role-relative zero-based index plus an optional current-name guard; Main uses its
+unique role plus an optional name guard. Return and Main targets still bind and
+revalidate opaque Track handles. They are accepted only by top-level device
+insert, exact device parameter, device duplicate/delete, and exact mixer
+parameter actions. Their observations and Session-scope restoration enumerate
+the separate Song collections without treating them as regular Tracks or reading
+regular-only Clip, Take Lane, Arm, group, or structural state.
+
 Scene creation, duplication, and deletion shift Session View row indexes. The
 validator therefore rejects a structural Scene edit followed in the same plan
 by a Scene-index target, Session Clip Slot target, or Session audio source. This

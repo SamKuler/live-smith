@@ -32,7 +32,11 @@ import {
   equalsLoose,
   findDevice,
   resolveArrangementClip,
+  resolveTrackSelector,
   resolveTrack,
+  songTrackEntries,
+  songTrackEntryForTrack,
+  trackHeading,
 } from "./resolve.js";
 import { trackTypeLabel, type LiveTarget } from "./target.js";
 import {
@@ -131,11 +135,11 @@ export async function observeLive(
     case "inspect_current_object":
       return summarizeCurrentObject(context, request, target);
     case "inspect_track": {
-      const track = resolveTrack(context, request.trackName, target);
-      return summarizeTrackWithDevices(track, request);
+      const track = resolveTrackSelector(context, request, target);
+      return summarizeObservedTrack(context, track, request);
     }
     case "inspect_device": {
-      const track = resolveTrack(context, request.trackName, target);
+      const track = resolveTrackSelector(context, request, target);
       const device = findDevice(track, request.deviceName, request.deviceIndex);
       return summarizeDevice(
         track.name,
@@ -144,13 +148,14 @@ export async function observeLive(
         false,
         request.deviceIndex ?? track.devices.indexOf(device),
         request,
+        trackHeading(context.application.song, track),
       );
     }
     case "inspect_device_tree":
       return summarizeDeviceTree(context, request, target);
     case "inspect_mixer": {
-      const track = resolveTrack(context, request.trackName, target);
-      return summarizeMixer(track);
+      const track = resolveTrackSelector(context, request, target);
+      return summarizeMixer(context, track);
     }
     case "inspect_clip": {
       if (request.slotIndex !== undefined) {
@@ -526,7 +531,7 @@ async function summarizeCurrentObject(
   if (!object) {
     throw new Error("No selected Live object is available for this Session.");
   }
-  if (object instanceof Track) return summarizeTrackWithDevices(object, request);
+  if (object instanceof Track) return summarizeObservedTrack(context, object, request);
   if (object instanceof Device) {
     const track = resolveTrack(context, undefined, target);
     const path = findDevicePath(track, object);
@@ -573,7 +578,7 @@ async function summarizeDeviceTree(
   request: Extract<AgentObservationRequest, { type: "inspect_device_tree" }>,
   target: LiveTarget,
 ): Promise<string> {
-  const track = resolveTrack(context, request.trackName, target);
+  const track = resolveTrackSelector(context, request, target);
   let rootPath: DevicePath | undefined;
   if (request.devicePath) {
     const resolved = resolveDevicePath(track, request.devicePath);
@@ -598,7 +603,7 @@ async function summarizeDeviceTree(
 
   const devicePage = pageOf(entries, request.itemOffset, request.itemLimit, 96);
   const lines = [
-    `Device tree on track "${track.name}":`,
+    `Device tree on ${trackHeading(context.application.song, track)} "${track.name}":`,
     pageHeader("devices", devicePage),
   ];
   for (const { device, parent, path, depth } of devicePage.items) {
@@ -637,14 +642,17 @@ async function summarizeDeviceTree(
   return lines.join("\n");
 }
 
-async function summarizeMixer(track: Track<"1.0.0">): Promise<string> {
+async function summarizeMixer(
+  context: Api,
+  track: Track<"1.0.0">,
+): Promise<string> {
   const parameters = [
     track.mixer.volume,
     track.mixer.panning,
     ...track.mixer.sends,
   ];
   return [
-    `Mixer on track "${track.name}" has ${parameters.length} parameters:`,
+    `Mixer on ${trackHeading(context.application.song, track)} "${track.name}" has ${parameters.length} parameters:`,
     ...(await Promise.all(parameters.map((parameter, index) =>
       describeParameter(parameter, index)
     ))),
@@ -789,20 +797,65 @@ function gridLabel(q: number): string {
 }
 
 function summarizeLiveSet(context: Api): string {
-  const tracks = context.application.song.tracks;
+  const song = context.application.song;
+  const entries = songTrackEntries(song);
+  const regularCount = entries.filter((entry) => entry.role === "regular").length;
+  const returnCount = entries.filter((entry) => entry.role === "return").length;
+  const hasMain = entries.some((entry) => entry.role === "main");
   return [
-    `Live set has ${tracks.length} tracks.`,
-    ...tracks.map((track, index) =>
-      [
-        `Track ${index + 1}: ${trackTypeLabel(track)} "${track.name}"`,
-        `  ${trackStateSummary(track)}`,
-        `  devices=${track.devices.map((device) => device.name).join(", ") || "none"}`,
-      ].join("\n"),
-    ),
+    `Live set has ${regularCount} regular tracks, ${returnCount} Return tracks${hasMain ? ", and a Main track" : ""}.`,
+    ...entries.map((entry) => {
+      const label = entry.role === "regular"
+        ? `Regular track index ${entry.index}: ${trackTypeLabel(entry.track)} "${entry.track.name}"`
+        : entry.role === "return"
+          ? `Return track index ${entry.index}: "${entry.track.name}"`
+          : `Main track: "${entry.track.name}"`;
+      return [
+        label,
+        ...(entry.role === "regular" ? [`  ${trackStateSummary(entry.track)}`] : []),
+        `  devices=${entry.track.devices.map((device) => device.name).join(", ") || "none"}`,
+      ].join("\n");
+    }),
   ].join("\n");
 }
 
-async function summarizeTrackWithDevices(
+async function summarizeObservedTrack(
+  context: Api,
+  track: Track<"1.0.0">,
+  request: ObservationPageRequest,
+): Promise<string> {
+  const entry = songTrackEntryForTrack(context.application.song, track);
+  return entry?.role === "return" || entry?.role === "main"
+    ? summarizeSpecialTrackWithDevices(context, track, request)
+    : summarizeRegularTrackWithDevices(track, request);
+}
+
+async function summarizeSpecialTrackWithDevices(
+  context: Api,
+  track: Track<"1.0.0">,
+  request: ObservationPageRequest,
+): Promise<string> {
+  const devicePage = pageOf(track.devices, request.itemOffset, request.itemLimit, 24);
+  const lines = [
+    `${trackHeading(context.application.song, track)} "${track.name}"`,
+    pageHeader("devices", devicePage),
+    `devices=${devicePage.items.map((device, index) => `${devicePage.offset + index}: ${device.name}`).join(", ") || "none"}`,
+  ];
+  for (const [index, device] of devicePage.items.entries()) {
+    lines.push(await summarizeDevice(
+      track.name,
+      device.name,
+      device.parameters,
+      true,
+      devicePage.offset + index,
+      request,
+      trackHeading(context.application.song, track),
+    ));
+  }
+  return lines.join("\n");
+}
+
+async function summarizeRegularTrackWithDevices(
   track: Track<"1.0.0">,
   request: ObservationPageRequest,
 ): Promise<string> {
@@ -979,6 +1032,7 @@ async function summarizeDevice(
   compact = false,
   deviceIndex?: number,
   request: ObservationPageRequest = {},
+  trackLabel = "track",
 ): Promise<string> {
   const parameterPage = pageOf(
     parameters,
@@ -987,7 +1041,7 @@ async function summarizeDevice(
     compact ? 18 : 80,
   );
   const lines = [
-    `Device "${deviceName}"${deviceIndex !== undefined ? ` at deviceIndex ${deviceIndex}` : ""} on track "${trackName}" has ${parameters.length} parameters:`,
+    `Device "${deviceName}"${deviceIndex !== undefined ? ` at deviceIndex ${deviceIndex}` : ""} on ${trackLabel} "${trackName}" has ${parameters.length} parameters:`,
     pageHeader("parameters", parameterPage),
     ...(await Promise.all(parameterPage.items.map((parameter, index) =>
       describeParameter(

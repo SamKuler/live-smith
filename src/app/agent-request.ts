@@ -618,6 +618,7 @@ export async function handleAgentRequest(
               error.failedTrackName,
               error.completedActionKeys,
               error.completedMutationCount,
+              error.failedTrackSelector,
             );
           } else {
             throw error;
@@ -788,7 +789,9 @@ function planActionIdentityKeys(
   bindings: AgentPlanBindings,
 ): string[][] {
   const aliases = new Map(
-    Object.entries(plan.targets ?? {}).map(([ref, target]) => [ref, target.trackName]),
+    Object.entries(plan.targets ?? {}).flatMap(([ref, target]) =>
+      target.trackName ? [[ref, target.trackName] as const] : []
+    ),
   );
   return plan.actions.map((action, actionIndex) => {
     const boundTrack = boundTrackForAction(action, actionIndex, bindings);
@@ -799,7 +802,20 @@ function planActionIdentityKeys(
     } else if ("trackName" in action && action.trackName) {
       trackAliases.push(action.trackName);
     }
-    const keys = liveActionIdentityKeys(action, boundTrack, trackAliases);
+    const target = "trackRef" in action && action.trackRef
+      ? plan.targets?.[action.trackRef]
+      : undefined;
+    const nonRegularTrack = target?.trackRole === "return"
+      ? { role: "return" as const }
+      : target?.trackRole === "main"
+        ? { role: "main" as const }
+        : undefined;
+    const keys = liveActionIdentityKeys(
+      action,
+      boundTrack,
+      trackAliases,
+      nonRegularTrack,
+    );
     if (
       (action.type === "create_midi_track" || action.type === "create_audio_track") &&
       action.ref &&

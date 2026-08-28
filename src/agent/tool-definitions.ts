@@ -15,17 +15,18 @@ export function liveSmithTools(options: {
     ),
     observationTool(
       "inspect_live_set",
-      "Inspect the Live set structure, including tracks and the names of devices on each track. This does not change the set.",
+      "Inspect the Live Set structure, including role-addressable regular, Return, and Main tracks and the names of devices on each track. This does not change the Set.",
     ),
     observationTool(
       "inspect_track",
-      "Inspect a track, including clips and device names. Use this before editing a track if the exact device chain is unknown.",
+      "Inspect a regular Track including Clips and devices, or a role-addressed Return/Main Track including its device chain. Use this before editing when the exact device chain is unknown.",
       {
         trackName: {
           type: "string",
           description:
-            "Optional track name. Omit it to inspect the current target track from the Live selection.",
+            "Optional regular Track name, or an expected current name guard when trackRole is return or main. Omit it to inspect the current target Track.",
         },
+        ...specialTrackProperties(),
         ...itemPageProperties(),
         ...parameterPageProperties(),
       },
@@ -37,8 +38,9 @@ export function liveSmithTools(options: {
         trackName: {
           type: "string",
           description:
-            "Optional track name. Omit it to use the current target track from the Live selection.",
+            "Optional regular Track name, or an expected current name guard when trackRole is return or main. Omit it to use the current target Track.",
         },
+        ...specialTrackProperties(),
         deviceName: {
           type: "string",
           description: 'The Live device name, for example "Auto Filter".',
@@ -59,8 +61,9 @@ export function liveSmithTools(options: {
       {
         trackName: {
           type: "string",
-          description: "Optional Track name. Omit it to use the selected object's owning Track.",
+          description: "Optional regular Track name, or an expected current name guard when trackRole is return or main. Omit it to use the selected object's owning Track.",
         },
+        ...specialTrackProperties(),
         deviceName: {
           type: "string",
           description: "Optional expected Device name for selecting one device subtree.",
@@ -76,8 +79,9 @@ export function liveSmithTools(options: {
       {
         trackName: {
           type: "string",
-          description: "Optional Track name. Omit it to use the selected object's owning Track.",
+          description: "Optional regular Track name, or an expected current name guard when trackRole is return or main. Omit it to use the selected object's owning Track.",
         },
+        ...specialTrackProperties(),
       },
     ),
     observationTool(
@@ -216,16 +220,47 @@ export function liveSmithTools(options: {
                 pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
               },
               additionalProperties: {
-                type: "object",
-                properties: {
-                  trackName: {
-                    type: "string",
-                    minLength: 1,
-                    description: "Current unambiguous Live track name.",
+                oneOf: [
+                  {
+                    type: "object",
+                    properties: {
+                      trackName: {
+                        type: "string",
+                        minLength: 1,
+                        description: "Current unambiguous regular Track name.",
+                      },
+                    },
+                    required: ["trackName"],
+                    additionalProperties: false,
                   },
-                },
-                required: ["trackName"],
-                additionalProperties: false,
+                  {
+                    type: "object",
+                    properties: {
+                      trackRole: { type: "string", enum: ["return"] },
+                      trackIndex: { type: "integer", minimum: 0 },
+                      trackName: {
+                        type: "string",
+                        minLength: 1,
+                        description: "Optional expected current Return Track name guard.",
+                      },
+                    },
+                    required: ["trackRole", "trackIndex"],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      trackRole: { type: "string", enum: ["main"] },
+                      trackName: {
+                        type: "string",
+                        minLength: 1,
+                        description: "Optional expected current Main Track name guard.",
+                      },
+                    },
+                    required: ["trackRole"],
+                    additionalProperties: false,
+                  },
+                ],
               },
             },
             resolvesPriorFailure: {
@@ -260,6 +295,23 @@ function itemPageProperties(): Record<string, Record<string, unknown>> {
       minimum: 1,
       maximum: 100,
       description: "Collection items per page. The concise default depends on the inspection and is capped at 100.",
+    },
+  };
+}
+
+function specialTrackProperties(): Record<string, Record<string, unknown>> {
+  return {
+    trackRole: {
+      type: "string",
+      enum: ["return", "main"],
+      description:
+        "Use return or main for a non-regular Track. Omit this field for regular or currently selected Tracks.",
+    },
+    trackIndex: {
+      type: "integer",
+      minimum: 0,
+      description:
+        "Required 0-based Return Track index when trackRole is return; omit for main and regular Tracks.",
     },
   };
 }

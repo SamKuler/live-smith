@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AudioClip, AudioTrack, MidiClip, MidiTrack } from "@ableton-extensions/sdk";
+import { AudioClip, AudioTrack, MidiClip, MidiTrack, Track } from "@ableton-extensions/sdk";
 
 import { validateAgentPlan } from "../agent/actions.js";
 import {
@@ -10,7 +10,7 @@ import {
   liveActionIdentityKeys,
 } from "./action-bindings.js";
 import { requiredEditScopesForPlan } from "./action-permissions.js";
-import { executeAgentPlanWithProgress } from "./executor.js";
+import { AgentPlanExecutionError, executeAgentPlanWithProgress } from "./executor.js";
 
 test("parsed Clip edits bind the selected track when optional target fields are omitted", async () => {
   for (const [clipPrototype, trackPrototype, scope] of [
@@ -86,6 +86,199 @@ test("existing plan targets bind by handle and reject replacement after confirma
   );
 });
 
+test("Return and Main targets bind by role and reject unsupported actions", async () => {
+  const inserted: string[] = [];
+  let returnVolume = 0.5;
+  const volume = {
+    name: "Volume",
+    min: 0,
+    max: 1,
+    getValue: async () => returnVolume,
+    setValue: async (value: number) => {
+      returnVolume = value;
+    },
+  };
+  const returnTrack = sdkObject(Track.prototype, {
+    handle: { id: "return-a" },
+    name: "A-Reverb",
+    devices: [],
+    mixer: { volume, panning: volume, sends: [] },
+    insertDevice: async (name: string) => {
+      inserted.push(`return:${name}`);
+      return { name };
+    },
+  });
+  const mainTrack = sdkObject(Track.prototype, {
+    handle: { id: "main" },
+    name: "Main",
+    devices: [],
+    insertDevice: async (name: string) => {
+      inserted.push(`main:${name}`);
+      return { name };
+    },
+  });
+  const context = {
+    application: {
+      song: { tracks: [], returnTracks: [returnTrack], mainTrack },
+    },
+  } as never;
+  const allowed = validateAgentPlan({
+    message: "Add bus devices",
+    targets: {
+      reverb: { trackRole: "return", trackIndex: 0, trackName: "A-Reverb" },
+      main: { trackRole: "main" },
+    },
+    actions: [
+      { type: "insert_device", trackRef: "reverb", deviceName: "Utility" },
+      { type: "insert_device", trackRef: "main", deviceName: "Limiter" },
+      {
+        type: "set_track_mixer_parameter",
+        trackRef: "reverb",
+        parameter: "volume",
+        value: 0.7,
+      },
+    ],
+  });
+
+  const bindings = bindAgentPlanTargets(context, allowed);
+  assert.equal(bindings.actionTracks.get(0), returnTrack);
+  assert.equal(bindings.actionTracks.get(1), mainTrack);
+  assert.equal(bindings.actionTracks.get(2), returnTrack);
+  assert.deepEqual(requiredEditScopesForPlan(context, allowed, bindings), [
+    "devices",
+    "mixer",
+  ]);
+  const outcome = await executeAgentPlanWithProgress(
+    context,
+    allowed,
+    {},
+    undefined,
+    bindings,
+  );
+  assert.equal(outcome.mutationCount, 3);
+  assert.deepEqual(inserted, ["return:Utility", "main:Limiter"]);
+  assert.equal(returnVolume, 0.7);
+
+  const implicit = validateAgentPlan({
+    message: "Insert on selected Main",
+    actions: [{ type: "insert_device", deviceName: "Utility" }],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(context, implicit, { track: mainTrack }),
+    /Main track.*requires an explicit role target.*trackRef/i,
+  );
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, {
+      message: "Arm Main",
+      targets: { main: { trackRole: "main" } },
+      actions: [{ type: "set_track_arm", trackRef: "main", arm: true }],
+    } as never),
+    /Main track.*does not support action set_track_arm/i,
+  );
+});
+
+test("Return target handle changes are rejected after confirmation", () => {
+  const original = { handle: { id: "return-1" }, name: "A", devices: [] };
+  const replacement = { handle: { id: "return-2" }, name: "A", devices: [] };
+  const mainTrack = { handle: { id: "main" }, name: "Main", devices: [] };
+  const plan = validateAgentPlan({
+    message: "Insert on Return A",
+    targets: { bus: { trackRole: "return", trackIndex: 0 } },
+    actions: [{ type: "insert_device", trackRef: "bus", deviceName: "Utility" }],
+  });
+  const before = bindAgentPlanTargets({
+    application: { song: { tracks: [], returnTracks: [original], mainTrack } },
+  } as never, plan);
+  const after = bindAgentPlanTargets({
+    application: { song: { tracks: [], returnTracks: [replacement], mainTrack } },
+  } as never, plan);
+
+  assert.throws(
+    () => assertSameExistingPlanTargets(before, after),
+    /ref "bus" changed/i,
+  );
+});
+
+test("a failed Return action reports its exact recovery locator", async () => {
+  const returnTrack = sdkObject(Track.prototype, {
+    handle: { id: "return-b" },
+    name: "B-Reverb",
+    devices: [],
+    insertDevice: async () => {
+      returnTrack.name = "Renamed Return";
+      throw new Error("Host rejected device");
+    },
+  });
+  const mainTrack = sdkObject(Track.prototype, {
+    handle: { id: "main" },
+    name: "Main",
+    devices: [],
+  });
+  const context = {
+    application: {
+      song: { tracks: [], returnTracks: [returnTrack], mainTrack },
+    },
+  } as never;
+  const plan = validateAgentPlan({
+    message: "Insert on Return B",
+    targets: {
+      bus: { trackRole: "return", trackIndex: 0, trackName: "B-Reverb" },
+    },
+    actions: [{ type: "insert_device", trackRef: "bus", deviceName: "Utility" }],
+  });
+  const bindings = bindAgentPlanTargets(context, plan);
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(context, plan, {}, undefined, bindings),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.deepEqual(error.failedTrackSelector, {
+        trackRole: "return",
+        trackIndex: 0,
+        trackName: "Renamed Return",
+      });
+      return true;
+    },
+  );
+});
+
+test("a removed Return target does not fall back to a same-name regular track", async () => {
+  const regular = { handle: { id: "regular" }, name: "Shared", devices: [] };
+  const returnTracks: Track<"1.0.0">[] = [];
+  const returnTrack = sdkObject(Track.prototype, {
+    handle: { id: "return" },
+    name: "Shared",
+    devices: [],
+    insertDevice: async () => {
+      returnTracks.length = 0;
+      throw new Error("Return disappeared");
+    },
+  });
+  returnTracks.push(returnTrack);
+  const mainTrack = sdkObject(Track.prototype, {
+    handle: { id: "main" }, name: "Main", devices: [],
+  });
+  const context = {
+    application: { song: { tracks: [regular], returnTracks, mainTrack } },
+  } as never;
+  const plan = validateAgentPlan({
+    message: "Insert on Return",
+    targets: { bus: { trackRole: "return", trackIndex: 0 } },
+    actions: [{ type: "insert_device", trackRef: "bus", deviceName: "Utility" }],
+  });
+  const bindings = bindAgentPlanTargets(context, plan);
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(context, plan, {}, undefined, bindings),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.failedTrackSelector, null);
+      return true;
+    },
+  );
+});
+
 test("plain trackName actions are also rebound and compared by handle", () => {
   const original = { name: "Scratch", handle: { id: "track-1" } };
   const plan = {
@@ -145,6 +338,43 @@ test("track creator identity is stable across aliases and post-create handles", 
 
   assert.ok(before.some((key) => after.includes(key)));
   assert.ok(before.some((key) => key.includes("song-or-creator")));
+});
+
+test("non-regular action identity survives handle-changing Return moves", () => {
+  const action = {
+    type: "insert_device" as const,
+    trackRef: "target",
+    deviceName: "Utility",
+  };
+  const first = { name: "Shared", handle: { id: "return-1" } } as never;
+  const second = { name: "Different", handle: { id: "return-2" } } as never;
+  const duplicateName = { name: "Shared", handle: { id: "return-duplicate" } } as never;
+  const movedFirst = { name: "Shared", handle: { id: "return-3" } } as never;
+  const main = { name: "Shared", handle: { id: "main" } } as never;
+  const keys = [
+    liveActionIdentityKeys(action, first, [], { role: "return" }),
+    liveActionIdentityKeys(action, second, [], { role: "return" }),
+    liveActionIdentityKeys(action, main, [], { role: "main" }),
+  ];
+
+  assert.equal(keys[0]?.some((key) => keys[1]?.includes(key)), false);
+  assert.equal(keys[0]?.some((key) => keys[2]?.includes(key)), false);
+  assert.ok(keys.flat().every((key) => !key.includes("track-name:shared")));
+  assert.ok(
+    liveActionIdentityKeys(action, first, [], { role: "return" })
+      .some((key) =>
+        liveActionIdentityKeys(action, movedFirst, [], {
+          role: "return",
+        }).includes(key)
+      ),
+  );
+  assert.ok(
+    liveActionIdentityKeys(action, first, [], { role: "return" })
+      .some((key) =>
+        liveActionIdentityKeys(action, duplicateName, [], { role: "return" })
+          .includes(key)
+      ),
+  );
 });
 
 test("Scene bindings reject an indexed object replacement after confirmation", () => {

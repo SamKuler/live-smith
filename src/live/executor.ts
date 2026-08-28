@@ -19,6 +19,8 @@ import {
   summarizeAgentAction,
   type AgentAction,
   type AgentPlan,
+  type AgentPlanTarget,
+  type ObservationTrackSelector,
 } from "../agent/actions.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { findExactParameterMatch } from "./parameter-match.js";
@@ -38,6 +40,7 @@ import {
   resolveTakeLane,
   resolveTrackMixerParameter,
   resolveTrack,
+  songTrackEntryForTrack,
 } from "./resolve.js";
 import { resolveSampleSource } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
@@ -48,6 +51,7 @@ import {
   requireBoundTrack,
   type AgentPlanBindings,
   type BoundActionObjects,
+  type NonRegularTrackIdentity,
 } from "./action-bindings.js";
 
 type Api = ExtensionContext<"1.0.0">;
@@ -123,7 +127,12 @@ export async function executeAgentPlanWithProgress(
         tracks,
         bindings.actionTracks,
       );
-      completedActionKeys.push(liveActionIdentityKeys(action, identityTrack));
+      completedActionKeys.push(liveActionIdentityKeys(
+        action,
+        identityTrack,
+        [],
+        nonRegularIdentityForAction(plan, action),
+      ));
     } catch (error) {
       if (error instanceof AgentPlanExecutionError) {
         identityTrack ??= trackForActionIdentity(
@@ -137,7 +146,12 @@ export async function executeAgentPlanWithProgress(
         const currentActionKeys = error.completedActionKeys.length
           ? error.completedActionKeys
           : error.completedResults.length
-            ? [liveActionIdentityKeys(action, identityTrack)]
+            ? [liveActionIdentityKeys(
+                action,
+                identityTrack,
+                [],
+                nonRegularIdentityForAction(plan, action),
+              )]
             : [];
         throw new AgentPlanExecutionError(
           [...results, ...error.completedResults],
@@ -153,6 +167,13 @@ export async function executeAgentPlanWithProgress(
           ),
           [...completedActionKeys, ...currentActionKeys],
           mutationCount + error.completedMutationCount,
+          error.failedTrackSelector !== undefined
+            ? error.failedTrackSelector
+            : trackSelectorForTrack(
+                context,
+                identityTrack,
+                planTargetForAction(plan, action),
+              ),
         );
       }
       throw new AgentPlanExecutionError(
@@ -169,6 +190,11 @@ export async function executeAgentPlanWithProgress(
         ),
         completedActionKeys,
         mutationCount,
+        trackSelectorForTrack(
+          context,
+          identityTrack,
+          planTargetForAction(plan, action),
+        ),
       );
     }
   }
@@ -185,6 +211,7 @@ export class AgentPlanExecutionError extends Error {
     readonly failedTrackName?: string,
     readonly completedActionKeys: readonly (readonly string[])[] = [],
     readonly completedMutationCount: number = completedResults.length,
+    readonly failedTrackSelector?: ObservationTrackSelector | null,
   ) {
     super([
       completedResults.length
@@ -217,9 +244,10 @@ function trackForActionIdentity(
     if ("trackRef" in action && action.trackRef) {
       return tracks.get(action.trackRef);
     }
+    const boundTrack = actionTracks.get(actionIndex);
+    if (boundTrack) return boundTrack;
     if ("trackName" in action) {
-      return actionTracks.get(actionIndex) ??
-        resolveTrack(context, action.trackName, target, false);
+      return resolveTrack(context, action.trackName, target, false);
     }
   } catch {
     return undefined;
@@ -244,13 +272,70 @@ function failedTrackName(
     if ("trackRef" in action && action.trackRef) {
       return tracks.get(action.trackRef)?.name;
     }
+    const boundTrack = actionTracks.get(actionIndex);
+    if (boundTrack) return boundTrack.name;
     if ("trackName" in action) {
-      return actionTracks.get(actionIndex)?.name ?? action.trackName ?? target.track?.name;
+      return action.trackName ?? target.track?.name;
     }
   } catch {
     return undefined;
   }
   return undefined;
+}
+
+function trackSelectorForTrack(
+  context: Api,
+  track: Track<"1.0.0"> | undefined,
+  declaredTarget: AgentPlanTarget | undefined,
+): ObservationTrackSelector | null | undefined {
+  if (!track) return declaredTarget?.trackRole ? null : undefined;
+  const entry = songTrackEntryForTrack(context.application.song, track);
+  if (declaredTarget?.trackRole === "return") {
+    if (entry?.role !== "return" || entry.index !== declaredTarget.trackIndex) {
+      return null;
+    }
+    return {
+      trackRole: "return",
+      trackIndex: declaredTarget.trackIndex,
+      trackName: track.name,
+    };
+  }
+  if (declaredTarget?.trackRole === "main") {
+    if (entry?.role !== "main") return null;
+    return {
+      trackRole: "main",
+      trackName: track.name,
+    };
+  }
+  if (entry?.role === "return") {
+    return {
+      trackRole: "return",
+      trackIndex: entry.index,
+      trackName: track.name,
+    };
+  }
+  if (entry?.role === "main") return { trackRole: "main", trackName: track.name };
+  return { trackName: track.name };
+}
+
+function planTargetForAction(
+  plan: AgentPlan,
+  action: AgentAction,
+): AgentPlanTarget | undefined {
+  return "trackRef" in action && action.trackRef
+    ? plan.targets?.[action.trackRef]
+    : undefined;
+}
+
+function nonRegularIdentityForAction(
+  plan: AgentPlan,
+  action: AgentAction,
+): NonRegularTrackIdentity | undefined {
+  const target = planTargetForAction(plan, action);
+  if (target?.trackRole === "return") {
+    return { role: "return" };
+  }
+  return target?.trackRole === "main" ? { role: "main" } : undefined;
 }
 
 async function executeAction(

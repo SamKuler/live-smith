@@ -7,20 +7,20 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
   if (toolCall.name === "inspect_device") {
     const suffix = typeof args.deviceIndex === "number" ? `[${args.deviceIndex}]` : "";
     const deviceName = stringArg(args.deviceName, "device");
-    const trackName = stringArg(args.trackName);
-    return `Inspecting ${deviceName}${suffix}${trackName ? ` on "${trackName}"` : ""}`;
+    const track = trackInspectionTarget(args);
+    return `Inspecting ${deviceName}${suffix}${track ? ` on ${track}` : ""}`;
   }
 
   if (toolCall.name === "inspect_device_tree") {
     const deviceName = stringArg(args.deviceName, "selected");
-    const trackName = stringArg(args.trackName);
-    return `Inspecting ${deviceName} device tree${trackName ? ` on "${trackName}"` : ""}`;
+    const track = trackInspectionTarget(args);
+    return `Inspecting ${deviceName} device tree${track ? ` on ${track}` : ""}`;
   }
 
   if (toolCall.name === "inspect_mixer") {
-    const trackName = stringArg(args.trackName);
-    return trackName
-      ? `Inspecting mixer on "${trackName}"`
+    const track = trackInspectionTarget(args);
+    return track
+      ? `Inspecting mixer on ${track}`
       : "Inspecting selected track mixer";
   }
 
@@ -34,8 +34,8 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
   }
 
   if (toolCall.name === "inspect_track") {
-    const trackName = stringArg(args.trackName);
-    return `Inspecting track ${trackName ? `"${trackName}"` : "selection"}`;
+    const track = trackInspectionTarget(args);
+    return `Inspecting ${track ?? "track selection"}`;
   }
 
   if (toolCall.name === "inspect_midi_clip") {
@@ -85,4 +85,13 @@ function parseArgs(value: string): Record<string, unknown> {
 
 function stringArg(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function trackInspectionTarget(args: Record<string, unknown>): string | undefined {
+  const name = stringArg(args.trackName);
+  if (args.trackRole === "return" && Number.isSafeInteger(args.trackIndex)) {
+    return `Return track index ${args.trackIndex}${name ? ` "${name}"` : ""}`;
+  }
+  if (args.trackRole === "main") return `Main track${name ? ` "${name}"` : ""}`;
+  return name ? `"${name}"` : undefined;
 }
