@@ -32,6 +32,7 @@ import {
   equalsLoose,
   findDevice,
   resolveArrangementClip,
+  resolveTakeLane,
   resolveTrackSelector,
   resolveTrack,
   songTrackEntries,
@@ -137,6 +138,28 @@ export async function observeLive(
     case "inspect_track": {
       const track = resolveTrackSelector(context, request, target);
       return summarizeObservedTrack(context, track, request);
+    }
+    case "inspect_take_lane": {
+      const track = resolveTrack(context, request.trackName, target);
+      if (songTrackEntryForTrack(context.application.song, track)?.role !== "regular") {
+        throw new Error("Take Lanes can be inspected only on a regular Track.");
+      }
+      const lane = resolveTakeLane(track, request.laneIndex, request.laneName);
+      const clips = lane.clips;
+      const clipPage = pageOf(
+        clips,
+        request.itemOffset,
+        request.itemLimit,
+        24,
+      );
+      return [
+        `Take Lane index ${request.laneIndex} "${lane.name}" on track "${track.name}"`,
+        `clips=${clips.length}`,
+        pageHeader("clips", clipPage),
+        ...clipPage.items.map((clip, index) =>
+          `  - clip index ${clipPage.offset + index}: ${summarizeClipReference(clip)}`
+        ),
+      ].join("\n");
     }
     case "inspect_device": {
       const track = resolveTrackSelector(context, request, target);

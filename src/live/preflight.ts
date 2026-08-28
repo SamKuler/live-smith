@@ -6,6 +6,7 @@ import {
   RackDevice,
   Simpler,
   type Chain,
+  type Clip,
   type Device,
   type DeviceParameter,
   type ExtensionContext,
@@ -102,17 +103,31 @@ export async function captureLiveActionPreflightSnapshot(
     }
     case "create_midi_clip": {
       const track = resolveMidiTrack(context, action.trackName, target);
+      const lane = action.laneIndex === undefined
+        ? undefined
+        : resolveTakeLane(track, action.laneIndex, action.laneName);
+      const clips = lane?.clips ?? track.arrangementClips;
       const matchingClip = action.name
         ? findReusableMidiClip(
-            track,
+            clips,
             action.name,
             action.startBeat,
             action.durationBeats,
           )
         : undefined;
+      if (lane) {
+        assertTakeLaneRangeAvailable(
+          lane,
+          clips,
+          action.startBeat,
+          action.durationBeats,
+          matchingClip,
+        );
+      }
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
+        ...(lane ? { takeLane: takeLaneTargetIdentity(lane) } : {}),
         matchingClip: matchingClip
           ? clipContentIdentity(matchingClip)
           : null,
@@ -335,10 +350,26 @@ export async function captureLiveActionPreflightSnapshot(
         throw new Error(`Track "${track.name}" is not an audio track.`);
       }
       const source = resolveSampleSource(context, action.source, target);
+      const lane = action.laneIndex === undefined
+        ? undefined
+        : resolveTakeLane(track, action.laneIndex, action.laneName);
+      if (lane) {
+        if (action.durationBeats === undefined) {
+          throw new Error("Take Lane audio creation requires durationBeats.");
+        }
+        assertTakeLaneRangeAvailable(
+          lane,
+          lane.clips,
+          action.startBeat,
+          action.durationBeats,
+        );
+      }
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
-        arrangementClips: track.arrangementClips.map(clipContentIdentity),
+        ...(lane
+          ? { takeLane: takeLaneTargetIdentity(lane) }
+          : { arrangementClips: track.arrangementClips.map(clipContentIdentity) }),
         source: sampleSourceIdentity(source),
       });
     }
@@ -526,6 +557,35 @@ function takeLaneIdentity(
     name: lane.name,
     clips: lane.clips.map(clipContentIdentity),
   };
+}
+
+function takeLaneTargetIdentity(
+  lane: import("@ableton-extensions/sdk").TakeLane<"1.0.0">,
+): object {
+  return {
+    id: requireHandleIdentity(lane, "Take Lane"),
+    name: lane.name,
+  };
+}
+
+function assertTakeLaneRangeAvailable(
+  lane: import("@ableton-extensions/sdk").TakeLane<"1.0.0">,
+  clips: readonly Clip<"1.0.0">[],
+  startBeat: number,
+  durationBeats: number,
+  reusableClip?: import("@ableton-extensions/sdk").MidiClip<"1.0.0">,
+): void {
+  const endBeat = startBeat + durationBeats;
+  const overlaps = clips.filter(
+    (clip) =>
+      clip !== reusableClip &&
+      clip.startTime < endBeat &&
+      clip.startTime + clip.duration > startBeat,
+  );
+  if (!overlaps.length) return;
+  throw new Error(
+    `Take Lane "${lane.name}" is not empty from beat ${startBeat} to ${endBeat}. Overlapping Clips: ${overlaps.map((clip) => `"${clip.name}"@${clip.startTime}-${clip.startTime + clip.duration}`).join(", ")}. Choose an empty range; Live Smith does not guess Take Lane overlap behavior.`,
+  );
 }
 
 async function verifiedParameterValue(

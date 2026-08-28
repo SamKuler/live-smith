@@ -38,6 +38,13 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
     return `Inspecting ${track ?? "track selection"}`;
   }
 
+  if (toolCall.name === "inspect_take_lane") {
+    const trackName = stringArg(args.trackName);
+    const laneName = stringArg(args.laneName);
+    const laneIndex = typeof args.laneIndex === "number" ? args.laneIndex : "?";
+    return `Inspecting Take Lane ${laneIndex}${laneName ? ` "${laneName}"` : ""}${trackName ? ` on "${trackName}"` : ""}`;
+  }
+
   if (toolCall.name === "inspect_midi_clip") {
     const clipName = stringArg(args.clipName);
     return `Inspecting MIDI clip ${clipName ? `"${clipName}"` : "selection"}`;

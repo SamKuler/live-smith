@@ -1322,6 +1322,12 @@ function observationCoversRecovery(
     case "inspect_track":
       return actual.type === "inspect_track" &&
         trackSelectorMatches(actual, required);
+    case "inspect_take_lane":
+      return actual.type === "inspect_take_lane" &&
+        optionalTextMatches(actual.trackName, required.trackName) &&
+        actual.laneIndex === required.laneIndex &&
+        (required.laneName === undefined ||
+          optionalTextMatches(actual.laneName, required.laneName));
     case "inspect_device":
       return actual.type === "inspect_device" &&
         trackSelectorMatches(actual, required) &&
@@ -1420,6 +1426,24 @@ function observationRequestFromToolCall(
         ...observationItemPageProps(args),
         ...observationParameterPageProps(args),
       };
+    case "inspect_take_lane": {
+      assertOnlyKeys(
+        args,
+        ["trackName", "laneIndex", "laneName", ...observationItemPageKeys],
+        `${toolCall.name} arguments`,
+      );
+      const laneIndex = optionalIntegerProp(args.laneIndex, "laneIndex", 0);
+      if (laneIndex.laneIndex === undefined) {
+        throw new Error("inspect_take_lane requires laneIndex.");
+      }
+      return {
+        type: "inspect_take_lane",
+        ...optionalStringProp(args.trackName, "trackName"),
+        laneIndex: laneIndex.laneIndex,
+        ...optionalStringProp(args.laneName, "laneName"),
+        ...observationItemPageProps(args),
+      };
+    }
     case "inspect_device":
       assertOnlyKeys(
         args,
@@ -1630,6 +1654,7 @@ function isObservationTool(name: string): boolean {
     name === "inspect_live_set" ||
     name === "inspect_current_object" ||
     name === "inspect_track" ||
+    name === "inspect_take_lane" ||
     name === "inspect_device" ||
     name === "inspect_device_tree" ||
     name === "inspect_mixer" ||

@@ -60,6 +60,61 @@ test("create_midi_clip snapshot detects notes edited while confirmation is open"
   assert.notEqual(after, before);
 });
 
+test("Take Lane MIDI preflight fingerprints an exact reuse and rejects other overlaps", async () => {
+  const reusable = midiClip(101n);
+  const unrelated = midiClip(102n);
+  Object.defineProperties(unrelated, {
+    name: { configurable: true, value: "Later" },
+    startTime: { configurable: true, value: 16 },
+    duration: { configurable: true, value: 4 },
+  });
+  const lane = sdkObject<TakeLane<"1.0.0">>(TakeLane.prototype, {
+    handle: { id: 301n },
+    name: "Take 1",
+    clips: [reusable, unrelated],
+  });
+  const track = midiTrack(11n, []);
+  Object.defineProperty(track, "takeLanes", {
+    configurable: true,
+    value: [lane],
+  });
+  const context = liveContext(track);
+  const action = {
+    type: "create_midi_clip" as const,
+    trackName: "Bass",
+    laneIndex: 0,
+    laneName: "Take 1",
+    name: "Phrase",
+    startBeat: 0,
+    durationBeats: 4,
+    notes: [{ pitch: 36, startTime: 0, duration: 1, velocity: 100 }],
+  };
+
+  const before = await captureLiveActionPreflightSnapshot(context, action, {});
+  unrelated.notes = [{ pitch: 72, startTime: 0, duration: 1, velocity: 80 }];
+  const outsideRange = await captureLiveActionPreflightSnapshot(context, action, {});
+  assert.equal(outsideRange, before);
+  reusable.notes = [{ pitch: 48, startTime: 0, duration: 1, velocity: 90 }];
+  const after = await captureLiveActionPreflightSnapshot(context, action, {});
+  assert.notEqual(after, before);
+
+  const overlap = midiClip(103n);
+  Object.defineProperties(overlap, {
+    name: { configurable: true, value: "Other" },
+    startTime: { configurable: true, value: 8 },
+    duration: { configurable: true, value: 4 },
+  });
+  lane.clips.push(overlap);
+  await assert.rejects(
+    captureLiveActionPreflightSnapshot(
+      context,
+      { ...action, name: "New", startBeat: 10, durationBeats: 2 },
+      {},
+    ),
+    /Take Lane "Take 1" is not empty.*Other.*8-12/i,
+  );
+});
+
 test("replace_midi_clip_segment snapshot detects clip edits while confirmation is open", async () => {
   const clip = midiClip(101n);
   const track = midiTrack(11n, [clip]);

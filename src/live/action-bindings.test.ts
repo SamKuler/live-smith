@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AudioClip, AudioTrack, MidiClip, MidiTrack, Track } from "@ableton-extensions/sdk";
+import {
+  AudioClip,
+  AudioTrack,
+  MidiClip,
+  MidiTrack,
+  Sample,
+  TakeLane,
+  Track,
+} from "@ableton-extensions/sdk";
 
 import { validateAgentPlan } from "../agent/actions.js";
 import {
@@ -440,6 +448,147 @@ test("Device bindings reject an indexed object replacement after confirmation", 
   assert.throws(
     () => assertSameExistingPlanTargets(before, after),
     /object bound to action 1 changed/i,
+  );
+});
+
+test("Take Lane Clip actions bind the lane and reject lane drift or overlapping writes", () => {
+  const clip = sdkObject(MidiClip.prototype, {
+    handle: { id: "clip-1" },
+    name: "Alternate",
+    startTime: 8,
+    duration: 4,
+    notes: [],
+  });
+  const lane = sdkObject(TakeLane.prototype, {
+    handle: { id: "lane-1" },
+    name: "Take 1",
+    clips: [clip],
+  });
+  const track = sdkObject(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [],
+    takeLanes: [lane],
+  });
+  const plan = validateAgentPlan({
+    message: "Update the alternate take",
+    actions: [{
+      type: "create_midi_clip",
+      trackName: "Lead",
+      laneIndex: 0,
+      laneName: "Take 1",
+      startBeat: 8,
+      durationBeats: 4,
+      name: "Alternate",
+      notes: [],
+    }],
+  });
+  const before = bindAgentPlanTargets(
+    { application: { song: { tracks: [track] } } } as never,
+    plan,
+  );
+
+  assert.equal(before.actionObjects.get(0)?.takeLane, lane);
+  assert.equal(before.actionObjects.get(0)?.clip, clip);
+  assert.deepEqual(
+    requiredEditScopesForPlan(
+      { application: { song: { tracks: [track] } } } as never,
+      plan,
+      before,
+    ),
+    ["midi"],
+  );
+
+  const replacementLane = sdkObject(TakeLane.prototype, {
+    handle: { id: "lane-2" },
+    name: "Take 1",
+    clips: [clip],
+  });
+  const replacementTrack = sdkObject(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [],
+    takeLanes: [replacementLane],
+  });
+  const after = bindAgentPlanTargets(
+    { application: { song: { tracks: [replacementTrack] } } } as never,
+    plan,
+  );
+  assert.throws(
+    () => assertSameExistingPlanTargets(before, after),
+    /object bound to action 1 changed/i,
+  );
+
+  const overlapping = validateAgentPlan({
+    message: "Write conflicting takes",
+    actions: [
+      {
+        type: "create_midi_clip",
+        trackName: "Lead",
+        laneIndex: 0,
+        startBeat: 16,
+        durationBeats: 4,
+        notes: [],
+      },
+      {
+        type: "create_midi_clip",
+        trackName: "Lead",
+        laneIndex: 0,
+        startBeat: 18,
+        durationBeats: 4,
+        notes: [],
+      },
+    ],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(
+      { application: { song: { tracks: [track] } } } as never,
+      overlapping,
+    ),
+    /Actions 1 and 2.*overlapping Clip ranges.*Take Lane/i,
+  );
+
+  const audioLane = sdkObject(TakeLane.prototype, {
+    handle: { id: "audio-lane" },
+    name: "Double",
+    clips: [],
+  });
+  const audioTrack = sdkObject(AudioTrack.prototype, {
+    handle: { id: "audio-track" },
+    name: "Vocals",
+    arrangementClips: [],
+    takeLanes: [audioLane],
+  });
+  const sample = sdkObject(Sample.prototype, {
+    handle: { id: "sample-1" },
+    filePath: "/private/voice.wav",
+  });
+  const audioPlan = validateAgentPlan({
+    message: "Write the double",
+    actions: [{
+      type: "create_arrangement_audio_clip",
+      trackName: "Vocals",
+      laneIndex: 0,
+      laneName: "Double",
+      source: { kind: "selected" },
+      startBeat: 0,
+      durationBeats: 4,
+    }],
+  });
+  const audioBindings = bindAgentPlanTargets(
+    { application: { song: { tracks: [audioTrack] } } } as never,
+    audioPlan,
+    { object: sample },
+  );
+  assert.equal(audioBindings.actionObjects.get(0)?.takeLane, audioLane);
+  assert.equal(audioBindings.actionObjects.get(0)?.sampleSource?.object, sample);
+  assert.deepEqual(
+    requiredEditScopesForPlan(
+      { application: { song: { tracks: [audioTrack] } } } as never,
+      audioPlan,
+      audioBindings,
+    ),
+    ["audio"],
   );
 });
 

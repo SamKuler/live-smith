@@ -32,6 +32,27 @@ export function liveSmithTools(options: {
       },
     ),
     observationTool(
+      "inspect_take_lane",
+      "Inspect one existing Take Lane and page its exact MIDI or Audio Clip references. Follow nextOffset until every relevant Clip range has been checked.",
+      {
+        trackName: {
+          type: "string",
+          description: "Optional regular Track name. Omit it to use the current target Track.",
+        },
+        laneIndex: {
+          type: "integer",
+          minimum: 0,
+          description: "0-based Take Lane index.",
+        },
+        laneName: {
+          type: "string",
+          description: "Optional expected current Take Lane name guard.",
+        },
+        ...itemPageProperties(),
+      },
+      ["laneIndex"],
+    ),
+    observationTool(
       "inspect_device",
       "Inspect a paged list of a Live device's exact exposed parameter names, ranges, current values, defaults, and indexed value items. Follow parameter and value-item nextOffset values until the needed target is visible.",
       {

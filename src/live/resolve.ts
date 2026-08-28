@@ -170,12 +170,12 @@ export function resolveMidiTrack(
 }
 
 export function findReusableMidiClip(
-  track: MidiTrack<"1.0.0">,
+  clips: readonly Clip<"1.0.0">[],
   name: string,
   startBeat: number,
   durationBeats: number,
 ): MidiClip<"1.0.0"> | undefined {
-  return track.arrangementClips.find(
+  return clips.find(
     (clip): clip is MidiClip<"1.0.0"> =>
       clip instanceof MidiClip &&
       equalsLoose(clip.name, name) &&

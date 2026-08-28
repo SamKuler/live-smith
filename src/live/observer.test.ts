@@ -1159,6 +1159,89 @@ test("inspect_song_info and inspect_track expose continuation offsets", async ()
   assert.doesNotMatch(trackResult, /slot index 0|slot index 2/);
 });
 
+test("inspect_take_lane pages exact Clip ranges on an indexed Lane", async () => {
+  const clips = [0, 4, 8].map((startTime, index) =>
+    Object.defineProperties(Object.create(MidiClip.prototype), {
+      name: { enumerable: true, value: `Phrase ${index}` },
+      startTime: { enumerable: true, value: startTime },
+      duration: { enumerable: true, value: 4 },
+      notes: { enumerable: true, value: Array(index).fill({ pitch: 64 }) },
+    })
+  );
+  const changedClips = [Object.defineProperties(Object.create(MidiClip.prototype), {
+    name: { enumerable: true, value: "Changed snapshot" },
+    startTime: { enumerable: true, value: 12 },
+    duration: { enumerable: true, value: 4 },
+    notes: { enumerable: true, value: [] },
+  })];
+  let firstSnapshot = true;
+  const lane = Object.defineProperties(Object.create(TakeLane.prototype), {
+    name: { enumerable: true, value: "Alternate" },
+    clips: {
+      enumerable: true,
+      get: () => {
+        const snapshot = firstSnapshot ? clips : changedClips;
+        firstSnapshot = false;
+        return snapshot;
+      },
+    },
+  });
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    name: { enumerable: true, value: "Lead" },
+    takeLanes: { enumerable: true, value: [lane] },
+  });
+
+  const result = await observeLive(
+    { application: { song: { tracks: [track] } } } as never,
+    {
+      type: "inspect_take_lane",
+      trackName: "Lead",
+      laneIndex: 0,
+      laneName: "Alternate",
+      itemOffset: 1,
+      itemLimit: 1,
+    },
+    {},
+  );
+
+  assert.match(result, /Take Lane index 0 "Alternate" on track "Lead"/);
+  assert.match(result, /clips page: offset=1, shown=1, total=3, nextOffset=2/);
+  assert.match(result, /clip index 1: MIDI clip "Phrase 1" start=4 duration=4, notes=1/);
+  assert.doesNotMatch(result, /Phrase 0|Phrase 2|Changed snapshot/);
+});
+
+test("inspect_take_lane rejects selected Return and Main tracks before reading Take Lanes", async () => {
+  for (const role of ["return", "main"] as const) {
+    let takeLaneReads = 0;
+    const track = Object.defineProperties(Object.create(Track.prototype), {
+      handle: { enumerable: true, value: { id: `${role}-track` } },
+      name: { enumerable: true, value: role === "return" ? "A-Reverb" : "Main" },
+      takeLanes: {
+        enumerable: true,
+        get: () => {
+          takeLaneReads += 1;
+          throw new Error("regular-only getter was read");
+        },
+      },
+    });
+    const song = {
+      tracks: [],
+      returnTracks: role === "return" ? [track] : [],
+      mainTrack: role === "main" ? track : undefined,
+    };
+
+    await assert.rejects(
+      observeLive(
+        { application: { song } } as never,
+        { type: "inspect_take_lane", laneIndex: 0 },
+        { track },
+      ),
+      /only on a regular Track/i,
+    );
+    assert.equal(takeLaneReads, 0);
+  }
+});
+
 test("inspect_track distinguishes unavailable Take Lanes from an empty collection", async () => {
   const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
     handle: { enumerable: true, value: { id: "track-1" } },

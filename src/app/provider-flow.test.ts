@@ -1613,7 +1613,12 @@ test("shared action routing covers every extended Live object action", () => {
     { type: "inspect_track", trackName: "Lead" },
     { type: "inspect_mixer", trackName: "Lead" },
     { type: "inspect_track", trackName: "Vocals" },
-    { type: "inspect_track", trackName: "Vocals" },
+    {
+      type: "inspect_take_lane",
+      trackName: "Vocals",
+      laneIndex: 0,
+      laneName: "Take 1",
+    },
     { type: "inspect_clip", trackName: "Lead", clipName: "Loop", slotIndex: 0 },
     {
       type: "inspect_clip",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  observationRequestForAction,
   validateAgentPlan,
   requiresExplicitConfirmation,
   summarizeActionPlan,
@@ -1141,6 +1142,89 @@ test("Scene, Cue Point, and Take Lane actions use stable indexes and expected na
   assert.match(summarizeActionPlan(plan), /Scene 0.*Intro.*Verse/i);
   assert.match(summarizeActionPlan(plan), /Cue Point.*beat 16/i);
   assert.match(summarizeActionPlan(plan), /Take Lane 0.*Main Take/i);
+});
+
+test("existing Take Lane Clip creation validates exact bounded locators", () => {
+  const plan = validateAgentPlan({
+    message: "Add alternate takes",
+    actions: [
+      {
+        type: "create_midi_clip",
+        trackName: "Lead",
+        laneIndex: 2,
+        laneName: "Alternate",
+        startBeat: 8,
+        durationBeats: 4,
+        name: "Lead alt",
+        notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 96 }],
+      },
+      {
+        type: "create_arrangement_audio_clip",
+        trackName: "Vocals",
+        laneIndex: 1,
+        laneName: "Double",
+        source: { kind: "selected" },
+        startBeat: 16,
+        durationBeats: 8,
+        isWarped: true,
+      },
+    ],
+  });
+
+  assert.equal(requiresExplicitConfirmation(plan), true);
+  assert.match(summarizeActionPlan(plan), /Take Lane 2.*Alternate.*beat 8/i);
+  assert.match(summarizeActionPlan(plan), /Take Lane 1.*Double.*8 beats/i);
+  assert.deepEqual(observationRequestForAction(plan.actions[0]!), {
+    type: "inspect_take_lane",
+    trackName: "Lead",
+    laneIndex: 2,
+    laneName: "Alternate",
+  });
+
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Missing lane index",
+      actions: [{
+        type: "create_midi_clip",
+        trackName: "Lead",
+        laneName: "Alternate",
+        startBeat: 0,
+        durationBeats: 4,
+        notes: [],
+      }],
+    }),
+    /laneName requires laneIndex/i,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Unknown audio range",
+      actions: [{
+        type: "create_arrangement_audio_clip",
+        trackName: "Vocals",
+        laneIndex: 0,
+        source: { kind: "selected" },
+        startBeat: 0,
+      }],
+    }),
+    /Take Lane audio creation requires durationBeats/i,
+  );
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Unobserved lane",
+      actions: [
+        { type: "create_midi_track", ref: "lead", name: "Lead" },
+        {
+          type: "create_midi_clip",
+          trackRef: "lead",
+          laneIndex: 0,
+          startBeat: 0,
+          durationBeats: 4,
+          notes: [],
+        },
+      ],
+    }),
+    /newly created.*staged/i,
+  );
 });
 
 test("structural Scene edits require a staged call before later index-based work", () => {

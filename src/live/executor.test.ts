@@ -1606,6 +1606,234 @@ test("Take Lane creation and rename use exact lane identities", async () => {
   assert.equal(creates, 1);
 });
 
+test("MIDI and audio Clip creation use the exact existing Take Lane", async () => {
+  let trackMidiCreates = 0;
+  let laneMidiCreates = 0;
+  const createdMidi = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "midi-clip" },
+    name: "Untitled",
+    startTime: 8,
+    duration: 4,
+    notes: [],
+  });
+  const midiLane = sdkObject<TakeLane<"1.0.0">>(TakeLane.prototype, {
+    handle: { id: "midi-lane" },
+    name: "Alternate MIDI",
+    clips: [],
+    createMidiClip: async (startBeat: number, durationBeats: number) => {
+      laneMidiCreates += 1;
+      assert.equal(startBeat, 8);
+      assert.equal(durationBeats, 4);
+      return createdMidi;
+    },
+  });
+  const midiTrack = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "midi-track" },
+    name: "Lead",
+    arrangementClips: [],
+    takeLanes: [midiLane],
+    createMidiClip: async () => {
+      trackMidiCreates += 1;
+      return createdMidi;
+    },
+  });
+
+  let trackAudioCreates = 0;
+  let laneAudioArgs: unknown;
+  const createdAudio = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "audio-clip" },
+    name: "Untitled",
+  });
+  const audioLane = sdkObject<TakeLane<"1.0.0">>(TakeLane.prototype, {
+    handle: { id: "audio-lane" },
+    name: "Double",
+    clips: [],
+    createAudioClip: async (args: unknown) => {
+      laneAudioArgs = args;
+      return createdAudio;
+    },
+  });
+  const audioTrack = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: "audio-track" },
+    name: "Vocals",
+    arrangementClips: [],
+    takeLanes: [audioLane],
+    createAudioClip: async () => {
+      trackAudioCreates += 1;
+      return createdAudio;
+    },
+  });
+  const source = sdkObject<Sample<"1.0.0">>(Sample.prototype, {
+    handle: { id: "sample" },
+    filePath: "/private/voice.wav",
+  });
+
+  const result = await executeAgentPlan(
+    { application: { song: { tracks: [midiTrack, audioTrack] } } } as never,
+    {
+      message: "Write alternate takes",
+      actions: [
+        {
+          type: "create_midi_clip",
+          trackName: "Lead",
+          laneIndex: 0,
+          laneName: "Alternate MIDI",
+          startBeat: 8,
+          durationBeats: 4,
+          name: "Lead alternate",
+          notes: [{
+            pitch: 64,
+            startTime: 0,
+            duration: 1,
+            velocity: 96,
+            probability: 0.75,
+          }],
+        },
+        {
+          type: "create_arrangement_audio_clip",
+          trackName: "Vocals",
+          laneIndex: 0,
+          laneName: "Double",
+          source: { kind: "selected" },
+          startBeat: 16,
+          durationBeats: 8,
+          name: "Vocal double",
+          isWarped: true,
+          loopSettings: {
+            looping: false,
+            startMarker: 0,
+            endMarker: 8,
+            loopStart: 0,
+            loopEnd: 8,
+          },
+        },
+      ],
+    },
+    { object: source },
+  );
+
+  assert.equal(laneMidiCreates, 1);
+  assert.equal(trackMidiCreates, 0);
+  assert.equal(createdMidi.name, "Lead alternate");
+  assert.deepEqual(createdMidi.notes, [{
+    pitch: 64,
+    startTime: 0,
+    duration: 1,
+    velocity: 96,
+    probability: 0.75,
+  }]);
+  assert.equal(trackAudioCreates, 0);
+  assert.deepEqual(laneAudioArgs, {
+    filePath: "/private/voice.wav",
+    startTime: 16,
+    duration: 8,
+    isWarped: true,
+    loopSettings: {
+      looping: false,
+      startMarker: 0,
+      endMarker: 8,
+      loopStart: 0,
+      loopEnd: 8,
+    },
+  });
+  assert.equal(createdAudio.name, "Vocal double");
+  assert.match(result.join("\n"), /Take Lane 0 "Alternate MIDI"/);
+  assert.match(result.join("\n"), /Take Lane 0 "Double"/);
+
+  midiLane.clips.push(createdMidi);
+  await executeAgentPlan(
+    { application: { song: { tracks: [midiTrack, audioTrack] } } } as never,
+    {
+      message: "Update the exact named take",
+      actions: [{
+        type: "create_midi_clip",
+        trackName: "Lead",
+        laneIndex: 0,
+        laneName: "Alternate MIDI",
+        startBeat: 8,
+        durationBeats: 4,
+        name: "Lead alternate",
+        notes: [{ pitch: 67, startTime: 0, duration: 2, velocity: 88 }],
+      }],
+    },
+    {},
+  );
+  assert.equal(laneMidiCreates, 1);
+  assert.deepEqual(createdMidi.notes, [
+    { pitch: 67, startTime: 0, duration: 2, velocity: 88 },
+  ]);
+});
+
+test("a named Take Lane MIDI Clip can resume after its initial note write fails", async () => {
+  const clips: MidiClip<"1.0.0">[] = [];
+  let creates = 0;
+  let noteWrites = 0;
+  let savedNotes: unknown[] = [];
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "created-clip" },
+    name: "Untitled",
+    startTime: 0,
+    duration: 4,
+  });
+  Object.defineProperty(clip, "notes", {
+    configurable: true,
+    get: () => savedNotes,
+    set: (notes: unknown[]) => {
+      noteWrites += 1;
+      if (noteWrites === 1) throw new Error("Transient note write failure");
+      savedNotes = notes;
+    },
+  });
+  const lane = sdkObject<TakeLane<"1.0.0">>(TakeLane.prototype, {
+    handle: { id: "lane-1" },
+    name: "Alternate",
+    clips,
+    createMidiClip: async () => {
+      creates += 1;
+      clips.push(clip);
+      return clip;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    arrangementClips: [],
+    takeLanes: [lane],
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+  const plan = {
+    message: "Write the alternate phrase",
+    actions: [{
+      type: "create_midi_clip" as const,
+      trackName: "Lead",
+      laneIndex: 0,
+      laneName: "Alternate",
+      startBeat: 0,
+      durationBeats: 4,
+      name: "Alternate phrase",
+      notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 96 }],
+    }],
+  };
+
+  await assert.rejects(
+    executeAgentPlan(context, plan, {}),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.completedMutationCount, 2);
+      assert.equal(error.completedActionKeys.length, 1);
+      assert.deepEqual(error.completedActionKeys, [[
+        "live-action-step:retryable-named-midi-create",
+      ]]);
+      return true;
+    },
+  );
+
+  await executeAgentPlan(context, plan, {});
+  assert.equal(creates, 1);
+  assert.equal(noteWrites, 2);
+  assert.deepEqual(savedNotes, plan.actions[0]?.notes);
+});
+
 test("AgentPlanExecutionError includes completed action results", () => {
   const error = new AgentPlanExecutionError(
     ['Inserted "Operator" on track "Future Bass".'],
@@ -1751,6 +1979,12 @@ for (const scenario of compositeCreationFailureScenarios()) {
         assert.equal(error.completedResults.length, 1);
         assert.match(error.completedResults[0] ?? "", scenario.completedPattern);
         assert.match(error.message, scenario.failurePattern);
+        if (scenario.name === "create_midi_clip") {
+          assert.ok(error.completedActionKeys.length > 0);
+          assert.ok(error.completedActionKeys.flat().every(
+            (key) => key.startsWith("live-action:") && !key.includes("action-step"),
+          ));
+        }
         return true;
       },
     );

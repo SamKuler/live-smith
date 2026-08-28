@@ -113,6 +113,7 @@ export function bindAgentPlanTargets(
     tracks,
     actionTracks,
   );
+  assertTakeLaneCreationRangesDoNotOverlap(plan, actionObjects);
   return { tracks, actionTracks, actionObjects };
 }
 
@@ -345,14 +346,29 @@ function bindActionObjects(
         );
         break;
       case "create_midi_clip":
-        if (track instanceof MidiTrack && action.name) {
-          const clip = findReusableMidiClip(
+        if (track instanceof MidiTrack) {
+          const lane = action.laneIndex === undefined
+            ? undefined
+            : resolveTakeLane(track, action.laneIndex, action.laneName);
+          if (lane) binding.takeLane = lane;
+          if (action.name) {
+            const clip = findReusableMidiClip(
+              lane?.clips ?? track.arrangementClips,
+              action.name,
+              action.startBeat,
+              action.durationBeats,
+            );
+            if (clip) binding.clip = clip;
+          }
+        }
+        break;
+      case "create_arrangement_audio_clip":
+        if (track && action.laneIndex !== undefined) {
+          binding.takeLane = resolveTakeLane(
             track,
-            action.name,
-            action.startBeat,
-            action.durationBeats,
+            action.laneIndex,
+            action.laneName,
           );
-          if (clip) binding.clip = clip;
         }
         break;
       case "create_session_midi_clip":
@@ -471,6 +487,43 @@ function bindActionObjects(
     }
   });
   return result;
+}
+
+function assertTakeLaneCreationRangesDoNotOverlap(
+  plan: AgentPlan,
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): void {
+  const ranges = new Map<
+    string,
+    Array<{ actionNumber: number; start: number; end: number }>
+  >();
+  const tolerance = 1e-7;
+  plan.actions.forEach((action, index) => {
+    if (
+      (action.type !== "create_midi_clip" &&
+        action.type !== "create_arrangement_audio_clip") ||
+      action.laneIndex === undefined
+    ) return;
+    if (action.durationBeats === undefined) {
+      throw new Error("Take Lane Clip creation requires a known duration.");
+    }
+    const lane = actionObjects.get(index)?.takeLane;
+    if (!lane) throw new Error(`Could not bind Take Lane for action ${index + 1}.`);
+    const key = hostObjectHandleId(lane, "Take Lane");
+    const start = action.startBeat;
+    const end = start + action.durationBeats;
+    const previous = ranges.get(key) ?? [];
+    const overlap = previous.find(
+      (range) => start < range.end - tolerance && range.start < end - tolerance,
+    );
+    if (overlap) {
+      throw new Error(
+        `Actions ${overlap.actionNumber} and ${index + 1} create overlapping Clip ranges in the same Take Lane. Use non-overlapping ranges or separate confirmed stages.`,
+      );
+    }
+    previous.push({ actionNumber: index + 1, start, end });
+    ranges.set(key, previous);
+  });
 }
 
 type WritableBoundActionObjects = {

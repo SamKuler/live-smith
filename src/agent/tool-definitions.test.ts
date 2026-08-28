@@ -66,6 +66,18 @@ test("apply_live_actions exposes every validated action schema", () => {
   assert.equal(parameters.properties?.actions?.items?.anyOf?.length, actionTypes.length);
   assert.ok(parameters.properties?.targets?.additionalProperties);
   assert.equal(parameters.properties?.resolvesPriorFailure?.type, "boolean");
+
+  for (const type of ["create_midi_clip", "create_arrangement_audio_clip"]) {
+    const schema = agentActionJsonSchemas().find(
+      (candidate) =>
+        (candidate.properties as { type?: { enum?: string[] } }).type?.enum?.[0] === type,
+    );
+    const properties = schema?.properties as Record<string, Record<string, unknown>>;
+    assert.equal(properties.laneIndex?.type, "integer");
+    assert.equal(properties.laneIndex?.minimum, 0);
+    assert.equal(properties.laneIndex?.maximum, 4095);
+    assert.equal(properties.laneName?.type, "string");
+  }
 });
 
 test("Live tools expose object-aware inspection without raw filesystem inputs", () => {
@@ -75,6 +87,7 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
 
   for (const name of [
     "inspect_current_object",
+    "inspect_take_lane",
     "inspect_device_tree",
     "inspect_mixer",
     "inspect_clip",
@@ -97,6 +110,13 @@ test("Live tools expose object-aware inspection without raw filesystem inputs", 
   };
   assert.ok(inspectTree.properties?.itemOffset);
   assert.ok(inspectTree.properties?.parameterLimit);
+
+  const inspectLane = tools.get("inspect_take_lane")?.parameters as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  assert.ok(inspectLane.properties?.itemOffset);
+  assert.deepEqual(inspectLane.required, ["laneIndex"]);
 
   const inspectSong = tools.get("inspect_song_info")?.parameters as {
     properties?: Record<string, unknown>;

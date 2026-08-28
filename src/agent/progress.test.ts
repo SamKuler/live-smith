@@ -50,6 +50,14 @@ test("progress labels identify object-aware inspections", () => {
     "Inspecting selected Live object",
   );
   assert.equal(
+    progressLabelForToolCall({
+      id: "take-lane",
+      name: "inspect_take_lane",
+      arguments: '{"trackName":"Lead","laneIndex":2,"laneName":"Alternate"}',
+    }),
+    'Inspecting Take Lane 2 "Alternate" on "Lead"',
+  );
+  assert.equal(
     progressLabelForToolCall({ id: "song", name: "inspect_song_info", arguments: "{}" }),
     "Inspecting song settings and markers",
   );

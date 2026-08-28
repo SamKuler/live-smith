@@ -862,8 +862,9 @@ using it after an insertion would authorize a different sequential meaning.
 
 ### MIDI authoring and transforms
 
-Whole-Clip MIDI authoring uses `create_midi_clip` and accepts 0-4096 notes per
-action. An empty named Clip is the staging anchor for longer work.
+Whole-Clip main Arrangement-lane MIDI authoring uses `create_midi_clip` and
+accepts 0-4096 notes per action. An empty named Clip is the staging anchor for
+longer work.
 `replace_midi_clip_segment` then targets that exact arrangement Clip by track,
 name, and start beat. Notes are relative to the Clip; each segment removes only
 notes whose intervals overlap its range, preserves non-overlapping notes, and
@@ -880,6 +881,33 @@ transpose, start quantization, velocity scaling, or beat shifting locally. A
 transform writes the complete resulting note set only after validating every
 pitch, start, and end against MIDI and Clip bounds; invalid output performs no
 mutation. Optional SDK note fields are preserved unchanged.
+
+### Take Lane Clip creation
+
+`create_midi_clip` and `create_arrangement_audio_clip` can target an existing
+Take Lane with its zero-based lane index and an optional current-name guard.
+Without that locator, their original main Arrangement-lane behavior is
+unchanged. `inspect_take_lane` resolves the same guarded locator and pages exact
+Clip names, types, starts, durations, and MIDI note counts so the model can
+inspect every relevant range before proposing a write. Preflight binds the
+Track, Take Lane, any exact reusable named MIDI
+Clip, and the audio SampleSource before confirmation, then fingerprints the
+lane handle and name, the exact reusable MIDI Clip when present, and the audio
+SampleSource again inside the mutation queue. The requested range is separately
+rechecked for overlap; unrelated Clip changes elsewhere in the lane do not
+invalidate confirmation. MIDI creation requires a MIDI Track; audio creation
+requires an Audio Track and an explicit duration when it targets a Take Lane.
+
+Take Lane creation uses only an empty requested range. A named MIDI Clip with
+the exact name, start, and duration can instead be updated idempotently without
+calling the SDK creation method. Other overlap is rejected because the SDK does
+not define a safe replacement contract for Take Lane creation. Multiple writes
+to one bound lane in a plan must also have non-overlapping ranges. Creating a
+lane and then writing it is staged across apply, inspect, and apply calls; no
+new Lane reference system or Take Lane-specific Edit Scope is introduced.
+Take Lane MIDI is limited to one whole-Clip creation or exact named update of
+at most 4096 notes. Segment replacement and deterministic MIDI transforms keep
+their existing main Arrangement or Session Clip locators.
 
 ### Audio analysis and SDK limits
 

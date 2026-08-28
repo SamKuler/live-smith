@@ -125,7 +125,9 @@ function actionDiffRow(
     case "create_midi_clip":
       return {
         title: "Write MIDI",
-        row: `± Create or replace MIDI clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat} (${action.notes.length} notes, ${action.durationBeats} beats)`,
+        row: action.laneIndex === undefined
+          ? `± Create or replace MIDI clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat} (${action.notes.length} notes, ${action.durationBeats} beats)`
+          : `${action.name ? "± Create or update exact" : "+ Create"} MIDI clip "${action.name ?? "Untitled"}" in Take Lane ${action.laneIndex}${action.laneName ? ` "${action.laneName}"` : ""} on ${trackLabel(action, refLabels)} at beat ${action.startBeat} (${action.notes.length} notes, ${action.durationBeats} beats; empty range required for creation)`,
       };
     case "create_session_midi_clip":
       return {
@@ -160,7 +162,7 @@ function actionDiffRow(
     case "create_arrangement_audio_clip":
       return {
         title: "Write Audio",
-        row: `+ Arrangement audio clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat}${action.durationBeats ? ` (${action.durationBeats} beats)` : " (natural duration)"} from ${sourceLabel(action.source)}${audioSettingsLabel(action)}`,
+        row: `+ ${action.laneIndex === undefined ? "Arrangement" : `Take Lane ${action.laneIndex}${action.laneName ? ` "${action.laneName}"` : ""}`} audio clip "${action.name ?? "Untitled"}" on ${trackLabel(action, refLabels)} at beat ${action.startBeat}${action.durationBeats ? ` (${action.durationBeats} beats)` : " (natural duration)"} from ${sourceLabel(action.source)}${audioSettingsLabel(action)}${action.laneIndex === undefined ? "" : "; empty lane range required"}`,
       };
     case "create_session_audio_clip":
       return {

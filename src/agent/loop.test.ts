@@ -563,6 +563,46 @@ test("runAgentLoop supports inspect_song_info tool calls", async () => {
   assert.equal(result.message, "The tempo is 120 BPM.");
 });
 
+test("runAgentLoop passes an exact paged Take Lane inspection", async () => {
+  const observedRequests: unknown[] = [];
+
+  await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> =>
+      input.messages.length === 0
+        ? {
+            content: "I will inspect the alternate take.",
+            toolCalls: [{
+              id: "take-lane",
+              name: "inspect_take_lane",
+              arguments: JSON.stringify({
+                trackName: "Lead",
+                laneIndex: 2,
+                laneName: "Alternate",
+                itemOffset: 24,
+                itemLimit: 12,
+              }),
+            }],
+          }
+        : { content: "The requested range is empty.", toolCalls: [] },
+    observe: async (request) => {
+      observedRequests.push(request);
+      return "clips page: offset=24, shown=0, total=24, nextOffset=none";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => mutationOutcome([]),
+  });
+
+  assert.deepEqual(observedRequests, [{
+    type: "inspect_take_lane",
+    trackName: "Lead",
+    laneIndex: 2,
+    laneName: "Alternate",
+    itemOffset: 24,
+    itemLimit: 12,
+  }]);
+});
+
 test("runAgentLoop passes Warp Marker pagination to inspect_clip", async () => {
   const observedRequests: unknown[] = [];
 
@@ -2847,6 +2887,99 @@ test("completed actions cannot be resubmitted during partial-plan repair", async
   );
 });
 
+test("MIDI creation replay is allowed only after a reusable name was applied", async (t) => {
+  const namedAction = {
+    type: "create_midi_clip" as const,
+    trackName: "Lead",
+    laneIndex: 0,
+    laneName: "Alternate",
+    startBeat: 0,
+    durationBeats: 4,
+    name: "Alternate phrase",
+    notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 96 }],
+  };
+  const unnamedAction = {
+    ...namedAction,
+    name: undefined,
+  };
+  const scenarios = [
+    {
+      name: "name applied before notes failed",
+      action: namedAction,
+      completedKeys: [["live-action-step:retryable-named-midi-create"]],
+      mutationCount: 2,
+      expectedExecutions: 2,
+    },
+    {
+      name: "name assignment failed",
+      action: namedAction,
+      completedKeys: [],
+      mutationCount: 1,
+      expectedExecutions: 1,
+    },
+    {
+      name: "unnamed notes failed",
+      action: unnamedAction,
+      completedKeys: [],
+      mutationCount: 1,
+      expectedExecutions: 1,
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      let modelCalls = 0;
+      let executions = 0;
+      const result = await runAgentLoop({
+        maxConsecutiveFailures: 3,
+        askModel: async (): Promise<ModelTurn> => {
+          modelCalls += 1;
+          if (modelCalls <= 2) {
+            return {
+              content: modelCalls === 1 ? "Creating the Clip." : "Finishing its notes.",
+              toolCalls: [{
+                id: `take-lane-midi-${modelCalls}`,
+                name: "apply_live_actions",
+                arguments: JSON.stringify({
+                  message: "Write the alternate phrase",
+                  ...(modelCalls === 2 ? { resolvesPriorFailure: true } : {}),
+                  actions: [scenario.action],
+                }),
+              }],
+            };
+          }
+          return { content: "Done.", toolCalls: [] };
+        },
+        observe: async () => 'Track "Lead" Take Lane 0 "Alternate" clips=1',
+        preflightActions: async () => async () => undefined,
+        confirmActions: async () => true,
+        executeActions: async (plan) => {
+          executions += 1;
+          if (executions === 1) {
+            throw new AgentPartialCompletionError(
+              ['Created MIDI clip "Alternate phrase" in Take Lane 0.'],
+              new Error(`${scenario.name}.`),
+              0,
+              plan.actions[0],
+              "Lead",
+              scenario.completedKeys,
+              scenario.mutationCount,
+            );
+          }
+          return mutationOutcome(["Updated the exact named MIDI clip."]);
+        },
+      });
+
+      assert.equal(executions, scenario.expectedExecutions);
+      if (scenario.expectedExecutions === 2) {
+        assert.equal(result.message, "Done.");
+      } else {
+        assert.match(result.message, /unfinished Live work/i);
+      }
+    });
+  }
+});
+
 test("persisted completed-action digests block replay in a later loop", async () => {
   const completedAction = {
     type: "insert_device",
@@ -3048,6 +3181,78 @@ test("a failed automatic refresh gates mutations until an explicit inspection su
   assert.equal(result.message, "Delay is in place.");
   assert.deepEqual(executedDevices, ["Ping Pong Delay", "Delay"]);
   assert.equal(observationCalls, 3);
+});
+
+test("a Take Lane recovery inspection may add the observed name guard", async () => {
+  let modelCalls = 0;
+  let observationCalls = 0;
+  let executions = 0;
+  const action = {
+    type: "create_midi_clip" as const,
+    trackName: "Lead",
+    laneIndex: 2,
+    startBeat: 0,
+    durationBeats: 4,
+    notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 96 }],
+  };
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (): Promise<ModelTurn> => {
+      modelCalls += 1;
+      if (modelCalls === 1 || modelCalls === 3) {
+        return {
+          content: "Writing the alternate take.",
+          toolCalls: [{
+            id: `lane-apply-${modelCalls}`,
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Write the alternate take",
+              actions: [action],
+            }),
+          }],
+        };
+      }
+      if (modelCalls === 2) {
+        return {
+          content: "Checking the exact lane.",
+          toolCalls: [{
+            id: "lane-inspect",
+            name: "inspect_take_lane",
+            arguments: JSON.stringify({
+              trackName: "Lead",
+              laneIndex: 2,
+              laneName: "Alternate",
+            }),
+          }],
+        };
+      }
+      return { content: "Done.", toolCalls: [] };
+    },
+    observe: async () => {
+      observationCalls += 1;
+      if (observationCalls === 1) throw new Error("Refresh unavailable");
+      return 'Take Lane index 2 "Alternate" clips=0';
+    },
+    preflightActions: async () => async () => undefined,
+    confirmActions: async () => true,
+    executeActions: async (plan) => {
+      executions += 1;
+      if (executions === 1) {
+        throw new AgentPartialCompletionError(
+          [],
+          new Error("Take Lane write failed"),
+          0,
+          plan.actions[0],
+          "Lead",
+        );
+      }
+      return mutationOutcome(["Created the Take Lane MIDI Clip."]);
+    },
+  });
+
+  assert.equal(result.message, "Done.");
+  assert.equal(executions, 2);
+  assert.equal(observationCalls, 2);
 });
 
 test("parameter failure recovery refreshes the exact affected device", async () => {

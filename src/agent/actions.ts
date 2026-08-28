@@ -101,6 +101,12 @@ export type AgentObservationRequest =
     } & ObservationTrackSelector & ObservationItemPage & ObservationParameterPage)
   | ({ type: "inspect_mixer" } & ObservationTrackSelector)
   | ({
+      type: "inspect_take_lane";
+      trackName?: string;
+      laneIndex: number;
+      laneName?: string;
+    } & ObservationItemPage)
+  | ({
       type: "inspect_clip";
       trackName?: string;
       clipName?: string;
@@ -180,8 +186,6 @@ export function observationRequestForAction(
     case "delete_cue_point":
     case "set_tempo":
       return { type: "inspect_song_info" };
-    case "create_midi_clip":
-    case "create_arrangement_audio_clip":
     case "clear_arrangement_range":
     case "rename_track":
     case "delete_track":
@@ -190,9 +194,19 @@ export function observationRequestForAction(
     case "set_track_solo":
     case "set_track_arm":
     case "create_take_lane":
-    case "rename_take_lane":
     case "delete_clip":
       return { type: "inspect_track", ...optionalTrackName };
+    case "create_midi_clip":
+    case "create_arrangement_audio_clip":
+    case "rename_take_lane":
+      return action.laneIndex === undefined
+        ? { type: "inspect_track", ...optionalTrackName }
+        : {
+            type: "inspect_take_lane",
+            ...optionalTrackName,
+            laneIndex: action.laneIndex,
+            ...(action.laneName ? { laneName: action.laneName } : {}),
+          };
     case "insert_device":
       return {
         type: "inspect_track",
@@ -385,7 +399,7 @@ export function summarizeActionPlan(plan: AgentPlan): string {
 export function actionSystemPrompt(): string {
   return [
     "You are Live Smith, running inside Ableton Live with tools.",
-    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, inspect_midi_clip, and analyze_audio_clip to inspect the exact current Live state needed by the next edit.",
+    "Use inspect_current_object first when the Session was opened from a specific Live object. Use inspect_live_set, inspect_song_info, inspect_track, inspect_take_lane, inspect_device_tree, inspect_device, inspect_mixer, inspect_clip, inspect_midi_clip, and analyze_audio_clip to inspect the exact current Live state needed by the next edit.",
     "Observation collections and device parameters are paged. When a result reports nextOffset, call the same inspection again with the corresponding itemOffset, parameterOffset, or valueItemOffset until the exact target is visible. Never infer an omitted item.",
     "The Extensions SDK cannot list or search every built-in device available in the current Live edition. Device insertion validates an exact name only when Live executes it, and the beta SDK does not expose the rejection cause. If insertion fails, preserve the failure as cause-unknown, inspect the current device chain, and decide from observed state whether to adjust placement, retry after a state repair, choose another exact name, or explain that no safe repair is known.",
     "Use inspect_midi_clip before analyzing or rewriting MIDI harmony, melody, voicing, or chord correctness unless the exact notes are already in context. For long clips, follow noteOffset pagination until every note has been inspected.",
@@ -395,9 +409,10 @@ export function actionSystemPrompt(): string {
     'Return and Main tracks use explicit plan targets plus trackRef: {"trackRole":"return","trackIndex":0,"trackName":"A-Reverb"} or {"trackRole":"main","trackName":"Main"}. The name is an optional stale-state guard. These targets support only insert_device, set_device_parameter, duplicate_device, delete_device, and set_track_mixer_parameter; never use them for Clips, Take Lanes, Arm, mute/solo, rename, duplicate, or delete Track actions.',
     'Example for rename then edit in one call: {"message":"Build pads","targets":{"pads":{"trackName":"1-MIDI"}},"actions":[{"type":"rename_track","trackRef":"pads","newName":"Dream Pads"},{"type":"insert_device","trackRef":"pads","deviceName":"Auto Filter"}]}.',
     "Use one apply_live_actions call when every note and device choice is already known and one confirmation is appropriate.",
-    "For MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
+    "For main Arrangement-lane MIDI, use one whole-Clip create_midi_clip action when the complete result is known and fits within 4096 notes. For larger or staged work, first create one named empty full-duration Clip in its own apply_live_actions call, then inspect that exact Clip and use replace_midi_clip_segment for non-overlapping relative-time ranges in later calls.",
+    "To create a Clip in an existing Take Lane, add its observed 0-based laneIndex and optional current laneName guard to create_midi_clip or create_arrangement_audio_clip. Take Lane MIDI supports only one whole-Clip creation or exact named update of at most 4096 notes; segmented replacement and MIDI transforms remain limited to main Arrangement and Session Clips. Take Lane audio creation also requires durationBeats. The requested range must not overlap an existing Clip in that lane. Create a new Take Lane, inspect it, and write its Clip in a later staged apply call.",
     "replace_midi_clip_segment replaces every existing note that overlaps its range; it does not append. Each staged apply_live_actions call gets a separate confirmation and remains in the same Session. Never recreate the empty Clip or repeat a completed segment.",
-    "Use transpose_midi_notes, quantize_midi_notes, scale_midi_velocity, or shift_midi_notes for deterministic whole-Clip edits instead of regenerating unchanged notes. Each transform fails without mutation if any resulting pitch or note interval would leave the valid MIDI or Clip bounds.",
+    "Use transpose_midi_notes, quantize_midi_notes, scale_midi_velocity, or shift_midi_notes for deterministic whole-Clip edits of main Arrangement or Session Clips instead of regenerating unchanged notes. Each transform fails without mutation if any resulting pitch or note interval would leave the valid MIDI or Clip bounds.",
     "Use staged apply/inspect/apply calls when later edits require newly observed Live state; all stages stay in the same Session.",
     "When a track contains multiple top-level devices with the same name, use the 0-based deviceIndex shown by inspect_track. For Rack devices, use the complete devicePath shown by inspect_device_tree.",
     "A Drum Rack or Simpler inserted by exact device name is empty unless its sample content is configured. configure_drum_pad with mode fill_empty_pad only fills a new or device-empty pad. Replacing an occupied pad requires mode replace_existing_simpler plus the exact observed simplerPath and explicit confirmation. Use SampleSource values that refer to the selected Live object, an observed arrangement/session audio Clip, or an observed Simpler. Never request, infer, or emit a filesystem path.",
@@ -441,7 +456,9 @@ export function summarizeAgentAction(action: AgentAction): string {
     case "delete_cue_point":
       return `Delete Arrangement Cue Point${action.cueName ? ` "${action.cueName}"` : ""} at beat ${action.timeBeat}.`;
     case "create_midi_clip":
-      return `Create or replace MIDI clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} from beat ${action.startBeat} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
+      return action.laneIndex === undefined
+        ? `Create or replace MIDI clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} from beat ${action.startBeat} for ${action.durationBeats} beats with ${action.notes.length} notes.`
+        : `${action.name ? "Create or update exact" : "Create"} MIDI clip${action.name ? ` "${action.name}"` : ""} in Take Lane ${action.laneIndex}${action.laneName ? ` "${action.laneName}"` : ""} on ${targetTrack(action)} from beat ${action.startBeat} for ${action.durationBeats} beats with ${action.notes.length} notes; creating requires an empty lane range.`;
     case "create_session_midi_clip":
       return `Create or replace Session MIDI clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
     case "replace_midi_clip_segment":
@@ -471,7 +488,7 @@ export function summarizeAgentAction(action: AgentAction): string {
         ? `Fill empty MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`
         : `Replace the sample in Simpler at ${devicePathText(action.simplerPath!)} on MIDI note ${action.receivingNote} in Drum Rack "${action.rackName}"${action.rackPath ? ` at ${devicePathText(action.rackPath)}` : ""} on ${targetTrack(action)} using ${sampleSourceText(action.source)}.`;
     case "create_arrangement_audio_clip":
-      return `Create arrangement audio clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}${action.durationBeats ? ` for ${action.durationBeats} beats` : " at its natural duration"} using ${sampleSourceText(action.source)}${audioSettingsText(action)}.`;
+      return `Create ${action.laneIndex === undefined ? "arrangement" : `Take Lane ${action.laneIndex}${action.laneName ? ` "${action.laneName}"` : ""}`} audio clip${action.name ? ` "${action.name}"` : ""} on ${targetTrack(action)} at beat ${action.startBeat}${action.durationBeats ? ` for ${action.durationBeats} beats` : " at its natural duration"} using ${sampleSourceText(action.source)}${audioSettingsText(action)}${action.laneIndex === undefined ? "" : "; the lane range must be empty"}.`;
     case "create_session_audio_clip":
       return `Create or replace Session audio clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} using ${sampleSourceText(action.source)}${audioSettingsText(action)}. If the source, Warp state, or loop settings differ, delete the existing slot Clip before recreating it.`;
     case "set_tempo":
@@ -576,6 +593,21 @@ function clipPropertyText(action: Extract<AgentAction, { type: "set_clip_propert
 }
 
 function validateActionLocators(action: AgentAction): void {
+  if (
+    (action.type === "create_midi_clip" ||
+      action.type === "create_arrangement_audio_clip") &&
+    action.laneName !== undefined &&
+    action.laneIndex === undefined
+  ) {
+    throw new Error("laneName requires laneIndex.");
+  }
+  if (
+    action.type === "create_arrangement_audio_clip" &&
+    action.laneIndex !== undefined &&
+    action.durationBeats === undefined
+  ) {
+    throw new Error("Take Lane audio creation requires durationBeats.");
+  }
   if (
     (action.type === "set_device_parameter" ||
       action.type === "duplicate_device" ||
@@ -993,7 +1025,7 @@ function validateTrackReferenceGraph(
           kind !== "existing" && kind !== "return" && kind !== "main"
         ) {
           throw new Error(
-            `Action ${actionNumber} cannot perform this observed-state edit on newly created trackRef "${action.trackRef}" in the same call. Apply the creation, inspect the affected device or mixer, then use a staged apply call.`,
+            `Action ${actionNumber} cannot perform this observed-state edit on newly created trackRef "${action.trackRef}" in the same call. Apply the creation, inspect the affected Live object, then use a staged apply call.`,
           );
         }
       }
@@ -1119,7 +1151,10 @@ function requiresObservedExistingTrack(action: AgentAction): boolean {
     action.type === "set_audio_clip_warp" ||
     isMidiTransformAction(action) ||
     action.type === "delete_session_clip" ||
-    action.type === "rename_take_lane"
+    action.type === "rename_take_lane" ||
+    ((action.type === "create_midi_clip" ||
+      action.type === "create_arrangement_audio_clip") &&
+      action.laneIndex !== undefined)
   );
 }
 

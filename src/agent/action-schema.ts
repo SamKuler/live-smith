@@ -155,6 +155,12 @@ const actionDescriptors = {
     {
       trackName: optionalString(),
       trackRef: optionalRef(),
+      laneIndex: optionalIntegerInRange(
+        0,
+        4095,
+        "0-based existing Take Lane index. Omit for the track's main Arrangement lane.",
+      ),
+      laneName: optionalString("Optional expected current Take Lane name guard."),
       startBeat: requiredNumber(),
       durationBeats: requiredPositiveNumber(),
       name: optionalString(),
@@ -407,6 +413,12 @@ const actionDescriptors = {
     {
       trackName: optionalString(),
       trackRef: optionalRef(),
+      laneIndex: optionalIntegerInRange(
+        0,
+        4095,
+        "0-based existing Take Lane index. Omit for the track's main Arrangement lane.",
+      ),
+      laneName: optionalString("Optional expected current Take Lane name guard."),
       source: requiredSampleSource(),
       startBeat: requiredNumber(),
       durationBeats: optionalPositiveNumber(),
@@ -1155,6 +1167,22 @@ function requiredIntegerInRange(
   description?: string,
 ): ActionField<number, true> {
   return requiredField(
+    {
+      type: "integer",
+      minimum,
+      maximum,
+      ...(description ? { description } : {}),
+    },
+    (value, key) => integerInRange(value, key, minimum, maximum),
+  );
+}
+
+function optionalIntegerInRange(
+  minimum: number,
+  maximum: number,
+  description?: string,
+): ActionField<number, false> {
+  return optionalField(
     {
       type: "integer",
       minimum,

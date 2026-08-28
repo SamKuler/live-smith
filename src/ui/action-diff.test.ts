@@ -247,12 +247,32 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
       notes: [],
     },
     {
+      type: "create_midi_clip",
+      trackName: "Lead",
+      laneIndex: 2,
+      laneName: "Alternate",
+      startBeat: 8,
+      durationBeats: 4,
+      name: "Lead alt",
+      notes: [],
+    },
+    {
       type: "create_arrangement_audio_clip",
       trackName: "Audio",
       source: { kind: "selected" },
       startBeat: 16,
       durationBeats: 8,
       name: "Vocal",
+    },
+    {
+      type: "create_arrangement_audio_clip",
+      trackName: "Audio",
+      laneIndex: 1,
+      laneName: "Double",
+      source: { kind: "selected" },
+      startBeat: 24,
+      durationBeats: 8,
+      name: "Vocal double",
     },
     {
       type: "create_session_audio_clip",
@@ -296,11 +316,19 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
     /Session MIDI.*slot 1/i,
   );
   assert.match(
+    groups.find((group) => group.title === "Write MIDI")?.rows[1] ?? "",
+    /Lead alt.*Take Lane 2.*Alternate.*beat 8.*empty range/i,
+  );
+  assert.match(
     groups.find((group) => group.title === "Write Audio")?.rows[0] ?? "",
     /Vocal.*beat 16.*8 beats.*selected/i,
   );
   assert.match(
     groups.find((group) => group.title === "Write Audio")?.rows[1] ?? "",
+    /Take Lane 1.*Double.*Vocal double.*beat 24.*empty lane range/i,
+  );
+  assert.match(
+    groups.find((group) => group.title === "Write Audio")?.rows[2] ?? "",
     /create or replace.*Warped Loop.*slot 2.*warped=true.*loop=2-6.*deletes and recreates/i,
   );
   assert.match(

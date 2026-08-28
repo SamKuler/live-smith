@@ -118,6 +118,12 @@ New and historical Sessions without a saved scope selection use All. The scope c
 edits, not which Live information the assistant can read. Instruments and effects
 share Devices because the current SDK cannot reliably classify every device.
 
+Live Smith can write MIDI or audio Clips into an existing Take Lane after it
+has inspected that lane. Take Lane Clip content uses the MIDI or Audio scope;
+creating or renaming the lane itself uses Structure. A newly created lane must
+be inspected before a later request writes into it, and Live Smith refuses to
+create over an occupied range whose overlap behavior cannot be verified.
+
 Plans outside the selected scope are rejected before any action runs. Container
 operations also need permissions for their contents: deleting or duplicating a
 track requires structure and mixer permissions, plus the scopes of its Clips and

@@ -11,6 +11,7 @@ import {
   type Clip,
   type ClipSlot,
   type NoteDescription,
+  type TakeLane,
   type Track,
   type ExtensionContext,
 } from "@ableton-extensions/sdk";
@@ -30,6 +31,7 @@ import {
   resolveDeviceTarget,
 } from "./device-tree.js";
 import {
+  equalsLoose,
   findReusableMidiClip,
   resolveArrangementClip,
   resolveClipLocator,
@@ -481,11 +483,19 @@ async function executeAction(
         tracks,
         actionTracks,
       );
+      const lane = action.laneIndex === undefined
+        ? undefined
+        : bound?.takeLane ?? resolveTakeLane(
+            track,
+            action.laneIndex,
+            action.laneName,
+          );
+      const location = arrangementClipLocation(track, lane, action.laneIndex);
       if (action.name) {
         const existing = bound?.clip instanceof MidiClip
           ? bound.clip
           : findReusableMidiClip(
-              track,
+              lane?.clips ?? track.arrangementClips,
               action.name,
               action.startBeat,
               action.durationBeats,
@@ -493,36 +503,47 @@ async function executeAction(
         if (existing) {
           if (midiNotesEqual(existing.notes, action.notes)) {
             return noMutation(
-              `Kept existing MIDI clip "${existing.name}" on track "${track.name}" because its notes already match.`,
+              `Kept existing MIDI clip "${existing.name}" ${location} because its notes already match.`,
             );
           }
           existing.notes = action.notes;
-          return `Updated existing MIDI clip "${existing.name}" on track "${track.name}" with ${action.notes.length} notes.`;
+          return `Updated existing MIDI clip "${existing.name}" ${location} with ${action.notes.length} notes.`;
         }
       }
-      const trackName = safeObjectName(track, "unnamed MIDI track");
-      const clip = await track.createMidiClip(action.startBeat, action.durationBeats);
+      const clip = await (lane ?? track).createMidiClip(
+        action.startBeat,
+        action.durationBeats,
+      );
       const createdName = safeObjectName(clip, "unnamed MIDI clip");
       if (action.name) {
         try {
           clip.name = action.name;
         } catch (error) {
           throw new AgentPlanExecutionError(
-            [createdMidiClipResult(createdName, trackName, action.startBeat, action.durationBeats, `without applying requested name "${action.name}"`)],
+            [createdMidiClipResult(createdName, location, action.startBeat, action.durationBeats, `without applying requested name "${action.name}"`)],
             error,
           );
         }
       }
       const configuredName = safeObjectName(clip, createdName);
+      const hasReusableName = action.name !== undefined &&
+        equalsLoose(configuredName, action.name);
       try {
         clip.notes = action.notes;
       } catch (error) {
         throw new AgentPlanExecutionError(
-          [createdMidiClipResult(configuredName, trackName, action.startBeat, action.durationBeats, "without applying requested notes")],
+          [createdMidiClipResult(configuredName, location, action.startBeat, action.durationBeats, "without applying requested notes")],
           error,
+          undefined,
+          undefined,
+          undefined,
+          hasReusableName
+            ? [["live-action-step:retryable-named-midi-create"]]
+            : [],
+          action.name ? 2 : 1,
         );
       }
-      return `Created MIDI clip "${configuredName}" on track "${trackName}" with ${action.notes.length} notes.`;
+      return `Created MIDI clip "${configuredName}" ${location} with ${action.notes.length} notes.`;
     }
     case "create_session_midi_clip": {
       const track = midiTrackForAction(
@@ -762,9 +783,17 @@ async function executeAction(
         actionTracks,
       );
       const source = bound?.sampleSource ?? resolveSampleSource(context, action.source, target);
+      const lane = action.laneIndex === undefined
+        ? undefined
+        : bound?.takeLane ?? resolveTakeLane(
+            track,
+            action.laneIndex,
+            action.laneName,
+          );
+      const location = arrangementClipLocation(track, lane, action.laneIndex);
       let clip: AudioClip<"1.0.0">;
       try {
-        clip = await track.createAudioClip({
+        clip = await (lane ?? track).createAudioClip({
           filePath: source.filePath,
           startTime: action.startBeat,
           ...(action.durationBeats === undefined
@@ -785,13 +814,13 @@ async function executeAction(
         } catch (error) {
           throw new AgentPlanExecutionError(
             [
-              `Created arrangement audio clip "${createdName}" on track "${track.name}" at beat ${action.startBeat} without applying requested name "${action.name}".`,
+              `Created ${lane ? "Take Lane" : "arrangement"} audio clip "${createdName}" ${location} at beat ${action.startBeat} without applying requested name "${action.name}".`,
             ],
             error,
           );
         }
       }
-      return `Created arrangement audio clip "${safeObjectName(clip, createdName)}" from "${source.label}" on track "${track.name}" at beat ${action.startBeat}.`;
+      return `Created ${lane ? "Take Lane" : "arrangement"} audio clip "${safeObjectName(clip, createdName)}" from "${source.label}" ${location} at beat ${action.startBeat}.`;
     }
     case "create_session_audio_clip": {
       const track = audioTrackForAction(
@@ -1284,7 +1313,7 @@ function clipStepKey(
   location: number | string,
   step: string,
 ): string {
-  return `live-action-step:clip:${objectHandleKey(track, track.name)}:${location}:${step}`;
+  return `live-action-step:clip:${objectHandleKey(track, "track")}:${location}:${step}`;
 }
 
 function requireSessionSlot(
@@ -1508,12 +1537,22 @@ function audioTrackForAction(
 
 function createdMidiClipResult(
   clipName: string,
-  trackName: string,
+  location: string,
   startBeat: number,
   durationBeats: number,
   detail: string,
 ): string {
-  return `Created MIDI clip "${clipName}" on track "${trackName}" at beat ${startBeat} for ${durationBeats} beats ${detail}.`;
+  return `Created MIDI clip "${clipName}" ${location} at beat ${startBeat} for ${durationBeats} beats ${detail}.`;
+}
+
+function arrangementClipLocation(
+  track: Track<"1.0.0">,
+  lane: TakeLane<"1.0.0"> | undefined,
+  laneIndex: number | undefined,
+): string {
+  return lane
+    ? `in Take Lane ${laneIndex} "${safeObjectName(lane, "unnamed Take Lane")}" on track "${track.name}"`
+    : `on track "${track.name}"`;
 }
 
 function compareMidiNotes(left: NoteDescription, right: NoteDescription): number {
