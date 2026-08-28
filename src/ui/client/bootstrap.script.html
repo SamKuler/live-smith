@@ -596,7 +596,8 @@
             [
               "set_session_model_selection",
               "session_model_selection_refresh",
-              "profile_settings_refresh",
+              "global_state_refresh",
+              "event_stream_refresh",
             ].includes(composerOperationState.commandKind),
           );
           setAttributeIfChanged(modelSelect, "aria-busy", runtimeBusy);
@@ -1092,9 +1093,10 @@
           session_model_selection_refresh: {
             status: "Refreshing the Session model after an external change…",
           },
-          profile_settings_refresh: {
-            status: "Refreshing Profiles after an external change…",
+          global_state_refresh: {
+            status: "Refreshing settings and Skills after an external change…",
           },
+          event_stream_refresh: {},
           save_global_settings: {
             busyAriaLabel: "Saving follow-up behavior…",
             controlId: "defaultFollowUpBehavior",
@@ -1125,11 +1127,6 @@
           rename_session: { status: "Renaming Session…" },
           archive_session: { status: "Archiving Session…" },
           unarchive_session: { status: "Returning Session…" },
-          attach_selected_audio_source: {
-            busyAriaLabel: "Attaching selected Live audio…",
-            controlId: "attachSelectedAudioButton",
-            status: "Copying selected source audio…",
-          },
           set_session_skills: { status: "Updating Session Skills…" },
         };
         let activeCommandControl = null;

@@ -8,6 +8,8 @@ import type { DevicePath } from "../live/device-tree.js";
 
 export type { AgentAction } from "./action-schema.js";
 
+export const MAX_AGENT_PLAN_ACTIONS = 64;
+
 export type AgentPlanTarget =
   | { trackName: string; trackRole?: never; trackIndex?: never }
   | { trackRole: "return"; trackIndex: number; trackName?: string }
@@ -351,6 +353,11 @@ export function validateAgentPlan(response: unknown): AgentPlan {
   if (!response.actions.length) {
     throw new Error("Action plan requires at least one action.");
   }
+  if (response.actions.length > MAX_AGENT_PLAN_ACTIONS) {
+    throw new Error(
+      `Action plan supports at most ${MAX_AGENT_PLAN_ACTIONS} actions. Split larger changes into observed stages.`,
+    );
+  }
 
   for (const key of Object.keys(response)) {
     if (
@@ -452,6 +459,7 @@ export function actionSystemPrompt(): string {
     "Every factual premise that affects a Live mutation must be supported by evidence available in the current request context or obtained through a tool. If the required evidence is missing, use an available tool to obtain it; otherwise ask the user. Model memory is not evidence.",
     "If a tool result reports completed or reused actions after a failure, do not repeat those actions. Inspect the track and continue only with missing steps.",
     "While repairing an unfinished Apply, successful intermediate apply_live_actions calls remain part of the same recovery operation and their completed actions also become replay-protected. Set resolvesPriorFailure to true only on the final repair Apply that completes or safely replaces every missing step. Omit it while more repair work remains. Do not use it when no prior Live failure is active.",
+    "If the remaining unfinished operation should be abandoned, first complete the recovery observation required in the current request, then call resolve_live_recovery with an empty object. This always asks the user whether to keep completed changes and close the unfinished operation. It never undoes or mutates Live and cannot be approved automatically.",
     "Never guess parameter names. Use the exact names from observations, for example Auto Filter uses Env Amount / Env Attack / Env Release rather than Envelope.",
     "To modify Live, call apply_live_actions. The user will confirm before the extension executes those actions.",
     "After a tool result comes back, continue the loop: inspect more, apply actions, or provide a final concise answer.",

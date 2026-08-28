@@ -15,7 +15,6 @@ import {
   interactionContextForScope,
   type LiveInteractionContext,
 } from "../live/context.js";
-import { copySelectedAudioAttachmentSource } from "../live/audio-attachment-source.js";
 import {
   defaultModelCapabilities,
   defaultModelCapabilityEvidence,
@@ -172,6 +171,7 @@ import {
 import {
   publishProfileSettingsChange,
   subscribeProfileSettingsChanges,
+  type ProfileSettingsChange,
 } from "./profile-settings-events.js";
 import {
   capabilityPreviewForProfile,
@@ -187,6 +187,18 @@ import {
   continuableSessionsForScope,
   withSessionCreationScope,
 } from "./session-context.js";
+import {
+  claimSession,
+  releaseSessionClaims,
+  sessionIsClaimedByAnotherOwner,
+} from "./session-claims.js";
+import { resolveSkillContextInTransaction } from "./skill-context.js";
+import {
+  invalidateGlobalState,
+  invalidateSessionState,
+  subscribeGlobalStateInvalidations,
+  subscribeSessionStateInvalidations,
+} from "./session-state-events.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 import {
   SessionMutationFence,
@@ -211,6 +223,7 @@ type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
 const sessionIntentFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
+const requestConfigurationFence = new SessionMutationFence();
 
 function effectiveSessionModelSelection(
   profile: SavedProfile,
@@ -233,7 +246,6 @@ function effectiveSessionModelSelection(
 }
 
 export interface AgentFlowDependencies {
-  copySelectedAudioAttachmentSource?: typeof copySelectedAudioAttachmentSource;
   deleteSession?: typeof deleteSession;
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
@@ -277,6 +289,7 @@ export async function runAgentFlow(
   let status: string | undefined;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
+  const modalSessionOwner = Symbol("Live Smith modal Session owner");
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const modelCatalogLoadReceiptByConnection = new Map<string, string>();
   const codexCatalogGenerationByConnection = new Map<string, number>();
@@ -387,6 +400,34 @@ export async function runAgentFlow(
     signal,
     operation,
   );
+  const requestConfigurationFenceKey = sessionMutationFenceKey(
+    storageDirectory,
+    "request-configuration",
+  );
+  const notifySessionStateChanged = (sessionId: string): void => {
+    invalidateSessionState(storageDirectory, {
+      sessionId,
+      source: modalSessionOwner,
+    });
+  };
+  const notifyGlobalStateChanged = (): void => {
+    invalidateGlobalState(storageDirectory, { source: modalSessionOwner });
+  };
+  const runSessionStateChange = async <T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    try {
+      const result = await operation();
+      notifySessionStateChanged(sessionId);
+      return result;
+    } catch (error) {
+      if (isStorageCommitOutcomeUnknownError(error)) {
+        notifySessionStateChanged(sessionId);
+      }
+      throw error;
+    }
+  };
 
   const resolveSessionInteraction = (
     session: { id: string; scope: LiveInteractionContext["scope"] },
@@ -428,6 +469,7 @@ export async function runAgentFlow(
         projectKey,
         requestedSessionId,
         signal,
+        modalSessionOwner,
       );
       throwIfAborted(signal);
       if (
@@ -957,21 +999,25 @@ export async function runAgentFlow(
     throwIfAborted(signal);
     const runProfileSettingsMutation = async (
       operation: () => Promise<unknown>,
-    ): Promise<void> => {
-      try {
-        await operation();
-      } catch (error) {
-        if (isStorageCommitOutcomeUnknownError(error)) {
-          publishProfileSettingsChange(storageDirectory, {
-            commandId: commandContext.commandId,
-          });
+    ): Promise<void> => requestConfigurationFence.run(
+      requestConfigurationFenceKey,
+      signal,
+      async () => {
+        try {
+          await operation();
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) {
+            publishProfileSettingsChange(storageDirectory, {
+              commandId: commandContext.commandId,
+            });
+          }
+          throw error;
         }
-        throw error;
-      }
-      publishProfileSettingsChange(storageDirectory, {
-        commandId: commandContext.commandId,
-      });
-    };
+        publishProfileSettingsChange(storageDirectory, {
+          commandId: commandContext.commandId,
+        });
+      },
+    );
     if (commandInput.kind === "save_profile") {
       const settings = await loadAgentSettings(storageDirectory);
       const otherProfiles = settings.profiles.filter(
@@ -1182,79 +1228,101 @@ export async function runAgentFlow(
       commandInput.kind === "set_session_approval_mode" ||
       commandInput.kind === "set_session_edit_scopes"
     ) {
-      await withSessionIntent(commandInput.sessionId, signal, async () => {
-        if (commandInput.kind === "set_session_approval_mode") {
+      const sessionCommand = commandInput;
+      await withSessionIntent(sessionCommand.sessionId, signal, async () => {
+        if (sessionCommand.kind === "set_session_approval_mode") {
           await dependencies.beforeSessionApprovalCommit?.();
         } else {
           await dependencies.beforeSessionEditScopesCommit?.();
         }
-        try {
-          return await withStorageTransaction(
-            storageDirectory,
-            async (transaction) => {
-              throwIfAborted(signal);
-              const session = (await listSessionsInTransaction(
-                transaction,
-                storageDirectory,
-                projectKey,
-              )).find(
-                (candidate) =>
-                  candidate.id === commandInput.sessionId && !candidate.archivedAt,
-              );
-              if (!session) {
-                throw new ChatBridgeResourceNotFoundError(
-                  "That Session is not available in this Live Set.",
-                );
-              }
-              const updatedSession = await (
-                dependencies.updateSessionInTransaction ?? updateSessionInTransaction
-              )(
-                transaction,
-                storageDirectory,
-                session.id,
-                commandInput.kind === "set_session_approval_mode"
-                  ? { approvalMode: commandInput.approvalMode }
-                  : { editScopes: commandInput.editScopes },
-              );
-              if (commandInput.kind === "set_session_approval_mode") {
-                publishSessionApprovalModeChange(storageDirectory, {
-                  sessionId: commandInput.sessionId,
-                  approvalMode: commandInput.approvalMode,
-                  updatedAt: updatedSession.updatedAt,
-                });
-              } else {
-                publishSessionEditScopesChange(storageDirectory, {
-                  sessionId: commandInput.sessionId,
-                  editScopes: resolveEditScopes(updatedSession.editScopes),
-                  updatedAt: updatedSession.updatedAt,
-                });
-              }
-            },
-          );
-        } catch (error) {
-          if (
-            commandInput.kind === "set_session_edit_scopes" &&
-            isStorageCommitOutcomeUnknownError(error)
-          ) {
-            invalidateSessionEditScopes(storageDirectory, commandInput.sessionId);
-            // Hold the intent fence through readback so a later permission
-            // command cannot be attributed to this uncertain write.
+        await requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          signal,
+          async () => {
             try {
-              const current = (await listSessions(storageDirectory, projectKey)).find(
-                (candidate) => candidate.id === commandInput.sessionId && !candidate.archivedAt,
+              await withStorageTransaction(
+                storageDirectory,
+                async (transaction) => {
+                  throwIfAborted(signal);
+                  const session = (await listSessionsInTransaction(
+                    transaction,
+                    storageDirectory,
+                    projectKey,
+                  )).find(
+                    (candidate) =>
+                      candidate.id === sessionCommand.sessionId &&
+                      !candidate.archivedAt,
+                  );
+                  if (!session) {
+                    throw new ChatBridgeResourceNotFoundError(
+                      "That Session is not available in this Live Set.",
+                    );
+                  }
+                  const updatedSession = await (
+                    dependencies.updateSessionInTransaction ??
+                      updateSessionInTransaction
+                  )(
+                    transaction,
+                    storageDirectory,
+                    session.id,
+                    sessionCommand.kind === "set_session_approval_mode"
+                      ? { approvalMode: sessionCommand.approvalMode }
+                      : { editScopes: sessionCommand.editScopes },
+                  );
+                  if (sessionCommand.kind === "set_session_approval_mode") {
+                    publishSessionApprovalModeChange(storageDirectory, {
+                      sessionId: sessionCommand.sessionId,
+                      approvalMode: sessionCommand.approvalMode,
+                      updatedAt: updatedSession.updatedAt,
+                    });
+                  } else {
+                    publishSessionEditScopesChange(storageDirectory, {
+                      sessionId: sessionCommand.sessionId,
+                      editScopes: resolveEditScopes(updatedSession.editScopes),
+                      updatedAt: updatedSession.updatedAt,
+                    });
+                  }
+                },
               );
-              if (!current) throw new Error("Session permissions are unavailable.");
-              publishSessionEditScopesChange(storageDirectory, {
-                sessionId: current.id,
-                editScopes: resolveEditScopes(current.editScopes),
-                updatedAt: current.updatedAt,
-              });
-            } catch {
-              // Keep active requests unauthorized until a later successful read.
+            } catch (error) {
+              if (isStorageCommitOutcomeUnknownError(error)) {
+                notifySessionStateChanged(sessionCommand.sessionId);
+              }
+              if (
+                sessionCommand.kind === "set_session_edit_scopes" &&
+                isStorageCommitOutcomeUnknownError(error)
+              ) {
+                invalidateSessionEditScopes(
+                  storageDirectory,
+                  sessionCommand.sessionId,
+                );
+                // Hold both fences through readback so a later permission
+                // command cannot be attributed to this uncertain write.
+                try {
+                  const current = (
+                    await listSessions(storageDirectory, projectKey)
+                  ).find(
+                    (candidate) =>
+                      candidate.id === sessionCommand.sessionId &&
+                      !candidate.archivedAt,
+                  );
+                  if (!current) {
+                    throw new Error("Session permissions are unavailable.");
+                  }
+                  publishSessionEditScopesChange(storageDirectory, {
+                    sessionId: current.id,
+                    editScopes: resolveEditScopes(current.editScopes),
+                    updatedAt: current.updatedAt,
+                  });
+                } catch {
+                  // Keep active requests unauthorized until a later successful read.
+                }
+              }
+              throw error;
             }
-          }
-          throw error;
-        }
+            notifySessionStateChanged(sessionCommand.sessionId);
+          },
+        );
       });
       status = undefined;
       return buildStateAfterCommandMutation();
@@ -1388,89 +1456,98 @@ export async function runAgentFlow(
             await dependencies.beforeSessionModelSelectionCommit();
           }
 
-          const updatedSession = await withStorageTransaction(
-            storageDirectory,
-            async (transaction) => {
-              throwIfAborted(signal);
-              if (
-                managedGeneration !== undefined &&
-                modelAuthSendFence.authGeneration() !== managedGeneration
-              ) {
-                throw new ChatBridgeConflictError(
-                  "ChatGPT sign-in changed. Choose the model again.",
+          await requestConfigurationFence.run(
+            requestConfigurationFenceKey,
+            signal,
+            () => withStorageTransaction(
+              storageDirectory,
+              async (transaction) => {
+                throwIfAborted(signal);
+                if (
+                  managedGeneration !== undefined &&
+                  modelAuthSendFence.authGeneration() !== managedGeneration
+                ) {
+                  throw new ChatBridgeConflictError(
+                    "ChatGPT sign-in changed. Choose the model again.",
+                  );
+                }
+                const settings = await loadAgentSettings(storageDirectory);
+                const profile = requireActiveSavedProfile(settings);
+                if (
+                  profile.id !== initialProfile.id ||
+                  connectionFingerprint(profile) !==
+                    connectionFingerprint(initialProfile) ||
+                  !profile.models.some(
+                    (model) => model.model === commandInput.model,
+                  )
+                ) {
+                  throw new ChatBridgeConflictError(
+                    "The active Profile changed. Choose the model again.",
+                  );
+                }
+                const runtimeProfile = runtimeProfileForSavedProfile(
+                  profile,
+                  models,
+                  {
+                    model: commandInput.model,
+                    reasoningEffort: commandInput.reasoningEffort,
+                  },
                 );
-              }
-              const settings = await loadAgentSettings(storageDirectory);
-              const profile = requireActiveSavedProfile(settings);
-              if (
-                profile.id !== initialProfile.id ||
-                connectionFingerprint(profile) !==
-                  connectionFingerprint(initialProfile) ||
-                !profile.models.some(
-                  (model) => model.model === commandInput.model,
-                )
-              ) {
-                throw new ChatBridgeConflictError(
-                  "The active Profile changed. Choose the model again.",
+                if (
+                  commandInput.reasoningEffort !== null &&
+                  !runtimeProfile.capabilities.reasoning.efforts.includes(
+                    commandInput.reasoningEffort,
+                  )
+                ) {
+                  throw new ChatBridgeConflictError(
+                    `Reasoning effort ${commandInput.reasoningEffort} is not supported by this model.`,
+                  );
+                }
+                validateGenerationParameters(
+                  runtimeProfile,
+                  runtimeProfile.capabilities,
                 );
-              }
-              const runtimeProfile = runtimeProfileForSavedProfile(
-                profile,
-                models,
-                {
-                  model: commandInput.model,
-                  reasoningEffort: commandInput.reasoningEffort,
-                },
-              );
-              if (
-                commandInput.reasoningEffort !== null &&
-                !runtimeProfile.capabilities.reasoning.efforts.includes(
-                  commandInput.reasoningEffort,
-                )
-              ) {
-                throw new ChatBridgeConflictError(
-                  `Reasoning effort ${commandInput.reasoningEffort} is not supported by this model.`,
+                const session = (await listSessionsInTransaction(
+                  transaction,
+                  storageDirectory,
+                  projectKey,
+                )).find(
+                  (candidate) =>
+                    candidate.id === commandInput.sessionId &&
+                    !candidate.archivedAt,
                 );
-              }
-              validateGenerationParameters(
-                runtimeProfile,
-                runtimeProfile.capabilities,
-              );
-              const session = (await listSessionsInTransaction(
-                transaction,
-                storageDirectory,
-                projectKey,
-              )).find(
-                (candidate) =>
-                  candidate.id === commandInput.sessionId &&
-                  !candidate.archivedAt,
-              );
-              if (!session) {
-                throw new ChatBridgeResourceNotFoundError(
-                  "That Session is not available in this Live Set.",
+                if (!session) {
+                  throw new ChatBridgeResourceNotFoundError(
+                    "That Session is not available in this Live Set.",
+                  );
+                }
+                const updated = await updateSessionInTransaction(
+                  transaction,
+                  storageDirectory,
+                  session.id,
+                  { modelSelection: savedSelection },
                 );
-              }
-              return updateSessionInTransaction(
-                transaction,
-                storageDirectory,
-                session.id,
-                {
+                publishSessionModelSelectionChange(storageDirectory, {
+                  sessionId: commandInput.sessionId,
                   modelSelection: savedSelection,
-                },
-              );
-            },
+                  updatedAt: updated.updatedAt,
+                });
+                notifySessionStateChanged(commandInput.sessionId);
+                return updated;
+              },
+            ),
           );
-          publishSessionModelSelectionChange(storageDirectory, {
-            sessionId: commandInput.sessionId,
-            modelSelection: savedSelection,
-            updatedAt: updatedSession.updatedAt,
-          });
           status = undefined;
           openSettingsOnLoad = false;
           return buildStateAfterCommandMutation(undefined, {
             heldSessionId: commandInput.sessionId,
             sessionMutationHeld: true,
           });
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) {
+            notifySessionStateChanged(commandInput.sessionId);
+          }
+          throw error;
         } finally {
           releaseManagedSelection?.();
         }
@@ -1512,6 +1589,8 @@ export async function runAgentFlow(
         selectionInteractionsBySessionId.set(session.id, activeInteraction);
         bindInvocationSelectionToNextSession = false;
       }
+      claimSession(storageDirectory, session.id, modalSessionOwner);
+      if (!reused) notifySessionStateChanged(session.id);
       activeSessionId = session.id;
       status = reused ? "Empty session ready." : "New session created.";
       openSettingsOnLoad = false;
@@ -1519,15 +1598,27 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "select_session") {
-      if (!(await sessionBelongsToProject(commandInput.sessionId))) {
+      const selectedState = await withSessionMutation(
+        commandInput.sessionId,
+        signal,
+        async () => {
+          if (!(await sessionBelongsToProject(commandInput.sessionId))) return undefined;
+          throwIfAborted(signal);
+          claimSession(storageDirectory, commandInput.sessionId, modalSessionOwner);
+          activeSessionId = commandInput.sessionId;
+          status = undefined;
+          openSettingsOnLoad = false;
+          const state = await buildStateWhileHoldingSessionMutation(
+            commandInput.sessionId,
+          );
+          return state;
+        },
+      );
+      if (!selectedState) {
         status = "That session is not available in this Live Set.";
         return buildState();
       }
-      throwIfAborted(signal);
-      activeSessionId = commandInput.sessionId;
-      status = undefined;
-      openSettingsOnLoad = false;
-      return buildStateAfterCommandMutation();
+      return selectedState;
     }
 
     if (commandInput.kind === "restore_session") {
@@ -1544,16 +1635,20 @@ export async function runAgentFlow(
         ).find((session) => session.id === commandInput.sessionId);
         if (!candidate) return null;
         throwIfAborted(signal);
-        return restoreSession(
-          storageDirectory,
+        return runSessionStateChange(
           candidate.id,
-          { projectKey, scope: continueInteraction.scope },
+          () => restoreSession(
+            storageDirectory,
+            candidate.id,
+            { projectKey, scope: continueInteraction.scope },
+          ),
         );
       });
       if (!restored) {
         status = "That historical Session cannot continue on the current Live object.";
         return buildState();
       }
+      claimSession(storageDirectory, restored.id, modalSessionOwner);
       activeSessionId = restored.id;
       if (continueInteraction.selectionContext) {
         selectionInteractionsBySessionId.set(restored.id, continueInteraction);
@@ -1580,6 +1675,7 @@ export async function runAgentFlow(
           } catch (cause) {
             if (isStorageCommitOutcomeUnknownError(cause)) {
               pendingSessionCleanup.add(commandInput.sessionId);
+              notifySessionStateChanged(commandInput.sessionId);
               throw new ChatBridgeCommandOutcomeUnknownError(
                 "Session deletion storage could not be confirmed.",
                 { cause },
@@ -1602,11 +1698,13 @@ export async function runAgentFlow(
           pendingSessionCleanup.delete(commandInput.sessionId);
         } catch (cause) {
           pendingSessionCleanup.add(commandInput.sessionId);
+          notifySessionStateChanged(commandInput.sessionId);
           throw new ChatBridgeCommandOutcomeUnknownError(
             "The Session was deleted, but associated data cleanup could not be confirmed.",
             { cause },
           );
         }
+        notifySessionStateChanged(commandInput.sessionId);
       });
       if (!existed) {
         status = "That Session no longer exists.";
@@ -1621,10 +1719,13 @@ export async function runAgentFlow(
       const renamed = await withSessionMutation(commandInput.sessionId, signal, async () => {
         if (!(await sessionExists(commandInput.sessionId))) return false;
         throwIfAborted(signal);
-        await updateSession(
-          storageDirectory,
+        await runSessionStateChange(
           commandInput.sessionId,
-          { title: commandInput.title },
+          () => updateSession(
+            storageDirectory,
+            commandInput.sessionId,
+            { title: commandInput.title },
+          ),
         );
         return true;
       });
@@ -1645,10 +1746,13 @@ export async function runAgentFlow(
       const changed = await withSessionMutation(commandInput.sessionId, signal, async () => {
         if (!(await sessionExists(commandInput.sessionId))) return false;
         throwIfAborted(signal);
-        await setSessionArchived(
-          storageDirectory,
+        await runSessionStateChange(
           commandInput.sessionId,
-          archived,
+          () => setSessionArchived(
+            storageDirectory,
+            commandInput.sessionId,
+            archived,
+          ),
         );
         return true;
       });
@@ -1662,85 +1766,6 @@ export async function runAgentFlow(
       status = archived ? "Session archived." : "Session returned to the list.";
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
-    }
-
-    if (commandInput.kind === "attach_selected_audio_source") {
-      return withSessionMutation(commandInput.sessionId, signal, async () => {
-        try {
-          throwIfAborted(signal);
-          const session = await attachmentSession(commandInput.sessionId);
-          const sessionInteraction = resolveSessionInteraction(session);
-          if (!sessionInteraction) {
-            throw new ChatBridgeResourceNotFoundError(
-              "The current Live source for this Session is unavailable.",
-            );
-          }
-          const events = await loadSessionEvents(
-            storageDirectory,
-            commandInput.sessionId,
-          );
-          const pending = await listPendingSessionAttachments(
-            storageDirectory,
-            commandInput.sessionId,
-            consumedAttachmentIds(events),
-          );
-          const source = await (
-            dependencies.copySelectedAudioAttachmentSource ??
-            copySelectedAudioAttachmentSource
-          )({
-            context,
-            target: sessionInteraction.target,
-            signal,
-          });
-          throwIfAborted(signal);
-          await saveSessionAttachment(
-            storageDirectory,
-            commandInput.sessionId,
-            {
-              fileName: source.fileName,
-              bytes: source.bytes,
-              claimedMediaType: source.inspection.mediaType,
-              signal,
-            },
-            {
-              preSavePendingAttachmentRefs: pending.map(
-                sessionAttachmentRefFromStored,
-              ),
-            },
-          );
-        } catch (error) {
-          if (isStorageCommitOutcomeUnknownError(error)) {
-            status = "Selected audio source attachment requires verification.";
-            openSettingsOnLoad = false;
-            let authoritativeState: ChatDialogState | undefined;
-            try {
-              authoritativeState = await buildStateWhileHoldingSessionMutation(
-                commandInput.sessionId,
-              );
-            } catch {
-              authoritativeState = undefined;
-            }
-            throw new ChatBridgeCommandOutcomeUnknownError(
-              "The selected audio source may have been attached, but its final state could not be confirmed.",
-              { cause: error, authoritativeState },
-            );
-          }
-          throwIfAborted(signal);
-          throwMappedSelectedAudioSourceError(error);
-        }
-        status = "Selected audio source attached.";
-        openSettingsOnLoad = false;
-        try {
-          return await buildStateWhileHoldingSessionMutation(
-            commandInput.sessionId,
-          );
-        } catch (cause) {
-          throw new ChatBridgeCommandOutcomeUnknownError(
-            "The selected audio source was attached, but the resulting Live Smith state could not be confirmed.",
-            { cause, authoritativeState: undefined },
-          );
-        }
-      });
     }
 
     if (commandInput.kind === "set_session_skills") {
@@ -1760,59 +1785,68 @@ export async function runAgentFlow(
         signal,
         async () => {
           try {
-            await withStorageTransaction(
-              storageDirectory,
-              async (transaction) => {
-                throwIfAborted(signal);
-                const sessions = await listSessionsInTransaction(
-                  transaction,
+            await requestConfigurationFence.run(
+              requestConfigurationFenceKey,
+              signal,
+              () => runSessionStateChange(
+                commandInput.sessionId,
+                () => withStorageTransaction(
                   storageDirectory,
-                );
-                const session = sessions.find(
-                  (candidate) => candidate.id === commandInput.sessionId,
-                );
-                if (!session) {
-                  throw new ChatBridgeResourceNotFoundError(
-                    "That Session does not exist.",
-                  );
-                }
-                const installed = await listInstalledSkillsInTransaction(
-                  transaction,
-                  storageDirectory,
-                );
-                const availableIds = new Set(
-                  availableSkillSummaries(installed).map((skill) => skill.id),
-                );
-                const unavailable = requestedSkillIds.find(
-                  (skillId) => !availableIds.has(skillId),
-                );
-                if (unavailable !== undefined) {
-                  throw new ChatBridgeSkillValidationError(
-                    `Skill ${unavailable} is not available.`,
-                  );
-                }
+                  async (transaction) => {
+                    throwIfAborted(signal);
+                    const sessions = await listSessionsInTransaction(
+                      transaction,
+                      storageDirectory,
+                    );
+                    const session = sessions.find(
+                      (candidate) => candidate.id === commandInput.sessionId,
+                    );
+                    if (!session) {
+                      throw new ChatBridgeResourceNotFoundError(
+                        "That Session does not exist.",
+                      );
+                    }
+                    const installed = await listInstalledSkillsInTransaction(
+                      transaction,
+                      storageDirectory,
+                    );
+                    const availableIds = new Set(
+                      availableSkillSummaries(installed).map(
+                        (skill) => skill.id,
+                      ),
+                    );
+                    const unavailable = requestedSkillIds.find(
+                      (skillId) => !availableIds.has(skillId),
+                    );
+                    if (unavailable !== undefined) {
+                      throw new ChatBridgeSkillValidationError(
+                        `Skill ${unavailable} is not available.`,
+                      );
+                    }
 
-                const currentSkillIds = session.activeSkillIds ?? [];
-                const removalOnly = requestedSkillIds.every(
-                  (skillId) => currentSkillIds.includes(skillId),
-                );
-                if (
-                  (session.archivedAt !== undefined ||
-                    session.projectKey !== projectKey) &&
-                  !removalOnly
-                ) {
-                  throw new ChatBridgeConflictError(
-                    "Archived or historical Sessions only allow removing active Skills.",
-                  );
-                }
-                throwIfAborted(signal);
-                await updateSessionInTransaction(
-                  transaction,
-                  storageDirectory,
-                  session.id,
-                  { activeSkillIds: requestedSkillIds },
-                );
-              },
+                    const currentSkillIds = session.activeSkillIds ?? [];
+                    const removalOnly = requestedSkillIds.every(
+                      (skillId) => currentSkillIds.includes(skillId),
+                    );
+                    if (
+                      (session.archivedAt !== undefined ||
+                        session.projectKey !== projectKey) &&
+                      !removalOnly
+                    ) {
+                      throw new ChatBridgeConflictError(
+                        "Archived or historical Sessions only allow removing active Skills.",
+                      );
+                    }
+                    throwIfAborted(signal);
+                    await updateSessionInTransaction(
+                      transaction,
+                      storageDirectory,
+                      session.id,
+                      { activeSkillIds: requestedSkillIds },
+                    );
+                  },
+                ),
+              ),
             );
           } catch (error) {
             if (
@@ -1972,6 +2006,11 @@ export async function runAgentFlow(
       sessionScopeKey(session.scope) === sessionScopeKey(scope)
     );
     for (const candidate of candidates) {
+      if (sessionIsClaimedByAnotherOwner(
+        storageDirectory,
+        candidate.id,
+        modalSessionOwner,
+      )) continue;
       const mutationKey = sessionMutationFenceKey(
         storageDirectory,
         candidate.id,
@@ -2010,7 +2049,10 @@ export async function runAgentFlow(
           },
         ),
       );
-      if (reusable) return reusable;
+      if (reusable) {
+        claimSession(storageDirectory, reusable.id, modalSessionOwner);
+        return reusable;
+      }
     }
     return undefined;
   };
@@ -2128,22 +2170,25 @@ export async function runAgentFlow(
       }
       throwIfAborted(signal);
       try {
-        await saveSessionAttachment(
-          storageDirectory,
+        await runSessionStateChange(
           input.sessionId,
-          {
-            fileName: input.fileName,
-            bytes: input.bytes,
-            ...(input.claimedMediaType === undefined
-              ? {}
-              : { claimedMediaType: input.claimedMediaType }),
-            signal,
-          },
-          {
-            preSavePendingAttachmentRefs: pending.map(
-              sessionAttachmentRefFromStored,
-            ),
-          },
+          () => saveSessionAttachment(
+            storageDirectory,
+            input.sessionId,
+            {
+              fileName: input.fileName,
+              bytes: input.bytes,
+              ...(input.claimedMediaType === undefined
+                ? {}
+                : { claimedMediaType: input.claimedMediaType }),
+              signal,
+            },
+            {
+              preSavePendingAttachmentRefs: pending.map(
+                sessionAttachmentRefFromStored,
+              ),
+            },
+          ),
         );
       } catch (error) {
         throwMappedAttachmentError(error);
@@ -2182,10 +2227,13 @@ export async function runAgentFlow(
       }
       throwIfAborted(signal);
       try {
-        await deleteSessionAttachment(
-          storageDirectory,
+        await runSessionStateChange(
           input.sessionId,
-          input.attachmentId,
+          () => deleteSessionAttachment(
+            storageDirectory,
+            input.sessionId,
+            input.attachmentId,
+          ),
         );
       } catch (error) {
         if (error instanceof AttachmentNotFoundError) {
@@ -2227,74 +2275,85 @@ export async function runAgentFlow(
     }
     const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
     let installed: InstalledSkill | undefined;
-    try {
-      installed = await withStorageTransaction(
-        storageDirectory,
-        async (transaction) => {
-          throwIfAborted(signal);
-          const existing = (await listInstalledSkillsInTransaction(
-            transaction,
-            storageDirectory,
-          )).find((skill) => skill.id === definition.id);
-          if (existing === undefined && isBuiltInSkillId(definition.id)) {
-            throw new ChatBridgeSkillValidationError(
-              `Built-in Skill ${definition.id} is read-only and cannot be installed or replaced.`,
-            );
-          }
-          if (existing?.sha256 === expectedSha256) return existing;
-          if (existing !== undefined && !input.replace) {
-            throw new ChatBridgeConflictError(
-              `Skill ${definition.id} is already installed. Confirm replacement to change it.`,
-            );
-          }
-          throwIfAborted(signal);
-          return installSkillInTransaction(
-            transaction,
-            storageDirectory,
-            bytes,
-            { replace: input.replace },
-          );
-        },
-      );
-    } catch (error) {
-      if (isStorageCommitOutcomeUnknownError(error)) {
+    let catalogChanged = false;
+    await requestConfigurationFence.run(
+      requestConfigurationFenceKey,
+      signal,
+      async () => {
+        let invalidationPublished = false;
+        const publishInvalidation = () => {
+          if (invalidationPublished) return;
+          invalidationPublished = true;
+          notifyGlobalStateChanged();
+        };
         try {
-          installed = (await listInstalledSkills(
+          installed = await withStorageTransaction(
             storageDirectory,
-          )).find((skill) =>
-            skill.id === definition.id && skill.sha256 === expectedSha256
+            async (transaction) => {
+              throwIfAborted(signal);
+              const existing = (await listInstalledSkillsInTransaction(
+                transaction,
+                storageDirectory,
+              )).find((skill) => skill.id === definition.id);
+              if (existing === undefined && isBuiltInSkillId(definition.id)) {
+                throw new ChatBridgeSkillValidationError(
+                  `Built-in Skill ${definition.id} is read-only and cannot be installed or replaced.`,
+                );
+              }
+              if (existing?.sha256 === expectedSha256) return existing;
+              if (existing !== undefined && !input.replace) {
+                throw new ChatBridgeConflictError(
+                  `Skill ${definition.id} is already installed. Confirm replacement to change it.`,
+                );
+              }
+              throwIfAborted(signal);
+              const next = await installSkillInTransaction(
+                transaction,
+                storageDirectory,
+                bytes,
+                { replace: input.replace },
+              );
+              catalogChanged = true;
+              return next;
+            },
           );
-        } catch {
-          installed = undefined;
-        }
-        if (installed === undefined) {
-          let authoritativeState: ChatDialogState | undefined;
-          try {
-            authoritativeState = await buildState();
-          } catch {
-            authoritativeState = undefined;
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) {
+            publishInvalidation();
+            try {
+              installed = (await listInstalledSkills(
+                storageDirectory,
+              )).find((skill) =>
+                skill.id === definition.id && skill.sha256 === expectedSha256
+              );
+            } catch {
+              installed = undefined;
+            }
+            if (installed === undefined) {
+              throw new ChatBridgeCommandOutcomeUnknownError(
+                "The Skill may have been installed, but its final state could not be confirmed.",
+                { cause: error },
+              );
+            }
+          } else if (
+            error instanceof ChatBridgeConflictError ||
+            error instanceof ChatBridgeSkillValidationError
+          ) {
+            throw error;
+          } else if (error instanceof SkillStorageCorruptionError) {
+            throw new ChatBridgeSkillValidationError(
+              "Installed Skill storage is invalid and was not changed.",
+            );
+          } else {
+            throwIfAborted(signal);
+            throw new ChatBridgeSkillValidationError(
+              "The Skill could not be installed or replaced.",
+            );
           }
-          throw new ChatBridgeCommandOutcomeUnknownError(
-            "The Skill may have been installed, but its final state could not be confirmed.",
-            { cause: error, authoritativeState },
-          );
         }
-      } else if (
-        error instanceof ChatBridgeConflictError ||
-        error instanceof ChatBridgeSkillValidationError
-      ) {
-        throw error;
-      } else if (error instanceof SkillStorageCorruptionError) {
-        throw new ChatBridgeSkillValidationError(
-          "Installed Skill storage is invalid and was not changed.",
-        );
-      } else {
-        throwIfAborted(signal);
-        throw new ChatBridgeSkillValidationError(
-          "The Skill could not be installed or replaced.",
-        );
-      }
-    }
+        if (catalogChanged) publishInvalidation();
+      },
+    );
     if (installed === undefined) {
       throw new ChatBridgeSkillValidationError(
         "The Skill installation could not be confirmed.",
@@ -2316,69 +2375,77 @@ export async function runAgentFlow(
       throw new ChatBridgeSkillValidationError("Skill ID is invalid.");
     }
     let deleted = false;
-    try {
-      await withStorageTransaction(
-        storageDirectory,
-        async (transaction) => {
-          throwIfAborted(signal);
-          const existing = (await listInstalledSkillsInTransaction(
-            transaction,
+    await requestConfigurationFence.run(
+      requestConfigurationFenceKey,
+      signal,
+      async () => {
+        let invalidationPublished = false;
+        const publishInvalidation = () => {
+          if (invalidationPublished) return;
+          invalidationPublished = true;
+          notifyGlobalStateChanged();
+        };
+        try {
+          await withStorageTransaction(
             storageDirectory,
-          )).some((skill) => skill.id === input.skillId);
-          if (!existing) return;
-          const sessions = await listSessionsInTransaction(
-            transaction,
-            storageDirectory,
+            async (transaction) => {
+              throwIfAborted(signal);
+              const existing = (await listInstalledSkillsInTransaction(
+                transaction,
+                storageDirectory,
+              )).some((skill) => skill.id === input.skillId);
+              if (!existing) return;
+              const sessions = await listSessionsInTransaction(
+                transaction,
+                storageDirectory,
+              );
+              if (sessions.some((session) =>
+                session.activeSkillIds?.includes(input.skillId)
+              )) {
+                throw new ChatBridgeConflictError(
+                  "Remove this Skill from every Session before deleting it.",
+                );
+              }
+              throwIfAborted(signal);
+              await deleteInstalledSkillInTransaction(
+                transaction,
+                storageDirectory,
+                input.skillId,
+              );
+              deleted = true;
+            },
           );
-          if (sessions.some((session) =>
-            session.activeSkillIds?.includes(input.skillId)
-          )) {
-            throw new ChatBridgeConflictError(
-              "Remove this Skill from every Session before deleting it.",
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) {
+            publishInvalidation();
+            try {
+              const stillInstalled = (await listInstalledSkills(
+                storageDirectory,
+              )).some((skill) => skill.id === input.skillId);
+              if (!stillInstalled) deleted = true;
+              else throw error;
+            } catch (reconciliationError) {
+              throw new ChatBridgeCommandOutcomeUnknownError(
+                "The Skill may have been deleted, but its final state could not be confirmed.",
+                { cause: reconciliationError },
+              );
+            }
+          } else if (error instanceof ChatBridgeConflictError) {
+            throw error;
+          } else if (error instanceof SkillStorageCorruptionError) {
+            throw new ChatBridgeSkillValidationError(
+              "Installed Skill storage is invalid and was not changed.",
+            );
+          } else {
+            throwIfAborted(signal);
+            throw new ChatBridgeSkillValidationError(
+              "The Skill could not be deleted.",
             );
           }
-          throwIfAborted(signal);
-          await deleteInstalledSkillInTransaction(
-            transaction,
-            storageDirectory,
-            input.skillId,
-          );
-          deleted = true;
-        },
-      );
-    } catch (error) {
-      if (isStorageCommitOutcomeUnknownError(error)) {
-        try {
-          const stillInstalled = (await listInstalledSkills(
-            storageDirectory,
-          )).some((skill) => skill.id === input.skillId);
-          if (!stillInstalled) deleted = true;
-          else throw error;
-        } catch (reconciliationError) {
-          let authoritativeState: ChatDialogState | undefined;
-          try {
-            authoritativeState = await buildState();
-          } catch {
-            authoritativeState = undefined;
-          }
-          throw new ChatBridgeCommandOutcomeUnknownError(
-            "The Skill may have been deleted, but its final state could not be confirmed.",
-            { cause: reconciliationError, authoritativeState },
-          );
         }
-      } else if (error instanceof ChatBridgeConflictError) {
-        throw error;
-      } else if (error instanceof SkillStorageCorruptionError) {
-        throw new ChatBridgeSkillValidationError(
-          "Installed Skill storage is invalid and was not changed.",
-        );
-      } else {
-        throwIfAborted(signal);
-        throw new ChatBridgeSkillValidationError(
-          "The Skill could not be deleted.",
-        );
-      }
-    }
+        if (deleted) publishInvalidation();
+      },
+    );
     status = deleted
       ? `Skill ${input.skillId} deleted.`
       : `Skill ${input.skillId} is already absent.`;
@@ -2402,18 +2469,33 @@ export async function runAgentFlow(
       let releaseModelAuthFence: (() => void) | undefined;
       try {
         throwIfAborted(signal);
-        const requestSnapshot = await withStorageTransaction(
-          storageDirectory,
-          async (transaction) => {
-            const session = (await listSessionsInTransaction(
-              transaction,
+        const requestSnapshot = await requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          signal,
+          async () => {
+            const snapshot = await withStorageTransaction(
               storageDirectory,
-              projectKey,
-            )).find((entry) =>
-              entry.id === sendInput.sessionId && !entry.archivedAt
+              async (transaction) => {
+                const session = (await listSessionsInTransaction(
+                  transaction,
+                  storageDirectory,
+                  projectKey,
+                )).find((entry) =>
+                  entry.id === sendInput.sessionId && !entry.archivedAt
+                );
+                const settings = await loadAgentSettings(storageDirectory);
+                const skillContext = session === undefined
+                  ? undefined
+                  : await resolveSkillContextInTransaction(transaction, {
+                      storageDirectory,
+                      sessionSkillIds: session.activeSkillIds ?? [],
+                      prompt,
+                    });
+                return { session, settings, skillContext };
+              },
             );
-            const settings = await loadAgentSettings(storageDirectory);
-            return { session, settings };
+            sendContext.assertStateCoverageCurrent();
+            return snapshot;
           },
         );
         const session = requestSnapshot.session;
@@ -2535,6 +2617,9 @@ export async function runAgentFlow(
             session.id,
             {
               signal,
+              ...(requestSnapshot.skillContext === undefined
+                ? {}
+                : { skillContextSnapshot: requestSnapshot.skillContext }),
               steering,
               steeringSendId: sendContext.sendId,
               onDelta: (delta) => stream.assistantDelta(delta),
@@ -2542,7 +2627,13 @@ export async function runAgentFlow(
               onModelTurnAccepted: (usage) => stream.modelTurnAccepted(usage),
               onProgress: (message) => stream.progress(message),
               onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
-              onSessionEvent: (event) => stream.sessionEvent(event),
+              onSessionEvent: (event) => {
+                notifySessionStateChanged(session.id);
+                return stream.sessionEvent(event);
+              },
+              onSessionStateInvalidated: () => {
+                notifySessionStateChanged(session.id);
+              },
               withActionExecutionLock: (operation) =>
                 liveMutationQueue.run(signal, operation),
               confirmActions: (plan) => decidePlanApproval(
@@ -2550,10 +2641,17 @@ export async function runAgentFlow(
                 session.id,
                 plan,
                 () => stream.requestConfirmation({
+                  kind: "apply",
                   message: plan.message,
                   groups: actionDiffGroups(plan.actions, plan.targets),
                 }),
               ),
+              confirmRecoveryResolution: (message) =>
+                stream.requestConfirmation({
+                  kind: "resolve_recovery",
+                  message,
+                  groups: [],
+                }),
             },
             requestTurn,
           );
@@ -2578,6 +2676,7 @@ export async function runAgentFlow(
         steering.close(new SteeringClosedError(
           "The active send ended before steering was accepted.",
         ));
+        if (error instanceof ChatBridgeSendFailureError) throw error;
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {
@@ -2628,6 +2727,31 @@ export async function runAgentFlow(
       : "conflict";
   };
 
+  const buildInvalidatedSessionState = (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ChatDialogState> => withSessionMutation(
+    sessionId,
+    signal,
+    async () => {
+      const available = (await listSessions(storageDirectory, projectKey)).some(
+        (candidate) => candidate.id === sessionId && !candidate.archivedAt,
+      );
+      if (!available) {
+        if (activeSessionId === sessionId) activeSessionId = undefined;
+        return buildState(undefined, {
+          sessionMutationHeld: true,
+          ...(signal === undefined ? {} : { signal }),
+        });
+      }
+      return buildState(undefined, {
+        heldSessionId: sessionId,
+        sessionMutationHeld: true,
+        ...(signal === undefined ? {} : { signal }),
+      });
+    },
+  );
+
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
@@ -2636,13 +2760,42 @@ export async function runAgentFlow(
   let unsubscribeModelSelections: (() => void) | undefined;
   let unsubscribeGlobalSettings: (() => void) | undefined;
   let unsubscribeProfileSettings: (() => void) | undefined;
+  let unsubscribeSessionState: (() => void) | undefined;
+  let unsubscribeGlobalState: (() => void) | undefined;
+  const pendingSessionStateInvalidations = new Set<string>();
+  let pendingGlobalStateInvalidation = false;
+  let pendingProfileSettingsChange: ProfileSettingsChange | undefined;
   try {
+    unsubscribeSessionState = subscribeSessionStateInvalidations(
+      storageDirectory,
+      ({ sessionId, source }) => {
+        if (source === modalSessionOwner) return;
+        if (bridge) bridge.publishSessionStateInvalidation(sessionId);
+        else pendingSessionStateInvalidations.add(sessionId);
+      },
+    );
+    unsubscribeGlobalState = subscribeGlobalStateInvalidations(
+      storageDirectory,
+      ({ source }) => {
+        if (source === modalSessionOwner) return;
+        if (bridge) bridge.publishGlobalStateInvalidation();
+        else pendingGlobalStateInvalidation = true;
+      },
+    );
+    unsubscribeProfileSettings = subscribeProfileSettingsChanges(
+      storageDirectory,
+      (change) => {
+        if (bridge) bridge.publishProfileSettingsChange(change);
+        else pendingProfileSettingsChange = change;
+      },
+    );
     await reconcileStartupSessionOrphans();
     bridge = await createChatBridge({
       buildState: (signal) => buildState(
         undefined,
         signal === undefined ? {} : { signal },
       ),
+      buildInvalidatedSessionState,
       renderHtml,
       handleCommand,
       handleSend,
@@ -2659,6 +2812,15 @@ export async function runAgentFlow(
         ? {}
         : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
     });
+    if (pendingGlobalStateInvalidation) {
+      bridge.publishGlobalStateInvalidation();
+    }
+    for (const sessionId of pendingSessionStateInvalidations) {
+      bridge.publishSessionStateInvalidation(sessionId);
+    }
+    if (pendingProfileSettingsChange) {
+      bridge.publishProfileSettingsChange(pendingProfileSettingsChange);
+    }
     unsubscribeApprovalModes = subscribeSessionApprovalModeChanges(
       storageDirectory,
       ({ sessionId, approvalMode, updatedAt }) => {
@@ -2683,12 +2845,6 @@ export async function runAgentFlow(
         bridge?.publishDefaultFollowUpBehavior(change);
       },
     );
-    unsubscribeProfileSettings = subscribeProfileSettingsChanges(
-      storageDirectory,
-      (change) => {
-        bridge?.publishProfileSettingsChange(change);
-      },
-    );
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
     unsubscribeApprovalModes?.();
@@ -2696,6 +2852,9 @@ export async function runAgentFlow(
     unsubscribeModelSelections?.();
     unsubscribeGlobalSettings?.();
     unsubscribeProfileSettings?.();
+    unsubscribeSessionState?.();
+    unsubscribeGlobalState?.();
+    releaseSessionClaims(storageDirectory, modalSessionOwner);
     managedBackendLeaseClosing = true;
     sharedBackendManagerAcquisitionController?.abort(
       managedBackendAcquisitionClosedError,
@@ -2830,25 +2989,6 @@ function throwMappedAttachmentError(error: unknown): never {
     throw new ChatBridgeAttachmentValidationError(error.message);
   }
   throw error;
-}
-
-function throwMappedSelectedAudioSourceError(error: unknown): never {
-  if (
-    error instanceof ChatBridgeAttachmentValidationError ||
-    error instanceof ChatBridgeConflictError ||
-    error instanceof ChatBridgePayloadTooLargeError ||
-    error instanceof ChatBridgeResourceNotFoundError ||
-    error instanceof ChatBridgeCommandOutcomeUnknownError
-  ) throw error;
-  if (
-    error instanceof AttachmentTooLargeError ||
-    error instanceof AttachmentPendingQuotaError ||
-    error instanceof UnsupportedAttachmentError ||
-    error instanceof AttachmentProcessingError
-  ) throwMappedAttachmentError(error);
-  throw new ChatBridgeAttachmentValidationError(
-    "The selected Live audio source is unavailable or could not be attached.",
-  );
 }
 
 export function showAgentError(context: Api, error: unknown): void {

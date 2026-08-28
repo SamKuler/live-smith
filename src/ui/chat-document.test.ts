@@ -13,6 +13,7 @@ import {
   injectBuiltInSkillDefinitions,
   type ChatClientScripts,
 } from "./chat-document.js";
+import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { stateFixture } from "./chat-dialog.test-harness.js";
 
 const scripts: ChatClientScripts = {
@@ -99,6 +100,28 @@ test("built-in definition injection preserves Markdown while escaping the script
       definitions,
     );
     assert.equal(dom.window.document.querySelectorAll("script").length, 1);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("chat document injects the canonical recovery ledger bound", () => {
+  const html = composeChatDocument(
+    "<script>__BRIDGE_CLIENT_SCRIPT__</script>",
+    stateFixture(),
+    { baseUrl: "http://127.0.0.1:12345", token: "test-token" },
+    {
+      ...scripts,
+      bridgeClient:
+        "window.recoveryDigestLimit = __MAX_RECOVERY_ACTION_DIGESTS__;",
+    },
+  );
+  const dom = new JSDOM(html, { runScripts: "dangerously" });
+  try {
+    assert.equal(
+      Reflect.get(dom.window, "recoveryDigestLimit"),
+      MAX_RECOVERY_ACTION_DIGESTS,
+    );
   } finally {
     dom.window.close();
   }

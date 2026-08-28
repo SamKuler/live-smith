@@ -24,7 +24,10 @@ import {
   type ObservationTrackSelector,
 } from "../agent/actions.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { findExactParameterMatch } from "./parameter-match.js";
+import {
+  assertParameterValueInObservedRange,
+  findExactParameterMatch,
+} from "./parameter-match.js";
 import {
   devicePathLabel,
   resolveDevicePath,
@@ -54,6 +57,8 @@ import {
   bindAgentPlanTargets,
   liveActionIdentityKeys,
   requireBoundTrack,
+  sessionAudioClipCanBeReused,
+  sessionMidiClipCanBeReused,
   type AgentPlanBindings,
   type BoundActionObjects,
   type NonRegularTrackIdentity,
@@ -102,7 +107,7 @@ export async function executeAgentPlanWithProgress(
   const tracks = new Map(bindings.tracks);
 
   for (const [actionIndex, action] of plan.actions.entries()) {
-    let identityTrack = trackForActionIdentity(
+    const identityTrack = trackForActionIdentity(
       context,
       action,
       actionIndex,
@@ -110,8 +115,26 @@ export async function executeAgentPlanWithProgress(
       tracks,
       bindings.actionTracks,
     );
+    const declaredTarget = planTargetForAction(plan, action);
+    const recoveryTrackName = trackNameBeforeAction(
+      action,
+      identityTrack,
+      target,
+      declaredTarget,
+    );
+    const recoveryTrackSelector = declaredTrackSelectorForRecovery(
+      declaredTarget,
+      recoveryTrackName,
+    );
+    let currentActionKeys: string[] | undefined;
     try {
       throwIfAborted(signal);
+      currentActionKeys = liveActionIdentityKeys(
+        action,
+        identityTrack,
+        [],
+        nonRegularIdentityForAction(plan, action),
+      );
       beforeAction?.(actionIndex, action);
       const result = await executeAction(
         context,
@@ -124,61 +147,51 @@ export async function executeAgentPlanWithProgress(
       );
       results.push(typeof result === "string" ? result : result.result);
       if (typeof result === "string" ? true : result.mutated) mutationCount += 1;
-      identityTrack ??= trackForActionIdentity(
-        context,
-        action,
-        actionIndex,
-        target,
-        tracks,
-        bindings.actionTracks,
-      );
-      completedActionKeys.push(liveActionIdentityKeys(
-        action,
-        identityTrack,
-        [],
-        nonRegularIdentityForAction(plan, action),
-      ));
+      completedActionKeys.push(currentActionKeys);
     } catch (error) {
+      const currentIdentityTrack = action.type === "delete_track"
+        ? undefined
+        : identityTrack ?? trackForActionIdentity(
+            context,
+            action,
+            actionIndex,
+            target,
+            tracks,
+            bindings.actionTracks,
+          );
+      const failedTrackName = trackNameAfterFailure(
+        currentIdentityTrack,
+        recoveryTrackName,
+      );
+      const failedTrackSelector = trackSelectorAfterFailure(
+        context,
+        currentIdentityTrack,
+        declaredTarget,
+        recoveryTrackSelector,
+      );
       if (error instanceof AgentPlanExecutionError) {
-        identityTrack ??= trackForActionIdentity(
-          context,
-          action,
-          actionIndex,
-          target,
-          tracks,
-          bindings.actionTracks,
-        );
-        const currentActionKeys = error.completedActionKeys.length
+        const completedCurrentActionKeys = error.completedActionKeys.length
           ? error.completedActionKeys
           : error.completedResults.length
-            ? [liveActionIdentityKeys(
-                action,
-                identityTrack,
-                [],
-                nonRegularIdentityForAction(plan, action),
-              )]
+            ? [currentActionKeys ?? liveActionIdentityKeys(
+              action,
+              identityTrack,
+              [],
+              nonRegularIdentityForAction(plan, action),
+            )]
             : [];
         throw new AgentPlanExecutionError(
           [...results, ...error.completedResults],
           error.cause,
           error.failedActionIndex ?? actionIndex,
           error.failedAction ?? action,
-          error.failedTrackName ?? failedTrackName(
-            action,
-            actionIndex,
-            target,
-            tracks,
-            bindings.actionTracks,
-          ),
-          [...completedActionKeys, ...currentActionKeys],
+          error.failedTrackName ?? failedTrackName,
+          [...completedActionKeys, ...completedCurrentActionKeys],
           mutationCount + error.completedMutationCount,
           error.failedTrackSelector !== undefined
             ? error.failedTrackSelector
-            : trackSelectorForTrack(
-                context,
-                identityTrack,
-                planTargetForAction(plan, action),
-              ),
+            : failedTrackSelector,
+          results.length + error.completedActionCount,
         );
       }
       throw new AgentPlanExecutionError(
@@ -186,20 +199,11 @@ export async function executeAgentPlanWithProgress(
         error,
         actionIndex,
         action,
-        failedTrackName(
-          action,
-          actionIndex,
-          target,
-          tracks,
-          bindings.actionTracks,
-        ),
+        failedTrackName,
         completedActionKeys,
         mutationCount,
-        trackSelectorForTrack(
-          context,
-          identityTrack,
-          planTargetForAction(plan, action),
-        ),
+        failedTrackSelector,
+        results.length,
       );
     }
   }
@@ -217,11 +221,12 @@ export class AgentPlanExecutionError extends Error {
     readonly completedActionKeys: readonly (readonly string[])[] = [],
     readonly completedMutationCount: number = completedResults.length,
     readonly failedTrackSelector?: ObservationTrackSelector | null,
+    readonly completedActionCount: number = 0,
   ) {
     super([
       completedResults.length
-        ? `Plan failed after ${completedResults.length} completed action(s).`
-        : "Plan failed before completing any actions.",
+        ? `Plan failed after ${completedResults.length} completed operation(s).`
+        : "Plan failed before completing any operations.",
       ...completedResults.map((result) => `Completed: ${result}`),
       failedActionIndex !== undefined && failedAction
         ? `Failed action ${failedActionIndex + 1}: ${summarizeAgentAction(failedAction)}`
@@ -260,32 +265,52 @@ function trackForActionIdentity(
   return undefined;
 }
 
-function failedTrackName(
+function trackNameBeforeAction(
   action: AgentAction,
-  actionIndex: number,
+  track: Track<"1.0.0"> | undefined,
   target: LiveTarget,
-  tracks: ReadonlyMap<string, Track<"1.0.0">>,
-  actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+  declaredTarget: AgentPlanTarget | undefined,
 ): string | undefined {
+  if ("trackName" in action && action.trackName) return action.trackName;
+  if (declaredTarget?.trackName) return declaredTarget.trackName;
   try {
-    if (
-      (action.type === "create_midi_track" || action.type === "create_audio_track") &&
-      action.ref
-    ) {
-      return tracks.get(action.ref)?.name;
-    }
-    if ("trackRef" in action && action.trackRef) {
-      return tracks.get(action.trackRef)?.name;
-    }
-    const boundTrack = actionTracks.get(actionIndex);
-    if (boundTrack) return boundTrack.name;
-    if ("trackName" in action) {
-      return action.trackName ?? target.track?.name;
-    }
+    return track?.name ?? target.track?.name;
   } catch {
     return undefined;
   }
-  return undefined;
+}
+
+function declaredTrackSelectorForRecovery(
+  declaredTarget: AgentPlanTarget | undefined,
+  trackName: string | undefined,
+): ObservationTrackSelector | undefined {
+  if (declaredTarget) return { ...declaredTarget };
+  return trackName ? { trackName } : undefined;
+}
+
+function trackNameAfterFailure(
+  track: Track<"1.0.0"> | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  try {
+    return track?.name ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function trackSelectorAfterFailure(
+  context: Api,
+  track: Track<"1.0.0"> | undefined,
+  declaredTarget: AgentPlanTarget | undefined,
+  fallback: ObservationTrackSelector | null | undefined,
+): ObservationTrackSelector | null | undefined {
+  try {
+    const current = trackSelectorForTrack(context, track, declaredTarget);
+    return current === undefined ? fallback : current;
+  } catch {
+    return fallback;
+  }
 }
 
 function trackSelectorForTrack(
@@ -622,13 +647,9 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const currentClip = resolveClipLocator(track, action);
-      if (bound?.clip && !sameHostObject(bound.clip, currentClip)) {
-        throw new Error(
-          `MIDI Clip at the requested locator changed earlier in this plan. Inspect the current Clip and apply the transform in a later stage.`,
-        );
-      }
-      const clip = bound?.clip ?? currentClip;
+      const clip = bound?.clip
+        ? requireBoundMidiClipAtLocator(track, action, bound.clip)
+        : resolveClipLocator(track, action);
       if (!(clip instanceof MidiClip)) {
         throw new Error(
           `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
@@ -716,11 +737,11 @@ async function executeAction(
           `Could not find parameter "${action.parameterName}" on device "${device.name}". Available parameters: ${available}`,
         );
       }
-      if (action.value < parameter.min || action.value > parameter.max) {
-        throw new Error(
-          `Value ${action.value} for parameter "${parameter.name}" on device "${device.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the device again and use a value inside that range.`,
-        );
-      }
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `on device "${device.name}"`,
+      );
       if (sameNumericValue(await parameter.getValue(), action.value)) {
         return noMutation(
           `Kept "${parameter.name}" on "${device.name}" at ${devicePathLabel(resolved.path)} in track "${track.name}" at ${action.value} because it already matches.`,
@@ -940,11 +961,11 @@ async function executeAction(
         action.parameter,
         action.sendIndex,
       );
-      if (action.value < parameter.min || action.value > parameter.max) {
-        throw new Error(
-          `Value ${action.value} for mixer parameter "${parameter.name}" on track "${track.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the mixer again and use a value inside that range.`,
-        );
-      }
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `on track "${track.name}"`,
+      );
       if (sameNumericValue(await parameter.getValue(), action.value)) {
         return noMutation(
           `Kept mixer parameter "${parameter.name}" on track "${track.name}" at ${action.value} because it already matches.`,
@@ -969,11 +990,11 @@ async function executeAction(
         action.parameter,
         action.sendIndex,
       );
-      if (action.value < parameter.min || action.value > parameter.max) {
-        throw new Error(
-          `Value ${action.value} for Chain mixer parameter "${parameter.name}" in Rack "${current.rackTarget.device.name}" is outside observed range ${parameter.min}-${parameter.max}. Inspect the Rack Chain again and use a value inside that range.`,
-        );
-      }
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `in Chain ${action.chainIndex} of Rack "${current.rackTarget.device.name}"`,
+      );
       if (sameNumericValue(await parameter.getValue(), action.value)) {
         return noMutation(
           `Kept Chain ${action.chainIndex} mixer parameter "${parameter.name}" in Rack "${current.rackTarget.device.name}" on track "${track.name}" at ${action.value} because it already matches.`,
@@ -1131,7 +1152,7 @@ async function createSessionMidiClip(
   const completedKeys: string[][] = [];
   try {
     let clip = slot.clip;
-    if (clip instanceof MidiClip && Math.abs(clip.duration - durationBeats) < 0.0001) {
+    if (sessionMidiClipCanBeReused(clip, durationBeats)) {
       let changed = false;
       if (name && clip.name !== name) {
         clip.name = name;
@@ -1193,11 +1214,12 @@ async function createSessionAudioClip(
   const completedKeys: string[][] = [];
   try {
     const existing = slot.clip;
-    if (
-      existing instanceof AudioClip &&
-      existing.filePath === filePath &&
-      sessionAudioSettingsMatch(existing, isWarped, loopSettings)
-    ) {
+    if (sessionAudioClipCanBeReused(
+      existing,
+      filePath,
+      isWarped,
+      loopSettings,
+    )) {
       if (name && existing.name !== name) {
         existing.name = name;
         completedResults.push(
@@ -1246,22 +1268,6 @@ async function createSessionAudioClip(
       completedKeys,
     );
   }
-}
-
-function sessionAudioSettingsMatch(
-  clip: AudioClip<"1.0.0">,
-  isWarped: boolean | undefined,
-  settings: import("../agent/action-schema.js").ClipLoopSettingsInput | undefined,
-): boolean {
-  if (isWarped !== undefined && clip.warping !== isWarped) return false;
-  if (!settings) return true;
-  return (
-    clip.looping === settings.looping &&
-    clip.startMarker === settings.startMarker &&
-    clip.endMarker === settings.endMarker &&
-    clip.loopStart === settings.loopStart &&
-    clip.loopEnd === settings.loopEnd
-  );
 }
 
 function setClipProperties(
@@ -1532,6 +1538,48 @@ function sameHostObject(
   return leftId !== undefined && leftId !== null &&
     rightId !== undefined && rightId !== null &&
     String(leftId) === String(rightId);
+}
+
+function requireBoundMidiClipAtLocator(
+  track: Track<"1.0.0">,
+  action: Extract<AgentAction, {
+    type:
+      | "transpose_midi_notes"
+      | "quantize_midi_notes"
+      | "scale_midi_velocity"
+      | "shift_midi_notes";
+  }>,
+  bound: Clip<"1.0.0">,
+): Clip<"1.0.0"> {
+  if (action.slotIndex !== undefined) {
+    if (!sameHostObject(track.clipSlots[action.slotIndex]?.clip, bound)) {
+      throw changedMidiClip();
+    }
+    return bound;
+  }
+  if (action.startBeat !== undefined) {
+    const current = track.arrangementClips.find((clip) =>
+      sameHostObject(clip, bound)
+    );
+    if (
+      !current ||
+      Math.abs(current.startTime - action.startBeat) >= 0.0001
+    ) {
+      throw changedMidiClip();
+    }
+    return bound;
+  }
+  const remainsOnTrack = track.arrangementClips.some((clip) =>
+    sameHostObject(clip, bound)
+  ) || track.clipSlots.some((slot) => sameHostObject(slot.clip, bound));
+  if (!remainsOnTrack) throw changedMidiClip();
+  return bound;
+}
+
+function changedMidiClip(): Error {
+  return new Error(
+    "MIDI Clip at the requested locator changed earlier in this plan. Inspect the current Clip and apply the transform in a later stage.",
+  );
 }
 
 function sanitizeSampleError(_error: unknown, _filePath: string): Error {

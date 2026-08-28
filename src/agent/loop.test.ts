@@ -20,6 +20,19 @@ function mutationOutcome(
   return { results, mutationCount };
 }
 
+test("runAgentLoop rejects an empty model turn instead of inventing a reply", async () => {
+  await assert.rejects(
+    runAgentLoop({
+      maxConsecutiveFailures: 3,
+      askModel: async () => ({ content: null, toolCalls: [] }),
+      observe: async () => assert.fail("an empty turn must not run tools"),
+      confirmActions: async () => assert.fail("an empty turn must not request approval"),
+      executeActions: async () => assert.fail("an empty turn must not execute actions"),
+    }),
+    /empty response/i,
+  );
+});
+
 test("a scope denial after only no-ops does not create unfinished Live work", async () => {
   const events: AgentLoopTraceEvent[] = [];
   let turn = 0;
@@ -50,6 +63,8 @@ test("a scope denial after only no-ops does not create unfinished Live work", as
         undefined,
         [],
         0,
+        undefined,
+        1,
       );
     },
     onEvent: (event) => { events.push(event); },
@@ -2438,6 +2453,13 @@ test("a partial apply failure returns to the model for inspect and repair", asyn
         throw new AgentPartialCompletionError(
           ['Inserted "Auto Filter" on track "Lead".'],
           new Error("Failed to insert device"),
+          undefined,
+          undefined,
+          undefined,
+          [],
+          1,
+          undefined,
+          1,
         );
       }
       return mutationOutcome(['Inserted "Delay" on track "Lead".']);
@@ -2542,7 +2564,7 @@ test("a first-action Live rejection returns current state without inventing a ca
   assert.deepEqual(observedRequests, ["inspect_track"]);
   assert.match(
     modelInputs[1]?.messages.at(-1)?.content ?? "",
-    /could not complete its first action.*Current Live state after the failure:.*devices=Auto Filter/is,
+    /could not complete its first operation.*Current Live state after the failure:.*devices=Auto Filter/is,
   );
   assert.doesNotMatch(
     modelInputs[1]?.messages.at(-1)?.content ?? "",
@@ -2929,6 +2951,10 @@ test("completed actions cannot be resubmitted during partial-plan repair", async
           1,
           plan.actions[1],
           "Lead",
+          [],
+          1,
+          undefined,
+          1,
         );
       }
       return mutationOutcome(['Inserted "Delay" on track "Lead".']);
@@ -2942,6 +2968,65 @@ test("completed actions cannot be resubmitted during partial-plan repair", async
     modelInputs[2]?.messages.at(-1)?.content ?? "",
     /repeats work already completed.*Auto Filter/is,
   );
+});
+
+test("request-audio import progress does not mark an unstarted plan action complete", async () => {
+  let modelCalls = 0;
+  let executions = 0;
+  const modelInputs: AgentLoopModelInput[] = [];
+  const action = { type: "set_tempo" as const, tempo: 128 };
+
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 3,
+    askModel: async (input): Promise<ModelTurn> => {
+      modelInputs.push(input);
+      modelCalls += 1;
+      if (modelCalls <= 2) {
+        return {
+          content: modelCalls === 1
+            ? "Importing the reference before applying the tempo."
+            : "Applying the tempo that did not start before cancellation.",
+          toolCalls: [{
+            id: `request-audio-recovery-${modelCalls}`,
+            name: "apply_live_actions",
+            arguments: JSON.stringify({
+              message: "Set the tempo",
+              ...(modelCalls === 2 ? { resolvesPriorFailure: true } : {}),
+              actions: [action],
+            }),
+          }],
+        };
+      }
+      return { content: "The tempo is now set.", toolCalls: [] };
+    },
+    observe: async () => "Tempo: 120 BPM",
+    preflightActions: async () => async () => undefined,
+    confirmActions: async () => true,
+    executeActions: async () => {
+      executions += 1;
+      if (executions === 1) {
+        return {
+          results: ["Imported current request audio input 1 into the Live project."],
+          mutationCount: 1,
+          incompleteRecovery: {
+            completedActionKeys: [[
+              "live-action-step:request-audio-import:event-current:0",
+            ]],
+            completedActionCount: 0,
+            failureMessage:
+              "The request was stopped before every confirmed Live action completed.",
+          },
+        };
+      }
+      return mutationOutcome(["Set tempo to 128 BPM."]);
+    },
+  });
+
+  assert.equal(executions, 2);
+  assert.equal(result.message, "The tempo is now set.");
+  const recoveryMessage = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  assert.match(recoveryMessage, /partially completed after 1 operation/i);
+  assert.doesNotMatch(recoveryMessage, /partially completed after 1 action/i);
 });
 
 test("MIDI creation replay is allowed only after a reusable name was applied", async (t) => {
@@ -2970,14 +3055,14 @@ test("MIDI creation replay is allowed only after a reusable name was applied", a
     {
       name: "name assignment failed",
       action: namedAction,
-      completedKeys: [],
+      completedKeys: [[JSON.stringify(namedAction)]],
       mutationCount: 1,
       expectedExecutions: 1,
     },
     {
       name: "unnamed notes failed",
       action: unnamedAction,
-      completedKeys: [],
+      completedKeys: [[JSON.stringify(unnamedAction)]],
       mutationCount: 1,
       expectedExecutions: 1,
     },
@@ -3659,6 +3744,13 @@ test("a partial apply remains fatal when its completed work cannot be recorded",
         throw new AgentPartialCompletionError(
           ['Inserted "Auto Filter" on track "Lead".'],
           new Error("Failed to insert device"),
+          undefined,
+          undefined,
+          undefined,
+          [],
+          1,
+          undefined,
+          1,
         );
       },
       onEvent: (event) => {
@@ -3710,6 +3802,13 @@ test("a partial apply result is recorded before cancellation stops recovery", as
         throw new AgentPartialCompletionError(
           ['Inserted "Auto Filter" on track "Lead".'],
           new Error("Failed to insert device"),
+          undefined,
+          undefined,
+          undefined,
+          [],
+          1,
+          undefined,
+          1,
         );
       },
       onEvent: (event) => {

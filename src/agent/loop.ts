@@ -12,6 +12,10 @@ import {
   type ObservationTrackSelector,
 } from "./actions.js";
 import {
+  MAX_FINAL_RECOVERY_ADMISSION_DIGESTS,
+  MAX_STAGED_RECOVERY_ACTION_DIGESTS,
+} from "./recovery-contract.js";
+import {
   progressLabelForActionPlan,
   progressLabelForToolCall,
 } from "./progress.js";
@@ -82,7 +86,8 @@ export interface AgentActionExecutionOutcome {
   mutationCount: number;
   incompleteRecovery?: {
     completedActionKeys: readonly (readonly string[])[];
-    failedActionIndex?: number;
+    /** Fully completed plan actions; preparation side effects are excluded. */
+    completedActionCount: number;
     failureMessage: string;
   };
 }
@@ -129,6 +134,8 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   confirmActions(
     plan: AgentPlan,
   ): Promise<boolean | AgentConfirmationDecision>;
+  /** Always resolves through an explicit user decision; automatic approval is forbidden. */
+  confirmRecoveryResolution?(message: string): Promise<boolean>;
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;
@@ -166,16 +173,33 @@ export class AgentApplyResultReportingError extends Error {
   constructor(completedResults: string[], cause: unknown) {
     super([
       completedResults.length
-        ? "Live actions completed, but their apply result could not be recorded."
+        ? "Live operations completed, but their apply result could not be recorded."
         : "The Live action failure could not be recorded.",
       ...completedResults.map((result) => `Completed: ${result}`),
       completedResults.length
-        ? "The completed actions will not be retried automatically."
-        : "No actions from this plan were completed.",
+        ? "The completed operations will not be retried automatically."
+        : "No operations from this plan were completed.",
       errorMessage(cause),
     ].join(" "), { cause });
     this.name = "AgentApplyResultReportingError";
     this.completedResults = [...completedResults];
+  }
+}
+
+export class AgentRecoveryResolutionReportingError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "The recovery resolution outcome could not be confirmed. Reload authoritative Session state before continuing.",
+      { cause },
+    );
+    this.name = "AgentRecoveryResolutionReportingError";
+  }
+}
+
+class AgentRecoveryResolutionSteeringError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentRecoveryResolutionSteeringError";
   }
 }
 
@@ -191,18 +215,19 @@ export class AgentPartialCompletionError extends Error {
     readonly completedActionKeys: readonly (readonly string[])[] = [],
     readonly completedMutationCount: number = completedResults.length,
     readonly failedTrackSelector?: ObservationTrackSelector | null,
+    readonly completedActionCount: number = 0,
   ) {
     super([
       completedResults.length
-        ? `Live action plan partially completed after ${completedResults.length} action(s).`
-        : "Live action plan could not complete its first action.",
+        ? `Live action plan partially completed after ${completedResults.length} operation(s).`
+        : "Live action plan could not complete its first operation.",
       ...completedResults.map((result) => `Completed: ${result}`),
       failedActionIndex !== undefined && failedAction
         ? `Failed action ${failedActionIndex + 1}: ${summarizeAgentAction(failedAction)}`
         : "",
       completedResults.length
-        ? "The completed actions will not be retried automatically."
-        : "No actions from this plan were completed.",
+        ? "The completed operations will not be retried automatically."
+        : "No operations from this plan were completed.",
       errorMessage(cause),
     ].filter(Boolean).join("\n"), { cause });
     this.name = "AgentPartialCompletionError";
@@ -211,10 +236,10 @@ export class AgentPartialCompletionError extends Error {
 }
 
 interface AgentRecoveryState {
-  readonly completedActionKeys: Set<string>;
   readonly completedActionDigests: Set<string>;
   requiresExplicitResolution: boolean;
   requiredObservation: AgentObservationRequest | undefined;
+  requiresLiveSetObservationForResolution: boolean;
   unresolvedFailure: string | undefined;
 }
 
@@ -280,12 +305,13 @@ export async function runAgentLoop(
   let pendingContinuationMessageStart: number | undefined;
   const observedProgress = new Set<string>();
   const recoveryState: AgentRecoveryState = {
-    completedActionKeys: new Set(),
     completedActionDigests: new Set(
       options.initialRecoveryState?.completedActionDigests ?? [],
     ),
     requiresExplicitResolution: options.initialRecoveryState !== undefined,
     requiredObservation: undefined,
+    requiresLiveSetObservationForResolution:
+      options.initialRecoveryState !== undefined,
     unresolvedFailure: options.initialRecoveryState?.unresolvedFailure,
   };
   const appendSteering = () => appendPendingSteering(
@@ -454,21 +480,20 @@ export async function runAgentLoop(
         await emitTraceEvent(options, { kind: "error", content: message });
         return { message };
       }
-      if (finalText) {
-        lastMessage = finalText;
-        await emitTraceEvent(options, {
-          kind: "assistant",
-          content: lastMessage,
-          ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
-        });
+      if (!finalText) {
+        throw new Error("The model returned an empty response.");
       }
+      lastMessage = finalText;
+      await emitTraceEvent(options, {
+        kind: "assistant",
+        content: lastMessage,
+        ...(completedTurnCitations.length ? { citations: completedTurnCitations } : {}),
+      });
       if (await appendSteering()) {
         planningProgressDeadline = iteration + maxIterations;
         continue;
       }
-      return {
-        message: lastMessage || "Done.",
-      };
+      return { message: lastMessage };
     }
 
     if (completedTurnContent.trim()) {
@@ -762,6 +787,11 @@ async function executeToolCall(
         observationCoversRecovery(request, recoveryState.requiredObservation)
       ) {
         recoveryState.requiredObservation = undefined;
+      } else if (
+        recoveryState.requiresLiveSetObservationForResolution &&
+        request.type === "inspect_live_set"
+      ) {
+        recoveryState.requiresLiveSetObservationForResolution = false;
       }
       await emitTraceEvent(options, {
         kind: "tool_result",
@@ -777,6 +807,97 @@ async function executeToolCall(
         failed: false,
         mutationProgress: false,
         progressKey: observation,
+      };
+    }
+
+    if (toolCall.name === "resolve_live_recovery") {
+      try {
+        assertOnlyKeys(
+          parseToolArguments(toolCall.arguments),
+          [],
+          `${toolCall.name} arguments`,
+        );
+      } catch (error) {
+        throw new AgentToolArgumentsError(error);
+      }
+      if (
+        recoveryState.unresolvedFailure === undefined ||
+        !recoveryState.requiresExplicitResolution
+      ) {
+        throw new AgentRecoveryPlanError(
+          "resolve_live_recovery is available only while this Session has an active unfinished Live operation.",
+        );
+      }
+      if (
+        recoveryState.requiredObservation !== undefined ||
+        recoveryState.requiresLiveSetObservationForResolution
+      ) {
+        throw new AgentRecoveryPlanError(
+          recoveryState.requiresLiveSetObservationForResolution
+            ? "Inspect the current Live Set successfully with inspect_live_set in this request before asking the user to close the recovered operation."
+            : "Complete the required recovery observation successfully before asking the user to close the unfinished operation.",
+        );
+      }
+      if (!options.confirmRecoveryResolution) {
+        throw new AgentRecoveryPlanError(
+          "Recovery resolution confirmation is unavailable; the unfinished operation remains active.",
+        );
+      }
+      const confirmationMessage =
+        "Keep the Live changes already completed and close this unfinished operation? Any unfinished steps will be abandoned. This does not undo anything and does not perform a Live mutation.";
+      throwIfAborted(options.signal);
+      if (options.hasPendingSteering?.()) {
+        throw new AgentRecoveryResolutionSteeringError(
+          "The recovery resolution was not requested because newer user guidance arrived.",
+        );
+      }
+      const confirmed = await options.confirmRecoveryResolution(
+        confirmationMessage,
+      );
+      throwIfAborted(options.signal);
+      if (options.hasPendingSteering?.()) {
+        throw new AgentRecoveryResolutionSteeringError(
+          "The recovery resolution was not accepted because newer user guidance arrived.",
+        );
+      }
+      if (!confirmed) {
+        const content =
+          "The user kept the unfinished operation active. No Live changes were made, and the replay-protection ledger remains in force.";
+        await emitTraceEvent(options, {
+          kind: "tool_result",
+          name: toolCall.name,
+          content,
+        });
+        return {
+          toolContent: content,
+          userMessage: content,
+          cancelled: true,
+          failed: false,
+          mutationProgress: false,
+        };
+      }
+      const content =
+        "Kept the completed Live changes and closed the unfinished operation. Unfinished steps were abandoned. Nothing was undone, and no Live mutation was performed.";
+      try {
+        await emitTraceEvent(options, {
+          kind: "apply_result",
+          content,
+          recovery: { active: false, completedActionDigests: [] },
+        });
+      } catch (error) {
+        throw new AgentRecoveryResolutionReportingError(error);
+      }
+      recoveryState.unresolvedFailure = undefined;
+      recoveryState.completedActionDigests.clear();
+      recoveryState.requiresExplicitResolution = false;
+      recoveryState.requiredObservation = undefined;
+      recoveryState.requiresLiveSetObservationForResolution = false;
+      return {
+        toolContent: content,
+        userMessage: content,
+        cancelled: true,
+        failed: false,
+        mutationProgress: false,
       };
     }
 
@@ -832,6 +953,11 @@ async function executeToolCall(
             `Action ${repeatedSemanticActionIndex + 1} repeats work already completed in this Session's unfinished operation: ${summarizeAgentAction(plan.actions[repeatedSemanticActionIndex]!)} Continue with missing work only.`,
           );
         }
+        assertRecoveryLedgerHasCapacity(
+          recoveryState,
+          plan,
+          applyActionKeys,
+        );
         throwIfAborted(options.signal);
       } catch (error) {
         throwIfAborted(options.signal);
@@ -930,29 +1056,31 @@ async function executeToolCall(
         : await executeConfirmedActions();
       if (outcome.incompleteRecovery) {
         const recovery = outcome.incompleteRecovery;
-        const hasGranularCompletionKeys = recovery.completedActionKeys.some(
-          (keys) => keys.some((key) => key.startsWith("live-action-step:")),
-        );
-        const completedActionCount = (recovery.failedActionIndex ?? 0) + (
-          !hasGranularCompletionKeys &&
-          outcome.results.length > (recovery.failedActionIndex ?? 0)
-            ? 1
-            : 0
-        );
-        for (const action of plan.actions.slice(0, completedActionCount)) {
+        if (
+          !Number.isInteger(recovery.completedActionCount) ||
+          recovery.completedActionCount < 0 ||
+          recovery.completedActionCount > plan.actions.length
+        ) {
+          throw new Error("Live action execution returned an invalid completed-action count.");
+        }
+        for (const action of plan.actions.slice(0, recovery.completedActionCount)) {
           rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
         }
         for (const keys of recovery.completedActionKeys) {
           for (const key of keys) rememberCompletedActionIdentity(recoveryState, key);
         }
         const content = [
-          `Live action plan partially completed after ${outcome.results.length} action(s).`,
+          `Live action plan partially completed after ${outcome.results.length} operation(s).`,
           ...outcome.results.map((item) => `Completed: ${item}`),
-          "The completed actions will not be retried automatically.",
+          "The completed operations will not be retried automatically.",
           recovery.failureMessage,
         ].join("\n");
         recoveryState.unresolvedFailure = content;
         recoveryState.requiresExplicitResolution ||= outcome.mutationCount > 0;
+        if (outcome.mutationCount > 0) {
+          recoveryState.requiredObservation = undefined;
+          recoveryState.requiresLiveSetObservationForResolution = true;
+        }
         const recoveryUpdate = recoveryState.requiresExplicitResolution
           ? recoveryLedgerUpdate(recoveryState)
           : undefined;
@@ -988,6 +1116,10 @@ async function executeToolCall(
             rememberCompletedActionIdentity(recoveryState, key);
           }
         }
+        if (outcome.mutationCount > 0) {
+          recoveryState.requiredObservation = undefined;
+          recoveryState.requiresLiveSetObservationForResolution = true;
+        }
       }
       const recoveryUpdate = clearsRecovery
         ? recoveryState.requiresExplicitResolution
@@ -1008,9 +1140,10 @@ async function executeToolCall(
       throwIfAborted(options.signal);
       if (clearsRecovery) {
         recoveryState.unresolvedFailure = undefined;
-        recoveryState.completedActionKeys.clear();
         recoveryState.completedActionDigests.clear();
         recoveryState.requiresExplicitResolution = false;
+        recoveryState.requiredObservation = undefined;
+        recoveryState.requiresLiveSetObservationForResolution = false;
       }
       return {
         toolContent: content,
@@ -1047,6 +1180,20 @@ async function executeToolCall(
         failureKind: "host",
       };
     }
+    if (error instanceof AgentRecoveryResolutionSteeringError) {
+      await emitTraceEvent(options, {
+        kind: "tool_result",
+        name: toolCall.name,
+        content: error.message,
+      });
+      return {
+        toolContent: error.message,
+        userMessage: error.message,
+        cancelled: false,
+        failed: false,
+        mutationProgress: false,
+      };
+    }
     if (error instanceof AgentSteeringBeforeApplyError) {
       await emitTraceEvent(options, {
         kind: "apply_result",
@@ -1065,44 +1212,22 @@ async function executeToolCall(
       recoveryState.unresolvedFailure = failureContent;
       recoveryState.requiresExplicitResolution ||=
         error.completedMutationCount > 0;
-      if (error.failedActionIndex !== undefined && error.failedActionIndex > 0) {
-        const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
-        const hasGranularCompletionKeys = error.completedActionKeys.some(
-          (keys) => keys.some((key) => key.startsWith("live-action-step:")),
-        );
-        const completedActionCount = error.failedActionIndex + (
-          !hasGranularCompletionKeys &&
-          error.completedResults.length > error.failedActionIndex
-            ? 1
-            : 0
-        );
-        for (const action of failedPlan.actions.slice(0, completedActionCount)) {
-          rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
-        }
-        const semanticKeys = error.completedActionKeys.length
-          ? error.completedActionKeys
-          : (applyActionKeys ?? []).slice(0, completedActionCount);
-        for (const keys of semanticKeys) {
-          for (const key of keys) rememberCompletedActionIdentity(recoveryState, key);
-        }
-      } else if (
-        error.failedActionIndex === 0 &&
-        error.completedResults.length > 0
+      const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
+      if (
+        !Number.isInteger(error.completedActionCount) ||
+        error.completedActionCount < 0 ||
+        error.completedActionCount > failedPlan.actions.length
       ) {
-        const failedPlan = applyPlan ?? actionPlanFromToolCall(toolCall);
-        const hasGranularCompletionKeys = error.completedActionKeys.some(
-          (keys) => keys.some((key) => key.startsWith("live-action-step:")),
-        );
-        if (!hasGranularCompletionKeys) {
-          rememberCompletedActionIdentity(
-            recoveryState,
-            agentActionKey(failedPlan.actions[0]!),
-          );
-        }
-        const semanticKeys = error.completedActionKeys[0] ?? applyActionKeys?.[0] ?? [];
-        for (const key of semanticKeys) {
-          rememberCompletedActionIdentity(recoveryState, key);
-        }
+        throw new Error("Live action execution returned an invalid completed-action count.");
+      }
+      for (const action of failedPlan.actions.slice(0, error.completedActionCount)) {
+        rememberCompletedActionIdentity(recoveryState, agentActionKey(action));
+      }
+      const semanticKeys = error.completedActionKeys.length
+        ? error.completedActionKeys
+        : (applyActionKeys ?? []).slice(0, error.completedActionCount);
+      for (const keys of semanticKeys) {
+        for (const key of keys) rememberCompletedActionIdentity(recoveryState, key);
       }
       try {
         const recoveryUpdate = recoveryState.requiresExplicitResolution
@@ -1122,6 +1247,7 @@ async function executeToolCall(
       throwIfAborted(options.signal);
       const requiredObservation = recoveryRequestForFailure(error);
       recoveryState.requiredObservation = requiredObservation;
+      recoveryState.requiresLiveSetObservationForResolution = false;
       let recoveryObservation = "";
       let recoveryObservationAvailable = false;
       try {
@@ -1212,7 +1338,8 @@ async function executeToolCall(
     }
     if (
       (error instanceof AgentActionPreflightError && !error.recoverable) ||
-      error instanceof AgentApplyResultReportingError
+      error instanceof AgentApplyResultReportingError ||
+      error instanceof AgentRecoveryResolutionReportingError
     ) {
       throw error;
     }
@@ -1272,6 +1399,7 @@ function recoveryProgressKey(
     failedAction: error.failedAction,
     completedActionKeys: error.completedActionKeys,
     completedMutationCount: error.completedMutationCount,
+    completedActionCount: error.completedActionCount,
     cause: errorMessage(error.cause),
   })}`;
 }
@@ -1288,16 +1416,46 @@ function hasCompletedActionIdentity(
   recoveryState: AgentRecoveryState,
   identity: string,
 ): boolean {
-  return recoveryState.completedActionKeys.has(identity) ||
-    recoveryState.completedActionDigests.has(digestActionIdentity(identity));
+  return recoveryState.completedActionDigests.has(digestActionIdentity(identity));
 }
 
 function rememberCompletedActionIdentity(
   recoveryState: AgentRecoveryState,
   identity: string,
 ): void {
-  recoveryState.completedActionKeys.add(identity);
   recoveryState.completedActionDigests.add(digestActionIdentity(identity));
+}
+
+function assertRecoveryLedgerHasCapacity(
+  recoveryState: AgentRecoveryState,
+  plan: AgentPlan,
+  actionKeys: readonly (readonly string[])[] | undefined,
+): void {
+  if (
+    recoveryState.unresolvedFailure === undefined ||
+    !recoveryState.requiresExplicitResolution
+  ) return;
+  const additionalDigests = new Set<string>();
+  for (const [index, action] of plan.actions.entries()) {
+    additionalDigests.add(digestActionIdentity(agentActionKey(action)));
+    for (const key of actionKeys?.[index] ?? []) {
+      additionalDigests.add(digestActionIdentity(key));
+    }
+  }
+  for (const digest of recoveryState.completedActionDigests) {
+    additionalDigests.delete(digest);
+  }
+  const limit = plan.resolvesPriorFailure === true
+    ? MAX_FINAL_RECOVERY_ADMISSION_DIGESTS
+    : MAX_STAGED_RECOVERY_ACTION_DIGESTS;
+  if (recoveryState.completedActionDigests.size + additionalDigests.size <= limit) {
+    return;
+  }
+  throw new AgentRecoveryPlanError(
+    plan.resolvesPriorFailure === true
+      ? "The final recovery Apply is too large for the bounded replay ledger. Split the remaining repair into fewer actions, or inspect the current Live Set and use resolve_live_recovery so the user can keep completed changes and close the unfinished operation."
+      : "The bounded replay ledger is reserving space for the final repair. Finish the current unfinished operation with resolvesPriorFailure, or inspect the current Live Set and use resolve_live_recovery so the user can close it before starting more Live work.",
+  );
 }
 
 function recoveryLedgerUpdate(

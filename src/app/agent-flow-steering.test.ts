@@ -442,7 +442,7 @@ test("steering before action 2 preserves completed mutation recovery", async () 
   );
   assert.match(
     recoveryToolResult?.content ?? "",
-    /partially completed after 1 action.*Current Live state after the failure:.*Tempo: 121 BPM/is,
+    /partially completed after 1 operation.*Current Live state after the failure:.*Tempo: 121 BPM/is,
   );
 
   const events = await loadSessionEvents(directory, session.id);
@@ -450,7 +450,7 @@ test("steering before action 2 preserves completed mutation recovery", async () 
   assert.equal(applyResults.length, 1);
   assert.match(
     applyResults[0]?.content ?? "",
-    /partially completed after 1 action.*Completed: Set tempo to 121 BPM.*Failed action 2/is,
+    /partially completed after 1 operation.*Completed: Set tempo to 121 BPM.*Failed action 2/is,
   );
   assert.equal(applyResults[0]?.recovery?.active, true);
   assert.ok(applyResults[0]?.recovery?.completedActionDigests.length);

@@ -1209,9 +1209,9 @@ function requiredNotes(minimumItems: number): ActionField<NoteDescription[], tru
     duration: requiredPositiveNumber(),
     velocity: requiredIntegerInRange(1, 127),
     muted: optionalBoolean(),
-    probability: optionalNumber(),
-    velocityDeviation: optionalNumber(),
-    releaseVelocity: optionalNumber(),
+    probability: optionalNumberInRange(0, 1),
+    velocityDeviation: optionalNumberInRange(-127, 127),
+    releaseVelocity: optionalNumberInRange(0, 127),
   });
   return requiredField(
     {
@@ -1288,6 +1288,22 @@ function optionalNumber(): ActionField<number, false> {
     }
     return value;
   });
+}
+
+function optionalNumberInRange(
+  minimum: number,
+  maximum: number,
+): ActionField<number, false> {
+  return optionalField(
+    { type: "number", minimum, maximum },
+    (value, key) => {
+      const parsed = finiteNumber(value, key);
+      if (parsed < minimum || parsed > maximum) {
+        throw new Error(`${key} must be between ${minimum} and ${maximum}.`);
+      }
+      return parsed;
+    },
+  );
 }
 
 function requiredField<Value>(

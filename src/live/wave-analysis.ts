@@ -3,6 +3,7 @@ import { lstat, open, type FileHandle } from "node:fs/promises";
 import { Buffer } from "node:buffer";
 
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
+import { safeRegularFileOpenFlags } from "./safe-file-read.js";
 
 export interface WaveAnalysis {
   readonly sampleRate: number;
@@ -30,12 +31,6 @@ export async function analyzeWaveFile(
   signal?: AbortSignal,
 ): Promise<WaveAnalysis> {
   throwIfAborted(signal);
-  if (
-    typeof constants.O_NOFOLLOW !== "number" ||
-    typeof constants.O_NONBLOCK !== "number"
-  ) {
-    throw unavailableWave();
-  }
 
   let handle: FileHandle | undefined;
   try {
@@ -43,7 +38,7 @@ export async function analyzeWaveFile(
     assertSafeFile(pathSnapshot);
     handle = await open(
       filePath,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      safeRegularFileOpenFlags(constants),
     );
     const before = await handle.stat({ bigint: true });
     assertSameFile(pathSnapshot, before);
@@ -52,6 +47,7 @@ export async function analyzeWaveFile(
     const after = await handle.stat({ bigint: true });
     assertSameFile(before, after);
     const afterPath = await lstat(filePath, { bigint: true });
+    assertSafeFile(afterPath);
     assertSameFile(after, afterPath);
     throwIfAborted(signal);
     return analysis;

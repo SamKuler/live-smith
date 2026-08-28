@@ -62,6 +62,14 @@ const protectedFields = [
 const encryptedReasoningInclude = "reasoning.encrypted_content";
 const webSearchSourcesInclude = "web_search_call.action.sources";
 
+type ResponsesTerminalStatus = "completed" | "incomplete";
+
+interface ResponsesTerminalResponse {
+  response: Record<string, unknown>;
+  output: Array<Record<string, unknown>>;
+  status: ResponsesTerminalStatus;
+}
+
 export function createOpenAIResponsesTransport(
   options: TransportFactoryOptions = {},
 ): ModelTransport {
@@ -86,17 +94,18 @@ export function createOpenAIResponsesTransport(
           method: "POST",
           body,
           ...(request.signal ? { signal: request.signal } : {}),
-          },
-        );
-      const hostedWebSearches = terminalWebSearchesFromResponse(
+        },
+      );
+      const terminal = requireResponsesTerminalResponse(
         response,
         "OpenAI Responses",
       );
+      const hostedWebSearches = webSearchesFromResponsesOutput(terminal.output);
       for (const search of hostedWebSearches) {
         await request.onHostedWebSearch?.(search);
       }
       return turnFromResponse(
-        response,
+        terminal,
         "OpenAI Responses",
         hostedWebSearches,
         request.runtimeProfile.capabilities.contextWindowTokens,
@@ -313,15 +322,17 @@ async function streamResponsesTurn(
       event.type === "response.completed" ||
       event.type === "response.incomplete"
     ) {
-      const hostedWebSearches = terminalWebSearchesFromResponse(
+      const terminal = requireResponsesTerminalResponse(
         event.response,
         "OpenAI Responses",
+        event.type === "response.completed" ? "completed" : "incomplete",
       );
+      const hostedWebSearches = webSearchesFromResponsesOutput(terminal.output);
       for (const search of hostedWebSearches) {
         await reportWebSearch(search);
       }
       return turnFromResponse(
-        event.response,
+        terminal,
         "OpenAI Responses",
         hostedWebSearches,
         request.runtimeProfile.capabilities.contextWindowTokens,
@@ -336,6 +347,8 @@ async function streamResponsesTurn(
         }
       }
       throw new Error("OpenAI Responses failed.");
+    } else if (event.type === "response.cancelled") {
+      throw new Error("OpenAI Responses was cancelled.");
     }
   }
   throw new ModelConnectionError(
@@ -373,25 +386,19 @@ function webSearchUpdateFromOpenAIEvent(
 }
 
 function turnFromResponse(
-  value: unknown,
+  terminal: ResponsesTerminalResponse,
   label: string,
   hostedWebSearches?: ModelHostedWebSearch[],
   contextWindowTokens?: number,
 ): ModelTurn {
-  if (!isRecord(value) || !Array.isArray(value.output)) {
-    throw new Error(`${label} returned no output items.`);
-  }
-  const output = value.output as Array<Record<string, unknown>>;
+  const { response: value, output, status } = terminal;
   const content = typeof value.output_text === "string" && value.output_text.trim()
     ? value.output_text
     : textFromOutput(output);
   const citations = citationsFromResponsesOutput(output);
   const contextUsage = openAIContextUsage(value.usage, contextWindowTokens);
   const terminalWebSearches = hostedWebSearches ?? webSearchesFromResponsesOutput(output);
-  const functionCalls = output.filter((item) =>
-    isRecord(item) && item.type === "function_call"
-  );
-  if (value.status === "incomplete") {
+  if (status === "incomplete") {
     const details = isRecord(value.incomplete_details)
       ? value.incomplete_details
       : undefined;
@@ -406,25 +413,20 @@ function turnFromResponse(
         `${label} reached its output-token limit without replayable output. Increase this Profile's Max Output Tokens and try again.`,
       );
     }
-    if (
-      functionCalls.length === 0 ||
-      functionCalls.some((item) => item.status !== "completed")
-    ) {
-      return {
-        content: content || null,
-        toolCalls: [],
-        continuation: { reason: "output_limit" },
-        ...(citations.length ? { citations } : {}),
-        ...(contextUsage ? { contextUsage } : {}),
-        ...(terminalWebSearches.length ? { hostedWebSearches: terminalWebSearches } : {}),
-        providerState: {
-          kind: "openai-responses",
-          output: cloneJsonValue(output),
-        },
-      };
-    }
+    return {
+      content: content || null,
+      toolCalls: [],
+      continuation: { reason: "output_limit" },
+      ...(citations.length ? { citations } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
+      ...(terminalWebSearches.length ? { hostedWebSearches: terminalWebSearches } : {}),
+      providerState: {
+        kind: "openai-responses",
+        output: cloneJsonValue(output),
+      },
+    };
   }
-  assertCompleteResponseToolCalls(value, output, label);
+  assertCompletedFunctionCallStatuses(output, label);
   const toolCallIds = new Set<string>();
   const toolCalls = output.flatMap((item): ModelToolCall[] => {
     if (!isRecord(item) || item.type !== "function_call") return [];
@@ -466,16 +468,35 @@ function openAIContextUsage(
   return requireModelContextUsage(usage?.total_tokens, contextWindowTokens);
 }
 
-function terminalWebSearchesFromResponse(
+function requireResponsesTerminalResponse(
   value: unknown,
   label: string,
-): ModelHostedWebSearch[] {
+  expectedStatus?: ResponsesTerminalStatus,
+): ResponsesTerminalResponse {
   if (!isRecord(value) || !Array.isArray(value.output)) {
     throw new Error(`${label} returned no output items.`);
   }
-  return webSearchesFromResponsesOutput(
-    value.output as Array<Record<string, unknown>>,
-  );
+  if (value.status !== "completed" && value.status !== "incomplete") {
+    throw new Error(`${label} returned an invalid terminal response status.`);
+  }
+  if (expectedStatus !== undefined && value.status !== expectedStatus) {
+    throw new Error(
+      `${label} returned a terminal event that contradicted its response status.`,
+    );
+  }
+  if (
+    (value.error !== undefined && value.error !== null) ||
+    (value.status === "completed" &&
+      value.incomplete_details !== undefined &&
+      value.incomplete_details !== null)
+  ) {
+    throw new Error(`${label} returned contradictory terminal response metadata.`);
+  }
+  return {
+    response: value,
+    output: value.output as Array<Record<string, unknown>>,
+    status: value.status,
+  };
 }
 
 function webSearchesFromResponsesOutput(
@@ -568,34 +589,17 @@ function citationsFromResponsesOutput(
   return normalizeModelCitations(candidates);
 }
 
-function assertCompleteResponseToolCalls(
-  response: Record<string, unknown>,
+function assertCompletedFunctionCallStatuses(
   output: Array<Record<string, unknown>>,
   label: string,
 ): void {
   const functionCalls = output.filter((item) =>
     isRecord(item) && item.type === "function_call"
   );
-  if (functionCalls.length && response.status !== "completed") {
-    const details = isRecord(response.incomplete_details)
-      ? response.incomplete_details
-      : undefined;
-    const status = typeof response.status === "string" && response.status.trim()
-      ? response.status
-      : "missing";
-    const isCompletedOutputLimitBatch = response.status === "incomplete" &&
-      details?.reason === "max_output_tokens" &&
-      functionCalls.every((item) => item.status === "completed");
-    if (!isCompletedOutputLimitBatch) {
-      throw new Error(
-        `${label} returned a tool call response with non-completed status ${status}.`,
-      );
-    }
-  }
   for (const item of functionCalls) {
-    if (typeof item.status === "string" && item.status !== "completed") {
+    if (item.status !== undefined && item.status !== "completed") {
       throw new Error(
-        `${label} returned a function_call with ${item.status} status.`,
+        `${label} returned a function_call with non-completed status.`,
       );
     }
   }
@@ -610,7 +614,7 @@ function requireUniqueToolCallId(
     throw new Error(`${label} returned a tool call ID that was missing or empty.`);
   }
   if (seen.has(value)) {
-    throw new Error(`${label} returned duplicate tool call ID ${value}.`);
+    throw new Error(`${label} returned a duplicate tool call ID.`);
   }
   seen.add(value);
   return value;

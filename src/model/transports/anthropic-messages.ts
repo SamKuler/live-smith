@@ -930,7 +930,7 @@ function requireUniqueToolCallId(value: unknown, seen: Set<string>): string {
     throw new Error("Anthropic Messages returned a tool call ID that was missing or empty.");
   }
   if (seen.has(value)) {
-    throw new Error(`Anthropic Messages returned duplicate tool call ID ${value}.`);
+    throw new Error("Anthropic Messages returned a duplicate tool call ID.");
   }
   seen.add(value);
   return value;
@@ -951,13 +951,13 @@ function assertCompleteAnthropicStopReason(
   if (value === "end_turn" || value === "stop_sequence") {
     if (toolCallCount > 0) {
       throw new Error(
-        `Anthropic Messages returned tool_use blocks with stop_reason ${value}.`,
+        "Anthropic Messages returned tool_use blocks with a non-tool stop_reason.",
       );
     }
     return;
   }
   if (typeof value === "string") {
-    throw new Error(`Anthropic Messages stopped with stop_reason ${value}.`);
+    throw new Error("Anthropic Messages returned an unsupported stop_reason.");
   }
   throw new Error(
     "Anthropic Messages stop_reason was missing before completion.",

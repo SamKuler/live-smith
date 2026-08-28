@@ -134,6 +134,8 @@ export async function prepareRequestAudioSampleSources(
       undefined,
       [],
       results.length,
+      undefined,
+      0,
     );
   }
   return { results, keys };
@@ -153,6 +155,8 @@ export function mergeRequestAudioImportProgress(
       undefined,
       [],
       progress.results.length,
+      undefined,
+      0,
     );
   }
 
@@ -165,6 +169,7 @@ export function mergeRequestAudioImportProgress(
     [[...progress.keys, ...error.completedActionKeys.flat()]],
     progress.results.length + error.completedMutationCount,
     error.failedTrackSelector,
+    error.completedActionCount,
   );
 }
 

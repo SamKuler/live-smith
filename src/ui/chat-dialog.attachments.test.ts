@@ -50,43 +50,7 @@ test("the attachment menu explains the supported drop and paste path without ima
     assert.match(menuText, /images, PDF, Office documents, WAV, and MP3/i);
     assert.match(menuText, /file browsing is not available in this Ableton window/i);
     assert.match(menuText, /active model does not support image input/i);
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
-test("the attachment menu keeps selected Live audio as an explicit secondary action", async () => {
-  const harness = await createDialogHarness();
-  try {
-    harness.click("#attachmentMenuButton");
-    const sourceButton = harness.document.querySelector<HTMLButtonElement>(
-      "#attachSelectedAudioButton",
-    );
-    assert.match(sourceButton?.textContent ?? "", /Attach selected Live audio/);
-    assert.match(sourceButton?.getAttribute("aria-label") ?? "", /selected Live audio/i);
-    assert.match(
-      harness.document.querySelector("#audioSourceAttachmentNote")?.textContent ?? "",
-      /complete source file.*embedded metadata.*not Live.*warped or processed/i,
-    );
-    sourceButton?.focus();
-    sourceButton?.click();
-    assert.equal(
-      harness.document.activeElement,
-      harness.document.querySelector("#attachmentMenuButton"),
-    );
-    assert.equal(
-      harness.document.querySelector<HTMLElement>("#attachmentMenu")?.hidden,
-      true,
-    );
-    await harness.settle();
-    assert.deepEqual(commandCalls(harness).at(-1), {
-      path: "/command",
-      body: {
-        kind: "attach_selected_audio_source",
-        sessionId: "session-1",
-      },
-    });
+    assert.equal(harness.document.querySelector("#attachSelectedAudioButton"), null);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -143,57 +107,6 @@ test("mixed text and audio paste preserves native text behavior while uploading 
       harness.calls.filter((call) => call.path === "/attachments").length,
       1,
     );
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
-test("selected source audio uses the strict Session command and reconciles a pending chip", async () => {
-  const harness = await createDialogHarness();
-  try {
-    harness.click("#attachSelectedAudioButton");
-    await harness.settle();
-    assert.deepEqual(commandCalls(harness).at(-1), {
-      path: "/command",
-      body: {
-        kind: "attach_selected_audio_source",
-        sessionId: "session-1",
-      },
-    });
-    assert.match(
-      harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
-      /Selected audio\.wav · WAV · 1\.5 s · 94 KiB/,
-    );
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
-test("selected source audio exposes busy feedback until its command settles", async () => {
-  const harness = await createDialogHarness();
-  try {
-    harness.holdNextCommand();
-    harness.click("#attachSelectedAudioButton");
-    await harness.settle();
-    const sourceButton = harness.document.querySelector<HTMLButtonElement>(
-      "#attachSelectedAudioButton",
-    );
-    assert.equal(sourceButton?.disabled, true);
-    assert.equal(
-      sourceButton?.getAttribute("aria-label"),
-      "Attaching selected Live audio…",
-    );
-    assert.match(sourceButton?.textContent ?? "", /Attach selected Live audio/);
-    assert.equal(
-      harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
-      true,
-    );
-    harness.releaseHeldCommand();
-    await harness.settle();
-    assert.equal(sourceButton?.disabled, false);
-    assert.equal(sourceButton?.getAttribute("aria-label"), "Attach selected Live audio source");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

@@ -227,15 +227,11 @@
 
       function syncAttachAvailability() {
         const menuButton = document.getElementById("attachmentMenuButton");
-        const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
         const hint = document.getElementById("attachmentCapabilityHint");
         if (menuButton) {
           if (menuButton.disabled !== busy) menuButton.disabled = busy;
           const title = imageCapabilityHint();
           if (menuButton.title !== title) menuButton.title = title;
-        }
-        if (selectedAudioButton && selectedAudioButton.disabled !== busy) {
-          selectedAudioButton.disabled = busy;
         }
         if (hint) {
           const text = imageCapabilityHint();
@@ -497,14 +493,6 @@
         return Boolean(clipboardData.getData("text/plain"));
       }
 
-      async function attachSelectedAudioSource() {
-        if (busy) return;
-        setAttachmentMenuOpen(false, { restoreFocus: true });
-        await runCommand("attach_selected_audio_source", {
-          sessionId: getState().activeSessionId,
-        });
-      }
-
       function initialize() {
         if (initialized) return;
         initialized = true;
@@ -512,14 +500,10 @@
         const prompt = document.getElementById("prompt");
         const menuShell = document.getElementById("attachmentMenuShell");
         const menuButton = document.getElementById("attachmentMenuButton");
-        const selectedAudioButton = document.getElementById("attachSelectedAudioButton");
 
         menuButton?.addEventListener("click", () => {
           const expanded = menuButton.getAttribute("aria-expanded") === "true";
           setAttachmentMenuOpen(!expanded);
-        });
-        selectedAudioButton?.addEventListener("click", () => {
-          void attachSelectedAudioSource();
         });
         document.addEventListener("click", (event) => {
           if (!menuShell?.contains(event.target)) setAttachmentMenuOpen(false);

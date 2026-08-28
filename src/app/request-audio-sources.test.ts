@@ -181,6 +181,7 @@ test("request audio preparation reports an earlier import when a later source fa
     (error: unknown) => {
       assert.ok(error instanceof AgentPlanExecutionError);
       assert.equal(error.completedMutationCount, 1);
+      assert.equal(error.completedActionCount, 0);
       assert.equal(error.completedResults.length, 1);
       assert.deepEqual(error.completedActionKeys, []);
       return true;
@@ -210,6 +211,7 @@ test("request audio preparation reports an earlier import when a later source fa
     "live-action-step:drum-pad:insert-simpler",
   ]]);
   assert.equal(merged.completedMutationCount, 3);
+  assert.equal(merged.completedActionCount, 0);
 });
 
 test("request audio import failures hide staging and project paths", async () => {

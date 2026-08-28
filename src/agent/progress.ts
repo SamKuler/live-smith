@@ -79,11 +79,15 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
     return "Preparing Live changes";
   }
 
+  if (toolCall.name === "resolve_live_recovery") {
+    return "Reviewing unfinished Live work";
+  }
+
   return `Running ${toolCall.name}`;
 }
 
 export function progressLabelForActionPlan(plan: AgentPlan): string {
-  return `Applying ${plan.actions.length} Live action${plan.actions.length === 1 ? "" : "s"}`;
+  return `Preparing ${plan.actions.length} Live action${plan.actions.length === 1 ? "" : "s"}`;
 }
 
 function parseArgs(value: string): Record<string, unknown> {

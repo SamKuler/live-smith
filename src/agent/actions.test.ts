@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MAX_AGENT_PLAN_ACTIONS,
   observationRequestForAction,
   validateAgentPlan,
   requiresExplicitConfirmation,
@@ -19,6 +20,23 @@ test("validateAgentPlan rejects empty action tool calls", () => {
   assert.throws(
     () => validateAgentPlan({ message: "Nothing to do", actions: [] }),
     /at least one action/,
+  );
+});
+
+test("validateAgentPlan bounds one apply before preflight work begins", () => {
+  const action = { type: "set_tempo", tempo: 120 };
+  const accepted = validateAgentPlan({
+    message: "Apply one bounded stage",
+    actions: Array.from({ length: MAX_AGENT_PLAN_ACTIONS }, () => action),
+  });
+  assert.equal(accepted.actions.length, MAX_AGENT_PLAN_ACTIONS);
+
+  assert.throws(
+    () => validateAgentPlan({
+      message: "Oversized stage",
+      actions: Array.from({ length: MAX_AGENT_PLAN_ACTIONS + 1 }, () => action),
+    }),
+    new RegExp(`at most ${MAX_AGENT_PLAN_ACTIONS} actions`, "i"),
   );
 });
 
@@ -50,6 +68,49 @@ test("validateAgentPlan rejects unsafe or malformed note data", () => {
     }),
     /velocity/i,
   );
+  for (const [field, value, range] of [
+    ["probability", 1.01, "0 and 1"],
+    ["velocityDeviation", -127.01, "-127 and 127"],
+    ["releaseVelocity", 127.01, "0 and 127"],
+  ] as const) {
+    assert.throws(
+      () => validateAgentPlan({
+        message: `Invalid ${field}`,
+        actions: [{
+          type: "create_midi_clip",
+          startBeat: 0,
+          durationBeats: 4,
+          notes: [{
+            pitch: 60,
+            startTime: 0,
+            duration: 1,
+            velocity: 100,
+            [field]: value,
+          }],
+        }],
+      }),
+      new RegExp(`${field} must be between ${range}`, "i"),
+    );
+  }
+
+  const boundaryPlan = validateAgentPlan({
+    message: "Boundary note expression",
+    actions: [{
+      type: "create_midi_clip",
+      startBeat: 0,
+      durationBeats: 4,
+      notes: [{
+        pitch: 60,
+        startTime: 0,
+        duration: 1,
+        velocity: 100,
+        probability: 0,
+        velocityDeviation: 127,
+        releaseVelocity: 0,
+      }],
+    }],
+  });
+  assert.equal(boundaryPlan.actions[0]?.type, "create_midi_clip");
 });
 
 test("summarizeActionPlan makes a confirmation-friendly summary", () => {

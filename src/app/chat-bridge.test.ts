@@ -124,22 +124,6 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
       headers: correlatedJsonHeaders("command"),
       body: JSON.stringify({ kind: "archive_session", sessionId: "s1" }),
     });
-    const attachActiveSession = await fetch(endpoint("/command"), {
-      method: "POST",
-      headers: correlatedJsonHeaders("command"),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: "s1",
-      }),
-    });
-    const attachOtherSession = await fetch(endpoint("/command"), {
-      method: "POST",
-      headers: correlatedJsonHeaders("command"),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: "s2",
-      }),
-    });
     const selectModelForActiveSession = await fetch(endpoint("/command"), {
       method: "POST",
       headers: correlatedJsonHeaders("command"),
@@ -198,11 +182,6 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     assert.deepEqual(await archiveActiveSession.json(), {
       error: "Stop this Session's active request before archiving it.",
     });
-    assert.equal(attachActiveSession.status, 409);
-    assert.deepEqual(await attachActiveSession.json(), {
-      error: "Stop this Session's active request before attaching its selected audio source.",
-    });
-    assert.equal(attachOtherSession.status, 200);
     assert.equal(selectModelForActiveSession.status, 409);
     assert.deepEqual(await selectModelForActiveSession.json(), {
       error: "Wait for this Session's active request to finish before changing its model.",
@@ -217,7 +196,7 @@ test("chat bridge isolates active sends by Session and keeps Session commands av
     assert.deepEqual(await profileCommand.json(), {
       error: "Profile settings cannot change while an agent request is active.",
     });
-    assert.equal(commandCalls, 5);
+    assert.equal(commandCalls, 4);
   } finally {
     releaseSend();
     await firstSend;
@@ -488,6 +467,7 @@ test("chat bridge success SSE uses the caller's send correlation ID", async () =
       (doneEvent.state as ChatDialogState).sessionActivities,
       [{
         sessionId: "s1",
+        sendId,
         status: "completed",
         message: "Completed",
         unread: true,
@@ -924,14 +904,16 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
     handleCommand: async () => state,
     handleSend: async (_input, stream) => {
       const result = stream.requestConfirmation({
+        kind: "apply",
         message: "Apply one change?",
         groups: [{ title: "Song", rows: ["Set tempo to 124 BPM"] }],
       });
       markConfirmationPending();
       confirmationResult = await result;
       const secondResult = stream.requestConfirmation({
-        message: "Apply another change?",
-        groups: [{ title: "Track", rows: ["Rename Lead"] }],
+        kind: "resolve_recovery",
+        message: "Keep completed changes and close the unfinished operation?",
+        groups: [],
       });
       markSecondConfirmationPending();
       secondConfirmationResult = await secondResult;
@@ -957,6 +939,7 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
     assert.equal(payload.type, "confirm_request");
     assert.equal(payload.sendId, sendId);
     assert.equal(payload.sessionId, "s1");
+    assert.equal(payload.kind, "apply");
     assert.equal(payload.message, "Apply one change?");
     assert.deepEqual(payload.groups, [
       { title: "Song", rows: ["Set tempo to 124 BPM"] },
@@ -1003,16 +986,41 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
     const secondPayload = await readSsePayload(secondEvents, "confirm_request");
     assert.notEqual(secondPayload.id, payload.id);
     assert.equal(secondPayload.confirmationGeneration, 2);
+    assert.equal(secondPayload.kind, "resolve_recovery");
+    assert.deepEqual(secondPayload.groups, []);
+    const secondResolvedEvents = await fetch(endpoint("/events"));
+    const secondResolvedPayload = readSsePayload(
+      secondResolvedEvents,
+      "confirm_resolved",
+    );
     const secondConfirmation = await fetch(endpoint("/confirm"), {
       method: "POST",
       headers: correlatedJsonHeaders(),
       body: JSON.stringify({ id: secondPayload.id, apply: false }),
     });
     assert.equal(secondConfirmation.status, 200);
-    assert.equal(
-      ((await secondConfirmation.json()) as Record<string, unknown>)
-        .confirmationGeneration,
-      2,
+    const secondConfirmationBody = await secondConfirmation.json() as Record<
+      string,
+      unknown
+    >;
+    assert.equal(secondConfirmationBody.confirmationGeneration, 2);
+    assert.deepEqual(secondConfirmationBody.activity, {
+      status: "running",
+      message: "Keeping unfinished operation active",
+    });
+    assert.deepEqual(
+      withoutBridgeStateRevisions(await secondResolvedPayload),
+      {
+        type: "confirm_resolved",
+        sendId,
+        sessionId: "s1",
+        id: secondPayload.id,
+        confirmationGeneration: 2,
+        activity: {
+          status: "running",
+          message: "Keeping unfinished operation active",
+        },
+      },
     );
     assert.equal((await send).status, 200);
     assert.equal(confirmationResult, false);
@@ -1220,6 +1228,7 @@ test("stop fences late stream publications without hiding durable Session events
       await stream.progress("Late progress after Stop");
       confirmationAfterStop = await Promise.race([
         stream.requestConfirmation({
+          kind: "apply",
           message: "Late confirmation after Stop?",
           groups: [{ title: "Song", rows: ["Set tempo"] }],
         }),
@@ -1270,6 +1279,7 @@ test("stop fences late stream publications without hiding durable Session events
     const refreshed = await (await fetch(endpoint("/state"))).json() as ChatBridgeState;
     assert.deepEqual(refreshed.sessionActivities, [{
       sessionId: "s1",
+      sendId: "send-stop-publication-fence",
       status: "stopped",
       message: "Stopped",
       unread: false,
@@ -1930,6 +1940,7 @@ test("a confirmation requested after bridge shutdown starts resolves without dea
         signal.addEventListener("abort", () => resolve(), { once: true });
       });
       confirmationResult = await stream.requestConfirmation({
+        kind: "apply",
         message: "Late confirmation",
         groups: [{ title: "Song", rows: ["Set tempo"] }],
       });
@@ -2126,45 +2137,6 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     );
     assert.equal(commandInput, undefined);
 
-    const validSourceAttach = await fetch(endpoint("/command"), {
-      method: "POST",
-      headers: correlatedJsonHeaders("command"),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: "session-audio",
-      }),
-    });
-    assert.equal(validSourceAttach.status, 200);
-    assert.deepEqual(commandInput, {
-      kind: "attach_selected_audio_source",
-      sessionId: "session-audio",
-    });
-
-    for (const forbidden of [
-      { path: "/private/sample.wav" },
-      { filePath: "/private/sample.wav" },
-      { fileName: "sample.wav" },
-      { attachmentId: "attachment-1" },
-      { profileId: "profile-1" },
-      { profile: { apiKey: "must-not-pass" } },
-    ]) {
-      commandInput = undefined;
-      const rejected = await fetch(endpoint("/command"), {
-        method: "POST",
-        headers: correlatedJsonHeaders("command"),
-        body: JSON.stringify({
-          kind: "attach_selected_audio_source",
-          sessionId: "session-audio",
-          ...forbidden,
-        }),
-      });
-      assert.equal(rejected.status, 400);
-      assert.match(
-        (await rejected.json() as { error: string }).error,
-        /does not support property/i,
-      );
-      assert.equal(commandInput, undefined);
-    }
   } finally {
     await bridge.close();
   }

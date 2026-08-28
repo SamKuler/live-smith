@@ -1406,6 +1406,10 @@ test("an expanded partial Apply Result does not repeat its summary line", async 
       index: 2,
     },
     "FB Lead",
+    [],
+    9,
+    undefined,
+    9,
   );
   state.events = [{
     id: "event-partial-apply-once",
@@ -1422,7 +1426,7 @@ test("an expanded partial Apply Result does not repeat its summary line", async 
     assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Partial Apply —"), true);
     const itemText = item?.textContent ?? "";
     assert.equal(
-      itemText.match(/Live action plan partially completed after 9 action\(s\)\./g)?.length,
+      itemText.match(/Live action plan partially completed after 9 operation\(s\)\./g)?.length,
       1,
     );
     assert.match(itemText, /Failed action 10: Insert Live device "Ping Pong Delay"/);
@@ -1439,9 +1443,9 @@ test("a zero-completion Apply failure is labeled failed and opened by default", 
     createdAt: "2026-08-06T00:00:00.000Z",
     kind: "apply_result",
     content: [
-      "Live action plan could not complete its first action.",
+      "Live action plan could not complete its first operation.",
       'Failed action 1: Insert Live device "Drift" on track "Arp".',
-      "No actions from this plan were completed.",
+      "No operations from this plan were completed.",
       "Failed to insert device",
     ].join("\n"),
   }];
@@ -1452,7 +1456,7 @@ test("a zero-completion Apply failure is labeled failed and opened by default", 
     );
     assert.equal(item?.open, true);
     assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Apply Failed —"), true);
-    assert.match(item?.textContent ?? "", /No actions from this plan were completed/);
+    assert.match(item?.textContent ?? "", /No operations from this plan were completed/);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

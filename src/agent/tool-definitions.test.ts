@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { agentActionJsonSchemas } from "./action-schema.js";
+import { MAX_AGENT_PLAN_ACTIONS } from "./actions.js";
 import { liveSmithTools } from "./tool-definitions.js";
 
 test("apply_live_actions exposes every validated action schema", () => {
@@ -60,14 +61,26 @@ test("apply_live_actions exposes every validated action schema", () => {
   );
   const parameters = applyTool?.function.parameters as {
     properties?: {
-      actions?: { items?: { anyOf?: unknown[] } };
+      actions?: { items?: { anyOf?: unknown[] }; maxItems?: number };
       targets?: { additionalProperties?: unknown };
       resolvesPriorFailure?: { type?: unknown };
     };
   };
   assert.equal(parameters.properties?.actions?.items?.anyOf?.length, actionTypes.length);
+  assert.equal(parameters.properties?.actions?.maxItems, MAX_AGENT_PLAN_ACTIONS);
   assert.ok(parameters.properties?.targets?.additionalProperties);
   assert.equal(parameters.properties?.resolvesPriorFailure?.type, "boolean");
+
+  const recoveryResolution = liveSmithTools().find(
+    (tool) => tool.function.name === "resolve_live_recovery",
+  )?.function.parameters as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+  assert.deepEqual(recoveryResolution.properties, {});
+  assert.deepEqual(recoveryResolution.required, []);
+  assert.equal(recoveryResolution.additionalProperties, false);
 
   for (const type of ["create_midi_clip", "create_arrangement_audio_clip"]) {
     const schema = agentActionJsonSchemas().find(

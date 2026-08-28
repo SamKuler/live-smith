@@ -306,7 +306,7 @@ for (const permission of [
     command: { kind: "set_session_edit_scopes", editScopes: [] },
   },
 ] as const) {
-test(`concurrent dialogs serialize pristine Session creation and ${permission.label} intent`, async (t) => {
+test(`claimed empty Sessions isolate concurrent ${permission.label} intent`, async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-session-lifecycle-race-"),
   );
@@ -363,54 +363,50 @@ test(`concurrent dialogs serialize pristine Session creation and ${permission.la
     const secondState = await (
       await fetch(endpoint(secondUrl, secondToken, "/state"))
     ).json() as ChatDialogState;
-    assert.equal(secondState.activeSessionId, firstState.activeSessionId);
-
-    await appendSessionEvent(directory, firstState.activeSessionId, {
-      kind: "user",
-      content: "Existing conversation",
-    });
+    assert.notEqual(secondState.activeSessionId, firstState.activeSessionId);
     const create = (url: URL, token: string | null) =>
       fetch(endpoint(url, token, "/command"), {
         method: "POST",
         headers: commandHeaders(),
         body: JSON.stringify({ kind: "new_session" }),
       });
-    const [firstResponse, secondResponse] = await Promise.all([
-      create(firstUrl, firstToken),
-      create(secondUrl, secondToken),
-    ]);
-    const firstBody = await firstResponse.text();
-    const secondBody = await secondResponse.text();
-    assert.equal(firstResponse.status, 200, firstBody);
-    assert.equal(secondResponse.status, 200, secondBody);
-    const first = JSON.parse(firstBody) as ChatDialogState;
-    const second = JSON.parse(secondBody) as ChatDialogState;
-    assert.notEqual(first.activeSessionId, firstState.activeSessionId);
-    assert.equal(second.activeSessionId, first.activeSessionId);
-    assert.equal((await listSessions(directory)).length, 2);
-
     holdApprovalCommit = true;
     const approval = fetch(endpoint(firstUrl, firstToken, "/command"), {
       method: "POST",
       headers: commandHeaders(),
       body: JSON.stringify({
         ...permission.command,
-        sessionId: first.activeSessionId,
+        sessionId: firstState.activeSessionId,
       }),
     });
     await approvalCommitStarted.promise;
-    const newDuringApproval = create(secondUrl, secondToken);
+    const newDuringApproval = await Promise.race([
+      create(secondUrl, secondToken),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("Independent New Session was blocked.")), 1_000);
+      }),
+    ]);
     releaseApprovalCommit.resolve();
     const approvalResponse = await approval;
     assert.equal(approvalResponse.status, 200);
     const approvalState = await approvalResponse.json() as ChatDialogState;
     assert.equal(approvalState.status, undefined);
-    const afterApprovalResponse = await newDuringApproval;
-    const afterApprovalBody = await afterApprovalResponse.text();
-    assert.equal(afterApprovalResponse.status, 200, afterApprovalBody);
+    if (permission.label === "approval") {
+      assert.equal(approvalState.approvalMode, "low-risk");
+    } else {
+      assert.deepEqual(
+        approvalState.sessions.find(
+          (session) => session.id === firstState.activeSessionId,
+        )?.editScopes,
+        [],
+      );
+    }
+    const afterApprovalBody = await newDuringApproval.text();
+    assert.equal(newDuringApproval.status, 200, afterApprovalBody);
     const afterApproval = JSON.parse(afterApprovalBody) as ChatDialogState;
-    assert.notEqual(afterApproval.activeSessionId, first.activeSessionId);
-    assert.equal((await listSessions(directory)).length, 3);
+    assert.equal(afterApproval.activeSessionId, secondState.activeSessionId);
+    assert.notEqual(afterApproval.activeSessionId, firstState.activeSessionId);
+    assert.equal((await listSessions(directory)).length, 2);
   } finally {
     releaseApprovalCommit.resolve();
     closeFirst.resolve();

@@ -59,6 +59,36 @@ export function songTrackEntryForTrack(
   return songTrackEntries(song).find((entry) => sameTrack(entry.track, track));
 }
 
+/** Exact regular-track tree copied or removed by whole-track operations. */
+export function affectedTrackTree(
+  context: Api,
+  track: Track<"1.0.0">,
+): Track<"1.0.0">[] {
+  const affected = [track];
+  const seen = new Set([trackTraversalHandleId(track)]);
+  for (const parent of affected) {
+    const parentId = trackTraversalHandleId(parent);
+    for (const candidate of context.application.song.tracks) {
+      const group = candidate.groupTrack;
+      if (!group || trackTraversalHandleId(group) !== parentId) continue;
+      const candidateId = trackTraversalHandleId(candidate);
+      if (!seen.has(candidateId)) {
+        seen.add(candidateId);
+        affected.push(candidate);
+      }
+    }
+  }
+  return affected;
+}
+
+function trackTraversalHandleId(track: Track<"1.0.0">): string {
+  const id = track.handle?.id;
+  if (id === undefined || id === null) {
+    throw new Error("Could not verify Track handle identity.");
+  }
+  return String(id);
+}
+
 export function trackHeading(
   song: Song<"1.0.0">,
   track: Track<"1.0.0">,

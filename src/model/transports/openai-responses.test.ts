@@ -1565,6 +1565,38 @@ test("OpenAI Responses failed events with malformed output still use a fixed err
   );
 });
 
+test("OpenAI Responses cancelled events do not expose provider error details", async () => {
+  const sentinel = "responses-cancelled-private-sentinel";
+  const sse = `data: ${JSON.stringify({
+    type: "response.cancelled",
+    response: {
+      status: "cancelled",
+      error: { code: sentinel, message: sentinel },
+      output: [],
+    },
+  })}\n\n`;
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const req = request(profile());
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    (error: unknown) => {
+      assert.equal(
+        String(error),
+        "Error: openai/responses request failed: OpenAI Responses was cancelled.",
+      );
+      assert.doesNotMatch(String(error), new RegExp(sentinel));
+      return true;
+    },
+  );
+});
+
 test("OpenAI Responses preserves incomplete terminal output", async () => {
   const response = {
     status: "incomplete",
@@ -1624,7 +1656,7 @@ test("OpenAI Responses returns replayable recovery state for max-output incomple
   );
 });
 
-test("OpenAI Responses executes only protocol-completed calls from a max-output response", async () => {
+test("OpenAI Responses never executes calls from an incomplete top-level response", async () => {
   const completedCall = {
     id: "fc-completed-before-limit",
     type: "function_call",
@@ -1633,30 +1665,41 @@ test("OpenAI Responses executes only protocol-completed calls from a max-output 
     arguments: "{\"trackName\":\"Lead\"}",
     status: "completed",
   };
-  const transport = createOpenAIResponsesTransport({
-    fetchImpl: async () => new Response(JSON.stringify({
-      status: "incomplete",
-      incomplete_details: { reason: "max_output_tokens" },
-      output_text: "I will inspect the selected track.",
-      output: [completedCall],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }),
-  });
+  const response = {
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+    output_text: "I will inspect the selected track.",
+    output: [completedCall],
+  };
 
-  const turn = await transport.createToolTurn(request(profile()));
+  for (const streaming of [false, true]) {
+    const payload = streaming
+      ? `data: ${JSON.stringify({ type: "response.incomplete", response })}\n\n`
+      : JSON.stringify(response);
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: {
+          "Content-Type": streaming ? "text/event-stream" : "application/json",
+        },
+      }),
+    });
+    const req = request(profile());
+    if (streaming) req.onDelta = () => {};
 
-  assert.equal(turn.continuation, undefined);
-  assert.deepEqual(turn.toolCalls, [{
-    id: "call-completed-before-limit",
-    name: "inspect",
-    arguments: "{\"trackName\":\"Lead\"}",
-  }]);
-  assert.deepEqual(
-    (turn.providerState as { output: unknown[] }).output,
-    [completedCall],
-  );
+    const turn = await transport.createToolTurn(req);
+
+    assert.deepEqual(turn.continuation, { reason: "output_limit" });
+    assert.deepEqual(turn.toolCalls, []);
+    assert.deepEqual(
+      (turn.providerState as { output: unknown[] }).output,
+      [completedCall],
+    );
+  }
 });
 
 test("OpenAI Responses rejects non-recoverable and malformed tool-call statuses", async () => {
+  const sentinel = "responses-private-function-status";
   const cases = [
     {
       status: "incomplete",
@@ -1667,6 +1710,8 @@ test("OpenAI Responses rejects non-recoverable and malformed tool-call statuses"
     { status: "completed", itemStatus: "incomplete" },
     { status: "completed", itemStatus: "in_progress" },
     { status: "completed", itemStatus: "failed" },
+    { status: "completed", itemStatus: sentinel },
+    { status: "completed", itemStatus: null },
   ] as const;
 
   for (const candidate of cases) {
@@ -1689,7 +1734,14 @@ test("OpenAI Responses rejects non-recoverable and malformed tool-call statuses"
 
     await assert.rejects(
       transport.createToolTurn(request(profile())),
-      /non-recoverable incomplete|tool call response|function_call.*(incomplete|in_progress|failed)/i,
+      (error: unknown) => {
+        assert.match(
+          String(error),
+          /non-recoverable incomplete|invalid terminal response status|function_call.*non-completed status/i,
+        );
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
     );
   }
 });
@@ -1711,16 +1763,152 @@ test("OpenAI Responses rejects every non-completed tool-call response status", a
 
     await assert.rejects(
       transport.createToolTurn(request(profile())),
-      /tool call response.*non-completed status/i,
+      /invalid terminal response status/i,
     );
   }
 });
 
+test("OpenAI Responses rejects non-terminal top-level JSON statuses before accepting text", async () => {
+  const sentinel = "responses-invalid-status-private-text";
+  for (const status of ["failed", "cancelled", "in_progress", undefined]) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        ...(status === undefined ? {} : { status }),
+        output_text: sentinel,
+        output: [{
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: sentinel, annotations: [] }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.match(String(error), /invalid terminal response status/i);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("OpenAI Responses rejects SSE terminal events that contradict response status", async () => {
+  const cases = [
+    { eventType: "response.completed", status: "incomplete" },
+    { eventType: "response.incomplete", status: "completed" },
+    { eventType: "response.completed", status: "in_progress" },
+    { eventType: "response.incomplete", status: undefined },
+  ] as const;
+
+  for (const candidate of cases) {
+    const response = {
+      ...(candidate.status === undefined ? {} : { status: candidate.status }),
+      ...(candidate.status === "incomplete"
+        ? { incomplete_details: { reason: "max_output_tokens" } }
+        : {}),
+      output_text: "must not be accepted",
+      output: [{
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "must not be accepted" }],
+      }],
+    };
+    const sse = `data: ${JSON.stringify({
+      type: candidate.eventType,
+      response,
+    })}\n\n`;
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(sse, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    });
+    const req = request(profile());
+    req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /terminal event.*contradicted|invalid terminal response status/i,
+    );
+  }
+});
+
+test("OpenAI Responses rejects contradictory terminal metadata without exposing it", async () => {
+  const sentinel = "responses-private-terminal-metadata";
+  const cases = [
+    {
+      status: "completed",
+      eventType: "response.completed",
+      error: { message: sentinel },
+    },
+    {
+      status: "completed",
+      eventType: "response.completed",
+      incomplete_details: { reason: sentinel },
+    },
+    {
+      status: "incomplete",
+      eventType: "response.incomplete",
+      error: { message: sentinel },
+      incomplete_details: { reason: "max_output_tokens" },
+    },
+  ] as const;
+
+  for (const streaming of [false, true]) {
+    for (const candidate of cases) {
+      const response = {
+        status: candidate.status,
+        ...("error" in candidate ? { error: candidate.error } : {}),
+        ...("incomplete_details" in candidate
+          ? { incomplete_details: candidate.incomplete_details }
+          : {}),
+        output: [{
+          type: "function_call",
+          call_id: "call-metadata",
+          name: "inspect",
+          arguments: "{}",
+          status: "completed",
+        }],
+      };
+      const payload = streaming
+        ? `data: ${JSON.stringify({
+            type: candidate.eventType,
+            response,
+          })}\n\n`
+        : JSON.stringify(response);
+      const transport = createOpenAIResponsesTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+
+      await assert.rejects(
+        transport.createToolTurn(req),
+        (error: unknown) => {
+          assert.match(String(error), /contradictory terminal response metadata/i);
+          assert.doesNotMatch(String(error), new RegExp(sentinel));
+          return true;
+        },
+      );
+    }
+  }
+});
+
 test("OpenAI Responses rejects missing, empty, and duplicate call IDs in both response modes", async () => {
+  const duplicateSentinel = "responses-private-duplicate-call-id";
   const invalidCallIds: Array<Array<string | undefined>> = [
     [undefined],
     [""],
-    ["duplicate", "duplicate"],
+    [duplicateSentinel, duplicateSentinel],
   ];
 
   for (const streaming of [false, true]) {
@@ -1751,7 +1939,11 @@ test("OpenAI Responses rejects missing, empty, and duplicate call IDs in both re
 
       await assert.rejects(
         transport.createToolTurn(req),
-        /tool call ID/i,
+        (error: unknown) => {
+          assert.match(String(error), /tool call ID/i);
+          assert.doesNotMatch(String(error), new RegExp(duplicateSentinel));
+          return true;
+        },
       );
     }
   }
@@ -1878,7 +2070,7 @@ test("OpenAI Responses recovers streaming max-output tool calls and rejects othe
 
     await assert.rejects(
       transport.createToolTurn(req),
-      /non-recoverable incomplete|tool call response|function_call.*(in_progress|failed)/i,
+      /non-recoverable incomplete|invalid terminal response status|terminal event.*contradicted|function_call.*non-completed status/i,
     );
   }
 });

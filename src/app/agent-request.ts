@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import {
   AgentPartialCompletionError,
+  AgentRecoveryResolutionReportingError,
   AgentSteeringBeforeApplyError,
   AgentSteeringInterruptError,
   runAgentLoop,
@@ -115,7 +116,10 @@ import {
   recoveryContextFromEvents,
   sessionTitleForPrompt,
 } from "./session-context.js";
-import { resolveSkillContext } from "./skill-context.js";
+import {
+  resolveSkillContext,
+  type ResolvedSkillContext,
+} from "./skill-context.js";
 import {
   subscribeSessionEditScopesChanges,
   subscribeSessionEditScopesInvalidations,
@@ -186,11 +190,12 @@ export async function handleAgentRequest(
       storageDirectory,
       session.id,
     );
-    const skillContext = await resolveSkillContext({
-      storageDirectory: storageDirectory,
-      sessionSkillIds: session.activeSkillIds ?? [],
-      prompt,
-    });
+    const skillContext = callbacks.skillContextSnapshot ??
+      await resolveSkillContext({
+        storageDirectory,
+        sessionSkillIds: session.activeSkillIds ?? [],
+        prompt,
+      });
     const currentAttachments = await listPendingSessionAttachments(
       storageDirectory,
       session.id,
@@ -227,6 +232,7 @@ export async function handleAgentRequest(
       );
     } catch (error) {
       if (isStorageCommitOutcomeUnknownError(error)) {
+        await callbacks.onSessionStateInvalidated?.();
         throw new ChatBridgePromptPersistenceUnknownError(
           "Prompt storage commit could not be confirmed.",
           { cause: error },
@@ -587,6 +593,9 @@ export async function handleAgentRequest(
           requestAudioSources,
         ),
       confirmActions: callbacks.confirmActions,
+      ...(callbacks.confirmRecoveryResolution
+        ? { confirmRecoveryResolution: callbacks.confirmRecoveryResolution }
+        : {}),
       executeActions: async (plan, rawBindings, revalidateAfterImport) => {
         let bindings = rawBindings as AgentPlanBindings;
         const assertActionBoundary = (actionIndex: number, action: AgentPlan["actions"][number]) => {
@@ -660,9 +669,7 @@ export async function handleAgentRequest(
               mutationCount: error.completedMutationCount,
               incompleteRecovery: {
                 completedActionKeys: error.completedActionKeys,
-                ...(error.failedActionIndex === undefined
-                  ? {}
-                  : { failedActionIndex: error.failedActionIndex }),
+                completedActionCount: error.completedActionCount,
                 failureMessage:
                   "The request was stopped before every confirmed Live action completed.",
               },
@@ -677,6 +684,7 @@ export async function handleAgentRequest(
               error.completedActionKeys,
               error.completedMutationCount,
               error.failedTrackSelector,
+              error.completedActionCount,
             );
           } else {
             throw error;
@@ -712,6 +720,13 @@ export async function handleAgentRequest(
     });
     return loopResult.message;
   } catch (error) {
+    if (
+      isStorageCommitOutcomeUnknownError(error) ||
+      error instanceof AgentRecoveryResolutionReportingError ||
+      error instanceof SteeringPersistenceOutcomeUnknownError
+    ) {
+      await callbacks.onSessionStateInvalidated?.();
+    }
     try {
       const errorEvent = await appendSessionEvent(
         storageDirectory,
@@ -723,6 +738,9 @@ export async function handleAgentRequest(
       );
       await callbacks.onSessionEvent(errorEvent);
     } catch (persistenceError) {
+      if (isStorageCommitOutcomeUnknownError(persistenceError)) {
+        await callbacks.onSessionStateInvalidated?.();
+      }
       console.error("Failed to persist the agent request error.", persistenceError);
     }
     throw error;
@@ -949,6 +967,8 @@ async function captureAgentPlanPreflightSnapshots(
 
 interface AgentRequestCallbacks {
   signal: AbortSignal;
+  /** Configuration snapshot captured atomically with the selected Profile. */
+  skillContextSnapshot?: ResolvedSkillContext;
   steering?: SteeringChannel;
   steeringSendId?: string;
   onDelta(delta: string): Promise<void> | void;
@@ -959,9 +979,11 @@ interface AgentRequestCallbacks {
     update: ModelHostedWebSearch,
   ): Promise<void> | void;
   onSessionEvent(event: SessionEvent): Promise<void> | void;
+  onSessionStateInvalidated?(): Promise<void> | void;
   confirmActions(
     plan: AgentPlan,
   ): Promise<boolean | AgentConfirmationDecision>;
+  confirmRecoveryResolution?(message: string): Promise<boolean>;
   withActionExecutionLock?(
     operation: () => Promise<AgentActionExecutionOutcome>,
   ): Promise<AgentActionExecutionOutcome>;

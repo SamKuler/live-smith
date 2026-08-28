@@ -212,6 +212,7 @@ test("a terminal steering receipt retry cannot rewrite a newer send activity", a
     ).json() as { sessionActivities?: unknown };
     assert.deepEqual(refreshed.sessionActivities, [{
       sessionId: "session-1",
+      sendId: "send-b",
       status: "running",
       message: "Send B progress",
       unread: false,
@@ -247,6 +248,7 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
       entry.accept();
       await startLaterConfirmation.promise;
       laterConfirmation = stream.requestConfirmation({
+        kind: "apply",
         message: "Apply the steered plan?",
         groups: [{ title: "Track", rows: ["Rename Lead"] }],
       });
@@ -340,6 +342,7 @@ test("steering supersedes an open confirmation before it is persisted", async ()
     handleSend: async (_input, stream, _signal, steering) => {
       confirmationStarted.resolve();
       confirmationResult = await stream.requestConfirmation({
+        kind: "apply",
         message: "Apply the old plan?",
         groups: [{ title: "Track", rows: ["Delete track"] }],
       });
@@ -432,6 +435,7 @@ test("the HTTP bridge reports steering mailbox capacity as a conflict", async ()
     handleSend: async (_input, stream, _signal, steering) => {
       steeringChannel = steering;
       confirmation = stream.requestConfirmation({
+        kind: "apply",
         message: "Apply the pending plan?",
         groups: [{ title: "Track", rows: ["Rename track"] }],
       });

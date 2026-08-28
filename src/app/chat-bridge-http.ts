@@ -15,6 +15,10 @@ import {
 } from "../skills/format.js";
 import { requireSafeStorageId } from "../storage/id.js";
 import {
+  MAX_SESSION_TITLE_CODE_POINTS,
+  isSessionTitle,
+} from "../storage/sessions.js";
+import {
   isApprovalMode,
   isDefaultFollowUpBehavior,
   isReasoningEffort,
@@ -128,7 +132,6 @@ export type ChatBridgeCommandInput =
   | { kind: "rename_session"; sessionId: string; title: string }
   | { kind: "archive_session"; sessionId: string }
   | { kind: "unarchive_session"; sessionId: string }
-  | { kind: "attach_selected_audio_source"; sessionId: string }
   | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
   | { kind: "discover_models"; profile: DraftProfile };
 
@@ -914,8 +917,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     kind === "restore_session" ||
     kind === "delete_session" ||
     kind === "archive_session" ||
-    kind === "unarchive_session" ||
-    kind === "attach_selected_audio_source"
+    kind === "unarchive_session"
   ) {
     assertOnlyInputKeys(input, ["kind", "sessionId"], `${kind} command`);
     return { kind, sessionId: inputString(input, "sessionId") };
@@ -926,10 +928,16 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       ["kind", "sessionId", "title"],
       `${kind} command`,
     );
+    const title = inputString(input, "title");
+    if (!isSessionTitle(title)) {
+      throw new ChatBridgeRequestValidationError(
+        `title may not exceed ${MAX_SESSION_TITLE_CODE_POINTS} characters.`,
+      );
+    }
     return {
       kind,
       sessionId: inputString(input, "sessionId"),
-      title: inputString(input, "title"),
+      title,
     };
   }
   if (kind === "set_session_skills") {

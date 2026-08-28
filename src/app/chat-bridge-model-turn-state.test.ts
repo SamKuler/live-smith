@@ -38,6 +38,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       await stream.webSearchUpdate(searchUpdate("current-search"));
       await stream.progress("Inspecting sources");
       const confirmation = stream.requestConfirmation({
+        kind: "apply",
         message: "Apply?",
         groups: [{ title: "Song", rows: ["Set tempo"] }],
       });
@@ -100,6 +101,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       resolvedConfirmationGeneration: 0,
     });
     assert.equal(confirmation.type, "confirm_request");
+    assert.equal(confirmation.kind, "apply");
     assert.equal(confirmation.modelTurnEpoch, 1);
     assert.equal(confirmation.confirmationGeneration, 1);
     const response = await fetch(endpoint("/confirm"), {

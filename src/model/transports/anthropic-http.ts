@@ -1,6 +1,7 @@
 import { URL } from "node:url";
 
 import {
+  assertApiKeyCanBeUsedInHttpHeader,
   requireDirectApiConnection,
   type DirectApiConnection,
   type DraftProfile,
@@ -149,6 +150,7 @@ function anthropicRequestInit(
   connection: DirectApiConnection,
   options: AnthropicRequestOptions,
 ): RequestInit {
+  assertApiKeyCanBeUsedInHttpHeader(connection.apiKey);
   const headers: Record<string, string> = {
     accept: "application/json",
     "anthropic-version": anthropicApiVersion,

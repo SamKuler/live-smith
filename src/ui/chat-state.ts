@@ -165,6 +165,8 @@ export type ChatSessionActivityStatus =
 
 export interface ChatSessionActivity {
   sessionId: string;
+  /** Correlates send-owned terminal activity with the exact request attempt. */
+  sendId?: string;
   status: ChatSessionActivityStatus;
   message?: string;
   unread: boolean;

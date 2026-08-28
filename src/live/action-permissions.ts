@@ -15,6 +15,7 @@ import {
   boundTrackForAction,
   type AgentPlanBindings,
 } from "./action-bindings.js";
+import { affectedTrackTree } from "./resolve.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -109,7 +110,7 @@ export function requiredEditScopesForAction(
       const track = requireActionTrack(action, actionIndex, bindings);
       // A whole-track operation also copies/deletes its mixer state.
       const required = new Set<EditScope>(["structure", "mixer"]);
-      for (const affected of trackAndDescendants(context, track)) {
+      for (const affected of affectedTrackTree(context, track)) {
         addClipScopes(required, affected.arrangementClips);
         for (const slot of affected.clipSlots) {
           if (slot.clip !== null) required.add(clipScope(slot.clip));
@@ -167,22 +168,6 @@ function requireActionTrack(
   const track = boundTrackForAction(action, actionIndex, bindings);
   if (!track) throw unidentifiedTarget("Track");
   return track;
-}
-
-function trackAndDescendants(context: Api, track: Track<"1.0.0">): Track<"1.0.0">[] {
-  const affected = [track];
-  const seen = new Set([handleId(track)]);
-  for (const parent of affected) {
-    const parentId = handleId(parent);
-    for (const candidate of context.application.song.tracks) {
-      const group = candidate.groupTrack;
-      if (group && handleId(group) === parentId && !seen.has(handleId(candidate))) {
-        seen.add(handleId(candidate));
-        affected.push(candidate);
-      }
-    }
-  }
-  return affected;
 }
 
 function sceneRow(context: Api, scene: Scene<"1.0.0">): number {

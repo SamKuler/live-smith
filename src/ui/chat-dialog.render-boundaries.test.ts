@@ -448,7 +448,6 @@ test("an Approval change does not rewrite unrelated Settings or composer content
       ["prompt", new Set(["disabled"])],
       ["sendButton", new Set(["disabled", "title"])],
       ["attachmentMenuButton", new Set(["disabled"])],
-      ["attachSelectedAudioButton", new Set(["disabled"])],
       ["pendingAttachments", new Set(["aria-busy"])],
       ["editScopeButton", new Set(["disabled"])],
     ]);

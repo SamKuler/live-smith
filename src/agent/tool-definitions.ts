@@ -1,5 +1,6 @@
 import type { ModelFunctionTool } from "../model/provider.js";
 import { agentActionJsonSchemas } from "./action-schema.js";
+import { MAX_AGENT_PLAN_ACTIONS } from "./actions.js";
 
 export function liveSmithTools(options: {
   readArrangementAudio?: boolean;
@@ -316,11 +317,26 @@ export function liveSmithTools(options: {
             actions: {
               type: "array",
               minItems: 1,
+              maxItems: MAX_AGENT_PLAN_ACTIONS,
               description: "Live actions to apply after user confirmation.",
               items: { anyOf: agentActionJsonSchemas() },
             },
           },
           required: ["message", "actions"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "resolve_live_recovery",
+        description:
+          "Ask the user to keep the Live changes already completed and close the active unfinished operation without undoing or performing any Live mutation. Use this only after the required current-request recovery observation when the remaining repair should be abandoned.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
           additionalProperties: false,
         },
       },

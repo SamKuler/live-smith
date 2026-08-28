@@ -1390,11 +1390,13 @@ test("Anthropic Messages protects system instructions and tool selection from Ex
 });
 
 test("Anthropic Messages rejects incomplete non-streaming stop reasons", async () => {
+  const sentinel = "anthropic-private-stop-reason";
   for (const stopReason of [
     "max_tokens",
     "model_context_window_exceeded",
     "refusal",
     "unexpected_reason",
+    sentinel,
     null,
   ]) {
     const transport = createAnthropicMessagesTransport({
@@ -1405,9 +1407,16 @@ test("Anthropic Messages rejects incomplete non-streaming stop reasons", async (
     });
     await assert.rejects(
       transport.createToolTurn(request(profile())),
-      stopReason === null
-        ? /stop_reason.*before completion/i
-        : new RegExp(`stop_reason ${stopReason}`),
+      (error: unknown) => {
+        assert.match(
+          String(error),
+          stopReason === null
+            ? /stop_reason.*before completion/i
+            : /unsupported stop_reason/i,
+        );
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
     );
   }
 });
@@ -1553,11 +1562,13 @@ test("Anthropic Messages bounds repeated pause_turn continuations", async () => 
 });
 
 test("Anthropic Messages rejects incomplete streaming stop reasons", async () => {
+  const sentinel = "anthropic-private-stream-stop-reason";
   for (const stopReason of [
     "max_tokens",
     "model_context_window_exceeded",
     "refusal",
     "unexpected_reason",
+    sentinel,
     null,
   ]) {
     const events = [
@@ -1582,18 +1593,26 @@ test("Anthropic Messages rejects incomplete streaming stop reasons", async () =>
     req.onDelta = () => {};
     await assert.rejects(
       transport.createToolTurn(req),
-      stopReason === null
-        ? /stop_reason.*before completion/i
-        : new RegExp(`stop_reason ${stopReason}`),
+      (error: unknown) => {
+        assert.match(
+          String(error),
+          stopReason === null
+            ? /stop_reason.*before completion/i
+            : /unsupported stop_reason/i,
+        );
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
     );
   }
 });
 
 test("Anthropic Messages rejects missing, empty, and duplicate tool-use IDs in both response modes", async () => {
+  const duplicateSentinel = "anthropic-private-duplicate-call-id";
   const invalidToolIds: Array<Array<string | undefined>> = [
     [undefined],
     [""],
-    ["duplicate", "duplicate"],
+    [duplicateSentinel, duplicateSentinel],
   ];
 
   for (const streaming of [false, true]) {
@@ -1632,7 +1651,11 @@ test("Anthropic Messages rejects missing, empty, and duplicate tool-use IDs in b
 
       await assert.rejects(
         transport.createToolTurn(req),
-        /tool call ID/i,
+        (error: unknown) => {
+          assert.match(String(error), /tool call ID/i);
+          assert.doesNotMatch(String(error), new RegExp(duplicateSentinel));
+          return true;
+        },
       );
     }
   }
@@ -1696,7 +1719,7 @@ test("Anthropic Messages requires tool blocks to match the terminal stop reason"
         { type: "text", text: "I finished the task." },
         { type: "tool_use", id: "tool-with-end", name: "inspect", input: {} },
       ],
-      error: /tool_use blocks with stop_reason end_turn/i,
+      error: /tool_use blocks with a non-tool stop_reason/i,
     },
   ];
 

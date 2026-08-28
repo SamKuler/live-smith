@@ -9,6 +9,7 @@ import {
   CuePoint,
   DrumChain,
   DrumRack,
+  Device,
   MidiClip,
   MidiTrack,
   RackDevice,
@@ -157,13 +158,14 @@ test("whole-Clip MIDI transform snapshot detects note drift", async () => {
   assert.notEqual(after, before);
 });
 
-test("MIDI clip snapshots ignore opaque bigint note metadata while tracking musical fields", async () => {
+test("MIDI clip snapshots ignore opaque and selection metadata while tracking musical fields", async () => {
   const clip = midiClip(101n);
   const note = {
     pitch: 48,
     startTime: 0,
     duration: 2,
     velocity: 90,
+    selected: false,
     hostIdentity: 9001n,
   };
   clip.notes = [note as never];
@@ -182,10 +184,13 @@ test("MIDI clip snapshots ignore opaque bigint note metadata while tracking musi
   const original = await captureLiveActionPreflightSnapshot(context, action, {});
   note.hostIdentity = 9002n;
   const metadataChanged = await captureLiveActionPreflightSnapshot(context, action, {});
+  note.selected = true;
+  const selectionChanged = await captureLiveActionPreflightSnapshot(context, action, {});
   note.pitch = 49;
   const pitchChanged = await captureLiveActionPreflightSnapshot(context, action, {});
 
   assert.equal(metadataChanged, original);
+  assert.equal(selectionChanged, original);
   assert.notEqual(pitchChanged, original);
 });
 
@@ -230,6 +235,11 @@ test("set_device_parameter snapshot binds device, parameter, range, and value", 
     parameterName: "Frequency",
     value: 0.5,
   };
+
+  await assert.rejects(
+    captureLiveActionPreflightSnapshot(context, { ...action, value: 1.5 }, {}),
+    /outside observed range 0-1/i,
+  );
 
   const original = await captureLiveActionPreflightSnapshot(context, action, {});
   parameter.max = 2;
@@ -453,6 +463,14 @@ test("Rack Chain snapshots track only the structure or mixer state each action u
     parameter: "volume" as const,
     value: 0.5,
   };
+  await assert.rejects(
+    captureLiveActionPreflightSnapshot(
+      context,
+      { ...mixerAction, value: 1.5 },
+      {},
+    ),
+    /outside observed range 0-1/i,
+  );
   const mixerBefore = await captureLiveActionPreflightSnapshot(
     context,
     mixerAction,
@@ -708,6 +726,19 @@ test("Simpler sample and mixer snapshots include source, target, range, and curr
       value: 0.8,
     },
     {},
+  );
+  await assert.rejects(
+    captureLiveActionPreflightSnapshot(
+      context,
+      {
+        type: "set_track_mixer_parameter",
+        trackName: "Bass",
+        parameter: "volume",
+        value: -0.1,
+      },
+      {},
+    ),
+    /outside observed range 0-1/i,
   );
   mixerValue = 0.75;
   const mixerAfter = await captureLiveActionPreflightSnapshot(
@@ -966,6 +997,39 @@ test("whole-Scene snapshots fail closed when a target row slot cannot be verifie
   }
 });
 
+test("whole-track snapshots cover the complete affected group tree", async (t) => {
+  const changes: [string, (fixture: ReturnType<typeof wholeTrackFixture>) => void][] = [
+    ["descendant membership", ({ tracks }) => { tracks.splice(1, 1); }],
+    ["Take Lane notes", ({ takeClip }) => {
+      takeClip.notes = [{ pitch: 72, startTime: 0, duration: 1, velocity: 90 }];
+    }],
+    ["descendant track mixer", ({ values }) => { values.childVolume = 0.8; }],
+    ["nested device parameter", ({ values }) => { values.nestedParameter = 0.9; }],
+    ["Rack Chain mixer", ({ values }) => { values.chainVolume = 0.7; }],
+  ];
+
+  for (const type of ["delete_track", "duplicate_track"] as const) {
+    for (const [label, change] of changes) {
+      await t.test(`${type}: ${label}`, async () => {
+        const fixture = wholeTrackFixture();
+        const action = { type, trackName: "Group" };
+        const before = await captureLiveActionPreflightSnapshot(
+          fixture.context,
+          action,
+          {},
+        );
+        change(fixture);
+        const after = await captureLiveActionPreflightSnapshot(
+          fixture.context,
+          action,
+          {},
+        );
+        assert.notEqual(after, before);
+      });
+    }
+  }
+});
+
 test("rename_scene snapshots deterministically encode bigint values returned by the host", async () => {
   const scene = sdkObject<Scene<"1.0.0">>(Scene.prototype, {
     handle: { id: 910n },
@@ -1007,7 +1071,7 @@ test("preflight snapshots fail closed when a target handle identity is unavailab
       { type: "delete_track", trackName: "Bass" },
       {},
     ),
-    /handle identity/i,
+    /handle/i,
   );
 });
 
@@ -1093,6 +1157,100 @@ function sceneFixture() {
     application: { song: { handle: { id: 1n }, tracks, scenes } },
   } as never;
   return { context, tracks, slots, midi, audio, otherRowClip };
+}
+
+function wholeTrackFixture() {
+  const values = {
+    rootVolume: 0.5,
+    childVolume: 0.4,
+    nestedParameter: 0.25,
+    chainVolume: 0.3,
+  };
+  const parameter = (id: bigint, name: string, read: () => number) => ({
+    handle: { id },
+    name,
+    min: 0,
+    max: 1,
+    getValue: async () => read(),
+  });
+  const nestedParameter = parameter(
+    804n,
+    "Frequency",
+    () => values.nestedParameter,
+  );
+  const nestedDevice = sdkObject<Device<"1.0.0">>(Device.prototype, {
+    handle: { id: 803n },
+    name: "Auto Filter",
+    parameters: [nestedParameter],
+  });
+  const chainVolume = parameter(806n, "Chain Volume", () => values.chainVolume);
+  const chain = sdkObject<Chain<"1.0.0">>(Chain.prototype, {
+    handle: { id: 802n },
+    devices: [nestedDevice],
+    mixer: {
+      handle: { id: 805n },
+      volume: chainVolume,
+      panning: parameter(807n, "Chain Panning", () => 0.5),
+      sends: [],
+    },
+  });
+  const rack = sdkObject<RackDevice<"1.0.0">>(RackDevice.prototype, {
+    handle: { id: 801n },
+    name: "Instrument Rack",
+    parameters: [],
+    chains: [chain],
+  });
+  const takeClip = midiClip(808n);
+  const takeLane = sdkObject<TakeLane<"1.0.0">>(TakeLane.prototype, {
+    handle: { id: 809n },
+    name: "Alternate",
+    clips: [takeClip],
+  });
+  const rootVolume = parameter(811n, "Volume", () => values.rootVolume);
+  const root = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: 810n },
+    name: "Group",
+    groupTrack: null,
+    mute: false,
+    solo: false,
+    arm: false,
+    mixer: {
+      handle: { id: 812n },
+      volume: rootVolume,
+      panning: parameter(813n, "Panning", () => 0.5),
+      sends: [],
+    },
+    devices: [rack],
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [takeLane],
+  });
+  const childVolume = parameter(815n, "Volume", () => values.childVolume);
+  const child = sdkObject<AudioTrack<"1.0.0">>(AudioTrack.prototype, {
+    handle: { id: 814n },
+    name: "Child",
+    groupTrack: root,
+    mute: false,
+    solo: false,
+    arm: false,
+    mixer: {
+      handle: { id: 816n },
+      volume: childVolume,
+      panning: parameter(817n, "Panning", () => 0.5),
+      sends: [],
+    },
+    devices: [],
+    arrangementClips: [],
+    clipSlots: [],
+    takeLanes: [],
+  });
+  const tracks = [root, child];
+  const context = {
+    application: {
+      song: { handle: { id: 1n }, tracks, scenes: [] },
+    },
+  } as never;
+  return { context, tracks, takeClip, values };
 }
 
 function midiTrack(

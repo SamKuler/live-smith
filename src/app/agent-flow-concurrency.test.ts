@@ -8,7 +8,7 @@ import { connect } from "node:net";
 import { env, execPath } from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ClipSlot, MidiTrack, Sample } from "@ableton-extensions/sdk";
+import { ClipSlot, MidiTrack } from "@ableton-extensions/sdk";
 
 import {
   arrangementSelectionInteractionContext,
@@ -53,7 +53,7 @@ import {
   saveSavedProfile,
   savedProfileRevision,
 } from "../storage/settings.js";
-import type { ChatDialogState } from "../ui/chat-state.js";
+import type { ChatBridgeState, ChatDialogState } from "../ui/chat-state.js";
 import { modelStateSourceForProfile } from "../ui/chat-state.js";
 import {
   decidePlanApproval,
@@ -69,6 +69,16 @@ function bridgeJsonHeaders(): Record<string, string> {
     "Content-Type": "application/json",
     "X-Live-Smith-Command-Id": `concurrency-command-${bridgeRequestSequence}`,
     "X-Live-Smith-Send-Id": `concurrency-send-${bridgeRequestSequence}`,
+  };
+}
+
+function bridgeSendHeaders(state: ChatBridgeState): Record<string, string> {
+  return {
+    ...bridgeJsonHeaders(),
+    "X-Live-Smith-Global-State-Covered-Through":
+      state.bridgeStateCoveredThroughRevision,
+    "X-Live-Smith-Session-State-Covered-Through":
+      state.bridgeStateCoveredThroughRevision,
   };
 }
 
@@ -334,13 +344,17 @@ test("global follow-up behavior changes publish to every open bridge for the sam
 });
 
 test("Profile changes notify every open bridge without publishing credentials", async () => {
+  let secondModelCalls = 0;
   const fixture = await openCrossBridgeFixture({
     directoryPrefix: "live-smith-profile-notification-",
     firstDependencies: {
       requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
     },
     secondDependencies: {
-      requestModelTurn: async () => ({ content: "Unused", toolCalls: [] }),
+      requestModelTurn: async () => {
+        secondModelCalls += 1;
+        return { content: "Used refreshed Profile", toolCalls: [] };
+      },
     },
   });
 
@@ -387,11 +401,31 @@ test("Profile changes notify every open bridge without publishing credentials", 
       type: "profile_settings_changed",
       commandId: "profile-settings-success",
     });
+    const staleSend = await fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        prompt: "Do not use an unseen Profile",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(staleSend.status, 409);
+    assert.equal(secondModelCalls, 0);
     const secondState = await (await fetch(
       fixture.second.endpoint("/state"),
-    )).json() as ChatDialogState;
+    )).json() as ChatBridgeState;
     assert.equal(secondState.settings.profiles[0]?.name, "Updated Provider");
     assert.equal(secondState.runtimeProfile?.selection.model, "model-b");
+    const currentSend = await fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: bridgeSendHeaders(secondState),
+      body: JSON.stringify({
+        prompt: "Use the reviewed Profile",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(currentSend.status, 200);
+    assert.equal(secondModelCalls, 1);
   } finally {
     await fixture.close();
   }
@@ -741,12 +775,6 @@ test("two bridges serialize a same-Session send and delete without recreating ev
       [],
     );
 
-    const deletedEvents = await fetch(fixture.first.endpoint("/events"));
-    const deletedError = readSsePayload(
-      deletedEvents,
-      "error",
-      (payload) => payload.sendId === "deleted-session-send",
-    );
     const deletedSend = await fetch(fixture.first.endpoint("/send"), {
       method: "POST",
       headers: {
@@ -758,32 +786,11 @@ test("two bridges serialize a same-Session send and delete without recreating ev
         sessionId: fixture.sessionId,
       }),
     });
-    assert.equal(deletedSend.status, 500);
+    assert.equal(deletedSend.status, 409);
     const deletedSendBody = await deletedSend.json() as {
       promptPersistence?: string;
-      sendFailureKind?: string;
-      state?: ChatDialogState;
     };
     assert.equal(deletedSendBody.promptPersistence, "not_persisted");
-    assert.equal(deletedSendBody.sendFailureKind, "session_unavailable");
-    assert.equal(
-      deletedSendBody.state?.sessions.some(
-        (session) => session.id === fixture.sessionId,
-      ),
-      false,
-    );
-    const deletedErrorEvent = await resolvesWithin(
-      deletedError,
-      "deleted Session error event",
-    );
-    assert.equal(deletedErrorEvent.promptPersistence, "not_persisted");
-    assert.equal(deletedErrorEvent.sendFailureKind, "session_unavailable");
-    assert.equal(
-      (deletedErrorEvent.state as ChatDialogState).sessions.some(
-        (session) => session.id === fixture.sessionId,
-      ),
-      false,
-    );
     assert.deepEqual(
       await loadSessionEvents(fixture.directory, fixture.sessionId),
       [],
@@ -875,10 +882,12 @@ test("a second dialog opens while an existing Session send holds its fence", asy
 test("Skills mutate atomically and reject activation during another dialog's active send", async () => {
   const modelStarted = deferred<void>();
   const releaseModel = deferred<void>();
+  let firstModelCalls = 0;
   const fixture = await openCrossBridgeFixture({
     directoryPrefix: "live-smith-cross-bridge-skills-",
     firstDependencies: {
       requestModelTurn: async () => {
+        firstModelCalls += 1;
         modelStarted.resolve();
         await releaseModel.promise;
         return { content: "Done", toolCalls: [] };
@@ -914,6 +923,16 @@ test("Skills mutate atomically and reject activation during another dialog's act
     };
     assert.equal(installBody.receipt.id, "mix-review");
     assert.match(installBody.receipt.sha256, /^[a-f0-9]{64}$/);
+    const staleSkillSend = await fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        prompt: "Do not use unseen Skill content",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    assert.equal(staleSkillSend.status, 409);
+    assert.equal(firstModelCalls, 0);
 
     const historical = await createSession(fixture.directory, {
       title: "Historical mix",
@@ -949,15 +968,20 @@ test("Skills mutate atomically and reject activation during another dialog's act
     });
     assert.equal(historicalAddition.status, 409);
 
+    const reconciledSendState = await fetch(
+      fixture.first.endpoint("/state"),
+    ).then((response) => response.json() as Promise<ChatBridgeState>);
+    assert.equal(reconciledSendState.activeSessionId, fixture.sessionId);
     const send = fetch(fixture.first.endpoint("/send"), {
       method: "POST",
-      headers: bridgeJsonHeaders(),
+      headers: bridgeSendHeaders(reconciledSendState),
       body: JSON.stringify({
         prompt: "Hold the Session lease",
         sessionId: fixture.sessionId,
       }),
     });
     await modelStarted.promise;
+    assert.equal(firstModelCalls, 1);
 
     const conflict = await resolvesWithin(fetch(
       fixture.second.endpoint("/command"),
@@ -1269,10 +1293,18 @@ test("a held Session state build never acquires the dialog's different active Se
       body: JSON.stringify({ kind: "select_session", sessionId: sessionB }),
     });
     assert.equal(selectedB.status, 200);
+    const selectedBInSecond = await fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({ kind: "select_session", sessionId: sessionB }),
+    });
+    assert.equal(selectedBInSecond.status, 200);
+    const secondState = await selectedBInSecond.json() as ChatBridgeState;
+    assert.equal(secondState.activeSessionId, sessionB);
 
     secondSend = fetch(fixture.second.endpoint("/send"), {
       method: "POST",
-      headers: bridgeJsonHeaders(),
+      headers: bridgeSendHeaders(secondState),
       body: JSON.stringify({
         prompt: "Finish Session B independently",
         sessionId: sessionB,
@@ -1424,268 +1456,6 @@ test("the HTTP send boundary validates whitespace without trimming the persisted
   }
 });
 
-for (const commandKind of ["delete_session", "archive_session"] as const) {
-  test(`two bridges serialize selected source attachment and ${commandKind}`, async () => {
-    const sourceStarted = deferred<void>();
-    const releaseSource = deferred<void>();
-    const fixture = await openCrossBridgeFixture({
-      directoryPrefix: `live-smith-source-${commandKind}-`,
-      firstDependencies: {
-        copySelectedAudioAttachmentSource: async () => {
-          sourceStarted.resolve();
-          await releaseSource.promise;
-          return copiedAudioSource();
-        },
-      },
-      secondDependencies: {},
-    });
-
-    try {
-      const attachment = fetch(fixture.first.endpoint("/command"), {
-        method: "POST",
-        headers: bridgeJsonHeaders(),
-        body: JSON.stringify({
-          kind: "attach_selected_audio_source",
-          sessionId: fixture.sessionId,
-        }),
-      });
-      await resolvesWithin(sourceStarted.promise, "selected source copy");
-
-      let mutationSettled = false;
-      const mutation = fetch(fixture.second.endpoint("/command"), {
-        method: "POST",
-        headers: bridgeJsonHeaders(),
-        body: JSON.stringify({
-          kind: commandKind,
-          sessionId: fixture.sessionId,
-        }),
-      }).then((response) => {
-        mutationSettled = true;
-        return response;
-      });
-      assert.equal(await Promise.race([
-        mutation.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => {
-          setTimeout(() => resolve("pending"), 100);
-        }),
-      ]), "pending");
-      assert.equal(mutationSettled, false);
-
-      releaseSource.resolve();
-      assert.equal((await attachment).status, 200);
-      assert.equal((await mutation).status, 200);
-      const session = (await listSessions(fixture.directory)).find(
-        (entry) => entry.id === fixture.sessionId,
-      );
-      if (commandKind === "delete_session") {
-        assert.equal(session, undefined);
-        assert.deepEqual(
-          await listSessionAttachments(fixture.directory, fixture.sessionId),
-          [],
-        );
-      } else {
-        assert.ok(session?.archivedAt);
-        assert.equal(
-          (await listSessionAttachments(fixture.directory, fixture.sessionId)).length,
-          1,
-        );
-      }
-    } finally {
-      releaseSource.resolve();
-      await fixture.close();
-    }
-  });
-}
-
-test("a selected source attachment and send share the same-Session fence", async () => {
-  const sourceStarted = deferred<void>();
-  const releaseSource = deferred<void>();
-  const modelStarted = deferred<void>();
-  const fixture = await openCrossBridgeFixture({
-    directoryPrefix: "live-smith-source-send-",
-    firstDependencies: {
-      copySelectedAudioAttachmentSource: async () => {
-        sourceStarted.resolve();
-        await releaseSource.promise;
-        return copiedAudioSource();
-      },
-    },
-    secondDependencies: {
-      requestModelTurn: async () => {
-        modelStarted.resolve();
-        return { content: "Done", toolCalls: [] };
-      },
-    },
-  });
-  await saveSavedProfile(fixture.directory, profile({
-    baseUrl: "https://provider.test/v1",
-    apiKey: "key",
-    apiMode: "chat-completions",
-    model: "audio-model",
-    advanced: {
-      capabilityOverrides: {
-        tools: true,
-        inputs: { audio: true },
-      },
-    },
-  }));
-
-  try {
-    const attachment = fetch(fixture.first.endpoint("/command"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: fixture.sessionId,
-      }),
-    });
-    await resolvesWithin(sourceStarted.promise, "selected source copy");
-    const send = fetch(fixture.second.endpoint("/send"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        prompt: "Analyze the audio",
-        sessionId: fixture.sessionId,
-      }),
-    });
-    assert.equal(await Promise.race([
-      modelStarted.promise.then(() => "model" as const),
-      new Promise<"pending">((resolve) => {
-        setTimeout(() => resolve("pending"), 100);
-      }),
-    ]), "pending");
-
-    releaseSource.resolve();
-    assert.equal((await attachment).status, 200);
-    await resolvesWithin(modelStarted.promise, "model after source attachment");
-    assert.equal((await send).status, 200);
-    const userEvent = (await loadSessionEvents(fixture.directory, fixture.sessionId))
-      .find((event) => event.kind === "user");
-    assert.equal(userEvent?.attachments?.length, 1);
-    assert.equal(userEvent?.attachments?.[0]?.kind, "audio");
-  } finally {
-    releaseSource.resolve();
-    await fixture.close();
-  }
-});
-
-test("selected source final state remains inside the same-Session fence", async () => {
-  const finalStateBuildStarted = deferred<void>();
-  const releaseFinalStateBuild = deferred<void>();
-  let sourceCopied = false;
-  let finalStateBlocked = false;
-  const fixture = await openCrossBridgeFixture({
-    directoryPrefix: "live-smith-source-final-state-",
-    firstDependencies: {
-      copySelectedAudioAttachmentSource: async () => {
-        sourceCopied = true;
-        return copiedAudioSource();
-      },
-      loadSessionEvents: async (...args) => {
-        if (sourceCopied && !finalStateBlocked) {
-          finalStateBlocked = true;
-          finalStateBuildStarted.resolve();
-          await releaseFinalStateBuild.promise;
-        }
-        return loadSessionEvents(...args);
-      },
-    },
-    secondDependencies: {},
-  });
-
-  try {
-    const attachment = fetch(fixture.first.endpoint("/command"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: fixture.sessionId,
-      }),
-    });
-    await resolvesWithin(finalStateBuildStarted.promise, "selected source final state");
-
-    let deleteSettled = false;
-    const deletion = fetch(fixture.second.endpoint("/command"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        kind: "delete_session",
-        sessionId: fixture.sessionId,
-      }),
-    }).then((response) => {
-      deleteSettled = true;
-      return response;
-    });
-    assert.equal(await Promise.race([
-      deletion.then(() => "settled" as const),
-      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
-    ]), "pending");
-    assert.equal(deleteSettled, false);
-
-    releaseFinalStateBuild.resolve();
-    assert.equal((await attachment).status, 200);
-    assert.equal((await deletion).status, 200);
-  } finally {
-    releaseFinalStateBuild.resolve();
-    await fixture.close();
-  }
-});
-
-test("selected source copies for different Sessions do not share a fence", async () => {
-  const firstSourceStarted = deferred<void>();
-  const releaseFirstSource = deferred<void>();
-  const fixture = await openCrossBridgeFixture({
-    directoryPrefix: "live-smith-source-different-session-",
-    firstDependencies: {
-      copySelectedAudioAttachmentSource: async () => {
-        firstSourceStarted.resolve();
-        await releaseFirstSource.promise;
-        return copiedAudioSource();
-      },
-    },
-    secondDependencies: {
-      copySelectedAudioAttachmentSource: async () => copiedAudioSource(),
-    },
-  });
-  const otherSession = await createSession(fixture.directory, {
-    title: "Other",
-    projectKey: (await listSessions(fixture.directory)).find(
-      (session) => session.id === fixture.sessionId,
-    )!.projectKey,
-    scope: { kind: "track", identity: "1", label: "Lead" },
-  });
-
-  try {
-    const first = fetch(fixture.first.endpoint("/command"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: fixture.sessionId,
-      }),
-    });
-    await resolvesWithin(firstSourceStarted.promise, "first selected source copy");
-    const other = await resolvesWithin(fetch(fixture.second.endpoint("/command"), {
-      method: "POST",
-      headers: bridgeJsonHeaders(),
-      body: JSON.stringify({
-        kind: "attach_selected_audio_source",
-        sessionId: otherSession.id,
-      }),
-    }), "different-Session selected source copy");
-    assert.equal(other.status, 200);
-    assert.equal(
-      (await listSessionAttachments(fixture.directory, otherSession.id)).length,
-      1,
-    );
-    releaseFirstSource.resolve();
-    assert.equal((await first).status, 200);
-  } finally {
-    releaseFirstSource.resolve();
-    await fixture.close();
-  }
-});
-
 test("stopping a same-Session send before or while it waits never persists its prompt", async () => {
   const firstModelStarted = deferred<void>();
   const releaseFirstModel = deferred<void>();
@@ -1790,7 +1560,7 @@ test("stopping a same-Session send before or while it waits never persists its p
   }
 });
 
-test("closing a bridge cancels its queued same-Session send without affecting the lease owner", async () => {
+test("closing a bridge after a stale same-Session send does not affect the lease owner", async () => {
   const firstModelStarted = deferred<void>();
   const releaseFirstModel = deferred<void>();
   let secondModelCalls = 0;
@@ -1840,11 +1610,17 @@ test("closing a bridge cancels its queued same-Session send without affecting th
         sessionId: fixture.sessionId,
       }),
     });
-    await waitForSessionActivity(fixture.second, fixture.sessionId);
-
+    const secondBoundary = await resolvesWithin(Promise.race([
+      secondSend.then((response) => ({ kind: "response" as const, response })),
+      waitForSessionActivity(fixture.second, fixture.sessionId).then(() => ({
+        kind: "active" as const,
+      })),
+    ]), "stale send admission");
     await resolvesWithin(fixture.closeSecond(), "queued bridge close");
-    const secondResponse = await resolvesWithin(secondSend, "closed queued send response");
-    assert.equal(secondResponse.status, 500);
+    const secondResponse = secondBoundary.kind === "response"
+      ? secondBoundary.response
+      : await resolvesWithin(secondSend, "closed send response");
+    assert.ok([409, 500].includes(secondResponse.status));
     assert.equal(
       (await secondResponse.json() as { promptPersistence?: string }).promptPersistence,
       "not_persisted",
@@ -2151,120 +1927,6 @@ test("attachment upload revalidates its Session after the body-read race window"
     socket.destroy();
     await fixture.close();
   }
-});
-
-test("selected Live source audio becomes pending without a Profile or user event", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-selected-audio-source-"),
-  );
-  const sourcePath = path.join(directory, "Selected Source.wav");
-  const sourceBytes = audioWaveBytes();
-  await fs.writeFile(sourcePath, sourceBytes);
-  const sample = Object.defineProperties(Object.create(Sample.prototype), {
-    handle: { enumerable: true, value: { id: 91n } },
-    name: { enumerable: true, value: "Selected Source" },
-    filePath: { enumerable: true, value: sourcePath },
-  }) as Sample<"1.0.0">;
-  let interaction!: LiveInteractionContext;
-  interaction = {
-    summary: "Sample: Selected Source",
-    target: { object: sample },
-    scope: { kind: "object", identity: "91", label: "Selected Source" },
-    selectionContext: { refresh: () => interaction },
-  };
-  let sessionId = "";
-  const context = {
-    application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const chatUrl = new URL(url);
-        const token = chatUrl.searchParams.get("token");
-        const endpoint = (pathname: string) =>
-          `${chatUrl.origin}${pathname}?token=${token}`;
-        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
-        sessionId = initial.activeSessionId;
-        const response = await fetch(endpoint("/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({
-            kind: "attach_selected_audio_source",
-            sessionId,
-          }),
-        });
-        assert.equal(response.status, 200);
-        const state = await response.json() as ChatDialogState;
-        assert.equal(state.pendingAttachments.length, 1);
-        assert.equal(state.pendingAttachments[0]?.kind, "audio");
-        assert.equal(state.pendingAttachments[0]?.fileName, "Selected Source.wav");
-        assert.equal(state.pendingAttachments[0]?.mediaType, "audio/wav");
-        assert.equal(state.pendingAttachments[0]?.byteLength, sourceBytes.byteLength);
-      },
-    },
-  };
-
-  await runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
-  });
-  assert.ok(sessionId);
-  assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
-  const [stored] = await listSessionAttachments(directory, sessionId);
-  assert.equal(stored?.kind, "audio");
-  assert.equal(stored?.fileName, "Selected Source.wav");
-  assert.equal(JSON.stringify(stored).includes(directory), false);
-});
-
-test("selected source command redacts a failing Live selection refresh", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-selected-audio-refresh-error-"),
-  );
-  const privatePath = "/private/secret/refresh-source.wav";
-  let failRefresh = false;
-  let interaction!: LiveInteractionContext;
-  interaction = {
-    summary: "Sample: Selected Source",
-    target: { object: fakeMidiTrack(92n, "Selected Source") },
-    scope: { kind: "object", identity: "92", label: "Selected Source" },
-    selectionContext: {
-      refresh: () => {
-        if (failRefresh) throw new Error(`SDK refresh failed at ${privatePath}`);
-        return interaction;
-      },
-    },
-  };
-  const context = {
-    application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const chatUrl = new URL(url);
-        const token = chatUrl.searchParams.get("token");
-        const endpoint = (pathname: string) =>
-          `${chatUrl.origin}${pathname}?token=${token}`;
-        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
-        failRefresh = true;
-        const response = await fetch(endpoint("/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({
-            kind: "attach_selected_audio_source",
-            sessionId: initial.activeSessionId,
-          }),
-        });
-        assert.equal(response.status, 400);
-        const body = await response.json() as { error?: string };
-        assert.equal(
-          body.error,
-          "The selected Live audio source is unavailable or could not be attached.",
-        );
-        assert.doesNotMatch(JSON.stringify(body), /private|secret|refresh-source/);
-      },
-    },
-  };
-
-  await runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
-  });
 });
 
 test("model discovery accepts a Draft with blank name and model without changing Runtime", async () => {
@@ -3728,38 +3390,6 @@ function sizedAttachmentPng(byteLength: number): Uint8Array {
   return bytes;
 }
 
-function audioWaveBytes(): Uint8Array {
-  const sampleRate = 8_000;
-  const bytes = NodeBuffer.alloc(44 + sampleRate);
-  bytes.write("RIFF", 0, "ascii");
-  bytes.writeUInt32LE(bytes.byteLength - 8, 4);
-  bytes.write("WAVEfmt ", 8, "ascii");
-  bytes.writeUInt32LE(16, 16);
-  bytes.writeUInt16LE(1, 20);
-  bytes.writeUInt16LE(1, 22);
-  bytes.writeUInt32LE(sampleRate, 24);
-  bytes.writeUInt32LE(sampleRate, 28);
-  bytes.writeUInt16LE(1, 32);
-  bytes.writeUInt16LE(8, 34);
-  bytes.write("data", 36, "ascii");
-  bytes.writeUInt32LE(sampleRate, 40);
-  return new Uint8Array(bytes);
-}
-
-function copiedAudioSource() {
-  const bytes = audioWaveBytes();
-  return {
-    fileName: "Selected Source.wav",
-    bytes,
-    inspection: {
-      mediaType: "audio/wav" as const,
-      durationSeconds: 1,
-      sampleRate: 8_000,
-      channels: 1,
-    },
-  };
-}
-
 function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
@@ -3855,18 +3485,21 @@ async function openCrossBridgeFixture(options: {
     const firstState = await (await fetch(
       `${firstUrl.origin}/state?token=${firstToken}`,
     )).json() as ChatDialogState;
-
+    await updateSession(directory, firstState.activeSessionId, { title: "Shared test Session" });
     secondFlow = runAgentFlow(context as never, interaction, {
       ...options.secondDependencies,
       renderHtml: () => "<html></html>",
     });
     const secondUrl = new URL(await resolvesWithin(secondDialog.promise, "second bridge"));
     const secondToken = secondUrl.searchParams.get("token")!;
-    const secondState = await (await fetch(
+    let secondState = await (await fetch(
       `${secondUrl.origin}/state?token=${secondToken}`,
     )).json() as ChatDialogState;
     assert.equal(secondState.activeSessionId, firstState.activeSessionId);
-
+    await updateSession(directory, firstState.activeSessionId, { title: "" });
+    secondState = await (await fetch(
+      `${secondUrl.origin}/state?token=${secondToken}`,
+    )).json() as ChatDialogState;
     const endpoint = (url: URL, token: string): CrossBridgeEndpoint => ({
       endpoint: (pathname) => `${url.origin}${pathname}?token=${token}`,
     });

@@ -1,5 +1,6 @@
-import { URL, URLSearchParams } from "node:url";
+import { validateHeaderValue } from "node:http";
 import { isIP } from "node:net";
+import { URL, URLSearchParams } from "node:url";
 
 import { cloneJsonValue } from "./json-clone.js";
 
@@ -280,6 +281,16 @@ export function requireDirectApiConnection(
 ): DirectApiConnection {
   if (profile.connection.kind === "direct-api") return profile.connection;
   throw new Error("The selected Profile does not use a direct API connection.");
+}
+
+export function assertApiKeyCanBeUsedInHttpHeader(apiKey: string): void {
+  try {
+    validateHeaderValue("authorization", apiKey);
+  } catch {
+    throw new Error(
+      "The selected Profile API key contains characters that cannot be used in an HTTP header.",
+    );
+  }
 }
 
 export function profileSecrets(
@@ -1049,6 +1060,14 @@ function apiKeyValue(value: unknown, baseUrl: string, field = "apiKey"): string 
     throw new ProfileValidationError(field, "API key must be a string.");
   }
   const apiKey = value.trim();
+  try {
+    assertApiKeyCanBeUsedInHttpHeader(apiKey);
+  } catch {
+    throw new ProfileValidationError(
+      field,
+      "API key contains characters that cannot be used in an HTTP header.",
+    );
+  }
   if (apiKey || isLoopbackHostname(new URL(baseUrl).hostname)) return apiKey;
   throw new ProfileValidationError(
     field,

@@ -2467,6 +2467,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
+      kind: "apply",
       message: "Apply the valid change?",
       groups: [null],
       activity: {
@@ -2483,6 +2484,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
+      kind: "apply",
       message: "Apply the valid change?",
       groups: [],
       activity: {
@@ -2500,6 +2502,7 @@ test("a malformed confirmation publication is ignored before projection mutation
       modelTurnEpoch: 0,
       id: "validated-confirmation",
       confirmationGeneration: 1,
+      kind: "apply",
       message: "Apply the valid change?",
       groups: [{ title: "Tracks", rows: ["Create track"] }],
       activity: {
@@ -3012,6 +3015,7 @@ test("command response-loss rejects a malformed state refresh", async () => {
     assert.equal(await command, false);
     await harness.settle();
     harness.emitServerEventOpen();
+    await harness.settle();
 
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>(
@@ -3021,7 +3025,7 @@ test("command response-loss rejects a malformed state refresh", async () => {
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /could not be reconciled|authoritative state/i,
+      /could not be reconciled|authoritative state|could not be confirmed/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {

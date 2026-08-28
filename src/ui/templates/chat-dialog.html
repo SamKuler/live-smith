@@ -1545,8 +1545,7 @@
         display: none;
       }
 
-      .attachment-drop-hint,
-      .attachment-menu-action {
+      .attachment-drop-hint {
         display: grid;
         gap: 2px;
         width: 100%;
@@ -1562,35 +1561,16 @@
         border: 1px dashed #626262;
       }
 
-      .attachment-menu-action {
-        color: var(--text);
-        background: transparent;
-        border: 0;
-      }
-
-      .attachment-menu-action:hover:not(:disabled),
-      .attachment-menu-action:focus-visible {
-        background: var(--accent-soft);
-      }
-
-      .attachment-drop-hint strong,
-      .attachment-menu-action strong {
+      .attachment-drop-hint strong {
         font-size: 12px;
         font-weight: 650;
       }
 
       .attachment-drop-hint span,
-      .attachment-menu-action span,
-      .attachment-capability-hint,
-      .audio-source-note {
+      .attachment-capability-hint {
         color: var(--quiet);
         font-size: 10px;
         line-height: 1.35;
-      }
-
-      .audio-source-note {
-        margin: 0;
-        padding: 3px 9px 5px;
       }
 
       .attachment-capability-hint {
@@ -3133,11 +3113,6 @@
                       <span>Images, PDF, Office documents, WAV, and MP3. File browsing is not available in this Ableton window.</span>
                     </div>
                     <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
-                    <button id="attachSelectedAudioButton" class="attachment-menu-action" type="button" aria-label="Attach selected Live audio source" aria-describedby="audioSourceAttachmentNote" title="Copy the selected Audio Clip, Sample, or Simpler source file into this Session">
-                      <strong>Attach selected Live audio</strong>
-                      <span>Audio Clip, Sample, or Simpler source</span>
-                    </button>
-                    <p id="audioSourceAttachmentNote" class="audio-source-note">Sends the complete source file, including embedded metadata—not Live’s warped or processed output.</p>
                   </div>
                 </div>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request.">

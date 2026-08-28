@@ -59,6 +59,8 @@ export interface SessionModelSelection {
   reasoningEffort?: ReasoningEffort;
 }
 
+export const MAX_SESSION_TITLE_CODE_POINTS = 80;
+
 const sessionsFileName = "live-smith-sessions.json";
 let memorySessions: AgentSession[] = [];
 const transientSessions = new Map<StorageScopeKey, AgentSession[]>();
@@ -89,6 +91,7 @@ export async function createSession(
   input: CreateSessionInput,
   options: { transient?: boolean } = {},
 ): Promise<AgentSession> {
+  const title = requireSessionTitle(input.title);
   const activeSkillIds = normalizedOptionalActiveSkillIds(input);
   const approvalMode = normalizedOptionalApprovalMode(input);
   const editScopes = normalizedOptionalEditScopes(input);
@@ -96,7 +99,7 @@ export async function createSession(
   const now = new Date().toISOString();
   const session: AgentSession = {
     id: createStorageId("session"),
-    title: input.title,
+    title,
     projectKey: input.projectKey,
     scope: cloneConversationScope(input.scope),
     ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
@@ -180,7 +183,10 @@ async function loadSavedSessions(
     ) {
       throw new SessionStorageCorruptionError();
     }
-    return parsed.map(cloneSession);
+    return parsed.map((session) => cloneSession({
+      ...session,
+      title: truncateSessionTitle(session.title),
+    }));
   } catch (error) {
     if (isMissingFileError(error)) return [];
     if (error instanceof SyntaxError) {
@@ -411,7 +417,7 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
         key !== "approvalMode" && key !== "editScopes" &&
         key !== "modelSelection",
     ) ||
-    (Object.hasOwn(record, "title") && typeof record.title !== "string") ||
+    (Object.hasOwn(record, "title") && !isSessionTitle(record.title)) ||
     (Object.hasOwn(record, "approvalMode") &&
       !isApprovalMode(record.approvalMode)) ||
     (Object.hasOwn(record, "modelSelection") &&
@@ -427,7 +433,9 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
   }
 
   return {
-    ...(Object.hasOwn(record, "title") ? { title: record.title as string } : {}),
+    ...(Object.hasOwn(record, "title")
+      ? { title: requireSessionTitle(record.title) }
+      : {}),
     ...(Object.hasOwn(record, "activeSkillIds")
       ? { activeSkillIds: normalizeActiveSkillIds(record.activeSkillIds) }
       : {}),
@@ -445,6 +453,36 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
         }
       : {}),
   };
+}
+
+export function isSessionTitle(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  let codePointCount = 0;
+  for (const _character of value) {
+    codePointCount += 1;
+    if (codePointCount > MAX_SESSION_TITLE_CODE_POINTS) return false;
+  }
+  return true;
+}
+
+export function requireSessionTitle(value: unknown): string {
+  if (!isSessionTitle(value)) {
+    throw new Error(
+      `Session title may not exceed ${MAX_SESSION_TITLE_CODE_POINTS} characters.`,
+    );
+  }
+  return value;
+}
+
+export function truncateSessionTitle(value: string): string {
+  let result = "";
+  let codePointCount = 0;
+  for (const character of value) {
+    if (codePointCount >= MAX_SESSION_TITLE_CODE_POINTS) break;
+    result += character;
+    codePointCount += 1;
+  }
+  return result;
 }
 
 function normalizedOptionalApprovalMode(

@@ -1,101 +1,21 @@
 import { constants } from "node:fs";
 import { open, lstat, type FileHandle } from "node:fs/promises";
 
-import type { ExtensionContext } from "@ableton-extensions/sdk";
-
-import {
-  inspectAudioAttachment,
-  type AudioAttachmentInspection,
-} from "../attachments/audio.js";
 import {
   AttachmentProcessingError,
   MAX_AUDIO_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
-import { audioFileLabel } from "./context.js";
-import { resolveSampleSource } from "./sample-source.js";
-import type { LiveTarget } from "./target.js";
-
-type Api = ExtensionContext<"1.0.0">;
+import { safeRegularFileOpenFlags } from "./safe-file-read.js";
 
 const audioSourceUnavailableMessage =
-  "The selected Live audio source is unavailable or changed while it was being copied.";
+  "The rendered Live audio file is unavailable or changed while it was being read.";
 const readChunkBytes = 256 * 1024;
-
-export interface CopiedAudioAttachmentSource {
-  readonly fileName: string;
-  readonly bytes: Uint8Array;
-  readonly inspection: AudioAttachmentInspection;
-}
-
-export async function copySelectedAudioAttachmentSource(input: {
-  context: Api;
-  target: LiveTarget;
-  signal: AbortSignal;
-}): Promise<CopiedAudioAttachmentSource> {
-  throwIfAborted(input.signal);
-  const initialSource = resolveSelectedSourceSafely(
-    input.context,
-    input.target,
-    input.signal,
-  );
-  const fileName = audioFileLabel(initialSource.filePath);
-  if (!sourcePathHasLeaf(initialSource.filePath)) {
-    throw unavailableAudioSource();
-  }
-
-  const bytes = await copyAudioFileSafely(initialSource.filePath, input.signal);
-  const finalSource = resolveSelectedSourceSafely(
-    input.context,
-    input.target,
-    input.signal,
-  );
-  if (
-    finalSource.filePath !== initialSource.filePath ||
-    finalSource.objectId !== initialSource.objectId
-  ) {
-    throw unavailableAudioSource();
-  }
-
-  throwIfAborted(input.signal);
-  const inspection = await inspectAudioAttachment({
-    bytes,
-    signal: input.signal,
-  });
-  return { fileName, bytes, inspection };
-}
-
-function resolveSelectedSourceSafely(
-  context: Api,
-  target: LiveTarget,
-  signal: AbortSignal,
-): { filePath: string; objectId: bigint } {
-  try {
-    throwIfAborted(signal);
-    const source = resolveSampleSource(context, { kind: "selected" }, target);
-    const filePath = source.filePath;
-    const objectId = source.object.handle.id;
-    if (typeof filePath !== "string" || typeof objectId !== "bigint") {
-      throw unavailableAudioSource();
-    }
-    return { filePath, objectId };
-  } catch {
-    throwIfAborted(signal);
-    throw unavailableAudioSource();
-  }
-}
 
 export async function copyAudioFileSafely(
   filePath: string,
   signal: AbortSignal,
 ): Promise<Uint8Array> {
-  if (
-    typeof constants.O_NOFOLLOW !== "number" ||
-    typeof constants.O_NONBLOCK !== "number"
-  ) {
-    throw unavailableAudioSource();
-  }
-
   let handle: FileHandle | undefined;
   try {
     const beforeOpen = await lstat(filePath, { bigint: true });
@@ -104,7 +24,7 @@ export async function copyAudioFileSafely(
 
     handle = await open(
       filePath,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      safeRegularFileOpenFlags(constants),
     );
     const beforeRead = await handle.stat({ bigint: true });
     assertSameFileSnapshot(beforeOpen, beforeRead);
@@ -190,8 +110,4 @@ function unavailableAudioSource(): AttachmentProcessingError {
     "invalid_audio",
     audioSourceUnavailableMessage,
   );
-}
-
-function sourcePathHasLeaf(filePath: string): boolean {
-  return filePath.trim().replaceAll("\\", "/").split("/").some(Boolean);
 }

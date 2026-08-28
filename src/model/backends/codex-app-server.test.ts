@@ -743,12 +743,29 @@ test("Codex turns remain stateless, sandboxed, and normalized to client tool cal
   assert.equal(turn.serviceTier, null);
   assert.equal((turn.outputSchema as { type: string }).type, "object");
   assert.equal(JSON.stringify(turn.outputSchema).includes("oneOf"), false);
+  assert.equal(JSON.stringify(turn.outputSchema).includes("anyOf"), false);
+  assert.match(
+    String((turn.outputSchema as { description: string }).description),
+    /nonblank assistant content or at least one tool call/i,
+  );
   assert.match(JSON.stringify(turn.input), /Observe the selected clip/);
   assert.match(JSON.stringify(thread.baseInstructions), /observe_live/);
   assert.deepEqual(
     rpc.requests.find((entry) => entry.method === "thread/unsubscribe")?.params,
     { threadId: "thread-1" },
   );
+});
+
+test("Codex rejects null or blank structured turns without tool calls", async () => {
+  for (const content of [null, "", " \n\t "]) {
+    const rpc = new FakeCodexRpc();
+    rpc.turnText = JSON.stringify({ content, toolCalls: [] });
+
+    await assert.rejects(
+      createCodexAppServerBackend({ rpc }).createToolTurn(request(rpc).value),
+      /empty structured model turn/i,
+    );
+  }
 });
 
 test("Codex attaches the latest exactly correlated turn usage", async () => {

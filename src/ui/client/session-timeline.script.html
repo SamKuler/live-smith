@@ -13,6 +13,7 @@
         runCommand,
         showStatus,
       }) {
+      const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const sessionDateFormatter = new Intl.DateTimeFormat(undefined, {
         day: "numeric",
         hour: "2-digit",
@@ -423,11 +424,17 @@
         input.className = "session-rename-input";
         input.name = "sessionName";
         input.autocomplete = "off";
+        input.maxLength = maximumSessionTitleCodePoints * 2;
         input.value = draft?.dirty ? draft.value : current;
         input.dataset.originalTitle = current;
         input.disabled = Boolean(draft?.disabled);
         input.setAttribute("aria-label", "Session Name");
         let settled = false;
+        input.addEventListener("input", () => {
+          const characters = [...input.value];
+          if (characters.length <= maximumSessionTitleCodePoints) return;
+          input.value = characters.slice(0, maximumSessionTitleCodePoints).join("");
+        });
         const restoreRow = () => {
           row.hidden = false;
           if (menuButton) menuButton.hidden = false;
@@ -436,8 +443,16 @@
         };
         const commit = (restoreFocus) => {
           if (settled) return;
-          settled = true;
           const newTitle = input.value.trim();
+          if ([...newTitle].length > maximumSessionTitleCodePoints) {
+            showStatus(
+              `Session names may not exceed ${maximumSessionTitleCodePoints} characters.`,
+              true,
+            );
+            input.focus({ preventScroll: true });
+            return;
+          }
+          settled = true;
           let command = null;
           if (newTitle && newTitle !== current) {
             command = runCommand("rename_session", { sessionId, title: newTitle });
@@ -1482,7 +1497,10 @@
         const title = document.createElement("div");
         title.id = "pendingConfirmationTitle";
         title.className = "confirm-title";
-        title.textContent = `Apply ${actionCount} ${actionCount === 1 ? "change" : "changes"} to the Live Set?`;
+        const resolvesRecovery = confirm.kind === "resolve_recovery";
+        title.textContent = resolvesRecovery
+          ? "Close this unfinished operation?"
+          : `Apply ${actionCount} ${actionCount === 1 ? "change" : "changes"} to the Live Set?`;
 
         const message = document.createElement("p");
         message.id = "pendingConfirmationMessage";
@@ -1512,12 +1530,12 @@
         cancel.className = "secondary";
         cancel.type = "button";
         cancel.dataset.confirmCancel = "";
-        cancel.textContent = "Cancel";
+        cancel.textContent = resolvesRecovery ? "Keep unfinished" : "Cancel";
         cancel.onclick = () => resolveConfirm(confirm.id, false);
         const apply = document.createElement("button");
         apply.className = "primary";
         apply.type = "button";
-        apply.textContent = "Apply";
+        apply.textContent = resolvesRecovery ? "Keep changes and close" : "Apply";
         apply.onclick = () => resolveConfirm(confirm.id, true);
         buttons.append(cancel, apply);
         card.append(buttons);
@@ -1894,7 +1912,7 @@
 
       function isFailedApplyResult(event) {
         return event.kind === "apply_result" &&
-          /Live action plan could not complete its first action|No actions from this plan were completed/i
+          /Live action plan could not complete its first (?:action|operation)|No (?:actions|operations) from this plan were completed/i
             .test(event.content || "");
       }
 

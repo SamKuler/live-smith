@@ -725,6 +725,8 @@ test("a Profile save that never reached the bridge preserves its local Draft", a
     await harness.settle();
     harness.emitServerEventError();
     await harness.settle();
+    harness.emitServerEventOpen();
+    await harness.settle();
 
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.value,

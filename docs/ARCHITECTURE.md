@@ -105,8 +105,8 @@ src/
     executor.ts
       Applies validated and confirmed actions to the Live Set.
     audio-attachment-source.ts
-      Copies a selected Audio Clip, Sample, or Simpler source through a
-      race-checked regular-file boundary without exposing its path.
+      Reads an SDK-created temporary audio render through a bounded,
+      race-checked regular-file snapshot without exposing its path.
 
   model/
     contracts.ts
@@ -262,7 +262,10 @@ compatibility.
    and Clip content; renaming a Scene only binds its metadata. Host `bigint` values
    are encoded deterministically at this fingerprint boundary instead of being
    passed to ordinary JSON serialization; no Approval mode can bypass the
-   guard. The complete plan must also fit the Session's latest saved Edit Scope;
+   guard. Parameter values outside their observed Device, Track mixer, or Chain
+   mixer range fail here, before any earlier action can run. A single Apply is
+   limited to 64 actions before preflight work begins. The complete plan must
+   also fit the Session's latest saved Edit Scope;
    a denied plan never reaches approval or begins executing.
 10. After confirmation and immediately before execution, `agent/loop.ts` invokes
    that provider-neutral guard. A changed target, clip, device, parameter, or
@@ -283,7 +286,17 @@ compatibility.
    tool-call quota; excessive one-turn tool fanout is returned to the model for
    regrouping without executing that batch. A separate six-failure host budget
    stops changing failure variants that produce no Live mutation; any actual
-   mutation resets it, so productive large workflows remain uncapped.
+   mutation resets it, so productive large workflows remain uncapped. An active
+   partial-recovery ledger accepts at most 5,120 completed-action digests. Its
+   staged-work threshold preserves the earlier 4,096-entry format's repair
+   headroom, while the larger persistence bound lets an already-full legacy
+   ledger record one bounded final repair plan's known identities plus identities
+   discovered by a partial execution. Persistence therefore cannot fail only
+   after those additional actions have run. Capacity is not treated as an
+   unlimited retry strategy: after a trusted current-request recovery
+   observation, `resolve_live_recovery` always asks the user whether to keep
+   completed changes and close the unfinished operation. Approval modes cannot
+   approve it automatically, and it neither undoes nor mutates Live.
 
 ### Approval and Undo semantics
 
@@ -587,15 +600,13 @@ interpreted as instructions, but inspection is not cleaning or sanitization.
 The immutable attachment remains the complete original file, including embedded
 metadata.
 
-File upload and `attach_selected_audio_source` may create a pending audio
-attachment without consulting the active Profile. The selected-source command
-contains only the Session ID; it resolves an Audio Clip, Sample, or Simpler
-source inside Live and never accepts or returns a filesystem path. The copy
-opens only a non-symlink regular file without following links, applies a bounded
-read, and compares file identity, size, and change timestamps before and after
-the read. It also resolves the Live source again, so a changed selection/source
-fails instead of attaching bytes from a stale target. This copies the source
-file, not Live's warped, processed, rendered, or mixed output.
+File upload may create a pending audio attachment without consulting the active
+Profile. The beta SDK permits direct file reads only inside the extension's
+storage and temporary directories; an observed Audio Clip, Sample, or Simpler
+`filePath` therefore cannot be copied into an attachment. Users provide original
+source files through the composer's paste or drop boundary. Arrangement audio
+model input uses `resources.renderPreFxAudio` and reads only the SDK-created
+temporary render through a bounded regular-file snapshot.
 
 DOCX, XLSX, and PPTX are opened by a bounded local OOXML ZIP/XML parser. It
 rejects malformed packages and packages with detected macro, VBA, ActiveX, or
@@ -611,7 +622,7 @@ aggregate limit fails before event append.
 
 ### Send admission and historical context
 
-Upload, selected-source copy, pending-quota validation, deletion, request
+Upload, pending-quota validation, deletion, request
 preparation, event append, and existing-Session lifecycle mutations use the
 same process-wide Session mutation fence. Operations check cancellation at
 their defined boundaries; upload hashing, audio/PDF/OOXML inspection, Office
@@ -710,9 +721,17 @@ Every committed Profile Save, activation, or deletion publishes a
 credential-free `profile_settings_changed` invalidation to the other modal
 bridges for the same storage directory. The originating bridge suppresses its
 own correlated notification because its command response already carries the
-new state. A peer immediately gates Send, reloads authoritative state, and
-keeps the gate closed if that reload fails; each bridge reconnect-replays its
-latest invalidation so an SSE gap cannot leave a stale model label usable.
+new state. Each peer records that publication as a required global Send-state
+revision, immediately gates Send, reloads authoritative state, and keeps the
+gate closed if that reload fails. User Skill installation, replacement, and
+deletion publish the same global barrier. Profile and User Skill mutations hold
+a short process-wide request-configuration fence through durable commit and
+publication. Send snapshots the saved Profile and exact active Skill
+definitions under that fence, then rechecks the client's admitted revision
+before appending the prompt. The request therefore uses either the earlier
+configuration snapshot or rejects; it cannot silently assemble a request from
+an unseen replacement. Each bridge reconnect-replays its latest invalidation so
+an SSE gap cannot leave a stale model label or Skill catalog usable.
 
 Each follow-up-setting write increments a persisted canonical nonnegative
 decimal-string revision (`"0"` or a positive value without leading zeroes) under
@@ -872,9 +891,22 @@ Points, Devices and their parents, Rack Chains, Clips, Clip Slots, Take Lanes, m
 parameters, and Live sample sources are bound per action as well. Current-request
 audio sources instead bind their exact send-scoped locator and immutable
 attachment reference. Execution uses those bindings directly, so an earlier
-delete or insertion cannot make a later index/path resolve to a different object. Because the SDK deletes a Session Clip
-through its Slot rather than through a Clip argument, execution also verifies
-that the Slot still contains the bound Clip before deleting. A creator `ref` never
+delete or insertion cannot make a later index/path resolve to a different object.
+Creating, replacing, or deleting Session Slot content invalidates that Slot's
+pre-bound Clip and SampleSource dependencies, so the binder rejects any later
+consumer in the same plan before confirmation and requires a staged inspection.
+Main Arrangement Clip creation likewise invalidates only existing Clips in the
+creation range that Live can replace or truncate. Exact named MIDI reuse and
+Clip targets outside that range remain valid; Take Lane creation keeps its
+separate empty-range rule. Two SDK Clip creations in one main Arrangement lane
+must have non-overlapping ranges; an omitted audio duration keeps the potentially
+affected range open because the SDK derives it from the sample at execution.
+Replacing an existing Simpler Sample likewise invalidates only that old Sample
+source; later actions that depend on the unchanged Simpler remain valid.
+Deleting a Track likewise invalidates its complete group-descendant tree; a later
+bound Track target or Live SampleSource from that tree is rejected before
+confirmation, while unrelated Tracks remain valid in the same plan.
+A creator `ref` never
 binds to a same-name existing track: execution always creates a new track and
 binds the returned handle for later actions. Preflight revalidates existing
 handles inside the extension-activation-wide mutation queue after confirmation.
@@ -1068,7 +1100,6 @@ every current category. Present scope lists must contain distinct,
 supported values; malformed persisted permissions fail validation rather than
 falling back to All. Deleting a Session removes these settings with the same
 metadata record.
-
 The dialog reserves an active Session ID before the first message, but opening
 a scope or choosing New Session does not persist an untouched empty Session.
 The storage module shares these transient records across dialogs for the same
@@ -1078,7 +1109,9 @@ metadata change, archive/restore, or the first event or attachment write persist
 that Session under the existing storage transaction; unrelated transient records
 are never included in the write. A confirmed saved record supersedes its
 in-memory reservation, including after an uncertain commit. The persisted
-Session format is unchanged.
+Session format is unchanged. New and renamed titles are limited to 80 Unicode
+code points. Older longer titles remain readable through a bounded projection
+and are repaired naturally by the next Session write.
 
 Opening a scope reserves one only when no current unarchived Session already
 matches that exact project and scope identity. Default resolution and explicit
@@ -1097,6 +1130,11 @@ Session reuse. Any current non-default state makes an empty conversation distinc
 and preserves it. No navigation or close path implicitly deletes a Session, because
 another dialog can still own local draft or running state for that ID;
 untouched transient records do not become saved history.
+Each open dialog also holds process-local claims for the Sessions it has used.
+Automatic empty-Session reuse skips a candidate claimed by another dialog,
+because that dialog may own an unsent draft or paused Queue that is intentionally
+absent from storage. The claim lasts until that dialog closes; explicit Session
+selection may still join a claimed Session.
 
 Current and History lists keep Sessions with a title, events, attachments, or
 window-local draft/queued/running work. The current dialog also keeps every
@@ -1141,8 +1179,13 @@ the same lease, so
 another dialog cannot delete a Session and then have a running send recreate its
 event log. A send never falls back to another Session when its requested ID is
 missing. Waiting operations recheck cancellation immediately after acquiring
-the lease. Different Sessions still overlap. Profile and model-discovery writes
-are locked in both the dialog and bridge while any send is active. The active
+the lease. A committed event, attachment, Skill activation, or lifecycle change
+invalidates peer modal state for that Session. The peer bridge records the
+invalidation revision before admitting another Send. Different Sessions still
+overlap. Within one modal, Profile and model-discovery writes are locked in both
+the dialog and bridge while any send is active. A peer Profile mutation may
+commit after request assembly; the running request retains its admitted
+request-start snapshot. The active
 Session's Approval mode and Edit Scope selectors are exceptions: they remain
 writable during a send and are read again from that Session before each new Apply
 decision. A committed change is broadcast to other open dialogs for the same
@@ -1156,6 +1199,26 @@ single Undo entry. Accept Everything changes approval only and cannot bypass
 Edit Scope, observation, action-schema validation, preflight, the process-wide mutation
 queue, cancellation, or target/state-drift revalidation. Profile,
 RuntimeProfile, attachment, and Skill state remain the request-start snapshot.
+
+Committed Session events, attachments, metadata, and lifecycle changes publish
+a storage-scoped invalidation to peer dialogs. A peer marks that Session stale
+before its SSE refresh begins. `/state?sessionId=...` reads that exact target
+while holding its mutation fence, without changing the modal's selected
+Session. An inactive Session does not claim full-content coverage from the
+currently selected Session; its refresh waits until it is selected, while an
+automatic background Send remains fail closed. Unknown storage outcomes publish
+the same invalidation because the mutation may already have committed.
+
+The Send JSON contract remains only `prompt` and `sessionId`. The bundled client
+adds separate decimal headers for the latest authoritative global state it has
+applied and the latest full-content state applied for the target Session. A
+bridge compares both acknowledgements with its required revisions before
+entering the agent flow and rechecks after the Profile and Skill snapshot. A
+409 response, a generated state response, or a lost response never clears the
+requirement; only a later request carrying sufficient acknowledgements can pass.
+Full state advances target-Session coverage only when that Session is the
+state's `activeSessionId`, although an authoritative summary may prove that a
+deleted or archived target is no longer sendable.
 
 ### Session Edit Scope
 
@@ -1274,6 +1337,12 @@ reconnect replays. The sequence is neither persisted nor compared across modals
 and is not a storage freshness clock: an async snapshot can finish after a newer
 patch. Mutable patches are skipped only when the current full-state cut already
 covers them. Confirmation state is processed by its exact ID and generation.
+If an SSE socket falls behind, the bridge permits the accepted frame to drain
+but closes the client before a second frame can accumulate. EventSource
+reconnection alone is not treated as recovery: the client blocks new work and
+loads one authoritative full state before reopening Send. That state also
+settles a completed active Send whose HTTP and terminal SSE deliveries were both
+lost.
 Durable steering correlation is represented in both incremental and full-state
 Session-event projections, so either one can reconcile an unresolved steer. The
 client runs every authoritative HTTP/SSE state through one complete wire
@@ -1460,11 +1529,13 @@ changing its visible presentation. A definitely
 recovery rules, while an unknown outcome keeps it attached to the unresolved
 send until authoritative reconciliation. Steering and queued follow-ups retain
 their separate projections and cannot acknowledge this initial prompt.
-If cancellation arrives after one or more Live actions complete, their partial
-apply result is persisted and published before cancellation propagates; later
-actions in the plan are not executed. A simultaneous host failure remains a
-partial failure rather than being converted into a successful cancellation
-result.
+If cancellation arrives after one or more irreversible execution operations,
+including a project audio import or a Live action, their partial apply result is
+persisted and published before cancellation propagates; later actions in the
+plan are not executed. Recovery carries the number of fully completed plan
+actions separately from preparation-operation results, so an import never makes
+an unstarted action replay-protected. A simultaneous host failure remains a
+partial failure rather than being converted into a successful cancellation result.
 For a non-cancelled action failure, including a rejection of the first action,
 the completed mutations and exact failed action are persisted as a recoverable
 apply result before being returned to the model. The bounded loop immediately
@@ -1484,7 +1555,18 @@ canonical song-level identity before and after Live returns the created Track,
 independent of the temporary `ref`. Successful intermediate repair Applies add
 their completed identities to the still-active ledger. Only a final successful
 repair plan that explicitly sets `resolvesPriorFailure` persists the cleared
-state. A host rejection with zero completed mutations is deliberately transient:
+state. `resolve_live_recovery` is the user-authorized exit when remaining steps
+should be abandoned. Recovery loaded from an earlier request first requires a
+successful `inspect_live_set`; a new partial failure may use its successful
+automatic target refresh or a later matching recovery inspection. A mutating
+intermediate repair invalidates that evidence and requires another
+`inspect_live_set`, while a no-op does not. Rejection preserves the exact ledger;
+confirmation persists the normal inactive recovery record without Undo or any
+Live mutation.
+If the inactive recovery event's commit or publication cannot be confirmed, the
+request reports an unconfirmed outcome and invalidates Session state for an
+authoritative reload; it does not guess whether the ledger remains active. A
+host rejection with zero completed mutations is deliberately transient:
 it still blocks a false success in the current loop, but it emits no persistent
 replay ledger and a later successful alternative clears it without a model-owned
 flag. Cross-request recovery therefore exists only when actual Live side effects
@@ -1535,7 +1617,10 @@ uncertain, `/steer` returns a prompt-free
 `steeringOutcome: "unknown"`; the client retains the same ID. Every terminal
 send state also carries the Session events for that send, and the client
 reconciles a pending steering receipt before clearing or safely retaining its
-draft. Until that reconciliation, only the byte-identical guidance may retry
+draft. Send-owned Session activity carries the exact send ID; reconnect settles
+a local attempt from `completed` state only when that ID matches, so an older
+completed activity cannot terminate a newly submitted request. Until that
+reconciliation, only the byte-identical guidance may retry
 with the retained ID; edited Steer text and Queue submission cannot abandon the
 possibly committed receipt. Queue starts another request through the unchanged
 Send contract; its mode is never added to that body. The global-settings command

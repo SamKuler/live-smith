@@ -1,5 +1,10 @@
 import {
+  AudioClip,
+  Device,
+  MidiClip,
   MidiTrack,
+  RackDevice,
+  Simpler,
   type Chain,
   type Clip,
   type ClipSlot,
@@ -25,6 +30,7 @@ import {
   type ResolvedDeviceTarget,
 } from "./device-tree.js";
 import {
+  affectedTrackTree,
   findReusableMidiClip,
   resolveArrangementClip,
   resolveClipLocator,
@@ -44,7 +50,7 @@ import {
   type RequestAudioSampleSources,
   type ResolvedSampleSource,
 } from "./sample-source.js";
-import type { LiveTarget } from "./target.js";
+import { findTrackAncestor, type LiveTarget } from "./target.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -121,6 +127,21 @@ export function bindAgentPlanTargets(
     actionTracks,
     requestAudioSources,
   );
+  assertStructuralActionDependenciesAreStable(
+    context,
+    plan,
+    target,
+    tracks,
+    actionTracks,
+    actionObjects,
+  );
+  assertMainArrangementCreationRangesDoNotOverlap(
+    plan,
+    tracks,
+    actionTracks,
+    actionObjects,
+  );
+  assertDrumPadFillsAreDistinct(plan, actionObjects);
   assertRackChainCreationsAreDistinct(plan, actionObjects);
   assertTakeLaneCreationRangesDoNotOverlap(plan, actionObjects);
   return { tracks, actionTracks, actionObjects };
@@ -590,6 +611,338 @@ function assertRackChainCreationsAreDistinct(
     }
     seen.set(key, index);
   });
+}
+
+function assertDrumPadFillsAreDistinct(
+  plan: AgentPlan,
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): void {
+  const seen = new Map<string, number>();
+  plan.actions.forEach((action, index) => {
+    if (
+      action.type !== "configure_drum_pad" ||
+      action.mode !== "fill_empty_pad"
+    ) return;
+    const rack = actionObjects.get(index)?.deviceTarget?.device;
+    if (!rack) throw new Error(`Could not bind the Drum Rack for action ${index + 1}.`);
+    const key = JSON.stringify([
+      hostObjectHandleId(rack, "Drum Rack"),
+      action.receivingNote,
+    ]);
+    const prior = seen.get(key);
+    if (prior !== undefined) {
+      throw new Error(
+        `Actions ${prior + 1} and ${index + 1} both fill MIDI note ${action.receivingNote} in the same Drum Rack. Use one fill_empty_pad action for that pad, then inspect it before further changes.`,
+      );
+    }
+    seen.set(key, index);
+  });
+}
+
+function assertMainArrangementCreationRangesDoNotOverlap(
+  plan: AgentPlan,
+  tracks: ReadonlyMap<string, Track<"1.0.0">>,
+  actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): void {
+  const candidates = plan.actions.filter((action) =>
+    (action.type === "create_midi_clip" ||
+      action.type === "create_arrangement_audio_clip") &&
+    action.laneIndex === undefined
+  );
+  if (candidates.length < 2) return;
+  const ranges = new Map<
+    string,
+    Array<{ actionNumber: number; start: number; end: number; creates: boolean }>
+  >();
+  const tolerance = 1e-7;
+  plan.actions.forEach((action, index) => {
+    if (
+      (action.type !== "create_midi_clip" &&
+        action.type !== "create_arrangement_audio_clip") ||
+      action.laneIndex !== undefined
+    ) return;
+    const track = boundTrackFromMaps(action, index, tracks, actionTracks);
+    const key = track
+      ? `track:${hostObjectHandleId(track, "Track")}`
+      : action.trackRef
+        ? `creator-ref:${action.trackRef}`
+        : undefined;
+    if (!key) return;
+    const current = {
+      actionNumber: index + 1,
+      start: action.startBeat,
+      end: action.durationBeats === undefined
+        ? Number.POSITIVE_INFINITY
+        : action.startBeat + action.durationBeats,
+      creates: action.type === "create_arrangement_audio_clip" ||
+        actionObjects.get(index)?.clip === undefined,
+    };
+    const previous = ranges.get(key) ?? [];
+    const overlap = previous.find((range) =>
+      current.start < range.end - tolerance &&
+      range.start < current.end - tolerance &&
+      (current.creates || range.creates)
+    );
+    if (overlap) {
+      throw new Error(
+        `Actions ${overlap.actionNumber} and ${current.actionNumber} create overlapping Clips in the same main Arrangement lane. Use non-overlapping ranges or separate confirmed stages.`,
+      );
+    }
+    previous.push(current);
+    ranges.set(key, previous);
+  });
+}
+
+interface BoundObjectDependency {
+  readonly object: { handle?: { id?: unknown } };
+  readonly label: string;
+}
+
+function assertStructuralActionDependenciesAreStable(
+  context: Api,
+  plan: AgentPlan,
+  target: LiveTarget,
+  tracks: ReadonlyMap<string, Track<"1.0.0">>,
+  actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
+  actionObjects: ReadonlyMap<number, BoundActionObjects>,
+): void {
+  const invalidated = new Map<string, number>();
+
+  plan.actions.forEach((action, index) => {
+    const actionTrack = boundTrackFromMaps(action, index, tracks, actionTracks);
+    const binding = actionObjects.get(index);
+    if (invalidated.size > 0) {
+      const dependencies = boundObjectDependencies(
+        context,
+        action,
+        actionTrack,
+        binding,
+        target,
+      );
+      for (const dependency of dependencies) {
+        const id = hostObjectHandleId(dependency.object, dependency.label);
+        const priorActionNumber = invalidated.get(id);
+        if (priorActionNumber === undefined) continue;
+        throw new Error(
+          `Action ${index + 1} depends on ${dependency.label}, which was invalidated by action ${priorActionNumber}. Inspect the resulting Live object and use a separate confirmed stage.`,
+        );
+      }
+    }
+
+    if (index === plan.actions.length - 1) return;
+    for (const object of structurallyInvalidatedObjects(
+      context,
+      action,
+      actionTrack,
+      binding,
+    )) {
+      const id = hostObjectHandleId(object, "structurally affected Live object");
+      if (!invalidated.has(id)) {
+        invalidated.set(id, index + 1);
+      }
+    }
+  });
+}
+
+function boundObjectDependencies(
+  context: Api,
+  action: AgentAction,
+  actionTrack: Track<"1.0.0"> | undefined,
+  binding: BoundActionObjects | undefined,
+  target: LiveTarget,
+): BoundObjectDependency[] {
+  const result: BoundObjectDependency[] = [];
+  const add = (
+    object: { handle?: { id?: unknown } } | null | undefined,
+    label: string,
+  ) => {
+    if (object) result.push({ object, label });
+  };
+  add(actionTrack, actionTrack ? `Track "${actionTrack.name}"` : "Track");
+  add(binding?.scene, "Scene");
+  add(binding?.cuePoint, "Cue Point");
+  add(binding?.deviceTarget?.device, binding?.deviceTarget
+    ? `Device "${binding.deviceTarget.device.name}"`
+    : "Device");
+  add(binding?.secondaryDeviceTarget?.device, binding?.secondaryDeviceTarget
+    ? `Device "${binding.secondaryDeviceTarget.device.name}"`
+    : "Device");
+  add(binding?.chain, "Rack Chain");
+  const sessionClip = "slotIndex" in action && action.slotIndex !== undefined;
+  add(binding?.clip, sessionClip ? "Session Clip" : "Arrangement Clip");
+  add(binding?.slot, "Session slot content");
+  add(binding?.takeLane, "Take Lane");
+  add(binding?.mixerParameter, "mixer parameter");
+  if (binding?.sampleSource?.kind === "live") {
+    add(binding.sampleSource.object, "Live sample source");
+    const sourceTrack = liveSampleSourceTrack(context, action, binding, target);
+    add(sourceTrack, sourceTrack ? `Track "${sourceTrack.name}"` : "Track");
+  }
+  return result;
+}
+
+function liveSampleSourceTrack(
+  context: Api,
+  action: AgentAction,
+  binding: BoundActionObjects,
+  target: LiveTarget,
+): Track<"1.0.0"> | undefined {
+  const source = binding.sampleSource;
+  if (source?.kind !== "live") return undefined;
+  try {
+    const ancestor = findTrackAncestor(source.object);
+    if (ancestor) return ancestor;
+  } catch {
+    // Exact named and invocation targets remain available as fallbacks.
+  }
+  if (hasSampleSource(action) && "trackName" in action.source) {
+    return resolveTrack(context, action.source.trackName, {});
+  }
+  return target.track;
+}
+
+function structurallyInvalidatedObjects(
+  context: Api,
+  action: AgentAction,
+  actionTrack: Track<"1.0.0"> | undefined,
+  binding: BoundActionObjects | undefined,
+): Array<{ handle?: { id?: unknown } }> {
+  switch (action.type) {
+    case "delete_track":
+      return actionTrack
+        ? affectedTrackTree(context, actionTrack)
+        : [];
+    case "delete_device":
+      return binding?.deviceTarget?.device
+        ? deviceObjectTree(binding.deviceTarget.device)
+        : [];
+    case "replace_simpler_sample":
+      return replacedSimplerSample(
+        binding?.deviceTarget?.device,
+        binding?.sampleSource,
+      );
+    case "configure_drum_pad":
+      return action.mode === "replace_existing_simpler"
+        ? replacedSimplerSample(
+            binding?.secondaryDeviceTarget?.device,
+            binding?.sampleSource,
+          )
+        : [];
+    case "delete_cue_point":
+      return binding?.cuePoint ? [binding.cuePoint] : [];
+    case "delete_clip":
+      return binding?.clip ? [binding.clip] : [];
+    case "create_midi_clip":
+    case "create_arrangement_audio_clip":
+      return arrangementCreationInvalidatedClips(action, actionTrack, binding);
+    case "clear_arrangement_range":
+      return actionTrack?.arrangementClips.filter((clip) =>
+        clip.startTime < action.endBeat &&
+        clip.startTime + clip.duration > action.startBeat
+      ) ?? [];
+    case "delete_session_clip":
+    case "create_session_midi_clip":
+    case "create_session_audio_clip": {
+      if (!boundActionReplacesSessionSlotClip(action, binding) || !binding?.slot) {
+        return [];
+      }
+      return [binding.slot, ...(binding.slot.clip ? [binding.slot.clip] : [])];
+    }
+    default:
+      return [];
+  }
+}
+
+function arrangementCreationInvalidatedClips(
+  action: Extract<
+    AgentAction,
+    { type: "create_midi_clip" | "create_arrangement_audio_clip" }
+  >,
+  track: Track<"1.0.0"> | undefined,
+  binding: BoundActionObjects | undefined,
+): Clip<"1.0.0">[] {
+  if (!track || action.laneIndex !== undefined) return [];
+  if (action.type === "create_midi_clip" && binding?.clip) return [];
+  const end = action.durationBeats === undefined
+    ? Number.POSITIVE_INFINITY
+    : action.startBeat + action.durationBeats;
+  return track.arrangementClips.filter((clip) =>
+    clip.startTime < end &&
+    clip.startTime + clip.duration > action.startBeat
+  );
+}
+
+function replacedSimplerSample(
+  device: Device<"1.0.0"> | undefined,
+  source: ResolvedSampleSource | undefined,
+): Array<{ handle?: { id?: unknown } }> {
+  if (!(device instanceof Simpler) || !source) return [];
+  const sample = device.sample;
+  if (!sample) return [];
+  if (source.kind === "live" && sample.filePath === source.filePath) {
+    return [];
+  }
+  return [sample];
+}
+
+function deviceObjectTree(device: Device<"1.0.0">): Array<{ handle?: { id?: unknown } }> {
+  return [
+    device,
+    ...(device instanceof Simpler && device.sample ? [device.sample] : []),
+    ...(device instanceof RackDevice
+      ? device.chains.flatMap((chain) => chain.devices.flatMap(deviceObjectTree))
+      : []),
+  ];
+}
+
+function boundActionReplacesSessionSlotClip(
+  action: AgentAction,
+  binding: BoundActionObjects | undefined,
+): boolean {
+  if (action.type === "delete_session_clip") return true;
+  if (action.type === "create_session_midi_clip") {
+    return !sessionMidiClipCanBeReused(
+      binding?.slot?.clip,
+      action.durationBeats,
+    );
+  }
+  if (action.type === "create_session_audio_clip") {
+    const source = binding?.sampleSource;
+    return source?.kind !== "live" || !sessionAudioClipCanBeReused(
+      binding?.slot?.clip,
+      source.filePath,
+      action.isWarped,
+      action.loopSettings,
+    );
+  }
+  return false;
+}
+
+export function sessionMidiClipCanBeReused(
+  clip: Clip<"1.0.0"> | null | undefined,
+  durationBeats: number,
+): clip is MidiClip<"1.0.0"> {
+  return clip instanceof MidiClip && Math.abs(clip.duration - durationBeats) < 0.0001;
+}
+
+export function sessionAudioClipCanBeReused(
+  clip: Clip<"1.0.0"> | null | undefined,
+  filePath: string,
+  isWarped: boolean | undefined,
+  settings: Extract<
+    AgentAction,
+    { type: "create_session_audio_clip" }
+  >["loopSettings"],
+): clip is AudioClip<"1.0.0"> {
+  if (!(clip instanceof AudioClip) || clip.filePath !== filePath) return false;
+  if (isWarped !== undefined && clip.warping !== isWarped) return false;
+  if (!settings) return true;
+  return clip.looping === settings.looping &&
+    clip.startMarker === settings.startMarker &&
+    clip.endMarker === settings.endMarker &&
+    clip.loopStart === settings.loopStart &&
+    clip.loopEnd === settings.loopEnd;
 }
 
 type WritableBoundActionObjects = {

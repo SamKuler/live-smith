@@ -1208,12 +1208,17 @@ function toolTurnOutputSchema(tools: ModelFunctionTool[]): Record<string, unknow
       };
   return {
     type: "object",
+    description: "Return nonblank assistant content or at least one tool call.",
     additionalProperties: false,
     required: ["content", "toolCalls"],
     properties: {
-      content: { type: ["string", "null"] },
+      content: {
+        type: ["string", "null"],
+        description: "Nonblank assistant text, or null when toolCalls is nonempty.",
+      },
       toolCalls: {
         type: "array",
+        description: "Live Smith tool calls, required when content is null or blank.",
         maxItems: tools.length ? maximumToolCalls : 0,
         items: itemSchema,
       },
@@ -1248,6 +1253,12 @@ function parseToolTurn(
   }
   if (!Array.isArray(record.toolCalls) || record.toolCalls.length > maximumToolCalls) {
     throw new Error("Codex returned an invalid tool call list.");
+  }
+  if (
+    record.toolCalls.length === 0 &&
+    (typeof record.content !== "string" || !record.content.trim())
+  ) {
+    throw new Error("Codex returned an empty structured model turn.");
   }
   const idThread = threadId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128);
   const toolCalls = record.toolCalls.map((entry, index) => {

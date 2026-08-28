@@ -264,7 +264,7 @@ function assertCompleteChatFinishReason(
   }
   if (typeof value === "string") {
     throw new Error(
-      `OpenAI Chat Completions stopped with finish_reason ${value}.`,
+      "OpenAI Chat Completions returned an unsupported finish_reason.",
     );
   }
   throw new Error(
@@ -338,7 +338,7 @@ function requireUniqueToolCallId(
     throw new Error(`${label} returned a tool call ID that was missing or empty.`);
   }
   if (seen.has(value)) {
-    throw new Error(`${label} returned duplicate tool call ID ${value}.`);
+    throw new Error(`${label} returned a duplicate tool call ID.`);
   }
   seen.add(value);
   return value;

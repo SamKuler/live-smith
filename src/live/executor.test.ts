@@ -329,6 +329,111 @@ test("plain trackName execution consumes the preflight-bound handle", async () =
   assert.notEqual(deleted, replacement);
 });
 
+test("delete_track records replay identity before the host invalidates its Track", async () => {
+  let valid = true;
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: {
+      get: () => {
+        if (!valid) throw new Error("Track handle is invalid");
+        return { id: "deleted-track" };
+      },
+    },
+    name: {
+      get: () => {
+        if (!valid) throw new Error("Track name is invalid");
+        return "Scratch";
+      },
+    },
+  }) as MidiTrack<"1.0.0">;
+
+  const outcome = await executeAgentPlanWithProgress(
+    {
+      application: {
+        song: {
+          tracks: [track],
+          deleteTrack: async () => { valid = false; },
+        },
+      },
+    } as never,
+    {
+      message: "Delete Scratch",
+      actions: [{ type: "delete_track", trackName: "Scratch" }],
+    },
+    {},
+    undefined,
+    {
+      tracks: new Map(),
+      actionTracks: new Map([[0, track]]),
+      actionObjects: new Map(),
+    },
+  );
+
+  assert.deepEqual(outcome.results, ['Deleted track "Scratch".']);
+  assert.equal(outcome.mutationCount, 1);
+});
+
+test("delete_track failure reporting does not reread an invalidated Track", async () => {
+  let valid = true;
+  let invalidGetterReads = 0;
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: {
+      get: () => {
+        if (!valid) {
+          invalidGetterReads += 1;
+          throw new Error("Track handle is invalid");
+        }
+        return { id: "deleted-track" };
+      },
+    },
+    name: {
+      get: () => {
+        if (!valid) {
+          invalidGetterReads += 1;
+          throw new Error("Track name is invalid");
+        }
+        return "Scratch";
+      },
+    },
+  }) as MidiTrack<"1.0.0">;
+  const context = {
+    application: {
+      song: {
+        tracks: [track],
+        deleteTrack: async () => {
+          valid = false;
+          throw new Error("Host could not confirm the deletion");
+        },
+      },
+    },
+  } as never;
+
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      context,
+      {
+        message: "Delete Scratch",
+        actions: [{ type: "delete_track", trackName: "Scratch" }],
+      },
+      {},
+      undefined,
+      {
+        tracks: new Map(),
+        actionTracks: new Map([[0, track]]),
+        actionObjects: new Map(),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentPlanExecutionError);
+      assert.equal(error.failedActionIndex, 0);
+      assert.deepEqual(error.failedTrackSelector, { trackName: "Scratch" });
+      assert.match(String(error.cause), /could not confirm the deletion/i);
+      assert.doesNotMatch(error.message, /Track (?:name|handle) is invalid/);
+      return true;
+    },
+  );
+  assert.equal(invalidGetterReads, 0);
+});
+
 test("set_device_parameter rejects an out-of-range value without calling setValue", async () => {
   let setValueCalls = 0;
   const parameter = {
@@ -935,6 +1040,7 @@ test("configure_drum_pad reports granular host mutations before a later failure"
     (error: unknown) => {
       assert.ok(error instanceof AgentPlanExecutionError);
       assert.equal(error.completedResults.length, 3);
+      assert.equal(error.completedActionCount, 0);
       assert.ok(
         error.completedActionKeys.flat().every((key) =>
           key.startsWith("live-action-step:drum-pad:"),
@@ -1089,7 +1195,7 @@ test("Session MIDI creation treats reordered expressive duplicates as matching",
   assert.equal(clip.notes, notes);
 });
 
-test("delete_session_clip refuses to delete a replacement created earlier in the plan", async () => {
+test("Session slot structural dependencies are rejected before any replacement", async () => {
   const original = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
     handle: { id: "clip-original" },
     name: "Original",
@@ -1146,11 +1252,67 @@ test("delete_session_clip refuses to delete a replacement created earlier in the
       },
       {},
     ),
-    /Session slot 0 changed earlier in this plan/i,
+    /action 2 depends on Session Clip.*invalidated by action 1/i,
   );
 
-  assert.equal(deletes, 1);
-  assert.equal(slot.clip, replacement);
+  assert.equal(deletes, 0);
+  assert.equal(slot.clip, original);
+});
+
+test("Session Clip edits cannot consume a Clip replaced earlier in the same plan", async () => {
+  const original = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "clip-original" },
+    name: "Original",
+    duration: 8,
+    notes: [],
+  });
+  let deletes = 0;
+  let creates = 0;
+  const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "slot-1" },
+    clip: original,
+    deleteClip: async () => { deletes += 1; },
+    createMidiClip: async () => {
+      creates += 1;
+      return original;
+    },
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    clipSlots: [slot],
+  });
+
+  await assert.rejects(
+    executeAgentPlan(
+      { application: { song: { tracks: [track] } } } as never,
+      {
+        message: "Replace then rename",
+        actions: [
+          {
+            type: "create_session_midi_clip",
+            trackName: "Lead",
+            slotIndex: 0,
+            durationBeats: 4,
+            notes: [],
+          },
+          {
+            type: "set_clip_properties",
+            trackName: "Lead",
+            slotIndex: 0,
+            clipName: "Original",
+            newName: "Final",
+          },
+        ],
+      },
+      {},
+    ),
+    /action 2 depends on Session Clip.*invalidated by action 1/i,
+  );
+  assert.equal(deletes, 0);
+  assert.equal(creates, 0);
+  assert.equal(original.name, "Original");
 });
 
 test("audio clip creation consumes an observed source internally for Arrangement and Session", async () => {
@@ -1379,6 +1541,7 @@ test("a Warp-only Session audio mismatch deletes and recreates the slot Clip", a
 
 test("clip property, Warp, range clear, and Session delete actions use exact clips", async () => {
   const clip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "session-clip" },
     name: "Vocal",
     startTime: 0,
     duration: 4,
@@ -1390,12 +1553,14 @@ test("clip property, Warp, range clear, and Session delete actions use exact cli
   });
   let sessionDeletes = 0;
   const slot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "session-slot" },
     clip,
     deleteClip: async () => {
       sessionDeletes += 1;
     },
   });
   const arrangementClip = sdkObject<AudioClip<"1.0.0">>(AudioClip.prototype, {
+    handle: { id: "arrangement-clip" },
     name: "Range Clip",
     startTime: 8,
     duration: 4,
@@ -2004,6 +2169,7 @@ test("a named Take Lane MIDI Clip can resume after its initial note write fails"
     (error: unknown) => {
       assert.ok(error instanceof AgentPlanExecutionError);
       assert.equal(error.completedMutationCount, 2);
+      assert.equal(error.completedActionCount, 0);
       assert.equal(error.completedActionKeys.length, 1);
       assert.deepEqual(error.completedActionKeys, [[
         "live-action-step:retryable-named-midi-create",
@@ -2018,13 +2184,14 @@ test("a named Take Lane MIDI Clip can resume after its initial note write fails"
   assert.deepEqual(savedNotes, plan.actions[0]?.notes);
 });
 
-test("AgentPlanExecutionError includes completed action results", () => {
+test("AgentPlanExecutionError distinguishes completed operations from plan actions", () => {
   const error = new AgentPlanExecutionError(
     ['Inserted "Operator" on track "Future Bass".'],
     new Error("Could not find parameter"),
   );
 
-  assert.match(error.message, /Plan failed after 1 completed action/);
+  assert.match(error.message, /Plan failed after 1 completed operation/);
+  assert.equal(error.completedActionCount, 0);
   assert.match(error.message, /Completed: Inserted "Operator"/);
   assert.match(error.message, /Could not find parameter/);
 });
@@ -2070,6 +2237,7 @@ test("AgentPlanExecutionError identifies the exact failed plan action", async ()
           .failedActionIndex,
         1,
       );
+      assert.equal(error.completedActionCount, 1);
       assert.equal(error.failedTrackName, "Lead");
       assert.match(
         error.message,
@@ -2342,7 +2510,7 @@ test("velocity factor one preserves an implicit SDK default as a no-op", async (
   assert.match(outcome.results[0] ?? "", /no note changes/i);
 });
 
-test("a transform refuses a Session Clip replaced earlier in the same plan", async () => {
+test("a Session transform dependency is rejected before replacing its Clip", async () => {
   const detached = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
     handle: { id: "clip-old" },
     name: "Loop",
@@ -2399,20 +2567,15 @@ test("a transform refuses a Session Clip replaced earlier in the same plan", asy
       },
       {},
     ),
-    (error: unknown) => {
-      assert.ok(error instanceof AgentPlanExecutionError);
-      assert.equal(error.completedResults.length, 1);
-      assert.match(error.message, /MIDI Clip.*changed earlier in this plan/i);
-      return true;
-    },
+    /action 2 depends on Session Clip.*invalidated by action 1/i,
   );
 
-  assert.equal(slot.clip, replacement);
-  assert.equal(replacement.notes[0]?.pitch, 60);
+  assert.equal(slot.clip, detached);
+  assert.equal(replacement.notes.length, 0);
   assert.equal(detached.notes[0]?.pitch, 48);
 });
 
-test("a transform refuses an Arrangement Clip replaced earlier in the same plan", async () => {
+test("an Arrangement transform dependency is rejected before replacing its Clip", async () => {
   const detached = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
     handle: { id: "clip-old" },
     name: "Verse",
@@ -2465,17 +2628,176 @@ test("a transform refuses an Arrangement Clip replaced earlier in the same plan"
       },
       {},
     ),
-    (error: unknown) => {
-      assert.ok(error instanceof AgentPlanExecutionError);
-      assert.equal(error.completedResults.length, 1);
-      assert.match(error.message, /MIDI Clip.*changed earlier in this plan/i);
-      return true;
-    },
+    /action 2 depends on Arrangement Clip.*invalidated by action 1/i,
   );
 
-  assert.equal(track.arrangementClips[0], replacement);
-  assert.equal(replacement.notes[0]?.pitch, 60);
+  assert.equal(track.arrangementClips[0], detached);
+  assert.equal(replacement.notes.length, 0);
   assert.equal(detached.notes[0]?.pitch, 48);
+});
+
+test("a bound MIDI transform ignores a planned rename but still rejects locator drift", async () => {
+  const clip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "bound-clip" },
+    name: "Old Name",
+    startTime: 8,
+    duration: 4,
+    notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }],
+  });
+  const track = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "bound-track" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [clip],
+    clipSlots: [],
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+  await executeAgentPlanWithProgress(
+    context,
+    {
+      message: "Rename then transpose the same Clip",
+      actions: [
+        {
+          type: "set_clip_properties",
+          trackName: "Lead",
+          startBeat: 8,
+          clipName: "Old Name",
+          newName: "New Name",
+        },
+        {
+          type: "transpose_midi_notes",
+          trackName: "Lead",
+          startBeat: 8,
+          clipName: "Old Name",
+          semitones: 7,
+        },
+      ],
+    },
+    {},
+  );
+  assert.equal(clip.name, "New Name");
+  assert.equal(clip.notes[0]?.pitch, 67);
+
+  const sessionClip = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "session-bound-clip" },
+    name: "Old Loop",
+    startTime: 0,
+    duration: 4,
+    notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 100 }],
+  });
+  const sessionSlot = sdkObject<ClipSlot<"1.0.0">>(ClipSlot.prototype, {
+    handle: { id: "session-bound-slot" },
+    clip: sessionClip,
+  });
+  const sessionTrack = sdkObject<MidiTrack<"1.0.0">>(MidiTrack.prototype, {
+    handle: { id: "session-bound-track" },
+    name: "Session Lead",
+    devices: [],
+    arrangementClips: [],
+    clipSlots: [sessionSlot],
+  });
+  const sessionContext = {
+    application: { song: { tracks: [sessionTrack] } },
+  } as never;
+  await executeAgentPlanWithProgress(
+    sessionContext,
+    {
+      message: "Rename a reusable Session Clip then transpose it",
+      actions: [
+        {
+          type: "create_session_midi_clip",
+          trackName: "Session Lead",
+          slotIndex: 0,
+          durationBeats: 4,
+          name: "New Loop",
+          notes: [{ pitch: 64, startTime: 0, duration: 1, velocity: 100 }],
+        },
+        {
+          type: "transpose_midi_notes",
+          trackName: "Session Lead",
+          slotIndex: 0,
+          clipName: "Old Loop",
+          semitones: 5,
+        },
+      ],
+    },
+    {},
+  );
+  assert.equal(sessionClip.name, "New Loop");
+  assert.equal(sessionClip.notes[0]?.pitch, 69);
+
+  const sessionTransform = validateAgentPlan({
+    message: "Transpose the bound Session Clip",
+    actions: [{
+      type: "transpose_midi_notes",
+      trackName: "Session Lead",
+      slotIndex: 0,
+      clipName: "New Loop",
+      semitones: 1,
+    }],
+  });
+  const sessionBindings = bindAgentPlanTargets(sessionContext, sessionTransform);
+  Reflect.set(sessionSlot, "clip", sdkObject(MidiClip.prototype, {
+    handle: { id: "session-replacement-clip" },
+    name: "New Loop",
+    startTime: 0,
+    duration: 4,
+    notes: [],
+  }));
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      sessionContext,
+      sessionTransform,
+      {},
+      undefined,
+      sessionBindings,
+    ),
+    /MIDI Clip.*changed earlier in this plan/i,
+  );
+
+  const transformPlan = validateAgentPlan({
+    message: "Transpose the bound Clip",
+    actions: [{
+      type: "transpose_midi_notes",
+      trackName: "Lead",
+      startBeat: 8,
+      clipName: "New Name",
+      semitones: 1,
+    }],
+  });
+  const replacedBindings = bindAgentPlanTargets(context, transformPlan);
+  const replacement = sdkObject<MidiClip<"1.0.0">>(MidiClip.prototype, {
+    handle: { id: "replacement-clip" },
+    name: "New Name",
+    startTime: 8,
+    duration: 4,
+    notes: [],
+  });
+  Reflect.set(track, "arrangementClips", [replacement]);
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      context,
+      transformPlan,
+      {},
+      undefined,
+      replacedBindings,
+    ),
+    /MIDI Clip.*changed earlier in this plan/i,
+  );
+
+  Reflect.set(track, "arrangementClips", [clip]);
+  const movedBindings = bindAgentPlanTargets(context, transformPlan);
+  Reflect.set(clip, "startTime", 12);
+  await assert.rejects(
+    executeAgentPlanWithProgress(
+      context,
+      transformPlan,
+      {},
+      undefined,
+      movedBindings,
+    ),
+    /MIDI Clip.*changed earlier in this plan/i,
+  );
 });
 
 test("sequential transforms keep using the same unchanged Clip handle", async () => {

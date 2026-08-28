@@ -13,6 +13,10 @@ import {
   MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
   MAX_PENDING_IMAGE_ATTACHMENT_BYTES,
 } from "../attachments/contracts.js";
+import {
+  LEGACY_MAX_RECOVERY_ACTION_DIGESTS,
+  MAX_RECOVERY_ACTION_DIGESTS,
+} from "../agent/recovery-contract.js";
 import type { SessionAttachmentRef } from "./attachments.js";
 
 import {
@@ -734,6 +738,44 @@ test("apply results persist a strict structured recovery ledger", async () => {
     { active: true, completedActionDigests: [digest] },
     { active: false, completedActionDigests: [] },
   ]);
+});
+
+test("recovery persistence accepts legacy and current bounds but rejects overflow", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
+  const digests = (count: number) => Array.from(
+    { length: count },
+    (_value, index) => createHash("sha256")
+      .update(`recovery-bound-${index}`)
+      .digest("hex"),
+  );
+
+  for (const [sessionId, count] of [
+    ["legacy-recovery-bound", LEGACY_MAX_RECOVERY_ACTION_DIGESTS],
+    ["current-recovery-bound", MAX_RECOVERY_ACTION_DIGESTS],
+  ] as const) {
+    await appendSessionEvent(dir, sessionId, {
+      kind: "apply_result",
+      content: "Recovery remains active.",
+      recovery: {
+        active: true,
+        completedActionDigests: digests(count),
+      },
+    });
+    const events = await loadSessionEvents(dir, sessionId);
+    assert.equal(events[0]?.recovery?.completedActionDigests.length, count);
+  }
+
+  await assert.rejects(
+    appendSessionEvent(dir, "overflow-recovery-bound", {
+      kind: "apply_result",
+      content: "Recovery exceeds its persistence bound.",
+      recovery: {
+        active: true,
+        completedActionDigests: digests(MAX_RECOVERY_ACTION_DIGESTS + 1),
+      },
+    }),
+    /Session event input is invalid/,
+  );
 });
 
 test("malformed recovery ledgers are rejected as event-log corruption", async () => {

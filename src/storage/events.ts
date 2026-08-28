@@ -21,6 +21,7 @@ import type {
 import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js";
 import type { ModelCitation, ModelHostedWebSearch } from "../model/contracts.js";
 import { isModelHostedWebSearch } from "../model/web-search.js";
+import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -586,7 +587,7 @@ function isSessionRecoveryLedger(value: unknown): value is SessionRecoveryLedger
     !hasOnlyKeys(record, ["active", "completedActionDigests"]) ||
     typeof record.active !== "boolean" ||
     !Array.isArray(record.completedActionDigests) ||
-    record.completedActionDigests.length > 4096 ||
+    record.completedActionDigests.length > MAX_RECOVERY_ACTION_DIGESTS ||
     !record.completedActionDigests.every(
       (digest) => typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
     ) ||

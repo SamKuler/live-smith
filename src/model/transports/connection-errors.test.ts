@@ -182,6 +182,29 @@ test("generation fetch rejection is typed in every Direct mode", async () => {
   }
 });
 
+test("invalid API-key header values fail locally without becoming connection loss", async () => {
+  const invalidApiKey = "private-key\r\nx-injected: private-value";
+  let fetchCalls = 0;
+  const fetchImpl = (async () => {
+    fetchCalls += 1;
+    throw new Error("Fetch must not run for an invalid local header.");
+  }) as typeof fetch;
+
+  for (const item of directCases(fetchImpl)) {
+    item.profile.connection.apiKey = invalidApiKey;
+    await assert.rejects(
+      item.transport.createToolTurn(request(item.profile, { streaming: true })),
+      (error: unknown) => assertOrdinaryError(
+        error,
+        /API key.*HTTP header/i,
+        invalidApiKey,
+      ),
+      item.name,
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
 test("model-discovery fetch rejection remains ordinary", async () => {
   const fetchImpl = (async () => {
     throw new Error("discovery failed");
@@ -540,7 +563,7 @@ test("JSON, protocol, oversize, and callback failures remain ordinary", async (t
       transport.createToolTurn(request(openAIProfile("chat-completions"), {
         streaming: true,
       })),
-      (error: unknown) => assertOrdinaryError(error, /finish_reason length/),
+      (error: unknown) => assertOrdinaryError(error, /unsupported finish_reason/),
     );
   });
 

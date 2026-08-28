@@ -336,6 +336,37 @@ test("loopback Profiles may omit authentication while remote Profiles require it
   }
 });
 
+test("Profile validation rejects API keys that cannot be used in HTTP headers", () => {
+  const invalidKeys = [
+    "key\r\nx-injected: value",
+    "key\0value",
+    `key${String.fromCharCode(0x1f)}value`,
+    `key${String.fromCharCode(0x7f)}value`,
+    "key\u0100value",
+  ];
+
+  for (const apiKey of invalidKeys) {
+    const candidate = profile("https://example.test/v1");
+    candidate.connection = {
+      ...(candidate.connection as Record<string, unknown>),
+      apiKey,
+    };
+    for (const validate of [
+      validateDraftProfileForDiscovery,
+      validateDraftProfileForSave,
+    ]) {
+      assert.throws(
+        () => validate(candidate),
+        (error: unknown) => {
+          assert.match(String(error), /API key.*HTTP header/i);
+          assert.equal(String(error).includes(apiKey), false);
+          return true;
+        },
+      );
+    }
+  }
+});
+
 test("Profile validation rejects unsafe or overlong internal IDs", () => {
   for (const id of ["../profile", "profile.with-dot", "a".repeat(129)]) {
     assert.throws(

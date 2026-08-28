@@ -66,7 +66,7 @@ interface DialogHarness {
     error: string,
     promptPersistence?: string,
     details?: {
-      sendFailureKind?: "session_unavailable";
+      sendFailureKind?: "session_unavailable" | "state_stale";
       state?: ChatBridgeState;
     },
   ): void;
@@ -95,6 +95,7 @@ interface DialogHarness {
   omitNextCommandId(): void;
   truncateNextCommandResponseAfterCommit(): void;
   rejectNextState(error: string): void;
+  readBootstrappedClientStateReference(): Readonly<ChatBridgeState>;
   holdNextCommand(): void;
   holdNextCommandResponse(): void;
   holdNextConfirmation(): void;
@@ -428,7 +429,7 @@ async function createDialogHarness(
   let nextSendError: {
     error: string;
     promptPersistence?: string;
-    sendFailureKind?: "session_unavailable";
+    sendFailureKind?: "session_unavailable" | "state_stale";
     state?: ChatBridgeState;
   } | null = null;
   let nextSteerError: {
@@ -562,7 +563,12 @@ async function createDialogHarness(
   };
   const pendingConfirmations = new Map<
     string,
-    { confirmationGeneration: number; sendId: string; sessionId: string }
+    {
+      confirmationGeneration: number;
+      kind: "apply" | "resolve_recovery";
+      sendId: string;
+      sessionId: string;
+    }
   >();
   const confirmationGenerations = new Map<
     string,
@@ -692,6 +698,7 @@ async function createDialogHarness(
     "profile_settings_changed",
     "session_event",
     "session_model_selection_changed",
+    "session_state_invalidated",
     "steer_accepted",
   ]);
 
@@ -792,6 +799,7 @@ async function createDialogHarness(
         {
           ...(current || {}),
           sessionId: event.sessionId,
+          ...(typeof event.sendId === "string" ? { sendId: event.sendId } : {}),
           status: projected.status,
           message: projected.message,
           unread: current?.unread || false,
@@ -830,6 +838,9 @@ async function createDialogHarness(
       return payload;
     }
     const event = { ...(payload as Record<string, unknown>) };
+    if (event.type === "confirm_request" && event.kind === undefined) {
+      event.kind = "apply";
+    }
     const sendId = typeof event.sendId === "string" ? event.sendId : undefined;
     if (
       sendId &&
@@ -930,6 +941,7 @@ async function createDialogHarness(
       ) {
         pendingConfirmations.set(published.id, {
           confirmationGeneration: published.confirmationGeneration as number,
+          kind: published.kind as "apply" | "resolve_recovery",
           sendId: published.sendId,
           sessionId: published.sessionId,
         });
@@ -971,6 +983,7 @@ async function createDialogHarness(
     return event;
   };
 
+  let bootstrappedClientStateReference: ChatBridgeState | undefined;
   const dom = new JSDOM(
     renderChatHtml(cloneState(initialState), bridge),
     {
@@ -979,6 +992,13 @@ async function createDialogHarness(
       pretendToBeVisual: true,
       virtualConsole,
       beforeParse(window) {
+        Object.defineProperty(window, "__LIVE_SMITH_STATE__", {
+          configurable: true,
+          get: () => bootstrappedClientStateReference,
+          set: (value: ChatBridgeState) => {
+            bootstrappedClientStateReference = value;
+          },
+        });
         Object.defineProperty(window, "crypto", {
           configurable: true,
           value: options.webCryptoAvailable === false
@@ -1500,23 +1520,6 @@ async function createDialogHarness(
                 ) ?? [];
                 synchronizeActiveSessionProjection();
               } else if (
-                command.kind === "attach_selected_audio_source" &&
-                command.sessionId
-              ) {
-                const attachments = pendingAttachmentsBySession.get(command.sessionId) ?? [];
-                const attachment = pendingAudio(
-                  `attachment-${attachments.length + 1}`,
-                  "Selected audio.wav",
-                  "audio/wav",
-                  96_000,
-                  1.5,
-                );
-                const next = [...attachments, attachment];
-                pendingAttachmentsBySession.set(command.sessionId, next);
-                if (serverState.activeSessionId === command.sessionId) {
-                  serverState.pendingAttachments = next;
-                }
-              } else if (
                 command.kind === "set_session_skills" &&
                 command.sessionId &&
                 Array.isArray(command.skillIds)
@@ -1765,9 +1768,13 @@ async function createDialogHarness(
                 if (owner) {
                   const activity = {
                     status: "running" as const,
-                    message: confirmation?.apply === true
-                      ? "Applying confirmed changes"
-                      : "Continuing after cancellation",
+                    message: owner.kind === "resolve_recovery"
+                      ? confirmation?.apply === true
+                        ? "Closing unfinished operation"
+                        : "Keeping unfinished operation active"
+                      : confirmation?.apply === true
+                        ? "Applying confirmed changes"
+                        : "Continuing after cancellation",
                   };
                   published = publishServerEvent({
                     type: "confirm_resolved",
@@ -1990,6 +1997,13 @@ async function createDialogHarness(
     },
     rejectNextState(error) {
       nextStateRejection = new Error(error);
+    },
+    readBootstrappedClientStateReference() {
+      assert.ok(
+        bootstrappedClientStateReference,
+        "Expected the bootstrapped client state reference to be captured.",
+      );
+      return bootstrappedClientStateReference;
     },
     holdNextCommand() {
       heldCommand = new Promise<void>((resolve) => {

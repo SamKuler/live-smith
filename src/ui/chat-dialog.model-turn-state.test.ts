@@ -632,6 +632,7 @@ test("connection overlay reveals the latest state, profile gate, command, Queue,
         false,
       );
       assert.equal(harness.document.querySelector<HTMLElement>("#status")?.hidden, false);
+      await harness.settle();
       harness.emitServerEventOpen();
       assert.equal(harness.document.querySelector("#status")?.textContent, "State is ready");
     } finally {
@@ -648,6 +649,7 @@ test("connection overlay reveals the latest state, profile gate, command, Queue,
     try {
       profileHarness.emitServerEventError();
       profileHarness.emitServerEventOpen();
+      await profileHarness.settle();
       assert.match(
         profileHarness.document.querySelector("#status")?.textContent ?? "",
         /Create and save a model profile/,

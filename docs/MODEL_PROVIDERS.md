@@ -37,6 +37,8 @@ The `direct-api` branch owns `apiFamily`, `apiMode`, `baseUrl`, and `apiKey`.
 implementations described under [API behavior](#api-behavior). Live Smith owns
 request mapping, SSE parsing, protocol replay, and error redaction. Environment
 variables and `.env` files are never credential or connection fallbacks.
+API keys containing characters that cannot be represented safely in an HTTP
+header are rejected before Fetch is called.
 
 #### Errors, bounds, and cancellation
 
@@ -65,8 +67,9 @@ Direct model generation classifies only a rejected Fetch call, a rejected
 response-body read, or a clean streaming EOF before the mode's required
 terminal event as a typed connection loss. Abort is checked first and retains
 its exact reason. HTTP status failures, explicit provider error events,
-malformed or contradictory protocol data, early `[DONE]`, oversized data, and
-consumer callback failures remain ordinary failures and are not reconnected.
+local request-construction failures, malformed or contradictory protocol data,
+early `[DONE]`, oversized data, and consumer callback failures remain ordinary
+failures and are not reconnected.
 For streaming compatibility, an absent `Content-Type` is accepted when the
 body is valid SSE; an explicitly incompatible media type is a non-retryable
 protocol error.
@@ -164,9 +167,11 @@ feedback, update checks, OTEL export, remote plugins/sharing, in-app updates,
 and remote compaction v2 are disabled. Each model call uses an ephemeral
 thread, no workspace roots or environments, empty developer instructions, a
 read-only sandbox, `approvalPolicy: never`, and no rollout path. The App Server
-output schema constrains the envelope and tool-name enum. The backend rejects
-runtime-tool items, unknown names, and malformed, non-object, or oversized
-argument strings. The provider-neutral outer loop remains the
+output schema constrains the envelope and tool-name enum and documents the
+nonempty-turn requirement; the parser enforces nonblank assistant content or at
+least one tool call. The backend rejects runtime-tool items, unknown names,
+empty turns, and malformed, non-object, or oversized argument strings. The
+provider-neutral outer loop remains the
 authoritative action-schema validator and the only component that executes Live
 observation or mutation tools.
 
@@ -507,12 +512,15 @@ user event.
   `url_citation` sources to the Session timeline.
 - Does not use `previous_response_id`.
 - Treats `response.completed` and `response.incomplete` as terminal lifecycle
-  events and cancels the reader without waiting for EOF or `[DONE]`.
+  events only when the embedded top-level status agrees, and cancels the reader
+  without waiting for EOF or `[DONE]`.
 - Replays an `incomplete: max_output_tokens` response locally and automatically
-  continues it at most twice. Partial text and citations are retained, while
-  a function call is executable only when the item itself is marked
-  `completed`; partial call items are replayed but never executed.
-- Rejects other incomplete reasons and rejects executable tool calls unless the
+  continues it at most twice. Partial text, citations, and output items are
+  retained for replay, but no client tool call from an incomplete top-level
+  response is exposed for execution.
+- Rejects other incomplete reasons, missing or nonterminal top-level statuses,
+  non-null failure metadata on an accepted terminal response, incomplete
+  metadata on a completed response, and executable tool calls unless the
   overall response is complete and every call has a non-empty, unique protocol
   ID, a non-empty function name, and a string argument representation. A
   malformed declared call invalidates the entire turn even when text output is
@@ -644,11 +652,11 @@ and does not include the track device chain. ID3 metadata is not executed
 locally, but the parser is not a cleaning or sanitization step. File names,
 embedded metadata, and audio content are untrusted model input.
 
-Audio may enter pending state through ordinary file upload or by copying the
-file backing a selected Live Audio Clip, Sample, or Simpler. Neither path is
-gated by the current Profile, which allows the user to attach first and select a
-compatible Profile before sending. The selected-source command accepts only a
-Session ID; no UI or model request can supply an arbitrary path.
+Audio enters pending state through ordinary file upload. Upload is not gated by
+the current Profile, which allows the user to attach first and select a compatible
+Profile before sending. The Extensions SDK does not expose arbitrary selected
+Live source bytes through its storage or temporary-file boundary, and no UI or
+model request accepts a filesystem path.
 
 Files remain pending until the associated user event is durably appended. A
 confirmed append consumes those immutable IDs before provider I/O, including

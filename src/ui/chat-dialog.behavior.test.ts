@@ -279,7 +279,6 @@ test("the compact composer uses one attachment menu and no unsupported file pick
     assert.equal(menuButton?.getAttribute("aria-expanded"), "true");
     assert.equal(menu?.hidden, false);
     assert.match(menu?.textContent ?? "", /drop or paste files/i);
-    assert.match(menu?.textContent ?? "", /selected Live audio/i);
 
     harness.document.dispatchEvent(
       new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
@@ -2820,10 +2819,12 @@ test("a command network error reconciles through state after the event stream di
     harness.emitServerEventError();
     await harness.settle();
     harness.emitServerEventOpen();
+    await harness.settle();
+    await harness.settle();
 
     assert.equal(
       harness.calls.filter((call) => call.path === "/state").length,
-      1,
+      2,
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
@@ -2837,9 +2838,9 @@ test("a command network error reconciles through state after the event stream di
       harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
       "false",
     );
-    assert.match(
+    assert.doesNotMatch(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /refreshed|verify/i,
+      /lost connection|close and reopen/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -2857,10 +2858,11 @@ test("a committed command with truncated JSON reconciles through authoritative s
     harness.emitServerEventError();
     await harness.settle();
     harness.emitServerEventOpen();
+    await harness.settle();
 
     assert.equal(
       harness.calls.filter((call) => call.path === "/state").length,
-      1,
+      2,
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#approvalMode")?.value,
@@ -2870,9 +2872,9 @@ test("a committed command with truncated JSON reconciles through authoritative s
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
       false,
     );
-    assert.match(
+    assert.doesNotMatch(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /refreshed|verify/i,
+      /lost connection|close and reopen/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -2925,6 +2927,8 @@ test("a response-lost Profile save rebuilds the editor from reconciled state", a
     harness.click("#saveProfileButton");
     await harness.settle();
     harness.emitServerEventError();
+    await harness.settle();
+    harness.emitServerEventOpen();
     await harness.settle();
 
     assert.equal(
@@ -3001,7 +3005,9 @@ test("a command network error blocks mutations when stream and state reconciliat
 
     harness.emitServerEventError();
     await harness.settle();
+    harness.rejectNextState("Bridge state is still unavailable.");
     harness.emitServerEventOpen();
+    await harness.settle();
 
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled,
@@ -3017,7 +3023,7 @@ test("a command network error blocks mutations when stream and state reconciliat
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
-      /could not.*reconcil|state.*unavailable/i,
+      /could not.*(?:reconcil|confirm)|state.*unavailable/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {

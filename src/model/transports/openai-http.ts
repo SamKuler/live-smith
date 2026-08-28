@@ -3,6 +3,7 @@ import { URL } from "node:url";
 import { throwIfAborted } from "../../runtime/host.js";
 import { ModelConnectionError } from "../connection-error.js";
 import {
+  assertApiKeyCanBeUsedInHttpHeader,
   requireDirectApiConnection,
   type DirectApiConnection,
   type DraftProfile,
@@ -146,6 +147,7 @@ function openAIRequestInit(
   connection: DirectApiConnection,
   options: OpenAIRequestOptions,
 ): RequestInit {
+  assertApiKeyCanBeUsedInHttpHeader(connection.apiKey);
   const headers: Record<string, string> = {
     accept: "application/json",
     "content-type": "application/json",

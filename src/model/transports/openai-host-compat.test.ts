@@ -111,7 +111,11 @@ const hostSafeFetch = (async (input: string | URL | Request) => {
       { type: "response.output_text.delta", delta: "responses safe" },
       {
         type: "response.completed",
-        response: { output_text: "responses safe", output: [] },
+        response: {
+          status: "completed",
+          output_text: "responses safe",
+          output: [],
+        },
       },
     ]);
   }

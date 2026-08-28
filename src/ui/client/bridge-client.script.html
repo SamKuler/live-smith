@@ -19,6 +19,8 @@
         __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
       const maximumTransientAssistantDraftBytes =
         __MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES__;
+      const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
+      const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
       const editScopeIds = __EDIT_SCOPES__;
       if (!isWireChatBridgeState(getState())) {
         throw new Error("Initial Live Smith state is invalid.");
@@ -71,6 +73,10 @@
       const modelSelectionProjectionsBySession = new Map();
       const sessionUpdatedAtProjectionsBySession = new Map();
       const modelSelectionRefreshesBySession = new Map();
+      const sessionStateRefreshesBySession = new Map();
+      const sessionFullStateCoverageBySession = new Map([
+        [getState().activeSessionId, getState().bridgeStateCoveredThroughRevision],
+      ]);
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
@@ -89,7 +95,6 @@
         "rename_session",
         "archive_session",
         "unarchive_session",
-        "attach_selected_audio_source",
         "set_session_skills",
         "set_session_approval_mode",
         "set_session_edit_scopes",
@@ -111,7 +116,10 @@
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
       let renderedOperationState = null;
-      let profileSettingsRefresh = null;
+      let globalStateRefresh = null;
+      let globalFullStateCoverage = getState().bridgeStateCoveredThroughRevision;
+      let eventStreamStateRefresh = null;
+      let eventStreamConnected = false;
       let attachmentOperationInProgress = false;
       let skillOperationInProgress = false;
       let closeDecisionPending = false;
@@ -450,7 +458,7 @@
       function captureOwnedPendingAttachmentAdditions(attempt, state) {
         if (
           !attempt ||
-          !["attachment", "attach_selected_audio_source"].includes(attempt.kind)
+          attempt.kind !== "attachment"
         ) return;
         const baselineIds = new Set(
           attempt.causalStateSnapshot.pendingAttachments.map(
@@ -998,17 +1006,22 @@
           state.activeSessionId === merged.activeSessionId &&
           current.activeSessionId === merged.activeSessionId
         ) {
-          merged.events = mergeImmutableEntries(
-            current.events,
-            state.events,
-            "id",
-          );
-          merged.pendingAttachments = mergeChangedEntries(
-            current.pendingAttachments,
-            state.pendingAttachments,
-            "id",
-            attempt.ownedPendingAttachmentIds,
-          );
+          if (attempt.ownedActiveSessionContentId === merged.activeSessionId) {
+            merged.events = state.events;
+            merged.pendingAttachments = state.pendingAttachments;
+          } else {
+            merged.events = mergeImmutableEntries(
+              current.events,
+              state.events,
+              "id",
+            );
+            merged.pendingAttachments = mergeChangedEntries(
+              current.pendingAttachments,
+              state.pendingAttachments,
+              "id",
+              attempt.ownedPendingAttachmentIds,
+            );
+          }
           if (
             attempt.ownedActiveContextSessionId === merged.activeSessionId ||
             !currentActiveContextChanged
@@ -1178,6 +1191,17 @@
       }
 
       function recordFullStateProjectionCoverage(state) {
+        globalFullStateCoverage = maxDecimalRevision(
+          globalFullStateCoverage,
+          state.bridgeStateCoveredThroughRevision,
+        );
+        sessionFullStateCoverageBySession.set(
+          state.activeSessionId,
+          maxDecimalRevision(
+            sessionFullStateCoverageBySession.get(state.activeSessionId) || "0",
+            state.bridgeStateCoveredThroughRevision,
+          ),
+        );
         const coveredSessionIds = sessionStateIds(state);
         for (const [sessionId, projection] of editScopesProjectionsBySession) {
           if (
@@ -1273,8 +1297,36 @@
             (entry) => entry.sessionId === sessionId,
           );
           if (!activity?.message) continue;
+          const terminal = ["completed", "failed", "stopped"].includes(
+            activity.status,
+          );
+          if (
+            terminal
+              ? activity.sendId !== attempt.id
+              : activity.sendId !== undefined && activity.sendId !== attempt.id
+          ) continue;
           attempt.progress = activity.message;
           attempt.progressIsError = activity.status === "failed";
+        }
+      }
+
+      function settleCompletedSendAttemptsFromState(state) {
+        for (const attempt of [...sendAttemptsBySession.values()]) {
+          const activity = (state.sessionActivities || []).find(
+            (entry) =>
+              entry.sessionId === attempt.sessionId &&
+              entry.status === "completed" &&
+              entry.sendId === attempt.id,
+          );
+          if (!activity) continue;
+          if (state.activeSessionId === attempt.sessionId) {
+            reconcilePendingUserMessageFromState(attempt, state);
+          }
+          resolveSendOutcome(attempt, {
+            sendOutcome: "success",
+            state,
+          });
+          settleSendAttempt(attempt);
         }
       }
 
@@ -1600,7 +1652,7 @@
           !hasOnlyWireKeys(value, ["active", "completedActionDigests"]) ||
           typeof value.active !== "boolean" ||
           !Array.isArray(value.completedActionDigests) ||
-          value.completedActionDigests.length > 4096 ||
+          value.completedActionDigests.length > maximumRecoveryActionDigests ||
           !value.completedActionDigests.every(
             (digest) => typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
           ) ||
@@ -1730,6 +1782,7 @@
           ]) &&
           isWireStorageId(value.id) &&
           typeof value.title === "string" &&
+          wireCodePointLengthAtMost(value.title, maximumSessionTitleCodePoints) &&
           typeof value.projectKey === "string" &&
           isWireConversationScope(value.scope) &&
           (value.originScope === undefined ||
@@ -2233,9 +2286,10 @@
 
       function isWireSessionActivity(value, sessionIds) {
         return isWireRecord(value) &&
-          hasOnlyWireKeys(value, ["sessionId", "status", "message", "unread"]) &&
+          hasOnlyWireKeys(value, ["sessionId", "sendId", "status", "message", "unread"]) &&
           isWireStorageId(value.sessionId) &&
           sessionIds.has(value.sessionId) &&
+          (value.sendId === undefined || isWireCorrelationId(value.sendId)) &&
           [
             "running",
             "waiting_confirmation",
@@ -2457,7 +2511,9 @@
               payload.promptPersistence,
             ) ||
             (payload.sendFailureKind !== undefined &&
-              payload.sendFailureKind !== "session_unavailable") ||
+              !["session_unavailable", "state_stale"].includes(
+                payload.sendFailureKind,
+              )) ||
             (payload.state !== undefined &&
               !isWireChatBridgeState(payload.state))
           ) return null;
@@ -2514,8 +2570,10 @@
         if (envelope.promptPersistence !== undefined) {
           error.promptPersistence = envelope.promptPersistence;
         }
-        if (envelope.sendFailureKind === "session_unavailable") {
-          error.sendFailureKind = "session_unavailable";
+        if (["session_unavailable", "state_stale"].includes(
+          envelope.sendFailureKind,
+        )) {
+          error.sendFailureKind = envelope.sendFailureKind;
         }
         if (envelope.state !== undefined) error.state = envelope.state;
         if (envelope.reconciliationRequired === true) {
@@ -2598,6 +2656,8 @@
                 [
                   "Applying confirmed changes",
                   "Continuing after cancellation",
+                  "Closing unfinished operation",
+                  "Keeping unfinished operation active",
                 ].includes(activity.message))
           ) return value;
           throw invalidBridgeHttpResponse(path);
@@ -2657,7 +2717,9 @@
             ["persisted", "not_persisted", "unknown"]
               .includes(value.promptPersistence) &&
             (value.sendFailureKind === undefined ||
-              value.sendFailureKind === "session_unavailable") &&
+              ["session_unavailable", "state_stale"].includes(
+                value.sendFailureKind,
+              )) &&
             (value.state === undefined || isWireChatBridgeState(value.state))
           ) return value;
           throw invalidBridgeHttpResponse(path);
@@ -2688,8 +2750,17 @@
         );
       }
 
-      function applyStateChangeActivity(sessionId, activity, received) {
-        if (!activity) return false;
+      function applySendActivity(attempt, activity, received) {
+        if (!attempt || !activity) return false;
+        if (attempt.awaitingStopTerminal) {
+          recordProjectionRevision(
+            activityProjectionRevisionsBySession,
+            attempt.sessionId,
+            received.revision,
+          );
+          return false;
+        }
+        const sessionId = attempt.sessionId;
         const covered = projectionRevisionIsCovered(
           activityProjectionRevisionsBySession,
           sessionId,
@@ -2701,30 +2772,15 @@
           received.revision,
         );
         if (covered) return false;
-        setLocalActivity(sessionId, activity.status, activity.message);
-        const attempt = sendAttemptsBySession.get(sessionId);
-        if (attempt) {
-          attempt.progress = activity.message;
-          attempt.progressIsError = activity.status === "failed";
-        }
-        return true;
-      }
-
-      function applySendActivity(attempt, activity, received) {
-        if (!activity) return false;
-        if (attempt?.awaitingStopTerminal) {
-          recordProjectionRevision(
-            activityProjectionRevisionsBySession,
-            attempt.sessionId,
-            received.revision,
-          );
-          return false;
-        }
-        return applyStateChangeActivity(
+        setLocalActivity(
           attempt.sessionId,
-          activity,
-          received,
+          attempt.id,
+          activity.status,
+          activity.message,
         );
+        attempt.progress = activity.message;
+        attempt.progressIsError = activity.status === "failed";
+        return true;
       }
 
       function effectiveDefaultFollowUpBehavior() {
@@ -2929,7 +2985,9 @@
           ...(typeof terminal?.field === "string"
             ? { field: terminal.field }
             : {}),
-          ...(terminal?.sendFailureKind === "session_unavailable"
+          ...(["session_unavailable", "state_stale"].includes(
+              terminal?.sendFailureKind,
+            )
             ? { sendFailureKind: terminal.sendFailureKind }
             : {}),
           ...(["persisted", "not_persisted", "unknown"].includes(
@@ -2980,14 +3038,18 @@
         return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
           commandReconciliationBlocked || attachmentOperationInProgress ||
           skillOperationInProgress ||
-          profileSettingsRefresh !== null ||
-          modelSelectionRefreshesBySession.has(activeSessionId());
+          globalStateRefresh !== null ||
+          eventStreamStateRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          sessionStateRefreshesBySession.has(activeSessionId());
       }
 
       function isProfileSettingsOperationInProgress() {
         return Boolean(
-          profileSettingsRefresh ||
+          globalStateRefresh ||
+          eventStreamStateRefresh ||
           modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          sessionStateRefreshesBySession.has(activeSessionId()) ||
           commandReconciliationBlocked ||
           attachmentOperationInProgress ||
           skillOperationInProgress ||
@@ -3007,17 +3069,29 @@
         const activeAttempt = activeSendAttempt();
         const modelSelectionReconciliation =
           modelSelectionRefreshesBySession.get(activeSessionId());
+        const sessionStateReconciliation =
+          sessionStateRefreshesBySession.get(activeSessionId());
         const operationState = {
           commandKind: commandInProgress ||
-            (profileSettingsRefresh
-              ? profileSettingsRefresh.failed
+            (globalStateRefresh
+              ? globalStateRefresh.failed
                 ? "reconciliation_required"
-                : "profile_settings_refresh"
+                : "global_state_refresh"
+              : null) ||
+            (eventStreamStateRefresh
+              ? eventStreamStateRefresh.failed
+                ? "reconciliation_required"
+                : "event_stream_refresh"
               : null) ||
             (modelSelectionReconciliation
               ? modelSelectionReconciliation.failed
                 ? "reconciliation_required"
                 : "session_model_selection_refresh"
+              : null) ||
+            (sessionStateReconciliation
+              ? sessionStateReconciliation.failed
+                ? "reconciliation_required"
+                : "session_state_refresh"
               : null) ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
           anySendInProgress: sendAttemptsBySession.size > 0 ||
@@ -3537,16 +3611,46 @@
         }
       }
 
-      function reconcileProfileSettingsRefreshWithState(state) {
+      function reconcileGlobalStateRefreshWithState(state) {
         if (
-          !profileSettingsRefresh ||
+          !globalStateRefresh ||
           compareDecimalRevisions(
-            state.bridgeStateCoveredThroughRevision,
-            profileSettingsRefresh.requiredRevision,
+            globalFullStateCoverage,
+            globalStateRefresh.requiredRevision,
           ) < 0
         ) return;
-        profileSettingsRefresh = null;
+        globalStateRefresh = null;
         syncOperationState();
+        resumeQueuedFollowUpsAfterStateRefresh();
+      }
+
+      function reconcileSessionStateRefreshesWithState(state) {
+        const sessionId = state.activeSessionId;
+        const refresh = sessionStateRefreshesBySession.get(sessionId);
+        let changed = false;
+        if (refresh && compareDecimalRevisions(
+          sessionFullStateCoverageBySession.get(sessionId) || "0",
+          refresh.requiredRevision,
+        ) >= 0) {
+          sessionStateRefreshesBySession.delete(sessionId);
+          changed = true;
+        }
+        for (const [pendingSessionId, pending] of sessionStateRefreshesBySession) {
+          if (
+            state.sessions.some((session) => session.id === pendingSessionId) ||
+            compareDecimalRevisions(
+              globalFullStateCoverage,
+              pending.requiredRevision,
+            ) < 0
+          ) continue;
+          sessionStateRefreshesBySession.delete(pendingSessionId);
+          sessionFullStateCoverageBySession.delete(pendingSessionId);
+          changed = true;
+        }
+        if (changed) {
+          syncOperationState();
+          resumeQueuedFollowUpsAfterStateRefresh();
+        }
       }
 
       function applyCommandState(kind, state, causalAttempt, options) {
@@ -3599,7 +3703,21 @@
         } else if (profileSettingsChanged) {
           requireView().reconcileSettingsForm();
         }
-        reconcileProfileSettingsRefreshWithState(reconciledState);
+        reconcileGlobalStateRefreshWithState(reconciledState);
+        reconcileSessionStateRefreshesWithState(reconciledState);
+        const pendingSessionRefresh = sessionStateRefreshesBySession.get(
+          reconciledState.activeSessionId,
+        );
+        if (
+          pendingSessionRefresh &&
+          !pendingSessionRefresh.inFlight &&
+          !pendingSessionRefresh.failed
+        ) {
+          runInvalidatedSessionStateRefresh(
+            reconciledState.activeSessionId,
+            pendingSessionRefresh,
+          );
+        }
         if (prompt && reconciledState.activeSessionId !== previousSessionId) {
           prompt.value = composerDraftsBySession.get(
             reconciledState.activeSessionId,
@@ -3687,7 +3805,7 @@
           if (profileSettingsChanged) {
             requireView().reconcileSettingsForm();
           }
-          reconcileProfileSettingsRefreshWithState(reconciledState);
+          reconcileGlobalStateRefreshWithState(reconciledState);
         } else {
           mergeBackgroundState(reconciledState, attempt);
         }
@@ -3702,12 +3820,13 @@
         return true;
       }
 
-      function setLocalActivity(sessionId, status, message) {
+      function setLocalActivity(sessionId, sendId, status, message) {
         const activities = getState().sessionActivities || [];
         const current = activities.find((entry) => entry.sessionId === sessionId);
         const next = {
           ...(current || {}),
           sessionId,
+          sendId,
           status,
           message,
           unread: current?.unread || false,
@@ -3948,6 +4067,10 @@
             headers: {
               "Content-Type": "application/json",
               "X-Live-Smith-Send-Id": attempt.id,
+              "X-Live-Smith-Global-State-Covered-Through":
+                globalFullStateCoverage,
+              "X-Live-Smith-Session-State-Covered-Through":
+                sessionFullStateCoverageBySession.get(attempt.sessionId) || "0",
             },
             body: JSON.stringify(payload),
           });
@@ -4064,7 +4187,11 @@
           commandInProgress ||
           commandReconciliationBlocked ||
           attachmentOperationInProgress ||
-          skillOperationInProgress
+          skillOperationInProgress ||
+          globalStateRefresh !== null ||
+          eventStreamStateRefresh !== null ||
+          modelSelectionRefreshesBySession.has(sessionId) ||
+          sessionStateRefreshesBySession.has(sessionId)
         ) return false;
         const entries = queuedFollowUpsBySession.get(sessionId);
         const next = entries?.shift();
@@ -4085,6 +4212,10 @@
         for (const sessionId of [...queuedFollowUpsBySession.keys()]) {
           startNextQueuedFollowUp(sessionId);
         }
+      }
+
+      function resumeQueuedFollowUpsAfterStateRefresh() {
+        void Promise.resolve().then(startQueuedFollowUpsForIdleSessions);
       }
 
       function submitFollowUp() {
@@ -4788,11 +4919,16 @@
           return;
         }
         if (persistence === "not_persisted") {
+          const refreshStaleState = sendFailureKind === "state_stale" &&
+            activeSessionId() === attempt.sessionId &&
+            globalStateRefresh === null &&
+            !sessionStateRefreshesBySession.has(attempt.sessionId);
           if (isWireChatBridgeState(authoritativeState)) {
             applyAuthoritativeSendState(attempt, authoritativeState);
           }
           const failedRecovery = pauseFailedSendForRecovery(attempt);
           if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
+          if (refreshStaleState) refreshGlobalState("0");
           if (activeSessionId() === attempt.sessionId) {
             if (failedRecovery.restoredToComposer) {
               document.getElementById("prompt").value = attempt.payload.prompt;
@@ -5317,6 +5453,7 @@
             return false;
           }
         }
+        options?.onAppliedState?.(state);
         return true;
       }
 
@@ -5339,7 +5476,8 @@
         if (
           statusWasPresented &&
           retainedCanceledFollowUpCount &&
-          !visibleAttempt
+          !visibleAttempt &&
+          eventStreamStateRefresh === null
         ) {
           retainedCanceledFollowUpCount = 0;
         }
@@ -5379,16 +5517,7 @@
           payload.confirmationGeneration <= 0
         ) return false;
         const activity = stateChangeActivity(payload, false);
-        if (
-          activity === null ||
-          activity && (
-            activity.status !== "running" ||
-            ![
-              "Applying confirmed changes",
-              "Continuing after cancellation",
-            ].includes(activity.message)
-          )
-        ) return false;
+        if (activity === null || activity && activity.status !== "running") return false;
         if (
           payload.confirmationGeneration <=
             attempt.resolvedConfirmationGeneration
@@ -5404,6 +5533,17 @@
           pending.id === payload.id &&
           pending.confirmationGeneration === payload.confirmationGeneration;
         if (!resolutionMatches && !pendingMatches) return false;
+        if (activity) {
+          if (!resolutionMatches) return false;
+          const expectedMessage = resolution.kind === "resolve_recovery"
+            ? resolution.apply
+              ? "Closing unfinished operation"
+              : "Keeping unfinished operation active"
+            : resolution.apply
+              ? "Applying confirmed changes"
+              : "Continuing after cancellation";
+          if (activity.message !== expectedMessage) return false;
+        }
         const received = receiveStateChangeRevision(payload);
         if (!received) return false;
         attempt.resolvedConfirmationGeneration = payload.confirmationGeneration;
@@ -5447,6 +5587,8 @@
           confirmationId: id,
           confirmationGeneration: confirmation.confirmationGeneration,
           modelTurnEpoch: confirmation.modelTurnEpoch,
+          kind: confirmation.kind,
+          apply: apply === true,
           authoritativeResolutionObserved: false,
           outcomeSignal,
           resolveOutcomeWait,
@@ -5581,40 +5723,58 @@
         }
       }
 
-      function refreshProfileSettings(requiredRevision) {
+      function refreshGlobalState(requiredRevision) {
+        if (globalStateRefresh && !globalStateRefresh.failed) {
+          globalStateRefresh.requiredRevision = maxDecimalRevision(
+            globalStateRefresh.requiredRevision,
+            requiredRevision,
+          );
+          return;
+        }
         const refresh = {
           failed: false,
           requiredRevision,
         };
-        profileSettingsRefresh = refresh;
+        globalStateRefresh = refresh;
         syncOperationState();
-        const causalAttempt = {
-          kind: "profile_settings_changed",
-          ownsGlobalState: true,
-          causalStateSnapshot: captureCausalState(),
-        };
         const markFailed = () => {
-          if (profileSettingsRefresh !== refresh) return;
+          if (globalStateRefresh !== refresh) return;
           refresh.failed = true;
           syncOperationState();
           showStatus(
-            "Profiles changed in another Live Smith window, but current settings could not be refreshed. Close and reopen Live Smith before sending.",
+            "Live Smith settings or Skills changed in another window, but current state could not be refreshed. Close and reopen Live Smith before sending.",
             true,
           );
         };
-        void refreshState(causalAttempt, "profile_settings_changed").then(
-          (refreshed) => {
-            if (profileSettingsRefresh !== refresh) return;
+        void (async () => {
+          for (;;) {
+            const sessionId = activeSessionId();
+            const causalAttempt = {
+              kind: "global_state_refresh",
+              ownsGlobalState: true,
+              ownedActiveSessionContentId: sessionId,
+              causalStateSnapshot: captureCausalState(),
+            };
+            const refreshed = await refreshState(
+              causalAttempt,
+              "global_state_refresh",
+            );
+            if (globalStateRefresh !== refresh) return;
             if (refreshed !== true) {
               markFailed();
               return;
             }
-            // A successful refresh normally clears through its coverage check.
-            // Staying pending means the snapshot predates this notification.
-            markFailed();
-          },
-          markFailed,
-        );
+            if (compareDecimalRevisions(
+              globalFullStateCoverage,
+              refresh.requiredRevision,
+            ) >= 0) {
+              globalStateRefresh = null;
+              syncOperationState();
+              resumeQueuedFollowUpsAfterStateRefresh();
+              return;
+            }
+          }
+        })().catch(markFailed);
       }
 
       function refreshActiveModelSelection(sessionId) {
@@ -5635,6 +5795,7 @@
           if (refreshed === true) {
             modelSelectionRefreshesBySession.delete(sessionId);
             syncOperationState();
+            resumeQueuedFollowUpsAfterStateRefresh();
             return;
           }
           refresh.failed = true;
@@ -5658,15 +5819,217 @@
         });
       }
 
+      function refreshInvalidatedSessionState(sessionId, requiredRevision) {
+        const pending = sessionStateRefreshesBySession.get(sessionId);
+        if (pending) {
+          const revisionAdvanced = compareDecimalRevisions(
+            requiredRevision,
+            pending.requiredRevision,
+          ) > 0;
+          pending.requiredRevision = maxDecimalRevision(
+            pending.requiredRevision,
+            requiredRevision,
+          );
+          if (revisionAdvanced && pending.failed) {
+            pending.failed = false;
+            syncOperationState();
+          }
+          if (
+            activeSessionId() === sessionId &&
+            !pending.inFlight &&
+            !pending.failed
+          ) runInvalidatedSessionStateRefresh(sessionId, pending);
+          return;
+        }
+        const refresh = {
+          failed: false,
+          inFlight: false,
+          requiredRevision,
+        };
+        sessionStateRefreshesBySession.set(sessionId, refresh);
+        syncOperationState();
+        if (activeSessionId() === sessionId) {
+          runInvalidatedSessionStateRefresh(sessionId, refresh);
+        }
+      }
+
+      function runInvalidatedSessionStateRefresh(sessionId, refresh) {
+        if (
+          refresh.inFlight ||
+          sessionStateRefreshesBySession.get(sessionId) !== refresh
+        ) return;
+        refresh.inFlight = true;
+        const baselineActiveSessionId = activeSessionId();
+        const causalAttempt = {
+          kind: "session_state_refresh",
+          causalStateSnapshot: captureCausalState(),
+          ownedSessionMembershipIds: new Set([sessionId]),
+          ownedActiveSessionContentId:
+            baselineActiveSessionId === sessionId ? sessionId : null,
+          ownsActiveSessionSelection: baselineActiveSessionId === sessionId,
+          ownsActiveRuntimeProjection: baselineActiveSessionId === sessionId,
+        };
+        let requestedRevision = refresh.requiredRevision;
+        const retryNewerRevision = () => {
+          if (
+            compareDecimalRevisions(
+              refresh.requiredRevision,
+              requestedRevision,
+            ) <= 0
+          ) return false;
+          refresh.inFlight = false;
+          refresh.failed = false;
+          runInvalidatedSessionStateRefresh(sessionId, refresh);
+          return true;
+        };
+        const markFailed = () => {
+          if (sessionStateRefreshesBySession.get(sessionId) !== refresh) return;
+          if (retryNewerRevision()) return;
+          refresh.inFlight = false;
+          refresh.failed = true;
+          syncOperationState();
+          if (activeSessionId() === sessionId) {
+            showStatus(
+              "This Session changed in another Live Smith window, but its current state could not be refreshed. Close and reopen Live Smith before sending.",
+              true,
+            );
+          }
+        };
+        void (async () => {
+          for (;;) {
+            requestedRevision = refresh.requiredRevision;
+            const response = await fetch(bridgeUrl(
+              `/state?sessionId=${encodeURIComponent(sessionId)}`,
+            ));
+            if (!response.ok) {
+              markFailed();
+              return;
+            }
+            const state = await response.json();
+            if (!isWireChatBridgeState(state)) {
+              markFailed();
+              return;
+            }
+            if (sessionStateRefreshesBySession.get(sessionId) !== refresh) return;
+            if (compareDecimalRevisions(
+              state.bridgeStateCoveredThroughRevision,
+              refresh.requiredRevision,
+            ) < 0) continue;
+            const targetStillAvailable = state.sessions.some(
+              (session) => session.id === sessionId,
+            );
+            if (targetStillAvailable && state.activeSessionId !== sessionId) {
+              markFailed();
+              return;
+            }
+            const applyAttempt = {
+              ...causalAttempt,
+              ownsActiveSessionSelection:
+                causalAttempt.ownsActiveSessionSelection &&
+                activeSessionId() === baselineActiveSessionId,
+              ownsActiveRuntimeProjection:
+                causalAttempt.ownsActiveRuntimeProjection &&
+                activeSessionId() === baselineActiveSessionId,
+            };
+            if (!applyCommandState(
+              "session_state_refresh",
+              state,
+              applyAttempt,
+            )) {
+              markFailed();
+              return;
+            }
+            if (!targetStillAvailable) {
+              sessionStateRefreshesBySession.delete(sessionId);
+              sessionFullStateCoverageBySession.delete(sessionId);
+              syncOperationState();
+            } else if (sessionStateRefreshesBySession.get(sessionId) === refresh) {
+              refresh.inFlight = false;
+              syncOperationState();
+            }
+            return;
+          }
+        })().catch(markFailed);
+      }
+
+      function refreshAfterEventStreamReconnect() {
+        const refresh = eventStreamStateRefresh;
+        if (!refresh || refresh.inFlight || !eventStreamConnected) return;
+        refresh.inFlight = true;
+        refresh.failed = false;
+        const generation = refresh.generation;
+        const sessionId = activeSessionId();
+        const causalAttempt = {
+          kind: "event_stream_refresh",
+          ownsGlobalState: true,
+          ownedActiveSessionContentId: sessionId,
+          causalStateSnapshot: captureCausalState(),
+        };
+        let authoritativeState = null;
+        const retryLatestGeneration = () => {
+          if (
+            refresh.generation === generation ||
+            !eventStreamConnected
+          ) return false;
+          refresh.inFlight = false;
+          refreshAfterEventStreamReconnect();
+          return true;
+        };
+        const markFailed = () => {
+          if (eventStreamStateRefresh !== refresh) return;
+          if (retryLatestGeneration()) return;
+          refresh.inFlight = false;
+          refresh.failed = true;
+          syncOperationState();
+          showStatus(
+            "Live Smith reconnected, but current state could not be confirmed. Close and reopen Live Smith before sending.",
+            true,
+          );
+        };
+        void refreshState(causalAttempt, "event_stream_refresh", {
+          onAppliedState: (state) => {
+            authoritativeState = state;
+          },
+        }).then(
+          (reconciled) => {
+            if (eventStreamStateRefresh !== refresh) return;
+            if (reconciled !== true) {
+              markFailed();
+              return;
+            }
+            if (retryLatestGeneration()) return;
+            eventStreamStateRefresh = null;
+            syncOperationState();
+            const state = getState();
+            settleCompletedSendAttemptsFromState(authoritativeState);
+            const visibleAttempt = activeSendAttempt();
+            if (visibleAttempt) {
+              setAttemptStatus(
+                visibleAttempt,
+                visibleAttempt.progress,
+                visibleAttempt.progressIsError,
+              );
+            } else if (retainedCanceledFollowUpCount) {
+              showStatus(state.status || "");
+            }
+            resumeQueuedFollowUpsAfterStateRefresh();
+          },
+          markFailed,
+        );
+      }
+
       function startEventStream() {
         if (eventSource) return;
         eventSource = new EventSource(bridgeUrl("/events"));
         eventSource.onopen = () => {
+          eventStreamConnected = true;
+          refreshAfterEventStreamReconnect();
           const statusWasPresented = presentStatus({ source: "event-stream" });
           if (
             statusWasPresented &&
             retainedCanceledFollowUpCount &&
-            !activeSendAttempt()
+            !activeSendAttempt() &&
+            eventStreamStateRefresh === null
           ) {
             retainedCanceledFollowUpCount = 0;
           }
@@ -5679,6 +6042,37 @@
             return;
           }
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
+          if (payload.type === "session_state_invalidated") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "sessionId",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireStorageId(payload.sessionId)
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received || received.covered) return;
+            refreshInvalidatedSessionState(
+              payload.sessionId,
+              received.revision,
+            );
+            return;
+          }
+          if (payload.type === "global_state_invalidated") {
+            if (!hasOnlyWireKeys(payload, [
+              "type",
+              "bridgeStateRevision",
+            ])) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            if (received.covered) {
+              reconcileGlobalStateRefreshWithState(getState());
+              return;
+            }
+            refreshGlobalState(received.revision);
+            return;
+          }
           if (payload.type === "profile_settings_changed") {
             if (
               !hasOnlyWireKeys(payload, [
@@ -5691,18 +6085,10 @@
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
             if (received.covered) {
-              reconcileProfileSettingsRefreshWithState(getState());
+              reconcileGlobalStateRefreshWithState(getState());
               return;
             }
-            if (profileSettingsRefresh) {
-              const pendingOrder = compareDecimalRevisions(
-                profileSettingsRefresh.requiredRevision,
-                received.revision,
-              );
-              if (pendingOrder > 0 || pendingOrder === 0 &&
-                !profileSettingsRefresh.failed) return;
-            }
-            refreshProfileSettings(received.revision);
+            refreshGlobalState(received.revision);
             return;
           }
           if (payload.type === "default_follow_up_behavior_changed") {
@@ -6192,6 +6578,7 @@
                 "modelTurnEpoch",
                 "id",
                 "confirmationGeneration",
+                "kind",
                 "message",
                 "groups",
                 "activity",
@@ -6202,9 +6589,12 @@
               !isWireCorrelationId(payload.id) ||
               !Number.isSafeInteger(payload.confirmationGeneration) ||
               payload.confirmationGeneration <= 0 ||
+              !["apply", "resolve_recovery"].includes(payload.kind) ||
               typeof payload.message !== "string" ||
               !payload.message ||
-              !isWireActionDiffGroups(payload.groups)
+              (payload.kind === "apply"
+                ? !isWireActionDiffGroups(payload.groups)
+                : !Array.isArray(payload.groups) || payload.groups.length !== 0)
             ) return;
             const activity = stateChangeActivity(payload, true);
             if (
@@ -6250,6 +6640,7 @@
               payload.confirmationGeneration === pending.confirmationGeneration;
             if (isPendingReplay && (
               payload.id !== pending.id ||
+              payload.kind !== pending.kind ||
               payload.message !== pending.message ||
               !wireActionDiffGroupsEqual(payload.groups, pending.groups)
             )) return;
@@ -6289,6 +6680,7 @@
             pendingConfirmationsBySession.set(payload.sessionId, {
               sendId: payload.sendId,
               id: payload.id,
+              kind: payload.kind,
               confirmationGeneration: payload.confirmationGeneration,
               modelTurnEpoch: payload.modelTurnEpoch,
               message: payload.message,
@@ -6440,6 +6832,18 @@
           }
         };
         eventSource.onerror = () => {
+          eventStreamConnected = false;
+          if (eventStreamStateRefresh) {
+            eventStreamStateRefresh.generation += 1;
+            eventStreamStateRefresh.failed = false;
+          } else {
+            eventStreamStateRefresh = {
+              failed: false,
+              generation: 1,
+              inFlight: false,
+            };
+          }
+          syncOperationState();
           presentStatus({
             isError: true,
             message: "Lost connection to Live Smith bridge.",
@@ -6477,8 +6881,9 @@
         isProfileSettingsOperationInProgress,
         isCommandInProgress: () => Boolean(commandInProgress) ||
           commandReconciliationBlocked ||
-          profileSettingsRefresh !== null ||
-          modelSelectionRefreshesBySession.has(activeSessionId()),
+          globalStateRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          sessionStateRefreshesBySession.has(activeSessionId()),
         isConfirmationLocked: activeConfirmationIsLocked,
         loadSessionModelCapabilities,
         resolveConfirm,

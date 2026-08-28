@@ -10,8 +10,12 @@ import {
   builtInSkillDefinition,
 } from "../skills/builtins.js";
 import {
+  listInstalledSkillsInTransaction,
+  readInstalledSkillInTransaction,
   withSkillCatalogTransaction,
+  type SkillCatalogTransaction,
 } from "../storage/skills.js";
+import type { StorageTransactionContext } from "../storage/persistence.js";
 
 export const MAX_ACTIVE_SKILL_INSTRUCTION_BYTES = 128 * 1024;
 
@@ -32,68 +36,100 @@ export async function resolveSkillContext(input: {
   sessionSkillIds: readonly string[];
   prompt: string;
 }): Promise<ResolvedSkillContext> {
+  return withSkillCatalogTransaction(
+    input.storageDirectory,
+    (catalog) => resolveSkillContextFromCatalog(input, catalog),
+  );
+}
+
+export function resolveSkillContextInTransaction(
+  transaction: StorageTransactionContext,
+  input: {
+    storageDirectory: string | undefined;
+    sessionSkillIds: readonly string[];
+    prompt: string;
+  },
+): Promise<ResolvedSkillContext> {
+  return resolveSkillContextFromCatalog(input, {
+    listInstalledSkills: () => listInstalledSkillsInTransaction(
+      transaction,
+      input.storageDirectory,
+    ),
+    readInstalledSkill: (skillId) => readInstalledSkillInTransaction(
+      transaction,
+      input.storageDirectory,
+      skillId,
+    ),
+  });
+}
+
+async function resolveSkillContextFromCatalog(
+  input: {
+    sessionSkillIds: readonly string[];
+    prompt: string;
+  },
+  catalog: Pick<SkillCatalogTransaction, "listInstalledSkills" | "readInstalledSkill">,
+): Promise<ResolvedSkillContext> {
   assertSessionSkillIds(input.sessionSkillIds);
   const mentionedCandidates = skillMentionCandidates(input.prompt);
   if (input.sessionSkillIds.length === 0 && mentionedCandidates.length === 0) {
     return { activeSkillIds: [], instructionBlock: "" };
   }
 
-  return withSkillCatalogTransaction(input.storageDirectory, async (catalog) => {
-    let installed;
-    try {
-      installed = await catalog.listInstalledSkills();
-    } catch {
-      throw new SkillContextError(
-        "Installed Skill summaries could not be validated.",
-      );
-    }
-
-    const installedIds = new Set(installed.map((skill) => skill.id));
-    const availableIds = new Set(
-      availableSkillSummaries(installed).map((skill) => skill.id),
+  let installed;
+  try {
+    installed = await catalog.listInstalledSkills();
+  } catch {
+    throw new SkillContextError(
+      "Installed Skill summaries could not be validated.",
     );
-    for (const skillId of input.sessionSkillIds) {
-      if (!availableIds.has(skillId)) {
+  }
+
+  const installedIds = new Set(installed.map((skill) => skill.id));
+  const availableIds = new Set(
+    availableSkillSummaries(installed).map((skill) => skill.id),
+  );
+  for (const skillId of input.sessionSkillIds) {
+    if (!availableIds.has(skillId)) {
+      throw unavailableSkillError(skillId);
+    }
+  }
+
+  const activeSkillIds = [...new Set([
+    ...input.sessionSkillIds,
+    ...mentionedCandidates.filter((skillId) => availableIds.has(skillId)),
+  ])].sort();
+  if (activeSkillIds.length > MAX_ACTIVE_SKILL_COUNT) {
+    throw new SkillContextError(
+      `At most ${MAX_ACTIVE_SKILL_COUNT} Skills can guide one request.`,
+    );
+  }
+
+  const definitions: SkillDefinition[] = [];
+  for (const skillId of activeSkillIds) {
+    if (installedIds.has(skillId)) {
+      try {
+        definitions.push(await catalog.readInstalledSkill(skillId));
+      } catch {
         throw unavailableSkillError(skillId);
       }
+    } else {
+      const definition = builtInSkillDefinition(skillId);
+      if (definition === undefined) throw unavailableSkillError(skillId);
+      definitions.push(definition);
     }
+  }
 
-    const activeSkillIds = [...new Set([
-      ...input.sessionSkillIds,
-      ...mentionedCandidates.filter((skillId) => availableIds.has(skillId)),
-    ])].sort();
-    if (activeSkillIds.length > MAX_ACTIVE_SKILL_COUNT) {
-      throw new SkillContextError(
-        `At most ${MAX_ACTIVE_SKILL_COUNT} Skills can guide one request.`,
-      );
-    }
-
-    const definitions: SkillDefinition[] = [];
-    for (const skillId of activeSkillIds) {
-      if (installedIds.has(skillId)) {
-        try {
-          definitions.push(await catalog.readInstalledSkill(skillId));
-        } catch {
-          throw unavailableSkillError(skillId);
-        }
-      } else {
-        const definition = builtInSkillDefinition(skillId);
-        if (definition === undefined) throw unavailableSkillError(skillId);
-        definitions.push(definition);
-      }
-    }
-
-    const instructionBlock = definitions.map(renderSkillInstructions).join("\n\n");
-    if (
-      Buffer.byteLength(instructionBlock, "utf8") >
-        MAX_ACTIVE_SKILL_INSTRUCTION_BYTES
-    ) {
-      throw new SkillContextError(
-        "The selected Skill instructions exceed the per-request byte limit.",
-      );
-    }
-    return { activeSkillIds, instructionBlock };
-  });
+  const instructionBlock = definitions.map(renderSkillInstructions).join("\n\n");
+  if (
+    Buffer.byteLength(instructionBlock, "utf8") >
+      MAX_ACTIVE_SKILL_INSTRUCTION_BYTES
+  ) {
+    throw new SkillContextError(
+      "The selected Skill instructions exceed the per-request byte limit.",
+    );
+  }
+  return { activeSkillIds, instructionBlock };
 }
 
 /**

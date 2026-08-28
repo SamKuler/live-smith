@@ -10,6 +10,7 @@ import { createStorageId } from "../storage/id.js";
 import {
   createSession,
   listSessions,
+  MAX_SESSION_TITLE_CODE_POINTS,
   sessionScopeKey,
   type AgentSession,
 } from "../storage/sessions.js";
@@ -17,6 +18,10 @@ import {
   SessionMutationFence,
   sessionMutationFenceKey,
 } from "./session-mutation-fence.js";
+import {
+  claimSession,
+  sessionIsClaimedByAnotherOwner,
+} from "./session-claims.js";
 import type { ChatSessionSummary } from "../ui/chat-state.js";
 
 type Api = ExtensionContext<"1.0.0">;
@@ -67,6 +72,7 @@ export async function getOrCreateDefaultSession(
   projectKey: string,
   preferredSessionId?: string | undefined,
   signal?: AbortSignal | undefined,
+  claimOwner?: symbol | undefined,
 ): Promise<AgentSession> {
   const scope = interaction.scope;
   return withSessionCreationScope(
@@ -81,22 +87,40 @@ export async function getOrCreateDefaultSession(
       const preferred = sessions.find(
         (session) => session.id === preferredSessionId,
       );
-      if (preferred) return preferred;
+      if (preferred) {
+        if (claimOwner) claimSession(storageDirectory, preferred.id, claimOwner);
+        return preferred;
+      }
 
       const scopeKey = sessionScopeKey(scope);
       const existing = sessions.find(
-        (session) => sessionScopeKey(session.scope) === scopeKey,
+        (session) =>
+          sessionScopeKey(session.scope) === scopeKey &&
+          !(
+            claimOwner &&
+            isReusableEmptySessionMetadata(session, projectKey, scope) &&
+            sessionIsClaimedByAnotherOwner(
+              storageDirectory,
+              session.id,
+              claimOwner,
+            )
+          ),
       );
-      if (existing) return existing;
+      if (existing) {
+        if (claimOwner) claimSession(storageDirectory, existing.id, claimOwner);
+        return existing;
+      }
 
       throwIfAborted(signal);
-      return createSession(storageDirectory, {
+      const created = await createSession(storageDirectory, {
         title: "",
         projectKey,
         scope,
         approvalMode: "manual",
         editScopes: [...EDIT_SCOPES],
       }, { transient: true });
+      if (claimOwner) claimSession(storageDirectory, created.id, claimOwner);
+      return created;
     },
   );
 }
@@ -198,5 +222,12 @@ export function projectKeyForContext(context: Api): string {
 
 export function sessionTitleForPrompt(prompt: string, fallback: string): string {
   const title = prompt.split("\n")[0]?.trim() || fallback;
-  return title.length <= 80 ? title : `${title.slice(0, 79)}…`;
+  const characters: string[] = [];
+  for (const character of title) {
+    characters.push(character);
+    if (characters.length > MAX_SESSION_TITLE_CODE_POINTS) break;
+  }
+  return characters.length <= MAX_SESSION_TITLE_CODE_POINTS
+    ? title
+    : `${characters.slice(0, MAX_SESSION_TITLE_CODE_POINTS - 1).join("")}…`;
 }

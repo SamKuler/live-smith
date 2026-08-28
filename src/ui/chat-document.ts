@@ -33,6 +33,8 @@ import {
 import { MAX_PROFILE_MODEL_COUNT } from "../model/profile.js";
 import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
+import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
+import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 
 export interface ChatClientScripts {
   attachments: string;
@@ -167,6 +169,18 @@ function injectEditScopeContract(script: string): string {
     .replaceAll("__EDIT_SCOPE_LABELS__", () => JSON.stringify(EDIT_SCOPE_LABELS));
 }
 
+function injectSessionContract(script: string): string {
+  return script
+    .replaceAll(
+      "__MAX_SESSION_TITLE_CODE_POINTS__",
+      String(MAX_SESSION_TITLE_CODE_POINTS),
+    )
+    .replaceAll(
+      "__MAX_RECOVERY_ACTION_DIGESTS__",
+      String(MAX_RECOVERY_ACTION_DIGESTS),
+    );
+}
+
 export function composeChatDocument(
   template: string,
   state: ChatBridgeState,
@@ -174,11 +188,11 @@ export function composeChatDocument(
   scripts: ChatClientScripts,
 ): string {
   const attachmentsScript = injectAttachmentContract(scripts.attachments);
-  const bridgeClientScript = injectEditScopeContract(
+  const bridgeClientScript = injectSessionContract(injectEditScopeContract(
     injectModelContract(injectSkillContract(
       injectAttachmentContract(scripts.bridgeClient),
     )),
-  );
+  ));
   const profileEditorScript = injectModelContract(scripts.profileEditor);
   const skillManagerScript = injectBuiltInSkillDefinitions(
     injectSkillContract(scripts.skillManager),
@@ -196,7 +210,10 @@ export function composeChatDocument(
     .replace("__SKILL_MANAGER_SCRIPT__", () => skillManagerScript)
     .replace("__BRIDGE_CLIENT_SCRIPT__", () => bridgeClientScript)
     .replace("__MARKDOWN_RENDERER_SCRIPT__", () => scripts.markdownRenderer)
-    .replace("__SESSION_TIMELINE_SCRIPT__", () => scripts.sessionTimeline)
+    .replace(
+      "__SESSION_TIMELINE_SCRIPT__",
+      () => injectSessionContract(scripts.sessionTimeline),
+    )
     .replace("__BOOTSTRAP_SCRIPT__", () => injectEditScopeContract(scripts.bootstrap));
 
   if (/__(?:STATE|BRIDGE|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {

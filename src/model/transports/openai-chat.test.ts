@@ -851,7 +851,14 @@ test("Extra Body may override generation fields but not structural or audio-outp
 });
 
 test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => {
-  for (const finishReason of ["length", "content_filter", "function_call", null]) {
+  const sentinel = "chat-private-finish-reason";
+  for (const finishReason of [
+    "length",
+    "content_filter",
+    "function_call",
+    sentinel,
+    null,
+  ]) {
     const transport = createOpenAIChatTransport({
       fetchImpl: async () => new Response(JSON.stringify({
         choices: [{
@@ -863,15 +870,29 @@ test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => 
     });
     await assert.rejects(
       transport.createToolTurn(request(profile())),
-      finishReason === null
-        ? /finish_reason.*before completion/i
-        : new RegExp(`finish_reason ${finishReason}`),
+      (error: unknown) => {
+        assert.match(
+          String(error),
+          finishReason === null
+            ? /finish_reason.*before completion/i
+            : /unsupported finish_reason/i,
+        );
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
     );
   }
 });
 
 test("OpenAI Chat rejects streaming incomplete finish reasons", async () => {
-  for (const finishReason of ["length", "content_filter", "function_call", null]) {
+  const sentinel = "chat-private-stream-finish-reason";
+  for (const finishReason of [
+    "length",
+    "content_filter",
+    "function_call",
+    sentinel,
+    null,
+  ]) {
     const chunk = {
       choices: [{
         index: 0,
@@ -890,18 +911,26 @@ test("OpenAI Chat rejects streaming incomplete finish reasons", async () => {
     req.onDelta = () => {};
     await assert.rejects(
       transport.createToolTurn(req),
-      finishReason === null
-        ? /\[DONE\].*before its protocol terminal event/i
-        : new RegExp(`finish_reason ${finishReason}`),
+      (error: unknown) => {
+        assert.match(
+          String(error),
+          finishReason === null
+            ? /\[DONE\].*before its protocol terminal event/i
+            : /unsupported finish_reason/i,
+        );
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
     );
   }
 });
 
 test("OpenAI Chat rejects missing, empty, and duplicate tool-call IDs in both response modes", async () => {
+  const duplicateSentinel = "chat-private-duplicate-call-id";
   const invalidCallIds: Array<Array<string | undefined>> = [
     [undefined],
     [""],
-    ["duplicate", "duplicate"],
+    [duplicateSentinel, duplicateSentinel],
   ];
 
   for (const streaming of [false, true]) {
@@ -940,7 +969,11 @@ test("OpenAI Chat rejects missing, empty, and duplicate tool-call IDs in both re
 
       await assert.rejects(
         transport.createToolTurn(req),
-        /tool call ID/i,
+        (error: unknown) => {
+          assert.match(String(error), /tool call ID/i);
+          assert.doesNotMatch(String(error), new RegExp(duplicateSentinel));
+          return true;
+        },
       );
     }
   }

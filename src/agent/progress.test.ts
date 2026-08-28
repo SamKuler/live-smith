@@ -20,7 +20,7 @@ test("progressLabelForActionPlan summarizes action counts", () => {
       message: "Apply",
       actions: [{ type: "create_midi_track", name: "Future Bass" }],
     }),
-    "Applying 1 Live action",
+    "Preparing 1 Live action",
   );
 });
 
@@ -84,5 +84,13 @@ test("progress labels identify object-aware inspections", () => {
       arguments: '{"clipName":"Reference"}',
     }),
     'Reading pre-FX audio for "Reference"',
+  );
+  assert.equal(
+    progressLabelForToolCall({
+      id: "resolve-recovery",
+      name: "resolve_live_recovery",
+      arguments: "{}",
+    }),
+    "Reviewing unfinished Live work",
   );
 });

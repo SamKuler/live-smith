@@ -41,8 +41,7 @@ Select a track, Clip, device, or another supported Live object and choose
   mention one for a single request. Open a built-in Skill to read its instructions
   before enabling it.
 - **Bring reference material.** Paste or drag images, documents, or audio into
-  the composer. You can also attach a selected Live audio source. Input support
-  depends on the model and connection.
+  the composer. Input support depends on the model and connection.
 - **Keep work moving.** Queue a follow-up for the next turn, steer the response
   already in progress, or stop it.
 - **Search when needed.** Compatible Direct API connections can enable hosted
@@ -183,6 +182,9 @@ Skills do not grant additional permissions or tools.
 Office documents are read as text. Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
 sent to every model. Use paste or drag-and-drop rather than a system file picker.
+The Extensions SDK does not expose selected Audio Clip, Sample, or Simpler source
+bytes to extensions, so export or locate the source file and drop it into the
+composer when you need the original file as an attachment.
 During that send, a compatible audio attachment can also be used as the source
 for an Arrangement, Session, or Take Lane Audio Clip, a Simpler sample, or a
 Drum Rack pad. When a confirmed plan first uses it, Live Smith copies the file

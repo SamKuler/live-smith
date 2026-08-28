@@ -14,7 +14,10 @@ import {
 } from "@ableton-extensions/sdk";
 
 import type { AgentAction } from "../agent/actions.js";
-import { findExactParameterMatch } from "./parameter-match.js";
+import {
+  assertParameterValueInObservedRange,
+  findExactParameterMatch,
+} from "./parameter-match.js";
 import {
   resolveDevicePath,
   resolveDeviceTarget,
@@ -22,6 +25,7 @@ import {
   resolveRackDeviceTarget,
 } from "./device-tree.js";
 import {
+  affectedTrackTree,
   findReusableMidiClip,
   resolveArrangementClip,
   resolveClipLocator,
@@ -265,6 +269,11 @@ export async function captureLiveActionPreflightSnapshot(
           `Could not verify the range for parameter "${parameter.name}" on device "${device.name}".`,
         );
       }
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `on device "${device.name}"`,
+      );
       const currentValue = await parameter.getValue();
       if (!Number.isFinite(currentValue)) {
         throw new Error(
@@ -505,6 +514,11 @@ export async function captureLiveActionPreflightSnapshot(
         action.parameter,
         action.sendIndex,
       );
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `on track "${track.name}"`,
+      );
       const currentValue = await verifiedParameterValue(parameter, "track mixer");
       return fingerprint(action.type, {
         song: songIdentity,
@@ -525,6 +539,11 @@ export async function captureLiveActionPreflightSnapshot(
         resolved.chain,
         action.parameter,
         action.sendIndex,
+      );
+      assertParameterValueInObservedRange(
+        action.value,
+        parameter,
+        `in Chain ${action.chainIndex} of Rack "${resolved.rackTarget.device.name}"`,
       );
       const currentValue = await verifiedParameterValue(parameter, "Rack Chain mixer");
       return fingerprint(action.type, {
@@ -587,7 +606,9 @@ export async function captureLiveActionPreflightSnapshot(
       const track = resolveTrack(context, action.trackName, target);
       return fingerprint(action.type, {
         song: songIdentity,
-        track: trackContentIdentity(track),
+        trackTree: await Promise.all(
+          affectedTrackTree(context, track).map(trackContentIdentity),
+        ),
       });
     }
     case "delete_clip": {
@@ -750,16 +771,19 @@ async function chainContentIdentity(chain: Chain<"1.0.0">): Promise<object> {
   };
 }
 
-async function mixerContentIdentity(chain: Chain<"1.0.0">): Promise<object> {
-  const mixer = chain.mixer;
+async function mixerContentIdentity(
+  owner: Chain<"1.0.0"> | Track<"1.0.0">,
+  label = "Rack Chain mixer",
+): Promise<object> {
+  const mixer = owner.mixer;
   const sends = mixer.sends;
   const parameters = [mixer.volume, mixer.panning, ...sends];
   return {
-    id: requireHandleIdentity(mixer, "Rack Chain mixer"),
+    id: requireHandleIdentity(mixer, label),
     parameters: await Promise.all(parameters.map(async (parameter) =>
       parameterIdentity(
         parameter,
-        await verifiedParameterValue(parameter, "Rack Chain mixer"),
+        await verifiedParameterValue(parameter, label),
       )
     )),
   };
@@ -809,18 +833,24 @@ function trackIdentity(track: Track<"1.0.0">): object {
   };
 }
 
-function trackContentIdentity(track: Track<"1.0.0">): object {
+async function trackContentIdentity(track: Track<"1.0.0">): Promise<object> {
+  const groupTrack = track.groupTrack;
   return {
     ...trackIdentity(track),
-    devices: track.devices.map((device) => ({
-      id: requireHandleIdentity(device, "device"),
-      name: device.name,
-    })),
+    groupTrack: groupTrack
+      ? requireHandleIdentity(groupTrack, "group track")
+      : null,
+    mute: track.mute,
+    solo: track.solo,
+    arm: track.arm,
+    mixer: await mixerContentIdentity(track, "track mixer"),
+    devices: await Promise.all(track.devices.map(deviceContentIdentity)),
     arrangementClips: track.arrangementClips.map(clipContentIdentity),
     clipSlots: track.clipSlots.map((slot) => ({
       id: requireHandleIdentity(slot, "clip slot"),
       clip: slot.clip ? clipContentIdentity(slot.clip) : null,
     })),
+    takeLanes: track.takeLanes.map(takeLaneIdentity),
   };
 }
 
@@ -863,7 +893,6 @@ function midiNoteIdentity(
     probability: note.probability,
     velocityDeviation: note.velocityDeviation,
     releaseVelocity: note.releaseVelocity,
-    selected: note.selected,
   };
 }
 

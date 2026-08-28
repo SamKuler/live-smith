@@ -2810,6 +2810,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
   const commitError = new StorageCommitOutcomeUnknownError(
     Object.assign(new Error("directory sync failed"), { code: "EIO" }),
   );
+  let invalidations = 0;
 
   await assert.rejects(
     handleAgentRequest(
@@ -2829,6 +2830,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
         onDelta: () => {},
         onProgress: () => {},
         onSessionEvent: () => {},
+        onSessionStateInvalidated: () => { invalidations += 1; },
         confirmActions: async () => true,
       },
       async () => assert.fail("model request must not start"),
@@ -2840,6 +2842,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
       error instanceof ChatBridgePromptPersistenceUnknownError &&
       error.cause === commitError,
   );
+  assert.equal(invalidations, 1);
   const [untitled] = await listSessions(dir, "project-a");
   assert.equal(untitled?.title, "");
 });
@@ -3122,7 +3125,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
   assert.deepEqual(attemptedDevices, [...plannedDevices, "Delay"]);
   assert.match(
     modelInputs[1]?.at(-1)?.content ?? "",
-    /partially completed after 9 action\(s\).*Current Live state after the failure:.*Wavetable.*EQ Eight/is,
+    /partially completed after 9 operation\(s\).*Current Live state after the failure:.*Wavetable.*EQ Eight/is,
   );
   assert.match(
     modelInputs[2]?.at(-1)?.content ?? "",
@@ -3135,7 +3138,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
   assert.equal(
     events.some(
       (event) => event.kind === "apply_result" &&
-        event.content.includes("partially completed after 9 action(s)"),
+        event.content.includes("partially completed after 9 operation(s)"),
     ),
     true,
   );

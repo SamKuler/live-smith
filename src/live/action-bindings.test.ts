@@ -5,10 +5,17 @@ import {
   AudioClip,
   AudioTrack,
   Chain,
+  ClipSlot,
+  CuePoint,
+  Device,
+  DeviceParameter,
+  DrumChain,
+  DrumRack,
   MidiClip,
   MidiTrack,
   RackDevice,
   Sample,
+  Simpler,
   TakeLane,
   Track,
 } from "@ableton-extensions/sdk";
@@ -57,6 +64,848 @@ test("an implicit track target must fail binding when no track is selected", () 
   assert.throws(() => bindAgentPlanTargets(
     { application: { song: { tracks: [] } } } as never, plan,
   ), /No target track is available/);
+});
+
+test("Session slot replacement invalidates later pre-bound sample sources", () => {
+  const oldClip = sdkObject(AudioClip.prototype, {
+    handle: { id: "old-clip" },
+    name: "Old",
+    filePath: "/project/old.wav",
+  });
+  const slot = sdkObject(ClipSlot.prototype, {
+    handle: { id: "slot-1" },
+    clip: oldClip,
+  });
+  const track = sdkObject(AudioTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Audio",
+    devices: [],
+    clipSlots: [slot],
+  });
+  const selected = sdkObject(Sample.prototype, {
+    handle: { id: "selected-sample" },
+    filePath: "/project/new.wav",
+  });
+  const plan = validateAgentPlan({
+    message: "Replace then reuse old content",
+    actions: [
+      {
+        type: "create_session_audio_clip",
+        trackName: "Audio",
+        slotIndex: 0,
+        source: { kind: "selected" },
+      },
+      {
+        type: "create_arrangement_audio_clip",
+        trackName: "Audio",
+        startBeat: 0,
+        source: {
+          kind: "session_audio_clip",
+          trackName: "Audio",
+          slotIndex: 0,
+          clipName: "Old",
+        },
+      },
+    ],
+  });
+
+  assert.throws(
+    () => bindAgentPlanTargets(
+      { application: { song: { tracks: [track] } } } as never,
+      plan,
+      { object: selected },
+    ),
+    /action 2 depends on Live sample source.*invalidated by action 1/i,
+  );
+});
+
+test("Session slot guards allow later consumers when creation reuses the same Clip", () => {
+  const midiClip = sdkObject(MidiClip.prototype, {
+    handle: { id: "midi-clip" },
+    name: "Loop",
+    duration: 4,
+    notes: [],
+  });
+  const midiSlot = sdkObject(ClipSlot.prototype, {
+    handle: { id: "midi-slot" },
+    clip: midiClip,
+  });
+  const midiTrack = sdkObject(MidiTrack.prototype, {
+    handle: { id: "midi-track" },
+    name: "Lead",
+    devices: [],
+    clipSlots: [midiSlot],
+  });
+  const midiPlan = validateAgentPlan({
+    message: "Update and color the reusable MIDI Clip",
+    actions: [
+      {
+        type: "create_session_midi_clip",
+        trackName: "Lead",
+        slotIndex: 0,
+        durationBeats: 4,
+        notes: [],
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Lead",
+        slotIndex: 0,
+        clipName: "Loop",
+        color: 1,
+      },
+    ],
+  });
+  const midiBindings = bindAgentPlanTargets(
+    { application: { song: { tracks: [midiTrack] } } } as never,
+    midiPlan,
+    { track: midiTrack },
+  );
+  assert.equal(midiBindings.actionObjects.get(1)?.clip, midiClip);
+
+  const audioClip = sdkObject(AudioClip.prototype, {
+    handle: { id: "audio-clip" },
+    name: "Audio Loop",
+    filePath: "/project/source.wav",
+    warping: false,
+  });
+  const audioSlot = sdkObject(ClipSlot.prototype, {
+    handle: { id: "audio-slot" },
+    clip: audioClip,
+  });
+  const audioTrack = sdkObject(AudioTrack.prototype, {
+    handle: { id: "audio-track" },
+    name: "Audio",
+    devices: [],
+    clipSlots: [audioSlot],
+  });
+  const source = sdkObject(Sample.prototype, {
+    handle: { id: "audio-source" },
+    filePath: "/project/source.wav",
+  });
+  const audioPlan = validateAgentPlan({
+    message: "Reuse and color the same Audio Clip",
+    actions: [
+      {
+        type: "create_session_audio_clip",
+        trackName: "Audio",
+        slotIndex: 0,
+        source: { kind: "selected" },
+        isWarped: false,
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Audio",
+        slotIndex: 0,
+        clipName: "Audio Loop",
+        color: 2,
+      },
+    ],
+  });
+  const audioBindings = bindAgentPlanTargets(
+    { application: { song: { tracks: [audioTrack] } } } as never,
+    audioPlan,
+    { object: source },
+  );
+  assert.equal(audioBindings.actionObjects.get(1)?.clip, audioClip);
+});
+
+test("destructive actions reject later consumers of the same bound host object", () => {
+  const parameter = sdkObject(DeviceParameter.prototype, {
+    handle: { id: "parameter-1" },
+    name: "Gain",
+    min: 0,
+    max: 1,
+  });
+  const devices: Device<"1.0.0">[] = [];
+  const track = sdkObject(Track.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices,
+  });
+  const device = sdkObject(Device.prototype, {
+    handle: { id: "device-1" },
+    name: "Utility",
+    parameters: [parameter],
+    parent: track,
+  });
+  devices.push(device);
+  const cue = sdkObject(CuePoint.prototype, {
+    handle: { id: "cue-1" },
+    name: "Drop",
+    time: 32,
+  });
+  const context = {
+    application: { song: { tracks: [track], cuePoints: [cue] } },
+  } as never;
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Delete then edit one Device",
+      actions: [
+        {
+          type: "delete_device",
+          trackName: "Lead",
+          deviceName: "Utility",
+          deviceIndex: 0,
+        },
+        {
+          type: "set_device_parameter",
+          trackName: "Lead",
+          deviceName: "Utility",
+          deviceIndex: 0,
+          parameterName: "Gain",
+          value: 0.5,
+        },
+      ],
+    })),
+    /action 2 depends on.*Device.*invalidated by action 1/i,
+  );
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Delete then rename one Cue Point",
+      actions: [
+        { type: "delete_cue_point", timeBeat: 32, cueName: "Drop" },
+        {
+          type: "rename_cue_point",
+          timeBeat: 32,
+          cueName: "Drop",
+          newName: "Late Drop",
+        },
+      ],
+    })),
+    /action 2 depends on.*Cue Point.*invalidated by action 1/i,
+  );
+
+  const rackSample = sdkObject(Sample.prototype, {
+    handle: { id: "rack-sample" },
+    filePath: "/project/rack.wav",
+  });
+  const simpler = sdkObject(Simpler.prototype, {
+    handle: { id: "simpler-1" },
+    name: "Simpler",
+    parameters: [],
+    sample: rackSample,
+  });
+  const chain = sdkObject(Chain.prototype, {
+    handle: { id: "chain-1" },
+    devices: [simpler],
+  });
+  const rack = sdkObject(RackDevice.prototype, {
+    handle: { id: "rack-1" },
+    name: "Rack",
+    parameters: [],
+    chains: [chain],
+  });
+  const sourceTrack = sdkObject(MidiTrack.prototype, {
+    handle: { id: "source-track" },
+    name: "Source",
+    devices: [rack],
+  });
+  const destinationTrack = sdkObject(AudioTrack.prototype, {
+    handle: { id: "destination-track" },
+    name: "Destination",
+    devices: [],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(
+      {
+        application: {
+          song: { tracks: [sourceTrack, destinationTrack], cuePoints: [] },
+        },
+      } as never,
+      validateAgentPlan({
+        message: "Delete a Rack then reuse its nested sample",
+        actions: [
+          {
+            type: "delete_device",
+            trackName: "Source",
+            deviceName: "Rack",
+            devicePath: { deviceIndex: 0 },
+          },
+          {
+            type: "create_arrangement_audio_clip",
+            trackName: "Destination",
+            startBeat: 0,
+            source: {
+              kind: "simpler",
+              trackName: "Source",
+              deviceName: "Simpler",
+              devicePath: {
+                deviceIndex: 0,
+                nested: [{ chainIndex: 0, deviceIndex: 0 }],
+              },
+            },
+          },
+        ],
+      }),
+    ),
+    /action 2 depends on Live sample source.*invalidated by action 1/i,
+  );
+});
+
+test("Simpler sample replacement invalidates only consumers of the replaced Sample", () => {
+  const oldSample = sdkObject(Sample.prototype, {
+    handle: { id: "old-sample" },
+    filePath: "/project/old.wav",
+  });
+  const replacement = sdkObject(Sample.prototype, {
+    handle: { id: "replacement-sample" },
+    filePath: "/project/new.wav",
+  });
+  const simpler = sdkObject(Simpler.prototype, {
+    handle: { id: "simpler-1" },
+    name: "Simpler",
+    parameters: [],
+    sample: oldSample,
+  });
+  const sourceTrack = sdkObject(MidiTrack.prototype, {
+    handle: { id: "source-track" },
+    name: "Source",
+    devices: [simpler],
+  });
+  const destination = sdkObject(AudioTrack.prototype, {
+    handle: { id: "destination-track" },
+    name: "Destination",
+    devices: [],
+  });
+  const context = {
+    application: { song: { tracks: [sourceTrack, destination] } },
+  } as never;
+  const replaceAction = {
+    type: "replace_simpler_sample" as const,
+    trackName: "Source",
+    simplerName: "Simpler",
+    simplerPath: { deviceIndex: 0 },
+    source: { kind: "selected" as const },
+  };
+  const consumeAction = {
+    type: "create_arrangement_audio_clip" as const,
+    trackName: "Destination",
+    startBeat: 0,
+    source: {
+      kind: "simpler" as const,
+      trackName: "Source",
+      deviceName: "Simpler",
+      devicePath: { deviceIndex: 0 },
+    },
+  };
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Replace then consume the old sample",
+      actions: [replaceAction, consumeAction],
+    }), { object: replacement }),
+    /action 2 depends on Live sample source.*invalidated by action 1/i,
+  );
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Keep then consume the same sample",
+    actions: [replaceAction, consumeAction],
+  }), { object: oldSample }));
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Replace the sample then edit the same device",
+    actions: [replaceAction, {
+      type: "set_device_parameter",
+      trackName: "Source",
+      deviceName: "Simpler",
+      devicePath: { deviceIndex: 0 },
+      parameterName: "Gain",
+      value: 0.5,
+    }],
+  }), { object: replacement }));
+});
+
+test("Drum Pad sample replacement invalidates only consumers of the replaced Sample", () => {
+  const oldSample = sdkObject(Sample.prototype, {
+    handle: { id: "pad-old-sample" },
+    filePath: "/project/old-pad.wav",
+  });
+  const replacement = sdkObject(Sample.prototype, {
+    handle: { id: "pad-replacement-sample" },
+    filePath: "/project/new-pad.wav",
+  });
+  const simpler = sdkObject(Simpler.prototype, {
+    handle: { id: "pad-simpler" },
+    name: "Simpler",
+    parameters: [],
+    sample: oldSample,
+  });
+  const chain = sdkObject(DrumChain.prototype, {
+    handle: { id: "pad-chain" },
+    receivingNote: 36,
+    devices: [simpler],
+  });
+  const rack = sdkObject(DrumRack.prototype, {
+    handle: { id: "drum-rack" },
+    name: "Drum Rack",
+    parameters: [],
+    chains: [chain],
+  });
+  const drums = sdkObject(MidiTrack.prototype, {
+    handle: { id: "drums-track" },
+    name: "Drums",
+    devices: [rack],
+  });
+  const destination = sdkObject(AudioTrack.prototype, {
+    handle: { id: "pad-destination" },
+    name: "Destination",
+    devices: [],
+  });
+  const context = {
+    application: { song: { tracks: [drums, destination] } },
+  } as never;
+  const simplerPath = {
+    deviceIndex: 0,
+    nested: [{ chainIndex: 0, deviceIndex: 0 }],
+  };
+  const replaceAction = {
+    type: "configure_drum_pad" as const,
+    trackName: "Drums",
+    rackName: "Drum Rack",
+    rackPath: { deviceIndex: 0 },
+    receivingNote: 36,
+    mode: "replace_existing_simpler" as const,
+    simplerPath,
+    source: { kind: "selected" as const },
+  };
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Replace then consume the old pad sample",
+      actions: [replaceAction, {
+        type: "create_arrangement_audio_clip",
+        trackName: "Destination",
+        startBeat: 0,
+        source: {
+          kind: "simpler",
+          trackName: "Drums",
+          deviceName: "Simpler",
+          devicePath: simplerPath,
+        },
+      }],
+    }), { object: replacement }),
+    /action 2 depends on Live sample source.*invalidated by action 1/i,
+  );
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Replace the pad sample then edit the same Simpler",
+    actions: [replaceAction, {
+      type: "set_device_parameter",
+      trackName: "Drums",
+      deviceName: "Simpler",
+      devicePath: simplerPath,
+      parameterName: "Gain",
+      value: 0.5,
+    }],
+  }), { object: replacement }));
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Replace one pad sample twice in a deterministic sequence",
+    actions: [replaceAction, replaceAction],
+  }), { object: replacement }));
+
+  const emptyRack = sdkObject(DrumRack.prototype, {
+    handle: { id: "empty-drum-rack" },
+    name: "Empty Drum Rack",
+    parameters: [],
+    chains: [],
+  });
+  const emptyDrums = sdkObject(MidiTrack.prototype, {
+    handle: { id: "empty-drums-track" },
+    name: "Empty Drums",
+    devices: [emptyRack],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(
+      { application: { song: { tracks: [emptyDrums] } } } as never,
+      validateAgentPlan({
+        message: "Fill one pad twice",
+        actions: [0, 1].map(() => ({
+          type: "configure_drum_pad" as const,
+          trackName: "Empty Drums",
+          rackName: "Empty Drum Rack",
+          rackPath: { deviceIndex: 0 },
+          receivingNote: 36,
+          mode: "fill_empty_pad" as const,
+          source: { kind: "selected" as const },
+        })),
+      }),
+      { object: replacement },
+    ),
+    /actions 1 and 2.*fill MIDI note 36.*same Drum Rack.*inspect/i,
+  );
+});
+
+test("Arrangement range invalidation rejects only later consumers of affected Clips", () => {
+  const affected = sdkObject(MidiClip.prototype, {
+    handle: { id: "affected-clip" },
+    name: "Affected",
+    startTime: 0,
+    duration: 4,
+    notes: [],
+  });
+  const unaffected = sdkObject(MidiClip.prototype, {
+    handle: { id: "unaffected-clip" },
+    name: "Unaffected",
+    startTime: 8,
+    duration: 4,
+    notes: [],
+  });
+  const track = sdkObject(MidiTrack.prototype, {
+    handle: { id: "track-1" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [affected, unaffected],
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+
+  for (const firstAction of [
+    {
+      type: "delete_clip" as const,
+      trackName: "Lead",
+      startBeat: 0,
+      clipName: "Affected",
+    },
+    {
+      type: "clear_arrangement_range" as const,
+      trackName: "Lead",
+      startBeat: 0,
+      endBeat: 4,
+    },
+  ]) {
+    assert.throws(
+      () => bindAgentPlanTargets(context, validateAgentPlan({
+        message: "Destroy then edit the affected Clip",
+        actions: [
+          firstAction,
+          {
+            type: "set_clip_properties",
+            trackName: "Lead",
+            startBeat: 0,
+            clipName: "Affected",
+            muted: true,
+          },
+        ],
+      })),
+      /action 2 depends on.*Clip.*invalidated by action 1/i,
+    );
+  }
+
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Clear one range then edit an unaffected Clip",
+    actions: [
+      {
+        type: "clear_arrangement_range",
+        trackName: "Lead",
+        startBeat: 0,
+        endBeat: 4,
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Lead",
+        startBeat: 8,
+        clipName: "Unaffected",
+        muted: true,
+      },
+    ],
+  })));
+});
+
+test("main Arrangement creation invalidates only Clips its create range can replace", () => {
+  const midiAffected = sdkObject(MidiClip.prototype, {
+    handle: { id: "midi-affected" },
+    name: "Affected",
+    startTime: 0,
+    duration: 8,
+    notes: [],
+  });
+  const midiUnaffected = sdkObject(MidiClip.prototype, {
+    handle: { id: "midi-unaffected" },
+    name: "Unaffected",
+    startTime: 16,
+    duration: 4,
+    notes: [],
+  });
+  const midiTrack = sdkObject(MidiTrack.prototype, {
+    handle: { id: "midi-track" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [midiAffected, midiUnaffected],
+    takeLanes: [],
+  });
+  const midiContext = {
+    application: { song: { tracks: [midiTrack] } },
+  } as never;
+
+  assert.throws(
+    () => bindAgentPlanTargets(midiContext, validateAgentPlan({
+      message: "Replace one range then edit the removed Clip",
+      actions: [
+        {
+          type: "create_midi_clip",
+          trackName: "Lead",
+          startBeat: 0,
+          durationBeats: 4,
+          notes: [],
+        },
+        {
+          type: "set_clip_properties",
+          trackName: "Lead",
+          startBeat: 0,
+          clipName: "Affected",
+          muted: true,
+        },
+      ],
+    })),
+    /action 2 depends on Arrangement Clip.*invalidated by action 1/i,
+  );
+  assert.doesNotThrow(() => bindAgentPlanTargets(midiContext, validateAgentPlan({
+    message: "Create one range then edit an unrelated Clip",
+    actions: [
+      {
+        type: "create_midi_clip",
+        trackName: "Lead",
+        startBeat: 0,
+        durationBeats: 4,
+        notes: [],
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Lead",
+        startBeat: 16,
+        clipName: "Unaffected",
+        muted: true,
+      },
+    ],
+  })));
+  assert.doesNotThrow(() => bindAgentPlanTargets(midiContext, validateAgentPlan({
+    message: "Reuse and then edit the exact existing MIDI Clip",
+    actions: [
+      {
+        type: "create_midi_clip",
+        trackName: "Lead",
+        startBeat: 0,
+        durationBeats: 8,
+        name: "Affected",
+        notes: [],
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Lead",
+        startBeat: 0,
+        clipName: "Affected",
+        muted: true,
+      },
+    ],
+  })));
+
+  const before = sdkObject(AudioClip.prototype, {
+    handle: { id: "audio-before" },
+    name: "Before",
+    startTime: 0,
+    duration: 4,
+    filePath: "/project/before.wav",
+  });
+  const after = sdkObject(AudioClip.prototype, {
+    handle: { id: "audio-after" },
+    name: "After",
+    startTime: 12,
+    duration: 4,
+    filePath: "/project/after.wav",
+  });
+  const audioTrack = sdkObject(AudioTrack.prototype, {
+    handle: { id: "audio-track" },
+    name: "Audio",
+    devices: [],
+    arrangementClips: [before, after],
+    takeLanes: [],
+  });
+  const source = sdkObject(Sample.prototype, {
+    handle: { id: "audio-source" },
+    filePath: "/project/source.wav",
+  });
+  const audioContext = {
+    application: { song: { tracks: [audioTrack] } },
+  } as never;
+  assert.throws(
+    () => bindAgentPlanTargets(audioContext, validateAgentPlan({
+      message: "Create natural-length audio then edit a potentially replaced Clip",
+      actions: [
+        {
+          type: "create_arrangement_audio_clip",
+          trackName: "Audio",
+          source: { kind: "selected" },
+          startBeat: 8,
+        },
+        {
+          type: "set_clip_properties",
+          trackName: "Audio",
+          startBeat: 12,
+          clipName: "After",
+          muted: true,
+        },
+      ],
+    }), { object: source }),
+    /action 2 depends on Arrangement Clip.*invalidated by action 1/i,
+  );
+  assert.doesNotThrow(() => bindAgentPlanTargets(audioContext, validateAgentPlan({
+    message: "Create natural-length audio after an unrelated earlier Clip",
+    actions: [
+      {
+        type: "create_arrangement_audio_clip",
+        trackName: "Audio",
+        source: { kind: "selected" },
+        startBeat: 8,
+      },
+      {
+        type: "set_clip_properties",
+        trackName: "Audio",
+        startBeat: 0,
+        clipName: "Before",
+        muted: true,
+      },
+    ],
+  }), { object: source }));
+});
+
+test("main Arrangement SDK creation ranges do not overlap within one plan", () => {
+  const track = sdkObject(MidiTrack.prototype, {
+    handle: { id: "main-midi-track" },
+    name: "Lead",
+    devices: [],
+    arrangementClips: [],
+    takeLanes: [],
+  });
+  const context = { application: { song: { tracks: [track] } } } as never;
+  const create = (startBeat: number, durationBeats: number) => ({
+    type: "create_midi_clip" as const,
+    trackName: "Lead",
+    startBeat,
+    durationBeats,
+    notes: [],
+  });
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Create overlapping main-lane Clips",
+      actions: [create(0, 8), create(4, 8)],
+    })),
+    /actions 1 and 2.*overlapping Clips.*main Arrangement lane/i,
+  );
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Create adjacent main-lane Clips",
+    actions: [create(0, 8), create(8, 8)],
+  })));
+
+  const reusable = sdkObject(MidiClip.prototype, {
+    handle: { id: "reusable-main-clip" },
+    name: "Reusable",
+    startTime: 0,
+    duration: 8,
+    notes: [],
+  });
+  track.arrangementClips.push(reusable);
+  const reuse = {
+    ...create(0, 8),
+    name: "Reusable",
+  };
+  assert.doesNotThrow(() => bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Update the same reusable Clip twice without SDK creation",
+    actions: [reuse, reuse],
+  })));
+
+  assert.throws(
+    () => bindAgentPlanTargets(
+      { application: { song: { tracks: [] } } } as never,
+      validateAgentPlan({
+        message: "Create a track then write overlapping ranges",
+        actions: [
+          { type: "create_midi_track", ref: "lead" },
+          { ...create(0, 8), trackName: undefined, trackRef: "lead" },
+          { ...create(4, 8), trackName: undefined, trackRef: "lead" },
+        ],
+      }),
+    ),
+    /actions 2 and 3.*overlapping Clips.*main Arrangement lane/i,
+  );
+});
+
+test("whole-track deletion rejects only later dependencies inside its affected tree", () => {
+  const group = sdkObject(MidiTrack.prototype, {
+    handle: { id: "group-track" },
+    name: "Group",
+    groupTrack: null,
+    devices: [],
+    clipSlots: [],
+    arrangementClips: [],
+    takeLanes: [],
+  });
+  const sourceClip = sdkObject(AudioClip.prototype, {
+    handle: { id: "child-source" },
+    name: "Source",
+    startTime: 0,
+    duration: 4,
+    filePath: "/project/source.wav",
+  });
+  const child = sdkObject(AudioTrack.prototype, {
+    handle: { id: "child-track" },
+    name: "Child",
+    groupTrack: group,
+    devices: [],
+    clipSlots: [],
+    arrangementClips: [sourceClip],
+    takeLanes: [],
+  });
+  const destination = sdkObject(AudioTrack.prototype, {
+    handle: { id: "destination-track" },
+    name: "Destination",
+    groupTrack: null,
+    devices: [],
+    clipSlots: [],
+    arrangementClips: [],
+    takeLanes: [],
+  });
+  const context = {
+    application: { song: { tracks: [group, child, destination] } },
+  } as never;
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Delete the group, then edit its child",
+      actions: [
+        { type: "delete_track", trackName: "Group" },
+        { type: "set_track_mute", trackName: "Child", mute: true },
+      ],
+    })),
+    /action 2 depends on track "Child".*action 1/i,
+  );
+
+  assert.throws(
+    () => bindAgentPlanTargets(context, validateAgentPlan({
+      message: "Delete the group, then reuse audio from its child",
+      actions: [
+        { type: "delete_track", trackName: "Group" },
+        {
+          type: "create_arrangement_audio_clip",
+          trackName: "Destination",
+          startBeat: 0,
+          source: {
+            kind: "arrangement_audio_clip",
+            trackName: "Child",
+            startBeat: 0,
+            clipName: "Source",
+          },
+        },
+      ],
+    })),
+    /action 2 depends on track "Child".*action 1/i,
+  );
+
+  const allowed = bindAgentPlanTargets(context, validateAgentPlan({
+    message: "Delete the group, then mute an unrelated track",
+    actions: [
+      { type: "delete_track", trackName: "Group" },
+      { type: "set_track_mute", trackName: "Destination", mute: true },
+    ],
+  }));
+  assert.equal(allowed.actionTracks.get(1), destination);
 });
 
 test("Set-level actions do not require a selected track", () => {
