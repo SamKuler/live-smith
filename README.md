@@ -203,6 +203,8 @@ remain because the beta SDK does not expose deletion or rollback for imported
 files.
 
 Queue and Steer are configured under **Settings → Conversation Behavior**.
+The same section can show or hide the compact context-window indicator in the
+composer.
 Queued follow-ups belong to the open window; Live Smith warns before closing
 with pending work.
 

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
   type DirectApiConnection,
   type DirectApiModelConfig,
@@ -114,12 +115,14 @@ function profileV4(overrides: ProfileOverrides = {}) {
 test("loadAgentSettings starts empty and rejects every legacy or invalid settings shape", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   assert.deepEqual(await loadAgentSettings(directory), {
-    schemaVersion: 5,
+    schemaVersion: 6,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
     defaultFollowUpBehavior: "queue",
     defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
   });
 
   const legacyShapes = [
@@ -193,10 +196,12 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
     }, null, 2);
     await fs.writeFile(settingsPath, original);
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 5);
+    assert.equal(loaded.schemaVersion, 6);
     assert.equal(loaded.approvalMode, approvalMode);
     assert.equal(loaded.defaultFollowUpBehavior, "queue");
     assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
+    assert.equal(loaded.showContextUsage, true);
+    assert.equal(loaded.contextUsageVisibilityRevision, "0");
     assert.deepEqual(loaded.profiles, [{
       id: "profile-1",
       name: "Studio",
@@ -230,9 +235,11 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   await fs.writeFile(settingsPath, original);
 
   const loaded = await loadAgentSettings(directory);
-  assert.equal(loaded.schemaVersion, 5);
+  assert.equal(loaded.schemaVersion, 6);
   assert.equal(loaded.defaultFollowUpBehavior, "queue");
   assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
+  assert.equal(loaded.showContextUsage, true);
+  assert.equal(loaded.contextUsageVisibilityRevision, "0");
   assert.equal(loaded.approvalMode, "everything");
   assert.equal(loaded.activeProfileId, "profile-1");
   assert.equal(loaded.profiles[0]?.connection.kind, "direct-api");
@@ -241,9 +248,11 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   const saved = await saveGlobalSettings(directory, {
     defaultFollowUpBehavior: "steer",
   });
-  assert.equal(saved.schemaVersion, 5);
+  assert.equal(saved.schemaVersion, 6);
   assert.equal(saved.defaultFollowUpBehavior, "steer");
   assert.equal(saved.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(saved.showContextUsage, true);
+  assert.equal(saved.contextUsageVisibilityRevision, "0");
   assert.equal(saved.approvalMode, "everything");
   assert.equal(saved.activeProfileId, "profile-1");
   assert.equal(saved.profiles.length, 1);
@@ -253,43 +262,50 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   );
 });
 
-test("the migration decoder accepts only canonical current revisions", () => {
-  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 5);
+test("the migration decoder accepts only canonical current per-field revisions", () => {
+  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 6);
+  const revisions = ["0", "7", "90071992547409931234567890"];
   for (const defaultFollowUpBehavior of ["queue", "steer"] as const) {
-    for (const defaultFollowUpBehaviorRevision of [
-      "0",
-      "7",
-      "90071992547409931234567890",
-    ]) {
-      const current = {
-        schemaVersion: 5,
-        activeProfileId: null,
-        profiles: [],
-        approvalMode: "everything",
-        defaultFollowUpBehavior,
-        defaultFollowUpBehaviorRevision,
-      } as const;
-      assert.deepEqual(decodeAgentSettings(current), current);
+    for (const defaultFollowUpBehaviorRevision of revisions) {
+      for (const contextUsageVisibilityRevision of revisions) {
+        const current = {
+          schemaVersion: 6,
+          activeProfileId: null,
+          profiles: [],
+          approvalMode: "everything",
+          defaultFollowUpBehavior,
+          defaultFollowUpBehaviorRevision,
+          showContextUsage: false,
+          contextUsageVisibilityRevision,
+        } as const;
+        assert.deepEqual(decodeAgentSettings(current), current);
+      }
     }
   }
 
+  const current = {
+    schemaVersion: 6,
+    activeProfileId: null,
+    profiles: [],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
+  } as const;
   for (const invalid of [undefined, "later", false]) {
     assert.throws(
       () => decodeAgentSettings({
-        schemaVersion: 5,
-        activeProfileId: null,
-        profiles: [],
-        approvalMode: "manual",
+        ...current,
         ...(invalid === undefined
-          ? {}
+          ? { defaultFollowUpBehavior: undefined }
           : { defaultFollowUpBehavior: invalid }),
-        defaultFollowUpBehaviorRevision: "0",
       }),
       /Default follow-up behavior must be queue or steer/,
     );
   }
 
-  for (const invalid of [
+  const invalidRevisions = [
     undefined,
     0,
     -1,
@@ -302,23 +318,40 @@ test("the migration decoder accepts only canonical current revisions", () => {
     "1e3",
     " 1",
     "1 ",
-  ]) {
+  ];
+  for (const invalid of invalidRevisions) {
     assert.throws(
       () => decodeAgentSettings({
-        schemaVersion: 5,
-        activeProfileId: null,
-        profiles: [],
-        approvalMode: "manual",
-        defaultFollowUpBehavior: "queue",
-        ...(invalid === undefined
-          ? {}
-          : { defaultFollowUpBehaviorRevision: invalid }),
+        ...current,
+        defaultFollowUpBehaviorRevision: invalid,
       }),
       /Default follow-up behavior revision must be a canonical nonnegative decimal string/,
     );
+    assert.throws(
+      () => decodeAgentSettings({
+        ...current,
+        contextUsageVisibilityRevision: invalid,
+      }),
+      /Context usage visibility revision must be a canonical nonnegative decimal string/,
+    );
   }
 
-  for (const schemaVersion of [0, 6]) {
+  for (const invalid of [undefined, null, 0, "true"]) {
+    assert.throws(
+      () => decodeAgentSettings({
+        ...current,
+        showContextUsage: invalid,
+      }),
+      /Show context usage must be a boolean/,
+    );
+  }
+
+  assert.throws(
+    () => decodeAgentSettings({ ...current, unexpected: true }),
+    /does not support property unexpected/,
+  );
+
+  for (const schemaVersion of [0, 7]) {
     assert.throws(
       () => decodeAgentSettings({
         schemaVersion,
@@ -349,9 +382,11 @@ test("settings v2 migrate every legacy Profile to a direct API connection", () =
     approvalMode: "manual",
   });
 
-  assert.equal(decoded.schemaVersion, 5);
+  assert.equal(decoded.schemaVersion, 6);
   assert.equal(decoded.defaultFollowUpBehavior, "queue");
   assert.equal(decoded.defaultFollowUpBehaviorRevision, "0");
+  assert.equal(decoded.showContextUsage, true);
+  assert.equal(decoded.contextUsageVisibilityRevision, "0");
   assert.deepEqual(decoded.profiles[0]?.connection, {
     kind: "direct-api",
     apiFamily: "openai",
@@ -398,10 +433,15 @@ test("both historical schema-v3 shapes migrate losslessly without rewriting on r
     await fs.writeFile(settingsPath, original);
 
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 5);
+    assert.equal(loaded.schemaVersion, 6);
     assert.equal(loaded.activeProfileId, "profile-1");
     assert.equal(loaded.defaultFollowUpBehavior, migrationCase.behavior);
-    assert.equal(loaded.defaultFollowUpBehaviorRevision, migrationCase.revision);
+    assert.equal(
+      loaded.defaultFollowUpBehaviorRevision,
+      migrationCase.revision,
+    );
+    assert.equal(loaded.showContextUsage, true);
+    assert.equal(loaded.contextUsageVisibilityRevision, "0");
     assert.deepEqual(loaded.profiles, [{
       ...profile(),
       connection: {
@@ -422,12 +462,14 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     defaultFollowUpBehavior: "steer",
     defaultFollowUpBehaviorRevision: "17",
   }), {
-    schemaVersion: 5,
+    schemaVersion: 6,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
     defaultFollowUpBehavior: "steer",
     defaultFollowUpBehaviorRevision: "17",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
   });
 
   assert.deepEqual(decodeAgentSettings({
@@ -436,12 +478,14 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     profiles: [],
     approvalMode: "manual",
   }), {
-    schemaVersion: 5,
+    schemaVersion: 6,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
     defaultFollowUpBehavior: "queue",
     defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
   });
 });
 
@@ -591,7 +635,7 @@ test("schema-v4 rejects unknown top-level and Profile fields", () => {
   );
 });
 
-test("schema-v4 single-model Profiles migrate to schema-v5 model collections", () => {
+test("schema-v4 single-model Profiles migrate through schema-v6 model collections", () => {
   const historical = profileV4({
     model: "model-b",
     parameters: {
@@ -608,7 +652,10 @@ test("schema-v4 single-model Profiles migrate to schema-v5 model collections", (
     defaultFollowUpBehaviorRevision: "9",
   });
 
-  assert.equal(decoded.schemaVersion, 5);
+  assert.equal(decoded.schemaVersion, 6);
+  assert.equal(decoded.defaultFollowUpBehaviorRevision, "9");
+  assert.equal(decoded.showContextUsage, true);
+  assert.equal(decoded.contextUsageVisibilityRevision, "0");
   assert.equal(decoded.profiles[0]?.defaultModel, "model-b");
   assert.deepEqual(decoded.profiles[0]?.models, [{
     model: "model-b",
@@ -620,7 +667,7 @@ test("schema-v4 single-model Profiles migrate to schema-v5 model collections", (
   }]);
 });
 
-test("schema-v5 strictly validates model collection fields", () => {
+test("schema-v5 strictly validates model collections before migrating to v6", () => {
   const savedProfile = profile({ baseUrl: "https://example.test/v1" });
   const current = {
     schemaVersion: 5,
@@ -631,7 +678,20 @@ test("schema-v5 strictly validates model collection fields", () => {
     defaultFollowUpBehaviorRevision: "0",
   } as const;
 
-  assert.deepEqual(decodeAgentSettings(current), current);
+  assert.deepEqual(decodeAgentSettings(current), {
+    schemaVersion: 6,
+    activeProfileId: "profile-1",
+    profiles: [savedProfile],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
+  });
+  assert.throws(
+    () => decodeAgentSettings({ ...current, showContextUsage: false }),
+    /does not support property showContextUsage/,
+  );
   assert.throws(
     () => decodeAgentSettings({
       ...current,
@@ -778,10 +838,12 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   assert.deepEqual(Object.keys(persisted).sort(), [
     "activeProfileId",
     "approvalMode",
+    "contextUsageVisibilityRevision",
     "defaultFollowUpBehavior",
     "defaultFollowUpBehaviorRevision",
     "profiles",
     "schemaVersion",
+    "showContextUsage",
   ]);
 });
 
@@ -957,81 +1019,116 @@ test("activation, deletion, and global settings are independent operations", asy
   });
   assert.equal(global.defaultFollowUpBehavior, "steer");
   assert.equal(global.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(global.showContextUsage, true);
+  assert.equal(global.contextUsageVisibilityRevision, "0");
   assert.equal(global.approvalMode, "manual");
   assert.equal(global.profiles.length, 2);
 
   const deleted = await deleteSavedProfile(directory, "profile-1");
   assert.equal(deleted.activeProfileId, "profile-2");
+  assert.equal(deleted.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(deleted.contextUsageVisibilityRevision, "0");
   assert.deepEqual(deleted.profiles.map((entry) => entry.id), ["profile-2"]);
 });
 
-test("global settings accept only queue or steer follow-up behavior", async () => {
+test("global settings accept exactly one validated patch field", async () => {
   await assert.rejects(
     saveGlobalSettings(undefined, {
       defaultFollowUpBehavior: "later",
     } as never),
     /Default follow-up behavior must be queue or steer/,
   );
+  await assert.rejects(
+    saveGlobalSettings(undefined, { showContextUsage: "yes" } as never),
+    /Show context usage must be a boolean/,
+  );
+  for (const invalid of [
+    {},
+    { defaultFollowUpBehavior: "queue", showContextUsage: false },
+  ]) {
+    await assert.rejects(
+      saveGlobalSettings(undefined, invalid as never),
+      /exactly one setting/,
+    );
+  }
 });
 
-test("every global settings write atomically increments and returns its revision", async () => {
+test("global settings patches preserve and increment independent field revisions", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
 
   const first = await saveGlobalSettings(directory, {
-    defaultFollowUpBehavior: "queue",
+    showContextUsage: false,
   });
   const second = await saveGlobalSettings(directory, {
-    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehavior: "steer",
   });
-  assert.equal(first.defaultFollowUpBehaviorRevision, "1");
-  assert.equal(second.defaultFollowUpBehaviorRevision, "2");
+  assert.equal(first.defaultFollowUpBehavior, "queue");
+  assert.equal(first.defaultFollowUpBehaviorRevision, "0");
+  assert.equal(first.showContextUsage, false);
+  assert.equal(first.contextUsageVisibilityRevision, "1");
+  assert.equal(second.defaultFollowUpBehavior, "steer");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "1");
+  assert.equal(second.showContextUsage, false);
+  assert.equal(second.contextUsageVisibilityRevision, "1");
 
   const concurrent = await Promise.all(
     Array.from({ length: 8 }, (_, index) =>
       saveGlobalSettings(directory, {
-        defaultFollowUpBehavior: index % 2 === 0 ? "steer" : "queue",
+        ...(index % 2 === 0
+          ? { defaultFollowUpBehavior: "queue" as const }
+          : { showContextUsage: index % 4 === 1 }),
       }),
     ),
   );
   assert.deepEqual(
     concurrent
+      .filter((_settings, index) => index % 2 === 0)
       .map((settings) => settings.defaultFollowUpBehaviorRevision)
       .sort(compareDefaultFollowUpBehaviorRevisions),
-    ["3", "4", "5", "6", "7", "8", "9", "10"],
+    ["2", "3", "4", "5"],
   );
-  assert.equal(
-    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
-    "10",
+  assert.deepEqual(
+    concurrent
+      .filter((_settings, index) => index % 2 === 1)
+      .map((settings) => settings.contextUsageVisibilityRevision)
+      .sort(compareContextUsageVisibilityRevisions),
+    ["2", "3", "4", "5"],
   );
+  const loaded = await loadAgentSettings(directory);
+  assert.equal(loaded.defaultFollowUpBehaviorRevision, "5");
+  assert.equal(loaded.contextUsageVisibilityRevision, "5");
 });
 
-test("global settings revisions increment beyond Number.MAX_SAFE_INTEGER", async () => {
+test("per-field global settings revisions increment beyond Number.MAX_SAFE_INTEGER", async () => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-settings-large-revision-"),
   );
   const settingsPath = path.join(directory, "live-smith-settings.json");
   await fs.writeFile(settingsPath, JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 6,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
     defaultFollowUpBehavior: "queue",
     defaultFollowUpBehaviorRevision: "9007199254740991",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "9007199254740991",
   }));
 
   const first = await saveGlobalSettings(directory, {
-    defaultFollowUpBehavior: "steer",
+    showContextUsage: false,
   });
   const second = await saveGlobalSettings(directory, {
-    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehavior: "steer",
   });
 
-  assert.equal(first.defaultFollowUpBehaviorRevision, "9007199254740992");
-  assert.equal(second.defaultFollowUpBehaviorRevision, "9007199254740993");
-  assert.equal(
-    (await loadAgentSettings(directory)).defaultFollowUpBehaviorRevision,
-    "9007199254740993",
-  );
+  assert.equal(first.defaultFollowUpBehaviorRevision, "9007199254740991");
+  assert.equal(first.contextUsageVisibilityRevision, "9007199254740992");
+  assert.equal(second.defaultFollowUpBehaviorRevision, "9007199254740992");
+  assert.equal(second.contextUsageVisibilityRevision, "9007199254740992");
+  const loaded = await loadAgentSettings(directory);
+  assert.equal(loaded.defaultFollowUpBehaviorRevision, "9007199254740992");
+  assert.equal(loaded.contextUsageVisibilityRevision, "9007199254740992");
 });
 
 test("settings keep an in-memory fallback without a storage directory", async () => {

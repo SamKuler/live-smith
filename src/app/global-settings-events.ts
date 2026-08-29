@@ -1,4 +1,5 @@
 import type {
+  ContextUsageVisibilityRevision,
   DefaultFollowUpBehavior,
   DefaultFollowUpBehaviorRevision,
 } from "../model/profile.js";
@@ -7,6 +8,8 @@ import { storageScopeKey } from "../storage/scope.js";
 export interface GlobalSettingsChange {
   defaultFollowUpBehavior: DefaultFollowUpBehavior;
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+  showContextUsage: boolean;
+  contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
   commandId: string;
 }
 

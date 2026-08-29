@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   cloneState,
+  commandCalls,
   createDialogHarness,
   modelStateSourceFixture,
   profileFixture,
@@ -31,12 +32,209 @@ async function selectSession(harness: Harness, sessionId: string): Promise<void>
   );
   assert.ok(row);
   row.click();
+  await waitForCondition(
+    () => commandCalls(harness).some((call) =>
+      call.body && typeof call.body === "object" &&
+      "kind" in call.body && call.body.kind === "select_session" &&
+      "sessionId" in call.body && call.body.sessionId === sessionId
+    ),
+    `Expected ${sessionId} selection to reach the bridge.`,
+  );
   await harness.settle();
+  await waitForCondition(
+    () => !row.hasAttribute("data-switching") &&
+      row.getAttribute("aria-pressed") === "true",
+    `Expected ${sessionId} selection to finish.`,
+  );
 }
 
 function usageValue(harness: Harness): string {
   return harness.document.querySelector("#contextUsageValue")?.textContent ?? "";
 }
+
+test("persisted context visibility applies on initial render", async () => {
+  const state = stateFixture();
+  state.settings.showContextUsage = false;
+  state.settings.contextUsageVisibilityRevision = "4";
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#showContextUsage")?.checked,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("context usage visibility saves globally and follows newer settings", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const indicator = harness.document.querySelector<HTMLElement>("#contextUsage");
+    const control = harness.document.querySelector<HTMLInputElement>(
+      "#showContextUsage",
+    );
+    assert.ok(indicator);
+    assert.ok(control);
+    assert.equal(indicator.hidden, false);
+    assert.equal(control.checked, true);
+
+    harness.click("#showContextUsage");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: {
+        kind: "save_global_settings",
+        showContextUsage: false,
+      },
+    });
+    assert.equal(indicator.hidden, true);
+    assert.equal(control.checked, false);
+
+    await selectSession(harness, "session-2");
+    assert.equal(indicator.hidden, true);
+    assert.equal(control.checked, false);
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "2",
+      commandId: "external-context-visibility",
+    });
+    assert.equal(indicator.hidden, false);
+    assert.equal(control.checked, true);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a failed context visibility save restores the confirmed setting", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.failNextCommand("Could not save context visibility.");
+    harness.click("#showContextUsage");
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#showContextUsage")?.checked,
+      true,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a newer context visibility event supersedes a pending local toggle", async () => {
+  const harness = await createDialogHarness();
+  let commandReleased = false;
+  try {
+    harness.holdNextCommandResponse();
+    harness.click("#showContextUsage");
+    await Promise.resolve();
+    const commandId = harness.commandIds.at(-1);
+    assert.ok(commandId);
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId,
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      true,
+    );
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "2",
+      commandId: "external-context-visibility-2",
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#showContextUsage")?.checked,
+      true,
+    );
+
+    harness.releaseHeldCommandResponse();
+    commandReleased = true;
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!commandReleased) harness.releaseHeldCommandResponse();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a background terminal state applies newer context visibility", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(
+      harness,
+      "Background context visibility",
+    );
+    harness.emitServerEvent({
+      type: "progress",
+      sendId,
+      sessionId: "session-1",
+      message: "Working in the background",
+    });
+    await selectSession(harness, "session-2");
+
+    const hidden = stateFixture();
+    hidden.openSettingsOnLoad = false;
+    hidden.activeSessionId = "session-2";
+    hidden.approvalMode = "low-risk";
+    hidden.settings.showContextUsage = false;
+    hidden.settings.contextUsageVisibilityRevision = "1";
+    harness.setServerState(hidden);
+    harness.releaseHeldSend();
+    await waitForCondition(
+      () => harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden === true,
+      "Expected the background terminal state to hide context usage.",
+    );
+
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#showContextUsage")?.checked,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
 
 function subscriptionState() {
   const state = stateFixture();

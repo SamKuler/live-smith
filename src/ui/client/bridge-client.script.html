@@ -106,13 +106,24 @@
       )
         ? getState().settings.defaultFollowUpBehavior
         : "queue";
+      let confirmedShowContextUsage =
+        typeof getState().settings?.showContextUsage === "boolean"
+          ? getState().settings.showContextUsage
+          : true;
       let confirmedDefaultFollowUpBehaviorRevision =
         isDecimalRevision(
           getState().settings?.defaultFollowUpBehaviorRevision,
         )
           ? getState().settings.defaultFollowUpBehaviorRevision
           : "0";
+      let confirmedContextUsageVisibilityRevision =
+        isDecimalRevision(
+          getState().settings?.contextUsageVisibilityRevision,
+        )
+          ? getState().settings.contextUsageVisibilityRevision
+          : "0";
       let optimisticDefaultFollowUpBehavior = null;
+      let optimisticContextUsageVisibility = null;
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
       let renderedOperationState = null;
@@ -2133,15 +2144,19 @@
             "approvalMode",
             "defaultFollowUpBehavior",
             "defaultFollowUpBehaviorRevision",
+            "showContextUsage",
+            "contextUsageVisibilityRevision",
           ]) ||
-          value.schemaVersion !== 5 ||
+          value.schemaVersion !== 6 ||
           !Array.isArray(value.profiles) ||
           !value.profiles.every(isWireSavedProfile) ||
           new Set(value.profiles.map((profile) => profile.id)).size !==
             value.profiles.length ||
           !isWireApprovalMode(value.approvalMode) ||
           !isDefaultFollowUpBehavior(value.defaultFollowUpBehavior) ||
-          !isDecimalRevision(value.defaultFollowUpBehaviorRevision)
+          !isDecimalRevision(value.defaultFollowUpBehaviorRevision) ||
+          typeof value.showContextUsage !== "boolean" ||
+          !isDecimalRevision(value.contextUsageVisibilityRevision)
         ) return false;
         return value.activeProfileId === null ||
           isWireStorageId(value.activeProfileId) &&
@@ -2788,6 +2803,11 @@
           confirmedDefaultFollowUpBehavior;
       }
 
+      function effectiveContextUsageVisibility() {
+        return optimisticContextUsageVisibility?.visible ??
+          confirmedShowContextUsage;
+      }
+
       function activeQueuedFollowUps() {
         return queuedFollowUpsBySession.get(activeSessionId()) || [];
       }
@@ -2820,68 +2840,132 @@
         );
       }
 
-      function writeEffectiveFollowUpBehaviorToState(state = getState()) {
+      function writeEffectiveGlobalSettingsToState(state = getState()) {
         if (!state?.settings || typeof state.settings !== "object") return state;
         state.settings.defaultFollowUpBehavior = effectiveDefaultFollowUpBehavior();
+        state.settings.showContextUsage = effectiveContextUsageVisibility();
         state.settings.defaultFollowUpBehaviorRevision =
           confirmedDefaultFollowUpBehaviorRevision;
+        state.settings.contextUsageVisibilityRevision =
+          confirmedContextUsageVisibilityRevision;
         return state;
       }
 
-      function adoptFollowUpBehaviorFromState(state) {
+      function adoptGlobalSettingsFromState(state) {
         const behavior = state?.settings?.defaultFollowUpBehavior;
-        const revision = state?.settings?.defaultFollowUpBehaviorRevision;
+        const behaviorRevision =
+          state?.settings?.defaultFollowUpBehaviorRevision;
+        const showContextUsage = state?.settings?.showContextUsage;
+        const contextRevision =
+          state?.settings?.contextUsageVisibilityRevision;
         if (
           isDefaultFollowUpBehavior(behavior) &&
-          isDecimalRevision(revision) &&
+          isDecimalRevision(behaviorRevision) &&
           compareDecimalRevisions(
-            revision,
+            behaviorRevision,
             confirmedDefaultFollowUpBehaviorRevision,
           ) > 0
         ) {
           confirmedDefaultFollowUpBehavior = behavior;
-          confirmedDefaultFollowUpBehaviorRevision = revision;
-          const optimistic = optimisticDefaultFollowUpBehavior;
+          confirmedDefaultFollowUpBehaviorRevision = behaviorRevision;
+          const behaviorOptimistic = optimisticDefaultFollowUpBehavior;
           if (
-            optimistic &&
+            behaviorOptimistic &&
             compareDecimalRevisions(
-              revision,
-              optimistic.committedRevision ?? optimistic.startedRevision,
+              behaviorRevision,
+              behaviorOptimistic.committedRevision ??
+                behaviorOptimistic.startedRevision,
             ) > 0
           ) {
             optimisticDefaultFollowUpBehavior = null;
           }
         }
-        return writeEffectiveFollowUpBehaviorToState(state);
+        if (
+          typeof showContextUsage === "boolean" &&
+          isDecimalRevision(contextRevision) &&
+          compareDecimalRevisions(
+            contextRevision,
+            confirmedContextUsageVisibilityRevision,
+          ) > 0
+        ) {
+          confirmedShowContextUsage = showContextUsage;
+          confirmedContextUsageVisibilityRevision = contextRevision;
+          const contextOptimistic = optimisticContextUsageVisibility;
+          if (
+            contextOptimistic &&
+            compareDecimalRevisions(
+              contextRevision,
+              contextOptimistic.committedRevision ??
+                contextOptimistic.startedRevision,
+            ) > 0
+          ) {
+            optimisticContextUsageVisibility = null;
+          }
+        }
+        return writeEffectiveGlobalSettingsToState(state);
       }
 
-      function adoptFollowUpBehaviorEvent(payload) {
+      function adoptGlobalSettingsEvent(payload) {
         const behavior = payload?.defaultFollowUpBehavior;
-        const revision = payload?.defaultFollowUpBehaviorRevision;
+        const behaviorRevision = payload?.defaultFollowUpBehaviorRevision;
+        const showContextUsage = payload?.showContextUsage;
+        const contextRevision = payload?.contextUsageVisibilityRevision;
         if (
           !isDefaultFollowUpBehavior(behavior) ||
-          !isDecimalRevision(revision) ||
-          compareDecimalRevisions(
-            revision,
-            confirmedDefaultFollowUpBehaviorRevision,
-          ) <= 0
+          typeof showContextUsage !== "boolean" ||
+          !isDecimalRevision(behaviorRevision) ||
+          !isDecimalRevision(contextRevision)
         ) return false;
-        confirmedDefaultFollowUpBehavior = behavior;
-        confirmedDefaultFollowUpBehaviorRevision = revision;
-        const optimistic = optimisticDefaultFollowUpBehavior;
-        if (optimistic) {
-          if (payload.commandId === optimistic.commandId) {
-            optimistic.committedRevision = revision;
-          } else if (
-            compareDecimalRevisions(
-              revision,
-              optimistic.committedRevision ?? optimistic.startedRevision,
-            ) > 0
-          ) {
-            optimisticDefaultFollowUpBehavior = null;
+        let adopted = false;
+        if (
+          compareDecimalRevisions(
+            behaviorRevision,
+            confirmedDefaultFollowUpBehaviorRevision,
+          ) > 0
+        ) {
+          confirmedDefaultFollowUpBehavior = behavior;
+          confirmedDefaultFollowUpBehaviorRevision = behaviorRevision;
+          const optimistic = optimisticDefaultFollowUpBehavior;
+          if (optimistic) {
+            if (payload.commandId === optimistic.commandId) {
+              optimistic.committedRevision = behaviorRevision;
+            } else if (
+              compareDecimalRevisions(
+                behaviorRevision,
+                optimistic.committedRevision ?? optimistic.startedRevision,
+              ) > 0
+            ) {
+              optimisticDefaultFollowUpBehavior = null;
+            }
           }
+          adopted = true;
         }
-        writeEffectiveFollowUpBehaviorToState();
+        if (
+          compareDecimalRevisions(
+            contextRevision,
+            confirmedContextUsageVisibilityRevision,
+          ) > 0
+        ) {
+          confirmedShowContextUsage = showContextUsage;
+          confirmedContextUsageVisibilityRevision = contextRevision;
+          const contextOptimistic = optimisticContextUsageVisibility;
+          if (contextOptimistic) {
+            if (payload.commandId === contextOptimistic.commandId) {
+              contextOptimistic.committedRevision = contextRevision;
+            } else if (
+              compareDecimalRevisions(
+                contextRevision,
+                contextOptimistic.committedRevision ??
+                  contextOptimistic.startedRevision,
+              ) > 0
+            ) {
+              optimisticContextUsageVisibility = null;
+            }
+          }
+          adopted = true;
+        }
+        if (!adopted) return false;
+        writeEffectiveGlobalSettingsToState();
         return true;
       }
 
@@ -3657,7 +3741,7 @@
         if (!isWireChatBridgeState(state)) return false;
         const previousSettings = getState().settings;
         captureOwnedPendingAttachmentAdditions(causalAttempt, state);
-        adoptFollowUpBehaviorFromState(state);
+        adoptGlobalSettingsFromState(state);
         const reconciledState = causalAttempt
           ? preserveNewerCausalState(state, causalAttempt)
           : state;
@@ -3685,7 +3769,7 @@
         }
         reconcileContextUsageWithState(reconciledState);
         reconcileRuntimeSourceWithState(reconciledState);
-        adoptFollowUpBehaviorFromState(reconciledState);
+        adoptGlobalSettingsFromState(reconciledState);
         setState(reconciledState);
         requireView().syncModelStateSource(reconciledState.modelStateSource);
         recordFullStateProjectionCoverage(reconciledState);
@@ -3765,9 +3849,9 @@
         if (!attempt || !isWireChatBridgeState(state)) return false;
         const previousState = getState();
         const previousSettings = previousState.settings;
-        // Global behavior has its own monotonic revision; Session ownership below
-        // remains scoped to this send so an older terminal cannot prune peers.
-        adoptFollowUpBehaviorFromState(state);
+        // Global settings have their own monotonic revisions; Session ownership
+        // below remains scoped to this send so an older terminal cannot prune peers.
+        adoptGlobalSettingsFromState(state);
         const visible =
           attempt.sessionId === activeSessionId() &&
           state.activeSessionId === activeSessionId();
@@ -3808,6 +3892,7 @@
           reconcileGlobalStateRefreshWithState(reconciledState);
         } else {
           mergeBackgroundState(reconciledState, attempt);
+          writeEffectiveGlobalSettingsToState();
         }
         recordAttemptOwnedActivityRevisions(attempt, state);
         reconcileAttemptProgressFromActivities(getState());
@@ -3815,6 +3900,7 @@
           requireView().render();
         } else {
           renderDefaultFollowUpBehavior();
+          requireView().renderContextUsage();
           requireView().renderSessions();
         }
         return true;
@@ -4249,7 +4335,7 @@
           committedRevision: null,
         };
         optimisticDefaultFollowUpBehavior = optimistic;
-        writeEffectiveFollowUpBehaviorToState();
+        writeEffectiveGlobalSettingsToState();
         renderDefaultFollowUpBehavior();
         syncOperationState();
         let saved = false;
@@ -4261,8 +4347,37 @@
           if (optimisticDefaultFollowUpBehavior === optimistic) {
             optimisticDefaultFollowUpBehavior = null;
           }
-          writeEffectiveFollowUpBehaviorToState();
+          writeEffectiveGlobalSettingsToState();
           renderDefaultFollowUpBehavior();
+          syncOperationState();
+        }
+        return saved;
+      }
+
+      async function saveContextUsageVisibility() {
+        const control = document.getElementById("showContextUsage");
+        if (!control) return false;
+        const optimistic = {
+          visible: Boolean(control.checked),
+          commandId: createCorrelationId("command"),
+          startedRevision: confirmedContextUsageVisibilityRevision,
+          committedRevision: null,
+        };
+        optimisticContextUsageVisibility = optimistic;
+        writeEffectiveGlobalSettingsToState();
+        requireView().renderContextUsage();
+        syncOperationState();
+        let saved = false;
+        try {
+          saved = await runCommand("save_global_settings", {
+            showContextUsage: optimistic.visible,
+          }, { commandId: optimistic.commandId });
+        } finally {
+          if (optimisticContextUsageVisibility === optimistic) {
+            optimisticContextUsageVisibility = null;
+          }
+          writeEffectiveGlobalSettingsToState();
+          requireView().renderContextUsage();
           syncOperationState();
         }
         return saved;
@@ -6091,24 +6206,29 @@
             refreshGlobalState(received.revision);
             return;
           }
-          if (payload.type === "default_follow_up_behavior_changed") {
+          if (payload.type === "global_settings_changed") {
             if (
               !hasOnlyWireKeys(payload, [
                 "type",
                 "defaultFollowUpBehavior",
                 "defaultFollowUpBehaviorRevision",
+                "showContextUsage",
+                "contextUsageVisibilityRevision",
                 "commandId",
                 "bridgeStateRevision",
               ]) ||
               !isDefaultFollowUpBehavior(payload.defaultFollowUpBehavior) ||
               !isDecimalRevision(payload.defaultFollowUpBehaviorRevision) ||
+              typeof payload.showContextUsage !== "boolean" ||
+              !isDecimalRevision(payload.contextUsageVisibilityRevision) ||
               !isWireCorrelationId(payload.commandId)
             ) return;
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
-            const adopted = adoptFollowUpBehaviorEvent(payload);
+            const adopted = adoptGlobalSettingsEvent(payload);
             if (!adopted) return;
             renderDefaultFollowUpBehavior();
+            requireView().renderContextUsage();
             return;
           }
           if (payload.type === "approval_mode_changed") {
@@ -6889,6 +7009,7 @@
         resolveConfirm,
         renderDefaultFollowUpBehavior,
         runCommand,
+        saveContextUsageVisibility,
         saveDefaultFollowUpBehavior,
         setCloseDecisionPending: (pending) => {
           closeDecisionPending = Boolean(pending);

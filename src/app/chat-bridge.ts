@@ -18,11 +18,14 @@ import type {
   ModelHostedWebSearch,
 } from "../model/contracts.js";
 import {
+  compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
+  isContextUsageVisibilityRevision,
   isDefaultFollowUpBehavior,
   isDefaultFollowUpBehaviorRevision,
   ProfileValidationError,
   type ApprovalMode,
+  type ContextUsageVisibilityRevision,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
 } from "../model/profile.js";
@@ -280,7 +283,7 @@ export interface ChatBridge {
   ): void;
   publishSessionStateInvalidation(sessionId: string): void;
   publishGlobalStateInvalidation(): void;
-  publishDefaultFollowUpBehavior(change: GlobalSettingsChange): void;
+  publishGlobalSettings(change: GlobalSettingsChange): void;
   publishProfileSettingsChange(change: ProfileSettingsChange): void;
   close(): Promise<void>;
 }
@@ -440,9 +443,11 @@ type StateChangeSsePayloadBase =
       updatedAt: string;
     }
   | {
-      type: "default_follow_up_behavior_changed";
+      type: "global_settings_changed";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+      showContextUsage: boolean;
+      contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
       commandId: string;
     }
   | {
@@ -758,43 +763,69 @@ export async function createChatBridge(
       !isDefaultFollowUpBehavior(settings.defaultFollowUpBehavior) ||
       !isDefaultFollowUpBehaviorRevision(
         settings.defaultFollowUpBehaviorRevision,
+      ) ||
+      typeof settings.showContextUsage !== "boolean" ||
+      !isContextUsageVisibilityRevision(
+        settings.contextUsageVisibilityRevision,
       )
     ) return state;
-    if (
-      latestGlobalSettingsChange === undefined ||
-      compareDefaultFollowUpBehaviorRevisions(
-        settings.defaultFollowUpBehaviorRevision,
-        latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
-      ) > 0
-    ) {
+    if (latestGlobalSettingsChange === undefined) {
       latestGlobalSettingsChange = {
         defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
         defaultFollowUpBehaviorRevision:
           settings.defaultFollowUpBehaviorRevision,
+        showContextUsage: settings.showContextUsage,
+        contextUsageVisibilityRevision:
+          settings.contextUsageVisibilityRevision,
         commandId: stateSnapshotCommandId,
       };
       latestGlobalSettingsFromState = true;
       return state;
     }
-    if (
-      latestGlobalSettingsChange !== undefined &&
-      compareDefaultFollowUpBehaviorRevisions(
-        latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
-        settings.defaultFollowUpBehaviorRevision,
-      ) > 0
-    ) {
-      return {
-        ...state,
-        settings: {
-          ...settings,
-          defaultFollowUpBehavior:
-            latestGlobalSettingsChange.defaultFollowUpBehavior,
-          defaultFollowUpBehaviorRevision:
-            latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
-        },
+
+    const behaviorFromState = compareDefaultFollowUpBehaviorRevisions(
+      settings.defaultFollowUpBehaviorRevision,
+      latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+    ) > 0;
+    const contextVisibilityFromState = compareContextUsageVisibilityRevisions(
+      settings.contextUsageVisibilityRevision,
+      latestGlobalSettingsChange.contextUsageVisibilityRevision,
+    ) > 0;
+    if (behaviorFromState || contextVisibilityFromState) {
+      latestGlobalSettingsChange = {
+        ...latestGlobalSettingsChange,
+        ...(behaviorFromState
+          ? {
+              defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+              defaultFollowUpBehaviorRevision:
+                settings.defaultFollowUpBehaviorRevision,
+            }
+          : {}),
+        ...(contextVisibilityFromState
+          ? {
+              showContextUsage: settings.showContextUsage,
+              contextUsageVisibilityRevision:
+                settings.contextUsageVisibilityRevision,
+            }
+          : {}),
+        commandId: stateSnapshotCommandId,
       };
+      latestGlobalSettingsFromState = true;
     }
-    return state;
+
+    return {
+      ...state,
+      settings: {
+        ...settings,
+        defaultFollowUpBehavior:
+          latestGlobalSettingsChange.defaultFollowUpBehavior,
+        defaultFollowUpBehaviorRevision:
+          latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+        showContextUsage: latestGlobalSettingsChange.showContextUsage,
+        contextUsageVisibilityRevision:
+          latestGlobalSettingsChange.contextUsageVisibilityRevision,
+      },
+    };
   };
 
   const stateWithActivities = (state: ChatDialogState): ChatDialogState => {
@@ -1241,7 +1272,7 @@ export async function createChatBridge(
         };
         if (latestGlobalSettingsChange) {
           replay({
-            type: "default_follow_up_behavior_changed",
+            type: "global_settings_changed",
             ...latestGlobalSettingsChange,
             bridgeStateRevision: nextStateRevision(),
           });
@@ -2174,29 +2205,59 @@ export async function createChatBridge(
         latestGlobalStateInvalidation = published;
       }
     },
-    publishDefaultFollowUpBehavior: (change) => {
+    publishGlobalSettings: (change) => {
       if (latestGlobalSettingsChange !== undefined) {
-        const revisionOrder = compareDefaultFollowUpBehaviorRevisions(
+        const behaviorOrder = compareDefaultFollowUpBehaviorRevisions(
           change.defaultFollowUpBehaviorRevision,
           latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
         );
+        const contextVisibilityOrder = compareContextUsageVisibilityRevisions(
+          change.contextUsageVisibilityRevision,
+          latestGlobalSettingsChange.contextUsageVisibilityRevision,
+        );
         if (
-          revisionOrder < 0 ||
           (
-            revisionOrder === 0 &&
-            (
-              !latestGlobalSettingsFromState ||
-              change.defaultFollowUpBehavior !==
-                latestGlobalSettingsChange.defaultFollowUpBehavior
+            behaviorOrder === 0 &&
+            change.defaultFollowUpBehavior !==
+              latestGlobalSettingsChange.defaultFollowUpBehavior
+          ) ||
+          (
+            contextVisibilityOrder === 0 &&
+            change.showContextUsage !==
+              latestGlobalSettingsChange.showContextUsage
+          ) ||
+          (
+            behaviorOrder <= 0 &&
+            contextVisibilityOrder <= 0 &&
+            !(
+              latestGlobalSettingsFromState &&
+              behaviorOrder === 0 &&
+              contextVisibilityOrder === 0
             )
           )
         ) return;
+        latestGlobalSettingsChange = {
+          defaultFollowUpBehavior: behaviorOrder > 0
+            ? change.defaultFollowUpBehavior
+            : latestGlobalSettingsChange.defaultFollowUpBehavior,
+          defaultFollowUpBehaviorRevision: behaviorOrder > 0
+            ? change.defaultFollowUpBehaviorRevision
+            : latestGlobalSettingsChange.defaultFollowUpBehaviorRevision,
+          showContextUsage: contextVisibilityOrder > 0
+            ? change.showContextUsage
+            : latestGlobalSettingsChange.showContextUsage,
+          contextUsageVisibilityRevision: contextVisibilityOrder > 0
+            ? change.contextUsageVisibilityRevision
+            : latestGlobalSettingsChange.contextUsageVisibilityRevision,
+          commandId: change.commandId,
+        };
+      } else {
+        latestGlobalSettingsChange = change;
       }
-      latestGlobalSettingsChange = change;
       latestGlobalSettingsFromState = false;
       broadcastStateChange({
-        type: "default_follow_up_behavior_changed",
-        ...change,
+        type: "global_settings_changed",
+        ...latestGlobalSettingsChange,
       });
     },
     publishProfileSettingsChange: (change) => {

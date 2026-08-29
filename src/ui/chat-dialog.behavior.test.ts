@@ -138,7 +138,7 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
       });
       harness.window.dispatchEvent(new harness.window.Event("resize"));
     };
-    setViewportWidth(680);
+    setViewportWidth(1038);
 
     const chat = harness.document.querySelector<HTMLElement>(".chat-pane");
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
@@ -150,12 +150,12 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
     assert.equal(chat?.hasAttribute("inert"), true);
     assert.equal(harness.document.activeElement?.id, "settingsTab");
 
-    setViewportWidth(1040);
+    setViewportWidth(1039);
     assert.equal(chat?.hasAttribute("inert"), false);
     prompt?.focus();
     assert.equal(harness.document.activeElement, prompt);
 
-    setViewportWidth(680);
+    setViewportWidth(1038);
     assert.equal(chat?.hasAttribute("inert"), true);
     assert.equal(harness.document.activeElement?.id, "settingsTab");
 

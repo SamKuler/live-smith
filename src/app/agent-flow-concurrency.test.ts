@@ -291,7 +291,7 @@ test("Session approval changes publish to every open bridge for the same storage
   }
 });
 
-test("global follow-up behavior changes publish to every open bridge for the same storage", async () => {
+test("global settings changes publish to every open bridge for the same storage", async () => {
   const fixture = await openCrossBridgeFixture({
     directoryPrefix: "live-smith-follow-up-notification-",
     firstDependencies: {
@@ -306,7 +306,7 @@ test("global follow-up behavior changes publish to every open bridge for the sam
     const events = await fetch(fixture.second.endpoint("/events"));
     const notification = readSsePayload(
       events,
-      "default_follow_up_behavior_changed",
+      "global_settings_changed",
       (payload) => payload.defaultFollowUpBehaviorRevision === "1",
     );
     const response = await fetch(fixture.first.endpoint("/command"), {
@@ -325,12 +325,15 @@ test("global follow-up behavior changes publish to every open bridge for the sam
     const state = await response.json() as ChatDialogState;
     assert.equal(state.settings.defaultFollowUpBehavior, "steer");
     assert.equal(state.settings.defaultFollowUpBehaviorRevision, "1");
+    assert.equal(state.settings.contextUsageVisibilityRevision, "0");
     assert.deepEqual(withoutBridgeStateRevision(
       await resolvesWithin(notification, "follow-up behavior notification"),
     ), {
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "global-settings-success",
     });
     const secondState = await (await fetch(
@@ -338,6 +341,40 @@ test("global follow-up behavior changes publish to every open bridge for the sam
     )).json() as ChatDialogState;
     assert.equal(secondState.settings.defaultFollowUpBehavior, "steer");
     assert.equal(secondState.settings.defaultFollowUpBehaviorRevision, "1");
+
+    const contextEvents = await fetch(fixture.second.endpoint("/events"));
+    const contextNotification = readSsePayload(
+      contextEvents,
+      "global_settings_changed",
+      (payload) => payload.contextUsageVisibilityRevision === "1",
+    );
+    const contextResponse = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-context-visibility",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        showContextUsage: false,
+      }),
+    });
+    assert.equal(contextResponse.status, 200);
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(contextNotification, "context visibility notification"),
+    ), {
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId: "global-context-visibility",
+    });
+    const contextState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.equal(contextState.settings.showContextUsage, false);
+    assert.equal(contextState.settings.contextUsageVisibilityRevision, "1");
   } finally {
     await fixture.close();
   }
@@ -452,7 +489,7 @@ test("an unknown global settings commit publishes its reconciled value to every 
     const events = await fetch(fixture.second.endpoint("/events"));
     const notification = readSsePayload(
       events,
-      "default_follow_up_behavior_changed",
+      "global_settings_changed",
       (payload) => payload.defaultFollowUpBehaviorRevision === "1",
     );
     const response = await fetch(fixture.first.endpoint("/command"), {
@@ -480,9 +517,11 @@ test("an unknown global settings commit publishes its reconciled value to every 
     assert.deepEqual(withoutBridgeStateRevision(
       await resolvesWithin(notification, "unknown commit notification"),
     ), {
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "global-settings-unknown",
     });
     const peerState = await (await fetch(
@@ -522,13 +561,13 @@ test("unknown global settings readback stays ordered before a later save", async
     const firstEvents = await fetch(fixture.first.endpoint("/events"));
     firstNotification = readSsePayload(
       firstEvents,
-      "default_follow_up_behavior_changed",
+      "global_settings_changed",
       (payload) => payload.defaultFollowUpBehaviorRevision === "1",
     );
     const secondEvents = await fetch(fixture.second.endpoint("/events"));
     secondNotification = readSsePayload(
       secondEvents,
-      "default_follow_up_behavior_changed",
+      "global_settings_changed",
       (payload) => payload.defaultFollowUpBehaviorRevision === "2",
     );
     const firstResponse = fetch(fixture.first.endpoint("/command"), {
@@ -588,9 +627,11 @@ test("unknown global settings readback stays ordered before a later save", async
         await resolvesWithin(firstNotification, "first settings notification"),
       ),
       {
-        type: "default_follow_up_behavior_changed",
+        type: "global_settings_changed",
         defaultFollowUpBehavior: "steer",
         defaultFollowUpBehaviorRevision: "1",
+        showContextUsage: true,
+        contextUsageVisibilityRevision: "0",
         commandId: "global-settings-unknown-first",
       },
     );
@@ -599,9 +640,11 @@ test("unknown global settings readback stays ordered before a later save", async
         await resolvesWithin(secondNotification, "second settings notification"),
       ),
       {
-        type: "default_follow_up_behavior_changed",
+        type: "global_settings_changed",
         defaultFollowUpBehavior: "queue",
         defaultFollowUpBehaviorRevision: "2",
+        showContextUsage: true,
+        contextUsageVisibilityRevision: "0",
         commandId: "global-settings-success-second",
       },
     );

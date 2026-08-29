@@ -700,9 +700,11 @@ for imported files, so a failed later step may leave an unused project copy.
 ### Write ownership and Profile revisions
 
 Only profile CRUD/activation and the dedicated global-settings command write the
-settings file. The global command owns the default Queue/Steer
-follow-up behavior, is allowed while sends are active, and broadcasts committed
-changes to every open dialog for the same storage directory. Sending,
+settings file. The global command owns the default Queue/Steer follow-up
+behavior and context-usage visibility. It applies exactly one setting per
+transaction, advances only that setting's revision, and is allowed while sends
+are active. It broadcasts the complete committed global settings to every open
+dialog for the same storage directory. Sending,
 discovering models, and creating/selecting/renaming/deleting sessions do not
 write configuration. Old flattened provider settings and environment variables
 are not configuration sources.
@@ -733,22 +735,22 @@ configuration snapshot or rejects; it cannot silently assemble a request from
 an unseen replacement. Each bridge reconnect-replays its latest invalidation so
 an SSE gap cannot leave a stale model label or Skill catalog usable.
 
-Each follow-up-setting write increments a persisted canonical nonnegative
-decimal-string revision (`"0"` or a positive value without leading zeroes) under
-a process-wide per-storage fence. Increment and comparison operate on decimal
-digits rather than JavaScript numbers, so ordering has no safe-integer ceiling.
+Each global setting has its own persisted canonical nonnegative decimal-string
+revision (`"0"` or a positive value without leading zeroes). A write increments
+only the changed setting under a process-wide per-storage fence. Increment and
+comparison operate on decimal digits rather than JavaScript numbers, so ordering
+has no safe-integer ceiling.
 The same fence covers an unknown-commit readback and publication, so another
 dialog cannot overtake that reconciliation and have its value attributed to the
-wrong command. Each bridge caches the highest revision, overlays older
-full-state snapshots, and replays the cached value when an event stream connects
-or reconnects. Each modal bridge likewise reconnect-replays the latest
-approval-mode patch for every Session, so an SSE gap cannot leave an ABA change
-hidden behind an older full-state cut. The client uses the same length-first,
-then lexicographic total
-order, so an HTTP response serialized before a newer SSE event cannot roll the
-control back. A bridge state snapshot may seed a revision, but a correlated
-event for the same value and revision replaces that synthetic provenance and is
-replayed.
+wrong command. Each bridge caches the highest revision of each setting, overlays
+older fields in full-state snapshots, and replays the merged values when an event
+stream connects or reconnects. Each modal bridge likewise reconnect-replays the
+latest approval-mode patch for every Session, so an SSE gap cannot leave an ABA
+change hidden behind an older full-state cut. The client uses the same
+length-first, then lexicographic total order, so an HTTP response serialized
+before a newer SSE event cannot roll the control back. A bridge state snapshot
+may seed a revision, but a correlated event for the same value and revision
+replaces that synthetic provenance and is replayed.
 
 Session edit-scope patches have their own Session-keyed projection and are also
 replayed on reconnect. A scope command owns only `editScopes` and `updatedAt`;
@@ -780,9 +782,10 @@ retryable instead of leaving an unreachable conversation log.
 
 ### Settings schema compatibility
 
-Settings schema version 5 combines connection Profiles, per-model configuration
-collections, the strict `defaultFollowUpBehavior` value `queue | steer`, and a
-canonical nonnegative decimal-string revision. It validates legacy
+Settings schema version 6 combines connection Profiles, per-model configuration
+collections, the strict `defaultFollowUpBehavior` value `queue | steer`, the
+context-usage visibility flag, and an independent canonical nonnegative
+decimal-string revision for each global setting. It validates legacy
 `approvalMode` for compatibility, but runtime authorization never reads that
 field. Subscription model configurations persist reasoning mode and optional
 effort but no unconsumed output-token placeholder; the decoder removes that
@@ -792,12 +795,14 @@ read.
 Persisted settings use adjacent migrations: v1 maps `autoApprove` into v2, v2
 wraps flat Profiles into the nested v3 connection shape, and v3 is
 shape-discriminated before migrating to v4. Version 4's single model becomes
-the default entry in a version-5 model configuration list. A v3 containing both
+the default entry in a version-5 model configuration list. Version 5 migrates to
+version 6 by preserving the follow-up behavior revision and enabling context
+usage at its initial revision. A v3 containing both
 follow-up fields must contain only flat Profiles and preserves its
 behavior/revision; a v3 containing neither must contain only nested Profiles
 and receives Queue at revision `"0"`. Partial fields, mixed Profile shapes, and
 unknown fields fail closed. Reads never rewrite the file; the next authorized
-settings mutation persists version 5. A future version or incomplete adjacent
+settings mutation persists version 6. A future version or incomplete adjacent
 migration chain is reported as settings corruption.
 
 ### Capability projections
@@ -1624,8 +1629,9 @@ reconciliation, only the byte-identical guidance may retry
 with the retained ID; edited Steer text and Queue submission cannot abandon the
 possibly committed receipt. Queue starts another request through the unchanged
 Send contract; its mode is never added to that body. The global-settings command
-accepts only `kind: "save_global_settings"` and
-`defaultFollowUpBehavior: "queue" | "steer"`.
+accepts `kind: "save_global_settings"` plus exactly one of
+`defaultFollowUpBehavior: "queue" | "steer"` or
+`showContextUsage: boolean`.
 Session, Profile, and subscription-auth commands accept only their
 command-specific fields; confirmation and Stop reject body fields they do not
 own. Stop targets the exact send ID in its header. While that send is active it

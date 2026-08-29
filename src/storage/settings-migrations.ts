@@ -1,6 +1,7 @@
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   isApprovalMode,
+  isContextUsageVisibilityRevision,
   isDefaultFollowUpBehavior,
   isDefaultFollowUpBehaviorRevision,
   ProfileValidationError,
@@ -8,6 +9,7 @@ import {
   type AgentSettings,
   type AnthropicDirectApiConnection,
   type ApprovalMode,
+  type ContextUsageVisibilityRevision,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
   type GenerationParameters,
@@ -70,6 +72,14 @@ interface AgentSettingsV4 extends SharedAgentSettings<SavedProfileV4> {
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
 }
 
+/** Schema-v5 multi-model shape. */
+interface AgentSettingsV5 extends SharedAgentSettings<SavedProfile> {
+  schemaVersion: 5;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
@@ -77,6 +87,7 @@ const migrations = new Map<number, SettingsMigration>([
   [2, migrateSettingsV2ToV3],
   [3, migrateSettingsV3ToV4],
   [4, migrateSettingsV4ToV5],
+  [5, migrateSettingsV5ToV6],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -95,7 +106,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV5(migrated);
+  return validateSettingsV6(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -161,7 +172,7 @@ function migrateSettingsV3ToV4(value: unknown): AgentSettingsV4 {
   };
 }
 
-function migrateSettingsV4ToV5(value: unknown): AgentSettings {
+function migrateSettingsV4ToV5(value: unknown): AgentSettingsV5 {
   const settings = validateSettingsV4(value);
   return {
     schemaVersion: 5,
@@ -170,6 +181,21 @@ function migrateSettingsV4ToV5(value: unknown): AgentSettings {
     approvalMode: settings.approvalMode,
     defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
     defaultFollowUpBehaviorRevision: settings.defaultFollowUpBehaviorRevision,
+  };
+}
+
+function migrateSettingsV5ToV6(value: unknown): AgentSettings {
+  const settings = validateSettingsV5(value);
+  return {
+    schemaVersion: 6,
+    activeProfileId: settings.activeProfileId,
+    profiles: settings.profiles,
+    approvalMode: settings.approvalMode,
+    defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision:
+      settings.defaultFollowUpBehaviorRevision,
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
   };
 }
 
@@ -295,7 +321,7 @@ function validateSettingsV4(value: unknown): AgentSettingsV4 {
   };
 }
 
-function validateSettingsV5(value: unknown): AgentSettings {
+function validateSettingsV5(value: unknown): AgentSettingsV5 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 5) throw unsupportedSchemaVersion();
   assertOnlyKeys(
@@ -324,6 +350,51 @@ function validateSettingsV5(value: unknown): AgentSettings {
     approvalMode,
     defaultFollowUpBehavior,
     defaultFollowUpBehaviorRevision,
+  };
+}
+
+function validateSettingsV6(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 6) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+      "showContextUsage",
+      "contextUsageVisibilityRevision",
+    ],
+    "settings",
+  );
+  const shared = validatedSharedSettings(record);
+  const approvalMode = approvalModeValue(record.approvalMode);
+  const defaultFollowUpBehavior = followUpBehaviorValue(
+    record.defaultFollowUpBehavior,
+  );
+  const defaultFollowUpBehaviorRevision = followUpRevisionValue(
+    record.defaultFollowUpBehaviorRevision,
+  );
+  if (typeof record.showContextUsage !== "boolean") {
+    throw new ProfileValidationError(
+      "showContextUsage",
+      "Show context usage must be a boolean.",
+    );
+  }
+  const contextUsageVisibilityRevision = contextUsageRevisionValue(
+    record.contextUsageVisibilityRevision,
+  );
+  return {
+    schemaVersion: 6,
+    ...shared,
+    approvalMode,
+    defaultFollowUpBehavior,
+    defaultFollowUpBehaviorRevision,
+    showContextUsage: record.showContextUsage,
+    contextUsageVisibilityRevision,
   };
 }
 
@@ -602,6 +673,18 @@ function followUpRevisionValue(
     throw new ProfileValidationError(
       "defaultFollowUpBehaviorRevision",
       "Default follow-up behavior revision must be a canonical nonnegative decimal string.",
+    );
+  }
+  return value;
+}
+
+function contextUsageRevisionValue(
+  value: unknown,
+): ContextUsageVisibilityRevision {
+  if (!isContextUsageVisibilityRevision(value)) {
+    throw new ProfileValidationError(
+      "contextUsageVisibilityRevision",
+      "Context usage visibility revision must be a canonical nonnegative decimal string.",
     );
   }
   return value;

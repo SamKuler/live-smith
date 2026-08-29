@@ -946,9 +946,11 @@ test("global follow-up saves and events preserve pending credential-free auth st
     );
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "2",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "other-dialog-save",
     });
     assert.equal(

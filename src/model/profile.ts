@@ -164,8 +164,9 @@ export const MAX_PROFILE_MODEL_COUNT = 2_000;
 export type ApprovalMode = "manual" | "low-risk" | "everything";
 export type DefaultFollowUpBehavior = "queue" | "steer";
 export type DefaultFollowUpBehaviorRevision = string;
+export type ContextUsageVisibilityRevision = string;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 5 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 6 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
@@ -174,6 +175,8 @@ export interface AgentSettings {
   approvalMode: ApprovalMode;
   defaultFollowUpBehavior: DefaultFollowUpBehavior;
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+  showContextUsage: boolean;
+  contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
 }
 
 export class ProfileValidationError extends Error {
@@ -196,6 +199,8 @@ export function freshEmptyAgentSettings(): AgentSettings {
     approvalMode: "manual",
     defaultFollowUpBehavior: "queue",
     defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
   };
 }
 
@@ -212,12 +217,32 @@ export function isDefaultFollowUpBehavior(
 export function isDefaultFollowUpBehaviorRevision(
   value: unknown,
 ): value is DefaultFollowUpBehaviorRevision {
-  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+  return isCanonicalSettingsRevision(value);
+}
+
+export function isContextUsageVisibilityRevision(
+  value: unknown,
+): value is ContextUsageVisibilityRevision {
+  return isCanonicalSettingsRevision(value);
 }
 
 export function compareDefaultFollowUpBehaviorRevisions(
   left: DefaultFollowUpBehaviorRevision,
   right: DefaultFollowUpBehaviorRevision,
+): -1 | 0 | 1 {
+  return compareCanonicalSettingsRevisions(left, right);
+}
+
+export function compareContextUsageVisibilityRevisions(
+  left: ContextUsageVisibilityRevision,
+  right: ContextUsageVisibilityRevision,
+): -1 | 0 | 1 {
+  return compareCanonicalSettingsRevisions(left, right);
+}
+
+function compareCanonicalSettingsRevisions(
+  left: string,
+  right: string,
 ): -1 | 0 | 1 {
   if (left.length !== right.length) return left.length < right.length ? -1 : 1;
   if (left === right) return 0;
@@ -227,6 +252,20 @@ export function compareDefaultFollowUpBehaviorRevisions(
 export function incrementDefaultFollowUpBehaviorRevision(
   revision: DefaultFollowUpBehaviorRevision,
 ): DefaultFollowUpBehaviorRevision {
+  return incrementCanonicalSettingsRevision(revision);
+}
+
+export function incrementContextUsageVisibilityRevision(
+  revision: ContextUsageVisibilityRevision,
+): ContextUsageVisibilityRevision {
+  return incrementCanonicalSettingsRevision(revision);
+}
+
+function isCanonicalSettingsRevision(value: unknown): value is string {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+}
+
+function incrementCanonicalSettingsRevision(revision: string): string {
   const digits = [...revision];
   for (let index = digits.length - 1; index >= 0; index -= 1) {
     if (digits[index] === "9") {

@@ -33,6 +33,9 @@
         --accent: #ff9f1a;
         --accent-soft: rgba(255, 159, 26, 0.12);
         --accent-text: #211503;
+        --composer-control-highlight: rgba(255, 255, 255, 0.055);
+        --focus: #8a8a8a;
+        --focus-soft: rgba(255, 255, 255, 0.07);
         --warn: #ffd166;
         --danger: #ff6e57;
         --trace: #78b9e8;
@@ -359,9 +362,13 @@
         text-align: right;
       }
 
-      .session-continue-button:not(:disabled):hover,
-      .session-continue-button:focus-visible {
+      .session-continue-button:not(:disabled):hover {
         color: #ffc04d;
+        text-decoration: underline;
+      }
+
+      .session-continue-button:not(:disabled):focus-visible {
+        color: var(--text);
         text-decoration: underline;
       }
 
@@ -511,14 +518,16 @@
 
       .chat-pane {
         display: grid;
-        grid-template-rows: 1fr auto auto;
+        grid-template-rows: minmax(0, 1fr) auto auto;
         min-width: 0;
+        overflow: hidden;
         background: var(--bg);
       }
 
       .approval-mode-label {
         display: flex;
         align-items: center;
+        flex: 0 0 auto;
         gap: 6px;
         color: var(--text);
         font-size: 11px;
@@ -526,22 +535,22 @@
       }
 
       .approval-mode-select {
-        width: 104px;
+        max-width: 170px;
       }
 
       .approval-mode-select.is-everything {
         color: var(--danger);
-        border-color: var(--danger);
-        box-shadow: 0 0 0 2px rgba(255, 110, 87, 0.14);
       }
 
       .edit-scope-shell {
+        flex: 0 1 auto;
         min-width: 0;
-        max-width: min(220px, 100%);
+        max-width: 170px;
       }
 
       .composer-select.edit-scope-button {
-        min-width: 104px;
+        width: auto;
+        min-width: 0;
         max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -831,6 +840,11 @@
         text-underline-offset: 2px;
       }
 
+      .markdown-body a:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 1px;
+      }
+
       .timeline-item.user .markdown-body a {
         color: inherit;
       }
@@ -1004,9 +1018,14 @@
         transition: opacity 100ms ease, transform 100ms ease;
       }
 
-      .inline-help:hover,
-      .inline-help:focus-visible {
+      .inline-help:hover {
         border-color: var(--accent);
+        color: var(--text);
+        outline: none;
+      }
+
+      .inline-help:focus-visible {
+        border-color: var(--focus);
         color: var(--text);
         outline: none;
       }
@@ -1020,6 +1039,23 @@
       .conversation-settings-section .inline-help::after {
         top: auto;
         bottom: calc(100% + 7px);
+      }
+
+      .context-usage-setting {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        color: var(--text);
+        text-transform: none;
+        cursor: pointer;
+      }
+
+      .context-usage-setting input {
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        accent-color: var(--accent);
       }
 
       .web-search-query-list,
@@ -1073,7 +1109,7 @@
       }
 
       .web-search-source-list a:focus-visible {
-        outline: 2px solid var(--accent);
+        outline: 2px solid var(--focus);
         outline-offset: 1px;
       }
 
@@ -1237,7 +1273,9 @@
         position: relative;
         display: grid;
         grid-template-columns: minmax(0, 1fr);
+        container: composer / inline-size;
         gap: 0;
+        min-width: 0;
         padding: 9px 12px 10px;
         border-top: 1px solid var(--line);
         background: var(--chrome);
@@ -1310,10 +1348,10 @@
       .composer-toolbar {
         position: relative;
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         align-items: center;
         column-gap: 8px;
-        row-gap: 5px;
+        row-gap: 6px;
         min-width: 0;
         min-height: 42px;
         padding: 5px 7px;
@@ -1323,12 +1361,12 @@
         background: var(--field);
       }
 
-      .composer:focus-within > textarea,
-      .composer:focus-within > .composer-toolbar {
-        border-color: var(--accent);
+      .composer > textarea:focus,
+      .composer > textarea:focus ~ .composer-toolbar {
+        border-color: var(--focus);
       }
 
-      .composer:focus-within > textarea {
+      .composer > textarea:focus {
         border-bottom-color: transparent;
         box-shadow: none;
       }
@@ -1337,22 +1375,24 @@
       .composer-runtime-controls {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 6px;
         min-width: 0;
       }
 
       .composer-live-controls {
-        flex: 0 0 auto;
-        flex-wrap: wrap;
+        flex: 0 1 auto;
+        flex-wrap: nowrap;
         max-width: 100%;
         order: 0;
       }
 
       .composer-runtime-controls {
-        flex: 1 1 270px;
+        flex: 0 1 auto;
+        flex-wrap: nowrap;
+        justify-content: flex-end;
         order: 1;
         width: auto;
-        max-width: 286px;
+        max-width: 100%;
         margin-left: auto;
       }
 
@@ -1366,28 +1406,32 @@
       }
 
       .composer-runtime-field.model {
-        flex: 1 1 104px;
+        flex: 0 1 auto;
+        max-width: 220px;
       }
 
       .composer-runtime-field.reasoning {
-        flex: 0 1 74px;
-        max-width: 82px;
+        flex: 0 1 auto;
+        max-width: 120px;
       }
 
       .composer-select {
         -webkit-appearance: none;
         appearance: none;
+        field-sizing: content;
+        width: auto;
         min-width: 0;
+        max-width: 100%;
         height: 30px;
-        padding: 0 23px 0 9px;
+        padding: 0 22px 0 8px;
         color: var(--text);
-        background-color: var(--pane-2);
+        background-color: transparent;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23c6c6c6' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
         background-repeat: no-repeat;
-        background-position: right 8px center;
+        background-position: right 7px center;
         background-size: 10px 10px;
-        border: 1px solid var(--line-soft);
-        border-radius: 999px;
+        border: 1px solid transparent;
+        border-radius: 7px;
         font-family: inherit;
         font-size: 10px;
         font-weight: 650;
@@ -1395,16 +1439,25 @@
       }
 
       #composerModel {
+        max-width: 220px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
       #composerReasoning {
+        max-width: 120px;
         color: #c59cff;
       }
 
-      .composer-select:hover:not(:disabled) {
-        border-color: #686868;
-        background-color: #454545;
+      button.composer-select:hover:not(:disabled),
+      button.composer-select:active:not(:disabled),
+      select.composer-select:hover:not(:focus):not(:disabled) {
+        background-color: var(--composer-control-highlight);
+      }
+
+      .composer-select:focus {
+        outline: 0;
+        border-color: transparent;
+        box-shadow: none;
       }
 
       .composer-select:disabled {
@@ -1416,11 +1469,11 @@
         position: relative;
         display: grid;
         place-items: center;
-        flex: 0 0 32px;
-        width: 32px;
-        height: 32px;
+        flex: 0 0 24px;
+        width: 24px;
+        height: 24px;
         color: var(--trace);
-        font-size: 8px;
+        font-size: 7px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
         line-height: 1;
@@ -1455,6 +1508,10 @@
         color: var(--quiet);
       }
 
+      .context-usage[hidden] {
+        display: none;
+      }
+
       .context-usage[data-state="unavailable"] .context-usage-meter {
         opacity: 0.72;
         stroke-dasharray: 2 7;
@@ -1470,10 +1527,10 @@
       .primary.composer-send {
         display: grid;
         place-items: center;
-        flex: 0 0 34px;
-        width: 34px;
-        min-width: 34px;
-        height: 34px;
+        flex: 0 0 30px;
+        width: 30px;
+        min-width: 30px;
+        height: 30px;
         padding: 0;
         border-radius: 50%;
         align-self: center;
@@ -1509,20 +1566,34 @@
       }
 
       .attachment-menu-button {
-        width: 30px;
-        height: 30px;
+        width: 26px;
+        height: 26px;
         padding: 0;
         color: var(--text);
-        background: var(--pane-2);
-        border: 1px solid var(--line-soft);
+        background: transparent;
+        border: 1px solid transparent;
         border-radius: 50%;
         font-size: 20px;
         line-height: 1;
       }
 
+      .attachment-menu-button:not(:disabled):hover,
+      .attachment-menu-button:not(:disabled):active {
+        background: var(--composer-control-highlight);
+      }
+
+      .attachment-menu-button:focus-visible {
+        outline: 0;
+      }
+
       .attachment-menu-button[aria-expanded="true"] {
         color: var(--accent);
-        border-color: rgba(255, 165, 0, 0.55);
+        border-color: transparent;
+        background: var(--accent-soft);
+      }
+
+      .attachment-menu-button[aria-expanded="true"]:hover,
+      .attachment-menu-button[aria-expanded="true"]:focus-visible {
         background: var(--accent-soft);
       }
 
@@ -1648,13 +1719,13 @@
       input:focus,
       select:focus {
         outline: 0;
-        border-color: var(--accent);
-        box-shadow: inset 0 0 0 1px var(--accent-soft);
+        border-color: var(--focus);
+        box-shadow: inset 0 0 0 1px var(--focus-soft);
       }
 
       button:focus-visible,
       summary:focus-visible {
-        outline: 1px solid var(--accent);
+        outline: 1px solid var(--focus);
         outline-offset: 2px;
       }
 
@@ -1663,7 +1734,7 @@
       }
 
       .tab-panel:focus-visible {
-        box-shadow: inset 0 2px 0 rgba(120, 185, 232, 0.85);
+        box-shadow: inset 0 2px 0 var(--focus);
       }
 
       button {
@@ -2060,11 +2131,15 @@
         text-decoration: none;
       }
 
-      .subscription-auth-open-link:hover,
-      .subscription-auth-open-link:focus-visible {
+      .subscription-auth-open-link:hover {
         color: #9fd4f7;
         background: rgba(120, 185, 232, 0.12);
         border-color: rgba(120, 185, 232, 0.58);
+      }
+
+      .subscription-auth-open-link:focus-visible {
+        outline: 1px solid var(--focus);
+        outline-offset: 2px;
       }
 
       .subscription-auth-device-error {
@@ -2320,7 +2395,7 @@
       }
 
       .citation-source-list a:focus-visible {
-        outline: 2px solid var(--accent);
+        outline: 2px solid var(--focus);
         outline-offset: 1px;
       }
 
@@ -2998,7 +3073,7 @@
         white-space: pre-wrap;
       }
 
-      @media (max-width: 1015px) {
+      @media (max-width: 1038px) {
         .app.inspector-open main {
           grid-template-columns: 180px minmax(0, 1fr);
         }
@@ -3021,15 +3096,13 @@
         }
       }
 
-      @media (max-width: 520px) {
-        .composer-live-controls,
-        .composer-runtime-controls {
-          flex: 1 1 100%;
-          width: 100%;
-          max-width: none;
-          margin-left: 0;
+      @container composer (max-width: 446px) {
+        .edit-scope-shell {
+          display: none;
         }
+      }
 
+      @media (max-width: 520px) {
         .skill-row[data-skill-source="user"] {
           grid-template-columns: minmax(0, 1fr);
           align-items: stretch;
@@ -3463,6 +3536,10 @@
                   </select>
                   <span id="defaultFollowUpBehaviorHint" class="field-hint" role="status" aria-live="polite">Queue sends the message as a new turn after the current response finishes.</span>
                 </div>
+                <label class="context-usage-setting" for="showContextUsage">
+                  <input id="showContextUsage" name="showContextUsage" type="checkbox" onchange="LiveSmithUI.saveContextUsageVisibility()" />
+                  <span>Show context window</span>
+                </label>
               </section>
             </div>
             </div>

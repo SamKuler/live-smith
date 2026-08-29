@@ -102,6 +102,12 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
+      showContextUsage?: never;
+    }
+  | {
+      kind: "save_global_settings";
+      defaultFollowUpBehavior?: never;
+      showContextUsage: boolean;
     }
   | {
       kind: "set_session_approval_mode";
@@ -782,18 +788,39 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "save_global_settings") {
     assertOnlyInputKeys(
       input,
-      ["kind", "defaultFollowUpBehavior"],
+      ["kind", "defaultFollowUpBehavior", "showContextUsage"],
       `${kind} command`,
     );
-    if (!isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)) {
+    const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
+      input,
+      "defaultFollowUpBehavior",
+    );
+    const hasContextUsage = Object.prototype.hasOwnProperty.call(
+      input,
+      "showContextUsage",
+    );
+    if (hasFollowUpBehavior === hasContextUsage) {
       throw new ChatBridgeRequestValidationError(
-        "defaultFollowUpBehavior must be queue or steer.",
+        "save_global_settings must contain exactly one setting.",
       );
     }
-    return {
-      kind,
-      defaultFollowUpBehavior: input.defaultFollowUpBehavior,
-    };
+    if (hasFollowUpBehavior) {
+      if (!isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)) {
+        throw new ChatBridgeRequestValidationError(
+          "defaultFollowUpBehavior must be queue or steer.",
+        );
+      }
+      return {
+        kind,
+        defaultFollowUpBehavior: input.defaultFollowUpBehavior,
+      };
+    }
+    if (typeof input.showContextUsage !== "boolean") {
+      throw new ChatBridgeRequestValidationError(
+        "showContextUsage must be a boolean.",
+      );
+    }
+    return { kind, showContextUsage: input.showContextUsage };
   }
   if (kind === "save_profile") {
     assertOnlyInputKeys(

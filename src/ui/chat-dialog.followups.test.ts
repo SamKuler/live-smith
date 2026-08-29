@@ -430,9 +430,11 @@ test("a global behavior event from another dialog routes the next follow-up imme
     await Promise.resolve();
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "external-follow-up-setting-1",
     });
     assert.equal(

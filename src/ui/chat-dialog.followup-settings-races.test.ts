@@ -35,9 +35,11 @@ test("a stale non-global command state cannot roll back a newer global behavior 
     await Promise.resolve();
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "external-setting-1",
     });
     assert.equal(selectedBehavior(harness), "steer");
@@ -63,9 +65,11 @@ test("a stale attachment state cannot roll back a newer global behavior event", 
     await Promise.resolve();
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "external-setting-1",
     });
     assert.equal(selectedBehavior(harness), "steer");
@@ -156,17 +160,21 @@ test("a later external revision supersedes an own committed save while its HTTP 
     assert.ok(ownCommandId);
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: ownCommandId,
     });
     assert.equal(selectedBehavior(harness), "steer");
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "2",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "external-setting-2",
     });
     assert.equal(selectedBehavior(harness), "queue");
@@ -176,6 +184,45 @@ test("a later external revision supersedes an own committed save while its HTTP 
     assert.equal(selectedBehavior(harness), "queue");
     assert.equal(harness.errors.length, 0);
   } finally {
+    harness.close();
+  }
+});
+
+test("an unrelated context setting cannot supersede a pending behavior save", async () => {
+  const harness = await createDialogHarness(behaviorState("queue", "0"));
+  let commandReleased = false;
+  try {
+    harness.holdNextCommandResponse();
+    harness.select("#defaultFollowUpBehavior", "steer");
+    await Promise.resolve();
+    assert.equal(selectedBehavior(harness), "steer");
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId: "external-context-setting",
+    });
+    assert.equal(selectedBehavior(harness), "steer");
+
+    const committed = behaviorState("steer", "1");
+    committed.settings.showContextUsage = false;
+    committed.settings.contextUsageVisibilityRevision = "1";
+    harness.setServerState(committed);
+    harness.releaseHeldCommandResponse();
+    commandReleased = true;
+    await harness.settle();
+    assert.equal(selectedBehavior(harness), "steer");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      true,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!commandReleased) harness.releaseHeldCommandResponse();
+    await harness.settle();
     harness.close();
   }
 });
@@ -240,14 +287,75 @@ test("a newer terminal revision supersedes an older optimistic mode", async () =
   }
 });
 
+test("global setting fields merge independently across out-of-order events", async () => {
+  const harness = await createDialogHarness(behaviorState("queue"));
+  try {
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId: "context-first",
+    });
+    assert.equal(selectedBehavior(harness), "queue");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      true,
+    );
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId: "behavior-second",
+    });
+    assert.equal(selectedBehavior(harness), "steer");
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "2",
+      commandId: "context-newer",
+    });
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      false,
+    );
+
+    harness.emitServerEvent({
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      commandId: "delayed-old-context",
+    });
+    assert.equal(selectedBehavior(harness), "steer");
+    assert.equal(
+      harness.document.querySelector<HTMLElement>("#contextUsage")?.hidden,
+      false,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("invalid and stale global behavior revisions are ignored", async () => {
   const harness = await createDialogHarness(behaviorState("steer", "3"));
   try {
     for (const revision of [-1, 1.5, "", "03", "+4", "4.0", "2", "3"]) {
       harness.emitServerEvent({
-        type: "default_follow_up_behavior_changed",
+        type: "global_settings_changed",
         defaultFollowUpBehavior: "queue",
         defaultFollowUpBehaviorRevision: revision,
+        showContextUsage: true,
+        contextUsageVisibilityRevision: "0",
         commandId: `invalid-or-stale-${revision}`,
       });
       assert.equal(selectedBehavior(harness), "steer");
@@ -264,17 +372,21 @@ test("browser reconciliation compares canonical revisions by decimal order", asy
   );
   try {
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "10000000000000000",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "larger-revision",
     });
     assert.equal(selectedBehavior(harness), "steer");
 
     harness.emitServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "9999999999999999",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "lexically-larger-but-stale",
     });
     assert.equal(selectedBehavior(harness), "steer");

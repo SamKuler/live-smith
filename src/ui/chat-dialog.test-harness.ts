@@ -7,6 +7,7 @@ import { URL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 
 import {
+  incrementContextUsageVisibilityRevision,
   incrementDefaultFollowUpBehaviorRevision,
   type ModelAdvancedSettings,
   type GenerationParameters,
@@ -330,11 +331,13 @@ function stateFixture(): ChatBridgeState {
     codexAuth: { status: "signed-out" },
     codexAuthGeneration: 0,
     settings: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       profiles: [
         profileFixture(),
         profileFixture({
@@ -693,7 +696,7 @@ async function createDialogHarness(
     "session_edit_scopes_changed",
     "confirm_request",
     "confirm_resolved",
-    "default_follow_up_behavior_changed",
+    "global_settings_changed",
     "progress",
     "profile_settings_changed",
     "session_event",
@@ -822,14 +825,19 @@ async function createDialogHarness(
       return;
     }
     if (
-      event.type === "default_follow_up_behavior_changed" &&
+      event.type === "global_settings_changed" &&
       ["queue", "steer"].includes(String(event.defaultFollowUpBehavior)) &&
-      typeof event.defaultFollowUpBehaviorRevision === "string"
+      typeof event.defaultFollowUpBehaviorRevision === "string" &&
+      typeof event.showContextUsage === "boolean" &&
+      typeof event.contextUsageVisibilityRevision === "string"
     ) {
       serverState.settings.defaultFollowUpBehavior =
         event.defaultFollowUpBehavior as "queue" | "steer";
       serverState.settings.defaultFollowUpBehaviorRevision =
         event.defaultFollowUpBehaviorRevision;
+      serverState.settings.showContextUsage = event.showContextUsage;
+      serverState.settings.contextUsageVisibilityRevision =
+        event.contextUsageVisibilityRevision;
     }
   };
 
@@ -1314,6 +1322,7 @@ async function createDialogHarness(
                 approvalMode?: "manual" | "low-risk" | "everything";
                 editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
+                showContextUsage?: boolean;
                 profile?: SavedProfile;
                 profileId?: string;
                 model?: string;
@@ -1324,15 +1333,22 @@ async function createDialogHarness(
                 title?: string;
               };
               if (
-                command.kind === "save_global_settings" &&
-                typeof command.defaultFollowUpBehavior === "string"
+                command.kind === "save_global_settings"
               ) {
-                serverState.settings.defaultFollowUpBehavior =
-                  command.defaultFollowUpBehavior;
-                serverState.settings.defaultFollowUpBehaviorRevision =
-                  incrementDefaultFollowUpBehaviorRevision(
-                    serverState.settings.defaultFollowUpBehaviorRevision,
-                  );
+                if (typeof command.defaultFollowUpBehavior === "string") {
+                  serverState.settings.defaultFollowUpBehavior =
+                    command.defaultFollowUpBehavior;
+                  serverState.settings.defaultFollowUpBehaviorRevision =
+                    incrementDefaultFollowUpBehaviorRevision(
+                      serverState.settings.defaultFollowUpBehaviorRevision,
+                    );
+                } else if (typeof command.showContextUsage === "boolean") {
+                  serverState.settings.showContextUsage = command.showContextUsage;
+                  serverState.settings.contextUsageVisibilityRevision =
+                    incrementContextUsageVisibilityRevision(
+                      serverState.settings.contextUsageVisibilityRevision,
+                    );
+                }
               } else if (
                 command.kind === "set_session_approval_mode" &&
                 typeof command.sessionId === "string" &&

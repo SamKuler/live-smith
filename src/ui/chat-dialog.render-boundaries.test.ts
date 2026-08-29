@@ -437,6 +437,7 @@ test("an Approval change does not rewrite unrelated Settings or composer content
       "codexCheckAccountButton",
       "codexLogoutButton",
       "defaultFollowUpBehavior",
+      "showContextUsage",
     ]);
     const unexpectedSettings = settingsRecords.filter((record) =>
       record.type !== "attributes" ||

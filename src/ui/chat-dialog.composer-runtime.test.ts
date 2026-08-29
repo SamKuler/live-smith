@@ -1232,6 +1232,31 @@ test("composer reasoning represents a disabled Profile default as Off", async ()
   }
 });
 
+test("composer reasoning uses a compact default label", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = true;
+  state.runtimeProfile!.selection.reasoning = { mode: "default" };
+  state.runtimeProfile!.capabilities.reasoning = {
+    supported: true,
+    canDisable: true,
+    efforts: ["low", "high"],
+    budgetTokens: false,
+    strategy: "effort",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>(
+      "#composerReasoning",
+    );
+    assert.equal(reasoning?.value, "");
+    assert.equal(reasoning?.selectedOptions[0]?.textContent, "Default");
+    assert.equal(reasoning?.title, "Reasoning · Default");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("authoritative Profile changes refresh a clean Settings form and preserve a dirty Draft visibly", async () => {
   const state = stateFixture();
   const profileA = profileFixture({

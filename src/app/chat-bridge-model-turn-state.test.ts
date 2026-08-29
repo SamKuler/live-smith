@@ -58,9 +58,11 @@ test("chat bridge reconnect snapshots transient model state before replaying its
 
   try {
     await confirmationPending.promise;
-    bridge.publishDefaultFollowUpBehavior({
+    bridge.publishGlobalSettings({
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       commandId: "settings-command",
     });
     bridge.publishSessionApprovalMode(
@@ -71,7 +73,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
     const events = await fetch(endpoint("/events"));
     const publications = await readSsePayloads(events, 4);
     assert.deepEqual(publications.map((payload) => payload.type), [
-      "default_follow_up_behavior_changed",
+      "global_settings_changed",
       "approval_mode_changed",
       "model_turn_state",
       "confirm_request",

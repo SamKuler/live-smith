@@ -6,6 +6,7 @@ import {
   activeSavedProfile,
   cloneAgentSettings,
   freshEmptyAgentSettings,
+  incrementContextUsageVisibilityRevision,
   incrementDefaultFollowUpBehaviorRevision,
   isDefaultFollowUpBehavior,
   validateDraftProfileForSave,
@@ -50,6 +51,16 @@ export interface SaveSavedProfileOptions {
   /** Revision of the normalized Profile snapshot from which editing started. */
   expectedCurrentProfileRevision?: string | null;
 }
+
+export type GlobalSettingsPatch =
+  | {
+      defaultFollowUpBehavior: DefaultFollowUpBehavior;
+      showContextUsage?: never;
+    }
+  | {
+      defaultFollowUpBehavior?: never;
+      showContextUsage: boolean;
+    };
 
 export function savedProfileRevision(profile: SavedProfile): string {
   return createHash("sha256").update(JSON.stringify(profile), "utf8").digest("hex");
@@ -153,20 +164,47 @@ export async function activateSavedProfile(
 
 export async function saveGlobalSettings(
   storageDirectory: string | undefined,
-  input: { defaultFollowUpBehavior: DefaultFollowUpBehavior },
+  input: GlobalSettingsPatch,
 ): Promise<AgentSettings> {
-  if (!isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)) {
+  const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
+    input,
+    "defaultFollowUpBehavior",
+  );
+  const hasContextUsage = Object.prototype.hasOwnProperty.call(
+    input,
+    "showContextUsage",
+  );
+  if (hasFollowUpBehavior === hasContextUsage) {
+    throw new Error("Global settings update must contain exactly one setting.");
+  }
+  if (
+    hasFollowUpBehavior &&
+    !isDefaultFollowUpBehavior(input.defaultFollowUpBehavior)
+  ) {
     throw new Error("Default follow-up behavior must be queue or steer.");
+  }
+  if (hasContextUsage && typeof input.showContextUsage !== "boolean") {
+    throw new Error("Show context usage must be a boolean.");
   }
   return withStorageTransaction(storageDirectory, async () => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
     return persistSettings(storageDirectory, {
       ...settings,
-      defaultFollowUpBehavior: input.defaultFollowUpBehavior,
-      defaultFollowUpBehaviorRevision:
-        incrementDefaultFollowUpBehaviorRevision(
-          settings.defaultFollowUpBehaviorRevision,
-        ),
+      ...(hasFollowUpBehavior
+        ? {
+            defaultFollowUpBehavior: input.defaultFollowUpBehavior!,
+            defaultFollowUpBehaviorRevision:
+              incrementDefaultFollowUpBehaviorRevision(
+                settings.defaultFollowUpBehaviorRevision,
+              ),
+          }
+        : {
+            showContextUsage: input.showContextUsage!,
+            contextUsageVisibilityRevision:
+              incrementContextUsageVisibilityRevision(
+                settings.contextUsageVisibilityRevision,
+              ),
+          }),
     });
   });
 }

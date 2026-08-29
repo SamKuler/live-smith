@@ -417,7 +417,7 @@ never inferred from a model name.
 ### Storage compatibility
 
 The first run contains no Profiles. Schema-version-2 flat Profiles first
-migrate to the nested version-3 `direct-api` shape. Current schema version 5
+migrate to the nested version-3 `direct-api` shape. Current schema version 6
 also reads the other historical development-v3 shape containing flat Profiles
 plus Queue/Steer behavior and a canonical decimal-string revision. Version 3 is
 discriminated before validation: both follow-up fields mean the flat shape;
@@ -426,7 +426,8 @@ shapes, and unknown fields fail closed. Migration preserves API family, mode,
 base URL, key, model, supported parameters, active identity, and any Queue/Steer
 revision; the nested v3 shape receives Queue at revision `"0"`. Version 4's
 single model, parameters, and Advanced settings become the sole model
-configuration and default model in version 5. Reads do not rewrite.
+configuration and default model in version 5. Version 6 adds context-usage
+visibility with its own revision. Reads do not rewrite.
 Historical schema-v3/v4 subscription Profiles may contain the former fixed
 `maxOutputTokens` placeholder. Decoding removes that unconsumed field, and the
 next authorized settings write persists the connection-specific shape.

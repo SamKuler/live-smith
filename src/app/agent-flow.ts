@@ -1182,16 +1182,25 @@ export async function runAgentFlow(
           try {
             const settings = await (
               dependencies.saveGlobalSettings ?? saveGlobalSettings
-            )(storageDirectory, {
-              defaultFollowUpBehavior: commandInput.defaultFollowUpBehavior,
-            });
+            )(
+              storageDirectory,
+              "defaultFollowUpBehavior" in commandInput
+                ? {
+                    defaultFollowUpBehavior:
+                      commandInput.defaultFollowUpBehavior,
+                  }
+                : { showContextUsage: commandInput.showContextUsage },
+            );
             publishGlobalSettingsChange(storageDirectory, {
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
               defaultFollowUpBehaviorRevision:
                 settings.defaultFollowUpBehaviorRevision,
+              showContextUsage: settings.showContextUsage,
+              contextUsageVisibilityRevision:
+                settings.contextUsageVisibilityRevision,
               commandId: commandContext.commandId,
             });
-            status = "Default follow-up behavior saved.";
+            status = "Global settings saved.";
             return buildStateAfterCommandMutation();
           } catch (cause) {
             if (!isStorageCommitOutcomeUnknownError(cause)) throw cause;
@@ -1204,6 +1213,9 @@ export async function runAgentFlow(
                 defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
                 defaultFollowUpBehaviorRevision:
                   settings.defaultFollowUpBehaviorRevision,
+                showContextUsage: settings.showContextUsage,
+                contextUsageVisibilityRevision:
+                  settings.contextUsageVisibilityRevision,
                 commandId: commandContext.commandId,
               });
             } catch {
@@ -1216,7 +1228,7 @@ export async function runAgentFlow(
               // The bridge will require explicit reconciliation when unavailable.
             }
             throw new ChatBridgeCommandOutcomeUnknownError(
-              "Default follow-up behavior storage could not be confirmed.",
+              "Global settings storage could not be confirmed.",
               { cause, authoritativeState },
             );
           }
@@ -2842,7 +2854,7 @@ export async function runAgentFlow(
     unsubscribeGlobalSettings = subscribeGlobalSettingsChanges(
       storageDirectory,
       (change) => {
-        bridge?.publishDefaultFollowUpBehavior(change);
+        bridge?.publishGlobalSettings(change);
       },
     );
     await context.ui.showModalDialog(bridge.url, 1040, 720);

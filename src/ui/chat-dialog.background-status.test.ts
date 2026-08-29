@@ -2580,9 +2580,11 @@ test("state-change decoders require their event-specific wire fields", async () 
     );
     assert.equal(followUp?.value, "queue");
     harness.emitRawServerEvent({
-      type: "default_follow_up_behavior_changed",
+      type: "global_settings_changed",
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
       bridgeStateRevision: "2",
     });
     assert.equal(followUp?.value, "queue");

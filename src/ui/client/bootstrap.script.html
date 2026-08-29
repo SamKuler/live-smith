@@ -37,7 +37,7 @@
           skillInProgress: false,
         };
         const contextTokenFormatter = new Intl.NumberFormat();
-        const INSPECTOR_DRAWER_MAX_WIDTH = 1015;
+        const INSPECTOR_DRAWER_MAX_WIDTH = 1038;
         const editScopeIds = __EDIT_SCOPES__;
         const editScopeLabels = __EDIT_SCOPE_LABELS__;
         const editScopeShortLabels = {
@@ -335,6 +335,10 @@
           const indicator = document.getElementById("contextUsage");
           const value = document.getElementById("contextUsageValue");
           if (!indicator || !value) return;
+          const visible = getState().settings?.showContextUsage !== false;
+          const control = document.getElementById("showContextUsage");
+          if (control && control.checked !== visible) control.checked = visible;
+          if (indicator.hidden !== !visible) indicator.hidden = !visible;
           const usage = bridgeClient.getContextUsage();
           if (!usage) {
             const unavailable = "Context usage unavailable for the active Session.";
@@ -459,7 +463,7 @@
         }
 
         function reasoningLabel(reasoning) {
-          if (!reasoning || reasoning.mode === "default") return "Provider default";
+          if (!reasoning || reasoning.mode === "default") return "Default";
           if (reasoning.mode === "disabled") return "Off";
           if (!reasoning.effort) return "Enabled";
           const labels = {
@@ -541,7 +545,7 @@
             } else if (efforts.length) {
               reasoningRows.push({
                 label: reasoning?.effort
-                  ? "Profile default"
+                  ? "Default"
                   : reasoningLabel(reasoning),
                 value: "",
               });
@@ -1098,9 +1102,7 @@
           },
           event_stream_refresh: {},
           save_global_settings: {
-            busyAriaLabel: "Saving follow-up behavior…",
-            controlId: "defaultFollowUpBehavior",
-            status: "Saving follow-up behavior…",
+            status: "Saving settings…",
           },
           start_codex_login: {
             controlId: "codexSignInButton",
@@ -1284,6 +1286,10 @@
           if (defaultFollowUp.disabled !== sessionSettingDisabled) {
             defaultFollowUp.disabled = sessionSettingDisabled;
           }
+          const showContextUsage = document.getElementById("showContextUsage");
+          if (showContextUsage.disabled !== sessionSettingDisabled) {
+            showContextUsage.disabled = sessionSettingDisabled;
+          }
           attachments.setBusy(operationBusy);
           skillManager.setBusy(skillsBusy);
 
@@ -1357,6 +1363,7 @@
           requestClose,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
+          saveContextUsageVisibility: bridgeClient.saveContextUsageVisibility,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           saveProfile: profileEditor.saveProfile,
           saveSessionModelSelection,
