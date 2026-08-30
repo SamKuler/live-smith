@@ -1,4 +1,7 @@
+import { NetworkProxyError } from "../runtime/network-proxy-error.js";
+
 export function shouldOpenSettingsForAgentError(error: unknown): boolean {
+  if (error instanceof NetworkProxyError) return true;
   const message = error instanceof Error ? error.message : String(error);
   return isConfigurationError(message);
 }
@@ -21,6 +24,6 @@ export function sessionErrorMessage(
 }
 
 function isConfigurationError(message: string): boolean {
-  return /api key|active profile|model profile|profile validation|settings|sign in with chatgpt|codex (?:cli|app server)/i
+  return /api key|active profile|model profile|profile validation|settings|oauth|(?:manual|system) proxy|proxy configuration|sign in (?:to|with) (?:chatgpt|claude|gemini)/i
     .test(message);
 }

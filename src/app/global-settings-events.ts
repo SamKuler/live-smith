@@ -2,6 +2,8 @@ import type {
   ContextUsageVisibilityRevision,
   DefaultFollowUpBehavior,
   DefaultFollowUpBehaviorRevision,
+  NetworkProxyRevision,
+  NetworkProxySettings,
 } from "../model/profile.js";
 import { storageScopeKey } from "../storage/scope.js";
 
@@ -10,6 +12,8 @@ export interface GlobalSettingsChange {
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
   showContextUsage: boolean;
   contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+  networkProxy: NetworkProxySettings;
+  networkProxyRevision: NetworkProxyRevision;
   commandId: string;
 }
 

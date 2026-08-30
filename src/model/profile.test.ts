@@ -609,9 +609,9 @@ test("draft discovery preserves the hosted Web Search opt-in", () => {
 
 test("subscription Profiles persist no direct API credentials", () => {
   const saved = validateDraftProfileForSave({
-    id: "codex-subscription",
+    id: "oauth-subscription",
     name: "ChatGPT subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-5.6-sol",
     models: [{
       model: "gpt-5.6-sol",
@@ -621,7 +621,7 @@ test("subscription Profiles persist no direct API credentials", () => {
   });
 
   assert.deepEqual(saved.connection, {
-    kind: "codex-subscription",
+    kind: "oauth-subscription",
     provider: "openai",
   });
   assert.equal(JSON.stringify(saved).includes("apiKey"), false);
@@ -675,9 +675,9 @@ test("reasoning effort validation preserves ultra and rejects unknown values", (
 
 test("subscription Profiles reject direct credentials and unsupported request settings", () => {
   const base = {
-    id: "codex-subscription",
+    id: "oauth-subscription",
     name: "ChatGPT subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-5.6-sol",
     models: [{
       model: "gpt-5.6-sol",
@@ -689,22 +689,21 @@ test("subscription Profiles reject direct credentials and unsupported request se
   for (const connection of [
     { ...base.connection, apiKey: "forbidden" },
     { ...base.connection, baseUrl: "https://api.openai.com/v1" },
-    { kind: "codex-subscription", provider: "anthropic" },
+    { kind: "oauth-subscription", provider: "unsupported" },
   ]) {
     assert.throws(
       () => validateDraftProfileForSave({ ...base, connection }),
-      /does not support property|require.*OpenAI/i,
+      /does not support property|unsupported/i,
     );
   }
 
   for (const modelSettings of [
     { parameters: { reasoning: { mode: "default" }, maxOutputTokens: 8192 } },
-    { parameters: { reasoning: { mode: "disabled" } } },
     { parameters: { reasoning: { mode: "default" }, temperature: 0.2 } },
-    { parameters: { reasoning: { mode: "enabled", budgetTokens: 4096 } } },
     { advanced: { capabilityOverrides: { tools: true } } },
     { advanced: { hostedTools: { webSearch: true } } },
     { advanced: { extraBody: {} } },
+    { advanced: { futureField: true } },
   ]) {
     const [baseModel] = base.models;
     assert(baseModel);
@@ -713,7 +712,21 @@ test("subscription Profiles reject direct credentials and unsupported request se
         ...base,
         models: [{ ...baseModel, ...modelSettings }],
       }),
-      /does not support property|not supported by Codex subscription Profiles|cannot be disabled/,
+      /does not support property|not supported by OAuth subscription Profiles|cannot be disabled/,
     );
   }
+
+  const saved = validateDraftProfileForSave({
+    ...base,
+    models: [{
+      ...base.models[0]!,
+      parameters: {
+        reasoning: { mode: "enabled", budgetTokens: 4096 },
+      },
+    }],
+  });
+  assert.deepEqual(saved.models[0]?.parameters.reasoning, {
+    mode: "enabled",
+    budgetTokens: 4096,
+  });
 });

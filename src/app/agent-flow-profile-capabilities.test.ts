@@ -5,9 +5,9 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type {
-  CodexSubscriptionBackend,
+  OAuthSubscriptionBackend,
   DiscoveredModelInfo,
-  ManagedAuthState,
+  OAuthAuthState,
 } from "../model/provider.js";
 import {
   isDirectApiProfile,
@@ -216,7 +216,7 @@ test("subscription capability loading restores a reopened modal without saving s
   const profile: SavedProfile = {
     id: "subscription-capability-reopen",
     name: "Subscription capability reopen",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "subscription-image",
     models: ["subscription-image", "subscription-audio"].map((model) => ({
       model,
@@ -256,7 +256,7 @@ test("subscription capability loading restores a reopened modal without saving s
       },
     },
   ];
-  const auth: ManagedAuthState = {
+  const auth: OAuthAuthState = {
     status: "signed-in",
     accountLabel: null,
     planType: "pro",
@@ -291,7 +291,7 @@ test("subscription capability loading restores a reopened modal without saving s
         assert.equal(initialResponse.status, 200);
         const initial = await initialResponse.json() as ChatDialogState;
         assert.equal(initial.activeSessionId, session.id);
-        assert.deepEqual(initial.codexAuth, auth);
+        assert.deepEqual(initial.oauthAuth, auth);
         assert.equal(initial.configuredModelsReady, false);
         assert.deepEqual(initial.availableModels, []);
         assert.deepEqual(initial.capabilityEvidence.inputs, unverifiedInputs);
@@ -388,18 +388,14 @@ test("subscription capability loading restores a reopened modal without saving s
   const savedSessions = await listSessions(directory);
 
   for (; opening < 2; opening += 1) {
-    const backend: CodexSubscriptionBackend = {
-      kind: "codex-subscription",
+    const backend: OAuthSubscriptionBackend = {
+      kind: "oauth-subscription",
       async listModels() {
         listModelsCalls += 1;
         return catalog;
       },
       async createToolTurn() {
         throw new Error("Capability restoration must not start a model turn.");
-      },
-      onTerminal() { return () => undefined; },
-      reserveToolTurn() {
-        throw new Error("Capability restoration must not reserve a model turn.");
       },
       async readAuthState() { return auth; },
       async beginLogin() { throw new Error("Sign-in must not be restarted."); },
@@ -410,11 +406,11 @@ test("subscription capability loading restores a reopened modal without saving s
       renderHtml: () => "<html></html>",
       modelBackendManager: {
         async forProfile() { return backend; },
-        async codex() { return backend; },
-        async codexLease() {
+        async oauth() { return backend; },
+        async oauthLease() {
           return { backend, async retire() { return true; } };
         },
-        async invalidateCodex() {},
+        async invalidateOAuth() {},
         async close() { closedManagers += 1; },
       },
     });
@@ -436,12 +432,12 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
     path.join(os.tmpdir(), "live-smith-subscription-capability-save-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const peerOwner = Symbol("peer auth owner");
   const baseProfile: SavedProfile = {
     id: "subscription-capability-save",
     name: "Subscription capability save",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "subscription-model",
     models: [
       {
@@ -489,30 +485,19 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
       inputs: { image: true, audio: true, pdf: false },
     },
   }];
-  const auth: ManagedAuthState = {
+  const auth: OAuthAuthState = {
     status: "signed-in",
     accountLabel: null,
     planType: "pro",
     subscriptionEligible: true,
   };
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels(_profile: DraftProfile) {
       return catalog;
     },
     async createToolTurn() {
       return { content: null, toolCalls: [] };
-    },
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          return { content: null, toolCalls: [] };
-        },
-        async release() {},
-      };
     },
     async readAuthState() {
       return auth;
@@ -529,13 +514,13 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
     async forProfile() {
       return backend;
     },
-    async codex() {
+    async oauth() {
       return backend;
     },
-    async codexLease() {
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
 

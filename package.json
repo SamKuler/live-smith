@@ -25,7 +25,8 @@
     "dompurify": "^3.4.13",
     "fast-xml-parser": "5.10.1",
     "fflate": "0.8.3",
-    "marked": "^18.0.9"
+    "marked": "^18.0.9",
+    "undici": "7.29.0"
   },
   "devDependencies": {
     "@ableton-extensions/cli": "file:extensions-sdk-1/ableton-extensions-cli-1.0.0-beta.1.tgz",

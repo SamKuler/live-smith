@@ -14,6 +14,10 @@ import {
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
   MAX_MODEL_DISCOVERY_PAGE_COUNT,
 } from "../catalog.js";
+import {
+  ModelAuthenticationError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import type {
   AnthropicDirectApiConnection,
   DirectApiModelConfig,
@@ -2098,6 +2102,71 @@ test("Anthropic streaming errors expose only fixed safe context", async () => {
   });
 });
 
+test("Anthropic streaming retries only documented transient error types", async () => {
+  const sentinel = "anthropic-private-stream-error-sentinel";
+  for (const errorType of [
+    "overloaded_error",
+    "rate_limit_error",
+    "api_error",
+    "timeout_error",
+  ]) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(
+        `event: error\ndata: ${JSON.stringify({
+          type: "error",
+          error: { type: errorType, message: sentinel },
+        })}\n\n`,
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ),
+    });
+    const req = request(profile());
+    req.onDelta = () => undefined;
+
+    await assert.rejects(transport.createToolTurn(req), (error: unknown) => {
+      assert.ok(error instanceof ModelRetryableError, errorType);
+      assert.equal(
+        error.message,
+        "anthropic/messages request failed: Anthropic stream reported a retryable failure.",
+      );
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
+      return true;
+    });
+  }
+
+  for (const errorType of [
+    "invalid_request_error",
+    "authentication_error",
+    "billing_error",
+    "permission_error",
+    "not_found_error",
+    "request_too_large",
+    "future_error",
+  ]) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(
+        `event: error\ndata: ${JSON.stringify({
+          type: "error",
+          error: { type: errorType, message: sentinel },
+        })}\n\n`,
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ),
+    });
+    const req = request(profile());
+    req.onDelta = () => undefined;
+
+    await assert.rejects(transport.createToolTurn(req), (error: unknown) => {
+      assert.ok(error instanceof Error, errorType);
+      assert.equal(error instanceof ModelRetryableError, false, errorType);
+      assert.equal(
+        error.message,
+        "anthropic/messages request failed: Anthropic stream error.",
+      );
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
+      return true;
+    });
+  }
+});
+
 test("Anthropic streaming cancels the response body when a delta consumer fails", async () => {
   let cancelled = false;
   const sse = [
@@ -2144,6 +2213,80 @@ test("Anthropic HTTP errors do not trust a plain-text provider message", async (
       return true;
     },
   );
+});
+
+test("Anthropic HTTP classifies bounded provider retry signals", async () => {
+  const sentinel = "anthropic-private-http-error-sentinel";
+  const retryableCases: ReadonlyArray<{
+    status: number;
+    headers?: Readonly<Record<string, string>>;
+    retryAfterMs?: number;
+  }> = [
+    { status: 400, headers: { "x-should-retry": "true" } },
+    { status: 408 },
+    { status: 409 },
+    { status: 429, headers: { "retry-after": "2.5" }, retryAfterMs: 2_500 },
+    { status: 500 },
+    { status: 502 },
+    { status: 503 },
+    { status: 504 },
+    { status: 529 },
+  ];
+
+  for (const retryableCase of retryableCases) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response(sentinel, {
+        status: retryableCase.status,
+        ...(retryableCase.headers ? { headers: retryableCase.headers } : {}),
+      }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelRetryableError, String(retryableCase.status));
+        assert.equal(error.retryAfterMs, retryableCase.retryAfterMs);
+        assert.match(error.message, new RegExp(`Anthropic HTTP ${retryableCase.status}`));
+        assert.doesNotMatch(error.message, new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("Anthropic HTTP keeps authentication and non-retryable responses fatal", async () => {
+  const cases: ReadonlyArray<{
+    status: number;
+    headers?: Readonly<Record<string, string>>;
+    authentication?: boolean;
+  }> = [
+    { status: 401, headers: { "x-should-retry": "true" }, authentication: true },
+    { status: 429 },
+    { status: 429, headers: { "retry-after": "invalid" } },
+    { status: 529, headers: { "x-should-retry": "false" } },
+  ];
+
+  for (const item of cases) {
+    const transport = createAnthropicMessagesTransport({
+      fetchImpl: async () => new Response("private provider message", {
+        status: item.status,
+        ...(item.headers ? { headers: item.headers } : {}),
+      }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.ok(error instanceof Error, String(item.status));
+        assert.equal(error instanceof ModelRetryableError, false, String(item.status));
+        assert.equal(
+          error instanceof ModelAuthenticationError,
+          item.authentication === true,
+          String(item.status),
+        );
+        assert.doesNotMatch(error.message, /private provider message/u);
+        return true;
+      },
+    );
+  }
 });
 
 test("Anthropic Messages errors never expose an echoed request body", async () => {

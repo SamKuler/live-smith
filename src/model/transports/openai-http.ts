@@ -1,7 +1,13 @@
 import { URL } from "node:url";
+import { validateHeaderValue } from "node:http";
 
 import { throwIfAborted } from "../../runtime/host.js";
-import { ModelConnectionError } from "../connection-error.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
+import {
+  ModelAuthenticationError,
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import {
   assertApiKeyCanBeUsedInHttpHeader,
   requireDirectApiConnection,
@@ -14,6 +20,11 @@ import {
   parseServerSentEventData,
 } from "./server-sent-events.js";
 import { readBoundedJsonResponse } from "./response-body.js";
+import {
+  openAIErrorCode,
+  openAIProviderFailure,
+} from "./openai-errors.js";
+import { providerRetryAfterMs } from "./retry-after.js";
 import { cancelStreamBestEffort } from "./stream-cancel.js";
 
 type OpenAIResource = "/models" | "/chat/completions" | "/responses";
@@ -54,11 +65,11 @@ async function requestOpenAIResource(
   const response = await fetchOpenAIResponse(
     fetchImpl,
     openAIEndpoint(connection.baseUrl, resource),
-    openAIRequestInit(connection, options),
+    openAIRequestInit(connection, options, requestHeadersFor(profile)),
     options.signal,
     resource !== "/models",
   );
-  await assertOpenAIResponse(response, options.signal);
+  await assertOpenAIResponse(response, options.signal, resource !== "/models");
   return readBoundedJsonResponse(response, {
     label: "OpenAI-compatible endpoint",
     ...(options.signal ? { signal: options.signal } : {}),
@@ -81,11 +92,11 @@ export async function* streamOpenAIEvents(
       method: "POST",
       body: { ...body, stream: true },
       ...(signal ? { signal } : {}),
-    }),
+    }, requestHeadersFor(profile)),
     signal,
     true,
   );
-  await assertOpenAIResponse(response, signal);
+  await assertOpenAIResponse(response, signal, true);
   if (!response.body) {
     throwIfAborted(signal);
     throw new Error("OpenAI-compatible endpoint returned a streaming response without a body.");
@@ -108,9 +119,6 @@ export async function* streamOpenAIEvents(
     if (!isRecord(event)) {
       throw new Error("OpenAI-compatible endpoint returned a non-object event in its event stream.");
     }
-    if (isOpenAIStreamError(event)) {
-      throw new Error("OpenAI-compatible stream error.");
-    }
     yield event;
   }
 }
@@ -126,13 +134,10 @@ async function fetchOpenAIResponse(
     return await fetchImpl(url, init);
   } catch (cause) {
     throwIfAborted(signal);
+    if (cause instanceof NetworkProxyError) throw cause;
     if (connectionFailure) throw new ModelConnectionError();
     throw cause;
   }
-}
-
-function isOpenAIStreamError(event: Record<string, unknown>): boolean {
-  return "error" in event || event.type === "error";
 }
 
 function openAIEndpoint(baseUrl: string, resource: OpenAIResource): string {
@@ -146,6 +151,7 @@ function openAIEndpoint(baseUrl: string, resource: OpenAIResource): string {
 function openAIRequestInit(
   connection: DirectApiConnection,
   options: OpenAIRequestOptions,
+  requestHeaders: Readonly<Record<string, string>> | undefined,
 ): RequestInit {
   assertApiKeyCanBeUsedInHttpHeader(connection.apiKey);
   const headers: Record<string, string> = {
@@ -153,6 +159,7 @@ function openAIRequestInit(
     "content-type": "application/json",
   };
   if (connection.apiKey) headers.authorization = `Bearer ${connection.apiKey}`;
+  mergeRequestHeaders(headers, requestHeaders);
   const init: RequestInit = {
     method: options.method,
     headers,
@@ -162,14 +169,83 @@ function openAIRequestInit(
   return init;
 }
 
+function mergeRequestHeaders(
+  target: Record<string, string>,
+  values: Readonly<Record<string, string>> | undefined,
+): void {
+  for (const [name, value] of Object.entries(values ?? {})) {
+    try {
+      validateHeaderValue(name, value);
+    } catch {
+      throw new Error("OAuth request headers contain an invalid value.");
+    }
+    target[name] = value;
+  }
+}
+
+function requestHeadersFor(
+  profile: DraftProfile | RuntimeProfileIdentity,
+): Readonly<Record<string, string>> | undefined {
+  return "requestHeaders" in profile ? profile.requestHeaders : undefined;
+}
+
 async function assertOpenAIResponse(
   response: Response,
   signal?: AbortSignal,
+  generationRequest = false,
 ): Promise<void> {
   if (response.ok) return;
-  cancelStreamBestEffort(response.body, signal?.reason);
+  if (response.status === 401) {
+    cancelStreamBestEffort(response.body, signal?.reason);
+    throwIfAborted(signal);
+    throw new ModelAuthenticationError("OpenAI-compatible HTTP 401: request failed");
+  }
+  if (!generationRequest) {
+    cancelStreamBestEffort(response.body, signal?.reason);
+    throwIfAborted(signal);
+    throw new Error(`OpenAI-compatible HTTP ${response.status}: request failed`);
+  }
+  const retryAfterMs = providerRetryAfterMs(response.headers);
+  if (
+    response.status === 408 ||
+    response.status === 409 ||
+    response.status >= 500
+  ) {
+    cancelStreamBestEffort(response.body, signal?.reason);
+    throwIfAborted(signal);
+    throw new ModelRetryableError(
+      `OpenAI-compatible HTTP ${response.status}: retryable failure`,
+      retryAfterMs,
+    );
+  }
+  const payload = await readOpenAIErrorPayload(response, signal);
+  if (response.status === 429) {
+    throw openAIProviderFailure(payload, "OpenAI-compatible endpoint", {
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      unknownIsRetryable: true,
+    });
+  }
+  if (openAIErrorCode(payload) !== undefined) {
+    throw openAIProviderFailure(payload, "OpenAI-compatible endpoint");
+  }
   throwIfAborted(signal);
   throw new Error(`OpenAI-compatible HTTP ${response.status}: request failed`);
+}
+
+async function readOpenAIErrorPayload(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  try {
+    return await readBoundedJsonResponse(response, {
+      label: "OpenAI-compatible error response",
+      maximumBytes: 64 * 1024,
+      ...(signal ? { signal } : {}),
+    });
+  } catch {
+    throwIfAborted(signal);
+    return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

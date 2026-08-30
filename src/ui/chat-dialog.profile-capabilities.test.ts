@@ -367,7 +367,7 @@ test("initial state rejects a malformed model-catalog load receipt", async () =>
 
 test("initial state rejects an invalid subscription auth generation", async () => {
   const state = stateFixture();
-  state.codexAuthGeneration = -1;
+  state.oauthAuthGeneration = -1;
   const harness = await createDialogHarness(state);
   try {
     assert.match(

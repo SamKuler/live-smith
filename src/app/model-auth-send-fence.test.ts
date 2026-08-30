@@ -1,12 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ManagedAuthState } from "../model/provider.js";
+import type { OAuthAuthState } from "../model/provider.js";
 import { createHostAbortController } from "../runtime/host.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
 
+test("OAuth fences isolate pending login and OAuth use by provider", async () => {
+  const storage = `/tmp/live-smith-provider-fence-${Date.now()}`;
+  const openai = modelAuthSendFenceForStorage(storage, "openai");
+  const google = modelAuthSendFenceForStorage(storage, "google");
+  const owner = Symbol("OpenAI login owner");
+  const releaseAuth = await openai.enterAuth(owner);
+  assert.ok(releaseAuth);
+  openai.updateAuthState(owner, "pending", true);
+  releaseAuth();
+
+  assert.equal(openai.hasPendingLogin(), true);
+  assert.equal(google.hasPendingLogin(), false);
+  const releaseGoogle = await google.enterOAuthUse();
+  assert.ok(releaseGoogle);
+  releaseGoogle();
+
+  openai.releaseOwner(owner);
+});
+
 test("simultaneous auth entrants reserve the shared fence atomically", async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const first = fence.enterAuth(Symbol("first"));
   const second = fence.enterAuth(Symbol("second"));
   const releaseFirst = await first;
@@ -25,13 +44,13 @@ test("simultaneous auth entrants reserve the shared fence atomically", async () 
   releaseSecond?.();
 });
 
-test("a simultaneous auth mutation excludes reads and managed subscription uses", async () => {
-  for (const kind of ["read", "managed-use"] as const) {
-    const fence = modelAuthSendFenceForStorage(undefined);
+test("a simultaneous auth mutation excludes reads and OAuth subscription uses", async () => {
+  for (const kind of ["read", "oauth-use"] as const) {
+    const fence = modelAuthSendFenceForStorage(undefined, "openai");
     const auth = fence.enterAuth(Symbol("auth"));
     const pending = kind === "read"
       ? fence.enterRead()
-      : fence.enterManagedUse();
+      : fence.enterOAuthUse();
     const releaseAuth = await auth;
     assert.equal(typeof releaseAuth, "function");
     let settled = false;
@@ -49,11 +68,11 @@ test("a simultaneous auth mutation excludes reads and managed subscription uses"
 });
 
 test("an aborted fence waiter preserves the caller reason", async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const releaseAuth = await fence.enterAuth(Symbol("auth"));
   const controller = createHostAbortController();
   const reason = new Error("stop waiting for shared auth");
-  const pending = fence.enterManagedUse(controller.signal);
+  const pending = fence.enterOAuthUse(controller.signal);
 
   controller.abort(reason);
   await assert.rejects(pending, (error: unknown) => error === reason);
@@ -61,23 +80,23 @@ test("an aborted fence waiter preserves the caller reason", async () => {
 });
 
 test("a definitive failed-login check clears the pending owner", async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("login owner");
   const releaseLogin = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "pending");
   releaseLogin?.();
-  assert.equal(await fence.enterManagedUse(), null);
+  assert.equal(await fence.enterOAuthUse(), null);
 
   const releaseCheck = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "unavailable", true);
   releaseCheck?.();
-  const releaseSend = await fence.enterManagedUse();
+  const releaseSend = await fence.enterOAuthUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
 });
 
 test("only the exact pending owner can serialize close-time retirement", async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
   const peer = Symbol("peer");
   const releaseLogin = await fence.enterAuth(owner);
@@ -107,13 +126,13 @@ test("an authoritative peer read clears a stale terminal pending owner once", as
     ["signed-out", false],
     ["unavailable", true],
   ] as const) {
-    const fence = modelAuthSendFenceForStorage(undefined);
+    const fence = modelAuthSendFenceForStorage(undefined, "openai");
     const owner = Symbol("pending owner");
     const releaseLogin = await fence.enterAuth(owner);
     fence.updateAuthState(owner, "pending");
     releaseLogin?.();
     const generation = fence.authGeneration();
-    const auth = managedAuthState(status, definitive);
+    const auth = oauthAuthState(status, definitive);
 
     const releaseRead = await fence.enterRead();
     assert.equal(fence.hasPendingLogin(), true);
@@ -130,7 +149,7 @@ test("an authoritative peer read clears a stale terminal pending owner once", as
 
     assert.equal(fence.hasPendingLogin(), false);
     assert.equal(fence.authGeneration(), generation + 1);
-    const releaseSend = await fence.enterManagedUse();
+    const releaseSend = await fence.enterOAuthUse();
     assert.equal(typeof releaseSend, "function");
     releaseSend?.();
   }
@@ -141,13 +160,13 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
     ["pending", false],
     ["unavailable", false],
   ] as const) {
-    const fence = modelAuthSendFenceForStorage(undefined);
+    const fence = modelAuthSendFenceForStorage(undefined, "openai");
     const owner = Symbol("pending owner");
     const releaseLogin = await fence.enterAuth(owner);
     fence.updateAuthState(owner, "pending");
     releaseLogin?.();
     const generation = fence.authGeneration();
-    const auth = managedAuthState(status, definitive);
+    const auth = oauthAuthState(status, definitive);
 
     const releaseRead = await fence.enterRead();
     assert.equal(
@@ -158,26 +177,26 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
 
     assert.equal(fence.hasPendingLogin(), true);
     assert.equal(fence.authGeneration(), generation);
-    assert.equal(await fence.enterManagedUse(), null);
+    assert.equal(await fence.enterOAuthUse(), null);
     fence.releaseOwner(owner);
   }
 });
 
 test("the credential-free generation projection remains readable after poison", () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const generation = fence.peekAuthGeneration();
 
-  fence.poison(new Error("managed shutdown failed"));
+  fence.poison(new Error("OAuth backend shutdown failed"));
 
   assert.equal(fence.peekAuthGeneration(), generation);
   assert.throws(
     () => fence.authGeneration(),
-    /shared ChatGPT subscription runtime could not be shut down safely/i,
+    /shared OAuth subscription backend could not be shut down safely/i,
   );
 });
 
 test("pending reconciliation isolates waiter cancellation from its single flight", async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
   const releaseLogin = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "pending");
@@ -190,8 +209,8 @@ test("pending reconciliation isolates waiter cancellation from its single flight
     finishRead = resolve;
   });
   let readCalls = 0;
-  const auth = managedAuthState("signed-in", false);
-  const readAuthState = async (): Promise<ManagedAuthState> => {
+  const auth = oauthAuthState("signed-in", false);
+  const readAuthState = async (): Promise<OAuthAuthState> => {
     readCalls += 1;
     await readGate;
     return auth;
@@ -207,14 +226,14 @@ test("pending reconciliation isolates waiter cancellation from its single flight
   controller.abort(reason);
   await assert.rejects(leader, (error: unknown) => error === reason);
   assert.equal(readCalls, 1);
-  assert.equal(await fence.enterManagedUse(), null);
+  assert.equal(await fence.enterOAuthUse(), null);
 
   finishRead();
   assert.equal(await follower, auth);
   releaseFirstRead();
   releaseSecondRead();
   assert.equal(fence.authGeneration(), generation + 1);
-  const releaseSend = await fence.enterManagedUse();
+  const releaseSend = await fence.enterOAuthUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
 });
@@ -222,7 +241,7 @@ test("pending reconciliation isolates waiter cancellation from its single flight
 test("pending owner cleanup aborts the shared reconciliation before waiting for reads", {
   timeout: 2_000,
 }, async () => {
-  const fence = modelAuthSendFenceForStorage(undefined);
+  const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
   const releaseLogin = await fence.enterAuth(owner);
   fence.updateAuthState(owner, "pending");
@@ -248,7 +267,7 @@ test("pending owner cleanup aborts the shared reconciliation before waiting for 
   const cleanup = fence.enterPendingOwnerCleanup(owner);
   await assert.rejects(
     reconciliation,
-    /ChatGPT sign-in owner closed/,
+    /OAuth sign-in owner closed/,
   );
   assert.equal(operationSignal?.aborted, true);
   releaseRead();
@@ -258,10 +277,10 @@ test("pending owner cleanup aborts the shared reconciliation before waiting for 
   fence.releaseOwner(owner);
 });
 
-function managedAuthState(
-  status: ManagedAuthState["status"],
+function oauthAuthState(
+  status: OAuthAuthState["status"],
   definitive: boolean,
-): ManagedAuthState {
+): OAuthAuthState {
   switch (status) {
     case "signed-in":
       return {

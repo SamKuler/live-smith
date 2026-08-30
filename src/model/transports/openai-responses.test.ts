@@ -11,6 +11,7 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
+import { ModelRetryableError } from "../connection-error.js";
 import type {
   DirectApiModelConfig,
   OpenAIDirectApiConnection,
@@ -1479,9 +1480,46 @@ test("OpenAI Responses streaming errors expose only fixed safe context", async (
     (error: unknown) => {
       assert.equal(
         String(error),
-        "Error: openai/responses request failed: OpenAI-compatible stream error.",
+        "Error: openai/responses request failed: OpenAI Responses failed.",
       );
       assert.doesNotMatch(String(error), new RegExp(sentinel));
+      return true;
+    },
+  );
+});
+
+test("OpenAI Responses waits for the authoritative failed event and preserves retryability", async () => {
+  const sentinel = "responses-private-provisional-error";
+  const sse = [
+    {
+      type: "error",
+      code: "provider_failure",
+      message: sentinel,
+    },
+    {
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: { code: "provider_failure", message: sentinel },
+        output: [],
+      },
+    },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const req = request(profile());
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelRetryableError);
+      assert.match(error.message, /OpenAI Responses.*retryable/u);
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
       return true;
     },
   );
@@ -1747,7 +1785,7 @@ test("OpenAI Responses rejects non-recoverable and malformed tool-call statuses"
 });
 
 test("OpenAI Responses rejects every non-completed tool-call response status", async () => {
-  for (const status of ["failed", "cancelled", "queued", "future_status", undefined]) {
+  for (const status of ["cancelled", "queued", "future_status", undefined]) {
     const transport = createOpenAIResponsesTransport({
       fetchImpl: async () => new Response(JSON.stringify({
         ...(status === undefined ? {} : { status }),
@@ -1770,7 +1808,7 @@ test("OpenAI Responses rejects every non-completed tool-call response status", a
 
 test("OpenAI Responses rejects non-terminal top-level JSON statuses before accepting text", async () => {
   const sentinel = "responses-invalid-status-private-text";
-  for (const status of ["failed", "cancelled", "in_progress", undefined]) {
+  for (const status of ["cancelled", "in_progress", undefined]) {
     const transport = createOpenAIResponsesTransport({
       fetchImpl: async () => new Response(JSON.stringify({
         ...(status === undefined ? {} : { status }),
@@ -1793,6 +1831,27 @@ test("OpenAI Responses rejects non-terminal top-level JSON statuses before accep
       },
     );
   }
+});
+
+test("OpenAI Responses classifies a non-streaming failed response", async () => {
+  const sentinel = "responses-private-non-stream-failure";
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      status: "failed",
+      error: { code: "rate_limit_exceeded", message: sentinel },
+      output: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  await assert.rejects(
+    transport.createToolTurn(request(profile())),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelRetryableError);
+      assert.match(error.message, /OpenAI Responses.*retryable/u);
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
+      return true;
+    },
+  );
 });
 
 test("OpenAI Responses rejects SSE terminal events that contradict response status", async () => {

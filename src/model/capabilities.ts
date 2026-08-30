@@ -39,15 +39,9 @@ export function defaultModelCapabilities(): ModelCapabilities {
   };
 }
 
-function codexSubscriptionFallbackCapabilities(): ModelCapabilities {
-  return {
-    ...defaultModelCapabilities(),
-    streaming: false,
-    temperature: "unsupported",
-  };
-}
-
-function runtimeProvider(source: ModelCapabilitySource): "openai" | "anthropic" {
+function runtimeProvider(
+  source: ModelCapabilitySource,
+): "openai" | "anthropic" | "google" {
   return source.profile.connection.kind === "direct-api"
     ? source.profile.connection.apiFamily
     : source.profile.connection.provider;
@@ -120,6 +114,8 @@ function knownCapabilitiesForModel(
     }
     return undefined;
   }
+
+  if (runtimeProvider(source) === "google") return undefined;
 
   if (/^claude-(?:fable|mythos)-5(?:-|$)/.test(model)) {
     return anthropicAdaptiveThinkingPolicy(
@@ -198,17 +194,16 @@ export function resolveModelCapabilitiesWithEvidence(
   capabilities: ModelCapabilities;
   capabilityEvidence: ModelCapabilityEvidence;
 } {
-  const managedSubscription =
-    source.profile.connection.kind === "codex-subscription";
-  const fallback = managedSubscription
-    ? codexSubscriptionFallbackCapabilities()
-    : defaultModelCapabilities();
-  const known = managedSubscription ? undefined : knownCapabilitiesForModel(source);
+  const fallback = defaultModelCapabilities();
+  const useKnownDirectPolicy = source.profile.connection.kind === "direct-api";
+  const known = useKnownDirectPolicy
+    ? knownCapabilitiesForModel(source)
+    : undefined;
   const withKnown = mergeCapabilities(fallback, known);
   const capabilityEvidence = defaultModelCapabilityEvidence();
-  const knownInputs = managedSubscription
-    ? undefined
-    : knownInputCapabilitiesForModel(source);
+  const knownInputs = useKnownDirectPolicy
+    ? knownInputCapabilitiesForModel(source)
+    : undefined;
   const withKnownInputs = mergeCapabilities(
     withKnown,
     knownInputs,
@@ -297,6 +292,10 @@ function knownInputCapabilitiesForModel(
     return documentedImageModel ? { inputs: { image: true } } : undefined;
   }
 
+  if (runtimeProvider(source) === "google") {
+    return model.startsWith("gemini-") ? { inputs: { image: true } } : undefined;
+  }
+
   const documentedImageModel = [
     "claude-fable-5",
     "claude-mythos-5",
@@ -355,13 +354,13 @@ export function validateGenerationParameters(
   capabilities: ModelCapabilities,
 ): void {
   const { parameters } = source.model;
-  const maxOutputTokens = isDirectRuntimeModelSource(source)
+  const configuredMaxOutputTokens = isDirectRuntimeModelSource(source)
     ? parameters.maxOutputTokens
     : undefined;
   if (
-    maxOutputTokens !== undefined &&
+    configuredMaxOutputTokens !== undefined &&
     capabilities.maxOutputTokens !== undefined &&
-    maxOutputTokens > capabilities.maxOutputTokens
+    configuredMaxOutputTokens > capabilities.maxOutputTokens
   ) {
     throw new ProfileValidationError(
       "parameters.maxOutputTokens",
@@ -416,10 +415,12 @@ export function validateGenerationParameters(
     requested.budgetTokens !== undefined ||
     capabilities.reasoning.strategy === "budget-thinking"
   ) {
+    const maxOutputTokens = configuredMaxOutputTokens ??
+      capabilities.maxOutputTokens;
     if (maxOutputTokens === undefined) {
       throw new ProfileValidationError(
         "parameters.reasoning.budgetTokens",
-        "Thinking token budgets are not supported by this Profile connection.",
+        "Thinking token budgets require a verified maximum output limit.",
       );
     }
     const budget = requested.budgetTokens ??

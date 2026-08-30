@@ -21,6 +21,7 @@ import {
   requestOpenAIJson,
   streamOpenAIEvents,
 } from "./openai-http.js";
+import { openAIProviderFailure } from "./openai-errors.js";
 import {
   buildOpenAIChatMessages,
   listOpenAIModels,
@@ -69,6 +70,9 @@ export function createOpenAIChatTransport(
           ...(request.signal ? { signal: request.signal } : {}),
         },
       );
+      if (isOpenAIChatError(completion)) {
+        throw openAIProviderFailure(completion, "OpenAI Chat Completions");
+      }
       const choice = chatCompletionChoice(completion);
       if (!choice) {
         throw new Error("OpenAI Chat Completions returned no message.");
@@ -173,6 +177,9 @@ async function streamChatTurn(
     request.signal,
   )) {
     throwIfAborted(request.signal);
+    if (isOpenAIChatError(chunk)) {
+      throw openAIProviderFailure(chunk, "OpenAI Chat Completions");
+    }
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     const choice = isRecord(choices[0]) ? choices[0] : undefined;
     let reachedTerminal = false;
@@ -234,6 +241,11 @@ async function streamChatTurn(
     toolCalls,
     providerState: { kind: "openai-chat", message: rawMessage },
   };
+}
+
+function isOpenAIChatError(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return value.type === "error" || isRecord(value.error);
 }
 
 function chatCompletionChoice(value: unknown): Record<string, unknown> | undefined {

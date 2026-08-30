@@ -22,9 +22,13 @@ import {
   isApprovalMode,
   isDefaultFollowUpBehavior,
   isReasoningEffort,
+  normalizeNetworkProxySettings,
+  ProfileValidationError,
   type ApprovalMode,
   type DefaultFollowUpBehavior,
   type DraftProfile,
+  type NetworkProxySettings,
+  type OAuthSubscriptionProvider,
   type ReasoningEffort,
 } from "../model/profile.js";
 
@@ -96,18 +100,26 @@ export type ChatBridgeCommandInput =
     }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
-  | { kind: "start_codex_login" }
-  | { kind: "refresh_codex_account" }
-  | { kind: "logout_codex" }
+  | { kind: "start_oauth_login"; provider: OAuthSubscriptionProvider }
+  | { kind: "refresh_oauth_account"; provider: OAuthSubscriptionProvider }
+  | { kind: "logout_oauth"; provider: OAuthSubscriptionProvider }
   | {
       kind: "save_global_settings";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       showContextUsage?: never;
+      networkProxy?: never;
     }
   | {
       kind: "save_global_settings";
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
+      networkProxy?: never;
+    }
+  | {
+      kind: "save_global_settings";
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy: NetworkProxySettings;
     }
   | {
       kind: "set_session_approval_mode";
@@ -160,9 +172,15 @@ export class ChatBridgePayloadTooLargeError extends Error {
 }
 
 export class ChatBridgeRequestValidationError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly field?: string;
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { field?: string },
+  ) {
     super(message, options);
     this.name = "ChatBridgeRequestValidationError";
+    if (options?.field !== undefined) this.field = options.field;
   }
 }
 
@@ -788,7 +806,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "save_global_settings") {
     assertOnlyInputKeys(
       input,
-      ["kind", "defaultFollowUpBehavior", "showContextUsage"],
+      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy"],
       `${kind} command`,
     );
     const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
@@ -799,7 +817,15 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       input,
       "showContextUsage",
     );
-    if (hasFollowUpBehavior === hasContextUsage) {
+    const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
+      input,
+      "networkProxy",
+    );
+    if (
+      Number(hasFollowUpBehavior) +
+        Number(hasContextUsage) +
+        Number(hasNetworkProxy) !== 1
+    ) {
       throw new ChatBridgeRequestValidationError(
         "save_global_settings must contain exactly one setting.",
       );
@@ -815,12 +841,27 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
         defaultFollowUpBehavior: input.defaultFollowUpBehavior,
       };
     }
-    if (typeof input.showContextUsage !== "boolean") {
+    if (hasContextUsage && typeof input.showContextUsage !== "boolean") {
       throw new ChatBridgeRequestValidationError(
         "showContextUsage must be a boolean.",
       );
     }
-    return { kind, showContextUsage: input.showContextUsage };
+    if (hasContextUsage) {
+      return { kind, showContextUsage: input.showContextUsage as boolean };
+    }
+    try {
+      return {
+        kind,
+        networkProxy: normalizeNetworkProxySettings(input.networkProxy),
+      };
+    } catch (error) {
+      if (error instanceof ProfileValidationError) {
+        throw new ChatBridgeRequestValidationError(error.message, {
+          field: error.field,
+        });
+      }
+      throw error;
+    }
   }
   if (kind === "save_profile") {
     assertOnlyInputKeys(
@@ -932,12 +973,18 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { kind };
   }
   if (
-    kind === "start_codex_login" ||
-    kind === "refresh_codex_account" ||
-    kind === "logout_codex"
+    kind === "start_oauth_login" ||
+    kind === "refresh_oauth_account" ||
+    kind === "logout_oauth"
   ) {
-    assertOnlyInputKeys(input, ["kind"], `${kind} command`);
-    return { kind };
+    assertOnlyInputKeys(input, ["kind", "provider"], `${kind} command`);
+    const provider = input.provider;
+    if (provider !== "openai" && provider !== "anthropic" && provider !== "google") {
+      throw new ChatBridgeRequestValidationError(
+        "provider must be openai, anthropic, or google.",
+      );
+    }
+    return { kind, provider };
   }
   if (
     kind === "select_session" ||

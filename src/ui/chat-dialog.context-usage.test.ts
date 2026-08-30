@@ -239,7 +239,7 @@ test("a background terminal state applies newer context visibility", async () =>
 function subscriptionState() {
   const state = stateFixture();
   const profile = profileFixture({
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     parameters: { reasoning: { mode: "default" } },
     advanced: {},
   });
@@ -250,7 +250,7 @@ function subscriptionState() {
   state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
   state.configuredModels = [{ model: profile.defaultModel, label: profile.defaultModel }];
   state.configuredModelsReady = true;
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -478,8 +478,8 @@ test("a subscription auth generation change clears retained context usage", asyn
     assert.equal(usageValue(harness), "25%");
 
     const changed = cloneState(state);
-    changed.codexAuthGeneration += 1;
-    changed.codexAuth = {
+    changed.oauthAuthGeneration += 1;
+    changed.oauthAuth = {
       status: "signed-in",
       accountLabel: "new-account@example.test",
       planType: "pro",
@@ -529,7 +529,7 @@ test("a Direct runtime retains context usage across subscription auth generation
     assert.equal(usageValue(harness), "25%");
 
     const changed = cloneState(state);
-    changed.codexAuthGeneration += 1;
+    changed.oauthAuthGeneration += 1;
     harness.setServerState(changed);
     const ui = (harness.window as unknown as {
       LiveSmithUI: {

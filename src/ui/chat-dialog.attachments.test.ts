@@ -1407,7 +1407,7 @@ test("unverified attachment guidance separates subscription model reloads from D
 
     const subscriptionState = stateFixture();
     const subscriptionProfile = profileFixture({
-      connection: { kind: "codex-subscription", provider: "openai" },
+      connection: { kind: "oauth-subscription", provider: "openai" },
       parameters: {
         reasoning: { mode: "default" },
       },
@@ -1416,9 +1416,9 @@ test("unverified attachment guidance separates subscription model reloads from D
     subscriptionState.settings.profiles = [subscriptionProfile];
     subscriptionState.settings.activeProfileId = subscriptionProfile.id;
     subscriptionState.modelStateSource = modelStateSourceFixture(subscriptionProfile);
-    subscriptionState.runtimeProfile!.profile.connectionKind = "codex-subscription";
+    subscriptionState.runtimeProfile!.profile.connectionKind = "oauth-subscription";
     subscriptionState.runtimeProfile!.profile.apiMode = null;
-    subscriptionState.codexAuth = {
+    subscriptionState.oauthAuth = {
       status: "signed-in",
       accountLabel: "studio@example.test",
       planType: "pro",
@@ -1441,11 +1441,16 @@ test("unverified attachment guidance separates subscription model reloads from D
       );
       const status = subscriptionHarness.document.querySelector("#status")?.textContent ?? "";
       assert.match(status, entry.removeGuidance);
-      assert.match(status, /load models/i);
-      assert.match(
-        status,
-        new RegExp(`select a model with verified ${entry.capability} input support`, "i"),
-      );
+      if (entry.capability === "image") {
+        assert.match(status, /load models/i);
+        assert.match(
+          status,
+          /select a model with verified image input support/i,
+        );
+      } else {
+        assert.match(status, /OpenAI Chat Completions Profile/i);
+        assert.doesNotMatch(status, /load models/i);
+      }
       assert.doesNotMatch(status, /override/i);
       assert.deepEqual(subscriptionHarness.errors, []);
     } finally {

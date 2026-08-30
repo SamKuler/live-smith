@@ -378,9 +378,9 @@ test("model cache reads an exact legacy slot only while its v2 slot is absent", 
 
 test("subscription fingerprints contain only non-secret connection identity", () => {
   const subscription: SavedProfile = {
-    id: "codex-subscription",
+    id: "oauth-subscription",
     name: "ChatGPT subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-5.6-sol",
     models: [{
       model: "gpt-5.6-sol",
@@ -409,7 +409,7 @@ test("subscription model metadata is modal-scoped rather than persisted across a
   const subscription: SavedProfile = {
     id: "managed-model-cache",
     name: "ChatGPT subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-5.6-sol",
     models: [{
       model: "gpt-5.6-sol",

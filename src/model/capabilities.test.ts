@@ -77,15 +77,17 @@ function profile(overrides: ProfileOverrides = {}): RuntimeModelSource {
   };
 }
 
-function subscriptionProfile(): RuntimeModelSource {
+function subscriptionProfile(
+  provider: "openai" | "anthropic" = "openai",
+): RuntimeModelSource {
   return {
     profile: {
       id: "subscription",
-      name: "ChatGPT subscription",
-      connection: { kind: "codex-subscription", provider: "openai" },
+      name: `${provider} subscription`,
+      connection: { kind: "oauth-subscription", provider },
     },
     model: {
-      model: "gpt-5.6-sol",
+      model: provider === "openai" ? "gpt-5.6-sol" : "claude-sonnet-4-6",
       parameters: {
         reasoning: { mode: "default" },
       },
@@ -198,13 +200,21 @@ test("only the documented GPT-5.6 family receives a known context window", () =>
   }
 });
 
-test("subscription capabilities come from App Server discovery, not model-name hints", () => {
-  const unresolved = resolveModelCapabilitiesWithEvidence(subscriptionProfile());
-  assert.equal(unresolved.capabilities.streaming, false);
-  assert.equal(unresolved.capabilities.temperature, "unsupported");
-  assert.equal(unresolved.capabilities.reasoning.supported, false);
-  assert.equal(unresolved.capabilities.inputs.image, false);
-  assert.equal(unresolved.capabilityEvidence.inputs.image, "unverified");
+test("OAuth subscription capabilities require signed-in provider evidence", () => {
+  for (const provider of ["openai", "anthropic"] as const) {
+    const unresolved = resolveModelCapabilitiesWithEvidence(
+      subscriptionProfile(provider),
+    );
+    assert.equal(unresolved.capabilities.streaming, true, provider);
+    assert.equal(unresolved.capabilities.reasoning.supported, false, provider);
+    assert.equal(unresolved.capabilities.inputs.image, false, provider);
+    assert.equal(unresolved.capabilityEvidence.reasoning, "unverified", provider);
+    assert.equal(
+      unresolved.capabilityEvidence.inputs.image,
+      "unverified",
+      provider,
+    );
+  }
 
   const discovered = resolveModelCapabilitiesWithEvidence(
     subscriptionProfile(),
@@ -569,4 +579,35 @@ test("generation validation enforces explicit and default thinking budget space"
   assert.doesNotThrow(() =>
     validateGenerationParameters(valid, resolveModelCapabilities(valid))
   );
+});
+
+test("OAuth generation accepts catalog-owned budget thinking without persisted output settings", () => {
+  const source: RuntimeModelSource = {
+    profile: {
+      id: "google-subscription",
+      name: "Gemini",
+      connection: { kind: "oauth-subscription", provider: "google" },
+    },
+    model: {
+      model: "gemini-2.5-pro",
+      parameters: {
+        reasoning: { mode: "enabled", effort: "medium" },
+      },
+      advanced: {},
+    },
+  };
+  assert.doesNotThrow(() => validateGenerationParameters(source, {
+    tools: true,
+    streaming: true,
+    temperature: "supported",
+    maxOutputTokens: 65_535,
+    reasoning: {
+      supported: true,
+      canDisable: false,
+      efforts: ["minimal", "low", "medium", "high"],
+      budgetTokens: false,
+      strategy: "budget-thinking",
+    },
+    inputs: { image: true, audio: false, pdf: false },
+  }));
 });

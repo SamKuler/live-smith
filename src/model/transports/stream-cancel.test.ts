@@ -50,7 +50,7 @@ test("non-2xx provider responses do not wait for body cancellation", async (t) =
         "/responses",
         { method: "POST" },
       )),
-      /OpenAI-compatible HTTP 503: request failed/,
+      /OpenAI-compatible HTTP 503: retryable failure/,
     );
     assert.equal(stream.cancelCalls(), 1);
   });

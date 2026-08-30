@@ -63,6 +63,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       defaultFollowUpBehaviorRevision: "1",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "settings-command",
     });
     bridge.publishSessionApprovalMode(

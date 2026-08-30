@@ -4,8 +4,12 @@ import { TextEncoder } from "node:util";
 import test from "node:test";
 
 import { createHostAbortController } from "../../runtime/host.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { runtimeProfileForSavedProfile } from "../../app/model-request.js";
-import { ModelConnectionError } from "../connection-error.js";
+import {
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import type { DirectApiProfile } from "../profile.js";
 import type { ModelTransport, TransportRequest } from "../provider.js";
 import { createAnthropicMessagesTransport } from "./anthropic-messages.js";
@@ -125,8 +129,20 @@ function assertOrdinaryError(
   forbidden?: string,
 ): boolean {
   assert.ok(error instanceof Error);
-  assert.equal(error instanceof ModelConnectionError, false);
+  assert.equal(error instanceof ModelRetryableError, false);
   if (expected) assert.match(error.message, expected);
+  if (forbidden) assert.equal(error.message.includes(forbidden), false);
+  return true;
+}
+
+function assertProviderRetryableError(
+  error: unknown,
+  expected: RegExp,
+  forbidden?: string,
+): boolean {
+  assert.ok(error instanceof ModelRetryableError);
+  assert.equal(error instanceof ModelConnectionError, false);
+  assert.match(error.message, expected);
   if (forbidden) assert.equal(error.message.includes(forbidden), false);
   return true;
 }
@@ -163,6 +179,29 @@ test("transport context preserves safe connection-error identity", async () => {
   );
 });
 
+test("transport context preserves retryable provider identity and delay", async () => {
+  const profile = openAIProfile();
+
+  await assert.rejects(
+    withTransportContext(profile, "request", async () => {
+      throw new ModelRetryableError(
+        "retry private-api-key private-query-token",
+        3_000,
+      );
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelRetryableError);
+      assert.equal(error instanceof ModelConnectionError, false);
+      assert.equal(error.retryAfterMs, 3_000);
+      assert.equal(
+        error.message,
+        "openai/responses request failed: retry [redacted] [redacted]",
+      );
+      return true;
+    },
+  );
+});
+
 test("generation fetch rejection is typed in every Direct mode", async () => {
   const secret = "private-fetch-failure";
   const fetchImpl = (async () => {
@@ -177,6 +216,28 @@ test("generation fetch rejection is typed in every Direct mode", async () => {
         /request failed/i,
         secret,
       ),
+      item.name,
+    );
+  }
+});
+
+test("Direct transports preserve an explicitly safe network proxy diagnosis", async () => {
+  const message =
+    "macOS automatic proxy configuration is not supported; choose Manual proxy instead.";
+  const proxyError = new NetworkProxyError(message);
+  const fetchImpl = (async () => {
+    throw proxyError;
+  }) as typeof fetch;
+
+  for (const item of directCases(fetchImpl)) {
+    await assert.rejects(
+      item.transport.createToolTurn(request(item.profile, { streaming: true })),
+      (error: unknown) => {
+        assert.ok(error instanceof NetworkProxyError);
+        assert.equal(error, proxyError);
+        assert.equal(error.message, message);
+        return true;
+      },
       item.name,
     );
   }
@@ -371,8 +432,8 @@ test("Abort retains exact identity instead of becoming a connection error", asyn
   });
 });
 
-test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
-  await t.test("HTTP status", async () => {
+test("provider failures preserve retryable and fatal protocol semantics", async (t) => {
+  await t.test("HTTP 503 is retryable in every Direct mode", async () => {
     const fetchImpl = (async () => new Response("untrusted private body", {
       status: 503,
       statusText: "private remote reason",
@@ -380,9 +441,9 @@ test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
     for (const item of directCases(fetchImpl)) {
       await assert.rejects(
         item.transport.createToolTurn(request(item.profile)),
-        (error: unknown) => assertOrdinaryError(
+        (error: unknown) => assertProviderRetryableError(
           error,
-          /HTTP 503: request failed/,
+          /HTTP 503/,
           "private remote reason",
         ),
         item.name,
@@ -390,7 +451,7 @@ test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
     }
   });
 
-  await t.test("explicit provider stream error", async () => {
+  await t.test("unknown provider stream errors remain fatal", async () => {
     const fixtures = [
       {
         name: "OpenAI Responses",
@@ -423,7 +484,67 @@ test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
     for (const item of fixtures) {
       await assert.rejects(
         item.transport.createToolTurn(request(item.profile, { streaming: true })),
-        (error: unknown) => assertOrdinaryError(error, /stream|Anthropic request failed/i),
+        (error: unknown) => assertOrdinaryError(error, /failed|request failed/i, "private"),
+        item.name,
+      );
+    }
+  });
+
+  await t.test("known transient provider stream errors are retryable", async () => {
+    const fixtures = [
+      {
+        name: "OpenAI Responses",
+        profile: openAIProfile(),
+        transport: createOpenAIResponsesTransport({
+          fetchImpl: async () => sseResponse([
+            {
+              type: "error",
+              code: "provider_failure",
+              message: "private",
+            },
+            {
+              type: "response.failed",
+              response: {
+                status: "failed",
+                error: { code: "provider_failure", message: "private" },
+                output: [],
+              },
+            },
+          ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")),
+        }),
+      },
+      {
+        name: "OpenAI Chat Completions",
+        profile: openAIProfile("chat-completions"),
+        transport: createOpenAIChatTransport({
+          fetchImpl: async () => sseResponse(
+            `data: ${JSON.stringify({
+              error: { code: "rate_limit_exceeded", message: "private" },
+            })}\n\n`,
+          ),
+        }),
+      },
+      {
+        name: "Anthropic Messages",
+        profile: anthropicProfile(),
+        transport: createAnthropicMessagesTransport({
+          fetchImpl: async () => sseResponse(
+            `data: ${JSON.stringify({
+              type: "error",
+              error: { type: "overloaded_error", message: "private" },
+            })}\n\n`,
+          ),
+        }),
+      },
+    ];
+    for (const item of fixtures) {
+      await assert.rejects(
+        item.transport.createToolTurn(request(item.profile, { streaming: true })),
+        (error: unknown) => assertProviderRetryableError(
+          error,
+          /retryable/i,
+          "private",
+        ),
         item.name,
       );
     }
@@ -454,6 +575,58 @@ test("HTTP, provider, and early DONE failures remain ordinary", async (t) => {
       );
     }
   });
+});
+
+test("OpenAI HTTP errors distinguish transient limits from account limits", async () => {
+  for (const apiMode of ["responses", "chat-completions"] as const) {
+    const transient = apiMode === "responses"
+      ? createOpenAIResponsesTransport({
+          fetchImpl: async () => new Response(JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "private" },
+          }), {
+            status: 429,
+            headers: { "retry-after-ms": "2750" },
+          }),
+        })
+      : createOpenAIChatTransport({
+          fetchImpl: async () => new Response(JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "private" },
+          }), {
+            status: 429,
+            headers: { "retry-after-ms": "2750" },
+          }),
+        });
+    await assert.rejects(
+      transient.createToolTurn(request(openAIProfile(apiMode))),
+      (error: unknown) => {
+        assertProviderRetryableError(error, /retryable/i, "private");
+        assert.equal((error as ModelRetryableError).retryAfterMs, 2_750);
+        return true;
+      },
+      apiMode,
+    );
+
+    const exhausted = apiMode === "responses"
+      ? createOpenAIResponsesTransport({
+          fetchImpl: async () => new Response(JSON.stringify({
+            error: { code: "insufficient_quota", message: "private" },
+          }), { status: 429 }),
+        })
+      : createOpenAIChatTransport({
+          fetchImpl: async () => new Response(JSON.stringify({
+            error: { code: "insufficient_quota", message: "private" },
+          }), { status: 429 }),
+        });
+    await assert.rejects(
+      exhausted.createToolTurn(request(openAIProfile(apiMode))),
+      (error: unknown) => assertOrdinaryError(
+        error,
+        /account usage limit was reached/i,
+        "private",
+      ),
+      apiMode,
+    );
+  }
 });
 
 test("an explicit incompatible streaming Content-Type is ordinary in every Direct mode", async () => {

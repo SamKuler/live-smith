@@ -72,7 +72,7 @@ function runtimeProfile(input: {
     ? {
         id: "profile-attachments",
         name: "Attachments",
-        connection: { kind: "codex-subscription", provider: "openai" },
+        connection: { kind: "oauth-subscription", provider: "openai" },
         defaultModel: "test-model",
         models: [{
           model: "test-model",
@@ -617,19 +617,18 @@ test("current audio context requires compatible saved Chat capability evidence b
     Buffer.from(wavBytes()).toString("base64"),
   );
 
-  const subscriptionResolved = await resolveCurrentAttachmentParts({
-    storageDirectory: directory,
-    sessionId,
-    refs: [stored],
-    runtimeProfile: runtimeProfile({
-      subscription: true,
-      audio: true,
-      audioEvidence: "supported",
+  await assert.rejects(
+    resolveCurrentAttachmentParts({
+      storageDirectory: directory,
+      sessionId,
+      refs: [stored],
+      runtimeProfile: runtimeProfile({
+        subscription: true,
+        audio: true,
+        audioEvidence: "supported",
+      }),
     }),
-  });
-  assert.deepEqual(
-    subscriptionResolved.parts.map((part) => part.type),
-    ["audio"],
+    /cannot read audio attachments/i,
   );
 });
 

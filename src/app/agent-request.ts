@@ -444,7 +444,7 @@ export async function handleAgentRequest(
             ...(waitForReconnectDelay
               ? { waitForDelay: waitForReconnectDelay }
               : {}),
-            request: async ({ markResponseStarted }) => {
+            request: async ({ markResponseStarted, reconnectState }) => {
               const remainingWebSearchEvents = Math.max(
                 0,
                 HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
@@ -474,6 +474,7 @@ export async function handleAgentRequest(
                     remainingWebSearchEvents,
                   ),
                 ),
+                reconnectState,
                 signal: turnSignal,
                 onDelta: async (delta) => {
                   await markResponseStarted();

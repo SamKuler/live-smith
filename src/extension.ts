@@ -14,6 +14,7 @@ import {
   clipSlotSelectionInteractionContext,
   objectInteractionContext,
 } from "./live/context.js";
+import { openOAuthAuthorizationUrl } from "./runtime/oauth-browser.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -96,7 +97,7 @@ async function askAboutObject(
   await runAgentFlow(
     context,
     objectInteractionContext(context, handle),
-    { liveMutationQueue },
+    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }
 
@@ -108,7 +109,7 @@ async function askAboutArrangementSelection(
   await runAgentFlow(
     context,
     arrangementSelectionInteractionContext(context, selection),
-    { liveMutationQueue },
+    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }
 
@@ -120,6 +121,6 @@ async function askAboutClipSlotSelection(
   await runAgentFlow(
     context,
     clipSlotSelectionInteractionContext(context, selection),
-    { liveMutationQueue },
+    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }

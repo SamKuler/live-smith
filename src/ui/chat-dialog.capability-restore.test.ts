@@ -56,7 +56,7 @@ const catalog: DiscoveredModelInfo[] = [{
 function subscriptionState(loaded = false): ChatBridgeState {
   const state = stateFixture();
   const profile = profileFixture({
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "model-a",
     models: [{
       model: "model-a",
@@ -78,7 +78,7 @@ function subscriptionState(loaded = false): ChatBridgeState {
   state.configuredModels = chatConfiguredModels(profile, models);
   state.configuredModelsReady = loaded;
   state.runtimeProfile = chatRuntimeSummary(runtimeProfileForSavedProfile(profile, models));
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in", accountLabel: "studio@example.test",
     planType: "pro", subscriptionEligible: true,
   };
@@ -137,7 +137,7 @@ test("opening a saved subscription restores every configured model's capabilitie
 test("restoring a saved subscription Session loads its reasoning capabilities after the command unlocks", async () => {
   const initial = subscriptionState();
   initial.openSettingsOnLoad = false;
-  initial.codexAuth = { status: "signed-out" };
+  initial.oauthAuth = { status: "signed-out" };
   const historicalSession = {
     id: "session-history",
     title: "Historical subscription Session",
@@ -491,7 +491,7 @@ test(`a late capability error does not replace status for ${foreground}`, async 
 
 test("an explicit same-source capability load updates Settings as well as the composer", async () => {
   const initial = subscriptionState();
-  initial.codexAuth = { status: "signed-out" };
+  initial.oauthAuth = { status: "signed-out" };
   const harness = await createDialogHarness(initial, undefined, {
     serverState: subscriptionState(true),
   });
@@ -515,10 +515,10 @@ test("startup capability loading skips Direct API, ready catalogs and unavailabl
     { status: "unavailable", message: "Account unavailable", definitive: true },
     { status: "pending", verificationUrl: "https://auth.openai.com/codex/device", userCode: "TEST-CODE" },
     { status: "signed-in", planType: "team", subscriptionEligible: false },
-  ] as Array<ChatBridgeState["codexAuth"]>) {
+  ] as Array<ChatBridgeState["oauthAuth"]>) {
     const state = subscriptionState();
-    if (auth === undefined) delete state.codexAuth;
-    else state.codexAuth = auth;
+    if (auth === undefined) delete state.oauthAuth;
+    else state.oauthAuth = auth;
     states.push(state);
   }
   for (const state of states) {
@@ -598,7 +598,7 @@ test("a failed capability transport leaves foreground commands usable without au
 
 test("a delayed same-source capability result restores Settings without reverting peer Session changes", async () => {
   const initial = subscriptionState();
-  initial.codexAuth = { status: "signed-out" };
+  initial.oauthAuth = { status: "signed-out" };
   const harness = await createDialogHarness(initial, undefined, {
     serverState: subscriptionState(true),
   });
@@ -626,7 +626,7 @@ test("a delayed same-source capability result restores Settings without revertin
 
 test("subscription capability loading cannot replace another connection's Draft evidence", async () => {
   const initial = subscriptionState();
-  initial.codexAuth = { status: "signed-out" };
+  initial.oauthAuth = { status: "signed-out" };
   const draft = profileFixture({
     connection: {
       kind: "direct-api", apiFamily: "openai", apiMode: "responses",
@@ -664,7 +664,7 @@ test("subscription capability loading cannot replace another connection's Draft 
 
 test("a late capability response cannot restore evidence from an older ChatGPT auth generation", async () => {
   const initial = subscriptionState();
-  initial.codexAuth = { status: "signed-out" };
+  initial.oauthAuth = { status: "signed-out" };
   const harness = await createDialogHarness(initial);
   harness.holdNextCommand();
   let released = false;
@@ -672,8 +672,8 @@ test("a late capability response cannot restore evidence from an older ChatGPT a
     harness.document.querySelector<HTMLSelectElement>("#composerModel")?.focus();
     await waitForCondition(() => capabilityCalls(harness).length === 1, "Expected the held capability request.");
     const signedOut = subscriptionState();
-    signedOut.codexAuthGeneration = 1;
-    signedOut.codexAuth = { status: "signed-out" };
+    signedOut.oauthAuthGeneration = 1;
+    signedOut.oauthAuth = { status: "signed-out" };
     harness.setServerState(signedOut);
     harness.emitServerEvent({ type: "profile_settings_changed", commandId: "peer-refresh" });
     await waitForCondition(() => harness.calls.some((call) => call.path === "/state"), "Expected a newer authoritative state.");
@@ -684,7 +684,7 @@ test("a late capability response cannot restore evidence from an older ChatGPT a
     await harness.settle();
     assert.deepEqual(renderedCapabilityStatuses(harness), unknownInputs);
     assert.equal(harness.document.querySelector<HTMLSelectElement>("#composerReasoning")?.disabled, true);
-    assert.equal(harness.document.querySelector<HTMLButtonElement>("#codexSignInButton")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#oauthSignInButton")?.hidden, false);
     assert.doesNotMatch(harness.document.querySelector("#modelConfigSelector")?.textContent ?? "", /Model A/);
     assert.deepEqual(harness.errors, []);
   } finally {

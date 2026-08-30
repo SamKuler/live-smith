@@ -20,14 +20,19 @@ import type {
 import {
   compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
+  compareNetworkProxyRevisions,
   isContextUsageVisibilityRevision,
   isDefaultFollowUpBehavior,
   isDefaultFollowUpBehaviorRevision,
+  isNetworkProxyRevision,
+  isNetworkProxySettings,
   ProfileValidationError,
   type ApprovalMode,
   type ContextUsageVisibilityRevision,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
+  type NetworkProxyRevision,
+  type NetworkProxySettings,
 } from "../model/profile.js";
 import { createHostAbortController } from "../runtime/host.js";
 import {
@@ -448,6 +453,8 @@ type StateChangeSsePayloadBase =
       defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
       showContextUsage: boolean;
       contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+      networkProxy: NetworkProxySettings;
+      networkProxyRevision: NetworkProxyRevision;
       commandId: string;
     }
   | {
@@ -767,7 +774,9 @@ export async function createChatBridge(
       typeof settings.showContextUsage !== "boolean" ||
       !isContextUsageVisibilityRevision(
         settings.contextUsageVisibilityRevision,
-      )
+      ) ||
+      !isNetworkProxySettings(settings.networkProxy) ||
+      !isNetworkProxyRevision(settings.networkProxyRevision)
     ) return state;
     if (latestGlobalSettingsChange === undefined) {
       latestGlobalSettingsChange = {
@@ -777,6 +786,8 @@ export async function createChatBridge(
         showContextUsage: settings.showContextUsage,
         contextUsageVisibilityRevision:
           settings.contextUsageVisibilityRevision,
+        networkProxy: settings.networkProxy,
+        networkProxyRevision: settings.networkProxyRevision,
         commandId: stateSnapshotCommandId,
       };
       latestGlobalSettingsFromState = true;
@@ -791,7 +802,15 @@ export async function createChatBridge(
       settings.contextUsageVisibilityRevision,
       latestGlobalSettingsChange.contextUsageVisibilityRevision,
     ) > 0;
-    if (behaviorFromState || contextVisibilityFromState) {
+    const networkProxyFromState = compareNetworkProxyRevisions(
+      settings.networkProxyRevision,
+      latestGlobalSettingsChange.networkProxyRevision,
+    ) > 0;
+    if (
+      behaviorFromState ||
+      contextVisibilityFromState ||
+      networkProxyFromState
+    ) {
       latestGlobalSettingsChange = {
         ...latestGlobalSettingsChange,
         ...(behaviorFromState
@@ -806,6 +825,12 @@ export async function createChatBridge(
               showContextUsage: settings.showContextUsage,
               contextUsageVisibilityRevision:
                 settings.contextUsageVisibilityRevision,
+          }
+          : {}),
+        ...(networkProxyFromState
+          ? {
+              networkProxy: settings.networkProxy,
+              networkProxyRevision: settings.networkProxyRevision,
             }
           : {}),
         commandId: stateSnapshotCommandId,
@@ -824,6 +849,9 @@ export async function createChatBridge(
         showContextUsage: latestGlobalSettingsChange.showContextUsage,
         contextUsageVisibilityRevision:
           latestGlobalSettingsChange.contextUsageVisibilityRevision,
+        networkProxy: latestGlobalSettingsChange.networkProxy,
+        networkProxyRevision:
+          latestGlobalSettingsChange.networkProxyRevision,
       },
     };
   };
@@ -2007,6 +2035,8 @@ export async function createChatBridge(
           : String(reportedError);
       const field = reportedError instanceof ProfileValidationError
         ? reportedError.field
+        : reportedError instanceof ChatBridgeRequestValidationError
+          ? reportedError.field
         : undefined;
       const promptPersistence = requestPath === "/send"
         ? promptPersistenceForSendOutcome(sendPromptPersistence, reportedError)
@@ -2215,6 +2245,10 @@ export async function createChatBridge(
           change.contextUsageVisibilityRevision,
           latestGlobalSettingsChange.contextUsageVisibilityRevision,
         );
+        const networkProxyOrder = compareNetworkProxyRevisions(
+          change.networkProxyRevision,
+          latestGlobalSettingsChange.networkProxyRevision,
+        );
         if (
           (
             behaviorOrder === 0 &&
@@ -2227,12 +2261,23 @@ export async function createChatBridge(
               latestGlobalSettingsChange.showContextUsage
           ) ||
           (
+            networkProxyOrder === 0 &&
+            (
+              change.networkProxy.mode !==
+                latestGlobalSettingsChange.networkProxy.mode ||
+              change.networkProxy.url !==
+                latestGlobalSettingsChange.networkProxy.url
+            )
+          ) ||
+          (
             behaviorOrder <= 0 &&
             contextVisibilityOrder <= 0 &&
+            networkProxyOrder <= 0 &&
             !(
               latestGlobalSettingsFromState &&
               behaviorOrder === 0 &&
-              contextVisibilityOrder === 0
+              contextVisibilityOrder === 0 &&
+              networkProxyOrder === 0
             )
           )
         ) return;
@@ -2249,6 +2294,12 @@ export async function createChatBridge(
           contextUsageVisibilityRevision: contextVisibilityOrder > 0
             ? change.contextUsageVisibilityRevision
             : latestGlobalSettingsChange.contextUsageVisibilityRevision,
+          networkProxy: networkProxyOrder > 0
+            ? change.networkProxy
+            : latestGlobalSettingsChange.networkProxy,
+          networkProxyRevision: networkProxyOrder > 0
+            ? change.networkProxyRevision
+            : latestGlobalSettingsChange.networkProxyRevision,
           commandId: change.commandId,
         };
       } else {

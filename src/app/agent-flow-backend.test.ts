@@ -6,8 +6,8 @@ import test from "node:test";
 
 import type { LiveInteractionContext } from "../live/context.js";
 import type {
-  CodexSubscriptionBackend,
-  ManagedAuthState,
+  OAuthSubscriptionBackend,
+  OAuthAuthState,
   ModelTurnExecutor,
   TransportRequest,
 } from "../model/provider.js";
@@ -15,6 +15,8 @@ import type { DraftProfile, SavedProfile } from "../model/profile.js";
 import { ModelBackendManager } from "../model/backend-registry.js";
 import { acquireSharedModelBackendManager } from "../model/shared-backend-manager.js";
 import { createOpenAIResponsesTransport } from "../model/transports/openai-responses.js";
+import { waitForPromiseWithSignal } from "../runtime/host.js";
+import { NetworkProxyError } from "../runtime/network-proxy-error.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { loadModelCache, saveModelCache } from "../storage/model-cache.js";
 import {
@@ -43,7 +45,7 @@ function bridgeJsonHeaders(): Record<string, string> {
 const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
   name: "ChatGPT subscription",
-  connection: { kind: "codex-subscription", provider: "openai" },
+  connection: { kind: "oauth-subscription", provider: "openai" },
   defaultModel: "gpt-subscription-model",
   models: [{
     model: "gpt-subscription-model",
@@ -73,22 +75,11 @@ const directProfile: SavedProfile = {
   }],
 };
 
-function managedLifecycleDefaults(): Pick<
-  CodexSubscriptionBackend,
-  "onTerminal" | "reserveToolTurn" | "readAuthState" | "beginLogin" | "logout"
+function oauthLifecycleDefaults(): Pick<
+  OAuthSubscriptionBackend,
+  "readAuthState" | "beginLogin" | "logout"
 > {
   return {
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          return { content: null, toolCalls: [] };
-        },
-        async release() {},
-      };
-    },
     async readAuthState() {
       return { status: "signed-out" };
     },
@@ -101,23 +92,29 @@ function managedLifecycleDefaults(): Pick<
   };
 }
 
-test("agent flow shares one Codex backend across auth and discovery, then closes it", async (t) => {
+test("agent flow shares one OAuth backend across auth and discovery, then closes it", {
+  timeout: 5_000,
+}, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-flow-"),
+    path.join(os.tmpdir(), "live-smith-oauth-flow-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
 
-  let auth: ManagedAuthState = { status: "signed-out" };
-  let managerCodexCalls = 0;
+  let auth: OAuthAuthState = { status: "signed-out" };
+  let readinessError: Error | undefined;
+  let managerOAuthCalls = 0;
   let managerProfileCalls = 0;
   let managerCloseCalls = 0;
   const authReadiness: boolean[] = [];
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const openedUrls: string[] = [];
+  const browserLaunchStarted = deferred<string>();
+  const releaseBrowserLaunch = deferred<void>();
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels(profile: DraftProfile) {
-      assert.equal(profile.connection.kind, "codex-subscription");
+      assert.equal(profile.connection.kind, "oauth-subscription");
       return [{
         id: "gpt-subscription-model",
         displayName: "Subscription model",
@@ -134,6 +131,7 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
     },
     async readAuthState(_signal, options) {
       authReadiness.push(options?.readiness === true);
+      if (options?.readiness === true && readinessError) throw readinessError;
       return auth;
     },
     async beginLogin() {
@@ -151,20 +149,20 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
     async close() {},
   };
   const modelBackendManager = {
-    async codex() {
-      managerCodexCalls += 1;
+    async oauth() {
+      managerOAuthCalls += 1;
       return backend;
     },
-    async codexLease() {
-      managerCodexCalls += 1;
+    async oauthLease() {
+      managerOAuthCalls += 1;
       return { backend, async retire() { return true; } };
     },
     async forProfile(profile: DraftProfile | SavedProfile) {
       managerProfileCalls += 1;
-      assert.equal(profile.connection.kind, "codex-subscription");
+      assert.equal(profile.connection.kind, "oauth-subscription");
       return backend;
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {
       managerCloseCalls += 1;
     },
@@ -192,19 +190,28 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         const initial = await (
           await fetch(endpoint("/state"))
         ).json() as ChatDialogState;
-        assert.deepEqual(initial.codexAuth, { status: "signed-out" });
+        assert.deepEqual(initial.oauthAuth, { status: "signed-out" });
 
-        const pending = await command({ kind: "start_codex_login" });
-        assert.ok(pending.codexAuthGeneration > initial.codexAuthGeneration);
-        assert.deepEqual(pending.codexAuth, {
+        const pending = await command({
+          kind: "start_oauth_login",
+          provider: "openai",
+        });
+        assert.ok(pending.oauthAuthGeneration > initial.oauthAuthGeneration);
+        assert.deepEqual(pending.oauthAuth, {
           status: "pending",
           verificationUrl: "https://auth.openai.com/codex/device",
           userCode: "ABCD-EFGH",
         });
         assert.equal(
           pending.status,
-          "Complete ChatGPT sign-in in your browser, then check again.",
+          "Complete ChatGPT sign-in in your browser, then check again. " +
+            "If the browser did not open, use the sign-in link below.",
         );
+        assert.equal(
+          await browserLaunchStarted.promise,
+          "https://auth.openai.com/codex/device",
+        );
+        releaseBrowserLaunch.resolve();
 
         auth = {
           status: "signed-in",
@@ -212,9 +219,12 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
           planType: "pro",
           subscriptionEligible: true,
         };
-        const signedIn = await command({ kind: "refresh_codex_account" });
-        assert.ok(signedIn.codexAuthGeneration > pending.codexAuthGeneration);
-        assert.deepEqual(signedIn.codexAuth, auth);
+        const signedIn = await command({
+          kind: "refresh_oauth_account",
+          provider: "openai",
+        });
+        assert.ok(signedIn.oauthAuthGeneration > pending.oauthAuthGeneration);
+        assert.deepEqual(signedIn.oauthAuth, auth);
 
         const discovered = await command({
           kind: "discover_models",
@@ -236,9 +246,41 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
         );
         assert.equal(saved.runtimeProfile?.capabilities.inputs.image, true);
 
-        const signedOut = await command({ kind: "logout_codex" });
-        assert.ok(signedOut.codexAuthGeneration > signedIn.codexAuthGeneration);
-        assert.deepEqual(signedOut.codexAuth, { status: "signed-out" });
+        const proxyMessage =
+          "macOS automatic proxy configuration is not supported; choose Manual proxy instead.";
+        readinessError = new NetworkProxyError(proxyMessage);
+        const rejectedSend = await fetch(endpoint("/send"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "system-proxy-auth-send-gate",
+          },
+          body: JSON.stringify({
+            prompt: "Must not persist while the proxy route is unavailable",
+            sessionId: saved.activeSessionId,
+          }),
+        });
+        const rejectedBody = await rejectedSend.json() as {
+          error?: string;
+          promptPersistence?: string;
+        };
+        assert.equal(rejectedSend.status, 409);
+        assert.equal(rejectedBody.error, proxyMessage);
+        assert.equal(rejectedBody.promptPersistence, "not_persisted");
+        assert.equal(
+          (await loadSessionEvents(directory, saved.activeSessionId)).some(
+            (event) => event.kind === "user",
+          ),
+          false,
+        );
+        readinessError = undefined;
+
+        const signedOut = await command({
+          kind: "logout_oauth",
+          provider: "openai",
+        });
+        assert.ok(signedOut.oauthAuthGeneration > signedIn.oauthAuthGeneration);
+        assert.deepEqual(signedOut.oauthAuth, { status: "signed-out" });
         assert.deepEqual(signedOut.availableModels, []);
       },
     },
@@ -253,15 +295,21 @@ test("agent flow shares one Codex backend across auth and discovery, then closes
   await runAgentFlow(context as never, interaction, {
     renderHtml: () => "<html></html>",
     modelBackendManager,
+    openOAuthAuthorizationUrl: async (url, signal) => {
+      openedUrls.push(url);
+      browserLaunchStarted.resolve(url);
+      await waitForPromiseWithSignal(releaseBrowserLaunch.promise, signal);
+    },
   });
 
   assert.equal(managerProfileCalls, 1);
-  assert.equal(managerCodexCalls, 5);
+  assert.equal(managerOAuthCalls, 6);
   assert.equal(managerCloseCalls, 1);
-  assert.deepEqual(authReadiness, [false, true, true]);
+  assert.deepEqual(authReadiness, [false, true, true, true]);
+  assert.deepEqual(openedUrls, ["https://auth.openai.com/codex/device"]);
 });
 
-test("a Direct API send does not enter the managed ChatGPT auth fence", async (t) => {
+test("a Direct API send does not enter the OAuth account fence", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-direct-auth-boundary-"),
   );
@@ -269,15 +317,15 @@ test("a Direct API send does not enter the managed ChatGPT auth fence", async (t
   await saveSavedProfile(directory, directProfile);
 
   let enterReadCalls = 0;
-  let enterManagedUseCalls = 0;
+  let enterOAuthUseCalls = 0;
   let authGenerationCalls = 0;
   const authFence: ModelAuthSendFence = {
     async enterRead() {
       enterReadCalls += 1;
       return () => undefined;
     },
-    async enterManagedUse() {
-      enterManagedUseCalls += 1;
+    async enterOAuthUse() {
+      enterOAuthUseCalls += 1;
       return null;
     },
     async enterAuth() {
@@ -317,13 +365,13 @@ test("a Direct API send does not enter the managed ChatGPT auth fence", async (t
     async forProfile() {
       return directBackend;
     },
-    async codex() {
-      throw new Error("Direct API send must not start Codex.");
+    async oauth() {
+      throw new Error("Direct API send must not start OAuth.");
     },
-    async codexLease() {
-      throw new Error("Direct API send must not lease Codex.");
+    async oauthLease() {
+      throw new Error("Direct API send must not lease OAuth.");
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const interaction: LiveInteractionContext = {
@@ -347,7 +395,7 @@ test("a Direct API send does not enter the managed ChatGPT auth fence", async (t
             "X-Live-Smith-Send-Id": "direct-send-with-pending-chatgpt-login",
           },
           body: JSON.stringify({
-            prompt: "Answer without using the managed backend",
+            prompt: "Answer without using the OAuth backend",
             sessionId: initial.activeSessionId,
           }),
         });
@@ -364,7 +412,7 @@ test("a Direct API send does not enter the managed ChatGPT auth fence", async (t
   });
 
   assert.equal(enterReadCalls, 0);
-  assert.equal(enterManagedUseCalls, 0);
+  assert.equal(enterOAuthUseCalls, 0);
   assert.equal(authGenerationCalls, 0);
 });
 
@@ -516,7 +564,7 @@ test("unsaved Direct discovery cannot evict the saved connection across modal re
   } as never, interaction, { renderHtml: () => "<html></html>" });
 });
 
-test("Direct API state, discovery, and send survive managed poison or concurrent auth", {
+test("Direct API state, discovery, and send survive OAuth poison or concurrent auth", {
   timeout: 5_000,
 }, async (t) => {
   for (const mode of ["poisoned", "auth-active"] as const) {
@@ -527,10 +575,10 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
       t.after(() => fs.rm(directory, { recursive: true, force: true }));
       await saveSavedProfile(directory, directProfile);
       const storageKey = await canonicalStorageDirectory(directory);
-      const fence = modelAuthSendFenceForStorage(storageKey);
+      const fence = modelAuthSendFenceForStorage(storageKey, "openai");
       let releasePeerAuth: (() => void) | undefined;
       if (mode === "poisoned") {
-        fence.poison(new Error("injected managed shutdown failure"));
+        fence.poison(new Error("injected OAuth backend shutdown failure"));
       } else {
         releasePeerAuth = await fence.enterAuth(Symbol("peer auth owner")) ??
           undefined;
@@ -630,7 +678,7 @@ test("Direct API state, discovery, and send survive managed poison or concurrent
   }
 });
 
-test("a production Direct flow bypasses a failed shared managed shutdown", {
+test("a production Direct flow bypasses a failed shared OAuth backend shutdown", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
@@ -638,21 +686,18 @@ test("a production Direct flow bypasses a failed shared managed shutdown", {
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, directProfile);
-  const storageKey = await canonicalStorageDirectory(directory);
-  const fence = modelAuthSendFenceForStorage(storageKey);
-  const shutdownError = new Error("managed shutdown was not confirmed");
-  const managedBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const shutdownError = new Error("OAuth backend shutdown was not confirmed");
+  const oauthBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
     async close() { throw shutdownError; },
   };
   const poisonedLease = await acquireSharedModelBackendManager(directory, {
-    startCodexBackend: async () => managedBackend,
-    onPoison: (error) => fence.poison(error),
+    startOAuthBackend: async () => oauthBackend,
   });
-  assert.equal(await poisonedLease.manager.codex(), managedBackend);
+  assert.equal(await poisonedLease.manager.oauth("openai"), oauthBackend);
   await assert.rejects(
     poisonedLease.release(),
     (error: unknown) => error === shutdownError,
@@ -699,7 +744,7 @@ test("a production Direct flow bypasses a failed shared managed shutdown", {
             "X-Live-Smith-Send-Id": "direct-production-poison-send",
           },
           body: JSON.stringify({
-            prompt: "Use Direct API after managed shutdown failure",
+            prompt: "Use Direct API after OAuth backend shutdown failure",
             sessionId: initial.activeSessionId,
           }),
         });
@@ -727,32 +772,32 @@ test("a production Direct flow bypasses a failed shared managed shutdown", {
 
   assert.equal(modelTurns, 1);
   await assert.rejects(
-    acquireSharedModelBackendManager(storageKey),
+    acquireSharedModelBackendManager(directory),
     (error: unknown) => error === shutdownError,
   );
 });
 
-test("production subscription flows lazily share and release one managed lease", {
+test("production subscription flows lazily share and release one OAuth lease", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-lazy-managed-lease-"),
+    path.join(os.tmpdir(), "live-smith-lazy-oauth-lease-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
   let backendStarts = 0;
   let backendCloseCalls = 0;
-  const managedBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const oauthBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
     async close() { backendCloseCalls += 1; },
   };
   const seedLease = await acquireSharedModelBackendManager(directory, {
-    startCodexBackend: async () => {
+    startOAuthBackend: async () => {
       backendStarts += 1;
-      return managedBackend;
+      return oauthBackend;
     },
   });
   t.after(() => seedLease.release().catch(() => undefined));
@@ -812,7 +857,7 @@ test("closing a modal aborts its first subscription state backend acquisition", 
   timeout: 2_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-startup-close-"),
+    path.join(os.tmpdir(), "live-smith-oauth-startup-close-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -820,19 +865,22 @@ test("closing a modal aborts its first subscription state backend acquisition", 
   const startupAborted = deferred<void>();
   let managerCloseCalls = 0;
   const manager = {
-    async codex(signal?: AbortSignal): Promise<CodexSubscriptionBackend> {
+    async oauth(
+      _provider: "openai" | "anthropic" | "google",
+      signal?: AbortSignal,
+    ): Promise<OAuthSubscriptionBackend> {
       assert.ok(signal, "subscription state acquisition requires its read signal");
       startupStarted.resolve();
-      return await new Promise<CodexSubscriptionBackend>((_resolve, reject) => {
+      return await new Promise<OAuthSubscriptionBackend>((_resolve, reject) => {
         signal.addEventListener("abort", () => {
           startupAborted.resolve();
           reject(signal.reason);
         }, { once: true });
       });
     },
-    async codexLease() { throw new Error("unused"); },
+    async oauthLease() { throw new Error("unused"); },
     async forProfile() { throw new Error("unused"); },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() { managerCloseCalls += 1; },
   };
   const interaction: LiveInteractionContext = {
@@ -876,9 +924,9 @@ test("closing a modal cancels a state read waiting for a prior shared close", {
   await saveSavedProfile(directory, subscriptionProfile);
   const closeStarted = deferred<void>();
   const releaseClose = deferred<void>();
-  const oldBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const oldBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
     async close() {
@@ -887,9 +935,9 @@ test("closing a modal cancels a state read waiting for a prior shared close", {
     },
   };
   const oldLease = await acquireSharedModelBackendManager(directory, {
-    startCodexBackend: async () => oldBackend,
+    startOAuthBackend: async () => oldBackend,
   });
-  await oldLease.manager.codex();
+  await oldLease.manager.oauth("openai");
   const oldClosing = oldLease.release();
   await closeStarted.promise;
 
@@ -943,7 +991,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-fence-"),
+    path.join(os.tmpdir(), "live-smith-oauth-fence-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -955,15 +1003,15 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
   const modelStarted = deferred<void>();
   let beginLoginCalls = 0;
   let logoutCalls = 0;
-  let authState: ManagedAuthState = {
+  let authState: OAuthAuthState = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
     subscriptionEligible: true,
   };
-  const authBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const authBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() {
       return [{
         id: subscriptionProfile.defaultModel,
@@ -994,16 +1042,16 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     async close() {},
   };
   const inertManager = {
-    async codex() {
+    async oauth() {
       return authBackend;
     },
-    async codexLease() {
+    async oauthLease() {
       return { backend: authBackend, async retire() { return true; } };
     },
     async forProfile() {
       return authBackend;
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const interaction: LiveInteractionContext = {
@@ -1089,7 +1137,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const blockedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_codex_login" }),
+      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
     });
     assert.equal(blockedAuth.status, 409);
     assert.match(
@@ -1112,7 +1160,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const allowedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_codex_login" }),
+      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
     });
     assert.equal(allowedAuth.status, 200);
     assert.equal(beginLoginCalls, 1);
@@ -1120,7 +1168,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const otherModalAuth = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_codex_login" }),
+      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
     });
     assert.equal(otherModalAuth.status, 409);
     assert.equal(beginLoginCalls, 1);
@@ -1142,7 +1190,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const logout = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_codex" }),
+      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
     });
     assert.equal(logout.status, 200);
     assert.equal(logoutCalls, 1);
@@ -1153,9 +1201,9 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
   }
 });
 
-test("an auth change closes another dialog's cached Codex process before state reuse", async (t) => {
+test("an auth change closes another dialog's cached OAuth backend before state reuse", async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-generation-"),
+    path.join(os.tmpdir(), "live-smith-oauth-generation-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -1173,13 +1221,13 @@ test("an auth change closes another dialog's cached Codex process before state r
   const managerFor = (owner: "first" | "second") => new ModelBackendManager(
     directory,
     {
-      startCodexBackend: async () => {
+      startOAuthBackend: async () => {
         const capturedSignedIn = sharedSignedIn;
         const record = { closed: false, createCalls: 0, readCalls: 0 };
         records[owner].push(record);
         return {
-          kind: "codex-subscription" as const,
-          ...managedLifecycleDefaults(),
+          kind: "oauth-subscription" as const,
+          ...oauthLifecycleDefaults(),
           async listModels() {
             return [];
           },
@@ -1187,7 +1235,7 @@ test("an auth change closes another dialog's cached Codex process before state r
             record.createCalls += 1;
             return { content: null, toolCalls: [] };
           },
-          async readAuthState(): Promise<ManagedAuthState> {
+          async readAuthState(): Promise<OAuthAuthState> {
             record.readCalls += 1;
               return capturedSignedIn
               ? {
@@ -1198,7 +1246,7 @@ test("an auth change closes another dialog's cached Codex process before state r
                 }
               : { status: "signed-out" };
           },
-          async logout(): Promise<ManagedAuthState> {
+          async logout(): Promise<OAuthAuthState> {
             sharedSignedIn = false;
             throw new Error("logout response was lost after the side effect");
           },
@@ -1258,18 +1306,18 @@ test("an auth change closes another dialog's cached Codex process before state r
         (response) => response.json() as Promise<ChatDialogState>,
       ),
     ]);
-    assert.equal(firstInitial.codexAuth?.status, "signed-in");
-    assert.equal(secondInitial.codexAuth?.status, "signed-in");
+    assert.equal(firstInitial.oauthAuth?.status, "signed-in");
+    assert.equal(secondInitial.oauthAuth?.status, "signed-in");
     const secondOldBackend = records.second[0]!;
 
     const logout = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_codex" }),
+      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
     });
     assert.equal(logout.status, 200);
     assert.equal(
-      ((await logout.json()) as ChatDialogState).codexAuth?.status,
+      ((await logout.json()) as ChatDialogState).oauthAuth?.status,
       "signed-out",
     );
     assert.equal(records.first[0]?.closed, true);
@@ -1282,7 +1330,7 @@ test("an auth change closes another dialog's cached Codex process before state r
     assert.equal(secondOldBackend.createCalls, 0);
     assert.equal(records.second.length, 2);
     assert.equal(records.second[1]?.readCalls, 1);
-    assert.equal(secondAfterLogout.codexAuth?.status, "signed-out");
+    assert.equal(secondAfterLogout.oauthAuth?.status, "signed-out");
   } finally {
     closeFirstDialog.resolve();
     closeSecondDialog.resolve();
@@ -1290,11 +1338,11 @@ test("an auth change closes another dialog's cached Codex process before state r
   }
 });
 
-test("closing a modal during initial Codex login retires before peers reuse auth", {
+test("closing a modal during initial OAuth login retires before peers reuse auth", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-abort-generation-"),
+    path.join(os.tmpdir(), "live-smith-oauth-abort-generation-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -1310,23 +1358,23 @@ test("closing a modal during initial Codex login retires before peers reuse auth
   const managerFor = (owner: "first" | "second") => new ModelBackendManager(
     directory,
     {
-      startCodexBackend: async () => {
+      startOAuthBackend: async () => {
         const record = { closed: false, readCalls: 0 };
         const index = records[owner].push(record) - 1;
         return {
-          kind: "codex-subscription" as const,
-          ...managedLifecycleDefaults(),
+          kind: "oauth-subscription" as const,
+          ...oauthLifecycleDefaults(),
           async listModels() {
             return [];
           },
           async createToolTurn() {
             return { content: null, toolCalls: [] };
           },
-          async readAuthState(): Promise<ManagedAuthState> {
+          async readAuthState(): Promise<OAuthAuthState> {
             record.readCalls += 1;
             return { status: "signed-out" };
           },
-          async beginLogin(signal?: AbortSignal): Promise<ManagedAuthState> {
+          async beginLogin(signal?: AbortSignal): Promise<OAuthAuthState> {
             if (owner !== "first" || index !== 0) {
               return {
                 status: "pending",
@@ -1404,7 +1452,7 @@ test("closing a modal during initial Codex login retires before peers reuse auth
     loginRequest = fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_codex_login" }),
+      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
     });
     await loginStarted.promise;
     closeFirstDialog.resolve();
@@ -1429,7 +1477,7 @@ test("closing a modal during initial Codex login retires before peers reuse auth
     await loginRequest.catch(() => undefined);
 
     const reconciled = await peerStateRequest;
-    assert.equal(reconciled.codexAuth?.status, "signed-out");
+    assert.equal(reconciled.oauthAuth?.status, "signed-out");
     assert.equal(secondOldBackend.closed, true);
     assert.equal(records.second.length, 2);
     assert.equal(records.second[1]?.readCalls, 1);
@@ -1442,11 +1490,101 @@ test("closing a modal during initial Codex login retires before peers reuse auth
   }
 });
 
+test("closing a modal blocks a late pending browser launch", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-late-oauth-browser-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+
+  const dialogUrl = deferred<string>();
+  const closeDialog = deferred<void>();
+  const loginStarted = deferred<void>();
+  const loginAbortObserved = deferred<void>();
+  const releaseLateLogin = deferred<void>();
+  let browserOpenCalls = 0;
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async readAuthState() { return { status: "signed-out" }; },
+    async beginLogin(signal) {
+      loginStarted.resolve();
+      const onAbort = () => loginAbortObserved.resolve();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      await releaseLateLogin.promise;
+      return {
+        status: "pending",
+        verificationUrl: "https://auth.openai.com/codex/device",
+        userCode: "ABCD-EFGH",
+      };
+    },
+    async close() {},
+  };
+  const manager = {
+    async oauth() { return backend; },
+    async oauthLease() {
+      return { backend, async retire() { return true; } };
+    },
+    async forProfile() { return backend; },
+    async invalidateOAuth() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const flow = runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        dialogUrl.resolve(url);
+        await closeDialog.promise;
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+    openOAuthAuthorizationUrl: async () => {
+      browserOpenCalls += 1;
+    },
+  });
+  let loginRequest: Promise<Response> | undefined;
+
+  try {
+    const url = await dialogUrl.promise;
+    await fetch(bridgeEndpoint(url, "/state"));
+    loginRequest = fetch(bridgeEndpoint(url, "/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+    });
+    await loginStarted.promise;
+    closeDialog.resolve();
+    await loginAbortObserved.promise;
+    releaseLateLogin.resolve();
+    await Promise.allSettled([flow, loginRequest]);
+    assert.equal(browserOpenCalls, 0);
+  } finally {
+    closeDialog.resolve();
+    releaseLateLogin.resolve();
+    await loginRequest?.catch(() => undefined);
+    await flow.catch(() => undefined);
+  }
+});
+
 test("a failed auth retirement permanently poisons peer auth, state, discovery, and send", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-shutdown-poison-"),
+    path.join(os.tmpdir(), "live-smith-oauth-shutdown-poison-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -1454,15 +1592,15 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
   let ownerManagerCalls = 0;
   let peerManagerCalls = 0;
   let peerModelCalls = 0;
-  const signedIn = (): ManagedAuthState => ({
+  const signedIn = (): OAuthAuthState => ({
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
     subscriptionEligible: true,
   });
-  const ownerBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const ownerBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
     async readAuthState() { return signedIn(); },
@@ -1471,9 +1609,9 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     },
     async close() {},
   };
-  const peerBackend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const peerBackend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() { return []; },
     async createToolTurn() {
       peerModelCalls += 1;
@@ -1484,16 +1622,16 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     async close() {},
   };
   const ownerManager = {
-    async codex() {
+    async oauth() {
       ownerManagerCalls += 1;
       return ownerBackend;
     },
-    async codexLease() {
+    async oauthLease() {
       ownerManagerCalls += 1;
       return {
         backend: ownerBackend,
         async retire() {
-          throw new Error("Codex child did not exit after SIGKILL");
+          throw new Error("OAuth backend retirement could not be confirmed");
         },
       };
     },
@@ -1501,17 +1639,17 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
       ownerManagerCalls += 1;
       return ownerBackend;
     },
-    async invalidateCodex() {
+    async invalidateOAuth() {
       ownerManagerCalls += 1;
     },
     async close() {},
   };
   const peerManager = {
-    async codex() {
+    async oauth() {
       peerManagerCalls += 1;
       return peerBackend;
     },
-    async codexLease() {
+    async oauthLease() {
       peerManagerCalls += 1;
       return { backend: peerBackend, async retire() { return true; } };
     },
@@ -1519,7 +1657,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
       peerManagerCalls += 1;
       return peerBackend;
     },
-    async invalidateCodex() {
+    async invalidateOAuth() {
       peerManagerCalls += 1;
     },
     async close() {},
@@ -1578,13 +1716,13 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
         (response) => response.json() as Promise<ChatDialogState>,
       ),
     ]);
-    assert.equal(ownerInitial.codexAuth?.status, "signed-in");
-    assert.equal(peerInitial.codexAuth?.status, "signed-in");
+    assert.equal(ownerInitial.oauthAuth?.status, "signed-in");
+    assert.equal(peerInitial.oauthAuth?.status, "signed-in");
 
     const logout = await fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_codex" }),
+      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
     });
     assert.equal(logout.status, 500);
     const peerCallsBeforePoisonChecks = peerManagerCalls;
@@ -1594,7 +1732,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     const authResponse = await fetch(bridgeEndpoint(peerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "refresh_codex_account" }),
+      body: JSON.stringify({ kind: "refresh_oauth_account", provider: "openai" }),
     });
     assert.equal(authResponse.status, 500);
     const discoveryResponse = await fetch(
@@ -1645,12 +1783,12 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-send-preflight-"),
+    path.join(os.tmpdir(), "live-smith-oauth-send-preflight-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
 
-  let auth: ManagedAuthState = {
+  let auth: OAuthAuthState = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -1660,9 +1798,9 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   const releaseLogout = deferred<void>();
   let peerListCalls = 0;
   let peerModelCalls = 0;
-  const backendFor = (owner: "owner" | "peer"): CodexSubscriptionBackend => ({
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const backendFor = (owner: "owner" | "peer"): OAuthSubscriptionBackend => ({
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() {
       if (owner === "peer") peerListCalls += 1;
       return [{
@@ -1687,12 +1825,12 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   const managerFor = (owner: "owner" | "peer") => {
     const backend = backendFor(owner);
     return {
-      async codex() { return backend; },
-      async codexLease() {
+      async oauth() { return backend; },
+      async oauthLease() {
         return { backend, async retire() { return true; } };
       },
       async forProfile() { return backend; },
-      async invalidateCodex() {},
+      async invalidateOAuth() {},
       async close() {},
     };
   };
@@ -1753,13 +1891,13 @@ test("a peer subscription send waits for logout and fails before prompt persiste
         (response) => response.json() as Promise<ChatDialogState>,
       ),
     ]);
-    assert.equal(ownerInitial.codexAuth?.status, "signed-in");
-    assert.equal(peerInitial.codexAuth?.status, "signed-in");
+    assert.equal(ownerInitial.oauthAuth?.status, "signed-in");
+    assert.equal(peerInitial.oauthAuth?.status, "signed-in");
 
     const logoutRequest = fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_codex" }),
+      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
     });
     await logoutStarted.promise;
     let sendSettled = false;
@@ -1790,7 +1928,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
     };
     assert.equal(sendBody.promptPersistence, "not_persisted");
     assert.match(sendBody.error ?? "", /eligible ChatGPT subscription|sign in/i);
-    assert.equal(peerListCalls, 1);
+    assert.equal(peerListCalls, 0);
     assert.equal(peerModelCalls, 0);
     assert.equal(
       (await loadSessionEvents(directory, peerInitial.activeSessionId)).some(
@@ -1808,7 +1946,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
 
 test("every subscription send refreshes its catalog and rejects a missing model before persistence", async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-send-catalog-"),
+    path.join(os.tmpdir(), "live-smith-oauth-send-catalog-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
@@ -1818,22 +1956,14 @@ test("every subscription send refreshes its catalog and rejects a missing model 
   let modelCalls = 0;
   let managerProfileCalls = 0;
   let selectedModelAvailable = true;
+  let catalogFailure = false;
   const turnExecutors: ModelTurnExecutor[] = [];
   const authReadiness: boolean[] = [];
   const continuationStarted = deferred<void>();
   const releaseContinuation = deferred<void>();
-  let reservationReleaseCalls = 0;
-  const firstTurnReservation = {
-    async createToolTurn() {
-      throw new Error("the injected turn function owns this test");
-    },
-    async release() {
-      reservationReleaseCalls += 1;
-    },
-  };
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    ...oauthLifecycleDefaults(),
     async listModels() {
       listCalls += 1;
       assert.equal(
@@ -1843,6 +1973,11 @@ test("every subscription send refreshes its catalog and rejects a missing model 
         listCalls === 1 ? 0 : 1,
         "catalog preflight must finish before the prompt is appended",
       );
+      if (catalogFailure) {
+        throw new Error(
+          "openai/responses model discovery failed: ChatGPT Codex HTTP 500: request failed",
+        );
+      }
       return [{
         id: selectedModelAvailable
           ? subscriptionProfile.defaultModel
@@ -1858,9 +1993,6 @@ test("every subscription send refreshes its catalog and rejects a missing model 
       );
       throw new Error("the injected turn function owns this test");
     },
-    reserveToolTurn() {
-      return firstTurnReservation;
-    },
     async readAuthState(_signal, options) {
       authReadiness.push(options?.readiness === true);
       return {
@@ -1872,20 +2004,20 @@ test("every subscription send refreshes its catalog and rejects a missing model 
     },
     async close() {},
   };
-  const replacementBackend: CodexSubscriptionBackend = {
+  const replacementBackend: OAuthSubscriptionBackend = {
     ...backend,
     async close() {},
   };
   const manager = {
-    async codex() { return backend; },
-    async codexLease() {
+    async oauth() { return backend; },
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
     async forProfile() {
       managerProfileCalls += 1;
       return replacementBackend;
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const interaction: LiveInteractionContext = {
@@ -1958,6 +2090,31 @@ test("every subscription send refreshes its catalog and rejects a missing model 
           ).length,
           1,
         );
+
+        catalogFailure = true;
+        const failedCatalog = await fetch(bridgeEndpoint(url, "/send"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Live-Smith-Send-Id": "failed-catalog-send",
+          },
+          body: JSON.stringify({
+            prompt: "Do not misclassify this catalog failure",
+            sessionId,
+          }),
+        });
+        const failedCatalogBody = await failedCatalog.json() as {
+          error?: string;
+          promptPersistence?: string;
+        };
+        assert.notEqual(failedCatalog.status, 200);
+        assert.equal(failedCatalogBody.promptPersistence, "not_persisted");
+        assert.match(failedCatalogBody.error ?? "", /model discovery.*HTTP 500/i);
+        assert.doesNotMatch(failedCatalogBody.error ?? "", /sign in|account status/i);
+        const afterFailure = await fetch(bridgeEndpoint(url, "/state")).then(
+          (stateResponse) => stateResponse.json() as Promise<ChatDialogState>,
+        );
+        assert.equal(afterFailure.oauthAuth?.status, "signed-in");
       },
     },
   };
@@ -1981,145 +2138,18 @@ test("every subscription send refreshes its catalog and rejects a missing model 
       return { content: "ready", toolCalls: [] };
     },
   });
-  assert.equal(listCalls, 2);
+  assert.equal(listCalls, 3);
   assert.equal(modelCalls, 2);
   assert.equal(managerProfileCalls, 1);
-  assert.deepEqual(turnExecutors, [firstTurnReservation, replacementBackend]);
-  assert.equal(reservationReleaseCalls, 1);
-  assert.deepEqual(authReadiness, [false, false, false]);
+  assert.deepEqual(turnExecutors, [backend, replacementBackend]);
+  assert.deepEqual(authReadiness, [false, true, true, true]);
 });
 
-test("threshold reservation cleanup preserves a pre-first-turn caller abort and poisons reuse", async (t) => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-reservation-abort-"),
-  );
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const storageKey = await canonicalStorageDirectory(directory);
-  await saveSavedProfile(directory, subscriptionProfile);
-
-  const modelStarted = deferred<void>();
-  const releaseError = new Error("threshold recycle close failed");
-  let reservationCreateCalls = 0;
-  let reservationReleaseCalls = 0;
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
-    ...managedLifecycleDefaults(),
-    async listModels() {
-      return [{
-        id: subscriptionProfile.defaultModel,
-        displayName: "Subscription model",
-        capabilities: { tools: true, streaming: true },
-      }];
-    },
-    async createToolTurn() {
-      throw new Error("the reserved first turn must own this request");
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          reservationCreateCalls += 1;
-          throw new Error("the injected turn must abort before consumption");
-        },
-        async release() {
-          reservationReleaseCalls += 1;
-          throw releaseError;
-        },
-      };
-    },
-    async readAuthState() {
-      return {
-        status: "signed-in",
-        accountLabel: "studio@example.test",
-        planType: "pro",
-        subscriptionEligible: true,
-      };
-    },
-    async close() {},
-  };
-  const manager = {
-    async codex() { return backend; },
-    async codexLease() {
-      return { backend, async retire() { return true; } };
-    },
-    async forProfile() { return backend; },
-    async invalidateCodex() {},
-    async close() {},
-  };
-  const interaction: LiveInteractionContext = {
-    summary: "Track: Lead",
-    target: {},
-    scope: { kind: "track", identity: "track-1", label: "Lead" },
-  };
-  interaction.selectionContext = { refresh: () => interaction };
-  const context = {
-    application: { song: { handle: { id: 1n } } },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const initial = await fetch(bridgeEndpoint(url, "/state")).then(
-          (response) => response.json() as Promise<ChatDialogState>,
-        );
-        const sendId = "reservation-abort-send";
-        const send = fetch(bridgeEndpoint(url, "/send"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Live-Smith-Send-Id": sendId,
-          },
-          body: JSON.stringify({
-            prompt: "Stop before the reserved turn is consumed",
-            sessionId: initial.activeSessionId,
-          }),
-        });
-        await modelStarted.promise;
-        const stopped = await fetch(bridgeEndpoint(url, "/stop"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Live-Smith-Send-Id": sendId,
-          },
-          body: "{}",
-        });
-        assert.equal(stopped.status, 200);
-
-        const response = await send;
-        const body = await response.text();
-        assert.notEqual(response.status, 200);
-        assert.match(body, /Stopped by user/i);
-        assert.doesNotMatch(body, /threshold recycle close failed/i);
-      },
-    },
-  };
-
-  await assert.rejects(
-    runAgentFlow(context as never, interaction, {
-      renderHtml: () => "<html></html>",
-      modelBackendManager: manager,
-      requestModelTurn: async (input) => {
-        modelStarted.resolve();
-        await new Promise<never>((_resolve, reject) => {
-          const onAbort = () => reject(input.signal.reason);
-          input.signal.addEventListener("abort", onAbort, { once: true });
-          if (input.signal.aborted) onAbort();
-        });
-        throw new Error("unreachable");
-      },
-    }),
-    /could not be shut down safely/i,
-  );
-  await assert.rejects(
-    modelAuthSendFenceForStorage(storageKey).enterRead(),
-    /could not be shut down safely/i,
-  );
-  assert.equal(reservationCreateCalls, 0);
-  assert.equal(reservationReleaseCalls, 1);
-});
-
-test("managed poison from a modal close leaves a Direct API peer operational", {
+test("OAuth poison from a modal close leaves a Direct API peer operational", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-codex-modal-close-poison-"),
+    path.join(os.tmpdir(), "live-smith-oauth-modal-close-poison-"),
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, directProfile);
@@ -2138,20 +2168,20 @@ test("managed poison from a modal close leaves a Direct API peer operational", {
     async close() {},
   };
   const firstManager = {
-    async codex() { throw new Error("unused"); },
-    async codexLease() { throw new Error("unused"); },
+    async oauth() { throw new Error("unused"); },
+    async oauthLease() { throw new Error("unused"); },
     async forProfile() { throw new Error("unused"); },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {
-      throw new Error("Codex child shutdown could not be confirmed");
+      throw new Error("OAuth backend shutdown could not be confirmed");
     },
   };
   const peerManager = {
-    async codex() {
+    async oauth() {
       peerManagerCalls += 1;
       throw new Error("must not start after poison");
     },
-    async codexLease() {
+    async oauthLease() {
       peerManagerCalls += 1;
       throw new Error("must not start after poison");
     },
@@ -2160,7 +2190,7 @@ test("managed poison from a modal close leaves a Direct API peer operational", {
       assert.equal(profile.connection.kind, "direct-api");
       return peerDirectBackend;
     },
-    async invalidateCodex() {
+    async invalidateOAuth() {
       peerManagerCalls += 1;
     },
     async close() {},

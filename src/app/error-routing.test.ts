@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { NetworkProxyError } from "../runtime/network-proxy-error.js";
 import {
   sessionErrorMessage,
   shouldOpenSettingsForAgentError,
@@ -19,7 +20,21 @@ test("shouldOpenSettingsForAgentError identifies profile configuration errors", 
   );
   assert.equal(
     shouldOpenSettingsForAgentError(
-      new Error("Codex App Server connection closed."),
+      new Error("OAuth token refresh failed."),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldOpenSettingsForAgentError(
+      new NetworkProxyError("A safe network route diagnosis."),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldOpenSettingsForAgentError(
+      new Error(
+        "The Manual proxy could not be reached. Start the proxy app, check the proxy URL, or choose No proxy.",
+      ),
     ),
     true,
   );

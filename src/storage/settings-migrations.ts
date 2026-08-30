@@ -4,6 +4,8 @@ import {
   isContextUsageVisibilityRevision,
   isDefaultFollowUpBehavior,
   isDefaultFollowUpBehaviorRevision,
+  isNetworkProxyRevision,
+  normalizeNetworkProxySettings,
   ProfileValidationError,
   validateDraftProfileForSave,
   type AgentSettings,
@@ -15,6 +17,7 @@ import {
   type GenerationParameters,
   type ModelAdvancedSettings,
   type ModelConnection,
+  type NetworkProxyRevision,
   type OpenAIDirectApiConnection,
   type SavedProfile,
 } from "../model/profile.js";
@@ -80,6 +83,24 @@ interface AgentSettingsV5 extends SharedAgentSettings<SavedProfile> {
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
 }
 
+interface AgentSettingsV6 extends SharedAgentSettings<SavedProfile> {
+  schemaVersion: 6;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+  showContextUsage: boolean;
+  contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+}
+
+interface AgentSettingsV7 extends SharedAgentSettings<SavedProfile> {
+  schemaVersion: 7;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+  showContextUsage: boolean;
+  contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
@@ -88,6 +109,8 @@ const migrations = new Map<number, SettingsMigration>([
   [3, migrateSettingsV3ToV4],
   [4, migrateSettingsV4ToV5],
   [5, migrateSettingsV5ToV6],
+  [6, migrateSettingsV6ToV7],
+  [7, migrateSettingsV7ToV8],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -106,7 +129,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV6(migrated);
+  return validateSettingsV8(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -184,7 +207,7 @@ function migrateSettingsV4ToV5(value: unknown): AgentSettingsV5 {
   };
 }
 
-function migrateSettingsV5ToV6(value: unknown): AgentSettings {
+function migrateSettingsV5ToV6(value: unknown): AgentSettingsV6 {
   const settings = validateSettingsV5(value);
   return {
     schemaVersion: 6,
@@ -196,6 +219,24 @@ function migrateSettingsV5ToV6(value: unknown): AgentSettings {
       settings.defaultFollowUpBehaviorRevision,
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+  };
+}
+
+function migrateSettingsV6ToV7(value: unknown): AgentSettingsV7 {
+  const settings = validateSettingsV6(value, true);
+  return {
+    ...settings,
+    schemaVersion: 7,
+  };
+}
+
+function migrateSettingsV7ToV8(value: unknown): AgentSettings {
+  const settings = validateSettingsV7(value);
+  return {
+    ...settings,
+    schemaVersion: 8,
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   };
 }
 
@@ -336,7 +377,7 @@ function validateSettingsV5(value: unknown): AgentSettingsV5 {
     ],
     "settings",
   );
-  const shared = validatedSharedSettings(record);
+  const shared = validatedSharedSettings(record, true);
   const approvalMode = approvalModeValue(record.approvalMode);
   const defaultFollowUpBehavior = followUpBehaviorValue(
     record.defaultFollowUpBehavior,
@@ -353,7 +394,10 @@ function validateSettingsV5(value: unknown): AgentSettingsV5 {
   };
 }
 
-function validateSettingsV6(value: unknown): AgentSettings {
+function validateSettingsV6(
+  value: unknown,
+  allowHistoricalConnection = false,
+): AgentSettingsV6 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 6) throw unsupportedSchemaVersion();
   assertOnlyKeys(
@@ -370,7 +414,7 @@ function validateSettingsV6(value: unknown): AgentSettings {
     ],
     "settings",
   );
-  const shared = validatedSharedSettings(record);
+  const shared = validatedSharedSettings(record, allowHistoricalConnection);
   const approvalMode = approvalModeValue(record.approvalMode);
   const defaultFollowUpBehavior = followUpBehaviorValue(
     record.defaultFollowUpBehavior,
@@ -398,8 +442,52 @@ function validateSettingsV6(value: unknown): AgentSettings {
   };
 }
 
+function validateSettingsV7(value: unknown): AgentSettingsV7 {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 7) throw unsupportedSchemaVersion();
+  const validated = validateSettingsV6(
+    { ...record, schemaVersion: 6 },
+    false,
+  );
+  return { ...validated, schemaVersion: 7 };
+}
+
+function validateSettingsV8(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 8) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+      "showContextUsage",
+      "contextUsageVisibilityRevision",
+      "networkProxy",
+      "networkProxyRevision",
+    ],
+    "settings",
+  );
+  const {
+    networkProxy: networkProxyValue,
+    networkProxyRevision: networkProxyRevisionValue,
+    ...settingsV7
+  } = record;
+  const validated = validateSettingsV7({ ...settingsV7, schemaVersion: 7 });
+  return {
+    ...validated,
+    schemaVersion: 8,
+    networkProxy: normalizeNetworkProxySettings(networkProxyValue),
+    networkProxyRevision: networkProxyRevision(networkProxyRevisionValue),
+  };
+}
+
 function validatedSharedSettings(
   record: Record<string, unknown>,
+  allowHistoricalConnection = false,
 ): SharedAgentSettings<SavedProfile> {
   if (!Array.isArray(record.profiles)) {
     throw new ProfileValidationError("profiles", "Profiles must be an array.");
@@ -407,7 +495,10 @@ function validatedSharedSettings(
 
   const profiles: SavedProfile[] = [];
   for (const entry of record.profiles) {
-    profiles.push(validateDraftProfileForSave(entry, profiles));
+    profiles.push(validateDraftProfileForSave(
+      allowHistoricalConnection ? withHistoricalOAuthConnection(entry) : entry,
+      profiles,
+    ));
   }
   const activeProfileId = validatedActiveProfileId(record, profiles);
   return { activeProfileId, profiles };
@@ -426,7 +517,7 @@ function validatedV4SharedSettings(
     profiles.push(validateProfileV4(
       allowLegacySubscriptionMaxOutputTokens
         ? withoutLegacySubscriptionMaxOutputTokens(entry)
-        : entry,
+        : withHistoricalOAuthConnection(entry),
       profiles,
     ));
   }
@@ -473,27 +564,53 @@ function validateProfileV4(
 }
 
 function withoutLegacySubscriptionMaxOutputTokens(value: unknown): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return value;
+  const normalized = withHistoricalOAuthConnection(value);
+  if (typeof normalized !== "object" || normalized === null || Array.isArray(normalized)) {
+    return normalized;
   }
-  const profile = value as Record<string, unknown>;
+  const profile = normalized as Record<string, unknown>;
   const connection = profile.connection;
   const parameters = profile.parameters;
   if (
     typeof connection !== "object" ||
     connection === null ||
     Array.isArray(connection) ||
-    (connection as Record<string, unknown>).kind !== "codex-subscription" ||
+    (connection as Record<string, unknown>).kind !== "oauth-subscription" ||
     typeof parameters !== "object" ||
     parameters === null ||
     Array.isArray(parameters) ||
     !Object.prototype.hasOwnProperty.call(parameters, "maxOutputTokens")
-  ) return value;
+  ) return normalized;
   const {
     maxOutputTokens: _legacySubscriptionMaxOutputTokens,
     ...supportedParameters
   } = parameters as Record<string, unknown>;
   return { ...profile, parameters: supportedParameters };
+}
+
+function withHistoricalOAuthConnection(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const profile = value as Record<string, unknown>;
+  const connection = profile.connection;
+  if (typeof connection !== "object" || connection === null ||
+    Array.isArray(connection)) {
+    return value;
+  }
+  const record = connection as Record<string, unknown>;
+  if (record.kind !== "codex-subscription") return value;
+  assertOnlyKeys(record, ["kind", "provider"], "connection");
+  if (record.provider !== "openai") {
+    throw new ProfileValidationError(
+      "connection.provider",
+      "Legacy Codex subscription Profiles require the OpenAI provider.",
+    );
+  }
+  return {
+    ...profile,
+    connection: { kind: "oauth-subscription", provider: "openai" },
+  };
 }
 
 function validatedLegacySharedSettings(
@@ -685,6 +802,16 @@ function contextUsageRevisionValue(
     throw new ProfileValidationError(
       "contextUsageVisibilityRevision",
       "Context usage visibility revision must be a canonical nonnegative decimal string.",
+    );
+  }
+  return value;
+}
+
+function networkProxyRevision(value: unknown): NetworkProxyRevision {
+  if (!isNetworkProxyRevision(value)) {
+    throw new ProfileValidationError(
+      "networkProxyRevision",
+      "Network proxy revision must be a canonical nonnegative decimal string.",
     );
   }
   return value;

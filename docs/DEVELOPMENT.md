@@ -34,9 +34,8 @@ Adjust the Live application path for your installation. `npm start` builds the
 development bundle and starts the Extensions CLI. Enable the extension in the
 CLI, then right-click a supported object in Live and choose **Ask Live Smith**.
 
-Configure a Profile in Live Smith Settings to use model features. The optional
-ChatGPT subscription backend needs the supported official Codex CLI installation
-described in [model connections](MODEL_PROVIDERS.md#chatgpt-subscription-experimental).
+Configure a Profile in Live Smith Settings to use model features. Subscription
+Profiles complete OAuth in the browser and require no provider CLI installation.
 Building and running tests do not require a model connection.
 
 Instead of passing `--live`, copy [.env.example](../.env.example) to `.env` and
@@ -63,10 +62,11 @@ npm run build
 npm --cache /private/tmp/live-smith-npm-cache audit --json
 ```
 
-The test suite includes structural limits, core behavior, and real-dialog DOM
-interaction tests. It uses fixtures and does not require provider credentials
-or call a model provider. Focused suites are available as `npm run test:core`,
-`npm run test:ui`, and `npm run test:structure`.
+The test suite includes structural limits, core behavior, real-dialog DOM
+interaction tests, and direct plus CONNECT-proxy requests through an Extension
+Host-equivalent restricted VM. It uses fixtures and does not require provider
+credentials or call a model provider. Focused suites are available as
+`npm run test:core`, `npm run test:ui`, and `npm run test:structure`.
 
 After editing dialog client fragments, also check the composed JavaScript:
 
@@ -74,11 +74,11 @@ After editing dialog client fragments, also check the composed JavaScript:
 node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
 ```
 
-DOM tests prove interaction and state behavior, not rendered geometry or
-Extension Host subprocess compatibility. In the target Live build, separately
-check dialog layout and focus, host integration, and managed-backend startup,
-cancellation, and shutdown. Use an authorized test account for provider checks;
-ordinary tests must not read a developer's saved credentials.
+DOM tests prove interaction and state behavior, not rendered geometry or live
+provider behavior. In the target Live build, separately check dialog layout and
+focus, host integration, OAuth browser/device login, refresh, cancellation,
+shutdown, and provider requests. Use an authorized test account for provider
+checks; ordinary tests must not read a developer's saved credentials.
 
 ## Packaging
 
@@ -110,7 +110,7 @@ to process memory and does not survive a host restart.
 The data directory is private, not disposable build output. It contains saved
 Profiles, Session metadata and events, attachments, imported Skills, and model
 metadata. `live-smith-settings.json` contains Direct API keys as plain text;
-`codex-subscription/` contains the isolated managed login and runtime state.
+`oauth/credentials.json` contains private provider OAuth credentials.
 Built-in Skills are bundled and do not create imported Skill files.
 
 Do not commit, share, cloud-sync, or delete private development data without the

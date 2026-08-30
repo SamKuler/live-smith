@@ -6,11 +6,14 @@ import test from "node:test";
 
 import type { LiveInteractionContext } from "../live/context.js";
 import type {
-  CodexSubscriptionBackend,
-  ManagedAuthState,
+  OAuthSubscriptionBackend,
+  OAuthAuthState,
 } from "../model/provider.js";
 import { canonicalStorageDirectory } from "../storage/scope.js";
-import type { SavedProfile } from "../model/profile.js";
+import type {
+  OAuthSubscriptionProvider,
+  SavedProfile,
+} from "../model/profile.js";
 import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
@@ -33,7 +36,7 @@ function bridgeJsonHeaders(): Record<string, string> {
 const subscriptionProfile: SavedProfile = {
   id: "chatgpt-subscription",
   name: "ChatGPT subscription",
-  connection: { kind: "codex-subscription", provider: "openai" },
+  connection: { kind: "oauth-subscription", provider: "openai" },
   defaultModel: "gpt-subscription-model",
   models: [{
     model: "gpt-subscription-model",
@@ -63,7 +66,7 @@ const directProfile: SavedProfile = {
   }],
 };
 
-test("Direct state does not pair stale managed auth with a newer generation", async (t) => {
+test("Direct state does not pair stale OAuth auth with a newer generation", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-direct-auth-projection-"),
   );
@@ -72,15 +75,15 @@ test("Direct state does not pair stale managed auth with a newer generation", as
   await saveSavedProfile(directory, subscriptionProfile);
 
   let generation = 0;
-  let managedReads = 0;
+  let oauthReads = 0;
   let healthCheckedGenerationReads = 0;
   let projectedGenerationReads = 0;
   const fence: ModelAuthSendFence = {
     async enterRead() {
-      managedReads += 1;
+      oauthReads += 1;
       return () => undefined;
     },
-    async enterManagedUse() {
+    async enterOAuthUse() {
       throw new Error("unused");
     },
     async enterAuth() {
@@ -107,18 +110,12 @@ test("Direct state does not pair stale managed auth with a newer generation", as
     poison() {},
     releaseOwner() {},
   };
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels() {
       return [];
     },
     async createToolTurn() {
-      throw new Error("unused");
-    },
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
       throw new Error("unused");
     },
     async readAuthState() {
@@ -138,16 +135,16 @@ test("Direct state does not pair stale managed auth with a newer generation", as
     async close() {},
   };
   const manager = {
-    async codex() {
+    async oauth() {
       return backend;
     },
-    async codexLease() {
+    async oauthLease() {
       throw new Error("unused");
     },
     async forProfile() {
       throw new Error("unused");
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const interaction: LiveInteractionContext = {
@@ -163,8 +160,8 @@ test("Direct state does not pair stale managed auth with a newer generation", as
     ui: {
       showModalDialog: async (url: string) => {
         const initial = await getState(url);
-        assert.equal(initial.codexAuth?.status, "signed-in");
-        assert.equal(initial.codexAuthGeneration, 0);
+        assert.equal(initial.oauthAuth?.status, "signed-in");
+        assert.equal(initial.oauthAuthGeneration, 0);
 
         const activation = await command(url, {
           kind: "activate_profile",
@@ -172,18 +169,18 @@ test("Direct state does not pair stale managed auth with a newer generation", as
         });
         assert.equal(activation.status, 200, await activation.clone().text());
         assert.equal(
-          (await activation.json() as ChatDialogState).codexAuth?.status,
+          (await activation.json() as ChatDialogState).oauthAuth?.status,
           "signed-in",
         );
 
         generation = 1;
-        managedReads = 0;
+        oauthReads = 0;
         healthCheckedGenerationReads = 0;
         projectedGenerationReads = 0;
         const directState = await getState(url);
-        assert.equal(directState.codexAuthGeneration, 1);
-        assert.equal("codexAuth" in directState, false);
-        assert.equal(managedReads, 0);
+        assert.equal(directState.oauthAuthGeneration, 1);
+        assert.equal("oauthAuth" in directState, false);
+        assert.equal(oauthReads, 0);
         assert.equal(healthCheckedGenerationReads, 0);
         assert.equal(projectedGenerationReads, 1);
       },
@@ -192,6 +189,120 @@ test("Direct state does not pair stale managed auth with a newer generation", as
     renderHtml: () => "<html></html>",
     modelBackendManager: manager,
     modelAuthSendFence: fence,
+  });
+});
+
+test("a definitive login mutation owns its response state and can be retried", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-definitive-login-failure-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+  const storageKey = await canonicalStorageDirectory(directory);
+  const failure: OAuthAuthState = {
+    status: "unavailable",
+    message: "ChatGPT sign-in did not complete.",
+    definitive: true,
+  };
+  let auth: OAuthAuthState = { status: "signed-out" };
+  let reads = 0;
+  let beginCalls = 0;
+  let retireCalls = 0;
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async readAuthState() {
+      reads += 1;
+      if (beginCalls === 1) {
+        throw new Error("the definitive mutation result must own this projection");
+      }
+      return auth;
+    },
+    async beginLogin() {
+      beginCalls += 1;
+      auth = beginCalls === 1
+        ? failure
+        : {
+            status: "pending",
+            verificationUrl: "https://auth.openai.com/codex/device",
+            userCode: "ABCD-EFGH",
+          };
+      return auth;
+    },
+    async logout() {
+      auth = { status: "signed-out" };
+      return auth;
+    },
+    async close() {},
+  };
+  const manager = {
+    async oauth() { return backend; },
+    async oauthLease() {
+      return {
+        backend,
+        async retire() {
+          retireCalls += 1;
+          return true;
+        },
+      };
+    },
+    async forProfile() { return backend; },
+    async invalidateOAuth() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const initial = await getState(url);
+        assert.equal(initial.oauthAuth?.status, "signed-out");
+        const initialGeneration = initial.oauthAuthGeneration;
+
+        const failedLogin = await command(url, {
+          kind: "start_oauth_login",
+          provider: "openai",
+        });
+        assert.equal(failedLogin.status, 200, await failedLogin.clone().text());
+        const failedState = await failedLogin.json() as ChatDialogState;
+        assert.deepEqual(failedState.oauthAuth, failure);
+        assert.equal(failedState.status, failure.message);
+        assert.equal(failedState.oauthAuthGeneration, initialGeneration + 1);
+        assert.equal(reads, 1);
+        assert.equal(retireCalls, 0);
+        assert.equal(
+          modelAuthSendFenceForStorage(storageKey, "openai").hasPendingLogin(),
+          false,
+        );
+
+        const retriedLogin = await command(url, {
+          kind: "start_oauth_login",
+          provider: "openai",
+        });
+        assert.equal(retriedLogin.status, 200, await retriedLogin.clone().text());
+        const retriedState = await retriedLogin.json() as ChatDialogState;
+        assert.equal(retriedState.oauthAuth?.status, "pending");
+        assert.equal(beginCalls, 2);
+        assert.equal(retireCalls, 0);
+
+        const logout = await command(url, {
+          kind: "logout_oauth",
+          provider: "openai",
+        });
+        assert.equal(logout.status, 200, await logout.clone().text());
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
   });
 });
 
@@ -208,8 +319,8 @@ test("a peer state or Check reconciles completed device login ownership", {
   await saveSavedProfile(directory, subscriptionProfile);
   const storageKey = await canonicalStorageDirectory(directory);
 
-  let auth: ManagedAuthState = { status: "signed-out" };
-  const signedIn = (): ManagedAuthState => ({
+  let auth: OAuthAuthState = { status: "signed-out" };
+  const signedIn = (): OAuthAuthState => ({
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -220,8 +331,8 @@ test("a peer state or Check reconciles completed device login ownership", {
   let concurrentReadinessCalls = 0;
   const concurrentReadinessStarted = deferred<void>();
   const releaseConcurrentReadiness = deferred<void>();
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels() {
       return [{
         id: subscriptionProfile.defaultModel,
@@ -231,17 +342,6 @@ test("a peer state or Check reconciles completed device login ownership", {
     },
     async createToolTurn() {
       throw new Error("the injected model turn owns this test");
-    },
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          throw new Error("the injected model turn owns this test");
-        },
-        async release() {},
-      };
     },
     async readAuthState(signal, options) {
       if (blockConcurrentReadiness && options?.readiness === true) {
@@ -256,7 +356,7 @@ test("a peer state or Check reconciles completed device login ownership", {
       return auth;
     },
     async beginLogin() {
-      const pending: ManagedAuthState = {
+      const pending: OAuthAuthState = {
         status: "pending",
         verificationUrl: "https://auth.openai.com/codex/device",
         userCode: "ABCD-EFGH",
@@ -271,12 +371,12 @@ test("a peer state or Check reconciles completed device login ownership", {
     async close() {},
   };
   const manager = {
-    async codex() { return backend; },
-    async codexLease() {
+    async oauth() { return backend; },
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
     async forProfile() { return backend; },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const ownerUrl = deferred<string>();
@@ -328,10 +428,11 @@ test("a peer state or Check reconciles completed device login ownership", {
     await getState(ownerDialogUrl);
 
     const firstPending = await command(ownerDialogUrl, {
-      kind: "start_codex_login",
+      kind: "start_oauth_login",
+      provider: "openai",
     });
     assert.equal(firstPending.status, 200);
-    const firstPendingGeneration = modelAuthSendFenceForStorage(storageKey)
+    const firstPendingGeneration = modelAuthSendFenceForStorage(storageKey, "openai")
       .authGeneration();
     const blockedSend = await send(
       peerDialogUrl,
@@ -342,29 +443,31 @@ test("a peer state or Check reconciles completed device login ownership", {
 
     auth = signedIn();
     const peerAfterPassiveRead = await getState(peerDialogUrl);
-    assert.equal(peerAfterPassiveRead.codexAuth?.status, "signed-in");
+    assert.equal(peerAfterPassiveRead.oauthAuth?.status, "signed-in");
     assert.equal(
-      modelAuthSendFenceForStorage(storageKey).authGeneration(),
+      modelAuthSendFenceForStorage(storageKey, "openai").authGeneration(),
       firstPendingGeneration + 1,
     );
 
     auth = { status: "signed-out" };
     const secondPending = await command(ownerDialogUrl, {
-      kind: "start_codex_login",
+      kind: "start_oauth_login",
+      provider: "openai",
     });
     assert.equal(secondPending.status, 200);
-    const secondPendingGeneration = modelAuthSendFenceForStorage(storageKey)
+    const secondPendingGeneration = modelAuthSendFenceForStorage(storageKey, "openai")
       .authGeneration();
     auth = signedIn();
 
     const peerCheck = await command(peerDialogUrl, {
-      kind: "refresh_codex_account",
+      kind: "refresh_oauth_account",
+      provider: "openai",
     });
     assert.equal(peerCheck.status, 200, await peerCheck.clone().text());
     const peerAfterCheck = await peerCheck.json() as ChatDialogState;
-    assert.equal(peerAfterCheck.codexAuth?.status, "signed-in");
+    assert.equal(peerAfterCheck.oauthAuth?.status, "signed-in");
     assert.equal(
-      modelAuthSendFenceForStorage(storageKey).authGeneration(),
+      modelAuthSendFenceForStorage(storageKey, "openai").authGeneration(),
       secondPendingGeneration + 1,
     );
 
@@ -378,7 +481,8 @@ test("a peer state or Check reconciles completed device login ownership", {
     auth = { status: "signed-out" };
     completeDuringStart = true;
     const instantCompletion = await command(ownerDialogUrl, {
-      kind: "start_codex_login",
+      kind: "start_oauth_login",
+      provider: "openai",
     });
     assert.equal(
       instantCompletion.status,
@@ -386,7 +490,7 @@ test("a peer state or Check reconciles completed device login ownership", {
       await instantCompletion.clone().text(),
     );
     const instantState = await instantCompletion.json() as ChatDialogState;
-    assert.equal(instantState.codexAuth?.status, "signed-in");
+    assert.equal(instantState.oauthAuth?.status, "signed-in");
     const sendAfterInstantCompletion = await send(
       peerDialogUrl,
       peerAfterCheck.activeSessionId,
@@ -401,7 +505,8 @@ test("a peer state or Check reconciles completed device login ownership", {
     completeDuringStart = false;
     auth = { status: "signed-out" };
     const pendingBeforeConcurrentChecks = await command(ownerDialogUrl, {
-      kind: "start_codex_login",
+      kind: "start_oauth_login",
+      provider: "openai",
     });
     assert.equal(
       pendingBeforeConcurrentChecks.status,
@@ -410,10 +515,12 @@ test("a peer state or Check reconciles completed device login ownership", {
     );
     blockConcurrentReadiness = true;
     const firstConcurrentCheck = command(ownerDialogUrl, {
-      kind: "refresh_codex_account",
+      kind: "refresh_oauth_account",
+      provider: "openai",
     });
     const secondConcurrentCheck = command(peerDialogUrl, {
-      kind: "refresh_codex_account",
+      kind: "refresh_oauth_account",
+      provider: "openai",
     });
     await concurrentReadinessStarted.promise;
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -452,7 +559,8 @@ test("a peer state or Check reconciles completed device login ownership", {
     blockConcurrentReadiness = false;
     auth = signedIn();
     const completedAfterConcurrentChecks = await command(ownerDialogUrl, {
-      kind: "refresh_codex_account",
+      kind: "refresh_oauth_account",
+      provider: "openai",
     });
     assert.equal(
       completedAfterConcurrentChecks.status,
@@ -482,23 +590,16 @@ test("closing a pending-login owner aborts its state read before peer auth resum
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, subscriptionProfile);
 
-  let auth: ManagedAuthState = { status: "signed-out" };
+  let auth: OAuthAuthState = { status: "signed-out" };
   let blockOwnerRead = false;
   let invalidations = 0;
   const blockedReadStarted = deferred<void>();
   const blockedReadAborted = deferred<void>();
   const forceReleaseRead = deferred<void>();
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels() { return []; },
     async createToolTurn() { return { content: null, toolCalls: [] }; },
-    onTerminal() { return () => undefined; },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() { return { content: null, toolCalls: [] }; },
-        async release() {},
-      };
-    },
     async readAuthState(signal, options) {
       if (blockOwnerRead && options?.readiness === true) {
         assert.ok(signal, "pending reconciliation must own a cancellation signal");
@@ -534,12 +635,12 @@ test("closing a pending-login owner aborts its state read before peer auth resum
     async close() {},
   };
   const manager = {
-    async codex() { return backend; },
-    async codexLease() {
+    async oauth() { return backend; },
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
     async forProfile() { return backend; },
-    async invalidateCodex() {
+    async invalidateOAuth() {
       invalidations += 1;
       auth = { status: "signed-out" };
     },
@@ -594,7 +695,10 @@ test("closing a pending-login owner aborts its state read before peer auth resum
       "initial modal states",
     );
     const login = await resolvesWithin(
-      command(ownerDialogUrl, { kind: "start_codex_login" }),
+      command(ownerDialogUrl, {
+        kind: "start_oauth_login",
+        provider: "openai",
+      }),
       "pending login command",
     );
     assert.equal(login.status, 200, await login.clone().text());
@@ -604,24 +708,27 @@ test("closing a pending-login owner aborts its state read before peer auth resum
       () => "response" as const,
       () => "error" as const,
     );
-    await resolvesWithin(blockedReadStarted.promise, "blocked managed state read");
+    await resolvesWithin(blockedReadStarted.promise, "blocked OAuth state read");
     closeOwner.resolve();
 
     await resolvesWithin(ownerFlow, "pending-login owner close");
-    await resolvesWithin(blockedReadAborted.promise, "managed state read abort");
+    await resolvesWithin(blockedReadAborted.promise, "OAuth state read abort");
     assert.equal(
-      await resolvesWithin(stateRead, "closed managed state response"),
+      await resolvesWithin(stateRead, "closed OAuth state response"),
       "error",
     );
     assert.ok(invalidations > 0, "owner close must retire its pending backend");
 
     const peerRefresh = await resolvesWithin(
-      command(peerDialogUrl, { kind: "refresh_codex_account" }),
+      command(peerDialogUrl, {
+        kind: "refresh_oauth_account",
+        provider: "openai",
+      }),
       "peer auth refresh after owner close",
     );
     assert.equal(peerRefresh.status, 200, await peerRefresh.clone().text());
     assert.equal(
-      (await peerRefresh.json() as ChatDialogState).codexAuth?.status,
+      (await peerRefresh.json() as ChatDialogState).oauthAuth?.status,
       "signed-out",
     );
   } finally {
@@ -631,13 +738,254 @@ test("closing a pending-login owner aborts its state read before peer auth resum
     if (stateRead) {
       await resolvesWithin(
         stateRead.catch(() => "error" as const),
-        "managed state response cleanup",
+        "OAuth state response cleanup",
       );
     }
     await resolvesWithin(
       Promise.allSettled([ownerFlow, peerFlow]),
       "modal flow cleanup",
     );
+  }
+});
+
+test("modal close retires every provider before reporting one cleanup failure", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-provider-auth-ownership-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+  const storageKey = await canonicalStorageDirectory(directory);
+  const auth = new Map<OAuthSubscriptionProvider, OAuthAuthState>([
+    ["openai", { status: "signed-out" }],
+    ["anthropic", { status: "signed-out" }],
+    ["google", { status: "signed-out" }],
+  ]);
+  const backends = new Map<OAuthSubscriptionProvider, OAuthSubscriptionBackend>();
+  const backendFor = (provider: OAuthSubscriptionProvider): OAuthSubscriptionBackend => {
+    let backend = backends.get(provider);
+    if (backend) return backend;
+    backend = {
+      kind: "oauth-subscription",
+      async listModels() { return []; },
+      async createToolTurn() { return { content: null, toolCalls: [] }; },
+      async readAuthState() { return auth.get(provider)!; },
+      async beginLogin() {
+        const pending: OAuthAuthState = {
+          status: "pending",
+          verificationUrl: provider === "openai"
+            ? "https://auth.openai.com/codex/device"
+            : "https://accounts.google.com/o/oauth2/v2/auth",
+        };
+        auth.set(provider, pending);
+        return pending;
+      },
+      async logout() {
+        const signedOut: OAuthAuthState = { status: "signed-out" };
+        auth.set(provider, signedOut);
+        return signedOut;
+      },
+      async close() {},
+    };
+    backends.set(provider, backend);
+    return backend;
+  };
+  const invalidated: OAuthSubscriptionProvider[] = [];
+  const manager = {
+    async oauth(provider: OAuthSubscriptionProvider) { return backendFor(provider); },
+    async oauthLease(provider: OAuthSubscriptionProvider) {
+      return { backend: backendFor(provider), async retire() { return true; } };
+    },
+    async forProfile(profile: SavedProfile) {
+      assert.equal(profile.connection.kind, "oauth-subscription");
+      return backendFor(profile.connection.provider);
+    },
+    async invalidateOAuth(provider: OAuthSubscriptionProvider) {
+      invalidated.push(provider);
+      if (provider === "openai") {
+        throw new Error("OpenAI retirement failed");
+      }
+    },
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+
+  await assert.rejects(
+    runAgentFlow({
+      application: { song: { handle: { id: 1n } } },
+      environment: { storageDirectory: directory },
+      ui: {
+        showModalDialog: async (url: string) => {
+          await getState(url);
+          const openAIPending = await command(url, {
+            kind: "start_oauth_login",
+            provider: "openai",
+          });
+          assert.equal(openAIPending.status, 200, await openAIPending.clone().text());
+
+          const googleCheck = await command(url, {
+            kind: "refresh_oauth_account",
+            provider: "google",
+          });
+          assert.equal(googleCheck.status, 200, await googleCheck.clone().text());
+          const googleState = await googleCheck.json() as ChatDialogState;
+          assert.equal(googleState.oauthAuthProvider, "google");
+          assert.equal(googleState.oauthAuth?.status, "signed-out");
+          assert.equal(
+            modelAuthSendFenceForStorage(storageKey, "openai").hasPendingLogin(),
+            true,
+          );
+          assert.equal(
+            modelAuthSendFenceForStorage(storageKey, "google").hasPendingLogin(),
+            false,
+          );
+
+          const googlePending = await command(url, {
+            kind: "start_oauth_login",
+            provider: "google",
+          });
+          assert.equal(googlePending.status, 200, await googlePending.clone().text());
+          assert.equal(
+            modelAuthSendFenceForStorage(storageKey, "openai").hasPendingLogin(),
+            true,
+          );
+          assert.equal(
+            modelAuthSendFenceForStorage(storageKey, "google").hasPendingLogin(),
+            true,
+          );
+        },
+      },
+    } as never, interaction, {
+      renderHtml: () => "<html></html>",
+      modelBackendManager: manager,
+    }),
+    /OpenAI retirement failed/,
+  );
+
+  assert.deepEqual([...invalidated].sort(), ["google", "openai"]);
+  assert.throws(
+    () => modelAuthSendFenceForStorage(storageKey, "openai").authGeneration(),
+    /could not be shut down safely/i,
+  );
+  assert.doesNotThrow(
+    () => modelAuthSendFenceForStorage(storageKey, "google").authGeneration(),
+  );
+  assert.equal(
+    modelAuthSendFenceForStorage(storageKey, "openai").hasPendingLogin(),
+    false,
+  );
+  assert.equal(
+    modelAuthSendFenceForStorage(storageKey, "google").hasPendingLogin(),
+    false,
+  );
+});
+
+test("logout cancels the pending provider browser launch", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-oauth-browser-logout-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, subscriptionProfile);
+
+  let auth: OAuthAuthState = { status: "signed-out" };
+  const browserStarted = deferred<void>();
+  const browserAborted = deferred<unknown>();
+  const dialogUrl = deferred<string>();
+  const closeDialog = deferred<void>();
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    async readAuthState() { return auth; },
+    async beginLogin() {
+      auth = {
+        status: "pending",
+        verificationUrl: "https://auth.openai.com/codex/device",
+        userCode: "ABCD-EFGH",
+      };
+      return auth;
+    },
+    async logout() {
+      auth = { status: "signed-out" };
+      return auth;
+    },
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() {},
+  };
+  const manager = {
+    async oauth() { return backend; },
+    async oauthLease() {
+      return { backend, async retire() { return true; } };
+    },
+    async forProfile() { return backend; },
+    async invalidateOAuth() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const flow = runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        dialogUrl.resolve(url);
+        await closeDialog.promise;
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+    openOAuthAuthorizationUrl: async (_url, signal) => {
+      assert.ok(signal);
+      browserStarted.resolve();
+      await new Promise<void>((resolve) => {
+        const onAbort = () => {
+          browserAborted.resolve(signal.reason);
+          resolve();
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+    },
+  });
+
+  try {
+    const url = await dialogUrl.promise;
+    const pendingResponse = await command(url, {
+      kind: "start_oauth_login",
+      provider: "openai",
+    });
+    assert.equal(pendingResponse.status, 200);
+    assert.equal(
+      ((await pendingResponse.json()) as ChatDialogState).oauthAuth?.status,
+      "pending",
+    );
+    await browserStarted.promise;
+
+    const logoutResponse = await command(url, {
+      kind: "logout_oauth",
+      provider: "openai",
+    });
+    assert.equal(logoutResponse.status, 200);
+    assert.equal(
+      ((await logoutResponse.json()) as ChatDialogState).oauthAuth?.status,
+      "signed-out",
+    );
+    const abortReason = await browserAborted.promise;
+    assert.ok(abortReason instanceof Error);
+    assert.match(abortReason.message, /sign-in was canceled/i);
+  } finally {
+    closeDialog.resolve();
+    await flow;
   }
 });
 

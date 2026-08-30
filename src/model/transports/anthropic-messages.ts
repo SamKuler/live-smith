@@ -6,7 +6,10 @@ import {
   type ModelToolCall,
   type ModelTurn,
 } from "../contracts.js";
-import { ModelConnectionError } from "../connection-error.js";
+import {
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import { normalizeModelCitations } from "../citations.js";
 import {
   decodeDiscoveredModelCatalog,
@@ -682,7 +685,7 @@ async function streamAnthropicMessage(
       continue;
     }
     if (event.type === "error") {
-      throw anthropicStreamError();
+      throw anthropicStreamError(event);
     }
     if (event.type === "message_delta" && isRecord(event.delta)) {
       if (event.usage !== undefined) terminalUsage = event.usage;
@@ -1107,7 +1110,17 @@ function finalizeToolInput(
   fragments.delete(index);
 }
 
-function anthropicStreamError(): Error {
+function anthropicStreamError(event: Record<string, unknown>): Error {
+  const error = isRecord(event.error) ? event.error : undefined;
+  switch (error?.type) {
+    case "overloaded_error":
+    case "rate_limit_error":
+    case "api_error":
+    case "timeout_error":
+      return new ModelRetryableError(
+        "Anthropic stream reported a retryable failure.",
+      );
+  }
   return new Error("Anthropic stream error.");
 }
 

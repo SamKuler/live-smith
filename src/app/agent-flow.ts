@@ -9,6 +9,7 @@ import {
   throwIfAborted,
   waitForPromiseWithSignal,
 } from "../runtime/host.js";
+import { NetworkProxyError } from "../runtime/network-proxy-error.js";
 import { requiresExplicitConfirmation, type AgentPlan } from "../agent/actions.js";
 import { EDIT_SCOPES, resolveEditScopes } from "../agent/edit-scopes.js";
 import {
@@ -23,15 +24,16 @@ import {
 import { decodeDiscoveredModelCatalog } from "../model/catalog.js";
 import type {
   DiscoveredModelInfo,
-  CodexSubscriptionBackend,
-  ManagedAuthReadOptions,
-  ManagedAuthState,
+  OAuthSubscriptionBackend,
+  OAuthAuthReadOptions,
+  OAuthAuthState,
 } from "../model/provider.js";
 import {
   ProfileValidationError,
   validateDraftProfileForDiscovery,
   validateDraftProfileForSave,
   type DraftProfile,
+  type OAuthSubscriptionProvider,
   type SavedProfile,
 } from "../model/profile.js";
 import {
@@ -218,6 +220,7 @@ import {
   steeringReceiptFor,
   type AgentModelTurnRequester,
 } from "./agent-request.js";
+import { providerFetchForStorage } from "./provider-fetch.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
@@ -256,13 +259,18 @@ export interface AgentFlowDependencies {
     profile: DraftProfile,
     signal: AbortSignal,
   ): Promise<DiscoveredModelInfo[]>;
-  /** Test-only manager; production creates Direct backends per use and shares managed. */
+  /** Test-only manager; production creates Direct backends per use and shares OAuth. */
   modelBackendManager?: Pick<
     ModelBackendManager,
-    "forProfile" | "codex" | "codexLease" | "invalidateCodex" | "close"
+    "forProfile" | "oauth" | "oauthLease" | "invalidateOAuth" | "close"
   >;
   /** Process-wide in production; injectable only for isolated tests. */
   modelAuthSendFence?: ModelAuthSendFence;
+  /** Production host capability; injectable only for isolated tests. */
+  openOAuthAuthorizationUrl?(
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   renderHtml?(
     state: ChatBridgeState,
     bridge: { baseUrl: string; token: string },
@@ -292,12 +300,16 @@ export async function runAgentFlow(
   const modalSessionOwner = Symbol("Live Smith modal Session owner");
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const modelCatalogLoadReceiptByConnection = new Map<string, string>();
-  const codexCatalogGenerationByConnection = new Map<string, number>();
+  const oauthCatalogGenerationByConnection = new Map<string, number>();
   const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
     : await canonicalStorageDirectory(context.environment.storageDirectory);
-  const modelAuthSendFence = dependencies.modelAuthSendFence ??
-    modelAuthSendFenceForStorage(storageDirectory);
+  const providerFetch = providerFetchForStorage(storageDirectory);
+  const modelAuthSendFenceFor = (
+    provider: OAuthSubscriptionProvider,
+  ): ModelAuthSendFence => dependencies.modelAuthSendFence ??
+    modelAuthSendFenceForStorage(storageDirectory, provider);
+  const oauthProvidersUsed = new Set<OAuthSubscriptionProvider>();
   let sharedBackendManagerLeasePromise:
     | Promise<SharedModelBackendManagerLease>
     | undefined;
@@ -305,24 +317,24 @@ export async function runAgentFlow(
   let sharedBackendManagerAcquisitionController:
     | ReturnType<typeof createHostAbortController>
     | undefined;
-  const managedBackendAcquisitionClosedError = new Error(
-    "The managed model backend acquisition was closed.",
+  const oauthBackendAcquisitionClosedError = new Error(
+    "The OAuth model backend acquisition was closed.",
   );
-  let managedBackendLeaseClosing = false;
-  const managedBackendManager = async (signal?: AbortSignal) => {
+  let oauthBackendLeaseClosing = false;
+  const oauthBackendManager = async (signal?: AbortSignal) => {
     if (dependencies.modelBackendManager) return dependencies.modelBackendManager;
     throwIfAborted(signal);
     if (
       sharedBackendManagerLeasePromise === undefined &&
-      managedBackendLeaseClosing
+      oauthBackendLeaseClosing
     ) {
-      throw new Error("The managed model backend is closing.");
+      throw new Error("The OAuth model backend is closing.");
     }
     if (sharedBackendManagerLeasePromise === undefined) {
       sharedBackendManagerAcquisitionController = createHostAbortController();
       sharedBackendManagerLeasePromise = acquireSharedModelBackendManager(
         storageDirectory,
-        { onPoison: (error) => modelAuthSendFence.poison(error) },
+        { fetchImpl: providerFetch },
         sharedBackendManagerAcquisitionController.signal,
       ).then((lease) => {
         sharedBackendManagerLease = lease;
@@ -343,24 +355,65 @@ export async function runAgentFlow(
         profile.connection.kind === "direct-api" &&
         dependencies.modelBackendManager === undefined
       ) {
-        return createDirectApiBackend(profile);
+        return createDirectApiBackend(profile, { fetchImpl: providerFetch });
       }
-      return (await managedBackendManager(signal)).forProfile(profile, signal);
+      return (await oauthBackendManager(signal)).forProfile(profile, signal);
     },
-    async codex(signal?: AbortSignal) {
-      return (await managedBackendManager(signal)).codex(signal);
+    async oauth(provider: OAuthSubscriptionProvider, signal?: AbortSignal) {
+      return (await oauthBackendManager(signal)).oauth(provider, signal);
     },
-    async codexLease(signal?: AbortSignal) {
-      return (await managedBackendManager(signal)).codexLease(signal);
+    async oauthLease(provider: OAuthSubscriptionProvider, signal?: AbortSignal) {
+      return (await oauthBackendManager(signal)).oauthLease(provider, signal);
     },
-    async invalidateCodex() {
-      return (await managedBackendManager()).invalidateCodex();
+    async invalidateOAuth(provider: OAuthSubscriptionProvider) {
+      return (await oauthBackendManager()).invalidateOAuth(provider);
     },
   };
   const modelAuthOwner = Symbol("Live Smith modal auth owner");
-  let managedBoundaryUsed = false;
   let observedAuthGeneration: number | undefined;
-  let codexAuth: ManagedAuthState | undefined;
+  let observedAuthProvider: OAuthSubscriptionProvider | undefined;
+  let oauthAuth: OAuthAuthState | undefined;
+  interface OAuthBrowserLaunch {
+    controller: ReturnType<typeof createHostAbortController>;
+  }
+  const oauthBrowserLaunchByProvider = new Map<
+    OAuthSubscriptionProvider,
+    OAuthBrowserLaunch
+  >();
+  const oauthBrowserLaunches = new Set<Promise<void>>();
+  let oauthBrowserLaunchesClosing = false;
+  const cancelOAuthBrowserLaunch = (
+    provider: OAuthSubscriptionProvider,
+    reason: Error,
+  ): void => {
+    oauthBrowserLaunchByProvider.get(provider)?.controller.abort(reason);
+  };
+  const launchPendingOAuthBrowser = (
+    provider: OAuthSubscriptionProvider,
+    url: string,
+  ): void => {
+    const open = dependencies.openOAuthAuthorizationUrl;
+    if (!open || oauthBrowserLaunchesClosing) return;
+    cancelOAuthBrowserLaunch(
+      provider,
+      new Error(`${oauthProviderLabel(provider)} OAuth browser launch was replaced.`),
+    );
+    const controller = createHostAbortController();
+    let active!: OAuthBrowserLaunch;
+    let launch!: Promise<void>;
+    launch = Promise.resolve()
+      .then(() => open(url, controller.signal))
+      .catch(() => undefined)
+      .finally(() => {
+        oauthBrowserLaunches.delete(launch);
+        if (oauthBrowserLaunchByProvider.get(provider) === active) {
+          oauthBrowserLaunchByProvider.delete(provider);
+        }
+      });
+    active = { controller };
+    oauthBrowserLaunchByProvider.set(provider, active);
+    oauthBrowserLaunches.add(launch);
+  };
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
   const selectionInteractionsBySessionId = new Map<
@@ -503,10 +556,13 @@ export async function runAgentFlow(
       modelsByConnection.set(fingerprint, models);
       return { models, ready: true };
     }
-    const generation = await synchronizeAuthGeneration(signal);
+    const generation = await synchronizeAuthGeneration(
+      profile.connection.provider,
+      signal,
+    );
     const models = modelsByConnection.get(fingerprint);
     const ready = models !== undefined &&
-      codexCatalogGenerationByConnection.get(fingerprint) === generation;
+      oauthCatalogGenerationByConnection.get(fingerprint) === generation;
     return { models: ready ? models : [], ready };
   };
 
@@ -522,118 +578,176 @@ export async function runAgentFlow(
     return models;
   };
 
-  const clearCodexCatalogs = (): void => {
-    for (const fingerprint of codexCatalogGenerationByConnection.keys()) {
+  const clearOAuthCatalogs = (): void => {
+    for (const fingerprint of oauthCatalogGenerationByConnection.keys()) {
       modelsByConnection.delete(fingerprint);
       modelCatalogLoadReceiptByConnection.delete(fingerprint);
     }
-    codexCatalogGenerationByConnection.clear();
+    oauthCatalogGenerationByConnection.clear();
   };
 
   async function synchronizeAuthGeneration(
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
   ): Promise<number> {
-    managedBoundaryUsed = true;
+    oauthProvidersUsed.add(provider);
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     for (;;) {
       throwIfAborted(signal);
       const generation = modelAuthSendFence.authGeneration();
-      if (observedAuthGeneration === undefined) {
+      if (
+        observedAuthGeneration === undefined ||
+        observedAuthProvider !== provider
+      ) {
         observedAuthGeneration = generation;
+        observedAuthProvider = provider;
+        oauthAuth = undefined;
         return generation;
       }
       if (generation === observedAuthGeneration) return generation;
       if (dependencies.modelBackendManager !== undefined) {
         try {
-          await modelBackendManager.invalidateCodex();
+          await modelBackendManager.invalidateOAuth(provider);
         } catch (error) {
           modelAuthSendFence.poison(error);
           throw error;
         }
         throwIfAborted(signal);
       }
-      clearCodexCatalogs();
-      codexAuth = undefined;
+      clearOAuthCatalogs();
+      oauthAuth = undefined;
       observedAuthGeneration = generation;
+      observedAuthProvider = provider;
     }
   }
 
-  function recordOwnedAuthState(auth: ManagedAuthState): void {
+  function recordOwnedAuthState(
+    provider: OAuthSubscriptionProvider,
+    auth: OAuthAuthState,
+  ): void {
+    if (auth.status !== "pending") {
+      cancelOAuthBrowserLaunch(
+        provider,
+        new Error(`${oauthProviderLabel(provider)} OAuth authorization settled.`),
+      );
+    }
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     modelAuthSendFence.updateAuthState(
       modelAuthOwner,
       auth.status,
       auth.status === "unavailable" && auth.definitive === true,
     );
     observedAuthGeneration = modelAuthSendFence.authGeneration();
-    clearCodexCatalogs();
+    clearOAuthCatalogs();
   }
 
-  function recordOwnedAuthMutation(auth: ManagedAuthState): void {
-    if (auth.status === "unavailable") codexAuth = undefined;
+  function recordOwnedAuthMutation(
+    provider: OAuthSubscriptionProvider,
+    auth: OAuthAuthState,
+  ): void {
+    if (auth.status !== "pending") {
+      cancelOAuthBrowserLaunch(
+        provider,
+        new Error(`${oauthProviderLabel(provider)} OAuth authorization changed.`),
+      );
+    }
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    oauthAuth = auth.status === "unavailable" && auth.definitive !== true
+      ? undefined
+      : auth;
     modelAuthSendFence.updateAuthState(modelAuthOwner, auth.status, true);
     observedAuthGeneration = modelAuthSendFence.authGeneration();
-    clearCodexCatalogs();
+    clearOAuthCatalogs();
   }
 
-  const unavailableCodexAuth = (): ManagedAuthState => ({
-    status: "unavailable",
-    message:
-      "Codex CLI 0.148.x could not provide a valid ChatGPT subscription session.",
-  });
+  const unavailableOAuthAuth = (
+    provider: OAuthSubscriptionProvider,
+    error?: unknown,
+  ): OAuthAuthState => error instanceof NetworkProxyError
+    ? {
+        status: "unavailable",
+        message: error.message,
+        definitive: true,
+      }
+    : {
+        status: "unavailable",
+        message: `${oauthProviderLabel(provider)} OAuth session is unavailable.`,
+      };
 
-  const readCodexAuth = async (
+  const readOAuthAuth = async (
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
-    options: ManagedAuthReadOptions = {},
-  ): Promise<ManagedAuthState> => {
+    options: OAuthAuthReadOptions = {},
+  ): Promise<OAuthAuthState> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     for (;;) {
-      const generation = await synchronizeAuthGeneration(signal);
-      let auth: ManagedAuthState;
+      const generation = await synchronizeAuthGeneration(provider, signal);
+      let auth: OAuthAuthState;
       try {
-        const backend = await modelBackendManager.codex(signal);
+        const backend = await modelBackendManager.oauth(provider, signal);
         throwIfAborted(signal);
         auth = await backend.readAuthState(signal, options);
       } catch (error) {
         throwIfAborted(signal);
-        auth = unavailableCodexAuth();
+        auth = unavailableOAuthAuth(provider, error);
       }
       if (modelAuthSendFence.authGeneration() !== generation) continue;
-      codexAuth = auth;
+      oauthAuth = auth;
+      if (auth.status !== "pending") {
+        cancelOAuthBrowserLaunch(
+          provider,
+          new Error(`${oauthProviderLabel(provider)} OAuth authorization settled.`),
+        );
+      }
       return auth;
     }
   };
 
-  const reconcilePendingCodexAuthWhileReading = async (
+  const reconcilePendingOAuthAuthWhileReading = async (
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
-  ): Promise<ManagedAuthState | undefined> => {
+  ): Promise<OAuthAuthState | undefined> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     if (!modelAuthSendFence.hasPendingLogin()) return undefined;
     const auth = await modelAuthSendFence.reconcilePendingAuthState(
       (reconciliationSignal) =>
-        readCodexAuth(reconciliationSignal, { readiness: true }),
+        readOAuthAuth(provider, reconciliationSignal, { readiness: true }),
       signal,
     );
     if (auth === undefined) return undefined;
-    await synchronizeAuthGeneration(signal);
-    codexAuth = auth;
+    await synchronizeAuthGeneration(provider, signal);
+    oauthAuth = auth;
     return auth;
   };
 
-  const withPendingCodexAuthReconciliation = async <T>(
+  const withPendingOAuthAuthReconciliation = async <T>(
+    provider: OAuthSubscriptionProvider,
     signal: AbortSignal | undefined,
-    operation: (auth: ManagedAuthState) => Promise<T>,
+    operation: (auth: OAuthAuthState) => Promise<T>,
   ): Promise<T | undefined> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     if (!modelAuthSendFence.hasPendingLogin()) return undefined;
     const release = await modelAuthSendFence.enterRead(signal);
     try {
-      const auth = await reconcilePendingCodexAuthWhileReading(signal);
+      const auth = await reconcilePendingOAuthAuthWhileReading(provider, signal);
       return auth === undefined ? undefined : await operation(auth);
     } finally {
       release();
     }
   };
 
-  const runCodexAuthOperation = async (
+  const runOAuthAuthOperation = async (
+    provider: OAuthSubscriptionProvider,
     operation: "beginLogin" | "logout",
     signal: AbortSignal,
-  ): Promise<ManagedAuthState> => {
+  ): Promise<OAuthAuthState> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    if (operation === "logout") {
+      cancelOAuthBrowserLaunch(
+        provider,
+        new Error(`${oauthProviderLabel(provider)} sign-in was canceled.`),
+      );
+    }
     let mutationAttempted = false;
     let retireBackend: (() => Promise<boolean>) | undefined;
     let retirementPromise: Promise<void> | undefined;
@@ -641,7 +755,7 @@ export async function runAgentFlow(
       retirementPromise ??= (async () => {
         try {
           if (retireBackend) await retireBackend();
-          else await modelBackendManager.invalidateCodex();
+          else await modelBackendManager.invalidateOAuth(provider);
         } catch (error) {
           modelAuthSendFence.poison(error);
           throw error;
@@ -650,7 +764,7 @@ export async function runAgentFlow(
       return retirementPromise;
     };
     try {
-      const lease = await modelBackendManager.codexLease(signal);
+      const lease = await modelBackendManager.oauthLease(provider, signal);
       const backend = lease.backend;
       retireBackend = lease.retire;
       mutationAttempted = true;
@@ -659,21 +773,20 @@ export async function runAgentFlow(
       if (auth.status === "unavailable" && auth.definitive !== true) {
         await confirmUnknownMutationRetirement();
       }
-      codexAuth = auth;
-      recordOwnedAuthMutation(auth);
+      recordOwnedAuthMutation(provider, auth);
       return auth;
     } catch (error) {
-      const auth = unavailableCodexAuth();
+      const auth = unavailableOAuthAuth(provider, error);
       let retirementError: unknown;
       if (mutationAttempted) {
         try {
           await confirmUnknownMutationRetirement();
-          recordOwnedAuthMutation(auth);
+          recordOwnedAuthMutation(provider, auth);
         } catch (retirementFailure) {
           retirementError = retirementFailure;
         }
       } else {
-        codexAuth = auth;
+        oauthAuth = auth;
       }
       try {
         throwIfAborted(signal);
@@ -685,18 +798,20 @@ export async function runAgentFlow(
     }
   };
 
-  const withExclusiveCodexAuth = async <T>(
+  const withExclusiveOAuthAuth = async <T>(
+    provider: OAuthSubscriptionProvider,
     operation: () => Promise<T>,
     signal: AbortSignal,
   ): Promise<T> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
     const release = await modelAuthSendFence.enterAuth(modelAuthOwner, signal);
     if (!release) {
       throw new ChatBridgeConflictError(
-        "Stop every active agent request before changing ChatGPT sign-in.",
+        `Stop every active agent request before changing ${oauthProviderLabel(provider)} sign-in.`,
       );
     }
     try {
-      await synchronizeAuthGeneration(signal);
+      await synchronizeAuthGeneration(provider, signal);
       return await operation();
     } finally {
       release();
@@ -706,7 +821,7 @@ export async function runAgentFlow(
   type BuildStateOptions = {
     heldSessionId?: string;
     sessionMutationHeld?: boolean;
-    codexAuthAlreadyResolved?: boolean;
+    oauthAuthAlreadyResolved?: boolean;
     signal?: AbortSignal;
   };
 
@@ -723,13 +838,6 @@ export async function runAgentFlow(
     return settings;
   };
 
-  const stateRequiresManagedProjection = (
-    previewProfile: DraftProfile | undefined,
-    settings: AgentSettings,
-  ): boolean =>
-    previewProfile?.connection.kind === "codex-subscription" ||
-    activeSavedProfile(settings)?.connection.kind === "codex-subscription";
-
   const buildStateFromSettings = async (
     settings: AgentSettings,
     previewProfile?: DraftProfile,
@@ -737,19 +845,22 @@ export async function runAgentFlow(
   ) => {
     const signal = options.signal;
     throwIfAborted(signal);
-    if (stateRequiresManagedProjection(previewProfile, settings)) {
-      await synchronizeAuthGeneration(signal);
-    }
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
+    if (modelProfile?.connection.kind === "oauth-subscription") {
+      await synchronizeAuthGeneration(modelProfile.connection.provider, signal);
+    }
     if (
-      modelProfile?.connection.kind === "codex-subscription" &&
-      !options.codexAuthAlreadyResolved
+      modelProfile?.connection.kind === "oauth-subscription" &&
+      !options.oauthAuthAlreadyResolved
     ) {
-      if (modelAuthSendFence.hasPendingLogin()) {
-        await reconcilePendingCodexAuthWhileReading(signal);
-      } else if (codexAuth === undefined) {
-        await readCodexAuth(signal);
+      if (modelAuthSendFenceFor(modelProfile.connection.provider).hasPendingLogin()) {
+        await reconcilePendingOAuthAuthWhileReading(
+          modelProfile.connection.provider,
+          signal,
+        );
+      } else if (oauthAuth === undefined) {
+        await readOAuthAuth(modelProfile.connection.provider, signal);
       }
     }
     const modelProjection = modelProfile
@@ -883,7 +994,9 @@ export async function runAgentFlow(
           )
         : null;
       const projectedAuthGeneration =
-        modelAuthSendFence.peekAuthGeneration();
+        observedAuthProvider === undefined
+          ? 0
+          : modelAuthSendFenceFor(observedAuthProvider).peekAuthGeneration();
       return {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
@@ -928,11 +1041,16 @@ export async function runAgentFlow(
           ? null
           : savedProfileRevision(activeProfile),
         settings,
-        ...(codexAuth === undefined ||
+        ...(oauthAuth === undefined ||
             observedAuthGeneration !== projectedAuthGeneration
           ? {}
-          : { codexAuth }),
-        codexAuthGeneration: projectedAuthGeneration,
+          : {
+              oauthAuth,
+              ...(observedAuthProvider
+                ? { oauthAuthProvider: observedAuthProvider }
+                : {}),
+            }),
+        oauthAuthGeneration: projectedAuthGeneration,
         status,
         openSettingsOnLoad: activeProfile ? openSettingsOnLoad : true,
       };
@@ -948,16 +1066,27 @@ export async function runAgentFlow(
     options,
   );
 
+  const stateOAuthProvider = (
+    previewProfile: DraftProfile | undefined,
+    settings: AgentSettings,
+  ): OAuthSubscriptionProvider | undefined => {
+    const profile = previewProfile ?? activeSavedProfile(settings);
+    return profile?.connection.kind === "oauth-subscription"
+      ? profile.connection.provider
+      : undefined;
+  };
+
   const buildState = async (
     previewProfile?: DraftProfile,
     options: BuildStateOptions = {},
   ) => {
     const signal = options.signal;
     const settings = await prepareBuildStateSettings(options);
-    if (!stateRequiresManagedProjection(previewProfile, settings)) {
+    const provider = stateOAuthProvider(previewProfile, settings);
+    if (provider === undefined) {
       return buildStateFromSettings(settings, previewProfile, options);
     }
-    const releaseAuthRead = await modelAuthSendFence.enterRead(signal);
+    const releaseAuthRead = await modelAuthSendFenceFor(provider).enterRead(signal);
     try {
       return await buildStateFromSettings(settings, previewProfile, options);
     } finally {
@@ -990,6 +1119,27 @@ export async function runAgentFlow(
     previewProfile?: DraftProfile,
     options: BuildStateOptions = {},
   ) => confirmCommandState(() => buildState(previewProfile, options));
+
+  const withOAuthAuthProjection = (
+    state: ChatDialogState,
+    provider: OAuthSubscriptionProvider,
+    auth: OAuthAuthState,
+  ): ChatDialogState => {
+    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    if (
+      state.oauthAuthProvider === provider &&
+      state.oauthAuth !== undefined &&
+      state.oauthAuthGeneration === modelAuthSendFence.peekAuthGeneration()
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      oauthAuth: auth,
+      oauthAuthProvider: provider,
+      oauthAuthGeneration: modelAuthSendFence.peekAuthGeneration(),
+    };
+  };
 
   const handleCommand = async (
     commandInput: ChatBridgeCommandInput,
@@ -1046,33 +1196,33 @@ export async function runAgentFlow(
           : subscriptionCatalogReady
             ? profile.models
             : profile.models.filter((model) => {
-                if (previousProfile?.connection.kind !== "codex-subscription") {
+                if (previousProfile?.connection.kind !== "oauth-subscription") {
                   return true;
                 }
                 const previous = previousModelsById.get(model.model);
                 return !previous || JSON.stringify(previous) !== JSON.stringify(model);
               });
         const subscriptionDefaultChanged =
-          profile.connection.kind === "codex-subscription" &&
-          previousProfile?.connection.kind === "codex-subscription" &&
+          profile.connection.kind === "oauth-subscription" &&
+          previousProfile?.connection.kind === "oauth-subscription" &&
           profile.defaultModel !== previousProfile.defaultModel;
         if (
-          profile.connection.kind === "codex-subscription" &&
+          profile.connection.kind === "oauth-subscription" &&
           (modelConfigsToValidate.length > 0 || subscriptionDefaultChanged) &&
           !subscriptionCatalogReady
         ) {
           throw new ChatBridgeConflictError(
-            "Load the current ChatGPT model catalog before changing subscription model settings.",
+            `Load the current ${oauthProviderLabel(profile.connection.provider)} model catalog before changing subscription model settings.`,
           );
         }
         for (const model of modelConfigsToValidate) {
           if (
-            profile.connection.kind === "codex-subscription" &&
+            profile.connection.kind === "oauth-subscription" &&
             !cachedModelsById.has(model.model)
           ) {
             throw new ProfileValidationError(
               "models",
-              `Model ${model.model} is not available for the signed-in ChatGPT account.`,
+              `Model ${model.model} is not available for the signed-in ${oauthProviderLabel(profile.connection.provider)} account.`,
             );
           }
           const runtimeProfile = runtimeProfileForSavedProfile(
@@ -1120,23 +1270,28 @@ export async function runAgentFlow(
         );
       }
 
-      const releaseManagedSave = await modelAuthSendFence.enterManagedUse(signal);
-      if (!releaseManagedSave) {
+      const releaseOAuthSave = await modelAuthSendFenceFor(
+        profile.connection.provider,
+      ).enterOAuthUse(signal);
+      if (!releaseOAuthSave) {
         throw new ChatBridgeConflictError(
-          "Wait for the ChatGPT sign-in operation to finish before saving this Profile.",
+          `Wait for the ${oauthProviderLabel(profile.connection.provider)} sign-in operation to finish before saving this Profile.`,
         );
       }
       try {
-        const generation = await synchronizeAuthGeneration(signal);
+        const generation = await synchronizeAuthGeneration(
+          profile.connection.provider,
+          signal,
+        );
         const subscriptionCatalogReady =
-          codexCatalogGenerationByConnection.get(profileFingerprint) === generation &&
+          oauthCatalogGenerationByConnection.get(profileFingerprint) === generation &&
           modelsByConnection.has(profileFingerprint);
         const cachedModels = subscriptionCatalogReady
           ? modelsByConnection.get(profileFingerprint) ?? []
           : [];
         return await saveWithCatalog(cachedModels, subscriptionCatalogReady);
       } finally {
-        releaseManagedSave();
+        releaseOAuthSave();
       }
     }
 
@@ -1189,7 +1344,9 @@ export async function runAgentFlow(
                     defaultFollowUpBehavior:
                       commandInput.defaultFollowUpBehavior,
                   }
-                : { showContextUsage: commandInput.showContextUsage },
+                : "showContextUsage" in commandInput
+                ? { showContextUsage: commandInput.showContextUsage }
+                : { networkProxy: commandInput.networkProxy },
             );
             publishGlobalSettingsChange(storageDirectory, {
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
@@ -1198,6 +1355,8 @@ export async function runAgentFlow(
               showContextUsage: settings.showContextUsage,
               contextUsageVisibilityRevision:
                 settings.contextUsageVisibilityRevision,
+              networkProxy: settings.networkProxy,
+              networkProxyRevision: settings.networkProxyRevision,
               commandId: commandContext.commandId,
             });
             status = "Global settings saved.";
@@ -1216,6 +1375,8 @@ export async function runAgentFlow(
                 showContextUsage: settings.showContextUsage,
                 contextUsageVisibilityRevision:
                   settings.contextUsageVisibilityRevision,
+                networkProxy: settings.networkProxy,
+                networkProxyRevision: settings.networkProxyRevision,
                 commandId: commandContext.commandId,
               });
             } catch {
@@ -1372,41 +1533,53 @@ export async function runAgentFlow(
         return buildStateAfterCommandMutation(undefined, { signal });
       }
 
-      const releaseManagedLoad = await modelAuthSendFence.enterManagedUse(signal);
-      if (!releaseManagedLoad) {
+      const modelAuthSendFence = modelAuthSendFenceFor(
+        profile.connection.provider,
+      );
+      const releaseOAuthLoad = await modelAuthSendFence.enterOAuthUse(signal);
+      if (!releaseOAuthLoad) {
         throw new ChatBridgeConflictError(
-          "Wait for the ChatGPT sign-in operation to finish before loading model capabilities.",
+          `Wait for the ${oauthProviderLabel(profile.connection.provider)} sign-in operation to finish before loading model capabilities.`,
         );
       }
       try {
-        const generation = await synchronizeAuthGeneration(signal);
+        const generation = await synchronizeAuthGeneration(
+          profile.connection.provider,
+          signal,
+        );
         const fingerprint = connectionFingerprint(profile);
         if (
-          codexCatalogGenerationByConnection.get(fingerprint) !== generation ||
+          oauthCatalogGenerationByConnection.get(fingerprint) !== generation ||
           !modelsByConnection.has(fingerprint)
         ) {
-          const backend = await modelBackendManager.codex(signal);
+          const backend = await modelBackendManager.oauth(
+            profile.connection.provider,
+            signal,
+          );
           const models = requireDiscoveredModelCatalog(
             await backend.listModels(profile, signal),
           );
           const auth = await backend.readAuthState(signal, { readiness: true });
-          codexAuth = auth;
-          const authError = subscriptionSendAuthError(auth);
+          oauthAuth = auth;
+          const authError = subscriptionSendAuthError(
+            auth,
+            profile.connection.provider,
+          );
           if (authError) throw new ChatBridgeConflictError(authError);
           throwIfAborted(signal);
           if (modelAuthSendFence.authGeneration() !== generation) {
             throw new ChatBridgeConflictError(
-              "ChatGPT sign-in changed before model capabilities finished loading.",
+              `${oauthProviderLabel(profile.connection.provider)} sign-in changed before model capabilities finished loading.`,
             );
           }
           modelsByConnection.set(fingerprint, models);
-          codexCatalogGenerationByConnection.set(fingerprint, generation);
+          oauthCatalogGenerationByConnection.set(fingerprint, generation);
         }
         status = undefined;
         openSettingsOnLoad = false;
         return await buildStateAfterCommandMutation(undefined, { signal });
       } finally {
-        releaseManagedLoad();
+        releaseOAuthLoad();
       }
     }
 
@@ -1422,7 +1595,7 @@ export async function runAgentFlow(
         );
       }
       return withSessionMutation(commandInput.sessionId, signal, async () => {
-        let releaseManagedSelection: (() => void) | undefined;
+        let releaseOAuthSelection: (() => void) | undefined;
         try {
           throwIfAborted(signal);
           const initialSettings = await loadAgentSettings(storageDirectory);
@@ -1432,28 +1605,37 @@ export async function runAgentFlow(
               "The active Profile changed. Choose the model again.",
             );
           }
-          let managedGeneration: number | undefined;
-          if (initialProfile.connection.kind === "codex-subscription") {
-            releaseManagedSelection = await modelAuthSendFence.enterManagedUse(
+          let oauthGeneration: number | undefined;
+          const initialOAuthProvider =
+            initialProfile.connection.kind === "oauth-subscription"
+              ? initialProfile.connection.provider
+              : undefined;
+          if (initialProfile.connection.kind === "oauth-subscription") {
+            releaseOAuthSelection = await modelAuthSendFenceFor(
+              initialProfile.connection.provider,
+            ).enterOAuthUse(
               signal,
             ) ?? undefined;
-            if (!releaseManagedSelection) {
+            if (!releaseOAuthSelection) {
               throw new ChatBridgeConflictError(
-                "Wait for the ChatGPT sign-in operation to finish before changing this Session's model.",
+                `Wait for the ${oauthProviderLabel(initialProfile.connection.provider)} sign-in operation to finish before changing this Session's model.`,
               );
             }
-            managedGeneration = await synchronizeAuthGeneration(signal);
+            oauthGeneration = await synchronizeAuthGeneration(
+              initialProfile.connection.provider,
+              signal,
+            );
           }
 
           const { models } = await modelProjectionForProfile(initialProfile, signal);
           if (
-            initialProfile.connection.kind === "codex-subscription" &&
+            initialProfile.connection.kind === "oauth-subscription" &&
             !models.some((model) => model.id === commandInput.model)
           ) {
             throw new ChatBridgeConflictError(
               models.length === 0
-                ? "Load the current ChatGPT model catalog before changing this Session's model."
-                : "That model is not available for the signed-in ChatGPT account.",
+                ? `Load the current ${oauthProviderLabel(initialProfile.connection.provider)} model catalog before changing this Session's model.`
+                : `That model is not available for the signed-in ${oauthProviderLabel(initialProfile.connection.provider)} account.`,
             );
           }
           const savedSelection = {
@@ -1476,11 +1658,12 @@ export async function runAgentFlow(
               async (transaction) => {
                 throwIfAborted(signal);
                 if (
-                  managedGeneration !== undefined &&
-                  modelAuthSendFence.authGeneration() !== managedGeneration
+                  oauthGeneration !== undefined &&
+                  modelAuthSendFenceFor(initialOAuthProvider!).authGeneration() !==
+                    oauthGeneration
                 ) {
                   throw new ChatBridgeConflictError(
-                    "ChatGPT sign-in changed. Choose the model again.",
+                    `${oauthProviderLabel(initialOAuthProvider!)} sign-in changed. Choose the model again.`,
                   );
                 }
                 const settings = await loadAgentSettings(storageDirectory);
@@ -1561,7 +1744,7 @@ export async function runAgentFlow(
           }
           throw error;
         } finally {
-          releaseManagedSelection?.();
+          releaseOAuthSelection?.();
         }
       });
     }
@@ -1884,18 +2067,18 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
-      const releaseManagedDiscovery = profile.connection.kind === "codex-subscription"
-        ? await modelAuthSendFence.enterManagedUse(signal)
+      const releaseOAuthDiscovery = profile.connection.kind === "oauth-subscription"
+        ? await modelAuthSendFenceFor(profile.connection.provider).enterOAuthUse(signal)
         : () => undefined;
-      if (!releaseManagedDiscovery) {
+      if (!releaseOAuthDiscovery) {
         throw new ChatBridgeConflictError(
-          "Wait for the ChatGPT sign-in operation to finish before loading models.",
+          `Wait for the ${profile.connection.kind === "oauth-subscription" ? oauthProviderLabel(profile.connection.provider) : "provider"} sign-in operation to finish before loading models.`,
         );
       }
       let cacheMutationCompleted = false;
       try {
-        const managedGeneration = profile.connection.kind === "codex-subscription"
-          ? await synchronizeAuthGeneration(signal)
+        const oauthGeneration = profile.connection.kind === "oauth-subscription"
+          ? await synchronizeAuthGeneration(profile.connection.provider, signal)
           : undefined;
         const discovered = requireDiscoveredModelCatalog(await (
           dependencies.listModels ??
@@ -1927,10 +2110,10 @@ export async function runAgentFlow(
           fingerprint,
           commandContext.commandId,
         );
-        if (profile.connection.kind === "codex-subscription") {
-          codexCatalogGenerationByConnection.set(
+        if (profile.connection.kind === "oauth-subscription") {
+          oauthCatalogGenerationByConnection.set(
             fingerprint,
-            managedGeneration!,
+            oauthGeneration!,
           );
         }
         status = discovered.length
@@ -1940,7 +2123,7 @@ export async function runAgentFlow(
         throwIfAborted(signal);
         status = error instanceof Error ? error.message : String(error);
       } finally {
-        releaseManagedDiscovery();
+        releaseOAuthDiscovery();
       }
       openSettingsOnLoad = true;
       return cacheMutationCompleted
@@ -1948,47 +2131,75 @@ export async function runAgentFlow(
         : buildState(profile, { signal });
     }
 
-    if (commandInput.kind === "start_codex_login") {
-      await withExclusiveCodexAuth(async () => {
-        const auth = await runCodexAuthOperation("beginLogin", signal);
-        status = codexAuthStatusMessage(auth);
+    if (commandInput.kind === "start_oauth_login") {
+      const provider = commandInput.provider;
+      let resultAuth!: OAuthAuthState;
+      await withExclusiveOAuthAuth(provider, async () => {
+        const auth = await runOAuthAuthOperation(provider, "beginLogin", signal);
+        resultAuth = auth;
+        status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation(undefined, { signal });
+      if (resultAuth.status === "pending") {
+        launchPendingOAuthBrowser(
+          provider,
+          resultAuth.verificationUrl,
+        );
+      }
+      return withOAuthAuthProjection(
+        await buildStateAfterCommandMutation(undefined, { signal }),
+        provider,
+        resultAuth,
+      );
     }
 
-    if (commandInput.kind === "refresh_codex_account") {
-      const pendingState = await withPendingCodexAuthReconciliation(
+    if (commandInput.kind === "refresh_oauth_account") {
+      const provider = commandInput.provider;
+      const pendingState = await withPendingOAuthAuthReconciliation(
+        provider,
         signal,
         async (pendingAuth) => {
-          status = codexAuthStatusMessage(pendingAuth);
+          status = oauthAuthStatusMessage(pendingAuth, provider);
           openSettingsOnLoad = true;
-          return confirmCommandState(() =>
+          return withOAuthAuthProjection(await confirmCommandState(() =>
             buildStateWithAuthReadHeld(undefined, {
-              codexAuthAlreadyResolved: true,
+              oauthAuthAlreadyResolved: true,
               signal,
             })
-          );
+          ), provider, pendingAuth);
         },
       );
       if (pendingState) return pendingState;
-      await withExclusiveCodexAuth(async () => {
-        codexAuth = undefined;
-        const auth = await readCodexAuth(signal, { readiness: true });
-        recordOwnedAuthState(auth);
-        status = codexAuthStatusMessage(auth);
+      let resultAuth!: OAuthAuthState;
+      await withExclusiveOAuthAuth(provider, async () => {
+        oauthAuth = undefined;
+        const auth = await readOAuthAuth(provider, signal, { readiness: true });
+        resultAuth = auth;
+        recordOwnedAuthState(provider, auth);
+        status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation(undefined, { signal });
+      return withOAuthAuthProjection(
+        await buildStateAfterCommandMutation(undefined, { signal }),
+        provider,
+        resultAuth,
+      );
     }
 
-    if (commandInput.kind === "logout_codex") {
-      await withExclusiveCodexAuth(async () => {
-        const auth = await runCodexAuthOperation("logout", signal);
-        status = codexAuthStatusMessage(auth);
+    if (commandInput.kind === "logout_oauth") {
+      const provider = commandInput.provider;
+      let resultAuth!: OAuthAuthState;
+      await withExclusiveOAuthAuth(provider, async () => {
+        const auth = await runOAuthAuthOperation(provider, "logout", signal);
+        resultAuth = auth;
+        status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
       }, signal);
-      return buildStateAfterCommandMutation(undefined, { signal });
+      return withOAuthAuthProjection(
+        await buildStateAfterCommandMutation(undefined, { signal }),
+        provider,
+        resultAuth,
+      );
     }
 
     return assertNeverCommand(commandInput);
@@ -2525,45 +2736,53 @@ export async function runAgentFlow(
         const profile = requireActiveSavedProfile(requestSnapshot.settings);
         const modelSelection = effectiveSessionModelSelection(profile, session);
         const fingerprint = connectionFingerprint(profile);
-        let requestBackend: CodexSubscriptionBackend | undefined;
+        let requestBackend: OAuthSubscriptionBackend | undefined;
         let models: DiscoveredModelInfo[] | undefined;
-        if (profile.connection.kind === "codex-subscription") {
-          releaseModelAuthFence = await modelAuthSendFence.enterManagedUse(signal) ??
+        if (profile.connection.kind === "oauth-subscription") {
+          const modelAuthSendFence = modelAuthSendFenceFor(
+            profile.connection.provider,
+          );
+          releaseModelAuthFence = await modelAuthSendFence.enterOAuthUse(signal) ??
             undefined;
           if (!releaseModelAuthFence) {
             throw new ChatBridgeConflictError(
-              "Wait for the ChatGPT sign-in operation to finish before sending.",
+              `Wait for the ${oauthProviderLabel(profile.connection.provider)} sign-in operation to finish before sending.`,
             );
           }
-          const generation = await synchronizeAuthGeneration(signal);
-          const lease = await modelBackendManager.codexLease(signal);
-          requestBackend = lease.backend;
-          let auth: ManagedAuthState;
+          const generation = await synchronizeAuthGeneration(
+            profile.connection.provider,
+            signal,
+          );
+          const lease = await modelBackendManager.oauthLease(
+            profile.connection.provider,
+            signal,
+          );
+          const oauthBackend = lease.backend;
+          requestBackend = oauthBackend;
+          let auth: OAuthAuthState;
           try {
-            models = requireDiscoveredModelCatalog(
-              await requestBackend.listModels(profile, signal),
-            );
-            auth = await requestBackend.readAuthState(signal);
+            auth = await oauthBackend.readAuthState(signal, { readiness: true });
           } catch (error) {
             throwIfAborted(signal);
-            auth = unavailableCodexAuth();
+            auth = unavailableOAuthAuth(profile.connection.provider, error);
           }
-          codexAuth = auth;
-          const authError = subscriptionSendAuthError(auth);
+          oauthAuth = auth;
+          const authError = subscriptionSendAuthError(
+            auth,
+            profile.connection.provider,
+          );
           if (authError) throw new ChatBridgeConflictError(authError);
-          if (models === undefined) {
-            throw new ChatBridgeConflictError(
-              "The ChatGPT subscription model catalog is unavailable.",
-            );
-          }
+          models = requireDiscoveredModelCatalog(
+            await oauthBackend.listModels(profile, signal),
+          );
           throwIfAborted(signal);
           if (modelAuthSendFence.authGeneration() !== generation) {
             throw new ChatBridgeConflictError(
-              "ChatGPT sign-in changed before the subscription request could start.",
+              `${oauthProviderLabel(profile.connection.provider)} sign-in changed before the subscription request could start.`,
             );
           }
           modelsByConnection.set(fingerprint, models);
-          codexCatalogGenerationByConnection.set(fingerprint, generation);
+          oauthCatalogGenerationByConnection.set(fingerprint, generation);
         } else {
           models = modelsByConnection.get(fingerprint);
           if (models === undefined) {
@@ -2578,11 +2797,11 @@ export async function runAgentFlow(
           throw new Error("The active model catalog is unavailable.");
         }
         if (
-          profile.connection.kind === "codex-subscription" &&
+          profile.connection.kind === "oauth-subscription" &&
           !models.some((model) => model.id === modelSelection.model)
         ) {
           throw new ChatBridgeConflictError(
-            "The selected subscription model is not available for the signed-in ChatGPT account. Choose an available model before sending.",
+            `The selected subscription model is not available for the signed-in ${oauthProviderLabel(profile.connection.provider)} account. Choose an available model before sending.`,
           );
         }
         const runtimeProfile = runtimeProfileForSavedProfile(
@@ -2597,20 +2816,16 @@ export async function runAgentFlow(
         const requestTurnImplementation = dependencies.requestModelTurn ??
           requestModelTurn;
         let preflightBackendForFirstTurn = requestBackend;
-        const firstTurnReservation = requestBackend?.reserveToolTurn();
         const requestTurn = async (
           input: Parameters<AgentModelTurnRequester>[0],
         ) => {
-          const turnReservation = preflightBackendForFirstTurn === undefined
-            ? undefined
-            : firstTurnReservation;
           const backend = preflightBackendForFirstTurn ??
             await modelBackendManager.forProfile(profile, input.signal);
           preflightBackendForFirstTurn = undefined;
           try {
             return await requestTurnImplementation({
               ...input,
-              turnExecutor: turnReservation ?? backend,
+              turnExecutor: backend,
             });
           } finally {
             if (backend.kind === "direct-api") await backend.close();
@@ -2671,17 +2886,7 @@ export async function runAgentFlow(
           requestFailed = true;
           requestError = error;
         }
-        let reservationReleaseFailed = false;
-        let reservationReleaseError: unknown;
-        try {
-          await firstTurnReservation?.release();
-        } catch (error) {
-          reservationReleaseFailed = true;
-          reservationReleaseError = error;
-          modelAuthSendFence.poison(error);
-        }
         if (requestFailed) throw requestError;
-        if (reservationReleaseFailed) throw reservationReleaseError;
         steering.close();
         return buildStateWhileHoldingSessionMutation(sendInput.sessionId);
       } catch (error) {
@@ -2867,33 +3072,49 @@ export async function runAgentFlow(
     unsubscribeSessionState?.();
     unsubscribeGlobalState?.();
     releaseSessionClaims(storageDirectory, modalSessionOwner);
-    managedBackendLeaseClosing = true;
+    oauthBrowserLaunchesClosing = true;
+    for (const launch of oauthBrowserLaunchByProvider.values()) {
+      launch.controller.abort(
+        new Error("Live Smith closed before the OAuth browser finished opening."),
+      );
+    }
+    await Promise.allSettled([...oauthBrowserLaunches]);
+    oauthBackendLeaseClosing = true;
     sharedBackendManagerAcquisitionController?.abort(
-      managedBackendAcquisitionClosedError,
+      oauthBackendAcquisitionClosedError,
     );
     try {
       await bridge?.close();
     } finally {
       let backendCleanupError: unknown;
-      try {
-        if (
-          managedBoundaryUsed &&
-          (dependencies.modelBackendManager !== undefined ||
-            sharedBackendManagerLease !== undefined)
-        ) {
-          const releasePendingCleanup = await modelAuthSendFence
-            .enterPendingOwnerCleanup(modelAuthOwner);
-          if (releasePendingCleanup) try {
-            await modelBackendManager.invalidateCodex();
-          } finally {
-            releasePendingCleanup();
-          }
+      if (
+        oauthProvidersUsed.size > 0 &&
+        (dependencies.modelBackendManager !== undefined ||
+          sharedBackendManagerLease !== undefined)
+      ) {
+        const providers = [...oauthProvidersUsed];
+        const cleanupResults = await Promise.allSettled(
+          providers.map(async (provider) => {
+            const modelAuthSendFence = modelAuthSendFenceFor(provider);
+            const releasePendingCleanup = await modelAuthSendFence
+              .enterPendingOwnerCleanup(modelAuthOwner);
+            if (releasePendingCleanup) try {
+              await modelBackendManager.invalidateOAuth(provider);
+            } finally {
+              releasePendingCleanup();
+            }
+          }),
+        );
+        for (const [index, result] of cleanupResults.entries()) {
+          if (result.status === "fulfilled") continue;
+          const provider = providers[index]!;
+          modelAuthSendFenceFor(provider).poison(result.reason);
+          backendCleanupError ??= result.reason;
         }
-      } catch (error) {
-        modelAuthSendFence.poison(error);
-        backendCleanupError = error;
       }
-      modelAuthSendFence.releaseOwner(modelAuthOwner);
+      for (const provider of oauthProvidersUsed) {
+        modelAuthSendFenceFor(provider).releaseOwner(modelAuthOwner);
+      }
       try {
         if (dependencies.modelBackendManager) {
           await dependencies.modelBackendManager.close();
@@ -2901,12 +3122,14 @@ export async function runAgentFlow(
           try {
             await sharedBackendManagerLeasePromise;
           } catch (error) {
-            if (error !== managedBackendAcquisitionClosedError) throw error;
+            if (error !== oauthBackendAcquisitionClosedError) throw error;
           }
           await sharedBackendManagerLease?.release();
         }
       } catch (error) {
-        modelAuthSendFence.poison(error);
+        for (const provider of oauthProvidersUsed) {
+          modelAuthSendFenceFor(provider).poison(error);
+        }
         backendCleanupError ??= error;
       }
       if (backendCleanupError !== undefined) throw backendCleanupError;
@@ -2914,38 +3137,53 @@ export async function runAgentFlow(
   }
 }
 
-function codexAuthStatusMessage(state: ManagedAuthState): string {
+function oauthAuthStatusMessage(
+  state: OAuthAuthState,
+  provider: OAuthSubscriptionProvider,
+): string {
+  const label = oauthProviderLabel(provider);
   switch (state.status) {
     case "unavailable":
       return state.message;
     case "signed-out":
-      return "Signed out of ChatGPT.";
+      return `Signed out of ${label}.`;
     case "pending":
-      return "Complete ChatGPT sign-in in your browser, then check again.";
+      return `Complete ${label} sign-in in your browser, then check again. ` +
+        "If the browser did not open, use the sign-in link below.";
     case "signed-in":
       return state.subscriptionEligible
-        ? "Signed in with ChatGPT."
-        : ineligibleCodexSubscriptionMessage;
+        ? `Signed in with ${label}.`
+        : `This ${label} account is not eligible for subscription requests.`;
   }
 }
 
-const ineligibleCodexSubscriptionMessage =
-  "This workspace-managed ChatGPT account is not eligible for subscription requests in Live Smith. Use Check after changing accounts, or Logout.";
-
 function subscriptionSendAuthError(
-  state: ManagedAuthState,
+  state: OAuthAuthState,
+  provider: OAuthSubscriptionProvider,
 ): string | undefined {
+  const label = oauthProviderLabel(provider);
   switch (state.status) {
     case "signed-in":
       return state.subscriptionEligible
         ? undefined
-        : ineligibleCodexSubscriptionMessage;
+        : `This ${label} account is not eligible for subscription requests.`;
     case "pending":
-      return "Complete ChatGPT sign-in before sending a subscription request.";
+      return `Complete ${label} sign-in before sending a subscription request.`;
     case "signed-out":
-      return "Sign in to ChatGPT before sending a subscription request.";
+      return `Sign in to ${label} before sending a subscription request.`;
     case "unavailable":
-      return "The ChatGPT subscription is unavailable. Check the account status before sending.";
+      return state.message;
+  }
+}
+
+function oauthProviderLabel(provider: OAuthSubscriptionProvider): string {
+  switch (provider) {
+    case "openai":
+      return "ChatGPT";
+    case "anthropic":
+      return "Claude";
+    case "google":
+      return "Gemini";
   }
 }
 

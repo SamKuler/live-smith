@@ -21,7 +21,7 @@ import {
 
 function subscriptionProfile(): SavedProfile {
   return profileFixture({
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     parameters: {
       reasoning: { mode: "default" },
     },
@@ -46,12 +46,12 @@ test("ChatGPT sign-in crosses a concurrent unrelated Profile refresh", async () 
   const state = stateFixture();
   const harness = await createDialogHarness(state);
   try {
-    harness.select("#connectionKind", "codex-subscription");
+    harness.select("#connectionKind", "oauth-subscription");
     harness.holdNextCommand();
-    harness.click("#codexSignInButton");
+    harness.click("#oauthSignInButton");
     await waitForCondition(
       () => commandCalls(harness).some((call) =>
-        (call.body as { kind?: string }).kind === "start_codex_login"
+        (call.body as { kind?: string }).kind === "start_oauth_login"
       ),
       "Expected ChatGPT sign-in to remain in flight.",
     );
@@ -69,7 +69,7 @@ test("ChatGPT sign-in crosses a concurrent unrelated Profile refresh", async () 
     await harness.settle();
 
     assert.equal(
-      harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
       "Waiting",
     );
     assert.equal(
@@ -97,7 +97,7 @@ test("a same-account Check invalidates the previous subscription Draft catalog",
     label: model.model,
   }));
   state.configuredModelsReady = true;
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -119,7 +119,7 @@ test("a same-account Check invalidates the previous subscription Draft catalog",
     refreshed.configuredModelsReady = false;
     delete refreshed.modelCatalogLoadReceipt;
     harness.setServerState(refreshed);
-    harness.click("#codexCheckAccountButton");
+    harness.click("#oauthCheckAccountButton");
     await harness.settle();
 
     assert.deepEqual(
@@ -152,7 +152,7 @@ test("a peer subscription auth generation invalidates another dirty Draft catalo
     label: model.model,
   }));
   state.configuredModelsReady = true;
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: null,
     planType: "pro",
@@ -178,8 +178,8 @@ test("a peer subscription auth generation invalidates another dirty Draft catalo
     incoming.configuredModels = [{ model: "peer-model", label: "peer-model" }];
     incoming.configuredModelsReady = true;
     incoming.availableModels = [];
-    incoming.codexAuthGeneration = state.codexAuthGeneration + 1;
-    incoming.codexAuth = {
+    incoming.oauthAuthGeneration = state.oauthAuthGeneration + 1;
+    incoming.oauthAuth = {
       status: "signed-in",
       accountLabel: "new-account@example.test",
       planType: "pro",
@@ -216,7 +216,7 @@ test("a peer subscription auth generation invalidates another dirty Draft catalo
 
 test("a Direct Session command drops an old subscription Draft catalog after auth changes", async () => {
   const state = stateFixture();
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -225,7 +225,7 @@ test("a Direct Session command drops an old subscription Draft catalog after aut
   const harness = await createDialogHarness(state);
   let commandReleased = false;
   try {
-    harness.select("#connectionKind", "codex-subscription");
+    harness.select("#connectionKind", "oauth-subscription");
     harness.click("#discoverModelsButton");
     await harness.settle();
     assert.deepEqual(
@@ -244,7 +244,7 @@ test("a Direct Session command drops an old subscription Draft catalog after aut
       "Expected the Approval command to reach the bridge.",
     );
     const incoming = cloneState(state);
-    incoming.codexAuthGeneration += 1;
+    incoming.oauthAuthGeneration += 1;
     incoming.approvalMode = "everything";
     incoming.sessions[0]!.approvalMode = "everything";
     incoming.availableModels = [];
@@ -256,7 +256,7 @@ test("a Direct Session command drops an old subscription Draft catalog after aut
 
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#connectionKind")?.value,
-      "codex-subscription",
+      "oauth-subscription",
     );
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLOptionElement>(
@@ -292,7 +292,7 @@ test("a delayed old subscription catalog cannot cross a newer auth generation", 
   state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
   state.configuredModels = [{ model: profile.defaultModel, label: profile.defaultModel }];
   state.configuredModelsReady = false;
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -311,8 +311,8 @@ test("a delayed old subscription catalog cannot cross a newer auth generation", 
     assert.ok(commandId);
 
     const newer = cloneState(state);
-    newer.codexAuthGeneration += 1;
-    newer.codexAuth = {
+    newer.oauthAuthGeneration += 1;
+    newer.oauthAuth = {
       status: "signed-in",
       accountLabel: "new-account@example.test",
       planType: "pro",
@@ -338,7 +338,7 @@ test("a delayed old subscription catalog cannot cross a newer auth generation", 
       "Expected the newer peer Profile before the delayed catalog.",
     );
     await waitForCondition(
-      () => harness.document.querySelector("#codexAuthStatus")?.textContent
+      () => harness.document.querySelector("#oauthAuthStatus")?.textContent
         ?.includes("new-account@example.test") === true,
       "Expected the newer auth generation before the delayed catalog.",
     );
@@ -409,7 +409,7 @@ test("a delayed old subscription catalog cannot cross a newer auth generation", 
       [profile.defaultModel],
     );
     assert.doesNotMatch(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /studio@example\.test/,
     );
     assert.equal(
@@ -437,16 +437,16 @@ test("a delayed old subscription catalog cannot cross a newer auth generation", 
 
 test("a Direct catalog remains independent of a newer subscription auth generation", async () => {
   const state = stateFixture();
-  state.codexAuthGeneration = 1;
-  state.codexAuth = {
+  state.oauthAuthGeneration = 1;
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "new-account@example.test",
     planType: "pro",
     subscriptionEligible: true,
   };
   const stale = cloneState(state);
-  stale.codexAuthGeneration = 0;
-  stale.codexAuth = {
+  stale.oauthAuthGeneration = 0;
+  stale.oauthAuth = {
     status: "signed-in",
     accountLabel: "old-account@example.test",
     planType: "plus",
@@ -465,12 +465,76 @@ test("a Direct catalog remains independent of a newer subscription auth generati
       ["model-a · Default", "Discovered model · model-discovered"],
     );
     assert.match(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /new-account@example\.test/,
     );
     assert.doesNotMatch(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /old-account@example\.test/,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a provider switch adopts its auth state without comparing another provider's generation", async () => {
+  const openAIProfile = subscriptionProfile();
+  const googleProfile = profileFixture({
+    id: "google-profile",
+    name: "Gemini subscription",
+    connection: { kind: "oauth-subscription", provider: "google" },
+    model: "gemini-3.1-pro-preview",
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  });
+  const state = stateFixture();
+  state.settings.profiles = [openAIProfile, googleProfile];
+  state.settings.activeProfileId = openAIProfile.id;
+  state.activeProfileRevision = profileRevisionFixture(openAIProfile);
+  state.modelStateSource = modelStateSourceFixture(openAIProfile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(openAIProfile);
+  state.oauthAuthProvider = "openai";
+  state.oauthAuthGeneration = 3;
+  state.oauthAuth = {
+    status: "signed-in",
+    accountLabel: "chatgpt@example.test",
+    planType: "ChatGPT subscription",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const google = cloneState(state);
+    google.settings.activeProfileId = googleProfile.id;
+    google.activeProfileRevision = profileRevisionFixture(googleProfile);
+    google.modelStateSource = modelStateSourceFixture(googleProfile);
+    google.runtimeProfile = runtimeSummaryForHarnessProfile(googleProfile);
+    google.configuredModels = [{
+      model: googleProfile.defaultModel,
+      label: googleProfile.defaultModel,
+    }];
+    google.oauthAuthProvider = "google";
+    google.oauthAuthGeneration = 1;
+    google.oauthAuth = {
+      status: "signed-in",
+      accountLabel: "gemini@example.test",
+      planType: "Google Cloud Code Assist",
+      subscriptionEligible: true,
+    };
+    harness.setServerState(google);
+    harness.emitServerEvent({
+      type: "profile_settings_changed",
+      commandId: "switch-to-google-provider",
+    });
+    await harness.settle();
+
+    assert.match(
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
+      /gemini@example\.test/,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
+      /chatgpt@example\.test/,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -497,7 +561,8 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
   const harness = await createDialogHarness(state);
   try {
     assert.equal(harness.document.querySelector<HTMLElement>("#directApiFields")?.hidden, false);
-    assert.equal(harness.document.querySelector<HTMLElement>("#codexAuthPanel")?.hidden, true);
+    assert.equal(harness.document.querySelector<HTMLElement>("#oauthProviderField")?.hidden, true);
+    assert.equal(harness.document.querySelector<HTMLElement>("#oauthAuthPanel")?.hidden, true);
 
     harness.select("#apiFamily", "anthropic");
     assert.equal(
@@ -506,7 +571,7 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     );
     assert.match(
       harness.document.querySelector("#anthropicSubscriptionHint")?.textContent ?? "",
-      /subscription login is not supported.*prior written approval/i,
+      /choose Account subscription \(OAuth\)/i,
     );
 
     harness.select("#apiFamily", "openai");
@@ -518,10 +583,11 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     harness.select("#overrideInputImage", "true");
     harness.input("#extraBody", '{"custom":true}');
 
-    harness.select("#connectionKind", "codex-subscription");
+    harness.select("#connectionKind", "oauth-subscription");
 
     assert.equal(harness.document.querySelector<HTMLElement>("#directApiFields")?.hidden, true);
-    assert.equal(harness.document.querySelector<HTMLElement>("#codexAuthPanel")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#oauthProviderField")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#oauthAuthPanel")?.hidden, false);
     assert.equal(harness.document.querySelector<HTMLDetailsElement>("#advancedSettings")?.hidden, true);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#temperature")?.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#temperature")?.disabled, true);
@@ -529,15 +595,15 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     assert.equal(harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.disabled, true);
     assert.match(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
-      /App Server owns the output limit/i,
+      /subscription backend owns the output limit/i,
     );
     assert.equal(harness.document.querySelector<HTMLInputElement>("#reasoningBudgetTokens")?.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#reasoningBudgetTokens")?.disabled, true);
-    assert.equal(harness.document.querySelector<HTMLSelectElement>("#reasoningMode")?.value, "default");
+    assert.equal(harness.document.querySelector<HTMLSelectElement>("#reasoningMode")?.value, "disabled");
     assert.equal(
       [...harness.document.querySelectorAll<HTMLOptionElement>("#reasoningMode option")]
         .some((option) => option.value === "disabled"),
-      false,
+      true,
     );
     assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.checked, false);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.disabled, true);
@@ -551,13 +617,13 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     );
     assert.equal(
       harness.document.querySelector<HTMLOptionElement>(
-        '#connectionKind option[value="codex-subscription"]',
+        '#connectionKind option[value="oauth-subscription"]',
       )?.textContent,
-      "ChatGPT subscription",
+      "Account subscription (OAuth)",
     );
     assert.equal(
       harness.document.querySelector(".subscription-auth-note")?.textContent,
-      "Uses your ChatGPT plan. API billing stays off.",
+      "Uses your ChatGPT account through the Codex backend API.",
     );
     assert.equal(
       harness.document.querySelector(".subscription-auth-details summary")?.textContent,
@@ -568,8 +634,8 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
         (item) => item.textContent,
       ),
       [
-        "Codex CLI 0.148.x must be on PATH.",
-        "Personal ChatGPT plans only; workspace-managed accounts are not eligible.",
+        "No provider CLI or API key is required.",
+        "OAuth credentials stay in Live Smith’s private Ableton storage.",
       ],
     );
     assert.deepEqual(harness.errors, []);
@@ -578,10 +644,88 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
   }
 });
 
-test("subscription model discovery and Save use only the managed connection contract", async () => {
+test("Sign in relies on the host browser launch and keeps a verified fallback link", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.oauthAuth = { status: "signed-out" };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLMetaElement>('meta[name="referrer"]')
+        ?.content,
+      "no-referrer",
+    );
+    harness.holdNextCommand();
+    harness.document.querySelector<HTMLButtonElement>("#oauthSignInButton")?.focus();
+    harness.click("#oauthSignInButton");
+
+    assert.deepEqual(harness.windowOpenAttempts, []);
+
+    harness.releaseHeldCommand();
+    await harness.settle();
+
+    assert.deepEqual(harness.windowOpenAttempts, []);
+    assert.equal(
+      harness.document.querySelector<HTMLAnchorElement>("#oauthVerificationLink")
+        ?.href,
+      "https://auth.openai.com/codex/device",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a definitive login failure restores a focused retry", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.oauthAuth = { status: "signed-out" };
+  const harness = await createDialogHarness(state, undefined, {
+    oauthLoginResult: {
+      status: "unavailable",
+      message: "ChatGPT device authorization is unavailable.",
+      definitive: true,
+    },
+  });
+  try {
+    const signIn = harness.document.querySelector<HTMLButtonElement>(
+      "#oauthSignInButton",
+    );
+    signIn?.focus();
+    harness.click("#oauthSignInButton");
+    await harness.settle();
+
+    assert.deepEqual(harness.windowOpenAttempts, []);
+    assert.equal(signIn?.hidden, false);
+    assert.equal(signIn?.disabled, false);
+    assert.equal(signIn?.textContent, "Try sign-in again");
+    assert.equal(harness.document.activeElement, signIn);
+
+    harness.click("#oauthSignInButton");
+    await harness.settle();
+    assert.equal(
+      commandCalls(harness).filter((call) =>
+        (call.body as { kind?: string }).kind === "start_oauth_login"
+      ).length,
+      2,
+    );
+    assert.deepEqual(harness.windowOpenAttempts, []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("subscription model discovery and Save use only the OAuth connection contract", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.select("#connectionKind", "codex-subscription");
+    harness.select("#connectionKind", "oauth-subscription");
     harness.click("#discoverModelsButton");
     await harness.settle();
 
@@ -591,7 +735,7 @@ test("subscription model discovery and Save use only the managed connection cont
     };
     assert.equal(discovery.kind, "discover_models");
     assert.deepEqual(discovery.profile.connection, {
-      kind: "codex-subscription",
+      kind: "oauth-subscription",
       provider: "openai",
     });
     assert.deepEqual(discovery.profile.models[0]?.advanced, {});
@@ -613,7 +757,7 @@ test("subscription model discovery and Save use only the managed connection cont
     };
     assert.equal(saved.kind, "save_profile");
     assert.deepEqual(saved.profile.connection, {
-      kind: "codex-subscription",
+      kind: "oauth-subscription",
       provider: "openai",
     });
     assert.deepEqual(saved.profile.models[0]?.advanced, {});
@@ -632,34 +776,34 @@ test("device-code login controls send strict commands and render backend state s
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = { status: "signed-out" };
+  state.oauthAuth = { status: "signed-out" };
   const harness = await createDialogHarness(state);
   try {
-    const panel = harness.document.querySelector<HTMLElement>("#codexAuthPanel");
+    const panel = harness.document.querySelector<HTMLElement>("#oauthAuthPanel");
     const signIn = harness.document.querySelector<HTMLButtonElement>(
-      "#codexSignInButton",
+      "#oauthSignInButton",
     );
     const check = harness.document.querySelector<HTMLButtonElement>(
-      "#codexCheckAccountButton",
+      "#oauthCheckAccountButton",
     );
     const logout = harness.document.querySelector<HTMLButtonElement>(
-      "#codexLogoutButton",
+      "#oauthLogoutButton",
     );
     assert.equal(
-      harness.document.querySelector("#codexAuthHeading")?.tagName,
+      harness.document.querySelector("#oauthAuthHeading")?.tagName,
       "H3",
     );
     assert.equal(
-      harness.document.querySelector("#codexAuthState")?.getAttribute("role"),
+      harness.document.querySelector("#oauthAuthState")?.getAttribute("role"),
       "status",
     );
     assert.equal(
-      harness.document.querySelector("#codexAuthState")?.getAttribute("aria-atomic"),
+      harness.document.querySelector("#oauthAuthState")?.getAttribute("aria-atomic"),
       "true",
     );
     assert.equal(panel?.dataset.authState, "signed-out");
     assert.equal(
-      harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
       "Signed out",
     );
     assert.match(
@@ -667,7 +811,7 @@ test("device-code login controls send strict commands and render backend state s
       /sign in to continue/i,
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+      harness.document.querySelector<HTMLElement>("#oauthAuthStateDetail")?.hidden,
       true,
       "the signed-out state should not repeat the persistent billing note",
     );
@@ -679,7 +823,7 @@ test("device-code login controls send strict commands and render backend state s
 
     harness.holdNextCommand();
     signIn?.focus();
-    harness.click("#codexSignInButton");
+    harness.click("#oauthSignInButton");
     await Promise.resolve();
     harness.document.body.tabIndex = -1;
     harness.document.body.focus();
@@ -689,27 +833,27 @@ test("device-code login controls send strict commands and render backend state s
 
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "start_codex_login" },
+      body: { kind: "start_oauth_login", provider: "openai" },
     });
-    const link = harness.document.querySelector<HTMLAnchorElement>("#codexAuthStatus a");
+    const link = harness.document.querySelector<HTMLAnchorElement>("#oauthAuthStatus a");
     assert.equal(link?.href, "https://auth.openai.com/codex/device");
     assert.equal(link?.target, "_blank");
     assert.match(link?.rel ?? "", /\bnoopener\b/);
     assert.match(link?.rel ?? "", /\bnoreferrer\b/);
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#codexUserCode")?.value,
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
       "ABCD-EFGH",
     );
     assert.equal(panel?.dataset.authState, "pending");
     assert.equal(
-      harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
       "Waiting",
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#codexDeviceCodeTicket")?.hidden,
+      harness.document.querySelector<HTMLElement>("#oauthDeviceCodeTicket")?.hidden,
       false,
     );
-    assert.match(link?.textContent ?? "", /open OpenAI sign-in page/i);
+    assert.match(link?.textContent ?? "", /open ChatGPT sign-in page/i);
     assert.equal(signIn?.hidden, true);
     assert.equal(check?.textContent, "Check sign-in");
     assert.equal(check?.classList.contains("primary"), true);
@@ -718,28 +862,28 @@ test("device-code login controls send strict commands and render backend state s
     assert.equal(logout?.hidden, false);
     assert.equal(harness.document.activeElement, link);
     assert.equal(
-      harness.document.querySelector("#codexAuthState a"),
+      harness.document.querySelector("#oauthAuthState a"),
       null,
       "the polite status region must not contain interactive controls",
     );
 
-    harness.click("#codexCheckAccountButton");
+    harness.click("#oauthCheckAccountButton");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_codex_account" },
+      body: { kind: "refresh_oauth_account", provider: "openai" },
     });
     assert.match(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /studio@example\.test \(pro\)/i,
     );
     assert.equal(panel?.dataset.authState, "signed-in");
     assert.equal(
-      harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
       "Connected",
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#codexDeviceCodeTicket")?.hidden,
+      harness.document.querySelector<HTMLElement>("#oauthDeviceCodeTicket")?.hidden,
       true,
     );
     assert.equal(check?.textContent, "Refresh account");
@@ -747,22 +891,22 @@ test("device-code login controls send strict commands and render backend state s
     assert.equal(logout?.dataset.busyLabel, "");
 
     logout?.focus();
-    harness.click("#codexLogoutButton");
+    harness.click("#oauthLogoutButton");
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_codex_account" },
+      body: { kind: "refresh_oauth_account", provider: "openai" },
     });
     assert.match(
       harness.document.querySelector("#appConfirmation")?.textContent ?? "",
-      /Sign out of ChatGPT.*pending device login/is,
+      /Sign out of ChatGPT.*pending login/is,
     );
     await harness.cancelAppConfirmation();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_codex_account" },
+      body: { kind: "refresh_oauth_account", provider: "openai" },
     });
 
-    harness.click("#codexLogoutButton");
+    harness.click("#oauthLogoutButton");
     harness.document.querySelector<HTMLButtonElement>("#appConfirmationCancel")
       ?.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
         bubbles: true,
@@ -776,11 +920,11 @@ test("device-code login controls send strict commands and render backend state s
     );
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_codex_account" },
+      body: { kind: "refresh_oauth_account", provider: "openai" },
     });
 
     harness.holdNextCommand();
-    harness.click("#codexLogoutButton");
+    harness.click("#oauthLogoutButton");
     await harness.acceptAppConfirmation();
     assert.equal(logout?.textContent, "Signing out…");
     harness.document.body.focus();
@@ -789,10 +933,10 @@ test("device-code login controls send strict commands and render backend state s
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "logout_codex" },
+      body: { kind: "logout_oauth", provider: "openai" },
     });
     assert.match(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /sign in to continue/i,
     );
     assert.equal(panel?.dataset.authState, "signed-out");
@@ -811,7 +955,7 @@ test("pending sign-in cancellation restores its action after a failed command", 
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "pending",
     verificationUrl: "https://auth.openai.com/codex/device",
     userCode: "ABCD-EFGH",
@@ -819,15 +963,15 @@ test("pending sign-in cancellation restores its action after a failed command", 
   const harness = await createDialogHarness(state);
   try {
     const logout = harness.document.querySelector<HTMLButtonElement>(
-      "#codexLogoutButton",
+      "#oauthLogoutButton",
     );
     const link = harness.document.querySelector<HTMLAnchorElement>(
-      "#codexVerificationLink",
+      "#oauthVerificationLink",
     );
     harness.failNextCommand("Could not cancel sign-in");
     harness.holdNextCommand();
     logout?.focus();
-    harness.click("#codexLogoutButton");
+    harness.click("#oauthLogoutButton");
     await harness.acceptAppConfirmation();
 
     assert.equal(logout?.textContent, "Cancelling…");
@@ -855,20 +999,20 @@ test("device-code values are text-only and unsafe backend URLs are not links", a
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "pending",
     verificationUrl: "javascript:alert(1)",
     userCode: '<img src=x onerror="alert(1)">',
   };
   const harness = await createDialogHarness(state);
   try {
-    const status = harness.document.querySelector("#codexAuthStatus");
-    const link = status?.querySelector<HTMLAnchorElement>("#codexVerificationLink");
+    const status = harness.document.querySelector("#oauthAuthStatus");
+    const link = status?.querySelector<HTMLAnchorElement>("#oauthVerificationLink");
     assert.equal(link?.hidden, true);
     assert.equal(link?.hasAttribute("href"), false);
     assert.equal(status?.querySelector("img"), null);
     assert.equal(
-      status?.querySelector<HTMLInputElement>("#codexUserCode")?.value,
+      status?.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
       '<img src=x onerror="alert(1)">',
     );
     assert.doesNotMatch(status?.textContent ?? "", /javascript:alert\(1\)/);
@@ -890,7 +1034,7 @@ test("device-code links are limited to the verified OpenAI HTTPS host", async ()
     state.settings.profiles = [profile];
     state.settings.activeProfileId = profile.id;
     state.modelStateSource = modelStateSourceFixture(profile);
-    state.codexAuth = {
+    state.oauthAuth = {
       status: "pending",
       verificationUrl,
       userCode: "ABCD-EFGH",
@@ -898,16 +1042,16 @@ test("device-code links are limited to the verified OpenAI HTTPS host", async ()
     const harness = await createDialogHarness(state);
     try {
       const link = harness.document.querySelector<HTMLAnchorElement>(
-        "#codexVerificationLink",
+        "#oauthVerificationLink",
       );
       assert.equal(link?.hidden, true);
       assert.equal(link?.hasAttribute("href"), false);
       assert.doesNotMatch(
-        harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+        harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
         new RegExp(verificationUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
       assert.match(
-        harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+        harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
         /could not verify the sign-in page/i,
       );
       assert.deepEqual(harness.errors, []);
@@ -917,13 +1061,76 @@ test("device-code links are limited to the verified OpenAI HTTPS host", async ()
   }
 });
 
+test("OAuth provider selection drives native Claude and Gemini commands", async () => {
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    harness.select("#connectionKind", "oauth-subscription");
+    harness.select("#oauthProvider", "anthropic");
+    assert.match(
+      harness.document.querySelector("#oauthAuthNote")?.textContent ?? "",
+      /Claude OAuth.*Anthropic Messages/i,
+    );
+    harness.click("#oauthSignInButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "start_oauth_login", provider: "anthropic" },
+    });
+
+    harness.select("#oauthProvider", "google");
+    assert.match(
+      harness.document.querySelector("#oauthAuthNote")?.textContent ?? "",
+      /Google account.*Cloud Code Assist/i,
+    );
+    harness.click("#oauthCheckAccountButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "refresh_oauth_account", provider: "google" },
+    });
+  } finally {
+    harness.close();
+  }
+});
+
+test("browser OAuth pending state supports a link without a device code", async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    connection: { kind: "oauth-subscription", provider: "anthropic" },
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  });
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.oauthAuthProvider = "anthropic";
+  state.oauthAuth = {
+    status: "pending",
+    verificationUrl: "https://claude.ai/oauth/authorize?client_id=test",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLAnchorElement>("#oauthVerificationLink")?.href,
+      "https://claude.ai/oauth/authorize?client_id=test",
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(".subscription-auth-code-ticket")?.hidden,
+      true,
+    );
+  } finally {
+    harness.close();
+  }
+});
+
 test("global follow-up saves and events preserve pending credential-free auth state", async () => {
   const state = stateFixture();
   const profile = subscriptionProfile();
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "pending",
     verificationUrl: "https://auth.openai.com/codex/device",
     userCode: "ABCD-EFGH",
@@ -941,7 +1148,7 @@ test("global follow-up saves and events preserve pending credential-free auth st
       },
     });
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#codexUserCode")?.value,
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
       "ABCD-EFGH",
     );
 
@@ -954,7 +1161,7 @@ test("global follow-up saves and events preserve pending credential-free auth st
       commandId: "other-dialog-save",
     });
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#codexUserCode")?.value,
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
       "ABCD-EFGH",
     );
     assert.equal(
@@ -975,7 +1182,7 @@ test("Apply confirmation locks Profile and auth controls but permits follow-up s
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -1003,9 +1210,9 @@ test("Apply confirmation locks Profile and auth controls but permits follow-up s
       "#profileName",
       "#connectionKind",
       "#saveProfileButton",
-      "#codexSignInButton",
-      "#codexCheckAccountButton",
-      "#codexLogoutButton",
+      "#oauthSignInButton",
+      "#oauthCheckAccountButton",
+      "#oauthLogoutButton",
     ]) {
       assert.equal(
         harness.document.querySelector<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>(
@@ -1034,12 +1241,12 @@ test("Apply confirmation locks Profile and auth controls but permits follow-up s
     assert.ok(harness.document.querySelector(".confirm-card"));
     assert.equal(
       harness.document.querySelector<HTMLButtonElement>(
-        "#codexCheckAccountButton",
+        "#oauthCheckAccountButton",
       )?.disabled,
       true,
     );
     assert.match(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /studio@example\.test \(pro\)/i,
     );
 
@@ -1082,16 +1289,18 @@ test("clean subscription Profiles disable Send until an eligible account is sign
     {
       auth: {
         status: "unavailable",
-        message: "Codex App Server is unavailable.",
+        definitive: true,
+        message:
+          "The Manual proxy could not be reached. Start the proxy app, check the proxy URL, or choose No proxy.",
       } as const,
       badge: "Unavailable",
       checkLabel: "Check again",
       detailHidden: false,
-      logoutHidden: true,
-      message: /ChatGPT subscription is unavailable/i,
+      logoutHidden: false,
+      message: /Manual proxy could not be reached/i,
       panelState: "unavailable",
-      signInHidden: true,
-      title: /subscription unavailable/i,
+      signInHidden: false,
+      title: /sign-in failed/i,
     },
     {
       auth: {
@@ -1117,36 +1326,36 @@ test("clean subscription Profiles disable Send until an eligible account is sign
     state.settings.profiles = [profile];
     state.settings.activeProfileId = profile.id;
     state.modelStateSource = modelStateSourceFixture(profile);
-    state.codexAuth = entry.auth;
+    state.oauthAuth = entry.auth;
     const harness = await createDialogHarness(state);
     try {
       const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
       assert.equal(
-        harness.document.querySelector<HTMLElement>("#codexAuthPanel")?.dataset.authState,
+        harness.document.querySelector<HTMLElement>("#oauthAuthPanel")?.dataset.authState,
         entry.panelState,
       );
       assert.equal(
-        harness.document.querySelector("#codexAuthStateBadge")?.textContent,
+        harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
         entry.badge,
       );
       assert.match(
-        harness.document.querySelector("#codexAuthStateLabel")?.textContent ?? "",
+        harness.document.querySelector("#oauthAuthStateLabel")?.textContent ?? "",
         entry.title,
       );
       assert.equal(
-        harness.document.querySelector<HTMLButtonElement>("#codexSignInButton")?.hidden,
+        harness.document.querySelector<HTMLButtonElement>("#oauthSignInButton")?.hidden,
         entry.signInHidden,
       );
       assert.equal(
-        harness.document.querySelector("#codexCheckAccountButton")?.textContent,
+        harness.document.querySelector("#oauthCheckAccountButton")?.textContent,
         entry.checkLabel,
       );
       assert.equal(
-        harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+        harness.document.querySelector<HTMLElement>("#oauthAuthStateDetail")?.hidden,
         entry.detailHidden,
       );
       assert.equal(
-        harness.document.querySelector<HTMLButtonElement>("#codexLogoutButton")?.hidden,
+        harness.document.querySelector<HTMLButtonElement>("#oauthLogoutButton")?.hidden,
         entry.logoutHidden,
       );
       assert.equal(send?.disabled, true, entry.auth.status);
@@ -1170,18 +1379,18 @@ test("clean subscription Profiles disable Send until an eligible account is sign
       );
       if (entry.auth.status === "signed-in") {
         assert.match(
-          harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
-          /workspace-managed.*supported.*sign out.*personal/i,
+          harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
+          /cannot use the selected subscription backend/i,
         );
         assert.equal(
           harness.document.querySelector<HTMLButtonElement>(
-            "#codexCheckAccountButton",
+            "#oauthCheckAccountButton",
           )?.disabled,
           false,
         );
         assert.equal(
           harness.document.querySelector<HTMLButtonElement>(
-            "#codexLogoutButton",
+            "#oauthLogoutButton",
           )?.disabled,
           false,
         );
@@ -1199,7 +1408,7 @@ test("a definitive sign-in failure offers a new ChatGPT sign-in attempt", async 
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "unavailable",
     message: "ChatGPT sign-in did not complete. Start a new sign-in and try again.",
     definitive: true,
@@ -1207,17 +1416,49 @@ test("a definitive sign-in failure offers a new ChatGPT sign-in attempt", async 
   const harness = await createDialogHarness(state);
   try {
     const signIn = harness.document.querySelector<HTMLButtonElement>(
-      "#codexSignInButton",
+      "#oauthSignInButton",
     );
     assert.equal(signIn?.hidden, false);
     assert.equal(signIn?.disabled, false);
     assert.match(signIn?.textContent ?? "", /try sign-in again/i);
 
-    harness.click("#codexSignInButton");
+    harness.click("#oauthSignInButton");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "start_codex_login" },
+      body: { kind: "start_oauth_login", provider: "openai" },
+    });
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("an unavailable OAuth account can sign out before starting over", async () => {
+  const state = stateFixture();
+  const profile = subscriptionProfile();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.oauthAuth = {
+    status: "unavailable",
+    message: "ChatGPT OAuth refresh failed.",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const logout = harness.document.querySelector<HTMLButtonElement>(
+      "#oauthLogoutButton",
+    );
+    assert.equal(logout?.hidden, false);
+    assert.equal(logout?.disabled, false);
+
+    harness.click("#oauthLogoutButton");
+    await harness.acceptAppConfirmation();
+    await harness.settle();
+
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: { kind: "logout_oauth", provider: "openai" },
     });
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -1231,7 +1472,7 @@ test("clean subscription Profiles enable Send for an eligible signed-in account"
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: '<img src=x onerror="alert(1)">',
     planType: "pro",
@@ -1239,13 +1480,13 @@ test("clean subscription Profiles enable Send for an eligible signed-in account"
   };
   const harness = await createDialogHarness(state);
   try {
-    assert.equal(harness.document.querySelector("#codexAuthStatus img"), null);
+    assert.equal(harness.document.querySelector("#oauthAuthStatus img"), null);
     assert.match(
-      harness.document.querySelector("#codexAuthStatus")?.textContent ?? "",
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
       /<img src=x onerror="alert\(1\)">/,
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#codexAuthStateDetail")?.hidden,
+      harness.document.querySelector<HTMLElement>("#oauthAuthStateDetail")?.hidden,
       false,
     );
     const send = harness.document.querySelector<HTMLButtonElement>("#sendButton");
@@ -1281,13 +1522,13 @@ test("clean Direct API Profiles keep the composer shortcut available", async () 
   }
 });
 
-test("verified subscription image and audio inputs are sendable while PDF stays disabled", async () => {
+test("OAuth subscription image input is sendable while audio and PDF stay disabled", async () => {
   const state = stateFixture();
   const profile = subscriptionProfile();
   state.settings.profiles = [profile];
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
-  state.codexAuth = {
+  state.oauthAuth = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -1297,7 +1538,7 @@ test("verified subscription image and audio inputs are sendable while PDF stays 
     profile: {
       id: profile.id,
       name: profile.name,
-      connectionKind: "codex-subscription",
+      connectionKind: "oauth-subscription",
       apiFamily: "openai",
       apiMode: null,
     },
@@ -1315,10 +1556,7 @@ test("verified subscription image and audio inputs are sendable while PDF stays 
       pdf: "supported",
     },
   };
-  state.pendingAttachments = [
-    pendingImage("image-1", "cover.png"),
-    pendingAudio("audio-1", "mix.wav"),
-  ];
+  state.pendingAttachments = [pendingImage("image-1", "cover.png")];
   const supportedHarness = await createDialogHarness(state);
   try {
     supportedHarness.input("#prompt", "Review these inputs");
@@ -1331,6 +1569,22 @@ test("verified subscription image and audio inputs are sendable while PDF stays 
     assert.deepEqual(supportedHarness.errors, []);
   } finally {
     supportedHarness.close();
+  }
+
+  state.pendingAttachments = [pendingAudio("audio-1", "mix.wav")];
+  const audioHarness = await createDialogHarness(state);
+  try {
+    audioHarness.input("#prompt", "Review the audio");
+    audioHarness.click("#sendButton");
+    await audioHarness.settle();
+    assert.equal(audioHarness.calls.some((call) => call.path === "/send"), false);
+    assert.match(
+      audioHarness.document.querySelector("#status")?.textContent ?? "",
+      /OpenAI Chat Completions Profile/i,
+    );
+    assert.deepEqual(audioHarness.errors, []);
+  } finally {
+    audioHarness.close();
   }
 
   state.pendingAttachments = [pendingDocument("pdf-1", "score.pdf", "application/pdf")];

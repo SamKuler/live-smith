@@ -8,10 +8,13 @@ import {
   freshEmptyAgentSettings,
   incrementContextUsageVisibilityRevision,
   incrementDefaultFollowUpBehaviorRevision,
+  incrementNetworkProxyRevision,
   isDefaultFollowUpBehavior,
+  normalizeNetworkProxySettings,
   validateDraftProfileForSave,
   type AgentSettings,
   type DefaultFollowUpBehavior,
+  type NetworkProxySettings,
   type SavedProfile,
 } from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
@@ -56,10 +59,17 @@ export type GlobalSettingsPatch =
   | {
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       showContextUsage?: never;
+      networkProxy?: never;
     }
   | {
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
+      networkProxy?: never;
+    }
+  | {
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy: NetworkProxySettings;
     };
 
 export function savedProfileRevision(profile: SavedProfile): string {
@@ -174,7 +184,16 @@ export async function saveGlobalSettings(
     input,
     "showContextUsage",
   );
-  if (hasFollowUpBehavior === hasContextUsage) {
+  const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
+    input,
+    "networkProxy",
+  );
+  if (
+    Number(hasFollowUpBehavior) +
+      Number(hasContextUsage) +
+      Number(hasNetworkProxy) !== 1 ||
+    Object.keys(input).length !== 1
+  ) {
     throw new Error("Global settings update must contain exactly one setting.");
   }
   if (
@@ -186,6 +205,9 @@ export async function saveGlobalSettings(
   if (hasContextUsage && typeof input.showContextUsage !== "boolean") {
     throw new Error("Show context usage must be a boolean.");
   }
+  const networkProxy = hasNetworkProxy
+    ? normalizeNetworkProxySettings(input.networkProxy)
+    : undefined;
   return withStorageTransaction(storageDirectory, async () => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
     return persistSettings(storageDirectory, {
@@ -198,12 +220,19 @@ export async function saveGlobalSettings(
                 settings.defaultFollowUpBehaviorRevision,
               ),
           }
-        : {
+        : hasContextUsage
+        ? {
             showContextUsage: input.showContextUsage!,
             contextUsageVisibilityRevision:
               incrementContextUsageVisibilityRevision(
                 settings.contextUsageVisibilityRevision,
               ),
+          }
+        : {
+            networkProxy: networkProxy!,
+            networkProxyRevision: incrementNetworkProxyRevision(
+              settings.networkProxyRevision,
+            ),
           }),
     });
   });

@@ -444,7 +444,7 @@ test("capability reads reject mutations, extra fields, oversized bodies, and inv
   try {
     for (const body of [
       jsonBody,
-      JSON.stringify({ kind: "logout_codex" }),
+      JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
       JSON.stringify({ kind: "select_session", sessionId: "session-2" }),
       JSON.stringify({ ...capabilityReadInput, settings: {} }),
       JSON.stringify({ ...capabilityReadInput, sessionId: 1 }),

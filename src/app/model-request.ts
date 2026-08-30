@@ -66,6 +66,7 @@ export interface ModelTurnRequestInput {
   editScopes?: readonly EditScope[];
   agentMessages: ModelConversationMessage[];
   tools: ModelTool[];
+  reconnectState?: object;
   signal: AbortSignal;
   onDelta(delta: string): Promise<void> | void;
   onHostedWebSearch?(
@@ -90,6 +91,7 @@ export function buildModelRequest(input: {
   agentMessages: ModelConversationMessage[];
   runtimeProfile: RuntimeProfile;
   tools: ModelTool[];
+  reconnectState?: object;
   signal?: AbortSignal;
   onDelta?: ((delta: string) => Promise<void> | void) | undefined;
   onHostedWebSearch?: ((
@@ -132,6 +134,7 @@ export function buildModelRequest(input: {
     tools: input.tools,
     runtimeProfile: input.runtimeProfile,
   };
+  if (input.reconnectState) request.reconnectState = input.reconnectState;
   if (input.signal) request.signal = input.signal;
   if (input.onDelta) request.onDelta = input.onDelta;
   if (input.onHostedWebSearch) {

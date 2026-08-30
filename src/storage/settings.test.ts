@@ -115,7 +115,7 @@ function profileV4(overrides: ProfileOverrides = {}) {
 test("loadAgentSettings starts empty and rejects every legacy or invalid settings shape", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   assert.deepEqual(await loadAgentSettings(directory), {
-    schemaVersion: 6,
+    schemaVersion: 8,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
@@ -123,6 +123,8 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     defaultFollowUpBehaviorRevision: "0",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   });
 
   const legacyShapes = [
@@ -196,12 +198,14 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
     }, null, 2);
     await fs.writeFile(settingsPath, original);
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 6);
+    assert.equal(loaded.schemaVersion, 8);
     assert.equal(loaded.approvalMode, approvalMode);
     assert.equal(loaded.defaultFollowUpBehavior, "queue");
     assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
     assert.equal(loaded.showContextUsage, true);
     assert.equal(loaded.contextUsageVisibilityRevision, "0");
+    assert.deepEqual(loaded.networkProxy, { mode: "none", url: "" });
+    assert.equal(loaded.networkProxyRevision, "0");
     assert.deepEqual(loaded.profiles, [{
       id: "profile-1",
       name: "Studio",
@@ -235,11 +239,13 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   await fs.writeFile(settingsPath, original);
 
   const loaded = await loadAgentSettings(directory);
-  assert.equal(loaded.schemaVersion, 6);
+  assert.equal(loaded.schemaVersion, 8);
   assert.equal(loaded.defaultFollowUpBehavior, "queue");
   assert.equal(loaded.defaultFollowUpBehaviorRevision, "0");
   assert.equal(loaded.showContextUsage, true);
   assert.equal(loaded.contextUsageVisibilityRevision, "0");
+  assert.deepEqual(loaded.networkProxy, { mode: "none", url: "" });
+  assert.equal(loaded.networkProxyRevision, "0");
   assert.equal(loaded.approvalMode, "everything");
   assert.equal(loaded.activeProfileId, "profile-1");
   assert.equal(loaded.profiles[0]?.connection.kind, "direct-api");
@@ -248,7 +254,7 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   const saved = await saveGlobalSettings(directory, {
     defaultFollowUpBehavior: "steer",
   });
-  assert.equal(saved.schemaVersion, 6);
+  assert.equal(saved.schemaVersion, 8);
   assert.equal(saved.defaultFollowUpBehavior, "steer");
   assert.equal(saved.defaultFollowUpBehaviorRevision, "1");
   assert.equal(saved.showContextUsage, true);
@@ -263,13 +269,13 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
 });
 
 test("the migration decoder accepts only canonical current per-field revisions", () => {
-  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 6);
+  assert.equal(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, 8);
   const revisions = ["0", "7", "90071992547409931234567890"];
   for (const defaultFollowUpBehavior of ["queue", "steer"] as const) {
     for (const defaultFollowUpBehaviorRevision of revisions) {
       for (const contextUsageVisibilityRevision of revisions) {
         const current = {
-          schemaVersion: 6,
+          schemaVersion: 8,
           activeProfileId: null,
           profiles: [],
           approvalMode: "everything",
@@ -277,6 +283,8 @@ test("the migration decoder accepts only canonical current per-field revisions",
           defaultFollowUpBehaviorRevision,
           showContextUsage: false,
           contextUsageVisibilityRevision,
+          networkProxy: { mode: "none", url: "" },
+          networkProxyRevision: "0",
         } as const;
         assert.deepEqual(decodeAgentSettings(current), current);
       }
@@ -284,7 +292,7 @@ test("the migration decoder accepts only canonical current per-field revisions",
   }
 
   const current = {
-    schemaVersion: 6,
+    schemaVersion: 8,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
@@ -292,6 +300,8 @@ test("the migration decoder accepts only canonical current per-field revisions",
     defaultFollowUpBehaviorRevision: "0",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   } as const;
   for (const invalid of [undefined, "later", false]) {
     assert.throws(
@@ -351,7 +361,7 @@ test("the migration decoder accepts only canonical current per-field revisions",
     /does not support property unexpected/,
   );
 
-  for (const schemaVersion of [0, 7]) {
+  for (const schemaVersion of [0, 9]) {
     assert.throws(
       () => decodeAgentSettings({
         schemaVersion,
@@ -382,7 +392,7 @@ test("settings v2 migrate every legacy Profile to a direct API connection", () =
     approvalMode: "manual",
   });
 
-  assert.equal(decoded.schemaVersion, 6);
+  assert.equal(decoded.schemaVersion, 8);
   assert.equal(decoded.defaultFollowUpBehavior, "queue");
   assert.equal(decoded.defaultFollowUpBehaviorRevision, "0");
   assert.equal(decoded.showContextUsage, true);
@@ -433,7 +443,7 @@ test("both historical schema-v3 shapes migrate losslessly without rewriting on r
     await fs.writeFile(settingsPath, original);
 
     const loaded = await loadAgentSettings(directory);
-    assert.equal(loaded.schemaVersion, 6);
+    assert.equal(loaded.schemaVersion, 8);
     assert.equal(loaded.activeProfileId, "profile-1");
     assert.equal(loaded.defaultFollowUpBehavior, migrationCase.behavior);
     assert.equal(
@@ -462,7 +472,7 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     defaultFollowUpBehavior: "steer",
     defaultFollowUpBehaviorRevision: "17",
   }), {
-    schemaVersion: 6,
+    schemaVersion: 8,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
@@ -470,6 +480,8 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     defaultFollowUpBehaviorRevision: "17",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   });
 
   assert.deepEqual(decodeAgentSettings({
@@ -478,7 +490,7 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     profiles: [],
     approvalMode: "manual",
   }), {
-    schemaVersion: 6,
+    schemaVersion: 8,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",
@@ -486,6 +498,8 @@ test("schema-v3 discrimination uses follow-up field presence for empty Profile a
     defaultFollowUpBehaviorRevision: "0",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   });
 });
 
@@ -635,7 +649,7 @@ test("schema-v4 rejects unknown top-level and Profile fields", () => {
   );
 });
 
-test("schema-v4 single-model Profiles migrate through schema-v6 model collections", () => {
+test("schema-v4 single-model Profiles migrate through current model collections", () => {
   const historical = profileV4({
     model: "model-b",
     parameters: {
@@ -652,7 +666,7 @@ test("schema-v4 single-model Profiles migrate through schema-v6 model collection
     defaultFollowUpBehaviorRevision: "9",
   });
 
-  assert.equal(decoded.schemaVersion, 6);
+  assert.equal(decoded.schemaVersion, 8);
   assert.equal(decoded.defaultFollowUpBehaviorRevision, "9");
   assert.equal(decoded.showContextUsage, true);
   assert.equal(decoded.contextUsageVisibilityRevision, "0");
@@ -667,7 +681,7 @@ test("schema-v4 single-model Profiles migrate through schema-v6 model collection
   }]);
 });
 
-test("schema-v5 strictly validates model collections before migrating to v6", () => {
+test("schema-v5 strictly validates model collections before migrating to current settings", () => {
   const savedProfile = profile({ baseUrl: "https://example.test/v1" });
   const current = {
     schemaVersion: 5,
@@ -679,7 +693,7 @@ test("schema-v5 strictly validates model collections before migrating to v6", ()
   } as const;
 
   assert.deepEqual(decodeAgentSettings(current), {
-    schemaVersion: 6,
+    schemaVersion: 8,
     activeProfileId: "profile-1",
     profiles: [savedProfile],
     approvalMode: "manual",
@@ -687,6 +701,8 @@ test("schema-v5 strictly validates model collections before migrating to v6", ()
     defaultFollowUpBehaviorRevision: "0",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   });
   assert.throws(
     () => decodeAgentSettings({ ...current, showContextUsage: false }),
@@ -712,6 +728,62 @@ test("schema-v5 strictly validates model collections before migrating to v6", ()
       profiles: [{ ...savedProfile, models: [] }],
     }),
     /at least one model/,
+  );
+});
+
+test("schema-v6 Codex Profiles migrate to native OpenAI OAuth", () => {
+  const decoded = decodeAgentSettings({
+    schemaVersion: 6,
+    activeProfileId: "subscription",
+    profiles: [{
+      id: "subscription",
+      name: "ChatGPT subscription",
+      connection: { kind: "codex-subscription", provider: "openai" },
+      defaultModel: "gpt-5.6-sol",
+      models: [{
+        model: "gpt-5.6-sol",
+        parameters: { reasoning: { mode: "default" } },
+        advanced: {},
+      }],
+    }],
+    approvalMode: "manual",
+    defaultFollowUpBehavior: "queue",
+    defaultFollowUpBehaviorRevision: "0",
+    showContextUsage: true,
+    contextUsageVisibilityRevision: "0",
+  });
+  assert.equal(decoded.schemaVersion, 8);
+  assert.deepEqual(decoded.profiles[0]?.connection, {
+    kind: "oauth-subscription",
+    provider: "openai",
+  });
+});
+
+test("current settings reject the removed Codex connection kind", () => {
+  assert.throws(
+    () => decodeAgentSettings({
+      schemaVersion: 8,
+      activeProfileId: "subscription",
+      profiles: [{
+        id: "subscription",
+        name: "Legacy connection",
+        connection: { kind: "codex-subscription", provider: "openai" },
+        defaultModel: "gpt-5.6-sol",
+        models: [{
+          model: "gpt-5.6-sol",
+          parameters: { reasoning: { mode: "default" } },
+          advanced: {},
+        }],
+      }],
+      approvalMode: "manual",
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
+    }),
+    /connection kind is unsupported/i,
   );
 });
 
@@ -841,6 +913,8 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
     "contextUsageVisibilityRevision",
     "defaultFollowUpBehavior",
     "defaultFollowUpBehaviorRevision",
+    "networkProxy",
+    "networkProxyRevision",
     "profiles",
     "schemaVersion",
     "showContextUsage",
@@ -1105,7 +1179,7 @@ test("per-field global settings revisions increment beyond Number.MAX_SAFE_INTEG
   );
   const settingsPath = path.join(directory, "live-smith-settings.json");
   await fs.writeFile(settingsPath, JSON.stringify({
-    schemaVersion: 6,
+    schemaVersion: 7,
     activeProfileId: null,
     profiles: [],
     approvalMode: "manual",

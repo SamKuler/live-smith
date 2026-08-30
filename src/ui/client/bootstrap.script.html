@@ -502,7 +502,7 @@
             ? state.configuredModels
             : [];
           const subscriptionCatalogPending =
-            runtime?.profile?.connectionKind === "codex-subscription" &&
+            runtime?.profile?.connectionKind === "oauth-subscription" &&
             state.configuredModelsReady === false;
           const selectedModel = runtime?.selection?.model || "";
           if (syncState) {
@@ -628,7 +628,7 @@
           const runtime = state.runtimeProfile;
           if (
             !runtime ||
-            runtime.profile.connectionKind !== "codex-subscription" ||
+            runtime.profile.connectionKind !== "oauth-subscription" ||
             state.configuredModelsReady !== false ||
             composerOperationState.sendInProgress ||
             bridgeClient.isCommandInProgress()
@@ -776,7 +776,7 @@
 
         function renderProfileStateProjection() {
           profileEditor.retryPendingCatalogApply();
-          profileEditor.renderCodexAuthState(profileSettingsLocked);
+          profileEditor.renderOAuthAuthState(profileSettingsLocked);
           profileEditor.renderProfileModels();
           profileEditor.updateCapabilityPreview();
           profileEditor.updateDraftActions();
@@ -963,6 +963,7 @@
           renderSendPresentation();
           renderComposerContextUsage();
           bridgeClient.renderDefaultFollowUpBehavior();
+          bridgeClient.renderNetworkProxySettings();
           profileEditor.renderApprovalMode();
           renderEditScopes();
           sessionTimeline.renderSessions();
@@ -979,9 +980,9 @@
             "saveProfileButton",
             "deleteProfileButton",
             "discoverModelsButton",
-            "codexSignInButton",
-            "codexCheckAccountButton",
-            "codexLogoutButton",
+            "oauthSignInButton",
+            "oauthCheckAccountButton",
+            "oauthLogoutButton",
           ].map((id) => document.getElementById(id)).filter(Boolean);
         }
 
@@ -1104,20 +1105,20 @@
           save_global_settings: {
             status: "Saving settings…",
           },
-          start_codex_login: {
-            controlId: "codexSignInButton",
+          start_oauth_login: {
+            controlId: "oauthSignInButton",
             busyLabel: "Starting…",
-            status: "Starting ChatGPT sign-in…",
+            status: "Starting account sign-in…",
           },
-          refresh_codex_account: {
-            controlId: "codexCheckAccountButton",
+          refresh_oauth_account: {
+            controlId: "oauthCheckAccountButton",
             busyLabel: "Checking…",
-            status: "Checking ChatGPT sign-in…",
+            status: "Checking account sign-in…",
           },
-          logout_codex: {
-            controlId: "codexLogoutButton",
+          logout_oauth: {
+            controlId: "oauthLogoutButton",
             busyLabel: "Signing out…",
-            status: "Ending the ChatGPT session…",
+            status: "Ending the account session…",
           },
           new_session: {
             busyLabel: "…",
@@ -1223,6 +1224,7 @@
           profileSettingsInProgress,
           sendInProgress,
           skillInProgress,
+          networkProxyDirty,
         }) {
           composerOperationState = {
             attachmentInProgress,
@@ -1290,6 +1292,24 @@
           if (showContextUsage.disabled !== sessionSettingDisabled) {
             showContextUsage.disabled = sessionSettingDisabled;
           }
+          const networkProxyMode = document.getElementById("networkProxyMode");
+          if (networkProxyMode.disabled !== sessionSettingDisabled) {
+            networkProxyMode.disabled = sessionSettingDisabled;
+          }
+          const networkProxyUrl = document.getElementById("networkProxyUrl");
+          if (networkProxyUrl.disabled !== sessionSettingDisabled) {
+            networkProxyUrl.disabled = sessionSettingDisabled;
+          }
+          const applyNetworkProxyButton = document.getElementById(
+            "applyNetworkProxyButton",
+          );
+          const networkProxyApplyDisabled = sessionSettingDisabled ||
+            !networkProxyDirty;
+          if (
+            applyNetworkProxyButton.disabled !== networkProxyApplyDisabled
+          ) {
+            applyNetworkProxyButton.disabled = networkProxyApplyDisabled;
+          }
           attachments.setBusy(operationBusy);
           skillManager.setBusy(skillsBusy);
 
@@ -1314,6 +1334,8 @@
 
         bridgeClient.connectView({
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
+          clearGlobalSettingsFieldError:
+            profileEditor.clearGlobalSettingsFieldError,
           clearFieldErrors: profileEditor.clearFieldErrors,
           ensureSessionModelCapabilities,
           isDraftDirty: () => profileEditor.getDraftState().dirty,
@@ -1349,7 +1371,10 @@
           handleApiFamilyChange: profileEditor.handleApiFamilyChange,
           handleApiModeChange: profileEditor.handleApiModeChange,
           handleConnectionKindChange: profileEditor.handleConnectionKindChange,
+          handleOAuthProviderChange: profileEditor.handleOAuthProviderChange,
           handleManualModelIdKeydown: profileEditor.handleManualModelIdKeydown,
+          handleNetworkProxyModeChange: bridgeClient.handleNetworkProxyModeChange,
+          handleNetworkProxyUrlInput: bridgeClient.handleNetworkProxyUrlInput,
           handleInspectorTabKeydown: sessionTimeline.handleInspectorTabKeydown,
           handleProfileSelection: profileEditor.handleProfileSelection,
           handleModelConfigSelection: profileEditor.handleModelConfigSelection,
@@ -1357,19 +1382,20 @@
           handleSendButton: bridgeClient.handleSendButton,
           markDraftDirty: profileEditor.markDraftDirty,
           addManualModel: profileEditor.addManualModel,
-          logoutCodex: profileEditor.logoutCodex,
+          logoutOAuth: profileEditor.logoutOAuth,
           openInspector,
-          refreshCodexAccount: profileEditor.refreshCodexAccount,
+          refreshOAuthAccount: profileEditor.refreshOAuthAccount,
           requestClose,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveContextUsageVisibility: bridgeClient.saveContextUsageVisibility,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
+          saveNetworkProxySettings: bridgeClient.saveNetworkProxySettings,
           saveProfile: profileEditor.saveProfile,
           saveSessionModelSelection,
           removeModelConfig: profileEditor.removeModelConfig,
           setDefaultModel: profileEditor.setDefaultModel,
-          startCodexLogin: profileEditor.startCodexLogin,
+          startOAuthLogin: profileEditor.startOAuthLogin,
           toggleInspector,
           toggleSessionsPane,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
@@ -1418,8 +1444,8 @@
               : document.getElementById("modelSetupGuide");
           initialFocus?.focus({ preventScroll: true });
           if (
-            getState().codexAuth?.status === "signed-in" &&
-            getState().codexAuth.subscriptionEligible
+            getState().oauthAuth?.status === "signed-in" &&
+            getState().oauthAuth.subscriptionEligible
           ) {
             void ensureSessionModelCapabilities();
           }

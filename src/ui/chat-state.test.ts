@@ -181,15 +181,17 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     modelStateSource: null,
     runtimeProfile: null,
     activeProfileRevision: null,
-    codexAuthGeneration: 0,
+    oauthAuthGeneration: 0,
     settings: {
-      schemaVersion: 6,
+      schemaVersion: 8,
       activeProfileId: null,
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "0",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       profiles: [],
     },
     openSettingsOnLoad: false,
@@ -202,15 +204,15 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
   assert.doesNotMatch(serialized, /[<>&\u2028\u2029]/);
 });
 
-test("managed auth state and subscription connections expose no credential-shaped keys", () => {
-  const managedSurface = {
-    codexAuth: {
+test("OAuth auth state and subscription connections expose no credential-shaped keys", () => {
+  const oauthSurface = {
+    oauthAuth: {
       status: "pending",
       verificationUrl: "https://auth.openai.com/codex/device",
       userCode: "ABCD-EFGH",
     },
     connection: {
-      kind: "codex-subscription",
+      kind: "oauth-subscription",
       provider: "openai",
     },
   };
@@ -227,7 +229,7 @@ test("managed auth state and subscription connections expose no credential-shape
     }
   };
 
-  visit(managedSurface);
+  visit(oauthSurface);
 
   assert.deepEqual(
     keys.filter((key) => /access|refresh|token|credentialPath/i.test(key)),

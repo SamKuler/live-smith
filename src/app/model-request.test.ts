@@ -13,7 +13,7 @@ const runtimeProfile: RuntimeProfile = {
   profile: {
     id: "subscription",
     name: "Subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
   },
   model: {
     model: "gpt-5.6-sol",
@@ -42,10 +42,12 @@ const runtimeProfile: RuntimeProfile = {
 
 test("requestModelTurn dispatches through one explicit turn executor", async () => {
   let executorTurns = 0;
+  const reconnectState = {};
   const turnExecutor = {
     async createToolTurn(request: Parameters<ModelBackend["createToolTurn"]>[0]) {
       executorTurns += 1;
       assert.equal(request.runtimeProfile, runtimeProfile);
+      assert.equal(request.reconnectState, reconnectState);
       assert.match(request.systemInstructions, /current request audio input 1/i);
       assert.doesNotMatch(JSON.stringify(request.currentUserContent), /event-current/);
       return { content: "dispatched", toolCalls: [] };
@@ -61,6 +63,7 @@ test("requestModelTurn dispatches through one explicit turn executor", async () 
     history: [],
     agentMessages: [],
     tools: [],
+    reconnectState,
     signal: createHostAbortController().signal,
     onDelta: () => undefined,
     turnExecutor,
@@ -130,7 +133,7 @@ test("runtime materialization rejects a model outside the saved Profile", () => 
   const profile: SavedProfile = {
     id: "subscription",
     name: "Subscription",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "model-a",
     models: [{
       model: "model-a",

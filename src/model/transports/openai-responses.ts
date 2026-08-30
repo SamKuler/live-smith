@@ -33,6 +33,7 @@ import {
   requestOpenAIJson,
   streamOpenAIEvents,
 } from "./openai-http.js";
+import { openAIProviderFailure } from "./openai-errors.js";
 import {
   listOpenAIModels,
 } from "./openai-shared.js";
@@ -82,7 +83,7 @@ export function createOpenAIResponsesTransport(
       return withTransportContext(request.runtimeProfile.profile, "request", async () => {
       assertNoUnsupportedAudioInput(request, "OpenAI Responses");
       assertBinaryInputWithinLimits(request);
-      const body = buildResponsesBody(request);
+      const body = buildOpenAIResponsesBody(request);
       if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
         return streamResponsesTurn(request, body, fetchImpl);
       }
@@ -96,6 +97,9 @@ export function createOpenAIResponsesTransport(
           ...(request.signal ? { signal: request.signal } : {}),
         },
       );
+      if (isRecord(response) && response.status === "failed") {
+        throw openAIProviderFailure(response, "OpenAI Responses");
+      }
       const terminal = requireResponsesTerminalResponse(
         response,
         "OpenAI Responses",
@@ -115,7 +119,7 @@ export function createOpenAIResponsesTransport(
   };
 }
 
-function buildResponsesBody(
+export function buildOpenAIResponsesBody(
   request: TransportRequest,
 ): Record<string, unknown> {
   const runtime = request.runtimeProfile;
@@ -176,6 +180,20 @@ function buildResponsesBody(
     ]),
   ];
   return body;
+}
+
+export function decodeOpenAIResponsesTerminalTurn(
+  value: unknown,
+  expectedStatus: ResponsesTerminalStatus,
+  label: string,
+  contextWindowTokens: number | undefined,
+): ModelTurn {
+  return turnFromResponse(
+    requireResponsesTerminalResponse(value, label, expectedStatus),
+    label,
+    [],
+    contextWindowTokens,
+  );
 }
 
 function mappedResponsesTools(
@@ -293,6 +311,7 @@ async function streamResponsesTurn(
   body: Record<string, unknown>,
   fetchImpl: typeof fetch,
 ): Promise<ModelTurn> {
+  let pendingError: Record<string, unknown> | undefined;
   const reportedWebSearches = new Map<string, string>();
   const reportWebSearch = async (update: ModelHostedWebSearch | undefined) => {
     if (!update) return;
@@ -315,6 +334,10 @@ async function streamResponsesTurn(
     request.signal,
   )) {
     throwIfAborted(request.signal);
+    if (event.type === "error") {
+      pendingError = event;
+      continue;
+    }
     await reportWebSearch(webSearchUpdateFromOpenAIEvent(event));
     if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
       await request.onDelta?.(event.delta);
@@ -346,10 +369,13 @@ async function streamResponsesTurn(
           await reportWebSearch(search);
         }
       }
-      throw new Error("OpenAI Responses failed.");
+      throw openAIProviderFailure(event.response, "OpenAI Responses");
     } else if (event.type === "response.cancelled") {
       throw new Error("OpenAI Responses was cancelled.");
     }
+  }
+  if (pendingError) {
+    throw openAIProviderFailure(pendingError, "OpenAI Responses");
   }
   throw new ModelConnectionError(
     "OpenAI Responses stream ended without a terminal response.",

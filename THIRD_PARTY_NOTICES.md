@@ -1,7 +1,7 @@
 # Third-Party Notices for Live Smith
 
 The production bundle includes or may include code from the following
-document-parser and Markdown-renderer packages.
+document-parser, Markdown-renderer, sanitizer, and network packages.
 
 ## Document parser
 
@@ -34,6 +34,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Network client
+
+### `undici` 7.29.0
+
+Copyright (c) Matteo Collina and Undici contributors
+
+Undici is distributed under the MIT License reproduced in the Document parser
+section above.
 
 ## Markdown renderer
 

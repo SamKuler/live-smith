@@ -1,5 +1,10 @@
 import { throwIfAborted } from "../../runtime/host.js";
-import { ModelConnectionError } from "../connection-error.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
+import {
+  ModelAuthenticationError,
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import {
   profileApiMode,
   profileProvider,
@@ -17,6 +22,7 @@ export async function withTransportContext<T>(
     return await run();
   } catch (cause) {
     throwIfAborted(signal);
+    if (cause instanceof NetworkProxyError) throw cause;
     const rawMessage = cause instanceof Error ? cause.message : String(cause);
     const message = redactTransportMessage(rawMessage, profileSecrets(profile));
     const apiMode = profileApiMode(profile);
@@ -26,6 +32,12 @@ export async function withTransportContext<T>(
     const contextualMessage = `${context} ${operation} failed: ${message}`;
     if (cause instanceof ModelConnectionError) {
       throw new ModelConnectionError(contextualMessage);
+    }
+    if (cause instanceof ModelRetryableError) {
+      throw new ModelRetryableError(contextualMessage, cause.retryAfterMs);
+    }
+    if (cause instanceof ModelAuthenticationError) {
+      throw new ModelAuthenticationError(contextualMessage);
     }
     throw new Error(contextualMessage);
   }

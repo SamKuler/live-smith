@@ -9,8 +9,10 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import {
   incrementContextUsageVisibilityRevision,
   incrementDefaultFollowUpBehaviorRevision,
+  incrementNetworkProxyRevision,
   type ModelAdvancedSettings,
   type GenerationParameters,
+  type NetworkProxySettings,
   type SavedProfile,
 } from "../model/profile.js";
 import {
@@ -52,6 +54,7 @@ interface DialogHarness {
   emitServerEventOpen(): void;
   errors: unknown[];
   eventSourceUrls: string[];
+  windowOpenAttempts: string[];
   failNextCommand(
     error: string,
     field?: string,
@@ -248,10 +251,10 @@ function profileFixture(overrides: ProfileFixtureOverrides = {}): SavedProfile {
     };
   const models = overrides.models ?? [{
     model,
-    parameters: connection.kind === "codex-subscription"
+    parameters: connection.kind === "oauth-subscription"
       ? { reasoning: parameters.reasoning }
       : parameters as GenerationParameters & { maxOutputTokens: number },
-    advanced: connection.kind === "codex-subscription"
+    advanced: connection.kind === "oauth-subscription"
       ? {}
       : overrides.advanced ?? {},
   }];
@@ -328,16 +331,18 @@ function stateFixture(): ChatBridgeState {
     modelStateSource: modelStateSourceFixture(profileFixture()),
     runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
     activeProfileRevision: profileRevisionFixture(profileFixture()),
-    codexAuth: { status: "signed-out" },
-    codexAuthGeneration: 0,
+    oauthAuth: { status: "signed-out" },
+    oauthAuthGeneration: 0,
     settings: {
-      schemaVersion: 6,
+      schemaVersion: 8,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "0",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       profiles: [
         profileFixture(),
         profileFixture({
@@ -391,6 +396,7 @@ async function createDialogHarness(
   initialState: ChatBridgeState = stateFixture(),
   bridge = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
+    oauthLoginResult?: NonNullable<ChatBridgeState["oauthAuth"]>;
     webCryptoAvailable?: boolean;
     webCryptoDigestFails?: boolean;
     serverState?: ChatBridgeState;
@@ -404,6 +410,7 @@ async function createDialogHarness(
   const commandIds: string[] = [];
   const errors: unknown[] = [];
   const eventSourceUrls: string[] = [];
+  const windowOpenAttempts: string[] = [];
   const sendIds: string[] = [];
   const stopIds: string[] = [];
   const eventSources: Array<{
@@ -560,7 +567,7 @@ async function createDialogHarness(
       model: entry.model,
       label: entry.model,
     }));
-    if (profile.connection.kind !== "codex-subscription") {
+    if (profile.connection.kind !== "oauth-subscription") {
       serverState.configuredModelsReady = true;
     }
   };
@@ -829,7 +836,10 @@ async function createDialogHarness(
       ["queue", "steer"].includes(String(event.defaultFollowUpBehavior)) &&
       typeof event.defaultFollowUpBehaviorRevision === "string" &&
       typeof event.showContextUsage === "boolean" &&
-      typeof event.contextUsageVisibilityRevision === "string"
+      typeof event.contextUsageVisibilityRevision === "string" &&
+      event.networkProxy &&
+      typeof event.networkProxy === "object" &&
+      typeof event.networkProxyRevision === "string"
     ) {
       serverState.settings.defaultFollowUpBehavior =
         event.defaultFollowUpBehavior as "queue" | "steer";
@@ -838,6 +848,10 @@ async function createDialogHarness(
       serverState.settings.showContextUsage = event.showContextUsage;
       serverState.settings.contextUsageVisibilityRevision =
         event.contextUsageVisibilityRevision;
+      serverState.settings.networkProxy = cloneState(
+        event.networkProxy as NetworkProxySettings,
+      );
+      serverState.settings.networkProxyRevision = event.networkProxyRevision;
     }
   };
 
@@ -846,6 +860,10 @@ async function createDialogHarness(
       return payload;
     }
     const event = { ...(payload as Record<string, unknown>) };
+    if (event.type === "global_settings_changed") {
+      event.networkProxy ??= cloneState(serverState.settings.networkProxy);
+      event.networkProxyRevision ??= serverState.settings.networkProxyRevision;
+    }
     if (event.type === "confirm_request" && event.kind === undefined) {
       event.kind = "apply";
     }
@@ -1050,6 +1068,13 @@ async function createDialogHarness(
           configurable: true,
           value: () => {
             throw new Error("Native confirm is unavailable in the Ableton host.");
+          },
+        });
+        Object.defineProperty(window, "open", {
+          configurable: true,
+          value: (url = "") => {
+            windowOpenAttempts.push(String(url));
+            return null;
           },
         });
         Object.defineProperty(window.navigator, "clipboard", {
@@ -1323,8 +1348,10 @@ async function createDialogHarness(
                 editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
                 showContextUsage?: boolean;
+                networkProxy?: NetworkProxySettings;
                 profile?: SavedProfile;
                 profileId?: string;
+                provider?: "openai" | "anthropic" | "google";
                 model?: string;
                 reasoningEffort?: "minimal" | "low" | "medium" | "high" |
                   "xhigh" | "max" | "ultra" | null;
@@ -1347,6 +1374,14 @@ async function createDialogHarness(
                   serverState.settings.contextUsageVisibilityRevision =
                     incrementContextUsageVisibilityRevision(
                       serverState.settings.contextUsageVisibilityRevision,
+                    );
+                } else if (command.networkProxy) {
+                  serverState.settings.networkProxy = cloneState(
+                    command.networkProxy,
+                  );
+                  serverState.settings.networkProxyRevision =
+                    incrementNetworkProxyRevision(
+                      serverState.settings.networkProxyRevision,
                     );
                 }
               } else if (
@@ -1374,24 +1409,25 @@ async function createDialogHarness(
                   ...serverState.archivedSessions,
                 ].find((entry) => entry.id === command.sessionId);
                 if (session) session.editScopes = resolveEditScopes(command.editScopes);
-              } else if (command.kind === "start_codex_login") {
-                serverState.codexAuthGeneration += 1;
-                serverState.codexAuth = {
+              } else if (command.kind === "start_oauth_login") {
+                serverState.oauthAuthGeneration += 1;
+                serverState.oauthAuthProvider = command.provider ?? "openai";
+                serverState.oauthAuth = cloneState(options.oauthLoginResult ?? {
                   status: "pending",
                   verificationUrl: "https://auth.openai.com/codex/device",
                   userCode: "ABCD-EFGH",
-                };
-              } else if (command.kind === "refresh_codex_account") {
-                serverState.codexAuthGeneration += 1;
-                serverState.codexAuth = {
+                });
+              } else if (command.kind === "refresh_oauth_account") {
+                serverState.oauthAuthGeneration += 1;
+                serverState.oauthAuth = {
                   status: "signed-in",
                   accountLabel: "studio@example.test",
                   planType: "pro",
                   subscriptionEligible: true,
                 };
-              } else if (command.kind === "logout_codex") {
-                serverState.codexAuthGeneration += 1;
-                serverState.codexAuth = { status: "signed-out" };
+              } else if (command.kind === "logout_oauth") {
+                serverState.oauthAuthGeneration += 1;
+                serverState.oauthAuth = { status: "signed-out" };
               } else if (
                 command.kind === "set_session_model_selection" &&
                 command.sessionId &&
@@ -1462,7 +1498,7 @@ async function createDialogHarness(
                   label: entry.model,
                 }));
                 serverState.configuredModelsReady =
-                  command.profile.connection.kind !== "codex-subscription";
+                  command.profile.connection.kind !== "oauth-subscription";
               } else if (command.kind === "discover_models") {
                 serverState.modelCatalogLoadReceipt = commandId;
                 serverState.availableModels = [{
@@ -1494,7 +1530,7 @@ async function createDialogHarness(
                     }))
                   : [];
                 serverState.configuredModelsReady =
-                  profile?.connection.kind !== "codex-subscription";
+                  profile?.connection.kind !== "oauth-subscription";
               } else if (command.kind === "delete_profile" && command.profileId) {
                 serverState.settings.profiles = serverState.settings.profiles.filter(
                   (entry) => entry.id !== command.profileId,
@@ -1519,7 +1555,7 @@ async function createDialogHarness(
                     }))
                   : [];
                 serverState.configuredModelsReady =
-                  profile?.connection.kind !== "codex-subscription";
+                  profile?.connection.kind !== "oauth-subscription";
               } else if (command.kind === "select_session" && command.sessionId) {
                 serverState.activeSessionId = command.sessionId;
                 const selected = serverState.sessions.find(
@@ -1934,6 +1970,7 @@ async function createDialogHarness(
     },
     errors,
     eventSourceUrls,
+    windowOpenAttempts,
     failNextCommand(error, field, details) {
       nextCommandError = {
         error,

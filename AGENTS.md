@@ -50,21 +50,22 @@ There are two API families and three supported modes:
 A named Profile owns one complete connection plus one or more model
 configurations. Each model configuration owns its generation parameters,
 capability overrides, hosted-tool policy, and Extra Body. A `direct-api`
-connection owns family, mode, base URL, and API key. A `codex-subscription`
-connection owns only the fixed OpenAI managed-backend identity; its supported
-models, reasoning efforts, and input evidence come from the signed-in catalog.
+connection owns family, mode, base URL, and API key. An `oauth-subscription`
+connection owns only an OpenAI, Anthropic, or Google provider identity; its
+credentials remain in private OAuth storage and its supported models, reasoning
+efforts, and input evidence come from the signed-in catalog.
 Do not add endpoint or vendor presets. OpenAI-compatible services use an
 ordinary Direct API OpenAI Profile with the protocol they implement.
 
 Keep Direct API provider-specific request mapping, streaming, tool-call replay,
-and opaque response state inside `src/model/transports/`; keep managed runtime
-protocol and lifecycle mapping inside `src/model/backends/`. The agent loop and
-Live executor must remain provider-neutral. Resolve feature decisions from
-capabilities, not from model-name checks inside either boundary.
+and opaque response state inside `src/model/transports/`; keep OAuth login,
+refresh, product-protocol, and lifecycle mapping inside `src/model/oauth/`. The
+agent loop and Live executor must remain provider-neutral. Resolve feature
+decisions from capabilities, not from model-name checks inside either boundary.
 
 Preserve supported, unsupported, and unverified capability evidence. Direct API
-discovery metadata belongs to its exact Profile connection; managed catalogs
-stay modal-only and scoped to the current auth generation. Configuration,
+discovery metadata belongs to its exact Profile connection; OAuth catalogs stay
+modal-only and scoped to the selected provider and current auth generation. Configuration,
 discovery evidence, and Session model selection have separate owners.
 
 ## Safety invariants

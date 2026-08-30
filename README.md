@@ -79,24 +79,49 @@ key. Supported request formats are OpenAI Responses, OpenAI Chat Completions,
 and Anthropic Messages. API usage is billed by the provider.
 
 Google Gemini works through its official OpenAI Chat Completions compatibility
-endpoint. See the [Gemini setup](docs/MODEL_PROVIDERS.md#google-gemini) for the
+endpoint. See the [Gemini setup](docs/MODEL_PROVIDERS.md#google-gemini-direct-api) for the
 connection fields and capability settings.
 
 Hosted Web Search is available through supported OpenAI Responses and Anthropic
 Messages connections. It is off by default and configured per model.
 
-### ChatGPT subscription — experimental
+### Account subscription — experimental
 
-Sign in through an isolated official Codex CLI connection to use an eligible
-ChatGPT account’s Codex allowance. It requires a supported Codex CLI installation
-and does not use or change your normal Codex login.
+Sign in inside Live Smith with ChatGPT, Claude, or Google. Live Smith owns the
+OAuth session and calls the provider product backend directly; customers do not
+install Codex CLI, Claude Code, Gemini CLI, or provide an API key.
+After the provider returns a pending authorization, the Extension Host opens
+the default system browser on macOS or Windows; the dialog also keeps the
+verified sign-in link and device code, when applicable, as a fallback.
 
-This connection does not fall back to API-key billing. Hosted Web Search and
-workspace-managed accounts are not supported by this experimental integration.
-Claude subscription login is not supported; use an Anthropic API connection instead.
+ChatGPT uses the Codex backend API, Claude uses OAuth-authenticated Anthropic
+Messages, and Gemini uses Google Cloud Code Assist. Anthropic currently assigns
+third-party OAuth traffic to Claude Extra Usage when it is enabled. Hosted Web
+Search is not exposed through subscription Profiles. If an account check is
+unavailable, use Sign out to clear its saved OAuth session before signing in
+again.
 
 See [model connections](docs/MODEL_PROVIDERS.md) for setup requirements and
 provider-specific limitations.
+
+## Network proxy
+
+**Settings → Network** provides three global modes: **No proxy**, **System
+proxy**, and **Manual proxy**. The selected route applies consistently to
+Direct API requests and to subscription sign-in, token refresh, model catalog,
+and model traffic. Loopback endpoints remain direct so local model servers keep
+working.
+
+System proxy discovery currently follows the active macOS HTTP, HTTPS, or SOCKS
+settings. Automatic PAC/WPAD configuration is not evaluated; use Manual proxy
+for that route instead. Manual proxy accepts an `http://`, `https://`,
+`socks://`, or `socks5://` URL without embedded credentials. Existing installs
+remain on No proxy until this setting is changed.
+
+Proxy modes are strict: Live Smith does not silently fall back to a different
+route. If the selected Manual or System proxy cannot be reached, provider
+requests stop with an actionable proxy message so you can start the proxy,
+correct the setting, or choose another mode.
 
 ## You control the changes
 
@@ -216,8 +241,13 @@ content, and any Arrangement audio range read by the agent are sent to the model
 provider you choose.
 
 Direct API keys are stored in local Profile settings as plain text. The
-subscription connection keeps its login in a separate local Codex home. Do not
-commit, share, or cloud-sync either storage location.
+subscription connection stores provider OAuth credentials in a separate private
+local credential file. Do not commit, share, or cloud-sync either storage
+location.
+
+The selected proxy mode and credential-free Manual proxy URL are stored in the
+same private local settings file. Proxy usernames and passwords are not accepted
+in that URL.
 
 ## Documentation
 

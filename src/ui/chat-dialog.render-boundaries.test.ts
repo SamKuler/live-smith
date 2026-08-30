@@ -433,11 +433,14 @@ test("an Approval change does not rewrite unrelated Settings or composer content
       "saveProfileButton",
       "deleteProfileButton",
       "discoverModelsButton",
-      "codexSignInButton",
-      "codexCheckAccountButton",
-      "codexLogoutButton",
+      "oauthSignInButton",
+      "oauthCheckAccountButton",
+      "oauthLogoutButton",
       "defaultFollowUpBehavior",
       "showContextUsage",
+      "networkProxyMode",
+      "networkProxyUrl",
+      "applyNetworkProxyButton",
     ]);
     const unexpectedSettings = settingsRecords.filter((record) =>
       record.type !== "attributes" ||
@@ -554,7 +557,7 @@ test("editing a Profile model does not rewrite unrelated controls", async () => 
       "#inputCapabilitiesPreview [data-capability-state]",
     )];
     const unrelatedRegions = [
-      harness.document.querySelector("#codexAuthPanel"),
+      harness.document.querySelector("#oauthAuthPanel"),
       harness.document.querySelector("#manualModelEntry"),
       harness.document.querySelector("#draftStatus"),
       harness.document.querySelector(".composer-toolbar"),

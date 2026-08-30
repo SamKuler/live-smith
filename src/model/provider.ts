@@ -8,13 +8,13 @@ import type {
 import type {
   ApiFamily,
   ApiMode,
-  CodexSubscriptionModelConfig,
-  CodexSubscriptionProfile,
   DirectApiModelConfig,
   DirectApiProfile,
   DraftModelConfig,
   DraftProfile,
   ModelConnection,
+  OAuthSubscriptionModelConfig,
+  OAuthSubscriptionProfile,
   ReasoningEffort,
   ReasoningStrategy,
 } from "./profile.js";
@@ -84,6 +84,8 @@ export interface RuntimeProfileIdentity {
   id: string;
   name: string;
   connection: ModelConnection;
+  /** Request-only headers supplied by a credential-owning backend; never persisted. */
+  requestHeaders?: Readonly<Record<string, string>>;
 }
 
 /** Minimum single-model view needed to resolve capabilities for a draft. */
@@ -99,8 +101,8 @@ export type RuntimeModelSource =
       model: DirectApiModelConfig;
     }
   | {
-      profile: Pick<CodexSubscriptionProfile, "id" | "name" | "connection">;
-      model: CodexSubscriptionModelConfig;
+      profile: Pick<OAuthSubscriptionProfile, "id" | "name" | "connection">;
+      model: OAuthSubscriptionModelConfig;
     };
 
 interface ResolvedRuntimeModelFields {
@@ -114,7 +116,7 @@ export type RuntimeProfile =
       profile: { connection: { kind: "direct-api" } };
     }> & ResolvedRuntimeModelFields)
   | (Extract<RuntimeModelSource, {
-      profile: { connection: { kind: "codex-subscription" } };
+      profile: { connection: { kind: "oauth-subscription" } };
     }> & ResolvedRuntimeModelFields);
 
 export function isDirectRuntimeModelSource(
@@ -155,6 +157,8 @@ export interface TransportRequest {
   history: ConversationMessage[];
   agentMessages: ModelConversationMessage[];
   tools: ModelTool[];
+  /** Opaque identity shared only by retries of this logical model request. */
+  reconnectState?: object;
   signal?: AbortSignal;
   onDelta?: ((delta: string) => Promise<void> | void) | undefined;
   onHostedWebSearch?: ((
@@ -172,7 +176,7 @@ export interface ModelTransport {
   createToolTurn(request: TransportRequest): Promise<ModelTurn>;
 }
 
-export type ManagedAuthState =
+export type OAuthAuthState =
   | {
       status: "unavailable";
       message: string;
@@ -183,7 +187,7 @@ export type ManagedAuthState =
   | {
       status: "pending";
       verificationUrl: string;
-      userCode: string;
+      userCode?: string;
     }
   | {
       status: "signed-in";
@@ -192,31 +196,18 @@ export type ManagedAuthState =
       subscriptionEligible: boolean;
     };
 
-export interface ManagedAuthReadOptions {
-  /** Proactively refresh managed credentials before reporting readiness. */
+export interface OAuthAuthReadOptions {
+  /** Proactively refresh OAuth credentials before reporting readiness. */
   readiness?: boolean;
-}
-
-export type ModelBackendTerminalListener = (error: Error) => void;
-
-export class ModelBackendShutdownError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ModelBackendShutdownError";
-  }
 }
 
 export interface ModelTurnExecutor {
   createToolTurn(request: TransportRequest): Promise<ModelTurn>;
 }
 
-export interface ModelToolTurnReservation extends ModelTurnExecutor {
-  release(): Promise<void>;
-}
-
 /**
- * Provider-neutral execution boundary. Direct API transports are wrapped by
- * a short-lived backend; managed runtimes may retain process and auth state.
+ * Provider-neutral execution boundary. Direct API transports are short-lived;
+ * OAuth backends retain only credential, login, and refresh state.
  */
 interface ModelBackendBase extends ModelTurnExecutor {
   listModels(
@@ -230,21 +221,17 @@ export interface DirectApiBackend extends ModelBackendBase {
   readonly kind: "direct-api";
 }
 
-export interface CodexSubscriptionBackend extends ModelBackendBase {
-  readonly kind: "codex-subscription";
-  /** Managed backends notify once when their runtime can no longer be reused. */
-  onTerminal(listener: ModelBackendTerminalListener): () => void;
-  /** Pins capacity for one future turn across pre-request preparation. */
-  reserveToolTurn(): ModelToolTurnReservation;
+export interface OAuthSubscriptionBackend extends ModelBackendBase {
+  readonly kind: "oauth-subscription";
   readAuthState(
     signal?: AbortSignal,
-    options?: ManagedAuthReadOptions,
-  ): Promise<ManagedAuthState>;
-  beginLogin(signal?: AbortSignal): Promise<ManagedAuthState>;
-  logout(signal?: AbortSignal): Promise<ManagedAuthState>;
+    options?: OAuthAuthReadOptions,
+  ): Promise<OAuthAuthState>;
+  beginLogin(signal?: AbortSignal): Promise<OAuthAuthState>;
+  logout(signal?: AbortSignal): Promise<OAuthAuthState>;
 }
 
-export type ModelBackend = DirectApiBackend | CodexSubscriptionBackend;
+export type ModelBackend = DirectApiBackend | OAuthSubscriptionBackend;
 
 export interface TransportFactoryOptions {
   fetchImpl?: typeof fetch;

@@ -50,6 +50,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   const events: string[] = [];
   const published: SessionEvent[] = [];
   const requestInputs: object[] = [];
+  const reconnectStates: Array<object | undefined> = [];
   const hostedAllowances: number[] = [];
   const acceptedUsage: unknown[] = [];
   let modelCalls = 0;
@@ -91,6 +92,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
     async (input) => {
       modelCalls += 1;
       requestInputs.push(input);
+      reconnectStates.push(input.reconnectState);
       hostedAllowances.push(hostedWebSearchAllowance(input.tools));
       if (modelCalls === 1) {
         await input.onDelta("partial");
@@ -109,6 +111,8 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   assert.equal(result, "Recovered response.");
   assert.equal(modelCalls, 2);
   assert.notEqual(requestInputs[0], requestInputs[1]);
+  assert.ok(reconnectStates[0]);
+  assert.equal(reconnectStates[0], reconnectStates[1]);
   assert.deepEqual(hostedAllowances, [20, 19]);
   assert.deepEqual(acceptedUsage, [
     { usedTokens: 640, contextWindowTokens: 16_000 },
@@ -206,6 +210,12 @@ test("steering during reconnect backoff cancels the retry and replans", {
   assert.equal(await request, "Replanned response.");
   assert.equal(backoffSignal.aborted, true);
   assert.equal(modelInputs.length, 2);
+  assert.ok(modelInputs[0]?.reconnectState);
+  assert.ok(modelInputs[1]?.reconnectState);
+  assert.notEqual(
+    modelInputs[0].reconnectState,
+    modelInputs[1].reconnectState,
+  );
   assert.deepEqual(modelInputs[1]?.agentMessages.at(-1), {
     role: "user",
     content: "Inspect Rhythm instead.",

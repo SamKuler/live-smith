@@ -97,12 +97,12 @@ test("tool-produced audio follows verified protocol capability rather than model
   };
   const responses = { ...chat, apiMode: "responses" as const };
   const subscription = {
-    kind: "codex-subscription" as const,
+    kind: "oauth-subscription" as const,
     provider: "openai" as const,
   };
 
   assert.equal(supportsAudioInputDelivery(runtime(chat, true, "supported")), true);
-  assert.equal(supportsAudioInputDelivery(runtime(subscription, true, "supported")), true);
+  assert.equal(supportsAudioInputDelivery(runtime(subscription, true, "supported")), false);
   assert.equal(supportsAudioInputDelivery(runtime(responses, true, "supported")), false);
   assert.equal(supportsAudioInputDelivery(runtime(chat, false, "supported")), false);
   assert.equal(supportsAudioInputDelivery(runtime(chat, true, "unverified")), false);

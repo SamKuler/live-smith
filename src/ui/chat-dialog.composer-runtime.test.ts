@@ -717,7 +717,7 @@ test("Direct API keeps manual model IDs in a secondary disclosure", async () => 
 test("subscription Profiles load catalog models and hide manual IDs", async () => {
   const state = stateFixture();
   const profile = profileFixture({
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "old-account-model",
     models: [
       {
@@ -1672,11 +1672,11 @@ test("Settings follows the Profile to Conversation Behavior workflow", async () 
     );
     const boundary = harness.document.querySelector("#webSearchBoundaryHint");
     assert.equal((boundary as HTMLElement | null)?.hidden, true);
-    harness.select("#connectionKind", "codex-subscription");
+    harness.select("#connectionKind", "oauth-subscription");
     assert.equal((boundary as HTMLElement | null)?.hidden, false);
     assert.match(
       boundary?.textContent ?? "",
-      /managed.*model-only.*Direct API.*OpenAI Responses.*Anthropic Messages/i,
+      /OAuth subscription.*Direct API.*OpenAI Responses.*Anthropic Messages/i,
     );
     assert.match(
       harness.document.querySelector("#webSearchEnabled")?.getAttribute(

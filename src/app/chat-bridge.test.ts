@@ -2063,9 +2063,9 @@ test("chat bridge rejects configuration and unknown fields on narrow request pat
     assert.equal(commandInput, undefined);
 
     for (const kind of [
-      "start_codex_login",
-      "refresh_codex_account",
-      "logout_codex",
+      "start_oauth_login",
+      "refresh_oauth_account",
+      "logout_oauth",
     ]) {
       const authCommand = await fetch(endpoint("/command"), {
         method: "POST",

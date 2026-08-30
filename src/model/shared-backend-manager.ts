@@ -17,7 +17,6 @@ interface SharedManagerEntry {
   readonly manager: ModelBackendManager;
   refs: number;
   closePromise?: Promise<void>;
-  poisonError?: Error;
 }
 
 const managersByStorageDirectory = new Map<string, SharedManagerEntry>();
@@ -48,7 +47,6 @@ export async function acquireSharedModelBackendManager(
       await waitForPromiseWithSignal(existing.closePromise, signal);
       continue;
     }
-    if (existing.poisonError) throw existing.poisonError;
     existing.refs += 1;
     return sharedLease(existing, storageKey);
   }
@@ -58,16 +56,8 @@ function createEntry(
   storageDirectory: string,
   options: ModelBackendManagerOptions,
 ): SharedManagerEntry {
-  const { onPoison, ...managerOptions } = options;
-  let entry!: SharedManagerEntry;
-  const manager = new ModelBackendManager(storageDirectory, {
-    ...managerOptions,
-    onPoison(error) {
-      entry.poisonError ??= error;
-      onPoison?.(error);
-    },
-  });
-  entry = { manager, refs: 1 };
+  const manager = new ModelBackendManager(storageDirectory, options);
+  const entry = { manager, refs: 1 };
   return entry;
 }
 
@@ -104,15 +94,13 @@ async function closeSharedEntry(
 ): Promise<void> {
   try {
     await entry.manager.close();
-    if (entry.poisonError) throw entry.poisonError;
     if (managersByStorageDirectory.get(storageKey) === entry) {
       managersByStorageDirectory.delete(storageKey);
     }
   } catch (error) {
-    entry.poisonError ??= error instanceof Error
+    throw error instanceof Error
       ? error
       : new Error("The shared model backend manager could not be stopped.");
-    throw entry.poisonError;
   }
 }
 

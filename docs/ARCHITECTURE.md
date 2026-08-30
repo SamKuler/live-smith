@@ -20,7 +20,7 @@ src/
 
   app/
     agent-flow.ts
-      Coordinates modal state, bridge commands, managed readiness, and errors.
+      Coordinates modal state, bridge commands, OAuth readiness, and errors.
     agent-request.ts
       Runs one provider-neutral agent request, including attachment/Skill
       context, trace persistence, approval, preflight, and Live execution.
@@ -33,8 +33,11 @@ src/
       Materializes one Session-selected model from a saved multi-model Profile,
       then builds provider-neutral requests and Draft capability previews.
     model-reconnect.ts
-      Rebuilds an unaccepted Direct API response on typed connection loss with
+      Rebuilds an unaccepted model response on typed connection loss with
       bounded, cancellable backoff; never re-enters send admission.
+    provider-fetch.ts
+      Applies the current global proxy selection to every Direct API and OAuth
+      request through one process-scoped Fetch boundary per storage directory.
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
@@ -52,7 +55,7 @@ src/
       Serializes the full same-Session send and lifecycle boundary across
       dialogs that share one storage directory.
     model-auth-send-fence.ts
-      Serializes storage-wide managed auth reads/mutations and subscription
+      Serializes provider-scoped OAuth auth reads/mutations and subscription
       sends, including pending-login reconciliation, generation invalidation,
       and poison.
     live-mutation-queue.ts
@@ -117,45 +120,61 @@ src/
     provider.ts
       Separates persisted Profile collections from the one effective runtime
       model, and owns normalized capability/evidence, context-usage, tool,
-      transport, managed-auth, and backend contracts.
+      transport, OAuth-auth, and backend contracts.
     capabilities.ts
       API-mode fallbacks, known model policies, and manual override resolution.
     backend-registry.ts
-      Exposes distinct Direct API and managed Codex backend contracts and owns
-      the lazily started managed backend slot.
+      Exposes distinct Direct API and OAuth subscription backend contracts and
+      owns one lazily created slot per subscription provider.
     shared-backend-manager.ts
-      Ref-counts one managed backend manager per canonical storage directory.
+      Ref-counts one OAuth backend manager per canonical storage directory.
     registry.ts
       Selects a Direct API transport from a validated API family/mode pair.
-    backends/
-      codex-app-server.ts
-        Managed ChatGPT subscription auth, model discovery, ephemeral turns,
-        schema-constrained tool intent, cancellation, and result normalization.
-      codex-rpc.ts
-        Bounded stdio App Server RPC with an exact Codex `0.148.x` handshake,
-        request cancellation/timeouts, redacted stderr, and process shutdown.
+    oauth/
+      credential-manager.ts, openai.ts, anthropic.ts, google.ts
+        Provider-scoped OAuth login, refresh, credential ownership, and safe
+        account-state projection.
+      openai-codex-protocol.ts, anthropic-protocol.ts, google-protocol.ts
+        ChatGPT Codex Responses, Anthropic OAuth Messages, and Google Cloud
+        Code Assist mapping into the common model-turn boundary.
+      direct-transport-adapter.ts, google-catalog.ts
+        Request-scoped adaptation into shared Direct transports and the bounded
+        Cloud Code Assist catalog.
     transports/
       openai-responses.ts
       openai-chat.ts
       anthropic-messages.ts
       Protocol serialization, streaming, tool calls, and opaque state replay.
-      openai-http.ts, anthropic-http.ts, server-sent-events.ts
-      Explicit HTTP headers, endpoint resolution, status-only non-2xx errors,
-      and shared SSE framing without provider SDK runtime dependencies.
+      openai-http.ts, anthropic-http.ts, openai-errors.ts, retry-after.ts,
+      server-sent-events.ts
+      Explicit HTTP headers, endpoint resolution, bounded provider-error
+      classification, and shared SSE framing without provider SDK runtime
+      dependencies.
 
   runtime/
+    oauth-browser.ts
+      Opens one allowlisted pending OAuth HTTPS URL through fixed macOS or
+      Windows default-browser commands after provider login acquisition succeeds.
     host.ts
       Resolves host-provided Fetch and Abort APIs with explicit capability
       errors and shared cancellation checks.
-    process-host.ts
-      Starts the official Codex native payload with a private runtime workspace,
-      isolated `CODEX_HOME`, stripped environment, and disabled agent features.
-    codex-executable.ts
-      Resolves the supported global npm launcher topology to its matching native
-      platform payload without executing the launcher.
-    codex-metadata-firewall.ts
-      Owns the narrow loopback policy responder required by Codex 0.148's
-      attribution and cloud-config extensions.
+    proxy-fetch.ts
+      Resolves the saved No proxy, System proxy, or Manual proxy route for each
+      provider request.
+    network-proxy-error.ts
+      Defines the fixed credential-free proxy diagnosis preserved through
+      Direct API and OAuth error boundaries.
+    undici-network-fetch.ts
+      Applies isolated direct/proxy dispatchers to the host-provided Fetch and
+      reselects the route for redirect targets without changing process-global
+      network configuration; only a selected proxy hop failing before response
+      headers is identified as a proxy error.
+    undici-node-globals.ts
+      Supplies explicit Node URL, Blob, immediate, and microtask bindings to the
+      bundled dispatcher graph for the restricted Extension Host VM.
+    system-proxy.ts
+      Reads the active macOS proxy dictionary through the fixed system
+      `scutil --proxy` command and returns only validated, credential-free routes.
 
   storage/
     scope.ts
@@ -163,6 +182,9 @@ src/
       transaction, fence, and event registry shares one physical identity.
     settings.ts
       Explicit named-profile CRUD and global settings persistence.
+    oauth-credentials.ts
+      Strict private OAuth credential storage, provider-scoped replacement,
+      refresh-token rotation, and logout deletion.
     settings-migrations.ts
       Current-schema validation plus registered adjacent-version migrations
       for historical settings files.
@@ -172,8 +194,7 @@ src/
       Connection-fingerprint-slotted raw Direct API model-metadata cache;
       unsaved Draft discovery cannot evict another connection's slot, and an
       exact legacy Profile-ID slot remains read-only fallback;
-      Live Smith's normalized subscription catalogs stay modal-only. Codex's
-      separate isolated upstream cache is described below.
+      Live Smith's normalized subscription catalogs stay modal-only.
     events.ts, sessions.ts
       Chat session metadata, narrow Profile/model/reasoning selections, and the
       canonical event history.
@@ -204,13 +225,25 @@ src/
 ### Extension Host compatibility
 
 Extension code imports Node runtime values such as `URL`, `Buffer`, and process
-data from their `node:` modules. Host-provided Fetch and Abort APIs are resolved
-only through `runtime/host.ts`, which reports missing capabilities explicitly
-and owns the shared cancellation helpers. `model/json-clone.ts` clones
+data from their `node:` modules. Host-provided Fetch defaults and Abort APIs are
+resolved only through `runtime/host.ts`, which reports missing capabilities
+explicitly and owns the shared cancellation helpers. Provider traffic uses that
+host Fetch with the pinned, lazily loaded Undici dispatcher graph in
+`runtime/undici-network-fetch.ts`. Bundle-time Node bindings cover only the
+dispatcher globals omitted by the restricted Extension Host VM; the Undici Web
+Fetch entrypoint is not used. Route selection remains in
+`runtime/proxy-fetch.ts`, so No proxy, System proxy, and Manual proxy do not
+mutate the Extension Host's process-global dispatcher or affect another
+extension. `model/json-clone.ts` clones
 provider/Profile JSON without depending on `structuredClone`. `build.ts`
 checks these boundaries and smoke-loads the extension entrypoint without ambient
-Web APIs; a successful Node import alone is not proof of Extension Host
-compatibility.
+Web APIs, while the runtime suite sends real direct and CONNECT-proxy requests
+through an equivalent restricted VM. A successful Node import alone is not
+proof of Extension Host compatibility. Production child processes are limited
+to the fixed macOS and Windows default-browser commands in
+`runtime/oauth-browser.ts` and the macOS system-proxy query in
+`runtime/system-proxy.ts`; the build rejects `node:child_process` everywhere
+else.
 
 ## Model request flow
 
@@ -241,19 +274,19 @@ compatibility.
    current immutable references only after current-file validation succeeds.
 6. `backend-registry.ts` routes strictly on `profile.connection.kind`. A
    `direct-api` connection asks `registry.ts` for OpenAI Responses, OpenAI Chat
-   Completions, or Anthropic Messages. A `codex-subscription` connection uses
-   the one canonical-storage-keyed, reference-counted Codex App Server shared
-   by every modal that uses the managed connection. Model names
-   never select or change this connection boundary.
+   Completions, or Anthropic Messages. An `oauth-subscription` connection uses
+   the canonical-storage-keyed, reference-counted native OAuth backend for its
+   explicit OpenAI, Anthropic, or Google provider. Model names never select or
+   change this connection boundary.
 7. A Direct API transport maps normalized client function tools and
-   provider-hosted tools, messages, and parameters to its wire protocol. The
-   Codex backend instead creates an ephemeral, read-only App Server thread with
-   a strict output schema describing assistant text and Live Smith tool intent;
-   it provides no runtime workspace root, environment, or dynamic Codex tool.
+   provider-hosted tools, messages, and parameters to its wire protocol. OAuth
+   backends obtain a refreshed credential and map the same normalized request
+   directly to ChatGPT Codex Responses, Anthropic Messages, or Google Cloud
+   Code Assist. They expose no provider CLI workspace or tool runtime.
 8. Either backend returns the same normalized text and client tool-call
    boundary. Direct API transports can additionally return bounded citations
-   and opaque replay state. Hosted provider tools never enter the client tool
-   executor, and unexpected App Server tool activity fails the Codex turn.
+   and opaque replay state. Provider replay state remains transport-owned and
+   hosted provider tools never enter the client tool executor.
 9. Before confirmation, `agent-request.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
@@ -351,26 +384,43 @@ item, preserves partial text and citations, and makes at most two additional
 model requests. A function-call item is executable only if its own protocol
 status is `completed`; partial items are replayed but never executed. Other
 incomplete reasons fail closed.
-Non-2xx provider response bodies are treated as untrusted and are not read,
-logged, or persisted; transport errors retain only family/mode context plus the
-HTTP status and a fixed local failure description. Remote HTTP reason phrases
-are never propagated.
+Non-2xx provider response bodies are untrusted and are never logged or
+persisted. OpenAI-compatible and Google generation may decode at most 64 KiB of
+JSON to select a fixed local classification from bounded code, status, reason,
+and retry-delay fields. Other paths do not read the body. Transport errors
+retain only family/mode context, numeric HTTP status, and fixed local text;
+remote messages, metadata, and HTTP reason phrases are never propagated.
 
-Direct API connection recovery sits inside one provider-neutral `askModel`
-step. Direct transports give a private typed identity only to Fetch rejection,
-response-reader rejection, and premature streaming EOF without the required
-protocol terminal. The step may rebuild that same still-unaccepted logical
-response after cancellable waits of 0.5, 1, 2, 4, and 8 seconds. Abort wins at
-every boundary, so Stop and Steer terminate the active request or backoff with
-their original reason. HTTP, explicit provider or protocol, size, decoding,
-and callback failures are not retried. Managed Codex errors never receive the
-Direct marker and remain governed by process retirement, reservation, and
-poison rules.
+Connection recovery sits inside one provider-neutral `askModel` step. A
+transport or OAuth product protocol gives a private typed identity to eligible
+Fetch rejection, response-reader rejection, premature streaming EOF without a
+required terminal, or documented transient HTTP/provider failure. The step may
+rebuild that same still-unaccepted logical response after cancellable waits of
+0.5, 1, 2, 4, and 8 seconds. A valid provider `Retry-After` or structured retry
+delay up to five minutes raises the corresponding wait rather than being
+truncated; a longer delay exits automatic retry instead of sending early.
+Abort wins at every boundary, so Stop and Steer terminate the active request or
+backoff with their original reason. Authentication, quota/account limits,
+policy/validation, size, decoding, malformed protocol, and callback failures
+are not retried. OAuth authentication and lifecycle errors remain governed by
+backend retirement, reservation, and auth-fence poison rules rather than
+connection recovery.
 
 Those waits permit one initial plus five outer `askModel` attempts. A transport
 may make several HTTP exchanges, including Anthropic `pause_turn`
 continuations, inside one outer attempt without consuming another reconnect
 slot.
+
+The reconnect owner creates one opaque object for those physical attempts and
+passes it through request assembly without inspecting provider state. The
+ChatGPT Codex protocol weakly associates its first bounded turn-state token
+with that object as soon as a response header or metadata event arrives, so an
+early EOF retry replays the same token. Google Cloud Code Assist likewise
+associates one `user_prompt_id` with the object so physical retries keep one
+prompt identity, then carries that ID in its opaque assistant state across tool
+and output-limit continuations. A steering user message ends that identity.
+The object and associations are not persisted or shared with a later agent
+turn.
 
 This recovery never re-enters `/send` or its one-time request-start
 preparation. Each retry rebuilds the provider request from the same prompt,
@@ -391,77 +441,66 @@ advance the accepted-turn boundary until their final non-continuation turn.
 
 - `DirectApiConnection` owns API family/mode, base URL, and API key. The
   registry selects one of the three explicit HTTP/SSE transports.
-- `CodexSubscriptionConnection` owns only the fixed OpenAI subscription
-  identity. It is a managed backend, not a fourth API mode or endpoint preset.
+- `OAuthSubscriptionConnection` owns only an OpenAI, Anthropic, or Google
+  provider identity. It is a product-backend boundary, not another Direct API
+  mode or endpoint preset.
 
 The backend contract mirrors that union. Direct API backends expose model
-listing and turn creation. The managed Codex backend additionally requires
-terminal notification, first-turn reservation, auth reads and auth mutations at
-compile time; application code uses that explicit contract rather than probing
-optional managed capabilities or creating a synthetic Profile to start the
-process. `requestModelTurn`
-receives one explicit turn executor—the backend or a reserved first-turn
-executor—and never creates hidden resources.
+listing and turn creation. The OAuth backend additionally requires auth reads
+and auth mutations at compile time; application code uses that explicit
+contract rather than probing optional capabilities. `requestModelTurn`
+receives one explicit backend turn executor and never creates hidden resources.
 
-### Managed ownership and lifecycle
+### OAuth ownership and lifecycle
 
 `storage/scope.ts` canonicalizes the Ableton-provided Live Smith storage path
 once, including aliases whose final leaf does not yet exist. The same canonical
 directory is then used by persistence transactions, Session mutation fences,
 cross-modal event buses, the auth/send fence and the shared backend manager.
-This prevents a real path and symlink alias from sharing one Codex process while
+This prevents a real path and symlink alias from sharing OAuth state while
 accidentally using different storage or notification locks.
 
-The managed runtime is split by responsibility:
+The OAuth backend is split by responsibility:
 
 - `model/shared-backend-manager.ts` owns one ref-counted
   `ModelBackendManager` per canonical storage directory.
 - `app/model-auth-send-fence.ts` serializes auth reads, sends, mutations,
   pending-login ownership, generation changes and poison.
-- `runtime/codex-executable.ts` resolves only supported global npm
-  nested/hoisted/base-vendor layouts and returns the matching native payload.
-- `runtime/process-host.ts` owns the isolated home/workspace, strict child
-  environment and fixed Codex configuration.
-- `runtime/codex-metadata-firewall.ts` supplies the narrow loopback
-  attribution/cloud-config policy boundary.
-- `model/backends/codex-rpc.ts` owns bounded stdio framing, timeouts and
-  confirmed child/firewall shutdown.
-- `model/backends/codex-app-server.ts` owns managed auth, catalog validation,
-  turn admission/correlation and normalized model-only results.
+- `storage/oauth-credentials.ts` owns strict private token persistence.
+- `model/oauth/credential-manager.ts` owns login acquisition through completion
+  and refresh single-flight, including manager-owned logout cleanup, abortable
+  retirement, generation-checked writes, refresh-error redaction, and one shared
+  close completion.
+- `model/oauth/openai.ts`, `anthropic.ts`, and `google.ts` own provider
+  authorization flows.
+- `model/oauth/openai-codex-protocol.ts`, `anthropic-protocol.ts`, and
+  `google-protocol.ts` own product-backend request mapping and normalized model
+  results.
 
-Each modal lazily leases the shared manager on its first managed operation.
-Auth mutations exclude subscription sends across modals. Direct-only state
-hydration, catalog access, and sends neither acquire that managed registry nor
-inspect the managed auth fence's health; they may read its credential-free
+Each modal lazily leases the shared manager on its first OAuth operation.
+Auth mutations exclude same-provider subscription sends across modals; another
+provider's auth, catalog, and send ownership remain independent. Direct-only
+state hydration, catalog access, and sends neither acquire that registry nor inspect
+the auth fence's health; they may read its credential-free
 generation solely to invalidate stale subscription projections;
-pending device login and readiness reconciliation are single-flight;
-unknown auth outcomes retire the exact backend before advancing generation.
-Managed startup belongs to its shared manager slot: caller cancellation ends
-only that wait, while slot retirement or final release aborts initialization
-and confirms child/firewall cleanup.
-The last managed lease closes the process, and an unconfirmed exit poisons
-subscription use for that storage directory rather than starting overlapping
-work.
+pending browser or device login and readiness reconciliation are single-flight.
+Caller cancellation ends only its wait; backend retirement or final release
+cancels pending login, aborts detached refresh, rejects late credential writes,
+finishes any started logout deletion, and closes loopback authorization servers.
+Native and registry close calls share completion and include slots already
+undergoing invalidation. Registry shutdown waits every provider cleanup before
+propagating a failure, so a shared manager cannot be replaced before its prior
+backends finish retiring.
 
-Before prompt persistence, every new subscription send refreshes managed
-readiness and the App Server model catalog, validates the current
-account/catalog/model, and reserves first-turn capacity. Subsequent
-agent-loop turns use the same explicit backend boundary. Ephemeral-thread
-recycling, continuation FIFO, terminal correlation and fail-closed tool
-inspection remain inside the Codex backend rather than leaking into the
-provider-neutral agent loop.
+Before prompt persistence, every new subscription send refreshes credential
+readiness and the provider model catalog and validates the current
+account/catalog/model. Every agent-loop turn uses the same explicit backend
+boundary; provider replay and
+tool-call normalization do not leak into the provider-neutral agent loop.
 
-The exact Codex `0.148.x` feature disables, credential isolation, supported
-npm topology, metadata/cache/network behavior, plan eligibility, service-tier
-and thread/turn invariants are canonicalized in
-[Model Profiles and Connection Backends](MODEL_PROVIDERS.md#chatgpt-subscription-experimental).
-Architecture changes should update that document rather than duplicating the
-full normative list here.
-
-Anthropic remains a Direct API Messages transport. Claude.ai subscription
-credentials are outside the product boundary unless Anthropic grants prior
-written approval; see
-[Anthropic subscription boundary](MODEL_PROVIDERS.md#anthropic-subscription-boundary).
+The provider authorization, token fields, product endpoints, catalog ownership,
+and wire invariants are canonicalized in
+[Model Profiles and Connection Backends](MODEL_PROVIDERS.md#oauth-subscriptions).
 
 ## Skill boundary
 
@@ -646,12 +685,12 @@ markers instead of failing the new send. Assistant history is text-only.
 
 The provider-neutral model contract carries typed user text, image, native PDF,
 and audio parts. Transports recheck the corresponding input capability before
-network I/O. The managed App Server maps image or audio data URLs only when its
-signed-in model catalog explicitly declares that modality. Audio additionally
-requires explicit `supported` evidence on the active saved `RuntimeProfile` and
-either OpenAI Chat Completions or the managed subscription connection; model
-tool support is unrelated and is not a gate. OpenAI Responses and Anthropic
-Messages reject audio locally. Office content is locally
+network I/O. OAuth OpenAI and Google map verified images to product-backend
+inline data, while OAuth Anthropic uses the same image blocks as Messages.
+Audio additionally requires explicit `supported` evidence on the active saved
+`RuntimeProfile` and Direct OpenAI Chat Completions; subscription backends,
+OpenAI Responses, and Anthropic Messages reject audio locally. Model tool
+support is unrelated and is not a gate. Office content is locally
 extracted and encoded with its filename and media type in a JSON-escaped block
 explicitly labelled untrusted. File names, embedded metadata, document text,
 audio, and other binary content have no instruction authority. Attachment IDs
@@ -701,7 +740,7 @@ for imported files, so a failed later step may leave an unused project copy.
 
 Only profile CRUD/activation and the dedicated global-settings command write the
 settings file. The global command owns the default Queue/Steer follow-up
-behavior and context-usage visibility. It applies exactly one setting per
+behavior, context-usage visibility, and network proxy selection. It applies exactly one setting per
 transaction, advances only that setting's revision, and is allowed while sends
 are active. It broadcasts the complete committed global settings to every open
 dialog for the same storage directory. Sending,
@@ -782,9 +821,10 @@ retryable instead of leaving an unreachable conversation log.
 
 ### Settings schema compatibility
 
-Settings schema version 6 combines connection Profiles, per-model configuration
+Settings schema version 8 combines connection Profiles, per-model configuration
 collections, the strict `defaultFollowUpBehavior` value `queue | steer`, the
-context-usage visibility flag, and an independent canonical nonnegative
+context-usage visibility flag, the validated `none | system | manual` network
+proxy selection, and an independent canonical nonnegative
 decimal-string revision for each global setting. It validates legacy
 `approvalMode` for compatibility, but runtime authorization never reads that
 field. Subscription model configurations persist reasoning mode and optional
@@ -797,12 +837,14 @@ wraps flat Profiles into the nested v3 connection shape, and v3 is
 shape-discriminated before migrating to v4. Version 4's single model becomes
 the default entry in a version-5 model configuration list. Version 5 migrates to
 version 6 by preserving the follow-up behavior revision and enabling context
-usage at its initial revision. A v3 containing both
+usage at its initial revision. Version 6 normalizes legacy Codex subscription
+connections into provider-scoped OpenAI OAuth connections in version 7. Version
+7 adds the explicit No proxy default and its initial revision in version 8. A v3 containing both
 follow-up fields must contain only flat Profiles and preserves its
 behavior/revision; a v3 containing neither must contain only nested Profiles
 and receives Queue at revision `"0"`. Partial fields, mixed Profile shapes, and
 unknown fields fail closed. Reads never rewrite the file; the next authorized
-settings mutation persists version 6. A future version or incomplete adjacent
+settings mutation persists version 8. A future version or incomplete adjacent
 migration chain is reported as settings corruption.
 
 ### Capability projections
@@ -817,10 +859,13 @@ the editor applies a catalog only when that receipt matches its own request.
 Direct API reloads merge newly discovered IDs for the same connection and
 replace after a Draft connection change. Subscription reloads reconcile to the
 current auth-generation catalog while retaining settings for model IDs that
-remain. Models from different APIs or ChatGPT accounts therefore cannot mix.
-The UI receives only the process-local numeric auth generation, never managed
+remain. Models from different APIs or OAuth providers/accounts therefore cannot mix.
+The UI receives only the process-local numeric auth generation, never OAuth
 credentials, and keeps auth, editor catalog, and active subscription runtime
-projections generation-coherent across delayed HTTP and SSE state merges.
+projections generation-coherent across delayed HTTP and SSE state merges. An
+auth generation is provider-local: delayed projections compare generations only
+when their providers match, while an authoritative provider switch adopts that
+provider's projection regardless of its numeric generation.
 On window initialization, an eligible signed-in subscription with a missing
 catalog gets one background restoration attempt through
 `POST /session-model-capabilities`. This read-only route accepts only the strict
@@ -848,10 +893,10 @@ Profile state has three deliberate boundaries: incomplete `DraftProfile` values
 enter through settings commands, only validated `SavedProfile` values reach
 storage, and generation plus the active UI summary consume one materialized
 `RuntimeProfile`. Each representation retains the same `direct-api` or
-`codex-subscription` discriminant. Model discovery uses the Draft connection
+`oauth-subscription` discriminant. Model discovery uses the Draft connection
 gate and therefore does not require a Profile name or selected model. Secrets
-enumeration returns only Direct API keys; managed subscription credentials stay
-inside the isolated Codex home.
+enumeration returns only Direct API keys; OAuth credentials stay inside private
+provider-scoped credential storage.
 
 A Session's model selection stores only `profileId`, `model`, and an optional
 `reasoningEffort` override. It does not duplicate connection settings, generation
@@ -1163,7 +1208,7 @@ Concurrency boundaries have distinct ownership:
 | --- | --- | --- |
 | Storage transaction | Canonical storage directory | Serialize durable settings, Session, event, attachment, and Skill mutations. |
 | Session mutation fence | Storage directory and Session ID | Hold one Session's send, attachment, Skill activation, and lifecycle boundary through reconciliation. |
-| Managed auth/send fence | Canonical storage directory | Keep auth changes, generations, and pending-login ownership coherent with subscription sends. |
+| OAuth auth/send fence | Canonical storage directory and provider | Keep auth changes, generations, and pending-login ownership coherent with same-provider subscription sends. |
 | Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, including request-audio import and revalidation after import. |
 
 These are in-process coordination boundaries, not locks between independent
@@ -1408,9 +1453,8 @@ Background Sessions retain their own projection until selected.
 
 Context utilization is scoped to the latest accepted, non-continuation model
 turn. A transport attaches it only when both provider-reported used tokens and
-an authoritative context-window size are available. The managed Codex backend
-correlates `thread/tokenUsage/updated` to its owned ephemeral thread and turn;
-Direct transports normalize terminal protocol usage when their model metadata
+an authoritative context-window size are available. Direct API and OAuth
+protocol adapters normalize terminal protocol usage when their model metadata
 supplies the denominator. Output-limit continuations, reconnect attempts, and
 turns superseded by Steer do not advance the meter. The bridge keeps the value
 for active-send recovery, while the WebView retains the latest value per Session
@@ -1631,7 +1675,7 @@ possibly committed receipt. Queue starts another request through the unchanged
 Send contract; its mode is never added to that body. The global-settings command
 accepts `kind: "save_global_settings"` plus exactly one of
 `defaultFollowUpBehavior: "queue" | "steer"` or
-`showContextUsage: boolean`.
+`showContextUsage: boolean` or a validated `networkProxy` selection.
 Session, Profile, and subscription-auth commands accept only their
 command-specific fields; confirmation and Stop reject body fields they do not
 own. Stop targets the exact send ID in its header. While that send is active it

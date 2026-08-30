@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
     <meta name="theme-color" content="#262626" />
     <title>Live Smith</title>
     <script>
@@ -1058,6 +1059,157 @@
         accent-color: var(--accent);
       }
 
+      .network-proxy-panel {
+        container-name: networkProxy;
+        container-type: inline-size;
+        display: grid;
+        gap: 7px;
+        padding: 8px;
+        background: rgba(0, 0, 0, 0.08);
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+      }
+
+      .network-proxy-control-label {
+        color: var(--quiet);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .network-proxy-mode {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 2px;
+        min-width: 0;
+        margin: 0;
+        padding: 2px;
+        background: var(--field);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+      }
+
+      .network-proxy-option {
+        position: relative;
+        min-width: 0;
+        color: var(--quiet);
+        cursor: pointer;
+        text-transform: none;
+      }
+
+      .network-proxy-option input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .network-proxy-option-label {
+        display: grid;
+        place-items: center;
+        min-width: 0;
+        height: 28px;
+        padding: 0 5px;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .network-proxy-option:hover .network-proxy-option-label {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .network-proxy-option input:checked + .network-proxy-option-label {
+        color: var(--accent);
+        background: var(--accent-soft);
+        border-color: rgba(255, 159, 26, 0.45);
+      }
+
+      .network-proxy-option input:focus-visible + .network-proxy-option-label {
+        outline: 1px solid var(--focus);
+        outline-offset: 1px;
+      }
+
+      .network-proxy-option input:disabled + .network-proxy-option-label {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      .network-proxy-route-hint {
+        display: grid;
+        grid-template-columns: 12px minmax(0, 1fr);
+        align-items: start;
+        gap: 5px;
+      }
+
+      .network-proxy-route-hint::before {
+        width: 12px;
+        height: 2px;
+        margin-top: 6px;
+        background: linear-gradient(
+          90deg,
+          var(--accent) 0 4px,
+          var(--line-soft) 4px 12px
+        );
+        content: "";
+      }
+
+      .network-proxy-commit {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 6px;
+      }
+
+      .network-proxy-url-field input {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10.5px;
+      }
+
+      .network-proxy-url-hint {
+        grid-column: 1 / -1;
+      }
+
+      .network-proxy-apply {
+        grid-column: 2;
+        width: auto;
+        min-width: 92px;
+        height: 30px;
+        padding: 0 11px;
+        color: var(--muted);
+        background: var(--pane-2);
+        border: 1px solid var(--line-soft);
+        font-size: 10px;
+        font-weight: 600;
+      }
+
+      .network-proxy-apply:not(:disabled) {
+        color: var(--accent-text);
+        background: var(--accent);
+        border-color: var(--accent);
+        font-weight: 700;
+      }
+
+      .network-proxy-apply:not(:disabled):hover {
+        background: #ffb733;
+      }
+
+      @container networkProxy (max-width: 250px) {
+        .network-proxy-commit {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .network-proxy-apply {
+          grid-column: 1;
+          width: 100%;
+        }
+      }
+
       .web-search-query-list,
       .web-search-source-list {
         display: grid;
@@ -2023,7 +2175,8 @@
 
       .subscription-auth-panel[hidden],
       .direct-api-fields[hidden],
-      .anthropic-subscription-hint[hidden] {
+      .anthropic-subscription-hint[hidden],
+      .field[hidden] {
         display: none;
       }
 
@@ -2196,20 +2349,19 @@
       }
 
       .subscription-auth-actions {
-        display: flex;
-        align-items: center;
+        display: grid;
+        grid-auto-columns: minmax(0, 1fr);
+        grid-auto-flow: column;
         gap: 6px;
       }
 
       .subscription-auth-actions button {
+        align-self: stretch;
+        width: 100%;
+        height: 30px;
         min-width: 0;
-        min-height: 30px;
         padding: 0 9px;
         font-size: 10px;
-      }
-
-      .subscription-auth-actions .primary {
-        flex: 1 1 auto;
       }
 
       .subscription-auth-actions .subscription-auth-quiet-action {
@@ -3279,7 +3431,15 @@
                   <label for="connectionKind">Type</label>
                   <select id="connectionKind" name="connectionKind" autocomplete="off" onchange="LiveSmithUI.handleConnectionKindChange()">
                     <option value="direct-api">Direct API</option>
-                    <option value="codex-subscription">ChatGPT subscription</option>
+                    <option value="oauth-subscription">Account subscription (OAuth)</option>
+                  </select>
+                </div>
+                <div id="oauthProviderField" class="field" hidden>
+                  <label for="oauthProvider">Subscription provider</label>
+                  <select id="oauthProvider" name="oauthProvider" autocomplete="off" onchange="LiveSmithUI.handleOAuthProviderChange()">
+                    <option value="openai">ChatGPT / Codex</option>
+                    <option value="anthropic">Claude</option>
+                    <option value="google">Google Gemini</option>
                   </select>
                 </div>
                 <div id="directApiFields" class="direct-api-fields">
@@ -3317,41 +3477,41 @@
                   </div>
                   <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" oninput="LiveSmithUI.markDraftDirty(this)" />
                 </div>
-                <span id="anthropicSubscriptionHint" class="field-hint anthropic-subscription-hint" hidden>Claude/Anthropic subscription login is not supported here. Anthropic requires an API connection for third-party products unless it grants prior written approval.</span>
+                <span id="anthropicSubscriptionHint" class="field-hint anthropic-subscription-hint" hidden>To sign in with a Claude account instead of an API key, choose Account subscription (OAuth).</span>
                 </div>
-                <section id="codexAuthPanel" class="subscription-auth-panel" data-auth-state="unchecked" aria-labelledby="codexAuthHeading" hidden>
+                <section id="oauthAuthPanel" class="subscription-auth-panel" data-auth-state="unchecked" aria-labelledby="oauthAuthHeading" hidden>
                   <div class="subscription-auth-header">
-                    <h3 id="codexAuthHeading">Account <span class="subscription-auth-experimental">Experimental</span></h3>
-                    <span id="codexAuthStateBadge" class="subscription-auth-state-badge">Not checked</span>
+                    <h3 id="oauthAuthHeading">Account <span class="subscription-auth-experimental">Experimental</span></h3>
+                    <span id="oauthAuthStateBadge" class="subscription-auth-state-badge">Not checked</span>
                   </div>
-                  <p class="subscription-auth-note">Uses your ChatGPT plan. API billing stays off.</p>
-                  <div id="codexAuthStatus" class="subscription-auth-status">
-                    <div id="codexAuthState" class="subscription-auth-state" role="status" aria-live="polite" aria-atomic="true">
-                      <strong id="codexAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
-                      <span id="codexAuthStateDetail" class="subscription-auth-state-detail" hidden></span>
+                  <p id="oauthAuthNote" class="subscription-auth-note">Uses the selected account through OAuth.</p>
+                  <div id="oauthAuthStatus" class="subscription-auth-status">
+                    <div id="oauthAuthState" class="subscription-auth-state" role="status" aria-live="polite" aria-atomic="true">
+                      <strong id="oauthAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
+                      <span id="oauthAuthStateDetail" class="subscription-auth-state-detail" hidden></span>
                     </div>
-                    <div id="codexDeviceCodeTicket" class="subscription-auth-device-ticket" aria-labelledby="codexDeviceCodeHeading" hidden>
-                      <a id="codexVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden>
-                        <span>Open OpenAI sign-in page</span><span aria-hidden="true">↗</span>
+                    <div id="oauthDeviceCodeTicket" class="subscription-auth-device-ticket" aria-labelledby="oauthDeviceCodeHeading" hidden>
+                      <a id="oauthVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden>
+                        <span id="oauthVerificationLinkLabel">Open sign-in page</span><span aria-hidden="true">↗</span>
                       </a>
-                      <p id="codexVerificationError" class="subscription-auth-device-error" hidden>Live Smith could not verify the sign-in page. Cancel this sign-in and start again.</p>
+                      <p id="oauthVerificationError" class="subscription-auth-device-error" hidden>Live Smith could not verify the sign-in page. Cancel this sign-in and start again.</p>
                       <div class="subscription-auth-code-ticket">
-                        <label id="codexDeviceCodeHeading" class="subscription-auth-code-label" for="codexUserCode">One-time code<small>Select to copy</small></label>
-                        <input id="codexUserCode" name="codexUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
+                        <label id="oauthDeviceCodeHeading" class="subscription-auth-code-label" for="oauthUserCode">One-time code<small>Select to copy</small></label>
+                        <input id="oauthUserCode" name="oauthUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
                       </div>
                       <p class="subscription-auth-device-guidance">Keep this window open. Return here after entering the code.</p>
                     </div>
                   </div>
                   <div class="subscription-auth-actions">
-                    <button id="codexSignInButton" class="primary" type="button" aria-describedby="codexAuthState" data-idle-label="Sign in" onclick="LiveSmithUI.startCodexLogin()">Sign in</button>
-                    <button id="codexCheckAccountButton" class="secondary" type="button" aria-describedby="codexAuthState" data-idle-label="Check existing session" onclick="LiveSmithUI.refreshCodexAccount()">Check existing session</button>
-                    <button id="codexLogoutButton" class="subscription-auth-quiet-action" type="button" aria-describedby="codexAuthState" data-idle-label="Sign out" onclick="LiveSmithUI.logoutCodex()" hidden>Sign out</button>
+                    <button id="oauthSignInButton" class="primary" type="button" aria-describedby="oauthAuthState" data-idle-label="Sign in" onclick="LiveSmithUI.startOAuthLogin()">Sign in</button>
+                    <button id="oauthCheckAccountButton" class="secondary" type="button" aria-describedby="oauthAuthState" data-idle-label="Check existing session" onclick="LiveSmithUI.refreshOAuthAccount()">Check existing session</button>
+                    <button id="oauthLogoutButton" class="subscription-auth-quiet-action" type="button" aria-describedby="oauthAuthState" data-idle-label="Sign out" onclick="LiveSmithUI.logoutOAuth()" hidden>Sign out</button>
                   </div>
                   <details class="subscription-auth-details">
                     <summary>Requirements</summary>
                     <ul>
-                      <li>Codex CLI 0.148.x must be on PATH.</li>
-                      <li>Personal ChatGPT plans only; workspace-managed accounts are not eligible.</li>
+                      <li>No provider CLI or API key is required.</li>
+                      <li>OAuth credentials stay in Live Smith’s private Ableton storage.</li>
                     </ul>
                   </details>
                 </section>
@@ -3362,7 +3522,7 @@
                 <div class="model-load-row">
                   <div class="model-load-copy">
                     <span id="profileModelCount" class="field-hint" role="status" aria-live="polite"></span>
-                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. ChatGPT reloads match the current account." data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. ChatGPT reloads match the current account.">?</span>
+                    <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account.">?</span>
                   </div>
                   <button id="discoverModelsButton" class="secondary" type="button" data-idle-label="Load Models" onclick="LiveSmithUI.discoverModels()">Load Models</button>
                 </div>
@@ -3396,7 +3556,7 @@
                     <span><strong>Web Search</strong>The model decides when to search.</span>
                   </label>
                   <span id="webSearchHint" class="field-hint" role="status" aria-live="polite" aria-atomic="true">Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support.</span>
-                  <span id="webSearchBoundaryHint" class="field-hint" hidden>The managed ChatGPT connection is model-only in Live Smith. Use a Direct API Profile with OpenAI Responses or Anthropic Messages for provider-hosted Web Search.</span>
+                  <span id="webSearchBoundaryHint" class="field-hint" hidden>OAuth subscription connections do not expose provider-hosted Web Search in Live Smith. Use a Direct API Profile with OpenAI Responses or Anthropic Messages for provider-hosted Web Search.</span>
                 </div>
                 <details id="advancedSettings" class="settings-disclosure top-level-settings advanced-settings">
                   <summary id="advancedSettingsHeading">
@@ -3540,6 +3700,39 @@
                   <input id="showContextUsage" name="showContextUsage" type="checkbox" onchange="LiveSmithUI.saveContextUsageVisibility()" />
                   <span>Show context window</span>
                 </label>
+              </section>
+              <section id="networkSettingsSection" class="settings-section" aria-labelledby="networkSettingsHeading">
+                <h2 id="networkSettingsHeading">Network</h2>
+                <div class="network-proxy-panel">
+                  <div class="field-label-row">
+                    <span id="networkProxyModeLabel" class="network-proxy-control-label">Proxy mode</span>
+                    <span class="inline-help" tabindex="0" role="note" aria-label="Applies to Direct API and account subscription requests in every Live Smith window." data-tooltip="Applies to Direct API and account subscription requests in every Live Smith window.">?</span>
+                  </div>
+                  <fieldset id="networkProxyMode" class="network-proxy-mode" aria-labelledby="networkProxyModeLabel" aria-describedby="networkProxyHint">
+                    <legend class="visually-hidden">Proxy mode</legend>
+                    <label class="network-proxy-option" for="networkProxyModeNone">
+                      <input id="networkProxyModeNone" name="networkProxyMode" type="radio" value="none" onchange="LiveSmithUI.handleNetworkProxyModeChange()" checked />
+                      <span class="network-proxy-option-label">No proxy</span>
+                    </label>
+                    <label class="network-proxy-option" for="networkProxyModeSystem">
+                      <input id="networkProxyModeSystem" name="networkProxyMode" type="radio" value="system" onchange="LiveSmithUI.handleNetworkProxyModeChange()" />
+                      <span class="network-proxy-option-label">System</span>
+                    </label>
+                    <label class="network-proxy-option" for="networkProxyModeManual">
+                      <input id="networkProxyModeManual" name="networkProxyMode" type="radio" value="manual" onchange="LiveSmithUI.handleNetworkProxyModeChange()" />
+                      <span class="network-proxy-option-label">Manual</span>
+                    </label>
+                  </fieldset>
+                  <span id="networkProxyHint" class="field-hint network-proxy-route-hint" role="status" aria-live="polite">Connect to providers directly.</span>
+                  <div class="network-proxy-commit">
+                    <div id="networkProxyUrlField" class="field network-proxy-url-field" hidden>
+                      <label class="visually-hidden" for="networkProxyUrl">Proxy URL</label>
+                      <input id="networkProxyUrl" name="networkProxyUrl" type="url" maxlength="2048" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Enter proxy URL…" aria-describedby="networkProxyUrlHint" oninput="LiveSmithUI.handleNetworkProxyUrlInput()" />
+                    </div>
+                    <button id="applyNetworkProxyButton" class="network-proxy-apply" type="button" data-busy-label="Applying…" onclick="LiveSmithUI.saveNetworkProxySettings()" disabled>Apply Proxy</button>
+                    <span id="networkProxyUrlHint" class="field-hint network-proxy-url-hint" hidden>HTTP(S) or SOCKS(5), without credentials.</span>
+                  </div>
+                </div>
               </section>
             </div>
             </div>

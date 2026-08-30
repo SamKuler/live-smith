@@ -334,6 +334,8 @@ test("global settings changes publish to every open bridge for the same storage"
       defaultFollowUpBehaviorRevision: "1",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "global-settings-success",
     });
     const secondState = await (await fetch(
@@ -368,6 +370,8 @@ test("global settings changes publish to every open bridge for the same storage"
       defaultFollowUpBehaviorRevision: "1",
       showContextUsage: false,
       contextUsageVisibilityRevision: "1",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "global-context-visibility",
     });
     const contextState = await (await fetch(
@@ -375,6 +379,51 @@ test("global settings changes publish to every open bridge for the same storage"
     )).json() as ChatDialogState;
     assert.equal(contextState.settings.showContextUsage, false);
     assert.equal(contextState.settings.contextUsageVisibilityRevision, "1");
+
+    const proxyEvents = await fetch(fixture.second.endpoint("/events"));
+    const proxyNotification = readSsePayload(
+      proxyEvents,
+      "global_settings_changed",
+      (payload) => payload.networkProxyRevision === "1",
+    );
+    const proxyResponse = await fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-network-proxy",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        networkProxy: {
+          mode: "manual",
+          url: "socks5://Proxy.Example:1080/",
+        },
+      }),
+    });
+    assert.equal(proxyResponse.status, 200);
+    assert.deepEqual(withoutBridgeStateRevision(
+      await resolvesWithin(proxyNotification, "network proxy notification"),
+    ), {
+      type: "global_settings_changed",
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: false,
+      contextUsageVisibilityRevision: "1",
+      networkProxy: {
+        mode: "manual",
+        url: "socks5://proxy.example:1080",
+      },
+      networkProxyRevision: "1",
+      commandId: "global-network-proxy",
+    });
+    const proxyState = await (await fetch(
+      fixture.second.endpoint("/state"),
+    )).json() as ChatDialogState;
+    assert.deepEqual(proxyState.settings.networkProxy, {
+      mode: "manual",
+      url: "socks5://proxy.example:1080",
+    });
+    assert.equal(proxyState.settings.networkProxyRevision, "1");
   } finally {
     await fixture.close();
   }
@@ -522,6 +571,8 @@ test("an unknown global settings commit publishes its reconciled value to every 
       defaultFollowUpBehaviorRevision: "1",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "global-settings-unknown",
     });
     const peerState = await (await fetch(
@@ -632,6 +683,8 @@ test("unknown global settings readback stays ordered before a later save", async
         defaultFollowUpBehaviorRevision: "1",
         showContextUsage: true,
         contextUsageVisibilityRevision: "0",
+        networkProxy: { mode: "none", url: "" },
+        networkProxyRevision: "0",
         commandId: "global-settings-unknown-first",
       },
     );
@@ -645,6 +698,8 @@ test("unknown global settings readback stays ordered before a later save", async
         defaultFollowUpBehaviorRevision: "2",
         showContextUsage: true,
         contextUsageVisibilityRevision: "0",
+        networkProxy: { mode: "none", url: "" },
+        networkProxyRevision: "0",
         commandId: "global-settings-success-second",
       },
     );

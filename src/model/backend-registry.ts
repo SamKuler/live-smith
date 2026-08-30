@@ -1,15 +1,16 @@
 import {
-  ModelBackendShutdownError,
-  type CodexSubscriptionBackend,
   type DirectApiBackend,
   type ModelBackend,
+  type OAuthSubscriptionBackend,
   type TransportFactoryOptions,
 } from "./provider.js";
-import type { DraftProfile, SavedProfile } from "./profile.js";
+import type {
+  DraftProfile,
+  OAuthSubscriptionProvider,
+  SavedProfile,
+} from "./profile.js";
 import { transportForProfile } from "./registry.js";
-import {
-  startCodexAppServerBackend,
-} from "./backends/codex-app-server.js";
+import { createNativeOAuthBackend } from "./oauth/native-backend.js";
 import {
   createHostAbortController,
   throwIfAborted,
@@ -17,11 +18,22 @@ import {
 } from "../runtime/host.js";
 
 export interface ModelBackendManagerOptions extends TransportFactoryOptions {
-  startCodexBackend?: (
+  startOAuthBackend?: (
     storageDirectory: string,
+    provider: OAuthSubscriptionProvider,
     signal: AbortSignal,
-  ) => Promise<CodexSubscriptionBackend>;
-  onPoison?(error: Error): void;
+  ) => Promise<OAuthSubscriptionBackend>;
+}
+
+export interface OAuthBackendLease {
+  readonly backend: OAuthSubscriptionBackend;
+  retire(): Promise<boolean>;
+}
+
+interface OAuthBackendSlot {
+  readonly startupController: ReturnType<typeof createHostAbortController>;
+  readonly promise: Promise<OAuthSubscriptionBackend>;
+  retirementPromise?: Promise<void>;
 }
 
 export async function createDirectApiBackend(
@@ -32,31 +44,21 @@ export async function createDirectApiBackend(
     throw new TypeError("A Direct API Profile is required.");
   }
   const transport = transportForProfile(profile, options);
-  return {
-    ...transport,
-    kind: "direct-api",
-    async close() {},
-  };
+  return { ...transport, kind: "direct-api", async close() {} };
 }
 
 export class ModelBackendManager {
-  private codexSlot: CodexBackendSlot | undefined;
-  private codexInvalidationPromise: Promise<void> | undefined;
-  private poisonError: Error | undefined;
+  private readonly oauthSlots = new Map<OAuthSubscriptionProvider, OAuthBackendSlot>();
+  private readonly invalidations = new Map<OAuthSubscriptionProvider, Promise<void>>();
   private closed = false;
-  private readonly options: Omit<
-    ModelBackendManagerOptions,
-    "onPoison"
-  >;
-  private readonly onPoison: ((error: Error) => void) | undefined;
+  private closePromise: Promise<void> | undefined;
+  private readonly options: ModelBackendManagerOptions;
 
   constructor(
     private readonly storageDirectory: string | undefined,
     options: ModelBackendManagerOptions = {},
   ) {
-    const { onPoison, ...factoryOptions } = options;
-    this.options = factoryOptions;
-    this.onPoison = onPoison;
+    this.options = options;
   }
 
   async forProfile(
@@ -64,176 +66,119 @@ export class ModelBackendManager {
     signal?: AbortSignal,
   ): Promise<ModelBackend> {
     this.assertOpen();
-    if (profile.connection.kind === "direct-api") {
-      return createDirectApiBackend(profile, this.options);
-    }
-    return this.codex(signal);
+    return profile.connection.kind === "direct-api"
+      ? createDirectApiBackend(profile, this.options)
+      : this.oauth(profile.connection.provider, signal);
   }
 
-  async codex(signal?: AbortSignal): Promise<CodexSubscriptionBackend> {
-    return (await this.codexLease(signal)).backend;
+  async oauth(
+    provider: OAuthSubscriptionProvider,
+    signal?: AbortSignal,
+  ): Promise<OAuthSubscriptionBackend> {
+    return (await this.oauthLease(provider, signal)).backend;
   }
 
-  async codexLease(signal?: AbortSignal): Promise<CodexBackendLease> {
+  async oauthLease(
+    provider: OAuthSubscriptionProvider,
+    signal?: AbortSignal,
+  ): Promise<OAuthBackendLease> {
     for (;;) {
       throwIfAborted(signal);
       this.assertOpen();
-      this.assertHealthy();
-      const invalidation = this.codexInvalidationPromise;
+      const invalidation = this.invalidations.get(provider);
       if (invalidation) {
         await waitForPromiseWithSignal(invalidation, signal);
         continue;
       }
       const storageDirectory = this.storageDirectory;
       if (!storageDirectory) {
-        throw new Error(
-          "The Codex subscription backend requires the Ableton storage directory.",
-        );
+        throw new Error("OAuth subscription backends require the Ableton storage directory.");
       }
-      let slot = this.codexSlot;
+      let slot = this.oauthSlots.get(provider);
       if (!slot) {
         const startupController = createHostAbortController();
-        let nextSlot!: CodexBackendSlot;
+        const start = this.options.startOAuthBackend ??
+          ((directory, selectedProvider, _signal) => Promise.resolve(
+            createNativeOAuthBackend(directory, selectedProvider, this.options),
+          ));
+        let created!: OAuthBackendSlot;
         const promise = Promise.resolve().then(() =>
-          (this.options.startCodexBackend ?? startCodexAppServerBackend)(
-            storageDirectory,
-            startupController.signal,
-          )
+          start(storageDirectory, provider, startupController.signal)
         ).catch((error: unknown) => {
-          if (this.codexSlot === nextSlot) this.codexSlot = undefined;
-          if (error instanceof ModelBackendShutdownError) this.poison(error);
+          if (this.oauthSlots.get(provider) === created) {
+            this.oauthSlots.delete(provider);
+          }
           throw error;
         });
-        slot = {
-          startupController,
-          terminalUnsubscribe: undefined,
-          promise,
-        };
-        nextSlot = slot;
-        this.codexSlot = slot;
+        created = { startupController, promise };
+        slot = created;
+        this.oauthSlots.set(provider, slot);
       }
       const backend = await waitForPromiseWithSignal(slot.promise, signal);
       throwIfAborted(signal);
       this.assertOpen();
-      this.assertHealthy();
-      if (this.codexSlot !== slot) {
-        const retiring = this.codexInvalidationPromise;
-        if (retiring) await waitForPromiseWithSignal(retiring, signal);
-        continue;
-      }
-      if (!slot.backend) {
-        slot.backend = backend;
-        slot.terminalUnsubscribe = backend.onTerminal(() => {
-          void this.retireSlot(slot).catch(() => undefined);
-        });
-      }
-      if (this.codexSlot !== slot) {
-        const retiring = this.codexInvalidationPromise;
-        if (retiring) await waitForPromiseWithSignal(retiring, signal);
-        continue;
-      }
+      if (this.oauthSlots.get(provider) !== slot) continue;
       return {
         backend,
-        retire: () => this.retireSlot(slot),
+        retire: () => this.retireSlot(provider, slot!),
       };
     }
   }
 
-  async invalidateCodex(): Promise<void> {
+  async invalidateOAuth(provider: OAuthSubscriptionProvider): Promise<void> {
     this.assertOpen();
-    this.assertHealthy();
-    if (this.codexInvalidationPromise) {
-      await this.codexInvalidationPromise;
-      return;
-    }
-    const slot = this.codexSlot;
-    if (!slot) return;
-    await this.retireSlot(slot);
+    const invalidation = this.invalidations.get(provider);
+    if (invalidation) return invalidation;
+    const slot = this.oauthSlots.get(provider);
+    if (slot) await this.retireSlot(provider, slot);
   }
 
-  private retireSlot(slot: CodexBackendSlot): Promise<boolean> {
-    if (slot.retirementPromise) {
-      return slot.retirementPromise.then(() => false);
-    }
-    if (this.codexSlot !== slot) return Promise.resolve(false);
-    this.codexSlot = undefined;
-    slot.terminalUnsubscribe?.();
-    slot.terminalUnsubscribe = undefined;
-    const invalidation = this.closeDetachedSlot(slot);
-    slot.retirementPromise = invalidation;
-    this.codexInvalidationPromise = invalidation;
-    return (async () => {
-      try {
-        await invalidation;
-        return true;
-      } finally {
-        if (this.codexInvalidationPromise === invalidation) {
-          this.codexInvalidationPromise = undefined;
-        }
-      }
-    })();
-  }
-
-  private async closeDetachedSlot(slot: CodexBackendSlot): Promise<void> {
-    slot.startupController.abort(
-      new Error("The Codex backend startup was canceled."),
-    );
-    const result = await Promise.allSettled([slot.promise]);
-    const backend = result[0]?.status === "fulfilled"
-      ? result[0].value
-      : undefined;
-    if (!backend) return;
-    try {
-      await backend.close();
-    } catch (error) {
-      const poison = error instanceof Error
-        ? error
-        : new Error("The Codex backend could not be stopped.");
-      this.poison(poison);
-      throw poison;
-    }
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    const invalidation = this.codexInvalidationPromise;
-    this.codexInvalidationPromise = undefined;
-    const slot = this.codexSlot;
-    this.codexSlot = undefined;
-    slot?.terminalUnsubscribe?.();
-    if (invalidation) await invalidation;
-    if (slot) await this.closeDetachedSlot(slot);
+    const invalidations = [...this.invalidations.values()];
+    const slots = [...this.oauthSlots.entries()];
+    this.oauthSlots.clear();
+    const cleanup = [
+      ...invalidations,
+      ...slots.map(async ([provider, slot]) => {
+        slot.startupController.abort(new Error(`${provider} OAuth backend manager closed.`));
+        const result = await Promise.allSettled([slot.promise]);
+        const backend = result[0]?.status === "fulfilled" ? result[0].value : undefined;
+        if (backend) await backend.close();
+      }),
+    ];
+    this.closePromise = Promise.allSettled(cleanup).then((results) => {
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failure) throw failure.reason;
+    });
+    return this.closePromise;
+  }
+
+  private retireSlot(
+    provider: OAuthSubscriptionProvider,
+    slot: OAuthBackendSlot,
+  ): Promise<boolean> {
+    if (slot.retirementPromise) return slot.retirementPromise.then(() => false);
+    if (this.oauthSlots.get(provider) !== slot) return Promise.resolve(false);
+    this.oauthSlots.delete(provider);
+    slot.startupController.abort(new Error(`${provider} OAuth backend was invalidated.`));
+    const retirement = slot.promise.then(
+      (backend) => backend.close(),
+      () => undefined,
+    );
+    slot.retirementPromise = retirement;
+    this.invalidations.set(provider, retirement);
+    return retirement.then(() => true).finally(() => {
+      if (this.invalidations.get(provider) === retirement) {
+        this.invalidations.delete(provider);
+      }
+    });
   }
 
   private assertOpen(): void {
     if (this.closed) throw new Error("The model backend manager is closed.");
   }
-
-  private assertHealthy(): void {
-    if (this.poisonError) throw this.poisonError;
-  }
-
-  private poison(error: Error): void {
-    if (this.poisonError) return;
-    this.poisonError = error;
-    try {
-      this.onPoison?.(error);
-    } catch {
-      // A storage-wide observer cannot replace the shutdown failure.
-    }
-  }
-}
-
-export interface CodexBackendLease {
-  readonly backend: CodexSubscriptionBackend;
-  retire(): Promise<boolean>;
-}
-
-interface CodexBackendSlot {
-  readonly startupController: ReturnType<typeof createHostAbortController>;
-  readonly promise: Promise<CodexSubscriptionBackend>;
-  backend?: CodexSubscriptionBackend;
-  retirementPromise?: Promise<void>;
-  terminalUnsubscribe: (() => void) | undefined;
 }

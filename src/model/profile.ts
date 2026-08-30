@@ -106,12 +106,21 @@ type DirectApiPair =
   | Pick<OpenAIDirectApiConnection, "apiFamily" | "apiMode">
   | Pick<AnthropicDirectApiConnection, "apiFamily" | "apiMode">;
 
-export interface CodexSubscriptionConnection {
-  kind: "codex-subscription";
-  provider: "openai";
+const oauthSubscriptionProviders = [
+  "openai",
+  "anthropic",
+  "google",
+] as const;
+
+export type OAuthSubscriptionProvider =
+  (typeof oauthSubscriptionProviders)[number];
+
+export interface OAuthSubscriptionConnection {
+  kind: "oauth-subscription";
+  provider: OAuthSubscriptionProvider;
 }
 
-export type ModelConnection = DirectApiConnection | CodexSubscriptionConnection;
+export type ModelConnection = DirectApiConnection | OAuthSubscriptionConnection;
 
 export interface ModelConnectionOwner {
   connection: ModelConnection;
@@ -123,7 +132,7 @@ export type DirectApiModelConfig = ModelConfigFields & {
   parameters: GenerationParameters & { maxOutputTokens: number };
 };
 
-export type CodexSubscriptionModelConfig = ModelConfigFields & {
+export type OAuthSubscriptionModelConfig = ModelConfigFields & {
   parameters: Omit<GenerationParameters, "maxOutputTokens" | "temperature"> & {
     maxOutputTokens?: never;
     temperature?: never;
@@ -137,16 +146,16 @@ export type CodexSubscriptionModelConfig = ModelConfigFields & {
 
 export type SavedModelConfig =
   | DirectApiModelConfig
-  | CodexSubscriptionModelConfig;
+  | OAuthSubscriptionModelConfig;
 
 export type DirectApiProfile = ProfileFields & {
   connection: DirectApiConnection;
   models: DirectApiModelConfig[];
 };
 
-export type CodexSubscriptionProfile = ProfileFields & {
-  connection: CodexSubscriptionConnection;
-  models: CodexSubscriptionModelConfig[];
+export type OAuthSubscriptionProfile = ProfileFields & {
+  connection: OAuthSubscriptionConnection;
+  models: OAuthSubscriptionModelConfig[];
 };
 
 /** Editable form state. Name and individual model fields may be blank. */
@@ -156,7 +165,7 @@ export type DraftProfile = ProfileFields & {
 };
 
 /** Complete, normalized configuration that is safe to persist and activate. */
-export type SavedProfile = DirectApiProfile | CodexSubscriptionProfile;
+export type SavedProfile = DirectApiProfile | OAuthSubscriptionProfile;
 
 /** A legacy/manual set plus one complete provider discovery catalog. */
 export const MAX_PROFILE_MODEL_COUNT = 2_000;
@@ -165,8 +174,14 @@ export type ApprovalMode = "manual" | "low-risk" | "everything";
 export type DefaultFollowUpBehavior = "queue" | "steer";
 export type DefaultFollowUpBehaviorRevision = string;
 export type ContextUsageVisibilityRevision = string;
+export type NetworkProxyMode = "none" | "system" | "manual";
+export interface NetworkProxySettings {
+  mode: NetworkProxyMode;
+  url: string;
+}
+export type NetworkProxyRevision = string;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 6 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 8 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
@@ -177,6 +192,8 @@ export interface AgentSettings {
   defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
   showContextUsage: boolean;
   contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+  networkProxy: NetworkProxySettings;
+  networkProxyRevision: NetworkProxyRevision;
 }
 
 export class ProfileValidationError extends Error {
@@ -201,6 +218,8 @@ export function freshEmptyAgentSettings(): AgentSettings {
     defaultFollowUpBehaviorRevision: "0",
     showContextUsage: true,
     contextUsageVisibilityRevision: "0",
+    networkProxy: { mode: "none", url: "" },
+    networkProxyRevision: "0",
   };
 }
 
@@ -226,6 +245,54 @@ export function isContextUsageVisibilityRevision(
   return isCanonicalSettingsRevision(value);
 }
 
+export function isNetworkProxyRevision(
+  value: unknown,
+): value is NetworkProxyRevision {
+  return isCanonicalSettingsRevision(value);
+}
+
+export function normalizeNetworkProxySettings(
+  value: unknown,
+): NetworkProxySettings {
+  const record = requiredRecord(
+    value,
+    "networkProxy",
+    "Network proxy settings must be an object.",
+  );
+  assertOnlyKeys(record, ["mode", "url"], "networkProxy");
+  if (
+    record.mode !== "none" &&
+    record.mode !== "system" &&
+    record.mode !== "manual"
+  ) {
+    throw new ProfileValidationError(
+      "networkProxy.mode",
+      "Network proxy mode must be none, system, or manual.",
+    );
+  }
+  if (typeof record.url !== "string") {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must be a string.",
+    );
+  }
+  const url = normalizeNetworkProxyUrl(record.url, record.mode === "manual");
+  return { mode: record.mode, url };
+}
+
+export function isNetworkProxySettings(
+  value: unknown,
+): value is NetworkProxySettings {
+  try {
+    const normalized = normalizeNetworkProxySettings(value);
+    return isRecord(value) &&
+      value.mode === normalized.mode &&
+      value.url === normalized.url;
+  } catch {
+    return false;
+  }
+}
+
 export function compareDefaultFollowUpBehaviorRevisions(
   left: DefaultFollowUpBehaviorRevision,
   right: DefaultFollowUpBehaviorRevision,
@@ -236,6 +303,13 @@ export function compareDefaultFollowUpBehaviorRevisions(
 export function compareContextUsageVisibilityRevisions(
   left: ContextUsageVisibilityRevision,
   right: ContextUsageVisibilityRevision,
+): -1 | 0 | 1 {
+  return compareCanonicalSettingsRevisions(left, right);
+}
+
+export function compareNetworkProxyRevisions(
+  left: NetworkProxyRevision,
+  right: NetworkProxyRevision,
 ): -1 | 0 | 1 {
   return compareCanonicalSettingsRevisions(left, right);
 }
@@ -258,6 +332,12 @@ export function incrementDefaultFollowUpBehaviorRevision(
 export function incrementContextUsageVisibilityRevision(
   revision: ContextUsageVisibilityRevision,
 ): ContextUsageVisibilityRevision {
+  return incrementCanonicalSettingsRevision(revision);
+}
+
+export function incrementNetworkProxyRevision(
+  revision: NetworkProxyRevision,
+): NetworkProxyRevision {
   return incrementCanonicalSettingsRevision(revision);
 }
 
@@ -301,7 +381,7 @@ export function isDirectApiProfile(
 
 export function profileProvider(
   profile: ModelConnectionOwner,
-): ApiFamily {
+): ApiFamily | OAuthSubscriptionProvider {
   return profile.connection.kind === "direct-api"
     ? profile.connection.apiFamily
     : profile.connection.provider;
@@ -429,7 +509,7 @@ export function validateDraftProfileForSave(
     "defaultModel",
     "Default model is required.",
   );
-  if (connection.kind === "codex-subscription") {
+  if (connection.kind === "oauth-subscription") {
     const models = savedModelConfigs(record.models, connection);
     validateDefaultModel(defaultModel, models);
     return {
@@ -488,10 +568,10 @@ function draftModelConfigs(
   }
   return value.map((entry) => {
     const record = isRecord(entry) ? entry : {};
-    return connection.kind === "codex-subscription"
+    return connection.kind === "oauth-subscription"
       ? {
           model: draftString(record.model, "model"),
-          parameters: draftCodexSubscriptionParameters(record.parameters),
+          parameters: draftOAuthSubscriptionParameters(record.parameters),
           advanced: {},
         }
       : {
@@ -504,8 +584,8 @@ function draftModelConfigs(
 
 function savedModelConfigs(
   value: unknown,
-  connection: CodexSubscriptionConnection,
-): CodexSubscriptionModelConfig[];
+  connection: OAuthSubscriptionConnection,
+): OAuthSubscriptionModelConfig[];
 function savedModelConfigs(
   value: unknown,
   connection: DirectApiConnection,
@@ -570,7 +650,7 @@ function savedModelConfig(
   );
   assertOnlyKeys(
     parameters,
-    connection.kind === "codex-subscription"
+    connection.kind === "oauth-subscription"
       ? ["reasoning"]
       : ["maxOutputTokens", "temperature", "reasoning"],
     parametersField,
@@ -588,13 +668,8 @@ function savedModelConfig(
         "Advanced model settings must be an object.",
       );
 
-  if (connection.kind === "codex-subscription") {
-    validateCodexSubscriptionSettings(
-      reasoning,
-      advanced,
-      reasoningField,
-      advancedField,
-    );
+  if (connection.kind === "oauth-subscription") {
+    assertOnlyKeys(advanced, [], advancedField);
     return {
       model,
       parameters: {
@@ -683,15 +758,20 @@ function connectionValue(value: unknown): ModelConnection {
       apiKey,
     };
   }
-  if (record.kind === "codex-subscription") {
+  if (record.kind === "oauth-subscription") {
     assertOnlyKeys(record, ["kind", "provider"], "connection");
-    if (record.provider !== "openai") {
+    if (!oauthSubscriptionProviders.includes(
+      record.provider as OAuthSubscriptionProvider,
+    )) {
       throw new ProfileValidationError(
         "connection.provider",
-        "Codex subscription Profiles require the OpenAI provider.",
+        "OAuth subscription provider is unsupported.",
       );
     }
-    return { kind: "codex-subscription", provider: "openai" };
+    return {
+      kind: "oauth-subscription",
+      provider: record.provider as OAuthSubscriptionProvider,
+    };
   }
   throw new ProfileValidationError(
     "connection.kind",
@@ -719,44 +799,6 @@ function directApiPairValue(
     );
   }
   return { apiFamily, apiMode };
-}
-
-function validateCodexSubscriptionSettings(
-  reasoning: Record<string, unknown>,
-  advanced: Record<string, unknown>,
-  reasoningField: string,
-  advancedField: string,
-): void {
-  if (reasoning.mode === "disabled") {
-    throw new ProfileValidationError(
-      `${reasoningField}.mode`,
-      "Reasoning cannot be disabled for Codex subscription Profiles.",
-    );
-  }
-  if (reasoning.budgetTokens !== undefined) {
-    throw new ProfileValidationError(
-      `${reasoningField}.budgetTokens`,
-      "Reasoning token budgets are not supported by Codex subscription Profiles.",
-    );
-  }
-  if (advanced.hostedTools !== undefined) {
-    throw new ProfileValidationError(
-      `${advancedField}.hostedTools`,
-      "Provider-hosted tools are not supported by Codex subscription Profiles.",
-    );
-  }
-  if (advanced.capabilityOverrides !== undefined) {
-    throw new ProfileValidationError(
-      `${advancedField}.capabilityOverrides`,
-      "Capability overrides are not supported by Codex subscription Profiles.",
-    );
-  }
-  if (advanced.extraBody !== undefined) {
-    throw new ProfileValidationError(
-      `${advancedField}.extraBody`,
-      "Extra Body is not supported by Codex subscription Profiles.",
-    );
-  }
 }
 
 function advancedSettings(
@@ -842,9 +884,9 @@ function draftDirectApiParameters(
   };
 }
 
-function draftCodexSubscriptionParameters(
+function draftOAuthSubscriptionParameters(
   value: unknown,
-): CodexSubscriptionModelConfig["parameters"] {
+): OAuthSubscriptionModelConfig["parameters"] {
   const rawReasoning = isRecord(value) && isRecord(value.reasoning)
     ? value.reasoning
     : {};
@@ -1077,6 +1119,69 @@ function normalizedBaseUrl(value: string, field = "baseUrl"): string {
     );
   }
   return value.replace(/\/+$/, "");
+}
+
+function normalizeNetworkProxyUrl(value: string, required: boolean): string {
+  const candidate = value.trim();
+  if (!candidate) {
+    if (!required) return "";
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL is required in manual mode.",
+    );
+  }
+  if (candidate.length > 2_048) {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must be at most 2048 characters.",
+    );
+  }
+  const originShape = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]+)\/?$/u.exec(
+    candidate,
+  );
+  if (!originShape) {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must contain only a proxy origin without credentials, path, query, or fragment.",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL is invalid.",
+    );
+  }
+  if (
+    parsed.protocol !== "http:" &&
+    parsed.protocol !== "https:" &&
+    parsed.protocol !== "socks:" &&
+    parsed.protocol !== "socks5:"
+  ) {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must use HTTP, HTTPS, SOCKS, or SOCKS5.",
+    );
+  }
+  if (
+    originShape[2]?.includes("@") ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must not include credentials.",
+    );
+  }
+  if (!parsed.hostname || (parsed.pathname !== "" && parsed.pathname !== "/")) {
+    throw new ProfileValidationError(
+      "networkProxy.url",
+      "Network proxy URL must contain only a proxy origin.",
+    );
+  }
+  return `${parsed.protocol.toLocaleLowerCase()}//${parsed.host.toLocaleLowerCase()}`;
 }
 
 function isLoopbackHostname(hostname: string): boolean {

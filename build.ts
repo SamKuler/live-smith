@@ -14,6 +14,7 @@ const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
 };
 const production = argv.includes("--production");
 const thirdPartyNotices = fs.readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
+const networkRuntimeInject = "src/runtime/undici-node-globals.ts";
 
 verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);
@@ -23,12 +24,14 @@ const buildResult = await esbuild.build({
   outfile: manifest.entry,
   bundle: true,
   format: "cjs",
+  metafile: true,
   platform: "node",
   write: false,
   sourcesContent: false,
   logLevel: "info",
   minify: production,
   sourcemap: !production,
+  inject: [networkRuntimeInject],
   loader: { ".html": "text" },
   define: {
     __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
@@ -46,6 +49,7 @@ if (!entryOutput) throw new Error(`Build did not produce ${manifest.entry}.`);
 const bundle = entryOutput.text;
 
 assertPackagedBundleContainsThirdPartyNotices(entryOutput.contents);
+verifyNetworkRuntimeBundleInputs(buildResult.metafile);
 verifyBundleDoesNotUseUnsupportedGlobals(bundle, manifest.entry);
 verifyBundleEntrypointLoads(bundle, manifest.entry);
 if (production) await verifyDocumentParserBundleIsHostSafe();
@@ -119,8 +123,25 @@ async function verifyDocumentParserBundleIsHostSafe(): Promise<void> {
   }
 }
 
+function verifyNetworkRuntimeBundleInputs(metafile: esbuild.Metafile): void {
+  const inputs = Object.keys(metafile.inputs).map(path.normalize);
+  if (!inputs.includes(path.normalize(networkRuntimeInject))) {
+    throw new Error("Provider network bundle is missing its Extension Host bindings.");
+  }
+  const bundledWebFetch = inputs.find((input) =>
+    input.endsWith(path.normalize("node_modules/undici/lib/web/fetch/index.js"))
+  );
+  if (bundledWebFetch !== undefined) {
+    throw new Error("Provider network bundle must use the host Fetch implementation.");
+  }
+}
+
 function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
   const violations: string[] = [];
+  const childProcessBoundaries = new Set([
+    "src/runtime/oauth-browser.ts",
+    "src/runtime/system-proxy.ts",
+  ].map(path.normalize));
   for (const file of sourceFiles(sourceDirectory)) {
     if (file.endsWith(".test.ts")) continue;
     const source = ts.createSourceFile(
@@ -140,18 +161,16 @@ function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
     );
     const hasNodeProcess = hasDefaultImport(source, "node:process", "process");
     const isHostBoundary = path.normalize(file) === path.normalize("src/runtime/host.ts");
-    const isProcessHostBoundary =
-      path.normalize(file) === path.normalize("src/runtime/process-host.ts");
 
     const visit = (node: ts.Node): void => {
       if (
         ts.isImportDeclaration(node) &&
         ts.isStringLiteral(node.moduleSpecifier) &&
         ["child_process", "node:child_process"].includes(node.moduleSpecifier.text) &&
-        !isProcessHostBoundary
+        !childProcessBoundaries.has(path.normalize(file))
       ) {
         violations.push(
-          `${file}: spawn child processes through src/runtime/process-host.ts`,
+          `${file}: child processes are not supported in the extension bundle`,
         );
       }
       if (ts.isIdentifier(node) && node.text === "structuredClone") {

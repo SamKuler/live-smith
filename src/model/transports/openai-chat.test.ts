@@ -14,6 +14,7 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
+import { ModelRetryableError } from "../connection-error.js";
 import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
@@ -1480,13 +1481,40 @@ test("OpenAI Chat streaming errors expose only fixed safe context", async () => 
       (error: unknown) => {
         assert.equal(
           String(error),
-          "Error: openai/chat-completions request failed: OpenAI-compatible stream error.",
+          "Error: openai/chat-completions request failed: OpenAI Chat Completions failed.",
         );
         assert.doesNotMatch(String(error), new RegExp(sentinel));
         return true;
       },
     );
   }
+});
+
+test("OpenAI Chat preserves retryable structured stream errors", async () => {
+  const sentinel = "chat-private-rate-limit-detail";
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(
+      `data: ${JSON.stringify({
+        error: {
+          code: "rate_limit_exceeded",
+          message: sentinel,
+        },
+      })}\n\n`,
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ),
+  });
+  const req = request(profile());
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelRetryableError);
+      assert.match(error.message, /OpenAI Chat Completions.*retryable/u);
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
+      return true;
+    },
+  );
 });
 
 test("OpenAI profiles discover models through the shared model-list endpoint", async () => {

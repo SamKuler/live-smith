@@ -17,7 +17,7 @@ function globalSettingsState(
   return {
     sessions: [],
     settings: {
-      schemaVersion: 6,
+      schemaVersion: 8,
       activeProfileId: null,
       profiles: [],
       approvalMode: "manual",
@@ -25,6 +25,8 @@ function globalSettingsState(
       defaultFollowUpBehaviorRevision,
       showContextUsage,
       contextUsageVisibilityRevision,
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
     },
   } as unknown as ChatDialogState;
 }
@@ -124,24 +126,78 @@ test("global follow-up settings are strict commands allowed during an active sen
       }),
     });
     assert.equal(contextResponse.status, 200);
+    const proxyResponse = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "global-network-proxy",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        networkProxy: {
+          mode: "manual",
+          url: "https://Proxy.Example:443/",
+        },
+      }),
+    });
+    assert.equal(proxyResponse.status, 200);
     assert.deepEqual(received, [
       { kind: "save_global_settings", defaultFollowUpBehavior: "queue" },
       { kind: "save_global_settings", defaultFollowUpBehavior: "steer" },
       { kind: "save_global_settings", showContextUsage: false },
+      {
+        kind: "save_global_settings",
+        networkProxy: {
+          mode: "manual",
+          url: "https://proxy.example",
+        },
+      },
     ]);
     assert.deepEqual(commandContexts, [
       { commandId: "global-queue" },
       { commandId: "global-steer" },
       { commandId: "global-context-usage" },
+      { commandId: "global-network-proxy" },
     ]);
+
+    const invalidProxyResponse = await fetch(endpoint("/command"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Live-Smith-Command-Id": "invalid-network-proxy",
+      },
+      body: JSON.stringify({
+        kind: "save_global_settings",
+        networkProxy: { mode: "manual", url: "ftp://proxy.example" },
+      }),
+    });
+    assert.equal(invalidProxyResponse.status, 400);
+    assert.deepEqual(await invalidProxyResponse.json(), {
+      error: "Network proxy URL must use HTTP, HTTPS, SOCKS, or SOCKS5.",
+      commandId: "invalid-network-proxy",
+      field: "networkProxy.url",
+    });
 
     for (const body of [
       { kind: "save_global_settings", defaultFollowUpBehavior: "unsafe" },
       { kind: "save_global_settings", showContextUsage: "yes" },
       {
         kind: "save_global_settings",
+        networkProxy: { mode: "manual", url: "" },
+      },
+      {
+        kind: "save_global_settings",
+        networkProxy: { mode: "system", url: "", extra: true },
+      },
+      {
+        kind: "save_global_settings",
         defaultFollowUpBehavior: "queue",
         showContextUsage: true,
+      },
+      {
+        kind: "save_global_settings",
+        defaultFollowUpBehavior: "queue",
+        networkProxy: { mode: "system", url: "" },
       },
       { kind: "save_global_settings" },
       { kind: "save_global_settings", defaultFollowUpBehavior: "queue", extra: true },
@@ -162,10 +218,69 @@ test("global follow-up settings are strict commands allowed during an active sen
       });
       assert.equal(response.status, 400);
     }
-    assert.equal(received.length, 3);
+    assert.equal(received.length, 4);
   } finally {
     releaseSend();
     await activeSend;
+    await bridge.close();
+  }
+});
+
+test("global settings reconcile the network proxy by its own revision", async () => {
+  const sourceState = globalSettingsState("queue", "0");
+  Object.assign(sourceState.settings, {
+    networkProxy: { mode: "system", url: "" },
+    networkProxyRevision: "0",
+  });
+  const bridge = await createChatBridge({
+    buildState: async () => sourceState,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => sourceState,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (pathname: string) =>
+    `${chatUrl.origin}${pathname}?token=${token}`;
+
+  try {
+    await (await fetch(endpoint("/state"))).json();
+    bridge.publishGlobalSettings({
+      defaultFollowUpBehavior: "queue",
+      defaultFollowUpBehaviorRevision: "0",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "manual", url: "http://proxy.example:8080" },
+      networkProxyRevision: "1",
+      commandId: "proxy-1",
+    });
+
+    const reconciled = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
+    assert.deepEqual(reconciled.settings.networkProxy, {
+      mode: "manual",
+      url: "http://proxy.example:8080",
+    });
+    assert.equal(reconciled.settings.networkProxyRevision, "1");
+
+    bridge.publishGlobalSettings({
+      defaultFollowUpBehavior: "steer",
+      defaultFollowUpBehaviorRevision: "1",
+      showContextUsage: true,
+      contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "system", url: "" },
+      networkProxyRevision: "0",
+      commandId: "behavior-1-stale-proxy",
+    });
+    const independentlyMerged = await (
+      await fetch(endpoint("/state"))
+    ).json() as ChatDialogState;
+    assert.equal(independentlyMerged.settings.defaultFollowUpBehavior, "steer");
+    assert.deepEqual(independentlyMerged.settings.networkProxy, {
+      mode: "manual",
+      url: "http://proxy.example:8080",
+    });
+    assert.equal(independentlyMerged.settings.networkProxyRevision, "1");
+  } finally {
     await bridge.close();
   }
 });
@@ -182,7 +297,7 @@ test("global settings replay and reconcile each field by its own revision", asyn
     verificationUrl: "https://auth.openai.com/codex/device",
     userCode: "ABCD-EFGH",
   };
-  sourceState.codexAuth = pendingAuth;
+  sourceState.oauthAuth = pendingAuth;
   const bridge = await createChatBridge({
     buildState: async () => sourceState,
     renderHtml: () => "<html></html>",
@@ -204,6 +319,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740992",
       showContextUsage: true,
       contextUsageVisibilityRevision: "7",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "save-steer-2",
     });
 
@@ -220,6 +337,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         defaultFollowUpBehaviorRevision: "9007199254740992",
         showContextUsage: true,
         contextUsageVisibilityRevision: "7",
+        networkProxy: { mode: "none", url: "" },
+        networkProxyRevision: "0",
         commandId: "save-steer-2",
     });
 
@@ -228,6 +347,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740992",
       showContextUsage: false,
       contextUsageVisibilityRevision: "8",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "hide-context-8",
     });
     const overlaid = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
@@ -238,7 +359,7 @@ test("global settings replay and reconcile each field by its own revision", asyn
       "9007199254740992",
     );
     assert.equal(overlaid.settings.contextUsageVisibilityRevision, "8");
-    assert.deepEqual(overlaid.codexAuth, pendingAuth);
+    assert.deepEqual(overlaid.oauthAuth, pendingAuth);
 
     sourceState = globalSettingsState(
       "queue",
@@ -260,6 +381,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740992",
       showContextUsage: true,
       contextUsageVisibilityRevision: "7",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "stale-save",
     });
     mergedEvents = await fetch(endpoint("/events"));
@@ -275,6 +398,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         defaultFollowUpBehaviorRevision: "9007199254740993",
         showContextUsage: false,
         contextUsageVisibilityRevision: "8",
+        networkProxy: { mode: "none", url: "" },
+        networkProxyRevision: "0",
         commandId: "bridge-state-snapshot",
     });
     await mergedEvents.body?.cancel();
@@ -285,6 +410,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740993",
       showContextUsage: false,
       contextUsageVisibilityRevision: "8",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "save-queue-3",
     });
     correlatedEvents = await fetch(endpoint("/events"));
@@ -300,6 +427,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740993",
       showContextUsage: false,
       contextUsageVisibilityRevision: "8",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "save-queue-3",
     });
     await correlatedEvents.body?.cancel();
@@ -310,6 +439,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       defaultFollowUpBehaviorRevision: "9007199254740993",
       showContextUsage: true,
       contextUsageVisibilityRevision: "9",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "show-context-9",
     });
     reconnectedEvents = await fetch(endpoint("/events"));
@@ -325,6 +456,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         defaultFollowUpBehaviorRevision: "9007199254740993",
         showContextUsage: true,
         contextUsageVisibilityRevision: "9",
+        networkProxy: { mode: "none", url: "" },
+        networkProxyRevision: "0",
         commandId: "show-context-9",
     });
   } finally {
@@ -356,6 +489,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
       defaultFollowUpBehaviorRevision: "10000000000000000",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "larger-revision",
     });
 
@@ -371,6 +506,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
       defaultFollowUpBehaviorRevision: "9999999999999999",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      networkProxy: { mode: "none", url: "" },
+      networkProxyRevision: "0",
       commandId: "lexically-larger-but-stale",
     });
     const replay = await fetch(endpoint("/events"));
@@ -387,6 +524,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
           defaultFollowUpBehaviorRevision: "10000000000000000",
           showContextUsage: true,
           contextUsageVisibilityRevision: "0",
+          networkProxy: { mode: "none", url: "" },
+          networkProxyRevision: "0",
           commandId: "larger-revision",
       });
     } finally {

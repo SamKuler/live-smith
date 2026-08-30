@@ -7,8 +7,8 @@ import test from "node:test";
 import type { LiveInteractionContext } from "../live/context.js";
 import type { SavedProfile } from "../model/profile.js";
 import type {
-  CodexSubscriptionBackend,
-  ManagedAuthState,
+  OAuthSubscriptionBackend,
+  OAuthAuthState,
   RuntimeProfile,
 } from "../model/provider.js";
 import { loadSessionEvents } from "../storage/events.js";
@@ -196,9 +196,9 @@ test("each Session resolves its own configured model and reasoning at send admis
           async close() {},
         };
       },
-      async codex() { throw new Error("unexpected managed backend"); },
-      async codexLease() { throw new Error("unexpected managed backend"); },
-      async invalidateCodex() {},
+      async oauth() { throw new Error("unexpected OAuth backend"); },
+      async oauthLease() { throw new Error("unexpected OAuth backend"); },
+      async invalidateOAuth() {},
       async close() {},
     },
     requestModelTurn: async (input) => {
@@ -248,7 +248,7 @@ test("subscription model capabilities load explicitly and remain auth-generation
   const profile: SavedProfile = {
     id: "subscription-model-capabilities",
     name: "Subscription model capabilities",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-capable",
     models: [{
       model: "gpt-capable",
@@ -258,7 +258,7 @@ test("subscription model capabilities load explicitly and remain auth-generation
   };
   await saveSavedProfile(directory, profile);
 
-  const auth: ManagedAuthState = {
+  const auth: OAuthAuthState = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
@@ -267,8 +267,8 @@ test("subscription model capabilities load explicitly and remain auth-generation
   let listModelsCalls = 0;
   let readinessReads = 0;
   let passiveReads = 0;
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels() {
       listModelsCalls += 1;
       return [{
@@ -292,17 +292,6 @@ test("subscription model capabilities load explicitly and remain auth-generation
     async createToolTurn() {
       return { content: null, toolCalls: [] };
     },
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          return { content: null, toolCalls: [] };
-        },
-        async release() {},
-      };
-    },
     async readAuthState(_signal, options) {
       if (options?.readiness) readinessReads += 1;
       else passiveReads += 1;
@@ -318,14 +307,14 @@ test("subscription model capabilities load explicitly and remain auth-generation
   };
   const modelBackendManager = {
     async forProfile() { return backend; },
-    async codex() { return backend; },
-    async codexLease() {
+    async oauth() { return backend; },
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
-  const fence = modelAuthSendFenceForStorage(directory);
+  const fence = modelAuthSendFenceForStorage(directory, "openai");
   const peerAuthOwner = Symbol("peer auth generation");
   let authMutationEnteredDuringSelection: boolean | undefined;
   const interaction: LiveInteractionContext = {
@@ -440,7 +429,7 @@ test("concurrent catalog loading cannot mark a fallback Session runtime ready", 
   const profile: SavedProfile = {
     id: "subscription-catalog-snapshot",
     name: "Subscription catalog snapshot",
-    connection: { kind: "codex-subscription", provider: "openai" },
+    connection: { kind: "oauth-subscription", provider: "openai" },
     defaultModel: "gpt-capable",
     models: [{
       model: "gpt-capable",
@@ -450,14 +439,14 @@ test("concurrent catalog loading cannot mark a fallback Session runtime ready", 
   };
   await saveSavedProfile(directory, profile);
 
-  const auth: ManagedAuthState = {
+  const auth: OAuthAuthState = {
     status: "signed-in",
     accountLabel: "studio@example.test",
     planType: "pro",
     subscriptionEligible: true,
   };
-  const backend: CodexSubscriptionBackend = {
-    kind: "codex-subscription",
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
     async listModels() {
       return [{
         id: "gpt-capable",
@@ -479,17 +468,6 @@ test("concurrent catalog loading cannot mark a fallback Session runtime ready", 
     async createToolTurn() {
       return { content: null, toolCalls: [] };
     },
-    onTerminal() {
-      return () => undefined;
-    },
-    reserveToolTurn() {
-      return {
-        async createToolTurn() {
-          return { content: null, toolCalls: [] };
-        },
-        async release() {},
-      };
-    },
     async readAuthState() {
       return auth;
     },
@@ -503,11 +481,11 @@ test("concurrent catalog loading cannot mark a fallback Session runtime ready", 
   };
   const modelBackendManager = {
     async forProfile() { return backend; },
-    async codex() { return backend; },
-    async codexLease() {
+    async oauth() { return backend; },
+    async oauthLease() {
       return { backend, async retire() { return true; } };
     },
-    async invalidateCodex() {},
+    async invalidateOAuth() {},
     async close() {},
   };
   const selectStateReadStarted = deferred<void>();

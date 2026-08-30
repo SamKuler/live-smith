@@ -39,9 +39,9 @@ export function isHostedWebSearchRequestMaxUses(value: number): boolean {
 
 export function supportsAudioInputDelivery(runtime: RuntimeProfile): boolean {
   const connection = runtime.profile.connection;
-  const protocolSupportsAudio = connection.kind === "codex-subscription" ||
-    (connection.apiFamily === "openai" &&
-      connection.apiMode === "chat-completions");
+  const protocolSupportsAudio = connection.kind === "direct-api" &&
+    connection.apiFamily === "openai" &&
+    connection.apiMode === "chat-completions";
   return protocolSupportsAudio &&
     runtime.capabilities.inputs.audio &&
     runtime.inputCapabilityEvidence.audio === "supported";

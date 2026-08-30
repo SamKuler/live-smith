@@ -1,4 +1,5 @@
 import { URL } from "node:url";
+import { validateHeaderValue } from "node:http";
 
 import {
   assertApiKeyCanBeUsedInHttpHeader,
@@ -8,12 +9,18 @@ import {
 } from "../profile.js";
 import type { RuntimeProfileIdentity } from "../provider.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { ModelConnectionError } from "../connection-error.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
+import {
+  ModelAuthenticationError,
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import {
   assertServerSentEventResponse,
   parseServerSentEventData,
 } from "./server-sent-events.js";
 import { readBoundedJsonResponse } from "./response-body.js";
+import { providerRetryAfterMs } from "./retry-after.js";
 import { cancelStreamBestEffort } from "./stream-cancel.js";
 
 const anthropicApiVersion = "2023-06-01";
@@ -57,7 +64,7 @@ async function requestAnthropicResource(
   const response = await fetchAnthropicResponse(
     fetchImpl,
     anthropicEndpoint(connection.baseUrl, resource, options.query),
-    anthropicRequestInit(connection, options),
+    anthropicRequestInit(connection, options, requestHeadersFor(profile)),
     options.signal,
     resource !== "/models",
   );
@@ -83,7 +90,7 @@ export async function* streamAnthropicEvents(
       method: "POST",
       body: { ...body, stream: true },
       ...(signal ? { signal } : {}),
-    }),
+    }, requestHeadersFor(profile)),
     signal,
     true,
   );
@@ -125,6 +132,7 @@ async function fetchAnthropicResponse(
     return await fetchImpl(url, init);
   } catch (cause) {
     throwIfAborted(signal);
+    if (cause instanceof NetworkProxyError) throw cause;
     if (connectionFailure) throw new ModelConnectionError();
     throw cause;
   }
@@ -149,6 +157,7 @@ function anthropicEndpoint(
 function anthropicRequestInit(
   connection: DirectApiConnection,
   options: AnthropicRequestOptions,
+  requestHeaders: Readonly<Record<string, string>> | undefined,
 ): RequestInit {
   assertApiKeyCanBeUsedInHttpHeader(connection.apiKey);
   const headers: Record<string, string> = {
@@ -156,7 +165,10 @@ function anthropicRequestInit(
     "anthropic-version": anthropicApiVersion,
     "content-type": "application/json",
   };
-  if (connection.apiKey) headers["x-api-key"] = connection.apiKey;
+  if (connection.apiKey && requestHeaders?.authorization === undefined) {
+    headers["x-api-key"] = connection.apiKey;
+  }
+  mergeRequestHeaders(headers, requestHeaders);
   const init: RequestInit = {
     method: options.method,
     headers,
@@ -166,6 +178,26 @@ function anthropicRequestInit(
   return init;
 }
 
+function mergeRequestHeaders(
+  target: Record<string, string>,
+  values: Readonly<Record<string, string>> | undefined,
+): void {
+  for (const [name, value] of Object.entries(values ?? {})) {
+    try {
+      validateHeaderValue(name, value);
+    } catch {
+      throw new Error("OAuth request headers contain an invalid value.");
+    }
+    target[name] = value;
+  }
+}
+
+function requestHeadersFor(
+  profile: DraftProfile | RuntimeProfileIdentity,
+): Readonly<Record<string, string>> | undefined {
+  return "requestHeaders" in profile ? profile.requestHeaders : undefined;
+}
+
 async function assertAnthropicResponse(
   response: Response,
   signal?: AbortSignal,
@@ -173,7 +205,23 @@ async function assertAnthropicResponse(
   if (response.ok) return;
   cancelStreamBestEffort(response.body, signal?.reason);
   throwIfAborted(signal);
-  throw new Error(`Anthropic HTTP ${response.status}: request failed`);
+  if (response.status === 401) {
+    throw new ModelAuthenticationError("Anthropic HTTP 401: request failed");
+  }
+  const message = `Anthropic HTTP ${response.status}: request failed`;
+  const retryAfterMs = providerRetryAfterMs(response.headers);
+  const shouldRetry = response.headers.get("x-should-retry");
+  if (shouldRetry === "false") throw new Error(message);
+  if (
+    shouldRetry === "true" ||
+    response.status === 408 ||
+    response.status === 409 ||
+    (response.status === 429 && retryAfterMs !== undefined) ||
+    response.status >= 500
+  ) {
+    throw new ModelRetryableError(message, retryAfterMs);
+  }
+  throw new Error(message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

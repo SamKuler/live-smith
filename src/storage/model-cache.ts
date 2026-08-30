@@ -48,7 +48,7 @@ export async function loadModelCache(
   storageDirectory: string | undefined,
   profile: DraftProfile | SavedProfile,
 ): Promise<DiscoveredModelInfo[]> {
-  if (profile.connection.kind === "codex-subscription") return [];
+  if (profile.connection.kind === "oauth-subscription") return [];
   const expected = connectionFingerprint(profile);
   if (!storageDirectory) {
     const entry = memoryCache.get(expected);
@@ -75,7 +75,7 @@ export async function saveModelCache(
   profile: DraftProfile | SavedProfile,
   models: DiscoveredModelInfo[],
 ): Promise<void> {
-  if (profile.connection.kind === "codex-subscription") return;
+  if (profile.connection.kind === "oauth-subscription") return;
   const canonicalModels = decodeDiscoveredModelCatalog(models);
   if (!canonicalModels) throw new TypeError("Model catalog is invalid.");
   const fingerprint = connectionFingerprint(profile);

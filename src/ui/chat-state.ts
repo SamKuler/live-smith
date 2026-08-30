@@ -6,7 +6,7 @@ import type {
   ModelCapabilityEvidence,
   ModelCapabilities,
   ModelInfo,
-  ManagedAuthState,
+  OAuthAuthState,
   RuntimeProfile,
 } from "../model/provider.js";
 import {
@@ -16,6 +16,7 @@ import {
   type ApiMode,
   type DraftProfile,
   type ModelConnection,
+  type OAuthSubscriptionProvider,
   type ReasoningSettings,
   type SavedProfile,
 } from "../model/profile.js";
@@ -61,10 +62,11 @@ export interface ChatDialogState {
   /** SHA-256 of the normalized active Saved Profile, or null with no active Profile. */
   activeProfileRevision: string | null;
   settings: AgentSettings;
-  /** Credential-free state from the isolated official Codex runtime. */
-  codexAuth?: ManagedAuthState;
+  /** Credential-free state for the selected native OAuth provider. */
+  oauthAuth?: OAuthAuthState;
+  oauthAuthProvider?: OAuthSubscriptionProvider;
   /** Non-sensitive process-local epoch for subscription catalog ownership. */
-  codexAuthGeneration: number;
+  oauthAuthGeneration: number;
   openSettingsOnLoad: boolean;
   status?: string | undefined;
   sessionActivities?: ChatSessionActivity[];
@@ -140,7 +142,7 @@ export interface ChatRuntimeSummary {
     id: string;
     name: string;
     connectionKind: ModelConnection["kind"];
-    apiFamily: ApiFamily;
+    apiFamily: ApiFamily | OAuthSubscriptionProvider;
     apiMode: ApiMode | null;
   };
   selection: {

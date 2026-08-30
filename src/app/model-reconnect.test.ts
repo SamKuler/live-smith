@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ModelConnectionError } from "../model/connection-error.js";
+import {
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../model/connection-error.js";
 import { createHostAbortController } from "../runtime/host.js";
 import { requestModelWithReconnect } from "./model-reconnect.js";
 
@@ -9,12 +12,14 @@ test("model reconnect uses the fixed schedule and announces a proven response on
   const controller = createHostAbortController();
   const events: string[] = [];
   const delays: number[] = [];
+  const reconnectStates: object[] = [];
   let calls = 0;
 
   const result = await requestModelWithReconnect({
     signal: controller.signal,
-    request: async ({ markResponseStarted }) => {
+    request: async ({ markResponseStarted, reconnectState }) => {
       calls += 1;
+      reconnectStates.push(reconnectState);
       events.push(`request:${calls}`);
       if (calls === 1) throw new ModelConnectionError();
       await markResponseStarted();
@@ -35,6 +40,7 @@ test("model reconnect uses the fixed schedule and announces a proven response on
   });
 
   assert.deepEqual(result, { value: "connected", reconnected: true });
+  assert.equal(reconnectStates[0], reconnectStates[1]);
   assert.deepEqual(delays, [500]);
   assert.deepEqual(events, [
     "request:1",
@@ -171,6 +177,82 @@ test("model reconnect announces a non-streaming recovery before resolving", asyn
     "provider-resolved",
     "progress:Reconnected. Reading model response",
   ]);
+});
+
+test("model retry honors a provider delay without calling it connection loss", async () => {
+  const controller = createHostAbortController();
+  const delays: number[] = [];
+  const progress: string[] = [];
+  let calls = 0;
+
+  const result = await requestModelWithReconnect({
+    signal: controller.signal,
+    request: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ModelRetryableError("Provider rate limit was reached.", 3_000);
+      }
+      return "recovered";
+    },
+    resetTransient: () => {},
+    onProgress: (message) => {
+      progress.push(message);
+    },
+    waitForDelay: async (delayMs) => {
+      delays.push(delayMs);
+    },
+  });
+
+  assert.deepEqual(result, { value: "recovered", reconnected: true });
+  assert.deepEqual(delays, [3_000]);
+  assert.deepEqual(progress, [
+    "Temporary model-provider failure. Retrying (1/5)…",
+    "Retry succeeded. Reading model response",
+  ]);
+});
+
+test("model retry exhaustion preserves its fixed safe provider diagnosis", async () => {
+  const controller = createHostAbortController();
+  let calls = 0;
+
+  await assert.rejects(
+    requestModelWithReconnect({
+      signal: controller.signal,
+      request: async () => {
+        calls += 1;
+        throw new ModelRetryableError("Provider rate limit was reached.");
+      },
+      resetTransient: () => {},
+      onProgress: () => {},
+      waitForDelay: async () => {},
+    }),
+    /Provider rate limit was reached\. Retry limit reached after 5 attempts\./u,
+  );
+  assert.equal(calls, 6);
+});
+
+test("model retry refuses a provider delay beyond the automatic wait window", async () => {
+  const controller = createHostAbortController();
+  let calls = 0;
+  let waits = 0;
+
+  await assert.rejects(
+    requestModelWithReconnect({
+      signal: controller.signal,
+      request: async () => {
+        calls += 1;
+        throw new ModelRetryableError("Provider rate limit was reached.", 300_001);
+      },
+      resetTransient: () => {},
+      onProgress: () => {},
+      waitForDelay: async () => {
+        waits += 1;
+      },
+    }),
+    /longer than the 5-minute automatic retry window; try again later/u,
+  );
+  assert.equal(calls, 1);
+  assert.equal(waits, 0);
 });
 
 test("model reconnect delay is canceled with the caller's exact reason", {

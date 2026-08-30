@@ -110,6 +110,11 @@
         typeof getState().settings?.showContextUsage === "boolean"
           ? getState().settings.showContextUsage
           : true;
+      let confirmedNetworkProxy = isNetworkProxySettings(
+        getState().settings?.networkProxy,
+      )
+        ? { ...getState().settings.networkProxy }
+        : { mode: "none", url: "" };
       let confirmedDefaultFollowUpBehaviorRevision =
         isDecimalRevision(
           getState().settings?.defaultFollowUpBehaviorRevision,
@@ -122,8 +127,15 @@
         )
           ? getState().settings.contextUsageVisibilityRevision
           : "0";
+      let confirmedNetworkProxyRevision = isDecimalRevision(
+        getState().settings?.networkProxyRevision,
+      )
+        ? getState().settings.networkProxyRevision
+        : "0";
       let optimisticDefaultFollowUpBehavior = null;
       let optimisticContextUsageVisibility = null;
+      let optimisticNetworkProxy = null;
+      let networkProxyDraft = null;
       let commandInProgress = null;
       let commandReconciliationBlocked = false;
       let renderedOperationState = null;
@@ -641,16 +653,21 @@
         target.activeProfileRevision = source.activeProfileRevision;
       }
 
-      function adoptManagedAuthProjection(target, current, state) {
-        const source = state.codexAuthGeneration > current.codexAuthGeneration
-          ? state
-          : state.codexAuthGeneration < current.codexAuthGeneration ||
-              state.codexAuth === undefined && current.codexAuth !== undefined
-            ? current
-            : state;
-        if (source.codexAuth === undefined) delete target.codexAuth;
-        else target.codexAuth = source.codexAuth;
-        target.codexAuthGeneration = source.codexAuthGeneration;
+      function adoptOAuthAuthProjection(target, current, state, preferred) {
+        const sameProvider = state.oauthAuthProvider === current.oauthAuthProvider;
+        const source = !sameProvider
+          ? preferred
+          : state.oauthAuthGeneration > current.oauthAuthGeneration
+            ? state
+            : state.oauthAuthGeneration < current.oauthAuthGeneration ||
+                state.oauthAuth === undefined && current.oauthAuth !== undefined
+              ? current
+              : state;
+        if (source.oauthAuth === undefined) delete target.oauthAuth;
+        else target.oauthAuth = source.oauthAuth;
+        if (source.oauthAuthProvider === undefined) delete target.oauthAuthProvider;
+        else target.oauthAuthProvider = source.oauthAuthProvider;
+        target.oauthAuthGeneration = source.oauthAuthGeneration;
       }
 
       function adoptEditorModelProjection(target, source) {
@@ -689,14 +706,14 @@
 
       function editorProjectionMatchesAuthGeneration(source, generation) {
         return source.modelStateSource?.connection?.kind !==
-            "codex-subscription" ||
-          source.codexAuthGeneration === generation;
+            "oauth-subscription" ||
+          source.oauthAuthGeneration === generation;
       }
 
       function runtimeProjectionMatchesAuthGeneration(source, generation) {
         return source.runtimeProfile?.profile?.connectionKind !==
-            "codex-subscription" ||
-          source.codexAuthGeneration === generation;
+            "oauth-subscription" ||
+          source.oauthAuthGeneration === generation;
       }
 
       function runtimeProjectionOwnsTarget(source, target) {
@@ -772,14 +789,14 @@
         return preferred === current ? state : current;
       }
 
-      function adoptCoherentManagedModelProjections(
+      function adoptCoherentOAuthModelProjections(
         target,
         current,
         state,
         preferredEditor,
         preferredRuntime,
       ) {
-        adoptManagedAuthProjection(target, current, state);
+        adoptOAuthAuthProjection(target, current, state, preferredEditor);
         const alternateEditor = alternateProjectionSource(
           preferredEditor,
           current,
@@ -789,7 +806,7 @@
           target,
           editorProjectionMatchesAuthGeneration(
               preferredEditor,
-              target.codexAuthGeneration,
+              target.oauthAuthGeneration,
             )
             ? preferredEditor
             : alternateEditor,
@@ -803,7 +820,7 @@
           (source) =>
             runtimeProjectionMatchesAuthGeneration(
               source,
-              target.codexAuthGeneration,
+              target.oauthAuthGeneration,
             ) && runtimeProjectionOwnsTarget(source, target),
         );
         if (runtimeProjection) {
@@ -847,7 +864,7 @@
             ownsEditorModelProjection
           ) {
             const merged = { ...state };
-            adoptCoherentManagedModelProjections(
+            adoptCoherentOAuthModelProjections(
               merged,
               current,
               state,
@@ -864,7 +881,7 @@
             modelCatalogLoadReceipt: current.modelCatalogLoadReceipt,
             modelStateSource: current.modelStateSource,
           };
-          adoptCoherentManagedModelProjections(
+          adoptCoherentOAuthModelProjections(
             merged,
             current,
             state,
@@ -1006,7 +1023,7 @@
             state.activeSessionId === merged.activeSessionId
             ? state
             : current;
-        adoptCoherentManagedModelProjections(
+        adoptCoherentOAuthModelProjections(
           merged,
           current,
           state,
@@ -1073,24 +1090,59 @@
         const activeProfile = (state.settings?.profiles || []).find(
           (profile) => profile.id === state.settings.activeProfileId,
         );
-        if (activeProfile?.connection?.kind !== "codex-subscription") return "";
-        const auth = state.codexAuth;
+        if (activeProfile?.connection?.kind !== "oauth-subscription") return "";
+        const provider = activeProfile.connection.provider;
+        const label = provider === "anthropic"
+          ? "Claude"
+          : provider === "google"
+            ? "Gemini"
+            : "ChatGPT";
+        if (state.oauthAuthProvider && state.oauthAuthProvider !== provider) {
+          return `Check the ${label} account before sending a subscription request.`;
+        }
+        const auth = state.oauthAuth;
         if (auth?.status === "signed-in") {
           return auth.subscriptionEligible
             ? ""
-            : "This workspace-managed ChatGPT account is not eligible for subscription requests in Live Smith.";
+            : `This ${label} account is not eligible for subscription requests in Live Smith.`;
         }
         if (auth?.status === "pending") {
-          return "Complete ChatGPT sign-in before sending a subscription request.";
+          return `Complete ${label} sign-in before sending a subscription request.`;
         }
         if (auth?.status === "signed-out") {
-          return "Sign in to ChatGPT before sending a subscription request.";
+          return `Sign in to ${label} before sending a subscription request.`;
         }
-        return "The ChatGPT subscription is unavailable. Check the account status before sending.";
+        if (auth?.status === "unavailable") return auth.message;
+        return `The ${label} subscription is unavailable. Check the account status before sending.`;
       }
 
       function isDefaultFollowUpBehavior(value) {
         return value === "queue" || value === "steer";
+      }
+
+      function isNetworkProxySettings(value) {
+        if (
+          !isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["mode", "url"]) ||
+          !["none", "system", "manual"].includes(value.mode) ||
+          typeof value.url !== "string" ||
+          value.url.length > 2048 ||
+          (value.mode === "manual" && !value.url)
+        ) return false;
+        if (!value.url) return true;
+        try {
+          const parsed = new URL(value.url);
+          return ["http:", "https:", "socks:", "socks5:"].includes(
+              parsed.protocol,
+            ) &&
+            !parsed.username &&
+            !parsed.password &&
+            !parsed.search &&
+            !parsed.hash &&
+            (parsed.pathname === "" || parsed.pathname === "/");
+        } catch {
+          return false;
+        }
       }
 
       function isDecimalRevision(value) {
@@ -2032,9 +2084,9 @@
 
       function isWireModelConnection(value) {
         if (!isWireRecord(value)) return false;
-        if (value.kind === "codex-subscription") {
+        if (value.kind === "oauth-subscription") {
           return hasOnlyWireKeys(value, ["kind", "provider"]) &&
-            value.provider === "openai";
+            ["openai", "anthropic", "google"].includes(value.provider);
         }
         return value.kind === "direct-api" &&
           hasOnlyWireKeys(value, [
@@ -2125,7 +2177,7 @@
           !value.models.every((model) =>
             isWireSavedModelConfig(
               model,
-              value.connection.kind === "codex-subscription",
+              value.connection.kind === "oauth-subscription",
             )
           ) ||
           new Set(value.models.map((model) => model.model)).size !==
@@ -2146,8 +2198,10 @@
             "defaultFollowUpBehaviorRevision",
             "showContextUsage",
             "contextUsageVisibilityRevision",
+            "networkProxy",
+            "networkProxyRevision",
           ]) ||
-          value.schemaVersion !== 6 ||
+          value.schemaVersion !== 8 ||
           !Array.isArray(value.profiles) ||
           !value.profiles.every(isWireSavedProfile) ||
           new Set(value.profiles.map((profile) => profile.id)).size !==
@@ -2156,7 +2210,9 @@
           !isDefaultFollowUpBehavior(value.defaultFollowUpBehavior) ||
           !isDecimalRevision(value.defaultFollowUpBehaviorRevision) ||
           typeof value.showContextUsage !== "boolean" ||
-          !isDecimalRevision(value.contextUsageVisibilityRevision)
+          !isDecimalRevision(value.contextUsageVisibilityRevision) ||
+          !isNetworkProxySettings(value.networkProxy) ||
+          !isDecimalRevision(value.networkProxyRevision)
         ) return false;
         return value.activeProfileId === null ||
           isWireStorageId(value.activeProfileId) &&
@@ -2242,8 +2298,10 @@
           !isWireModelCapabilities(value.capabilities) ||
           !isWireInputCapabilityEvidence(value.inputCapabilityEvidence)
         ) return false;
-        return value.profile.connectionKind === "codex-subscription"
-          ? value.profile.apiFamily === "openai" && value.profile.apiMode === null
+        return value.profile.connectionKind === "oauth-subscription"
+          ? ["openai", "anthropic", "google"].includes(
+              value.profile.apiFamily,
+            ) && value.profile.apiMode === null
           : value.profile.connectionKind === "direct-api" &&
               (
                 value.profile.apiFamily === "openai" &&
@@ -2268,7 +2326,7 @@
           );
       }
 
-      function isWireManagedAuth(value) {
+      function isWireOAuthAuth(value) {
         if (!isWireRecord(value) || typeof value.status !== "string") return false;
         if (value.status === "signed-out") {
           return hasOnlyWireKeys(value, ["status"]);
@@ -2285,7 +2343,7 @@
             "userCode",
           ]) &&
             typeof value.verificationUrl === "string" &&
-            typeof value.userCode === "string";
+            (value.userCode === undefined || typeof value.userCode === "string");
         }
         return value.status === "signed-in" &&
           hasOnlyWireKeys(value, [
@@ -2341,8 +2399,9 @@
             "runtimeProfile",
             "settings",
             "activeProfileRevision",
-            "codexAuth",
-            "codexAuthGeneration",
+            "oauthAuth",
+            "oauthAuthProvider",
+            "oauthAuthGeneration",
             "openSettingsOnLoad",
             "status",
             "sessionActivities",
@@ -2408,9 +2467,11 @@
               /^[a-f0-9]{64}$/.test(value.activeProfileRevision) &&
               value.settings.activeProfileId !== null
           ) ||
-          (value.codexAuth !== undefined && !isWireManagedAuth(value.codexAuth)) ||
-          !Number.isSafeInteger(value.codexAuthGeneration) ||
-          value.codexAuthGeneration < 0 ||
+          (value.oauthAuth !== undefined && !isWireOAuthAuth(value.oauthAuth)) ||
+          (value.oauthAuthProvider !== undefined &&
+            !["openai", "anthropic", "google"].includes(value.oauthAuthProvider)) ||
+          !Number.isSafeInteger(value.oauthAuthGeneration) ||
+          value.oauthAuthGeneration < 0 ||
           typeof value.openSettingsOnLoad !== "boolean" ||
           (value.status !== undefined && typeof value.status !== "string") ||
           !isDecimalRevision(value.bridgeStateRevision) ||
@@ -2808,6 +2869,17 @@
           confirmedShowContextUsage;
       }
 
+      function effectiveNetworkProxy() {
+        return optimisticNetworkProxy?.networkProxy ?? confirmedNetworkProxy;
+      }
+
+      function hasNetworkProxyChanges() {
+        if (!networkProxyDraft) return false;
+        const effective = effectiveNetworkProxy();
+        return networkProxyDraft.mode !== effective.mode ||
+          networkProxyDraft.url.trim() !== effective.url;
+      }
+
       function activeQueuedFollowUps() {
         return queuedFollowUpsBySession.get(activeSessionId()) || [];
       }
@@ -2844,10 +2916,12 @@
         if (!state?.settings || typeof state.settings !== "object") return state;
         state.settings.defaultFollowUpBehavior = effectiveDefaultFollowUpBehavior();
         state.settings.showContextUsage = effectiveContextUsageVisibility();
+        state.settings.networkProxy = { ...effectiveNetworkProxy() };
         state.settings.defaultFollowUpBehaviorRevision =
           confirmedDefaultFollowUpBehaviorRevision;
         state.settings.contextUsageVisibilityRevision =
           confirmedContextUsageVisibilityRevision;
+        state.settings.networkProxyRevision = confirmedNetworkProxyRevision;
         return state;
       }
 
@@ -2858,6 +2932,8 @@
         const showContextUsage = state?.settings?.showContextUsage;
         const contextRevision =
           state?.settings?.contextUsageVisibilityRevision;
+        const networkProxy = state?.settings?.networkProxy;
+        const networkProxyRevision = state?.settings?.networkProxyRevision;
         if (
           isDefaultFollowUpBehavior(behavior) &&
           isDecimalRevision(behaviorRevision) &&
@@ -2902,6 +2978,30 @@
             optimisticContextUsageVisibility = null;
           }
         }
+        if (
+          isNetworkProxySettings(networkProxy) &&
+          isDecimalRevision(networkProxyRevision) &&
+          compareDecimalRevisions(
+            networkProxyRevision,
+            confirmedNetworkProxyRevision,
+          ) > 0
+        ) {
+          confirmedNetworkProxy = { ...networkProxy };
+          confirmedNetworkProxyRevision = networkProxyRevision;
+          networkProxyDraft = null;
+          requireView().clearGlobalSettingsFieldError("networkProxy.url");
+          const networkOptimistic = optimisticNetworkProxy;
+          if (
+            networkOptimistic &&
+            compareDecimalRevisions(
+              networkProxyRevision,
+              networkOptimistic.committedRevision ??
+                networkOptimistic.startedRevision,
+            ) > 0
+          ) {
+            optimisticNetworkProxy = null;
+          }
+        }
         return writeEffectiveGlobalSettingsToState(state);
       }
 
@@ -2910,11 +3010,15 @@
         const behaviorRevision = payload?.defaultFollowUpBehaviorRevision;
         const showContextUsage = payload?.showContextUsage;
         const contextRevision = payload?.contextUsageVisibilityRevision;
+        const networkProxy = payload?.networkProxy;
+        const networkProxyRevision = payload?.networkProxyRevision;
         if (
           !isDefaultFollowUpBehavior(behavior) ||
           typeof showContextUsage !== "boolean" ||
           !isDecimalRevision(behaviorRevision) ||
-          !isDecimalRevision(contextRevision)
+          !isDecimalRevision(contextRevision) ||
+          !isNetworkProxySettings(networkProxy) ||
+          !isDecimalRevision(networkProxyRevision)
         ) return false;
         let adopted = false;
         if (
@@ -2936,6 +3040,32 @@
               ) > 0
             ) {
               optimisticDefaultFollowUpBehavior = null;
+            }
+          }
+          adopted = true;
+        }
+        if (
+          compareDecimalRevisions(
+            networkProxyRevision,
+            confirmedNetworkProxyRevision,
+          ) > 0
+        ) {
+          confirmedNetworkProxy = { ...networkProxy };
+          confirmedNetworkProxyRevision = networkProxyRevision;
+          networkProxyDraft = null;
+          requireView().clearGlobalSettingsFieldError("networkProxy.url");
+          const networkOptimistic = optimisticNetworkProxy;
+          if (networkOptimistic) {
+            if (payload.commandId === networkOptimistic.commandId) {
+              networkOptimistic.committedRevision = networkProxyRevision;
+            } else if (
+              compareDecimalRevisions(
+                networkProxyRevision,
+                networkOptimistic.committedRevision ??
+                  networkOptimistic.startedRevision,
+              ) > 0
+            ) {
+              optimisticNetworkProxy = null;
             }
           }
           adopted = true;
@@ -3184,6 +3314,7 @@
           profileSettingsInProgress: isProfileSettingsOperationInProgress(),
           skillInProgress: skillOperationInProgress,
           sendInProgress: Boolean(activeAttempt),
+          networkProxyDirty: hasNetworkProxyChanges(),
         };
         if (
           renderedOperationState &&
@@ -3206,7 +3337,7 @@
       function loadSessionModelCapabilities(input) {
         const initial = getState();
         const profileRevision = initial.activeProfileRevision;
-        const authGeneration = initial.codexAuthGeneration;
+        const authGeneration = initial.oauthAuthGeneration;
         const key = JSON.stringify([
           input.profileId, profileRevision, authGeneration,
         ]);
@@ -3224,7 +3355,7 @@
         const isCurrent = () => sessionModelCapabilityLoad === attempt &&
           getState().settings.activeProfileId === input.profileId &&
           getState().activeProfileRevision === profileRevision &&
-          getState().codexAuthGeneration === authGeneration;
+          getState().oauthAuthGeneration === authGeneration;
         sessionModelCapabilityLoad = attempt;
         attempt.promise = (async () => {
           try {
@@ -3344,9 +3475,9 @@
             ].includes(kind) && targetSessionId === activeSessionId(),
           ownsRuntimeCatalogProjection: [
             "discover_models",
-            "start_codex_login",
-            "refresh_codex_account",
-            "logout_codex",
+            "start_oauth_login",
+            "refresh_oauth_account",
+            "logout_oauth",
           ].includes(kind),
           ownsEditorModelProjection: kind === "discover_models",
           ownsAuthoritativeSessionAdditions: kind === "new_session",
@@ -3367,6 +3498,10 @@
         syncOperationState();
         if (["save_profile", "discover_models"].includes(kind)) {
           requireView().clearFieldErrors();
+        } else if (
+          kind === "save_global_settings" && payload.networkProxy !== undefined
+        ) {
+          requireView().clearGlobalSettingsFieldError("networkProxy.url");
         }
         let commandError = null;
         let commandWarning = null;
@@ -3631,11 +3766,11 @@
               apiMode: connection.apiMode,
               baseUrl: connection.baseUrl.replace(/\/+$/, ""),
             }
-          : connection?.kind === "codex-subscription"
+          : connection?.kind === "oauth-subscription"
             ? {
                 kind: connection.kind,
                 provider: connection.provider,
-                authGeneration: state.codexAuthGeneration,
+                authGeneration: state.oauthAuthGeneration,
               }
             : null;
         return JSON.stringify({
@@ -3900,6 +4035,7 @@
           requireView().render();
         } else {
           renderDefaultFollowUpBehavior();
+          renderNetworkProxySettings();
           requireView().renderContextUsage();
           requireView().renderSessions();
         }
@@ -3981,6 +4117,50 @@
           }
           if (shortcutHint.hidden !== !running) shortcutHint.hidden = !running;
         }
+      }
+
+      function renderNetworkProxySettings() {
+        const networkProxy = effectiveNetworkProxy();
+        const draft = networkProxyDraft ?? networkProxy;
+        const mode = draft.mode;
+        for (const control of document.querySelectorAll(
+          'input[name="networkProxyMode"]',
+        )) {
+          const checked = control.value === mode;
+          if (control.checked !== checked) control.checked = checked;
+        }
+        const urlField = document.getElementById("networkProxyUrlField");
+        if (urlField && urlField.hidden !== (mode !== "manual")) {
+          urlField.hidden = mode !== "manual";
+        }
+        const urlHint = document.getElementById("networkProxyUrlHint");
+        if (urlHint && urlHint.hidden !== (mode !== "manual")) {
+          urlHint.hidden = mode !== "manual";
+        }
+        const urlControl = document.getElementById("networkProxyUrl");
+        if (
+          urlControl &&
+          (networkProxyDraft === null || document.activeElement !== urlControl) &&
+          urlControl.value !== draft.url
+        ) {
+          urlControl.value = draft.url;
+        }
+        const hint = document.getElementById("networkProxyHint");
+        if (hint) {
+          const text = mode === "none"
+            ? "Connect to providers directly."
+            : mode === "system"
+              ? "Use the active macOS HTTP, HTTPS, or SOCKS proxy. PAC/WPAD is not supported."
+              : "Use one proxy URL for provider traffic. Local endpoints stay direct.";
+          if (hint.textContent !== text) hint.textContent = text;
+        }
+        syncOperationState();
+      }
+
+      function readNetworkProxyMode() {
+        return document.querySelector(
+          'input[name="networkProxyMode"]:checked',
+        )?.value;
       }
 
       function syncActiveSessionUi() {
@@ -4379,6 +4559,82 @@
           writeEffectiveGlobalSettingsToState();
           requireView().renderContextUsage();
           syncOperationState();
+        }
+        return saved;
+      }
+
+      function handleNetworkProxyModeChange() {
+        const mode = readNetworkProxyMode();
+        if (!["none", "system", "manual"].includes(mode)) {
+          networkProxyDraft = null;
+          renderNetworkProxySettings();
+          return false;
+        }
+        const urlControl = document.getElementById("networkProxyUrl");
+        const candidateUrl = urlControl?.value.trim() ??
+          effectiveNetworkProxy().url;
+        networkProxyDraft = {
+          mode,
+          url: mode === "manual" || isNetworkProxySettings({
+              mode,
+              url: candidateUrl,
+            })
+            ? candidateUrl
+            : effectiveNetworkProxy().url,
+        };
+        renderNetworkProxySettings();
+        return true;
+      }
+
+      function handleNetworkProxyUrlInput() {
+        const mode = readNetworkProxyMode();
+        if (!["none", "system", "manual"].includes(mode)) return;
+        networkProxyDraft = {
+          mode,
+          url: document.getElementById("networkProxyUrl")?.value ?? "",
+        };
+        syncOperationState();
+      }
+
+      async function saveNetworkProxySettings() {
+        const mode = readNetworkProxyMode();
+        const urlControl = document.getElementById("networkProxyUrl");
+        const url = urlControl?.value.trim() ?? "";
+        if (!["none", "system", "manual"].includes(mode)) {
+          networkProxyDraft = null;
+          renderNetworkProxySettings();
+          return false;
+        }
+        if (!hasNetworkProxyChanges()) {
+          networkProxyDraft = null;
+          renderNetworkProxySettings();
+          return false;
+        }
+        if (mode === "manual" && !url) {
+          showStatus("Enter a Manual proxy URL before applying it.", true);
+          urlControl?.focus({ preventScroll: true });
+          return false;
+        }
+        const optimistic = {
+          networkProxy: { mode, url },
+          commandId: createCorrelationId("command"),
+          startedRevision: confirmedNetworkProxyRevision,
+          committedRevision: null,
+        };
+        optimisticNetworkProxy = optimistic;
+        writeEffectiveGlobalSettingsToState();
+        let saved = false;
+        try {
+          saved = await runCommand("save_global_settings", {
+            networkProxy: optimistic.networkProxy,
+          }, { commandId: optimistic.commandId });
+        } finally {
+          if (optimisticNetworkProxy === optimistic) {
+            optimisticNetworkProxy = null;
+          }
+          networkProxyDraft = saved ? null : { mode, url };
+          writeEffectiveGlobalSettingsToState();
+          renderNetworkProxySettings();
         }
         return saved;
       }
@@ -6214,6 +6470,8 @@
                 "defaultFollowUpBehaviorRevision",
                 "showContextUsage",
                 "contextUsageVisibilityRevision",
+                "networkProxy",
+                "networkProxyRevision",
                 "commandId",
                 "bridgeStateRevision",
               ]) ||
@@ -6221,6 +6479,8 @@
               !isDecimalRevision(payload.defaultFollowUpBehaviorRevision) ||
               typeof payload.showContextUsage !== "boolean" ||
               !isDecimalRevision(payload.contextUsageVisibilityRevision) ||
+              !isNetworkProxySettings(payload.networkProxy) ||
+              !isDecimalRevision(payload.networkProxyRevision) ||
               !isWireCorrelationId(payload.commandId)
             ) return;
             const received = receiveStateChangeRevision(payload);
@@ -6228,6 +6488,7 @@
             const adopted = adoptGlobalSettingsEvent(payload);
             if (!adopted) return;
             renderDefaultFollowUpBehavior();
+            renderNetworkProxySettings();
             requireView().renderContextUsage();
             return;
           }
@@ -7008,9 +7269,13 @@
         loadSessionModelCapabilities,
         resolveConfirm,
         renderDefaultFollowUpBehavior,
+        renderNetworkProxySettings,
         runCommand,
+        handleNetworkProxyModeChange,
+        handleNetworkProxyUrlInput,
         saveContextUsageVisibility,
         saveDefaultFollowUpBehavior,
+        saveNetworkProxySettings,
         setCloseDecisionPending: (pending) => {
           closeDecisionPending = Boolean(pending);
           if (!closeDecisionPending) startQueuedFollowUpsForIdleSessions();

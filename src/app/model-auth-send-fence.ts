@@ -1,4 +1,5 @@
-import type { ManagedAuthState } from "../model/provider.js";
+import type { OAuthAuthState } from "../model/provider.js";
+import type { OAuthSubscriptionProvider } from "../model/profile.js";
 import {
   createHostAbortController,
   throwIfAborted,
@@ -9,12 +10,12 @@ import {
   type StorageScopeKey,
 } from "../storage/scope.js";
 
-type ManagedAuthStatus = "unavailable" | "signed-out" | "pending" | "signed-in";
+type OAuthAuthStatus = "unavailable" | "signed-out" | "pending" | "signed-in";
 
 export interface ModelAuthSendFence {
   enterRead(signal?: AbortSignal): Promise<() => void>;
-  /** Admit one managed subscription discovery or send; Direct API bypasses it. */
-  enterManagedUse(signal?: AbortSignal): Promise<(() => void) | null>;
+  /** Admit one OAuth subscription discovery or send; Direct API bypasses it. */
+  enterOAuthUse(signal?: AbortSignal): Promise<(() => void) | null>;
   enterAuth(owner: symbol, signal?: AbortSignal): Promise<(() => void) | null>;
   enterPendingOwnerCleanup(
     owner: symbol,
@@ -22,15 +23,15 @@ export interface ModelAuthSendFence {
   ): Promise<(() => void) | null>;
   hasPendingLogin(): boolean;
   reconcilePendingAuthState(
-    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal?: AbortSignal,
-  ): Promise<ManagedAuthState | undefined>;
+  ): Promise<OAuthAuthState | undefined>;
   updateAuthState(
     owner: symbol,
-    status: ManagedAuthStatus,
+    status: OAuthAuthStatus,
     mutationAttempted?: boolean,
   ): void;
-  /** Read the credential-free epoch for UI projection without admitting managed use. */
+  /** Read the credential-free epoch for UI projection without admitting OAuth use. */
   peekAuthGeneration(): number;
   authGeneration(): number;
   poison(cause: unknown): void;
@@ -45,7 +46,7 @@ interface ActiveAuthMutation {
 
 interface PendingAuthReconciliation {
   readonly controller: ReturnType<typeof createHostAbortController>;
-  readonly settled: Promise<ManagedAuthState>;
+  readonly settled: Promise<OAuthAuthState>;
 }
 
 class ProcessModelAuthSendFence implements ModelAuthSendFence {
@@ -74,7 +75,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
     }
   }
 
-  async enterManagedUse(signal?: AbortSignal): Promise<(() => void) | null> {
+  async enterOAuthUse(signal?: AbortSignal): Promise<(() => void) | null> {
     for (;;) {
       throwIfAborted(signal);
       this.assertHealthy();
@@ -143,7 +144,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       }
       if (this.pendingAuthReconciliation) {
         this.pendingAuthReconciliation.controller.abort(
-          new Error("The ChatGPT sign-in owner closed."),
+          new Error("The OAuth sign-in owner closed."),
         );
         await this.waitForStateChange(signal);
         continue;
@@ -173,15 +174,15 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 
   async reconcilePendingAuthState(
-    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal?: AbortSignal,
-  ): Promise<ManagedAuthState | undefined> {
+  ): Promise<OAuthAuthState | undefined> {
     throwIfAborted(signal);
     this.assertHealthy();
     if (this.pendingLoginOwner === null) return undefined;
     if (this.authMutation || this.activeOperations === 0) {
       throw new Error(
-        "Pending ChatGPT sign-in reconciliation requires a shared auth read.",
+        "Pending OAuth sign-in reconciliation requires a shared auth read.",
       );
     }
     if (this.pendingAuthReconciliation === null) {
@@ -201,9 +202,9 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 
   private async performPendingAuthReconciliation(
-    readAuthState: (signal: AbortSignal) => Promise<ManagedAuthState>,
+    readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal: AbortSignal,
-  ): Promise<ManagedAuthState> {
+  ): Promise<OAuthAuthState> {
     try {
       const auth = await readAuthState(signal);
       throwIfAborted(signal);
@@ -225,7 +226,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
 
   updateAuthState(
     owner: symbol,
-    status: ManagedAuthStatus,
+    status: OAuthAuthStatus,
     mutationAttempted = false,
   ): void {
     this.assertHealthy();
@@ -251,7 +252,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   poison(cause: unknown): void {
     if (this.poisonError) return;
     this.poisonError = new Error(
-      "The shared ChatGPT subscription runtime could not be shut down safely. Restart the Live Smith extension before continuing.",
+      "The shared OAuth subscription backend could not be shut down safely. Restart the Live Smith extension before continuing.",
       { cause },
     );
     this.pendingAuthReconciliation?.controller.abort(this.poisonError);
@@ -267,7 +268,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
     }
     if (this.pendingLoginOwner === owner) {
       this.pendingAuthReconciliation?.controller.abort(
-        new Error("The ChatGPT sign-in owner closed."),
+        new Error("The OAuth sign-in owner closed."),
       );
       this.pendingLoginOwner = null;
       this.generation += 1;
@@ -308,17 +309,26 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 }
 
-const fencesByStorageDirectory = new Map<StorageScopeKey, ModelAuthSendFence>();
+const fencesByStorageDirectory = new Map<
+  StorageScopeKey,
+  Map<OAuthSubscriptionProvider, ModelAuthSendFence>
+>();
 
 export function modelAuthSendFenceForStorage(
   storageDirectory: string | undefined,
+  provider: OAuthSubscriptionProvider,
 ): ModelAuthSendFence {
   if (storageDirectory === undefined) return new ProcessModelAuthSendFence();
   const key = storageScopeKey(storageDirectory);
-  let fence = fencesByStorageDirectory.get(key);
+  let providerFences = fencesByStorageDirectory.get(key);
+  if (!providerFences) {
+    providerFences = new Map();
+    fencesByStorageDirectory.set(key, providerFences);
+  }
+  let fence = providerFences.get(provider);
   if (!fence) {
     fence = new ProcessModelAuthSendFence();
-    fencesByStorageDirectory.set(key, fence);
+    providerFences.set(provider, fence);
   }
   return fence;
 }

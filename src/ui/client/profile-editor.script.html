@@ -23,7 +23,7 @@
       let draftCatalogProjection = null;
       let pendingCatalogApply = null;
       let renderedCatalogMatchesConnection = false;
-      let renderedCodexAuthKey = null;
+      let renderedOAuthAuthKey = null;
       const controlIdByProfileField = {
         name: "profileName",
         connection: "connectionKind",
@@ -35,6 +35,10 @@
         "connection.baseUrl": "baseUrl",
         defaultModel: "modelConfigSelector",
         models: "modelConfigSelector",
+      };
+
+      const controlIdByGlobalSettingsField = {
+        "networkProxy.url": "networkProxyUrl",
       };
 
       const controlIdByModelField = {
@@ -122,6 +126,11 @@
         for (const error of document.querySelectorAll(".field-error")) error.remove();
       }
 
+      function clearGlobalSettingsFieldError(field) {
+        const controlId = controlIdByGlobalSettingsField[field];
+        if (controlId) clearFieldError(document.getElementById(controlId));
+      }
+
       function showFieldError(field, message) {
         const modelField = /^models\.(\d+)\.(.+)$/.exec(field);
         if (modelField && draftProfile?.models?.[Number(modelField[1])]) {
@@ -130,11 +139,12 @@
         }
         const controlId = modelField
           ? controlIdByModelField[modelField[2]]
-          : controlIdByProfileField[field];
+          : controlIdByProfileField[field] ??
+            controlIdByGlobalSettingsField[field];
         const control = controlId ? document.getElementById(controlId) : null;
         const container = control?.closest(".field");
         if (!control || !container) return false;
-        clearFieldErrors();
+        clearFieldError(control);
         control.closest("details")?.setAttribute("open", "");
         const error = document.createElement("span");
         error.id = `${control.id}Error`;
@@ -192,7 +202,7 @@
         };
       }
 
-      function blankModelConfig(subscription = isCodexSubscription()) {
+      function blankModelConfig(subscription = isOAuthSubscription()) {
         return {
           model: "",
           parameters: subscription
@@ -226,7 +236,10 @@
                 baseUrl: String(connection.baseUrl || "").trim().replace(/\/+$/, ""),
                 apiKey: String(connection.apiKey || "").trim(),
               }
-            : { kind: "codex-subscription", provider: "openai" },
+            : {
+                kind: "oauth-subscription",
+                provider: connection.provider || "openai",
+              },
           model: String(model || "").trim(),
         };
       }
@@ -234,8 +247,8 @@
       function currentModelSource() {
         return modelSourceFor({
           id: draftProfile?.id || "",
-          connection: isCodexSubscription()
-            ? { kind: "codex-subscription", provider: "openai" }
+          connection: isOAuthSubscription()
+            ? { kind: "oauth-subscription", provider: oauthProvider() }
             : {
                 kind: "direct-api",
                 apiFamily: document.getElementById("apiFamily").value,
@@ -249,7 +262,7 @@
 
       function sameModelConnection(left, right) {
         if (!left || !right || left.kind !== right.kind) return false;
-        if (left.kind === "codex-subscription") {
+        if (left.kind === "oauth-subscription") {
           return left.provider === right.provider;
         }
         return left.apiFamily === right.apiFamily &&
@@ -297,9 +310,9 @@
       }
 
       function connectionFromForm() {
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         return subscription
-          ? { kind: "codex-subscription", provider: "openai" }
+          ? { kind: "oauth-subscription", provider: oauthProvider() }
           : {
               kind: "direct-api",
               apiFamily: document.getElementById("apiFamily").value,
@@ -310,14 +323,12 @@
       }
 
       function modelConfigFromForm({ preserveInvalidExtraBody = false } = {}) {
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         const temperatureControl = document.getElementById("temperature");
         const temperatureRaw = subscription || temperatureControl.disabled
           ? ""
           : temperatureControl.value.trim();
-        const budgetRaw = subscription
-          ? ""
-          : document.getElementById("reasoningBudgetTokens").value.trim();
+        const budgetRaw = document.getElementById("reasoningBudgetTokens").value.trim();
         const extraRaw = subscription
           ? ""
           : document.getElementById("extraBody").value.trim();
@@ -341,11 +352,7 @@
           }
         }
         const selectedReasoningMode = document.getElementById("reasoningMode").value;
-        const reasoning = {
-          mode: subscription && selectedReasoningMode === "disabled"
-            ? "default"
-            : selectedReasoningMode,
-        };
+        const reasoning = { mode: selectedReasoningMode };
         const effort = document.getElementById("reasoningEffort").value;
         if (reasoning.mode === "enabled" && effort) reasoning.effort = effort;
         const budget = Number(budgetRaw);
@@ -435,8 +442,21 @@
         };
       }
 
-      function isCodexSubscription() {
-        return document.getElementById("connectionKind")?.value === "codex-subscription";
+      function isOAuthSubscription() {
+        return document.getElementById("connectionKind")?.value === "oauth-subscription";
+      }
+
+      function oauthProvider() {
+        const value = document.getElementById("oauthProvider")?.value;
+        return value === "anthropic" || value === "google" ? value : "openai";
+      }
+
+      function oauthProviderLabel() {
+        return oauthProvider() === "anthropic"
+          ? "Claude"
+          : oauthProvider() === "google"
+            ? "Gemini"
+            : "ChatGPT";
       }
 
       function capabilityOverridesFromForm() {
@@ -562,7 +582,7 @@
         document.getElementById("extraBody").value = entry.advanced?.extraBody
           ? JSON.stringify(entry.advanced.extraBody, null, 2)
           : "";
-        if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
+        if (isOAuthSubscription()) clearOAuthSubscriptionIncompatibleSettings();
         renderModelConfigSelector();
         updateHostedToolControls();
         updateCapabilityPreview();
@@ -606,8 +626,8 @@
           return null;
         }
         if (
-          projection.source.connection.kind === "codex-subscription" &&
-          projection.authGeneration !== getState().codexAuthGeneration
+          projection.source.connection.kind === "oauth-subscription" &&
+          projection.authGeneration !== getState().oauthAuthGeneration
         ) {
           invalidateDraftCatalogProjection();
           return null;
@@ -629,7 +649,7 @@
       function modelConfigForId(modelId, template, catalogById) {
         const config = cloneValue(template || blankModelConfig());
         config.model = modelId;
-        if (isCodexSubscription()) {
+        if (isOAuthSubscription()) {
           config.parameters = {
             reasoning: config.parameters?.reasoning || { mode: "default" },
           };
@@ -712,7 +732,7 @@
       }
 
       function addManualModel() {
-        if (modelEditorLocked() || isCodexSubscription()) return;
+        if (modelEditorLocked() || isOAuthSubscription()) return;
         const input = document.getElementById("manualModelId");
         const modelId = input.value.trim();
         if (!modelId || configuredModelIds().has(modelId)) {
@@ -807,7 +827,7 @@
         }
         const loadedModelIds = catalogModels.map((model) => model.id);
         let applied;
-        if (isCodexSubscription()) {
+        if (isOAuthSubscription()) {
           applied = reconcileSubscriptionModelsWithLoadedCatalog(
             loadedModelIds,
             catalogModels,
@@ -957,7 +977,7 @@
       function handleConnectionKindChange() {
         const control = document.getElementById("connectionKind");
         document.getElementById("manualModelId").value = "";
-        if (isCodexSubscription()) clearManagedSubscriptionIncompatibleSettings();
+        if (isOAuthSubscription()) clearOAuthSubscriptionIncompatibleSettings();
         else if (!document.getElementById("maxOutputTokens").value) {
           document.getElementById("maxOutputTokens").value = "8192";
         }
@@ -968,28 +988,36 @@
         updateHostedToolControls();
       }
 
-      function clearManagedSubscriptionIncompatibleSettings() {
+      function handleOAuthProviderChange() {
+        const control = document.getElementById("oauthProvider");
+        if (!isOAuthSubscription()) return;
+        synchronizeCurrentModelConfig({ preserveInvalidExtraBody: true });
+        draftProfile.connection = connectionFromForm();
+        draftProfile.models = [blankModelConfig(true)];
+        draftProfile.defaultModel = "";
+        selectedModelIndex = 0;
+        invalidateDraftCatalogProjection();
+        syncModelStateSource(draftProfile);
+        markDraftDirty(control);
+        renderSelectedModelConfig();
+        applyConnectionKindPresentation();
+      }
+
+      function clearOAuthSubscriptionIncompatibleSettings() {
         document.getElementById("temperature").value = "";
         document.getElementById("maxOutputTokens").value = "";
-        document.getElementById("reasoningBudgetTokens").value = "";
         document.getElementById("webSearchEnabled").checked = false;
         document.getElementById("extraBody").value = "";
         populateCapabilityOverrides({});
-        const reasoningMode = document.getElementById("reasoningMode");
-        if (reasoningMode.value === "disabled") reasoningMode.value = "default";
       }
 
       function normalizeDraftModelsForConnection() {
         if (!draftProfile?.models) return;
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         draftProfile.models = draftProfile.models.map((entry) => {
           const reasoning = cloneValue(entry.parameters?.reasoning) || {
             mode: "default",
           };
-          if (subscription && reasoning.mode === "disabled") {
-            reasoning.mode = "default";
-          }
-          if (subscription) delete reasoning.budgetTokens;
           return {
             model: entry.model || "",
             parameters: subscription
@@ -1008,9 +1036,11 @@
       }
 
       function applyConnectionKindPresentation(settingsLocked = false) {
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         document.getElementById("directApiFields").hidden = subscription;
-        document.getElementById("codexAuthPanel").hidden = !subscription;
+        document.getElementById("oauthProviderField").hidden = !subscription;
+        document.getElementById("oauthProvider").disabled = settingsLocked || !subscription;
+        document.getElementById("oauthAuthPanel").hidden = !subscription;
         const advancedSettings = document.getElementById("advancedSettings");
         advancedSettings.hidden = subscription;
         if (subscription) advancedSettings.open = false;
@@ -1027,8 +1057,8 @@
         document.getElementById("temperature").disabled = settingsLocked || subscription;
         document.getElementById("maxOutputTokens").disabled = settingsLocked || subscription;
         document.getElementById("reasoningBudgetTokens").disabled =
-          settingsLocked || subscription || document.getElementById("reasoningBudgetRow").hidden;
-        renderCodexAuthState(settingsLocked);
+          settingsLocked || document.getElementById("reasoningBudgetRow").hidden;
+        renderOAuthAuthState(settingsLocked);
       }
 
       function handleApiFamilyChange() {
@@ -1064,14 +1094,14 @@
         const hint = document.getElementById("webSearchHint");
         const boundary = document.getElementById("webSearchBoundaryHint");
         const mode = document.getElementById("apiMode").value;
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         const supported = !subscription && (mode === "responses" || mode === "messages");
         if (boundary) boundary.hidden = !subscription;
         if (subscription) control.checked = false;
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
         hint.textContent = subscription
-          ? "Provider-hosted Web Search is unavailable for ChatGPT subscription Profiles."
+          ? "Provider-hosted Web Search is unavailable for OAuth subscription Profiles."
           : supported
           ? "Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support."
           : wasTurnedOff
@@ -1088,7 +1118,9 @@
         try {
           const url = new URL(String(value));
           return url.protocol === "https:" &&
-            url.hostname === "auth.openai.com" &&
+            ["auth.openai.com", "claude.ai", "accounts.google.com"].includes(
+              url.hostname,
+            ) &&
             !url.username &&
             !url.password
             ? url.toString()
@@ -1098,7 +1130,8 @@
         }
       }
 
-      function codexAuthPresentation(auth) {
+      function oauthAuthPresentation(auth) {
+        const providerLabel = oauthProviderLabel();
         if (!auth) {
           return {
             state: "unchecked",
@@ -1116,9 +1149,9 @@
             state: "unavailable",
             badge: "Unavailable",
             title: retryableSignIn
-              ? "ChatGPT sign-in did not complete"
-              : "ChatGPT subscription unavailable",
-            detail: `${auth.message} Fix the issue, then check again.`,
+              ? `${providerLabel} sign-in failed`
+              : `${providerLabel} subscription unavailable`,
+            detail: auth.message,
             signIn: {
               label: retryableSignIn ? "Try sign-in again" : "Sign in",
               hidden: !retryableSignIn,
@@ -1129,7 +1162,7 @@
               hidden: false,
               tone: retryableSignIn ? "secondary" : "primary",
             },
-            logout: { label: "Sign out", hidden: true, tone: "quiet" },
+            logout: { label: "Sign out", hidden: false, tone: "quiet" },
           };
         }
         if (auth.status === "signed-out") {
@@ -1144,11 +1177,14 @@
           };
         }
         if (auth.status === "pending") {
+          const hasCode = Boolean(auth.userCode);
           return {
             state: "pending",
             badge: "Waiting",
             title: "Finish sign-in",
-            detail: "Open the OpenAI page, enter the one-time code, then return here.",
+            detail: hasCode
+              ? `Open the ${providerLabel} page, enter the one-time code, then return here.`
+              : `Complete ${providerLabel} sign-in in the browser, then return here.`,
             signIn: { label: "Sign in", hidden: true, tone: "secondary" },
             check: { label: "Check sign-in", hidden: false, tone: "primary" },
             logout: {
@@ -1164,7 +1200,7 @@
             state: "ineligible",
             badge: "Not eligible",
             title: "This account isn’t supported",
-            detail: "Workspace-managed plans aren’t supported here. Sign out and connect a personal ChatGPT plan.",
+            detail: `This ${providerLabel} account cannot use the selected subscription backend.`,
             signIn: { label: "Sign in", hidden: true, tone: "secondary" },
             check: { label: "Refresh account", hidden: false, tone: "secondary" },
             logout: { label: "Sign out", hidden: false, tone: "quiet" },
@@ -1183,7 +1219,7 @@
         };
       }
 
-      function configureCodexAuthAction(button, action) {
+      function configureOAuthAuthAction(button, action) {
         setPropertyIfChanged(button, "hidden", action.hidden);
         setDataIfChanged(button, "idleLabel", action.label);
         setDataIfChanged(button, "busyLabel", action.busyLabel || "");
@@ -1199,26 +1235,48 @@
         );
       }
 
-      function renderCodexAuthState(settingsLocked = false) {
-        const auth = getState().codexAuth;
-        const presentation = codexAuthPresentation(auth);
-        const panel = document.getElementById("codexAuthPanel");
-        const ticket = document.getElementById("codexDeviceCodeTicket");
-        const verificationLink = document.getElementById("codexVerificationLink");
-        const verificationError = document.getElementById("codexVerificationError");
-        const userCode = document.getElementById("codexUserCode");
+      function renderOAuthAuthState(settingsLocked = false) {
+        const auth = !getState().oauthAuthProvider ||
+            getState().oauthAuthProvider === oauthProvider()
+          ? getState().oauthAuth
+          : undefined;
+        const presentation = oauthAuthPresentation(auth);
+        const panel = document.getElementById("oauthAuthPanel");
+        const ticket = document.getElementById("oauthDeviceCodeTicket");
+        const verificationLink = document.getElementById("oauthVerificationLink");
+        const verificationError = document.getElementById("oauthVerificationError");
+        const userCode = document.getElementById("oauthUserCode");
         const presentationKey = JSON.stringify(auth || null);
+        const providerLabel = oauthProviderLabel();
+        const headingText = `${providerLabel} account `;
+        const headingNode = document.getElementById("oauthAuthHeading").firstChild;
+        if (headingNode.textContent !== headingText) headingNode.textContent = headingText;
+        const noteText = providerLabel === "Claude"
+            ? "Uses Claude OAuth through Anthropic Messages. Extra Usage is account-billed when enabled."
+            : providerLabel === "Gemini"
+              ? "Uses your Google account through Cloud Code Assist."
+              : "Uses your ChatGPT account through the Codex backend API.";
+        setPropertyIfChanged(
+          document.getElementById("oauthAuthNote"),
+          "textContent",
+          noteText,
+        );
+        setPropertyIfChanged(
+          document.getElementById("oauthVerificationLinkLabel"),
+          "textContent",
+          `Open ${providerLabel} sign-in page`,
+        );
         setDataIfChanged(panel, "authState", presentation.state);
         setPropertyIfChanged(
-          document.getElementById("codexAuthStateBadge"),
+          document.getElementById("oauthAuthStateBadge"),
           "textContent",
           presentation.badge,
         );
 
-        if (renderedCodexAuthKey !== presentationKey) {
-          renderedCodexAuthKey = presentationKey;
-          document.getElementById("codexAuthStateLabel").textContent = presentation.title;
-          const detail = document.getElementById("codexAuthStateDetail");
+        if (renderedOAuthAuthKey !== presentationKey) {
+          renderedOAuthAuthKey = presentationKey;
+          document.getElementById("oauthAuthStateLabel").textContent = presentation.title;
+          const detail = document.getElementById("oauthAuthStateDetail");
           detail.textContent = presentation.detail;
           detail.hidden = !presentation.detail;
           const pending = auth?.status === "pending";
@@ -1232,22 +1290,25 @@
             } else {
               verificationLink.removeAttribute("href");
             }
-            userCode.value = auth.userCode;
+            userCode.value = auth.userCode || "";
+            document.querySelector(".subscription-auth-code-ticket").hidden =
+              !auth.userCode;
           } else {
             verificationLink.hidden = true;
             verificationLink.removeAttribute("href");
             verificationError.hidden = true;
             userCode.value = "";
+            document.querySelector(".subscription-auth-code-ticket").hidden = false;
           }
         }
 
-        const subscription = isCodexSubscription();
-        const signIn = document.getElementById("codexSignInButton");
-        const check = document.getElementById("codexCheckAccountButton");
-        const logout = document.getElementById("codexLogoutButton");
-        configureCodexAuthAction(signIn, presentation.signIn);
-        configureCodexAuthAction(check, presentation.check);
-        configureCodexAuthAction(logout, presentation.logout);
+        const subscription = isOAuthSubscription();
+        const signIn = document.getElementById("oauthSignInButton");
+        const check = document.getElementById("oauthCheckAccountButton");
+        const logout = document.getElementById("oauthLogoutButton");
+        configureOAuthAuthAction(signIn, presentation.signIn);
+        configureOAuthAuthAction(check, presentation.check);
+        configureOAuthAuthAction(logout, presentation.logout);
         setPropertyIfChanged(
           signIn,
           "disabled",
@@ -1265,21 +1326,21 @@
         );
       }
 
-      function focusAfterCodexAuthCommand(source) {
-        if (!isCodexSubscription()) return;
+      function focusAfterOAuthAuthCommand(source) {
+        if (!isOAuthSubscription()) return;
         const focused = document.activeElement;
         if (
           focused !== source &&
           focused !== document.body &&
           focused !== document.documentElement
         ) return;
-        const auth = getState().codexAuth;
-        const signIn = document.getElementById("codexSignInButton");
-        const check = document.getElementById("codexCheckAccountButton");
-        const verificationLink = document.getElementById("codexVerificationLink");
+        const auth = getState().oauthAuth;
+        const signIn = document.getElementById("oauthSignInButton");
+        const check = document.getElementById("oauthCheckAccountButton");
+        const verificationLink = document.getElementById("oauthVerificationLink");
         const target = auth?.status === "pending"
           ? verificationLink.hidden ? check : verificationLink
-          : !auth || auth.status === "signed-out"
+          : !signIn.hidden
           ? signIn
           : check;
         if (!target.hidden && !target.disabled) {
@@ -1287,33 +1348,38 @@
         }
       }
 
-      async function runCodexAuthCommand(kind, sourceId) {
+      async function runOAuthAuthCommand(kind, sourceId, provider = oauthProvider()) {
         const source = document.getElementById(sourceId);
         const shouldRestoreFocus = document.activeElement === source;
-        const succeeded = await runCommand(kind);
-        if (shouldRestoreFocus) focusAfterCodexAuthCommand(source);
-        return succeeded;
+        await runCommand(kind, { provider });
+        if (shouldRestoreFocus) focusAfterOAuthAuthCommand(source);
       }
 
-      async function startCodexLogin() {
-        await runCodexAuthCommand("start_codex_login", "codexSignInButton");
-      }
-
-      async function refreshCodexAccount() {
-        await runCodexAuthCommand(
-          "refresh_codex_account",
-          "codexCheckAccountButton",
+      async function startOAuthLogin() {
+        const provider = oauthProvider();
+        await runOAuthAuthCommand(
+          "start_oauth_login",
+          "oauthSignInButton",
+          provider,
         );
       }
 
-      async function logoutCodex() {
+      async function refreshOAuthAccount() {
+        await runOAuthAuthCommand(
+          "refresh_oauth_account",
+          "oauthCheckAccountButton",
+        );
+      }
+
+      async function logoutOAuth() {
+        const providerLabel = oauthProviderLabel();
         if (!(await confirmAction({
-          title: "Sign out of ChatGPT?",
-          message: "Sign out of the isolated Live Smith Codex session? Any pending device login will be cancelled.",
+          title: `Sign out of ${providerLabel}?`,
+          message: `Remove the ${providerLabel} OAuth session stored by Live Smith? Any pending login will be cancelled.`,
           acceptLabel: "Sign Out",
           danger: true,
         }))) return;
-        await runCodexAuthCommand("logout_codex", "codexLogoutButton");
+        await runOAuthAuthCommand("logout_oauth", "oauthLogoutButton");
       }
 
       async function addProfile() {
@@ -1398,8 +1464,8 @@
           const source = cloneValue(modelStateSource);
           if (modelSourceMatchesCurrentConnection(source)) {
             const projection = {
-              authGeneration: source.connection.kind === "codex-subscription"
-                ? getState().codexAuthGeneration
+              authGeneration: source.connection.kind === "oauth-subscription"
+                ? getState().oauthAuthGeneration
                 : null,
               models: cloneValue(getState().availableModels || []),
               source,
@@ -1551,6 +1617,10 @@
         const connection = profile.connection;
         document.getElementById("connectionKind").value = connection.kind;
         const directConnection = connection.kind === "direct-api" ? connection : null;
+        document.getElementById("oauthProvider").value =
+          connection.kind === "oauth-subscription"
+            ? connection.provider || "openai"
+            : "openai";
         document.getElementById("apiFamily").value = directConnection?.apiFamily || "openai";
         renderApiModes(directConnection?.apiFamily || "openai", directConnection?.apiMode);
         document.getElementById("apiKey").value = directConnection?.apiKey || "";
@@ -1560,7 +1630,7 @@
         document.getElementById("baseUrl").value = directConnection?.baseUrl || "";
         document.getElementById("manualModelId").value = "";
         if (!Array.isArray(draftProfile.models) || draftProfile.models.length === 0) {
-          draftProfile.models = [blankModelConfig(connection.kind === "codex-subscription")];
+          draftProfile.models = [blankModelConfig(connection.kind === "oauth-subscription")];
         }
         selectedModelIndex = Math.max(
           0,
@@ -1622,7 +1692,7 @@
         const input = document.getElementById("manualModelId");
         const modelId = input.value.trim();
         const duplicate = Boolean(modelId) && configured.has(modelId);
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         const locked = modelEditorLocked();
         const modelCount = configured.size;
         const profileIsFull = modelCount >= maximumProfileModelCount;
@@ -1657,10 +1727,8 @@
         const capability = selection.capability;
         const reasoning = capability && capability.reasoning;
         const supported = Boolean(reasoning && reasoning.supported);
-        const subscription = isCodexSubscription();
-        const budgetSupported = !subscription && Boolean(
-          reasoning && reasoning.budgetTokens,
-        );
+        const subscription = isOAuthSubscription();
+        const budgetSupported = Boolean(reasoning && reasoning.budgetTokens);
         const modeSelect = document.getElementById("reasoningMode");
         const effortSelect = document.getElementById("reasoningEffort");
         const effortRow = document.getElementById("reasoningEffortRow");
@@ -1679,23 +1747,15 @@
         let adjusted = false;
         const rawRequestedMode = modeSelect.dataset.requestedValue ??
           modeSelect.value ?? "default";
-        const requestedMode = subscription && rawRequestedMode === "disabled"
-          ? "default"
-          : rawRequestedMode;
-        if (requestedMode !== rawRequestedMode) adjusted = true;
+        const requestedMode = rawRequestedMode;
         delete modeSelect.dataset.requestedValue;
         const requestedEffort = effortSelect.dataset.requestedValue ??
           effortSelect.value;
         delete effortSelect.dataset.requestedValue;
         const budgetInput = document.getElementById("reasoningBudgetTokens");
-        if (subscription) {
-          for (const option of [...modeSelect.options]) {
-            if (option.value === "disabled") option.remove();
-          }
-        }
         if (selection.authoritative.reasoning) {
           const modeRows = [{ label: "Provider default", value: "default" }];
-          if (supported && reasoning.canDisable && !subscription) {
+          if (supported && reasoning.canDisable) {
             modeRows.push({ label: "Disabled", value: "disabled" });
           }
           if (supported) modeRows.push({ label: "Enabled", value: "enabled" });
@@ -1876,7 +1936,7 @@
           },
         };
         let overrides = {};
-        if (!isCodexSubscription()) {
+        if (!isOAuthSubscription()) {
           try {
             overrides = capabilityOverridesFromForm();
           } catch {}
@@ -1959,7 +2019,7 @@
           synchronizeInputCapabilityPreview(inputPreview, statuses);
         }
         const outputTokensInput = document.getElementById("maxOutputTokens");
-        const subscription = isCodexSubscription();
+        const subscription = isOAuthSubscription();
         const trustedModelLimit = selection.authoritative.maxOutputTokens
           ? modelLimit
           : undefined;
@@ -1985,7 +2045,7 @@
           markDraftDirtyForCapabilityAdjustment();
         }
         const outputLimitHint = subscription
-          ? "Codex App Server owns the output limit for subscription requests."
+          ? "The selected subscription backend owns the output limit."
           : trustedModelLimit === undefined
             ? "Model output limit is unknown; the provider validates this request."
             : `Model output limit: ${trustedModelLimit}.`;
@@ -2125,6 +2185,7 @@
         addManualModel,
         addProfile,
         applyConnectionKindPresentation,
+        clearGlobalSettingsFieldError,
         clearFieldErrors,
         deleteProfile,
         discardProfileChanges,
@@ -2138,14 +2199,15 @@
         handleApiFamilyChange,
         handleApiModeChange,
         handleConnectionKindChange,
+        handleOAuthProviderChange,
         handleManualModelIdKeydown,
         handleModelConfigSelection,
         handleProfileSelection,
         handleWebSearchChange,
         markDraftDirty,
-        logoutCodex,
-        refreshCodexAccount,
-        renderCodexAuthState,
+        logoutOAuth,
+        refreshOAuthAccount,
+        renderOAuthAuthState,
         updateApprovalModePresentation,
         updateHostedToolControls,
         renderProfileModels,
@@ -2157,7 +2219,7 @@
         saveApprovalMode,
         saveProfile,
         showFieldError,
-        startCodexLogin,
+        startOAuthLogin,
         setDefaultModel,
         syncModelStateSource,
         toggleApiKeyVisibility,
