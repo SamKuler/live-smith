@@ -109,7 +109,7 @@ an Anthropic Console API key balance and from the plan's base allowance.
 OAuth credentials live only in private Ableton storage at
 `<storageDirectory>/oauth/credentials.json`. The file is schema-validated,
 atomically replaced, and mode `0600` on POSIX; its directory is mode `0700`.
-It stores one discriminated credential per provider:
+It stores discriminated credentials in exact Profile-ID/provider slots:
 
 - OpenAI: access token, refresh token, expiry, and ChatGPT account ID.
 - Anthropic: access token, refresh token, and expiry.
@@ -124,28 +124,56 @@ service label, or a fixed unavailable description. An unavailable account keeps
 an explicit Sign out action so a revoked or malformed refresh credential can be
 cleared before starting a new authorization.
 
+Credential-store schema v1 used provider-global slots. Before the first OAuth
+operation in a process, and before any Profile Save or Delete that changes OAuth
+ownership, one serialized preparation reads the current saved settings and
+assigns each validated legacy credential to the active matching saved Profile,
+or the first matching saved Profile when the active Profile uses another
+connection. A legacy credential with no saved owner is discarded, so a future
+Draft cannot inherit it. The preparation also removes tuple credentials left
+from a prior process when they no longer match a saved connection. Preparation
+failure prevents the ownership-changing settings mutation from committing.
+
+While one Profile is being edited, signing in to another provider writes a
+separate provisional tuple and does not overwrite the saved provider's refresh
+token. Saving an OAuth connection retains only its selected provider tuple;
+saving Direct API or deleting the Profile removes every tuple for that Profile.
+Discarding, replacing, or closing a Draft reconciles any provider authorized by
+that modal against authoritative saved settings: the saved provider remains,
+while foreign-provider and never-saved Profile tuples are removed. Direct-only
+Draft changes do not enter OAuth storage. Discarding the Draft therefore cannot
+sign the saved provider out or leave an unreachable refresh token behind.
+If settings commit but backend retirement or tuple cleanup cannot be confirmed,
+the exact Profile remains in a process-wide per-storage reconciliation set that
+survives modal closure. State hydration retries that cleanup from authoritative
+saved settings. Until it succeeds, the command reports the committed settings
+and an explicit reconciliation warning instead of claiming an ordinary failure
+or silently reusing the old credential.
+
 #### Login and refresh lifecycle
 
 OpenAI uses device authorization. Claude uses its registered fixed loopback
-port; Google binds an available ephemeral loopback port. Both browser flows use
-PKCE and exact state validation. The callback accepts only its one path and
-expected state, returns inert local HTML, and closes after success, denial,
-cancellation, or backend shutdown.
+port. Google uses browser PKCE with an available ephemeral port and the exact
+`http://127.0.0.1:<port>/oauth2callback` redirect; Google does not issue a
+one-time or device code. Both loopback flows use exact state validation. The
+callback accepts only its one path and expected state, returns inert local HTML,
+and closes after success, denial, cancellation, timeout, or backend shutdown.
 
 The dialog does not depend on popup support in Ableton's embedded WebView.
 After login acquisition returns a validated pending HTTPS URL, the Extension
 Host launches it through a fixed system browser command: `/usr/bin/open` on
 macOS or the System32 URL handler on Windows. Launch failure does not cancel the
-provider-owned login; the pending dialog state retains the verified URL and
+Profile-owned login; the pending dialog state retains the verified URL and
 optional device code as a fallback. Closing the owning modal stops admitting
 new browser launches, cancels an unfinished launch, and waits for it to settle
 before OAuth cleanup completes. Sign-out, replacement, or completed account
-reconciliation likewise cancels that provider's unfinished browser launch.
+reconciliation likewise cancels that Profile connection's unfinished browser
+launch.
 
-One provider manager owns an in-flight login from adapter acquisition through
-credential commit, plus one refresh single-flight. Login ownership is installed
-before provider setup begins, so caller abort, logout, and close can cancel a
-late-returning browser or device attempt and await its completion.
+One Profile/provider backend owns an in-flight login from adapter acquisition
+through credential commit, plus one refresh single-flight. Login ownership is
+installed before provider setup begins, so caller abort, logout, and close can
+cancel a late-returning browser or device attempt and await its completion.
 Concurrent requests waiting on an expired credential share the same rotating
 refresh operation. A caller may cancel its wait without canceling a refresh
 already owned by another request. Sign-in, logout, and backend close retire the
@@ -153,10 +181,10 @@ current credential generation, abort and settle any detached refresh, and
 reject a late refresh result before it can write. Credential persistence checks
 that ownership again after entering the serialized storage transaction, making
 the check and commit one ordered operation. Logout also cancels pending
-authorization and removes only the selected provider credential. Once logout
-starts, its settle-and-delete cleanup remains manager-owned even if the caller
-cancels its wait; close and later operations wait for that cleanup, so an
-already-started credential write cannot outlive a confirmed retirement.
+authorization and removes only that Profile's matching provider credential.
+Once logout starts, its settle-and-delete cleanup remains manager-owned even if
+the caller cancels its wait; close and later operations wait for that cleanup,
+so an already-started credential write cannot outlive a confirmed retirement.
 An operation resumed after waiting for logout rechecks caller cancellation
 before acquiring new login, read, or refresh ownership.
 Provider refresh failures are replaced at the credential boundary with a fixed
@@ -164,13 +192,22 @@ provider-context error; raw Fetch errors and their credential-bearing request
 data never propagate.
 Every close caller shares the same completion through the credential manager,
 native backend, and backend registry; registry close also waits for OAuth slots
-already undergoing invalidation and for every provider cleanup before reporting
-one cleanup failure.
+already undergoing invalidation and for every Profile/provider cleanup before
+reporting one cleanup failure.
 
-The provider-scoped auth/send fence prevents login, refresh-state mutation, and
-logout from racing same-provider subscription discovery or generation. Its credential-free
-generation invalidates modal-only catalogs and stale auth projections. Direct
-API requests do not enter this fence.
+The auth/send fence is Profile-scoped because one Profile owns one editable
+connection lifecycle. It tags pending login ownership, live auth activity, and
+credential-free generations by provider. This prevents a provider switch,
+Profile Save, or Delete from racing another provider operation for the same
+Profile, while different Profile IDs remain independent even when they use the
+same provider. Provider-local generations invalidate only that tuple's modal
+catalog and stale auth projection. Auth state is cached as one atomic
+Profile/provider/generation entry, so delayed reads from independent Profiles
+cannot exchange account projections. Profile lifecycle paths acquire the
+Profile fence before the request-configuration fence, including recovery of an
+unknown settings outcome. Direct API hydration and sends do not enter this
+fence; ordinary Direct Profile mutations use only the cheap in-process Profile
+gate unless OAuth state for that Profile actually needs retirement.
 
 #### Provider request mapping
 
@@ -230,11 +267,11 @@ ID-less call remains internal and is omitted from both Google wire parts.
 
 #### Catalogs and send admission
 
-Subscription catalogs are scoped to the selected provider, exact Profile
-connection fingerprint, and current auth generation. They remain modal-only
-and are never persisted across accounts. Every subscription send refreshes or
-loads the provider catalog before prompt persistence and rejects a Session
-model that is no longer available.
+Subscription catalogs are scoped to the exact Profile/provider connection
+fingerprint and that connection's current auth generation. They remain
+modal-only and are never persisted across accounts. Every subscription send
+refreshes or loads the provider catalog before prompt persistence and rejects a
+Session model that is no longer available.
 
 OpenAI and Anthropic use OAuth-authenticated product catalogs. Google loads the
 signed-in project's bounded `retrieveUserQuota` model buckets; only returned
@@ -363,10 +400,10 @@ uses Cloud Code Assist.
 ## Credential storage
 
 `live-smith-settings.json` contains Direct API keys because a Direct API Profile
-owns its complete connection. `oauth/credentials.json` contains OAuth tokens
-because subscription Profiles deliberately do not. Both are private local
-files and must not be committed, logged, copied into fixtures, or shown in
-screenshots.
+owns its complete connection. `oauth/credentials.json` contains OAuth tokens in
+Profile-ID/provider tuple slots because subscription Profiles deliberately do
+not contain them. Both are private local files and must not be
+committed, logged, copied into fixtures, or shown in screenshots.
 
 Provider failures are redacted with both the active Direct API secret set and
 the send-scoped OAuth credential. Errors retain useful provider/protocol/status

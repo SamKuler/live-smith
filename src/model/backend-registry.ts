@@ -4,10 +4,11 @@ import {
   type OAuthSubscriptionBackend,
   type TransportFactoryOptions,
 } from "./provider.js";
-import type {
-  DraftProfile,
-  OAuthSubscriptionProvider,
-  SavedProfile,
+import {
+  isProfileId,
+  type DraftProfile,
+  type OAuthSubscriptionProvider,
+  type SavedProfile,
 } from "./profile.js";
 import { transportForProfile } from "./registry.js";
 import { createNativeOAuthBackend } from "./oauth/native-backend.js";
@@ -20,6 +21,7 @@ import {
 export interface ModelBackendManagerOptions extends TransportFactoryOptions {
   startOAuthBackend?: (
     storageDirectory: string,
+    profileId: string,
     provider: OAuthSubscriptionProvider,
     signal: AbortSignal,
   ) => Promise<OAuthSubscriptionBackend>;
@@ -31,6 +33,8 @@ export interface OAuthBackendLease {
 }
 
 interface OAuthBackendSlot {
+  readonly profileId: string;
+  readonly provider: OAuthSubscriptionProvider;
   readonly startupController: ReturnType<typeof createHostAbortController>;
   readonly promise: Promise<OAuthSubscriptionBackend>;
   retirementPromise?: Promise<void>;
@@ -48,8 +52,8 @@ export async function createDirectApiBackend(
 }
 
 export class ModelBackendManager {
-  private readonly oauthSlots = new Map<OAuthSubscriptionProvider, OAuthBackendSlot>();
-  private readonly invalidations = new Map<OAuthSubscriptionProvider, Promise<void>>();
+  private readonly oauthSlots = new Map<string, OAuthBackendSlot>();
+  private readonly invalidations = new Map<string, Promise<void>>();
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private readonly options: ModelBackendManagerOptions;
@@ -68,24 +72,28 @@ export class ModelBackendManager {
     this.assertOpen();
     return profile.connection.kind === "direct-api"
       ? createDirectApiBackend(profile, this.options)
-      : this.oauth(profile.connection.provider, signal);
+      : this.oauth(profile.id, profile.connection.provider, signal);
   }
 
   async oauth(
+    profileId: string,
     provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
   ): Promise<OAuthSubscriptionBackend> {
-    return (await this.oauthLease(provider, signal)).backend;
+    return (await this.oauthLease(profileId, provider, signal)).backend;
   }
 
   async oauthLease(
+    profileId: string,
     provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
   ): Promise<OAuthBackendLease> {
+    requireProfileId(profileId);
+    const key = oauthBackendKey(profileId, provider);
     for (;;) {
       throwIfAborted(signal);
       this.assertOpen();
-      const invalidation = this.invalidations.get(provider);
+      const invalidation = this.invalidations.get(key);
       if (invalidation) {
         await waitForPromiseWithSignal(invalidation, signal);
         continue;
@@ -94,43 +102,71 @@ export class ModelBackendManager {
       if (!storageDirectory) {
         throw new Error("OAuth subscription backends require the Ableton storage directory.");
       }
-      let slot = this.oauthSlots.get(provider);
+      let slot = this.oauthSlots.get(key);
       if (!slot) {
         const startupController = createHostAbortController();
         const start = this.options.startOAuthBackend ??
-          ((directory, selectedProvider, _signal) => Promise.resolve(
-            createNativeOAuthBackend(directory, selectedProvider, this.options),
+          ((directory, selectedProfileId, selectedProvider, _signal) => Promise.resolve(
+            createNativeOAuthBackend(
+              directory,
+              selectedProfileId,
+              selectedProvider,
+              this.options,
+            ),
           ));
         let created!: OAuthBackendSlot;
         const promise = Promise.resolve().then(() =>
-          start(storageDirectory, provider, startupController.signal)
+          start(storageDirectory, profileId, provider, startupController.signal)
         ).catch((error: unknown) => {
-          if (this.oauthSlots.get(provider) === created) {
-            this.oauthSlots.delete(provider);
+          if (this.oauthSlots.get(key) === created) {
+            this.oauthSlots.delete(key);
           }
           throw error;
         });
-        created = { startupController, promise };
+        created = { profileId, provider, startupController, promise };
         slot = created;
-        this.oauthSlots.set(provider, slot);
+        this.oauthSlots.set(key, slot);
       }
       const backend = await waitForPromiseWithSignal(slot.promise, signal);
       throwIfAborted(signal);
       this.assertOpen();
-      if (this.oauthSlots.get(provider) !== slot) continue;
+      if (this.oauthSlots.get(key) !== slot) continue;
       return {
         backend,
-        retire: () => this.retireSlot(provider, slot!),
+        retire: () => this.retireSlot(key, slot!),
       };
     }
   }
 
-  async invalidateOAuth(provider: OAuthSubscriptionProvider): Promise<void> {
+  async invalidateOAuth(
+    profileId: string,
+    provider: OAuthSubscriptionProvider,
+  ): Promise<void> {
+    requireProfileId(profileId);
     this.assertOpen();
-    const invalidation = this.invalidations.get(provider);
+    const key = oauthBackendKey(profileId, provider);
+    const invalidation = this.invalidations.get(key);
     if (invalidation) return invalidation;
-    const slot = this.oauthSlots.get(provider);
-    if (slot) await this.retireSlot(provider, slot);
+    const slot = this.oauthSlots.get(key);
+    if (slot) await this.retireSlot(key, slot);
+  }
+
+  async invalidateOAuthProfile(profileId: string): Promise<void> {
+    requireProfileId(profileId);
+    this.assertOpen();
+    const prefix = `${profileId}:`;
+    const pending: Promise<unknown>[] = [];
+    for (const [key, invalidation] of this.invalidations) {
+      if (key.startsWith(prefix)) pending.push(invalidation);
+    }
+    for (const [key, slot] of this.oauthSlots) {
+      if (slot.profileId === profileId) pending.push(this.retireSlot(key, slot));
+    }
+    const results = await Promise.allSettled(pending);
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
   }
 
   close(): Promise<void> {
@@ -141,8 +177,10 @@ export class ModelBackendManager {
     this.oauthSlots.clear();
     const cleanup = [
       ...invalidations,
-      ...slots.map(async ([provider, slot]) => {
-        slot.startupController.abort(new Error(`${provider} OAuth backend manager closed.`));
+      ...slots.map(async ([_key, slot]) => {
+        slot.startupController.abort(
+          new Error(`${slot.provider} OAuth backend manager closed.`),
+        );
         const result = await Promise.allSettled([slot.promise]);
         const backend = result[0]?.status === "fulfilled" ? result[0].value : undefined;
         if (backend) await backend.close();
@@ -158,22 +196,24 @@ export class ModelBackendManager {
   }
 
   private retireSlot(
-    provider: OAuthSubscriptionProvider,
+    key: string,
     slot: OAuthBackendSlot,
   ): Promise<boolean> {
     if (slot.retirementPromise) return slot.retirementPromise.then(() => false);
-    if (this.oauthSlots.get(provider) !== slot) return Promise.resolve(false);
-    this.oauthSlots.delete(provider);
-    slot.startupController.abort(new Error(`${provider} OAuth backend was invalidated.`));
+    if (this.oauthSlots.get(key) !== slot) return Promise.resolve(false);
+    this.oauthSlots.delete(key);
+    slot.startupController.abort(
+      new Error(`${slot.provider} OAuth backend was invalidated.`),
+    );
     const retirement = slot.promise.then(
       (backend) => backend.close(),
       () => undefined,
     );
     slot.retirementPromise = retirement;
-    this.invalidations.set(provider, retirement);
+    this.invalidations.set(key, retirement);
     return retirement.then(() => true).finally(() => {
-      if (this.invalidations.get(provider) === retirement) {
-        this.invalidations.delete(provider);
+      if (this.invalidations.get(key) === retirement) {
+        this.invalidations.delete(key);
       }
     });
   }
@@ -181,4 +221,15 @@ export class ModelBackendManager {
   private assertOpen(): void {
     if (this.closed) throw new Error("The model backend manager is closed.");
   }
+}
+
+function oauthBackendKey(
+  profileId: string,
+  provider: OAuthSubscriptionProvider,
+): string {
+  return `${profileId}:${provider}`;
+}
+
+function requireProfileId(profileId: string): void {
+  if (!isProfileId(profileId)) throw new TypeError("A valid OAuth Profile ID is required.");
 }

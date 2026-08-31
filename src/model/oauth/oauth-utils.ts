@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import {
+  clearTimeout as cancelTimeout,
+  setTimeout as scheduleTimeout,
+} from "node:timers";
 import { URL, URLSearchParams } from "node:url";
 
 import { readBoundedJsonResponse } from "../transports/response-body.js";
@@ -39,6 +43,9 @@ export async function startLoopbackAuthorization(options: {
   expectedState: string;
   signal: AbortSignal;
   successMessage: string;
+  listenHost?: "127.0.0.1";
+  redirectHost?: "localhost" | "127.0.0.1";
+  timeoutMs?: number;
 }): Promise<LoopbackAuthorization> {
   let settle!: (value: string) => void;
   let reject!: (error: unknown) => void;
@@ -48,13 +55,16 @@ export async function startLoopbackAuthorization(options: {
     reject = rejectPromise;
   });
   let server!: Server;
+  let timeout: ReturnType<typeof scheduleTimeout> | undefined;
   let boundPort = options.port;
+  const listenHost = options.listenHost ?? "127.0.0.1";
+  const redirectHost = options.redirectHost ?? "localhost";
   const finish = (operation: () => void): void => {
     if (settled) return;
     settled = true;
     options.signal.removeEventListener("abort", onAbort);
-    server.close();
-    operation();
+    if (timeout !== undefined) cancelTimeout(timeout);
+    server.close(operation);
   };
   const onAbort = (): void => finish(() => {
     try {
@@ -65,7 +75,7 @@ export async function startLoopbackAuthorization(options: {
   });
   server = createServer((request, response) => {
     try {
-      const url = new URL(request.url ?? "", `http://localhost:${boundPort}`);
+      const url = new URL(request.url ?? "", `http://${redirectHost}:${boundPort}`);
       if (url.pathname !== options.path) {
         sendHtml(response, 404, "OAuth callback route not found.");
         return;
@@ -92,7 +102,7 @@ export async function startLoopbackAuthorization(options: {
   });
   await new Promise<void>((resolve, rejectListen) => {
     server.once("error", rejectListen);
-    server.listen(options.port, "127.0.0.1", () => {
+    server.listen(options.port, listenHost, () => {
       server.removeListener("error", rejectListen);
       const address = server.address();
       if (!address || typeof address === "string") {
@@ -106,8 +116,15 @@ export async function startLoopbackAuthorization(options: {
   });
   options.signal.addEventListener("abort", onAbort, { once: true });
   if (options.signal.aborted) onAbort();
+  if (!settled) {
+    timeout = scheduleTimeout(
+      () => finish(() => reject(new Error("OAuth authorization timed out."))),
+      options.timeoutMs ?? 5 * 60 * 1_000,
+    );
+    timeout.unref();
+  }
   return {
-    redirectUri: `http://localhost:${boundPort}${options.path}`,
+    redirectUri: `http://${redirectHost}:${boundPort}${options.path}`,
     completion,
     cancel(reason = new Error("OAuth sign-in was canceled.")) {
       finish(() => reject(reason));
@@ -173,6 +190,7 @@ function sendHtml(
 ): void {
   response.statusCode = status;
   response.setHeader("content-type", "text/html; charset=utf-8");
+  response.setHeader("connection", "close");
   response.end(`<!doctype html><meta charset="utf-8"><title>Live Smith</title><p>${escapeHtml(message)}</p>`);
 }
 

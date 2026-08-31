@@ -121,6 +121,8 @@ async function beginGoogleLogin(
     expectedState: state,
     signal: controller.signal,
     successMessage: "Gemini sign-in completed. You can close this window.",
+    listenHost: "127.0.0.1",
+    redirectHost: "127.0.0.1",
   });
   const authorization = new URL(authorizeUrl);
   authorization.searchParams.set("client_id", clientId);

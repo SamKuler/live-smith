@@ -90,9 +90,15 @@ Messages connections. It is off by default and configured per model.
 Sign in inside Live Smith with ChatGPT, Claude, or Google. Live Smith owns the
 OAuth session and calls the provider product backend directly; customers do not
 install Codex CLI, Claude Code, Gemini CLI, or provide an API key.
+Each subscription Profile has its own sign-in state, even when another Profile
+uses the same provider. Creating a new Profile therefore starts signed out, and
+signing out affects only that Profile.
+
 After the provider returns a pending authorization, the Extension Host opens
-the default system browser on macOS or Windows; the dialog also keeps the
-verified sign-in link and device code, when applicable, as a fallback.
+the default system browser on macOS or Windows. ChatGPT displays its device
+code in the dialog. Claude and Google complete browser PKCE through a local
+callback; Google returns automatically to `127.0.0.1` and does not issue a
+one-time or device code.
 
 ChatGPT uses the Codex backend API, Claude uses OAuth-authenticated Anthropic
 Messages, and Gemini uses Google Cloud Code Assist. Anthropic currently assigns
@@ -240,10 +246,11 @@ Prompts, relevant Live context, selected Skill guidance, supported attachment
 content, and any Arrangement audio range read by the agent are sent to the model
 provider you choose.
 
-Direct API keys are stored in local Profile settings as plain text. The
-subscription connection stores provider OAuth credentials in a separate private
-local credential file. Do not commit, share, or cloud-sync either storage
-location.
+Direct API keys are stored in local Profile settings as plain text. A separate
+private local credential file stores OAuth credentials under exact Profile and
+provider identities. Saving a connection keeps only the provider selected by
+that Profile; Direct API and Profile deletion clear that Profile's OAuth
+credentials. Do not commit, share, or cloud-sync either storage location.
 
 The selected proxy mode and credential-free Manual proxy URL are stored in the
 same private local settings file. Proxy usernames and passwords are not accepted

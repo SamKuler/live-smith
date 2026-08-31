@@ -91,38 +91,99 @@ test("Direct API backends remain short-lived transports", async () => {
   await backend.close();
 });
 
-test("OAuth backend manager shares one slot per provider", async (t) => {
+test("OAuth backend manager shares one slot per Profile and provider", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-backends-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const starts: OAuthSubscriptionProvider[] = [];
-  const backends = new Map<OAuthSubscriptionProvider, ReturnType<typeof fakeBackend>>();
+  const starts: string[] = [];
+  const backends = new Map<string, ReturnType<typeof fakeBackend>>();
   const manager = new ModelBackendManager(directory, {
-    async startOAuthBackend(_storage, provider) {
-      starts.push(provider);
+    async startOAuthBackend(_storage, profileId, provider) {
+      const key = `${profileId}:${provider}`;
+      starts.push(key);
       const backend = fakeBackend(provider);
-      backends.set(provider, backend);
+      backends.set(key, backend);
       return backend;
     },
   });
 
-  const [openai1, openai2, google] = await Promise.all([
-    manager.oauth("openai"),
-    manager.oauth("openai"),
-    manager.oauth("google"),
-  ]);
+  const [openai1, openai2, otherOpenai, google] = await Promise.all([
+    manager.oauth("profile-a", "openai"),
+    manager.oauth("profile-a", "openai"),
+    manager.oauth("profile-b", "openai"),
+    manager.oauth("profile-a", "google"),
+  ]) as [
+    ReturnType<typeof fakeBackend>,
+    ReturnType<typeof fakeBackend>,
+    ReturnType<typeof fakeBackend>,
+    ReturnType<typeof fakeBackend>,
+  ];
   assert.equal(openai1, openai2);
+  assert.notEqual(openai1, otherOpenai);
   assert.notEqual(openai1, google);
-  assert.deepEqual(starts.sort(), ["google", "openai"]);
+  assert.deepEqual(starts.sort(), [
+    "profile-a:google",
+    "profile-a:openai",
+    "profile-b:openai",
+  ]);
 
-  await manager.invalidateOAuth("openai");
-  assert.equal(backends.get("openai")?.closeCalls, 1);
-  assert.notEqual(await manager.oauth("openai"), openai1);
+  await manager.invalidateOAuth("profile-a", "openai");
+  assert.equal(backends.get("profile-a:openai")?.closeCalls, 1);
+  assert.equal(backends.get("profile-b:openai")?.closeCalls, 0);
+  const replacementOpenAI = await manager.oauth(
+    "profile-a",
+    "openai",
+  ) as ReturnType<typeof fakeBackend>;
+  assert.notEqual(replacementOpenAI, openai1);
+  await manager.invalidateOAuthProfile("profile-a");
+  assert.equal(replacementOpenAI.closeCalls, 1);
+  assert.equal(google.closeCalls, 1);
+  assert.equal(otherOpenai.closeCalls, 0);
+  await manager.close();
+});
+
+test("Profile invalidation waits for every provider before reporting a close failure", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-profile-retire-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const releaseGoogleClose = deferred<void>();
+  const closeFailure = new Error("OpenAI Profile backend close failed");
+  const openai = fakeBackend("openai");
+  openai.close = async function close() {
+    this.closeCalls += 1;
+    throw closeFailure;
+  };
+  const google = fakeBackend("google");
+  google.close = async function close() {
+    this.closeCalls += 1;
+    await releaseGoogleClose.promise;
+  };
+  const manager = new ModelBackendManager(directory, {
+    async startOAuthBackend(_storage, _profileId, provider) {
+      return provider === "openai" ? openai : google;
+    },
+  });
+  await Promise.all([
+    manager.oauth("profile-a", "openai"),
+    manager.oauth("profile-a", "google"),
+  ]);
+
+  let settled = false;
+  const invalidation = manager.invalidateOAuthProfile("profile-a").finally(() => {
+    settled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(openai.closeCalls, 1);
+  assert.equal(google.closeCalls, 1);
+
+  releaseGoogleClose.resolve(undefined);
+  await assert.rejects(invalidation, (error: unknown) => error === closeFailure);
   await manager.close();
 });
 
 test("OAuth backend manager requires durable private storage", async () => {
   const manager = new ModelBackendManager(undefined);
-  await assert.rejects(manager.oauth("anthropic"), /storage directory/i);
+  await assert.rejects(manager.oauth("profile-a", "anthropic"), /storage directory/i);
+  await assert.rejects(manager.oauth("bad profile", "anthropic"), /valid OAuth Profile ID/i);
   await manager.close();
 });
 
@@ -140,7 +201,7 @@ test("concurrent backend manager closes share backend cleanup", async (t) => {
       return backend;
     },
   });
-  await manager.oauth("openai");
+  await manager.oauth("profile-a", "openai");
   let firstSettled = false;
   let secondSettled = false;
   const first = manager.close().then(() => {
@@ -174,8 +235,8 @@ test("backend manager close waits for an existing OAuth invalidation", async (t)
       return backend;
     },
   });
-  await manager.oauth("openai");
-  const invalidation = manager.invalidateOAuth("openai");
+  await manager.oauth("profile-a", "openai");
+  const invalidation = manager.invalidateOAuth("profile-a", "openai");
   let managerCloseSettled = false;
   const managerClose = manager.close().then(() => {
     managerCloseSettled = true;
@@ -205,11 +266,11 @@ test("backend manager close waits for every provider before propagating failure"
     await releaseGoogleClose.promise;
   };
   const manager = new ModelBackendManager(directory, {
-    async startOAuthBackend(_storage, provider) {
+    async startOAuthBackend(_storage, _profileId, provider) {
       return provider === "openai" ? openai : google;
     },
   });
-  await Promise.all([manager.oauth("openai"), manager.oauth("google")]);
+  await Promise.all([manager.oauth("profile-a", "openai"), manager.oauth("profile-a", "google")]);
 
   let closeSettled = false;
   const closeResult = manager.close().then(

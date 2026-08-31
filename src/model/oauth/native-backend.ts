@@ -23,6 +23,7 @@ export interface NativeOAuthBackendOptions extends TransportFactoryOptions {
 
 export function createNativeOAuthBackend(
   storageDirectory: string | undefined,
+  profileId: string,
   provider: OAuthSubscriptionProvider,
   options: NativeOAuthBackendOptions = {},
 ): OAuthSubscriptionBackend {
@@ -31,7 +32,7 @@ export function createNativeOAuthBackend(
   if (adapter.provider !== provider) {
     throw new Error("OAuth backend adapter provider does not match its slot.");
   }
-  const credentials = new OAuthCredentialManager(storageDirectory, adapter);
+  const credentials = new OAuthCredentialManager(storageDirectory, profileId, adapter);
   let closed = false;
   let closePromise: Promise<void> | undefined;
   const backend: OAuthSubscriptionBackend = {
@@ -50,7 +51,7 @@ export function createNativeOAuthBackend(
     },
     async listModels(profile, signal) {
       assertOpen();
-      requireProfileProvider(profile.connection, provider);
+      requireProfileOwner(profile, profileId, provider);
       return withAuthenticationRecovery(
         (credential) => protocol.listModels(profile, credential, signal),
         signal,
@@ -58,7 +59,7 @@ export function createNativeOAuthBackend(
     },
     async createToolTurn(request) {
       assertOpen();
-      requireProfileProvider(request.runtimeProfile.profile.connection, provider);
+      requireProfileOwner(request.runtimeProfile.profile, profileId, provider);
       return withAuthenticationRecovery(
         (credential) => protocol.createToolTurn(request, credential),
         request.signal,
@@ -123,11 +124,21 @@ function protocolFor(
   }
 }
 
-function requireProfileProvider(
-  connection: { kind: string; provider?: string },
+function requireProfileOwner(
+  profile: {
+    id: string;
+    connection: { kind: string; provider?: string };
+  },
+  profileId: string,
   provider: OAuthSubscriptionProvider,
 ): void {
-  if (connection.kind !== "oauth-subscription" || connection.provider !== provider) {
+  if (profile.id !== profileId) {
+    throw new Error("OAuth backend received a request for another Profile.");
+  }
+  if (
+    profile.connection.kind !== "oauth-subscription" ||
+    profile.connection.provider !== provider
+  ) {
     throw new Error("OAuth backend received a Profile for another provider.");
   }
 }

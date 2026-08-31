@@ -11,7 +11,11 @@ import type {
   ModelTurnExecutor,
   TransportRequest,
 } from "../model/provider.js";
-import type { DraftProfile, SavedProfile } from "../model/profile.js";
+import type {
+  DraftProfile,
+  OAuthSubscriptionProvider,
+  SavedProfile,
+} from "../model/profile.js";
 import { ModelBackendManager } from "../model/backend-registry.js";
 import { acquireSharedModelBackendManager } from "../model/shared-backend-manager.js";
 import { createOpenAIResponsesTransport } from "../model/transports/openai-responses.js";
@@ -24,6 +28,10 @@ import {
   savedProfileRevision,
 } from "../storage/settings.js";
 import { canonicalStorageDirectory } from "../storage/scope.js";
+import {
+  loadOAuthCredential,
+  saveOAuthCredential,
+} from "../storage/oauth-credentials.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import {
@@ -194,6 +202,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
 
         const pending = await command({
           kind: "start_oauth_login",
+          profileId: subscriptionProfile.id,
           provider: "openai",
         });
         assert.ok(pending.oauthAuthGeneration > initial.oauthAuthGeneration);
@@ -221,6 +230,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
         };
         const signedIn = await command({
           kind: "refresh_oauth_account",
+          profileId: subscriptionProfile.id,
           provider: "openai",
         });
         assert.ok(signedIn.oauthAuthGeneration > pending.oauthAuthGeneration);
@@ -277,6 +287,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
 
         const signedOut = await command({
           kind: "logout_oauth",
+          profileId: subscriptionProfile.id,
           provider: "openai",
         });
         assert.ok(signedOut.oauthAuthGeneration > signedIn.oauthAuthGeneration);
@@ -315,6 +326,11 @@ test("a Direct API send does not enter the OAuth account fence", async (t) => {
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, directProfile);
+  await fs.mkdir(path.join(directory, "oauth"), { recursive: true });
+  await fs.writeFile(
+    path.join(directory, "oauth", "credentials.json"),
+    "not valid JSON",
+  );
 
   let enterReadCalls = 0;
   let enterOAuthUseCalls = 0;
@@ -335,6 +351,12 @@ test("a Direct API send does not enter the OAuth account fence", async (t) => {
       return null;
     },
     hasPendingLogin() {
+      return true;
+    },
+    pendingLoginProvider() {
+      return "openai";
+    },
+    hasAuthActivity() {
       return true;
     },
     async reconcilePendingAuthState() {
@@ -414,6 +436,113 @@ test("a Direct API send does not enter the OAuth account fence", async (t) => {
   assert.equal(enterReadCalls, 0);
   assert.equal(enterOAuthUseCalls, 0);
   assert.equal(authGenerationCalls, 0);
+});
+
+test("Profile Save and Delete retire only OAuth state owned by that Profile", async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-profile-oauth-lifecycle-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  const invalidations: Array<{
+    profileId: string;
+    provider: OAuthSubscriptionProvider;
+  }> = [];
+  const manager = {
+    async forProfile() { throw new Error("unused"); },
+    async oauth() { throw new Error("unused"); },
+    async oauthLease() { throw new Error("unused"); },
+    async invalidateOAuth(
+      profileId: string,
+      provider: OAuthSubscriptionProvider,
+    ) {
+      invalidations.push({ profileId, provider });
+    },
+    async close() {},
+  };
+  const storageKey = await canonicalStorageDirectory(directory);
+  const fence = modelAuthSendFenceForStorage(storageKey, directProfile.id);
+  const peerOwner = Symbol("unsaved OAuth Draft owner");
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+
+  await runAgentFlow({
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const chatUrl = new URL(url);
+        const commandUrl = `${chatUrl.origin}/command?token=${chatUrl.searchParams.get("token")}`;
+        const runCommand = async (body: unknown) => {
+          const response = await fetch(commandUrl, {
+            method: "POST",
+            headers: bridgeJsonHeaders(),
+            body: JSON.stringify(body),
+          });
+          assert.equal(response.status, 200, await response.clone().text());
+          return response.json() as Promise<ChatDialogState>;
+        };
+
+        await fetch(`${chatUrl.origin}/state?token=${chatUrl.searchParams.get("token")}`);
+        await saveOAuthCredential(directory, directProfile.id, {
+          provider: "google",
+          accessToken: "google-access",
+          refreshToken: "google-refresh",
+          expiresAt: 2_000_000_000_000,
+          projectId: "project-1",
+          accountLabel: "listener@example.test",
+        });
+        const releaseForeignLogin = await fence.enterAuth(peerOwner, "google");
+        assert.ok(releaseForeignLogin);
+
+        const renamed = { ...directProfile, name: "Renamed Direct Profile" };
+        let saveSettled = false;
+        const save = runCommand({
+          kind: "save_profile",
+          profile: renamed,
+          expectedProfileRevision: savedProfileRevision(directProfile),
+        }).finally(() => {
+          saveSettled = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(saveSettled, false);
+        fence.updateAuthState(peerOwner, "google", "signed-in", true);
+        releaseForeignLogin();
+        await save;
+        assert.equal(
+          await loadOAuthCredential(directory, directProfile.id, "google"),
+          undefined,
+        );
+
+        await saveOAuthCredential(directory, directProfile.id, {
+          provider: "anthropic",
+          accessToken: "anthropic-access",
+          refreshToken: "anthropic-refresh",
+          expiresAt: 2_000_000_000_000,
+        });
+        fence.updateAuthState(peerOwner, "anthropic", "signed-in", true);
+        await runCommand({ kind: "delete_profile", profileId: directProfile.id });
+        assert.equal(
+          await loadOAuthCredential(directory, directProfile.id, "anthropic"),
+          undefined,
+        );
+      },
+    },
+  } as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+  });
+
+  assert.deepEqual(invalidations, ["openai", "anthropic", "google", "openai", "anthropic", "google"].map(
+    (provider) => ({
+      profileId: directProfile.id,
+      provider: provider as OAuthSubscriptionProvider,
+    }),
+  ));
 });
 
 test("a malformed provider catalog preserves the prior Direct API cache", async (t) => {
@@ -580,7 +709,10 @@ test("Direct API state, discovery, and send survive OAuth poison or concurrent a
       if (mode === "poisoned") {
         fence.poison(new Error("injected OAuth backend shutdown failure"));
       } else {
-        releasePeerAuth = await fence.enterAuth(Symbol("peer auth owner")) ??
+        releasePeerAuth = await fence.enterAuth(
+          Symbol("peer auth owner"),
+          "openai",
+        ) ??
           undefined;
         assert.ok(releasePeerAuth);
       }
@@ -697,7 +829,10 @@ test("a production Direct flow bypasses a failed shared OAuth backend shutdown",
   const poisonedLease = await acquireSharedModelBackendManager(directory, {
     startOAuthBackend: async () => oauthBackend,
   });
-  assert.equal(await poisonedLease.manager.oauth("openai"), oauthBackend);
+  assert.equal(
+    await poisonedLease.manager.oauth("poisoned-profile", "openai"),
+    oauthBackend,
+  );
   await assert.rejects(
     poisonedLease.release(),
     (error: unknown) => error === shutdownError,
@@ -866,6 +1001,7 @@ test("closing a modal aborts its first subscription state backend acquisition", 
   let managerCloseCalls = 0;
   const manager = {
     async oauth(
+      _profileId: string,
       _provider: "openai" | "anthropic" | "google",
       signal?: AbortSignal,
     ): Promise<OAuthSubscriptionBackend> {
@@ -937,7 +1073,7 @@ test("closing a modal cancels a state read waiting for a prior shared close", {
   const oldLease = await acquireSharedModelBackendManager(directory, {
     startOAuthBackend: async () => oldBackend,
   });
-  await oldLease.manager.oauth("openai");
+  await oldLease.manager.oauth(subscriptionProfile.id, "openai");
   const oldClosing = oldLease.release();
   await closeStarted.promise;
 
@@ -1137,7 +1273,11 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const blockedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "start_oauth_login",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(blockedAuth.status, 409);
     assert.match(
@@ -1160,7 +1300,11 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const allowedAuth = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "start_oauth_login",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(allowedAuth.status, 200);
     assert.equal(beginLoginCalls, 1);
@@ -1168,7 +1312,11 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const otherModalAuth = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "start_oauth_login",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(otherModalAuth.status, 409);
     assert.equal(beginLoginCalls, 1);
@@ -1190,7 +1338,11 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     const logout = await fetch(bridgeEndpoint(secondUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "logout_oauth",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(logout.status, 200);
     assert.equal(logoutCalls, 1);
@@ -1313,7 +1465,11 @@ test("an auth change closes another dialog's cached OAuth backend before state r
     const logout = await fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "logout_oauth",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(logout.status, 200);
     assert.equal(
@@ -1452,7 +1608,11 @@ test("closing a modal during initial OAuth login retires before peers reuse auth
     loginRequest = fetch(bridgeEndpoint(firstUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "start_oauth_login",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     await loginStarted.promise;
     closeFirstDialog.resolve();
@@ -1564,7 +1724,11 @@ test("closing a modal blocks a late pending browser launch", {
     loginRequest = fetch(bridgeEndpoint(url, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "start_oauth_login", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "start_oauth_login",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     await loginStarted.promise;
     closeDialog.resolve();
@@ -1722,7 +1886,11 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     const logout = await fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "logout_oauth",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(logout.status, 500);
     const peerCallsBeforePoisonChecks = peerManagerCalls;
@@ -1732,7 +1900,11 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
     const authResponse = await fetch(bridgeEndpoint(peerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "refresh_oauth_account", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "refresh_oauth_account",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     assert.equal(authResponse.status, 500);
     const discoveryResponse = await fetch(
@@ -1897,7 +2069,11 @@ test("a peer subscription send waits for logout and fails before prompt persiste
     const logoutRequest = fetch(bridgeEndpoint(ownerDialogUrl, "/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
-      body: JSON.stringify({ kind: "logout_oauth", provider: "openai" }),
+      body: JSON.stringify({
+        kind: "logout_oauth",
+        profileId: subscriptionProfile.id,
+        provider: "openai",
+      }),
     });
     await logoutStarted.promise;
     let sendSettled = false;

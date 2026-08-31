@@ -52,8 +52,10 @@ configurations. Each model configuration owns its generation parameters,
 capability overrides, hosted-tool policy, and Extra Body. A `direct-api`
 connection owns family, mode, base URL, and API key. An `oauth-subscription`
 connection owns only an OpenAI, Anthropic, or Google provider identity; its
-credentials remain in private OAuth storage and its supported models, reasoning
-efforts, and input evidence come from the signed-in catalog.
+credential, backend, auth generation, and signed-in catalog are isolated to the
+exact Profile ID and provider. Credentials remain in private OAuth storage.
+Google desktop OAuth uses browser PKCE with an exact `127.0.0.1` loopback
+callback and never presents a one-time or device code.
 Do not add endpoint or vendor presets. OpenAI-compatible services use an
 ordinary Direct API OpenAI Profile with the protocol they implement.
 
@@ -65,8 +67,9 @@ decisions from capabilities, not from model-name checks inside either boundary.
 
 Preserve supported, unsupported, and unverified capability evidence. Direct API
 discovery metadata belongs to its exact Profile connection; OAuth catalogs stay
-modal-only and scoped to the selected provider and current auth generation. Configuration,
-discovery evidence, and Session model selection have separate owners.
+modal-only and scoped to the selected Profile/provider connection and its
+current auth generation. Configuration, discovery evidence, and Session model
+selection have separate owners.
 
 ## Safety invariants
 

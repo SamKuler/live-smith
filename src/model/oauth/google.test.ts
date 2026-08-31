@@ -13,11 +13,13 @@ function response(body: unknown, status = 200): Response {
 
 test("Google OAuth resolves the Cloud Code Assist project and account", async () => {
   const requests: string[] = [];
+  let tokenRequestBody = "";
   const adapter = createGoogleOAuthAdapter({
-    fetchImpl: async (input) => {
+    fetchImpl: async (input, init) => {
       const url = String(input);
       requests.push(url);
       if (url === "https://oauth2.googleapis.com/token") {
+        tokenRequestBody = String(init?.body);
         return response({
           access_token: "google-access",
           refresh_token: "google-refresh",
@@ -32,16 +34,24 @@ test("Google OAuth resolves the Cloud Code Assist project and account", async ()
         cloudaicompanionProject: "project-1",
       });
     },
-    startLoopback: async (): Promise<LoopbackAuthorization> => ({
-      redirectUri: "http://localhost:8085/oauth2callback",
-      completion: Promise.resolve("authorization-code"),
-      cancel() {},
-    }),
+    startLoopback: async (options): Promise<LoopbackAuthorization> => {
+      assert.equal(options.listenHost, "127.0.0.1");
+      assert.equal(options.redirectHost, "127.0.0.1");
+      return {
+        redirectUri: "http://127.0.0.1:8085/oauth2callback",
+        completion: Promise.resolve("authorization-code"),
+        cancel() {},
+      };
+    },
   });
 
   const attempt = await adapter.beginLogin(new AbortController().signal);
   const authorization = new URL(attempt.pending.verificationUrl);
   assert.equal(authorization.hostname, "accounts.google.com");
+  assert.equal(
+    authorization.searchParams.get("redirect_uri"),
+    "http://127.0.0.1:8085/oauth2callback",
+  );
   assert.equal(authorization.searchParams.get("access_type"), "offline");
   assert.match(authorization.searchParams.get("scope") ?? "", /cloud-platform/u);
   assert.deepEqual({ ...(await attempt.completion), expiresAt: 0 }, {
@@ -52,6 +62,10 @@ test("Google OAuth resolves the Cloud Code Assist project and account", async ()
     projectId: "project-1",
     accountLabel: "listener@example.com",
   });
+  assert.equal(
+    new URLSearchParams(tokenRequestBody).get("redirect_uri"),
+    "http://127.0.0.1:8085/oauth2callback",
+  );
   assert.ok(requests.some((url) => url.endsWith("/v1internal:loadCodeAssist")));
 });
 

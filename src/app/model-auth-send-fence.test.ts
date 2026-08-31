@@ -5,29 +5,36 @@ import type { OAuthAuthState } from "../model/provider.js";
 import { createHostAbortController } from "../runtime/host.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
 
-test("OAuth fences isolate pending login and OAuth use by provider", async () => {
-  const storage = `/tmp/live-smith-provider-fence-${Date.now()}`;
-  const openai = modelAuthSendFenceForStorage(storage, "openai");
-  const google = modelAuthSendFenceForStorage(storage, "google");
-  const owner = Symbol("OpenAI login owner");
-  const releaseAuth = await openai.enterAuth(owner);
+test("OAuth fences isolate pending login and OAuth use by Profile", async () => {
+  const storage = `/tmp/live-smith-profile-fence-${Date.now()}`;
+  const first = modelAuthSendFenceForStorage(storage, "profile-a");
+  const second = modelAuthSendFenceForStorage(storage, "profile-b");
+  const owner = Symbol("Profile A login owner");
+  const releaseAuth = await first.enterAuth(owner, "openai");
   assert.ok(releaseAuth);
-  openai.updateAuthState(owner, "pending", true);
+  first.updateAuthState(owner, "openai", "pending", true);
   releaseAuth();
 
-  assert.equal(openai.hasPendingLogin(), true);
-  assert.equal(google.hasPendingLogin(), false);
-  const releaseGoogle = await google.enterOAuthUse();
-  assert.ok(releaseGoogle);
-  releaseGoogle();
+  assert.equal(first.hasPendingLogin(), true);
+  assert.equal(second.hasPendingLogin(), false);
+  const releaseSecond = await second.enterOAuthUse();
+  assert.ok(releaseSecond);
+  releaseSecond();
 
-  openai.releaseOwner(owner);
+  first.releaseOwner(owner);
+});
+
+test("OAuth fences reject invalid Profile IDs", () => {
+  assert.throws(
+    () => modelAuthSendFenceForStorage("/tmp/live-smith-fence", "bad profile"),
+    /valid OAuth Profile ID/i,
+  );
 });
 
 test("simultaneous auth entrants reserve the shared fence atomically", async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
-  const first = fence.enterAuth(Symbol("first"));
-  const second = fence.enterAuth(Symbol("second"));
+  const first = fence.enterAuth(Symbol("first"), "openai");
+  const second = fence.enterAuth(Symbol("second"), "openai");
   const releaseFirst = await first;
   assert.equal(typeof releaseFirst, "function");
 
@@ -47,7 +54,7 @@ test("simultaneous auth entrants reserve the shared fence atomically", async () 
 test("a simultaneous auth mutation excludes reads and OAuth subscription uses", async () => {
   for (const kind of ["read", "oauth-use"] as const) {
     const fence = modelAuthSendFenceForStorage(undefined, "openai");
-    const auth = fence.enterAuth(Symbol("auth"));
+    const auth = fence.enterAuth(Symbol("auth"), "openai");
     const pending = kind === "read"
       ? fence.enterRead()
       : fence.enterOAuthUse();
@@ -69,7 +76,7 @@ test("a simultaneous auth mutation excludes reads and OAuth subscription uses", 
 
 test("an aborted fence waiter preserves the caller reason", async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
-  const releaseAuth = await fence.enterAuth(Symbol("auth"));
+  const releaseAuth = await fence.enterAuth(Symbol("auth"), "openai");
   const controller = createHostAbortController();
   const reason = new Error("stop waiting for shared auth");
   const pending = fence.enterOAuthUse(controller.signal);
@@ -82,30 +89,65 @@ test("an aborted fence waiter preserves the caller reason", async () => {
 test("a definitive failed-login check clears the pending owner", async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("login owner");
-  const releaseLogin = await fence.enterAuth(owner);
-  fence.updateAuthState(owner, "pending");
+  const releaseLogin = await fence.enterAuth(owner, "openai");
+  fence.updateAuthState(owner, "openai", "pending");
   releaseLogin?.();
   assert.equal(await fence.enterOAuthUse(), null);
 
-  const releaseCheck = await fence.enterAuth(owner);
-  fence.updateAuthState(owner, "unavailable", true);
+  const releaseCheck = await fence.enterAuth(owner, "openai", undefined, true);
+  fence.updateAuthState(owner, "openai", "unavailable", true);
   releaseCheck?.();
   const releaseSend = await fence.enterOAuthUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
 });
 
+test("a pending provider cannot be continued through another provider slot", async () => {
+  const fence = modelAuthSendFenceForStorage(undefined, "profile-a");
+  const owner = Symbol("login owner");
+  const releaseLogin = await fence.enterAuth(owner, "openai");
+  fence.updateAuthState(owner, "openai", "pending");
+  releaseLogin?.();
+
+  const releaseRead = await fence.enterRead();
+  assert.equal(
+    await fence.reconcilePendingAuthState(
+      "google",
+      async () => assert.fail("another provider must not reconcile the login"),
+    ),
+    undefined,
+  );
+  releaseRead();
+  assert.equal(
+    await fence.enterAuth(owner, "google", undefined, true),
+    null,
+  );
+  const releaseCancel = await fence.enterAuth(
+    owner,
+    "openai",
+    undefined,
+    true,
+  );
+  assert.equal(typeof releaseCancel, "function");
+  assert.equal(fence.hasAuthActivity("openai"), true);
+  fence.updateAuthState(owner, "openai", "signed-out", true);
+  assert.equal(fence.hasAuthActivity("openai"), false);
+  releaseCancel?.();
+  fence.releaseOwner(owner);
+});
+
 test("only the exact pending owner can serialize close-time retirement", async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
   const peer = Symbol("peer");
-  const releaseLogin = await fence.enterAuth(owner);
-  fence.updateAuthState(owner, "pending");
+  const releaseLogin = await fence.enterAuth(owner, "openai");
+  fence.updateAuthState(owner, "openai", "pending");
   releaseLogin?.();
-  assert.equal(await fence.enterPendingOwnerCleanup(peer), null);
+  assert.equal(await fence.enterPendingOwnerCleanup(peer, "openai"), null);
+  assert.equal(await fence.enterPendingOwnerCleanup(owner, "google"), null);
 
   const releaseRead = await fence.enterRead();
-  const cleanup = fence.enterPendingOwnerCleanup(owner);
+  const cleanup = fence.enterPendingOwnerCleanup(owner, "openai");
   let cleanupSettled = false;
   void cleanup.then(() => {
     cleanupSettled = true;
@@ -128,27 +170,27 @@ test("an authoritative peer read clears a stale terminal pending owner once", as
   ] as const) {
     const fence = modelAuthSendFenceForStorage(undefined, "openai");
     const owner = Symbol("pending owner");
-    const releaseLogin = await fence.enterAuth(owner);
-    fence.updateAuthState(owner, "pending");
+    const releaseLogin = await fence.enterAuth(owner, "openai");
+    fence.updateAuthState(owner, "openai", "pending");
     releaseLogin?.();
-    const generation = fence.authGeneration();
+    const generation = fence.authGeneration("openai");
     const auth = oauthAuthState(status, definitive);
 
     const releaseRead = await fence.enterRead();
     assert.equal(fence.hasPendingLogin(), true);
     assert.equal(
-      await fence.reconcilePendingAuthState(async () => auth),
+      await fence.reconcilePendingAuthState("openai", async () => auth),
       auth,
     );
     assert.equal(
-      await fence.reconcilePendingAuthState(async () => auth),
+      await fence.reconcilePendingAuthState("openai", async () => auth),
       undefined,
       "the same terminal observation must not advance generation twice",
     );
     releaseRead();
 
     assert.equal(fence.hasPendingLogin(), false);
-    assert.equal(fence.authGeneration(), generation + 1);
+    assert.equal(fence.authGeneration("openai"), generation + 1);
     const releaseSend = await fence.enterOAuthUse();
     assert.equal(typeof releaseSend, "function");
     releaseSend?.();
@@ -162,21 +204,21 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
   ] as const) {
     const fence = modelAuthSendFenceForStorage(undefined, "openai");
     const owner = Symbol("pending owner");
-    const releaseLogin = await fence.enterAuth(owner);
-    fence.updateAuthState(owner, "pending");
+    const releaseLogin = await fence.enterAuth(owner, "openai");
+    fence.updateAuthState(owner, "openai", "pending");
     releaseLogin?.();
-    const generation = fence.authGeneration();
+    const generation = fence.authGeneration("openai");
     const auth = oauthAuthState(status, definitive);
 
     const releaseRead = await fence.enterRead();
     assert.equal(
-      await fence.reconcilePendingAuthState(async () => auth),
+      await fence.reconcilePendingAuthState("openai", async () => auth),
       auth,
     );
     releaseRead();
 
     assert.equal(fence.hasPendingLogin(), true);
-    assert.equal(fence.authGeneration(), generation);
+    assert.equal(fence.authGeneration("openai"), generation);
     assert.equal(await fence.enterOAuthUse(), null);
     fence.releaseOwner(owner);
   }
@@ -184,13 +226,13 @@ test("pending and non-definitive reads preserve pending ownership", async () => 
 
 test("the credential-free generation projection remains readable after poison", () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
-  const generation = fence.peekAuthGeneration();
+  const generation = fence.peekAuthGeneration("openai");
 
   fence.poison(new Error("OAuth backend shutdown failed"));
 
-  assert.equal(fence.peekAuthGeneration(), generation);
+  assert.equal(fence.peekAuthGeneration("openai"), generation);
   assert.throws(
-    () => fence.authGeneration(),
+    () => fence.authGeneration("openai"),
     /shared OAuth subscription backend could not be shut down safely/i,
   );
 });
@@ -198,10 +240,10 @@ test("the credential-free generation projection remains readable after poison", 
 test("pending reconciliation isolates waiter cancellation from its single flight", async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
-  const releaseLogin = await fence.enterAuth(owner);
-  fence.updateAuthState(owner, "pending");
+  const releaseLogin = await fence.enterAuth(owner, "openai");
+  fence.updateAuthState(owner, "openai", "pending");
   releaseLogin?.();
-  const generation = fence.authGeneration();
+  const generation = fence.authGeneration("openai");
   const releaseFirstRead = await fence.enterRead();
   const releaseSecondRead = await fence.enterRead();
   let finishRead!: () => void;
@@ -218,10 +260,11 @@ test("pending reconciliation isolates waiter cancellation from its single flight
   const controller = createHostAbortController();
   const reason = new Error("leader modal closed");
   const leader = fence.reconcilePendingAuthState(
+    "openai",
     readAuthState,
     controller.signal,
   );
-  const follower = fence.reconcilePendingAuthState(readAuthState);
+  const follower = fence.reconcilePendingAuthState("openai", readAuthState);
 
   controller.abort(reason);
   await assert.rejects(leader, (error: unknown) => error === reason);
@@ -232,7 +275,7 @@ test("pending reconciliation isolates waiter cancellation from its single flight
   assert.equal(await follower, auth);
   releaseFirstRead();
   releaseSecondRead();
-  assert.equal(fence.authGeneration(), generation + 1);
+  assert.equal(fence.authGeneration("openai"), generation + 1);
   const releaseSend = await fence.enterOAuthUse();
   assert.equal(typeof releaseSend, "function");
   releaseSend?.();
@@ -243,8 +286,8 @@ test("pending owner cleanup aborts the shared reconciliation before waiting for 
 }, async () => {
   const fence = modelAuthSendFenceForStorage(undefined, "openai");
   const owner = Symbol("pending owner");
-  const releaseLogin = await fence.enterAuth(owner);
-  fence.updateAuthState(owner, "pending");
+  const releaseLogin = await fence.enterAuth(owner, "openai");
+  fence.updateAuthState(owner, "openai", "pending");
   releaseLogin?.();
   const releaseRead = await fence.enterRead();
   let operationSignal: AbortSignal | undefined;
@@ -252,7 +295,7 @@ test("pending owner cleanup aborts the shared reconciliation before waiting for 
   const started = new Promise<void>((resolve) => {
     markStarted = resolve;
   });
-  const reconciliation = fence.reconcilePendingAuthState(async (signal) => {
+  const reconciliation = fence.reconcilePendingAuthState("openai", async (signal) => {
     operationSignal = signal;
     markStarted();
     await new Promise<void>((_resolve, reject) => {
@@ -264,7 +307,7 @@ test("pending owner cleanup aborts the shared reconciliation before waiting for 
   });
 
   await started;
-  const cleanup = fence.enterPendingOwnerCleanup(owner);
+  const cleanup = fence.enterPendingOwnerCleanup(owner, "openai");
   await assert.rejects(
     reconciliation,
     /OAuth sign-in owner closed/,

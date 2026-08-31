@@ -9,6 +9,7 @@ import type {
   OAuthAuthReadOptions,
   OAuthAuthState,
 } from "../provider.js";
+import { isProfileId } from "../profile.js";
 import {
   createHostAbortController,
   throwIfAborted,
@@ -63,8 +64,13 @@ export class OAuthCredentialManager {
 
   constructor(
     private readonly storageDirectory: string | undefined,
+    private readonly profileId: string,
     private readonly adapter: OAuthProviderAdapter,
-  ) {}
+  ) {
+    if (!isProfileId(profileId)) {
+      throw new TypeError("A valid OAuth Profile ID is required.");
+    }
+  }
 
   async readAuthState(
     signal?: AbortSignal,
@@ -81,6 +87,7 @@ export class OAuthCredentialManager {
     const generation = this.credentialGeneration;
     let credential = await loadOAuthCredential(
       this.storageDirectory,
+      this.profileId,
       this.adapter.provider,
     );
     throwIfAborted(signal);
@@ -131,6 +138,7 @@ export class OAuthCredentialManager {
     const generation = this.credentialGeneration;
     const credential = await loadOAuthCredential(
       this.storageDirectory,
+      this.profileId,
       this.adapter.provider,
     );
     throwIfAborted(signal);
@@ -155,6 +163,7 @@ export class OAuthCredentialManager {
     const generation = this.credentialGeneration;
     const current = await loadOAuthCredential(
       this.storageDirectory,
+      this.profileId,
       this.adapter.provider,
     );
     throwIfAborted(signal);
@@ -277,6 +286,7 @@ export class OAuthCredentialManager {
       if (!this.ownsLogin(active)) throw this.loginOwnershipError();
       const committed = await saveOAuthCredential(
         this.storageDirectory,
+        this.profileId,
         credential,
         { shouldCommit: () => this.ownsLogin(active) },
       );
@@ -329,7 +339,11 @@ export class OAuthCredentialManager {
       (operation): operation is Promise<void> => operation !== undefined,
     );
     const cleanup = Promise.allSettled(pending).then(async () => {
-      await deleteOAuthCredential(this.storageDirectory, this.adapter.provider);
+      await deleteOAuthCredential(
+        this.storageDirectory,
+        this.profileId,
+        this.adapter.provider,
+      );
       this.loginError = undefined;
     });
     this.logoutPromise = cleanup;
@@ -369,6 +383,7 @@ export class OAuthCredentialManager {
           }
           const committed = await saveOAuthCredential(
             this.storageDirectory,
+            this.profileId,
             refreshed,
             {
               shouldCommit: () =>

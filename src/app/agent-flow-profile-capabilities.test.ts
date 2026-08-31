@@ -537,7 +537,7 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
         });
         assert.equal(discovered.response.status, 200);
 
-        fence.updateAuthState(peerOwner, "signed-in", true);
+        fence.updateAuthState(peerOwner, "openai", "signed-in", true);
         const staleReasoningSave = await command(
           endpoint,
           "subscription-stale-reasoning-save",
@@ -591,7 +591,7 @@ test("subscription Save consumes only the current auth-generation catalog", asyn
         );
         assert.ok(savedProfile);
 
-        fence.updateAuthState(peerOwner, "signed-in", true);
+        fence.updateAuthState(peerOwner, "openai", "signed-in", true);
         const staleDefaultSave = await command(
           endpoint,
           "subscription-stale-default-save",

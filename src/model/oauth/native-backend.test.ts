@@ -65,7 +65,7 @@ function request(): TransportRequest {
 test("OAuth backend refreshes once and replays a pre-body unauthorized request", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-oauth-401-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await saveOAuthCredential(directory, {
+  await saveOAuthCredential(directory, "openai-oauth", {
     provider: "openai",
     accessToken: "old-access",
     refreshToken: "refresh-1",
@@ -106,7 +106,7 @@ test("OAuth backend refreshes once and replays a pre-body unauthorized request",
       return { content: "Ready", toolCalls: [] };
     },
   };
-  const backend = createNativeOAuthBackend(directory, "openai", {
+  const backend = createNativeOAuthBackend(directory, "openai-oauth", "openai", {
     adapter,
     protocol,
   });
@@ -123,7 +123,7 @@ test("OAuth backend refreshes once and replays a pre-body unauthorized request",
 test("OAuth backend bounds repeated unauthorized responses to one refresh", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-oauth-401-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await saveOAuthCredential(directory, {
+  await saveOAuthCredential(directory, "openai-oauth", {
     provider: "openai",
     accessToken: "old-access",
     refreshToken: "refresh-1",
@@ -160,7 +160,7 @@ test("OAuth backend bounds repeated unauthorized responses to one refresh", asyn
       throw new ModelAuthenticationError("ChatGPT Codex authentication was rejected.");
     },
   };
-  const backend = createNativeOAuthBackend(directory, "openai", {
+  const backend = createNativeOAuthBackend(directory, "openai-oauth", "openai", {
     adapter,
     protocol,
   });
@@ -212,7 +212,7 @@ test("concurrent native OAuth backend closes share credential cleanup", async (t
       return { content: "", toolCalls: [] };
     },
   };
-  const backend = createNativeOAuthBackend(directory, "openai", {
+  const backend = createNativeOAuthBackend(directory, "openai-oauth", "openai", {
     adapter,
     protocol,
   });
@@ -239,4 +239,47 @@ test("concurrent native OAuth backend closes share credential cleanup", async (t
 
   assert.equal(firstSettledBeforeLogin, false);
   assert.equal(secondSettledBeforeLogin, false);
+});
+
+test("native OAuth backend rejects a request owned by another Profile", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-oauth-owner-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveOAuthCredential(directory, "openai-oauth", {
+    provider: "openai",
+    accessToken: "access-1",
+    refreshToken: "refresh-1",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "account-1",
+  });
+  const adapter: OAuthProviderAdapter = {
+    provider: "openai",
+    displayName: "ChatGPT",
+    async beginLogin() {
+      throw new Error("unexpected login");
+    },
+    async refresh(credential) {
+      return credential;
+    },
+    authState() {
+      throw new Error("unexpected state");
+    },
+  };
+  const protocol: OAuthModelProtocol = {
+    async listModels() { return []; },
+    async createToolTurn() { return { content: "", toolCalls: [] }; },
+  };
+  const backend = createNativeOAuthBackend(
+    directory,
+    "openai-oauth",
+    "openai",
+    { adapter, protocol },
+  );
+  const otherRequest = request();
+  otherRequest.runtimeProfile.profile.id = "other-profile";
+
+  await assert.rejects(
+    backend.createToolTurn(otherRequest),
+    /another Profile/i,
+  );
+  await backend.close();
 });

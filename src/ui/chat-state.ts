@@ -64,6 +64,7 @@ export interface ChatDialogState {
   settings: AgentSettings;
   /** Credential-free state for the selected native OAuth provider. */
   oauthAuth?: OAuthAuthState;
+  oauthAuthProfileId?: string;
   oauthAuthProvider?: OAuthSubscriptionProvider;
   /** Non-sensitive process-local epoch for subscription catalog ownership. */
   oauthAuthGeneration: number;

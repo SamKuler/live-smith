@@ -43,8 +43,8 @@ test("canonical storage paths share one OAuth backend manager until the final re
     acquireSharedModelBackendManager(alias, options),
   ]);
   assert.equal(first.manager, second.manager);
-  assert.equal(await first.manager.oauth("openai"), instance);
-  assert.equal(await second.manager.oauth("openai"), instance);
+  assert.equal(await first.manager.oauth("profile-shared", "openai"), instance);
+  assert.equal(await second.manager.oauth("profile-shared", "openai"), instance);
   assert.equal(starts, 1);
 
   await first.release();

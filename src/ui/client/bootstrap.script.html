@@ -771,6 +771,14 @@
             }
             if (!accepted) return;
           }
+          if (
+            !operationActive &&
+            profileEditor.hasProvisionalOAuth() &&
+            !(await profileEditor.discardProvisionalOAuth())
+          ) {
+            bridgeClient.setCloseDecisionPending(false);
+            return;
+          }
           hostAdapter.closeWithResult({ kind: "close" });
         }
 
@@ -1439,9 +1447,7 @@
           const inspector = document.getElementById("inspectorPane");
           const initialFocus = inspector.hidden
             ? prompt
-            : document.getElementById("modelSetupGuide").hidden
-              ? document.getElementById("profileName")
-              : document.getElementById("modelSetupGuide");
+            : document.getElementById("profileName");
           initialFocus?.focus({ preventScroll: true });
           if (
             getState().oauthAuth?.status === "signed-in" &&

@@ -1,5 +1,8 @@
 import type { OAuthAuthState } from "../model/provider.js";
-import type { OAuthSubscriptionProvider } from "../model/profile.js";
+import {
+  isProfileId,
+  type OAuthSubscriptionProvider,
+} from "../model/profile.js";
 import {
   createHostAbortController,
   throwIfAborted,
@@ -16,24 +19,34 @@ export interface ModelAuthSendFence {
   enterRead(signal?: AbortSignal): Promise<() => void>;
   /** Admit one OAuth subscription discovery or send; Direct API bypasses it. */
   enterOAuthUse(signal?: AbortSignal): Promise<(() => void) | null>;
-  enterAuth(owner: symbol, signal?: AbortSignal): Promise<(() => void) | null>;
+  enterAuth(
+    owner: symbol,
+    provider: OAuthSubscriptionProvider,
+    signal?: AbortSignal,
+    allowPendingOwner?: boolean,
+  ): Promise<(() => void) | null>;
   enterPendingOwnerCleanup(
     owner: symbol,
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
   ): Promise<(() => void) | null>;
-  hasPendingLogin(): boolean;
+  hasPendingLogin(provider?: OAuthSubscriptionProvider): boolean;
+  pendingLoginProvider(): OAuthSubscriptionProvider | undefined;
+  hasAuthActivity(provider: OAuthSubscriptionProvider): boolean;
   reconcilePendingAuthState(
+    provider: OAuthSubscriptionProvider,
     readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal?: AbortSignal,
   ): Promise<OAuthAuthState | undefined>;
   updateAuthState(
     owner: symbol,
+    provider: OAuthSubscriptionProvider,
     status: OAuthAuthStatus,
     mutationAttempted?: boolean,
   ): void;
   /** Read the credential-free epoch for UI projection without admitting OAuth use. */
-  peekAuthGeneration(): number;
-  authGeneration(): number;
+  peekAuthGeneration(provider: OAuthSubscriptionProvider): number;
+  authGeneration(provider: OAuthSubscriptionProvider): number;
   poison(cause: unknown): void;
   releaseOwner(owner: symbol): void;
 }
@@ -49,12 +62,18 @@ interface PendingAuthReconciliation {
   readonly settled: Promise<OAuthAuthState>;
 }
 
+interface PendingLoginOwner {
+  readonly owner: symbol;
+  readonly provider: OAuthSubscriptionProvider;
+}
+
 class ProcessModelAuthSendFence implements ModelAuthSendFence {
   private activeOperations = 0;
   private authMutation: ActiveAuthMutation | null = null;
-  private pendingLoginOwner: symbol | null = null;
+  private pendingLoginOwner: PendingLoginOwner | null = null;
   private pendingAuthReconciliation: PendingAuthReconciliation | null = null;
-  private generation = 0;
+  private readonly generations = new Map<OAuthSubscriptionProvider, number>();
+  private readonly authActivity = new Set<OAuthSubscriptionProvider>();
   private poisonError: Error | undefined;
   private readonly stateChangeWaiters = new Set<() => void>();
 
@@ -95,7 +114,9 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
 
   async enterAuth(
     owner: symbol,
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
+    allowPendingOwner = false,
   ): Promise<(() => void) | null> {
     for (;;) {
       throwIfAborted(signal);
@@ -111,7 +132,12 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       }
       if (
         this.activeOperations > 0 ||
-        (this.pendingLoginOwner && this.pendingLoginOwner !== owner)
+        this.pendingLoginOwner &&
+          (
+            this.pendingLoginOwner.owner !== owner ||
+            this.pendingLoginOwner.provider !== provider ||
+            !allowPendingOwner
+          )
       ) return null;
 
       let settle!: () => void;
@@ -131,12 +157,16 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
 
   async enterPendingOwnerCleanup(
     owner: symbol,
+    provider: OAuthSubscriptionProvider,
     signal?: AbortSignal,
   ): Promise<(() => void) | null> {
     for (;;) {
       throwIfAborted(signal);
       this.assertHealthy();
-      if (this.pendingLoginOwner !== owner) return null;
+      if (
+        this.pendingLoginOwner?.owner !== owner ||
+        this.pendingLoginOwner.provider !== provider
+      ) return null;
       const activeMutation = this.authMutation;
       if (activeMutation) {
         await waitForPromiseWithSignal(activeMutation.settled, signal);
@@ -169,17 +199,27 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
     }
   }
 
-  hasPendingLogin(): boolean {
-    return this.pendingLoginOwner !== null;
+  hasPendingLogin(provider?: OAuthSubscriptionProvider): boolean {
+    return this.pendingLoginOwner !== null &&
+      (provider === undefined || this.pendingLoginOwner.provider === provider);
+  }
+
+  pendingLoginProvider(): OAuthSubscriptionProvider | undefined {
+    return this.pendingLoginOwner?.provider;
+  }
+
+  hasAuthActivity(provider: OAuthSubscriptionProvider): boolean {
+    return this.authActivity.has(provider);
   }
 
   async reconcilePendingAuthState(
+    provider: OAuthSubscriptionProvider,
     readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal?: AbortSignal,
   ): Promise<OAuthAuthState | undefined> {
     throwIfAborted(signal);
     this.assertHealthy();
-    if (this.pendingLoginOwner === null) return undefined;
+    if (this.pendingLoginOwner?.provider !== provider) return undefined;
     if (this.authMutation || this.activeOperations === 0) {
       throw new Error(
         "Pending OAuth sign-in reconciliation requires a shared auth read.",
@@ -190,6 +230,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       this.pendingAuthReconciliation = {
         controller,
         settled: this.performPendingAuthReconciliation(
+          provider,
           readAuthState,
           controller.signal,
         ),
@@ -202,6 +243,7 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
   }
 
   private async performPendingAuthReconciliation(
+    provider: OAuthSubscriptionProvider,
     readAuthState: (signal: AbortSignal) => Promise<OAuthAuthState>,
     signal: AbortSignal,
   ): Promise<OAuthAuthState> {
@@ -210,12 +252,12 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       throwIfAborted(signal);
       this.assertHealthy();
       if (
-        this.pendingLoginOwner !== null &&
+        this.pendingLoginOwner?.provider === provider &&
         auth.status !== "pending" &&
         (auth.status !== "unavailable" || auth.definitive === true)
       ) {
         this.pendingLoginOwner = null;
-        this.generation += 1;
+        this.incrementGeneration(provider);
       }
       return auth;
     } finally {
@@ -226,27 +268,33 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
 
   updateAuthState(
     owner: symbol,
+    provider: OAuthSubscriptionProvider,
     status: OAuthAuthStatus,
     mutationAttempted = false,
   ): void {
     this.assertHealthy();
     if (status === "unavailable" && !mutationAttempted) return;
     if (status === "pending") {
-      this.pendingLoginOwner = owner;
-    } else if (this.pendingLoginOwner === owner) {
+      this.pendingLoginOwner = { owner, provider };
+    } else if (
+      this.pendingLoginOwner?.owner === owner &&
+      this.pendingLoginOwner.provider === provider
+    ) {
       this.pendingLoginOwner = null;
     }
-    this.generation += 1;
+    if (status === "signed-out") this.authActivity.delete(provider);
+    else this.authActivity.add(provider);
+    this.incrementGeneration(provider);
     this.signalStateChange();
   }
 
-  peekAuthGeneration(): number {
-    return this.generation;
+  peekAuthGeneration(provider: OAuthSubscriptionProvider): number {
+    return this.generations.get(provider) ?? 0;
   }
 
-  authGeneration(): number {
+  authGeneration(provider: OAuthSubscriptionProvider): number {
     this.assertHealthy();
-    return this.generation;
+    return this.peekAuthGeneration(provider);
   }
 
   poison(cause: unknown): void {
@@ -266,12 +314,13 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
       this.authMutation = null;
       mutation.settle();
     }
-    if (this.pendingLoginOwner === owner) {
+    if (this.pendingLoginOwner?.owner === owner) {
+      const provider = this.pendingLoginOwner.provider;
       this.pendingAuthReconciliation?.controller.abort(
         new Error("The OAuth sign-in owner closed."),
       );
       this.pendingLoginOwner = null;
-      this.generation += 1;
+      this.incrementGeneration(provider);
     }
     this.signalStateChange();
   }
@@ -304,6 +353,10 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
     for (const waiter of [...this.stateChangeWaiters]) waiter();
   }
 
+  private incrementGeneration(provider: OAuthSubscriptionProvider): void {
+    this.generations.set(provider, this.peekAuthGeneration(provider) + 1);
+  }
+
   private assertHealthy(): void {
     if (this.poisonError) throw this.poisonError;
   }
@@ -311,24 +364,27 @@ class ProcessModelAuthSendFence implements ModelAuthSendFence {
 
 const fencesByStorageDirectory = new Map<
   StorageScopeKey,
-  Map<OAuthSubscriptionProvider, ModelAuthSendFence>
+  Map<string, ModelAuthSendFence>
 >();
 
 export function modelAuthSendFenceForStorage(
   storageDirectory: string | undefined,
-  provider: OAuthSubscriptionProvider,
+  profileId: string,
 ): ModelAuthSendFence {
+  if (!isProfileId(profileId)) {
+    throw new TypeError("A valid OAuth Profile ID is required.");
+  }
   if (storageDirectory === undefined) return new ProcessModelAuthSendFence();
   const key = storageScopeKey(storageDirectory);
-  let providerFences = fencesByStorageDirectory.get(key);
-  if (!providerFences) {
-    providerFences = new Map();
-    fencesByStorageDirectory.set(key, providerFences);
+  let profileFences = fencesByStorageDirectory.get(key);
+  if (!profileFences) {
+    profileFences = new Map();
+    fencesByStorageDirectory.set(key, profileFences);
   }
-  let fence = providerFences.get(provider);
+  let fence = profileFences.get(profileId);
   if (!fence) {
     fence = new ProcessModelAuthSendFence();
-    providerFences.set(provider, fence);
+    profileFences.set(profileId, fence);
   }
   return fence;
 }

@@ -517,8 +517,11 @@ test("startup capability loading skips Direct API, ready catalogs and unavailabl
     { status: "signed-in", planType: "team", subscriptionEligible: false },
   ] as Array<ChatBridgeState["oauthAuth"]>) {
     const state = subscriptionState();
-    if (auth === undefined) delete state.oauthAuth;
-    else state.oauthAuth = auth;
+    if (auth === undefined) {
+      delete state.oauthAuth;
+      delete state.oauthAuthProfileId;
+      delete state.oauthAuthProvider;
+    } else state.oauthAuth = auth;
     states.push(state);
   }
   for (const state of states) {

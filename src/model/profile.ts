@@ -208,6 +208,10 @@ export class ProfileValidationError extends Error {
 
 const profileIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
+export function isProfileId(value: unknown): value is string {
+  return typeof value === "string" && profileIdPattern.test(value);
+}
+
 export function freshEmptyAgentSettings(): AgentSettings {
   return {
     schemaVersion: CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
@@ -1286,7 +1290,7 @@ function modelIdValue(value: unknown, field: string): string {
 
 function profileIdValue(value: unknown): string {
   const id = requiredString(value, "id", "Profile ID is required.");
-  if (!profileIdPattern.test(id)) {
+  if (!isProfileId(id)) {
     throw new ProfileValidationError(
       "id",
       "Profile ID must be 1-128 letters, numbers, underscores, or hyphens and start with a letter or number.",

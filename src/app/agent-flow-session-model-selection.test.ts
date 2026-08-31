@@ -395,7 +395,12 @@ test("subscription model capabilities load explicitly and remain auth-generation
         assert.equal(listModelsCalls, 1);
         assert.equal(readinessReads, 1);
 
-        fence.updateAuthState(peerAuthOwner, "signed-in", true);
+        fence.updateAuthState(
+          peerAuthOwner,
+          "openai",
+          "signed-in",
+          true,
+        );
         const invalidated = await state();
         assert.equal(invalidated.configuredModelsReady, false);
         assert.equal(listModelsCalls, 1);
@@ -412,7 +417,7 @@ test("subscription model capabilities load explicitly and remain auth-generation
     modelBackendManager,
     modelAuthSendFence: fence,
     beforeSessionModelSelectionCommit: async () => {
-      const releaseAuth = await fence.enterAuth(peerAuthOwner);
+      const releaseAuth = await fence.enterAuth(peerAuthOwner, "openai");
       authMutationEnteredDuringSelection = releaseAuth !== null;
       releaseAuth?.();
     },

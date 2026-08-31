@@ -21,6 +21,7 @@ import {
 import {
   isApprovalMode,
   isDefaultFollowUpBehavior,
+  isProfileId,
   isReasoningEffort,
   normalizeNetworkProxySettings,
   ProfileValidationError,
@@ -100,9 +101,22 @@ export type ChatBridgeCommandInput =
     }
   | { kind: "delete_profile"; profileId: string }
   | { kind: "activate_profile"; profileId: string }
-  | { kind: "start_oauth_login"; provider: OAuthSubscriptionProvider }
-  | { kind: "refresh_oauth_account"; provider: OAuthSubscriptionProvider }
-  | { kind: "logout_oauth"; provider: OAuthSubscriptionProvider }
+  | { kind: "discard_profile_oauth"; profileId: string }
+  | {
+      kind: "start_oauth_login";
+      profileId: string;
+      provider: OAuthSubscriptionProvider;
+    }
+  | {
+      kind: "refresh_oauth_account";
+      profileId: string;
+      provider: OAuthSubscriptionProvider;
+    }
+  | {
+      kind: "logout_oauth";
+      profileId: string;
+      provider: OAuthSubscriptionProvider;
+    }
   | {
       kind: "save_global_settings";
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
@@ -896,6 +910,16 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     }
     return { kind, profile: input.profile as unknown as DraftProfile };
   }
+  if (kind === "discard_profile_oauth") {
+    assertOnlyInputKeys(input, ["kind", "profileId"], `${kind} command`);
+    const profileId = inputString(input, "profileId");
+    if (!isProfileId(profileId)) {
+      throw new ChatBridgeRequestValidationError(
+        "profileId must be a valid Profile ID.",
+      );
+    }
+    return { kind, profileId };
+  }
   if (kind === "delete_profile" || kind === "activate_profile") {
     assertOnlyInputKeys(input, ["kind", "profileId"], `${kind} command`);
     return { kind, profileId: inputString(input, "profileId") };
@@ -977,14 +1001,24 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     kind === "refresh_oauth_account" ||
     kind === "logout_oauth"
   ) {
-    assertOnlyInputKeys(input, ["kind", "provider"], `${kind} command`);
+    assertOnlyInputKeys(
+      input,
+      ["kind", "profileId", "provider"],
+      `${kind} command`,
+    );
+    const profileId = input.profileId;
+    if (!isProfileId(profileId)) {
+      throw new ChatBridgeRequestValidationError(
+        "profileId must be a valid Profile ID.",
+      );
+    }
     const provider = input.provider;
     if (provider !== "openai" && provider !== "anthropic" && provider !== "google") {
       throw new ChatBridgeRequestValidationError(
         "provider must be openai, anthropic, or google.",
       );
     }
-    return { kind, provider };
+    return { kind, profileId, provider };
   }
   if (
     kind === "select_session" ||

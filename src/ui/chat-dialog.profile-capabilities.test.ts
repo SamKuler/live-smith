@@ -385,3 +385,31 @@ test("initial state rejects an invalid subscription auth generation", async () =
     harness.close();
   }
 });
+
+test("initial state rejects partial OAuth auth scope projections", async () => {
+  for (const omitted of [
+    "oauthAuth",
+    "oauthAuthProfileId",
+    "oauthAuthProvider",
+  ] as const) {
+    const state = stateFixture();
+    delete state[omitted];
+    const harness = await createDialogHarness(state);
+    try {
+      assert.match(
+        harness.document.querySelector("#status")?.textContent ?? "",
+        /invalid initial state/i,
+        `expected a missing ${omitted} projection to fail closed`,
+      );
+      assert.equal(
+        harness.document.querySelector(".app")?.hasAttribute("inert"),
+        true,
+      );
+      assert.deepEqual(harness.eventSourceUrls, []);
+      assert.equal("LiveSmithUI" in harness.window, false);
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      harness.close();
+    }
+  }
+});

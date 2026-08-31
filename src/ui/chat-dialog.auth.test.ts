@@ -513,6 +513,7 @@ test("a provider switch adopts its auth state without comparing another provider
       model: googleProfile.defaultModel,
       label: googleProfile.defaultModel,
     }];
+    google.oauthAuthProfileId = googleProfile.id;
     google.oauthAuthProvider = "google";
     google.oauthAuthGeneration = 1;
     google.oauthAuth = {
@@ -538,6 +539,525 @@ test("a provider switch adopts its auth state without comparing another provider
     );
     assert.deepEqual(harness.errors, []);
   } finally {
+    harness.close();
+  }
+});
+
+test("a new OAuth Profile does not inherit another Profile's signed-in account", async () => {
+  const profile = subscriptionProfile();
+  const state = stateFixture();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.oauthAuthProfileId = profile.id;
+  state.oauthAuthProvider = "openai";
+  state.oauthAuth = {
+    status: "signed-in",
+    accountLabel: "first-profile@example.test",
+    planType: "ChatGPT subscription",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
+      "Connected",
+    );
+
+    harness.click(".profile-actions button");
+    await harness.settle();
+    harness.select("#connectionKind", "oauth-subscription");
+
+    assert.equal(
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
+      "Not checked",
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
+      /first-profile@example\.test/,
+    );
+
+    harness.click("#oauthSignInButton");
+    await harness.settle();
+    const command = commandCalls(harness).at(-1);
+    assert.equal(command?.path, "/command");
+    assert.equal((command?.body as { kind?: string }).kind, "start_oauth_login");
+    assert.equal((command?.body as { provider?: string }).provider, "openai");
+    assert.equal(
+      typeof (command?.body as { profileId?: unknown }).profileId,
+      "string",
+    );
+    assert.notEqual(
+      (command?.body as { profileId?: string }).profileId,
+      profile.id,
+    );
+    assert.equal(
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
+      "Waiting",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("provisional OAuth Draft exits discard the exact Profile before navigating", async (t) => {
+  for (const action of ["add", "duplicate", "discard", "switch"] as const) {
+    await t.test(action, async () => {
+      const state = stateFixture();
+      const harness = await createDialogHarness(state, undefined, {
+        oauthLoginResult: {
+          status: "signed-in",
+          accountLabel: "draft@example.test",
+          planType: "Google Cloud Code Assist",
+          subscriptionEligible: true,
+        },
+      });
+      try {
+        harness.select("#connectionKind", "oauth-subscription");
+        harness.select("#oauthProvider", "google");
+        harness.click("#oauthSignInButton");
+        await harness.settle();
+        const login = commandCalls(harness).find((call) =>
+          (call.body as { kind?: string }).kind === "start_oauth_login"
+        );
+        const profileId = (login?.body as { profileId?: string }).profileId;
+        assert.equal(profileId, "profile-1");
+        const callsBeforeAction = commandCalls(harness).length;
+
+        if (action === "add") {
+          harness.click("#addProfileButton");
+          await harness.acceptAppConfirmation();
+        } else if (action === "duplicate") {
+          harness.click("#duplicateProfileButton");
+          await harness.acceptAppConfirmation();
+        } else if (action === "discard") {
+          harness.click("#discardProfileButton");
+        } else {
+          harness.select("#profileSelector", "profile-2");
+          await harness.acceptAppConfirmation();
+        }
+        await harness.settle();
+
+        const actionCalls = commandCalls(harness).slice(callsBeforeAction);
+        assert.deepEqual(actionCalls[0], {
+          path: "/command",
+          body: {
+            kind: "discard_profile_oauth",
+            profileId,
+          },
+        });
+        if (action === "switch") {
+          assert.deepEqual(actionCalls[1], {
+            path: "/command",
+            body: { kind: "activate_profile", profileId: "profile-2" },
+          });
+        }
+        assert.deepEqual(harness.errors, []);
+      } finally {
+        harness.close();
+      }
+    });
+  }
+});
+
+test("a matching OAuth command becomes provisional when its saved Profile changes in flight", async (t) => {
+  for (const [change, action] of [
+    ["direct", "add"],
+    ["google", "discard"],
+    ["deleted", "add"],
+  ] as const) {
+    await t.test(`${change} then ${action}`, async () => {
+      const profile = subscriptionProfile();
+      const peerProfile = profileFixture({
+        id: "profile-2",
+        name: "Peer Profile",
+        model: "peer-model",
+      });
+      const state = stateFixture();
+      state.settings.profiles = [profile, peerProfile];
+      state.settings.activeProfileId = profile.id;
+      state.activeProfileRevision = profileRevisionFixture(profile);
+      state.modelStateSource = modelStateSourceFixture(profile);
+      state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+      state.oauthAuthProfileId = profile.id;
+      state.oauthAuthProvider = "openai";
+      state.oauthAuth = { status: "signed-out" };
+      const harness = await createDialogHarness(state, undefined, {
+        oauthLoginResult: {
+          status: "signed-in",
+          accountLabel: "completed@example.test",
+          planType: "ChatGPT subscription",
+          subscriptionEligible: true,
+        },
+      });
+      let released = false;
+      try {
+        harness.input("#profileName", "Local P draft");
+        harness.holdNextCommand();
+        harness.click("#oauthSignInButton");
+        await waitForCondition(
+          () => commandCalls(harness).some((call) =>
+            (call.body as { kind?: string }).kind === "start_oauth_login"
+          ),
+          "Expected the matching OAuth command to reach the bridge.",
+        );
+
+        const authoritative = cloneState(state);
+        authoritative.availableModels = [];
+        delete authoritative.modelCatalogLoadReceipt;
+        authoritative.oauthAuthGeneration += 1;
+        if (change === "deleted") {
+          authoritative.settings.profiles = [peerProfile];
+          authoritative.settings.activeProfileId = peerProfile.id;
+          authoritative.activeProfileRevision = profileRevisionFixture(peerProfile);
+          authoritative.modelStateSource = modelStateSourceFixture(peerProfile);
+          authoritative.runtimeProfile = runtimeSummaryForHarnessProfile(peerProfile);
+          authoritative.configuredModels = peerProfile.models.map((model) => ({
+            model: model.model,
+            label: model.model,
+          }));
+          authoritative.configuredModelsReady = true;
+          delete authoritative.oauthAuth;
+          delete authoritative.oauthAuthProfileId;
+          delete authoritative.oauthAuthProvider;
+        } else {
+          const changedProfile = profileFixture({
+            id: profile.id,
+            name: profile.name,
+            connection: change === "direct"
+              ? {
+                  kind: "direct-api",
+                  apiFamily: "openai",
+                  apiMode: "responses",
+                  baseUrl: "https://example.test/v1",
+                  apiKey: "changed-key",
+                }
+              : { kind: "oauth-subscription", provider: "google" },
+            model: change === "direct" ? "changed-direct-model" : "gemini-model",
+            parameters: change === "direct"
+              ? {
+                  maxOutputTokens: 8_192,
+                  reasoning: { mode: "default" },
+                }
+              : { reasoning: { mode: "default" } },
+            advanced: {},
+          });
+          authoritative.settings.profiles = [changedProfile, peerProfile];
+          authoritative.activeProfileRevision = profileRevisionFixture(changedProfile);
+          authoritative.modelStateSource = modelStateSourceFixture(changedProfile);
+          authoritative.runtimeProfile = runtimeSummaryForHarnessProfile(changedProfile);
+          authoritative.configuredModels = changedProfile.models.map((model) => ({
+            model: model.model,
+            label: model.model,
+          }));
+          authoritative.configuredModelsReady = change === "direct";
+          if (change === "direct") {
+            delete authoritative.oauthAuth;
+            delete authoritative.oauthAuthProfileId;
+            delete authoritative.oauthAuthProvider;
+          } else {
+            authoritative.oauthAuthProfileId = changedProfile.id;
+            authoritative.oauthAuthProvider = "google";
+            authoritative.oauthAuth = { status: "signed-out" };
+          }
+        }
+        harness.setServerState(authoritative);
+        harness.emitServerEvent({
+          type: "profile_settings_changed",
+          commandId: `peer-${change}-during-auth`,
+        });
+        await harness.settle();
+        assert.equal(
+          harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+          "Local P draft",
+        );
+
+        harness.releaseHeldCommand();
+        released = true;
+        await harness.settle();
+        const callsBeforeExit = commandCalls(harness).length;
+        if (action === "add") {
+          try {
+            await waitForCondition(
+              () =>
+                harness.document.querySelector<HTMLButtonElement>(
+                  "#addProfileButton",
+                )?.disabled === false,
+              "Expected Add to unlock after the OAuth command settled.",
+            );
+          } catch {
+            assert.fail(`Add stayed locked after ${change}: ${JSON.stringify({
+              settingsBusy: harness.document.querySelector("#settingsPanel")
+                ?.getAttribute("aria-busy"),
+              status: harness.document.querySelector("#status")?.textContent,
+              stateCalls: jsonCalls(harness, "/state").length,
+              addDisabled: harness.document.querySelector<HTMLButtonElement>(
+                "#addProfileButton",
+              )?.disabled,
+              selectorDisabled: harness.document.querySelector<HTMLSelectElement>(
+                "#profileSelector",
+              )?.disabled,
+              connectionKindDisabled:
+                harness.document.querySelector<HTMLSelectElement>(
+                  "#connectionKind",
+                )?.disabled,
+              oauthStatus: harness.document.querySelector("#oauthAuthStatus")
+                ?.textContent,
+            })}`);
+          }
+          harness.click("#addProfileButton");
+          await Promise.resolve();
+          if (
+            harness.document.querySelector<HTMLElement>("#appConfirmation")
+              ?.hidden === false
+          ) {
+            await harness.acceptAppConfirmation();
+          }
+        } else {
+          harness.click("#discardProfileButton");
+        }
+        await harness.settle();
+
+        assert.deepEqual(commandCalls(harness).slice(callsBeforeExit)[0], {
+          path: "/command",
+          body: {
+            kind: "discard_profile_oauth",
+            profileId: profile.id,
+          },
+        });
+        assert.deepEqual(harness.errors, []);
+      } finally {
+        if (!released) harness.releaseHeldCommand();
+        await harness.settle();
+        harness.close();
+      }
+    });
+  }
+});
+
+test("saved matching OAuth and Direct-only Draft exits do not request provisional cleanup", async (t) => {
+  await t.test("saved matching provider", async () => {
+    const state = stateFixture();
+    const profile = subscriptionProfile();
+    state.settings.profiles = [profile];
+    state.settings.activeProfileId = profile.id;
+    state.activeProfileRevision = profileRevisionFixture(profile);
+    state.modelStateSource = modelStateSourceFixture(profile);
+    state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+    state.oauthAuthProfileId = profile.id;
+    state.oauthAuthProvider = "openai";
+    state.oauthAuth = { status: "signed-out" };
+    const harness = await createDialogHarness(state, undefined, {
+      oauthLoginResult: {
+        status: "signed-in",
+        accountLabel: "saved@example.test",
+        planType: "ChatGPT subscription",
+        subscriptionEligible: true,
+      },
+    });
+    try {
+      harness.click("#oauthSignInButton");
+      await harness.settle();
+      harness.click("#addProfileButton");
+      await harness.settle();
+      assert.notEqual(
+        harness.document.querySelector<HTMLSelectElement>("#profileSelector")?.value,
+        profile.id,
+      );
+      assert.equal(
+        commandCalls(harness).some((call) =>
+          (call.body as { kind?: string }).kind === "discard_profile_oauth"
+        ),
+        false,
+      );
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      harness.close();
+    }
+  });
+
+  await t.test("peer provisional auth projection", async () => {
+    const state = stateFixture();
+    state.oauthAuthProfileId = "profile-1";
+    state.oauthAuthProvider = "google";
+    state.oauthAuth = {
+      status: "signed-in",
+      accountLabel: "peer@example.test",
+      planType: "Google Cloud Code Assist",
+      subscriptionEligible: true,
+    };
+    const harness = await createDialogHarness(state);
+    try {
+      harness.input("#profileName", "Direct draft after peer OAuth");
+      harness.click("#addProfileButton");
+      await harness.acceptAppConfirmation();
+      await harness.settle();
+      assert.notEqual(
+        harness.document.querySelector<HTMLSelectElement>("#profileSelector")?.value,
+        "profile-1",
+      );
+      assert.equal(
+        commandCalls(harness).some((call) =>
+          (call.body as { kind?: string }).kind === "discard_profile_oauth"
+        ),
+        false,
+      );
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      harness.close();
+    }
+  });
+
+  for (const action of ["add", "duplicate", "discard", "switch"] as const) {
+    await t.test(`Direct-only ${action}`, async () => {
+      const harness = await createDialogHarness();
+      try {
+        harness.input("#profileName", "Direct-only draft");
+        if (action === "add") {
+          harness.click("#addProfileButton");
+          await harness.acceptAppConfirmation();
+        } else if (action === "duplicate") {
+          harness.click("#duplicateProfileButton");
+          await harness.acceptAppConfirmation();
+        } else if (action === "discard") {
+          harness.click("#discardProfileButton");
+        } else {
+          harness.select("#profileSelector", "profile-2");
+          await harness.acceptAppConfirmation();
+        }
+        await harness.settle();
+        if (action === "add") {
+          assert.notEqual(
+            harness.document.querySelector<HTMLSelectElement>("#profileSelector")
+              ?.value,
+            "profile-1",
+          );
+        } else if (action === "duplicate") {
+          assert.equal(
+            harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+            "Direct-only draft Copy",
+          );
+        } else if (action === "discard") {
+          assert.equal(
+            harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
+            "Studio",
+          );
+        } else {
+          assert.equal(
+            (commandCalls(harness).at(-1)?.body as { profileId?: string })
+              .profileId,
+            "profile-2",
+          );
+        }
+        assert.equal(
+          commandCalls(harness).some((call) =>
+            (call.body as { kind?: string }).kind === "discard_profile_oauth"
+          ),
+          false,
+        );
+        assert.deepEqual(harness.errors, []);
+      } finally {
+        harness.close();
+      }
+    });
+  }
+});
+
+test("a delayed Profile auth response cannot reuse another Profile's same-generation catalog or runtime", async () => {
+  const profile = profileFixture({
+    id: "profile-a",
+    name: "Profile A",
+    connection: { kind: "oauth-subscription", provider: "openai" },
+    model: "profile-a-model",
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  });
+  const state = stateFixture();
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.availableModels = [{
+    id: profile.defaultModel,
+    displayName: "Profile A catalog model",
+    capabilities: capabilities(),
+    capabilityEvidence: cloneState(state.capabilityEvidence),
+  }];
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.configuredModels = [{
+    model: profile.defaultModel,
+    label: "Profile A runtime model",
+  }];
+  state.configuredModelsReady = true;
+  state.oauthAuthProfileId = profile.id;
+  state.oauthAuthProvider = "openai";
+  state.oauthAuthGeneration = 1;
+  state.oauthAuth = {
+    status: "signed-in",
+    accountLabel: "profile-a@example.test",
+    planType: "ChatGPT subscription",
+    subscriptionEligible: true,
+  };
+  const harness = await createDialogHarness(state);
+  let released = false;
+  try {
+    harness.click(".profile-actions button");
+    await harness.settle();
+    harness.select("#connectionKind", "oauth-subscription");
+    harness.holdNextCommandResponse();
+    harness.click("#oauthSignInButton");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "start_oauth_login"
+      ),
+      "Expected the new Profile login to reach the bridge.",
+    );
+    harness.releaseHeldCommandResponse();
+    released = true;
+    await harness.settle();
+
+    assert.equal(
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
+      "Waiting",
+    );
+    assert.match(
+      harness.document.querySelector<HTMLSelectElement>("#composerModel")?.title ?? "",
+      /Open to load capabilities/i,
+      "Profile A's ready runtime must not be paired with Profile B's auth",
+    );
+
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>(
+        "#discardProfileButton",
+      )?.disabled,
+      true,
+    );
+    harness.click("#oauthLogoutButton");
+    await harness.acceptAppConfirmation();
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>(
+        "#discardProfileButton",
+      )?.disabled,
+      false,
+    );
+    harness.click("#discardProfileButton");
+    assert.doesNotMatch(
+      harness.document.querySelector("#modelConfigSelector")?.textContent ?? "",
+      /Profile A catalog model/,
+      "Profile A's catalog must be invalidated while Profile B owns the auth projection",
+    );
+    assert.equal(
+      harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
+      "Not checked",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (!released) harness.releaseHeldCommandResponse();
+    await harness.settle();
     harness.close();
   }
 });
@@ -833,7 +1353,11 @@ test("device-code login controls send strict commands and render backend state s
 
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "start_oauth_login", provider: "openai" },
+      body: {
+        kind: "start_oauth_login",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     const link = harness.document.querySelector<HTMLAnchorElement>("#oauthAuthStatus a");
     assert.equal(link?.href, "https://auth.openai.com/codex/device");
@@ -871,7 +1395,11 @@ test("device-code login controls send strict commands and render backend state s
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_oauth_account", provider: "openai" },
+      body: {
+        kind: "refresh_oauth_account",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     assert.match(
       harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
@@ -894,7 +1422,11 @@ test("device-code login controls send strict commands and render backend state s
     harness.click("#oauthLogoutButton");
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_oauth_account", provider: "openai" },
+      body: {
+        kind: "refresh_oauth_account",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     assert.match(
       harness.document.querySelector("#appConfirmation")?.textContent ?? "",
@@ -903,7 +1435,11 @@ test("device-code login controls send strict commands and render backend state s
     await harness.cancelAppConfirmation();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_oauth_account", provider: "openai" },
+      body: {
+        kind: "refresh_oauth_account",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
 
     harness.click("#oauthLogoutButton");
@@ -920,7 +1456,11 @@ test("device-code login controls send strict commands and render backend state s
     );
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_oauth_account", provider: "openai" },
+      body: {
+        kind: "refresh_oauth_account",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
 
     harness.holdNextCommand();
@@ -933,7 +1473,11 @@ test("device-code login controls send strict commands and render backend state s
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "logout_oauth", provider: "openai" },
+      body: {
+        kind: "logout_oauth",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     assert.match(
       harness.document.querySelector("#oauthAuthStatus")?.textContent ?? "",
@@ -1074,7 +1618,11 @@ test("OAuth provider selection drives native Claude and Gemini commands", async 
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "start_oauth_login", provider: "anthropic" },
+      body: {
+        kind: "start_oauth_login",
+        profileId: "profile-1",
+        provider: "anthropic",
+      },
     });
 
     harness.select("#oauthProvider", "google");
@@ -1086,7 +1634,11 @@ test("OAuth provider selection drives native Claude and Gemini commands", async 
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "refresh_oauth_account", provider: "google" },
+      body: {
+        kind: "refresh_oauth_account",
+        profileId: "profile-1",
+        provider: "google",
+      },
     });
   } finally {
     harness.close();
@@ -1104,6 +1656,7 @@ test("browser OAuth pending state supports a link without a device code", async 
   state.settings.activeProfileId = profile.id;
   state.modelStateSource = modelStateSourceFixture(profile);
   state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.oauthAuthProfileId = profile.id;
   state.oauthAuthProvider = "anthropic";
   state.oauthAuth = {
     status: "pending",
@@ -1111,6 +1664,7 @@ test("browser OAuth pending state supports a link without a device code", async 
   };
   const harness = await createDialogHarness(state);
   try {
+    harness.input("#profileName", "Changed while sign-in is pending");
     assert.equal(
       harness.document.querySelector<HTMLAnchorElement>("#oauthVerificationLink")?.href,
       "https://claude.ai/oauth/authorize?client_id=test",
@@ -1119,6 +1673,79 @@ test("browser OAuth pending state supports a link without a device code", async 
       harness.document.querySelector<HTMLElement>(".subscription-auth-code-ticket")?.hidden,
       true,
     );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#connectionKind")?.disabled,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLSelectElement>("#oauthProvider")?.disabled,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#oauthLogoutButton")?.disabled,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#saveProfileButton")?.disabled,
+      true,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#discardProfileButton")?.disabled,
+      true,
+    );
+    for (const selector of [
+      "#profileSelector",
+      "#addProfileButton",
+      "#duplicateProfileButton",
+      "#deleteProfileButton",
+    ]) {
+      assert.equal(
+        harness.document.querySelector<HTMLButtonElement | HTMLSelectElement>(
+          selector,
+        )?.disabled,
+        true,
+        selector,
+      );
+    }
+  } finally {
+    harness.close();
+  }
+});
+
+test("Gemini browser OAuth explains that no one-time code is required", async () => {
+  const state = stateFixture();
+  const profile = profileFixture({
+    id: "gemini-profile",
+    connection: { kind: "oauth-subscription", provider: "google" },
+    parameters: { reasoning: { mode: "default" } },
+    advanced: {},
+  });
+  state.settings.profiles = [profile];
+  state.settings.activeProfileId = profile.id;
+  state.activeProfileRevision = profileRevisionFixture(profile);
+  state.modelStateSource = modelStateSourceFixture(profile);
+  state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
+  state.oauthAuthProfileId = profile.id;
+  state.oauthAuthProvider = "google";
+  state.oauthAuth = {
+    status: "pending",
+    verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        ".subscription-auth-code-ticket",
+      )?.hidden,
+      true,
+    );
+    assert.match(
+      harness.document.querySelector(
+        ".subscription-auth-device-guidance",
+      )?.textContent ?? "",
+      /Google returns here automatically; no one-time code is required/i,
+    );
+    assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
@@ -1426,7 +2053,11 @@ test("a definitive sign-in failure offers a new ChatGPT sign-in attempt", async 
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "start_oauth_login", provider: "openai" },
+      body: {
+        kind: "start_oauth_login",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -1458,7 +2089,11 @@ test("an unavailable OAuth account can sign out before starting over", async () 
 
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
-      body: { kind: "logout_oauth", provider: "openai" },
+      body: {
+        kind: "logout_oauth",
+        profileId: "profile-1",
+        provider: "openai",
+      },
     });
     assert.deepEqual(harness.errors, []);
   } finally {

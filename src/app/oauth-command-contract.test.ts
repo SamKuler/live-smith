@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { parseCommandInput } from "./chat-bridge-http.js";
 
-test("OAuth commands require one explicit supported provider", () => {
+test("OAuth commands require one explicit Profile and supported provider", () => {
+  const profileId = "profile-oauth";
   for (const kind of [
     "start_oauth_login",
     "refresh_oauth_account",
@@ -11,18 +12,56 @@ test("OAuth commands require one explicit supported provider", () => {
   ] as const) {
     assert.throws(
       () => parseCommandInput({ kind }),
+      /profileId must be a valid Profile ID/i,
+    );
+    assert.throws(
+      () => parseCommandInput({ kind, profileId }),
       /provider must be openai, anthropic, or google/i,
     );
     for (const provider of ["openai", "anthropic", "google"] as const) {
-      assert.deepEqual(parseCommandInput({ kind, provider }), { kind, provider });
+      assert.deepEqual(
+        parseCommandInput({ kind, profileId, provider }),
+        { kind, profileId, provider },
+      );
     }
     assert.throws(
-      () => parseCommandInput({ kind, provider: "other" }),
+      () => parseCommandInput({ kind, profileId, provider: "other" }),
       /provider must be openai, anthropic, or google/i,
     );
     assert.throws(
-      () => parseCommandInput({ kind, apiKey: "forbidden" }),
+      () => parseCommandInput({
+        kind,
+        profileId,
+        provider: "openai",
+        apiKey: "forbidden",
+      }),
       /does not support property apiKey/i,
+    );
+  }
+});
+
+test("discard_profile_oauth accepts only one exact Profile ID", () => {
+  const input = {
+    kind: "discard_profile_oauth" as const,
+    profileId: "profile-oauth",
+  };
+  assert.deepEqual(parseCommandInput(input), input);
+  assert.throws(
+    () => parseCommandInput({ kind: input.kind }),
+    /profileId must be a string/i,
+  );
+  assert.throws(
+    () => parseCommandInput({ ...input, profileId: "bad profile" }),
+    /profileId must be a valid Profile ID/i,
+  );
+  for (const extra of [
+    { provider: "google" },
+    { apiKey: "forbidden" },
+    { accessToken: "forbidden" },
+  ]) {
+    assert.throws(
+      () => parseCommandInput({ ...input, ...extra }),
+      /does not support property/i,
     );
   }
 });

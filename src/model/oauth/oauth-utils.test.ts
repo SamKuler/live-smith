@@ -46,3 +46,51 @@ test("loopback OAuth binds an ephemeral port and terminates a denied authorizati
   assert.doesNotMatch(await response.text(), /access_denied_with_remote_details/u);
   await completion;
 });
+
+test("loopback OAuth uses one explicit IPv4 host for listening and redirect", async () => {
+  const controller = new AbortController();
+  const authorization = await startLoopbackAuthorization({
+    port: 0,
+    path: "/oauth2callback",
+    expectedState: "expected-state",
+    signal: controller.signal,
+    successMessage: "Signed in.",
+    listenHost: "127.0.0.1",
+    redirectHost: "127.0.0.1",
+  });
+  const callback = new URL(authorization.redirectUri);
+  try {
+    assert.equal(callback.hostname, "127.0.0.1");
+    callback.searchParams.set("state", "expected-state");
+    callback.searchParams.set("code", "authorization-code");
+
+    const response = await fetch(callback);
+    assert.equal(response.status, 200);
+    assert.equal(await authorization.completion, "authorization-code");
+    await assert.rejects(fetch(callback));
+  } finally {
+    authorization.cancel();
+    await authorization.completion.catch(() => undefined);
+  }
+});
+
+test("loopback OAuth times out and closes its listener", async () => {
+  const controller = new AbortController();
+  const authorization = await startLoopbackAuthorization({
+    port: 0,
+    path: "/oauth2callback",
+    expectedState: "expected-state",
+    signal: controller.signal,
+    successMessage: "Signed in.",
+    listenHost: "127.0.0.1",
+    redirectHost: "127.0.0.1",
+    timeoutMs: 10,
+  });
+  const callback = new URL(authorization.redirectUri);
+
+  await assert.rejects(
+    authorization.completion,
+    /OAuth authorization timed out/u,
+  );
+  await assert.rejects(fetch(callback));
+});

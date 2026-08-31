@@ -58,7 +58,11 @@ import {
   acquireSharedModelBackendManager,
   type SharedModelBackendManagerLease,
 } from "../model/shared-backend-manager.js";
-import { canonicalStorageDirectory } from "../storage/scope.js";
+import {
+  canonicalStorageDirectory,
+  storageScopeKey,
+  type StorageScopeKey,
+} from "../storage/scope.js";
 import {
   connectionFingerprint,
   loadModelCache,
@@ -106,10 +110,15 @@ import {
   type InstalledSkill,
 } from "../storage/skills.js";
 import {
+  deleteOAuthCredentialProfile,
+  retainOAuthCredentialForProfileProvider,
+} from "../storage/oauth-credentials.js";
+import {
   activeSavedProfile,
   activateSavedProfile,
   deleteSavedProfile,
   loadAgentSettings,
+  prepareOAuthCredentialStoreForSavedProfiles,
   requireActiveSavedProfile,
   SavedProfileConflictError,
   saveGlobalSettings,
@@ -227,6 +236,27 @@ const sessionMutationFence = new SessionMutationFence();
 const sessionIntentFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
 const requestConfigurationFence = new SessionMutationFence();
+const pendingProfileOAuthLifecycleByStorage = new Map<
+  StorageScopeKey,
+  Set<string>
+>();
+const oauthSubscriptionProviders: readonly OAuthSubscriptionProvider[] = [
+  "openai",
+  "anthropic",
+  "google",
+];
+
+function pendingProfileOAuthLifecycleForStorage(
+  storageDirectory: string | undefined,
+): Set<string> {
+  const key = storageScopeKey(storageDirectory);
+  let pending = pendingProfileOAuthLifecycleByStorage.get(key);
+  if (!pending) {
+    pending = new Set();
+    pendingProfileOAuthLifecycleByStorage.set(key, pending);
+  }
+  return pending;
+}
 
 function effectiveSessionModelSelection(
   profile: SavedProfile,
@@ -254,6 +284,8 @@ export interface AgentFlowDependencies {
   loadSessionEvents?: typeof loadSessionEvents;
   requestModelTurn?: typeof requestModelTurn;
   saveGlobalSettings?: typeof saveGlobalSettings;
+  saveSavedProfile?: typeof saveSavedProfile;
+  deleteSavedProfile?: typeof deleteSavedProfile;
   updateSessionInTransaction?: typeof updateSessionInTransaction;
   listModels?(
     profile: DraftProfile,
@@ -262,7 +294,11 @@ export interface AgentFlowDependencies {
   /** Test-only manager; production creates Direct backends per use and shares OAuth. */
   modelBackendManager?: Pick<
     ModelBackendManager,
-    "forProfile" | "oauth" | "oauthLease" | "invalidateOAuth" | "close"
+    | "forProfile"
+    | "oauth"
+    | "oauthLease"
+    | "invalidateOAuth"
+    | "close"
   >;
   /** Process-wide in production; injectable only for isolated tests. */
   modelAuthSendFence?: ModelAuthSendFence;
@@ -289,6 +325,27 @@ export interface AgentFlowDependencies {
   beforeSessionEditScopesCommit?(): Promise<void> | void;
 }
 
+interface OAuthProfileScope {
+  profileId: string;
+  provider: OAuthSubscriptionProvider;
+}
+
+function oauthProfileScope(
+  profile: DraftProfile | SavedProfile,
+): OAuthProfileScope {
+  if (profile.connection.kind !== "oauth-subscription") {
+    throw new TypeError("An OAuth subscription Profile is required.");
+  }
+  return {
+    profileId: profile.id,
+    provider: profile.connection.provider,
+  };
+}
+
+function oauthScopeKey(scope: OAuthProfileScope): string {
+  return `${scope.profileId}:${scope.provider}`;
+}
+
 export async function runAgentFlow(
   context: Api,
   interaction: LiveInteractionContext,
@@ -300,16 +357,24 @@ export async function runAgentFlow(
   const modalSessionOwner = Symbol("Live Smith modal Session owner");
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const modelCatalogLoadReceiptByConnection = new Map<string, string>();
-  const oauthCatalogGenerationByConnection = new Map<string, number>();
+  const oauthCatalogOwnershipByConnection = new Map<
+    string,
+    { generation: number; scopeKey: string }
+  >();
   const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
     : await canonicalStorageDirectory(context.environment.storageDirectory);
   const providerFetch = providerFetchForStorage(storageDirectory);
   const modelAuthSendFenceFor = (
-    provider: OAuthSubscriptionProvider,
+    profileId: string,
   ): ModelAuthSendFence => dependencies.modelAuthSendFence ??
-    modelAuthSendFenceForStorage(storageDirectory, provider);
-  const oauthProvidersUsed = new Set<OAuthSubscriptionProvider>();
+    modelAuthSendFenceForStorage(storageDirectory, profileId);
+  const oauthScopesUsed = new Map<string, OAuthProfileScope>();
+  const pendingProfileOAuthLifecycleReconciliation =
+    pendingProfileOAuthLifecycleForStorage(storageDirectory);
+  void prepareOAuthCredentialStoreForSavedProfiles(storageDirectory).catch(
+    () => undefined,
+  );
   let sharedBackendManagerLeasePromise:
     | Promise<SharedModelBackendManagerLease>
     | undefined;
@@ -359,44 +424,79 @@ export async function runAgentFlow(
       }
       return (await oauthBackendManager(signal)).forProfile(profile, signal);
     },
-    async oauth(provider: OAuthSubscriptionProvider, signal?: AbortSignal) {
-      return (await oauthBackendManager(signal)).oauth(provider, signal);
+    async oauth(
+      profileId: string,
+      provider: OAuthSubscriptionProvider,
+      signal?: AbortSignal,
+    ) {
+      return (await oauthBackendManager(signal)).oauth(
+        profileId,
+        provider,
+        signal,
+      );
     },
-    async oauthLease(provider: OAuthSubscriptionProvider, signal?: AbortSignal) {
-      return (await oauthBackendManager(signal)).oauthLease(provider, signal);
+    async oauthLease(
+      profileId: string,
+      provider: OAuthSubscriptionProvider,
+      signal?: AbortSignal,
+    ) {
+      return (await oauthBackendManager(signal)).oauthLease(
+        profileId,
+        provider,
+        signal,
+      );
     },
-    async invalidateOAuth(provider: OAuthSubscriptionProvider) {
-      return (await oauthBackendManager()).invalidateOAuth(provider);
+    async invalidateOAuth(
+      profileId: string,
+      provider: OAuthSubscriptionProvider,
+    ) {
+      return (await oauthBackendManager()).invalidateOAuth(profileId, provider);
+    },
+    async invalidateOAuthProfile(profileId: string) {
+      const manager = await oauthBackendManager();
+      if (dependencies.modelBackendManager === undefined) {
+        return (manager as ModelBackendManager).invalidateOAuthProfile(profileId);
+      }
+      const results = await Promise.allSettled(
+        oauthSubscriptionProviders.map((provider) =>
+          manager.invalidateOAuth(profileId, provider)
+        ),
+      );
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failure) throw failure.reason;
     },
   };
   const modelAuthOwner = Symbol("Live Smith modal auth owner");
-  let observedAuthGeneration: number | undefined;
-  let observedAuthProvider: OAuthSubscriptionProvider | undefined;
-  let oauthAuth: OAuthAuthState | undefined;
+  const oauthAuthByScope = new Map<
+    string,
+    { generation: number; auth?: OAuthAuthState }
+  >();
   interface OAuthBrowserLaunch {
     controller: ReturnType<typeof createHostAbortController>;
   }
-  const oauthBrowserLaunchByProvider = new Map<
-    OAuthSubscriptionProvider,
+  const oauthBrowserLaunchByScope = new Map<
+    string,
     OAuthBrowserLaunch
   >();
   const oauthBrowserLaunches = new Set<Promise<void>>();
   let oauthBrowserLaunchesClosing = false;
   const cancelOAuthBrowserLaunch = (
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     reason: Error,
   ): void => {
-    oauthBrowserLaunchByProvider.get(provider)?.controller.abort(reason);
+    oauthBrowserLaunchByScope.get(oauthScopeKey(scope))?.controller.abort(reason);
   };
   const launchPendingOAuthBrowser = (
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     url: string,
   ): void => {
     const open = dependencies.openOAuthAuthorizationUrl;
     if (!open || oauthBrowserLaunchesClosing) return;
     cancelOAuthBrowserLaunch(
-      provider,
-      new Error(`${oauthProviderLabel(provider)} OAuth browser launch was replaced.`),
+      scope,
+      new Error(`${oauthProviderLabel(scope.provider)} OAuth browser launch was replaced.`),
     );
     const controller = createHostAbortController();
     let active!: OAuthBrowserLaunch;
@@ -406,12 +506,13 @@ export async function runAgentFlow(
       .catch(() => undefined)
       .finally(() => {
         oauthBrowserLaunches.delete(launch);
-        if (oauthBrowserLaunchByProvider.get(provider) === active) {
-          oauthBrowserLaunchByProvider.delete(provider);
+        const key = oauthScopeKey(scope);
+        if (oauthBrowserLaunchByScope.get(key) === active) {
+          oauthBrowserLaunchByScope.delete(key);
         }
       });
     active = { controller };
-    oauthBrowserLaunchByProvider.set(provider, active);
+    oauthBrowserLaunchByScope.set(oauthScopeKey(scope), active);
     oauthBrowserLaunches.add(launch);
   };
   const projectKey = projectKeyForContext(context);
@@ -557,12 +658,12 @@ export async function runAgentFlow(
       return { models, ready: true };
     }
     const generation = await synchronizeAuthGeneration(
-      profile.connection.provider,
+      oauthProfileScope(profile),
       signal,
     );
     const models = modelsByConnection.get(fingerprint);
     const ready = models !== undefined &&
-      oauthCatalogGenerationByConnection.get(fingerprint) === generation;
+      oauthCatalogOwnershipByConnection.get(fingerprint)?.generation === generation;
     return { models: ready ? models : [], ready };
   };
 
@@ -578,87 +679,229 @@ export async function runAgentFlow(
     return models;
   };
 
-  const clearOAuthCatalogs = (): void => {
-    for (const fingerprint of oauthCatalogGenerationByConnection.keys()) {
+  const clearOAuthCatalogs = (scope: OAuthProfileScope): void => {
+    const expectedScopeKey = oauthScopeKey(scope);
+    for (const [fingerprint, ownership] of oauthCatalogOwnershipByConnection) {
+      if (ownership.scopeKey !== expectedScopeKey) continue;
       modelsByConnection.delete(fingerprint);
       modelCatalogLoadReceiptByConnection.delete(fingerprint);
+      oauthCatalogOwnershipByConnection.delete(fingerprint);
     }
-    oauthCatalogGenerationByConnection.clear();
   };
 
   async function synchronizeAuthGeneration(
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     signal?: AbortSignal,
   ): Promise<number> {
-    oauthProvidersUsed.add(provider);
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    await waitForPromiseWithSignal(
+      prepareOAuthCredentialStoreForSavedProfiles(storageDirectory),
+      signal,
+    );
+    oauthScopesUsed.set(oauthScopeKey(scope), scope);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+    const scopeKey = oauthScopeKey(scope);
     for (;;) {
       throwIfAborted(signal);
-      const generation = modelAuthSendFence.authGeneration();
-      if (
-        observedAuthGeneration === undefined ||
-        observedAuthProvider !== provider
-      ) {
-        observedAuthGeneration = generation;
-        observedAuthProvider = provider;
-        oauthAuth = undefined;
+      const generation = modelAuthSendFence.authGeneration(scope.provider);
+      const cached = oauthAuthByScope.get(scopeKey);
+      if (cached === undefined) {
+        oauthAuthByScope.set(scopeKey, { generation });
         return generation;
       }
-      if (generation === observedAuthGeneration) return generation;
+      if (generation === cached.generation) return generation;
       if (dependencies.modelBackendManager !== undefined) {
         try {
-          await modelBackendManager.invalidateOAuth(provider);
+          await modelBackendManager.invalidateOAuth(
+            scope.profileId,
+            scope.provider,
+          );
         } catch (error) {
           modelAuthSendFence.poison(error);
           throw error;
         }
         throwIfAborted(signal);
       }
-      clearOAuthCatalogs();
-      oauthAuth = undefined;
-      observedAuthGeneration = generation;
-      observedAuthProvider = provider;
+      clearOAuthCatalogs(scope);
+      oauthAuthByScope.set(scopeKey, { generation });
     }
+  }
+
+  function cacheOAuthAuth(
+    scope: OAuthProfileScope,
+    generation: number,
+    auth?: OAuthAuthState,
+  ): void {
+    oauthAuthByScope.set(
+      oauthScopeKey(scope),
+      auth === undefined ? { generation } : { generation, auth },
+    );
   }
 
   function recordOwnedAuthState(
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     auth: OAuthAuthState,
   ): void {
     if (auth.status !== "pending") {
       cancelOAuthBrowserLaunch(
-        provider,
-        new Error(`${oauthProviderLabel(provider)} OAuth authorization settled.`),
+        scope,
+        new Error(
+          `${oauthProviderLabel(scope.provider)} OAuth authorization settled.`,
+        ),
       );
     }
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
     modelAuthSendFence.updateAuthState(
       modelAuthOwner,
+      scope.provider,
       auth.status,
       auth.status === "unavailable" && auth.definitive === true,
     );
-    observedAuthGeneration = modelAuthSendFence.authGeneration();
-    clearOAuthCatalogs();
+    cacheOAuthAuth(
+      scope,
+      modelAuthSendFence.authGeneration(scope.provider),
+      auth,
+    );
+    clearOAuthCatalogs(scope);
   }
 
   function recordOwnedAuthMutation(
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     auth: OAuthAuthState,
   ): void {
     if (auth.status !== "pending") {
       cancelOAuthBrowserLaunch(
-        provider,
-        new Error(`${oauthProviderLabel(provider)} OAuth authorization changed.`),
+        scope,
+        new Error(
+          `${oauthProviderLabel(scope.provider)} OAuth authorization changed.`,
+        ),
       );
     }
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
-    oauthAuth = auth.status === "unavailable" && auth.definitive !== true
-      ? undefined
-      : auth;
-    modelAuthSendFence.updateAuthState(modelAuthOwner, auth.status, true);
-    observedAuthGeneration = modelAuthSendFence.authGeneration();
-    clearOAuthCatalogs();
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+    modelAuthSendFence.updateAuthState(
+      modelAuthOwner,
+      scope.provider,
+      auth.status,
+      true,
+    );
+    cacheOAuthAuth(
+      scope,
+      modelAuthSendFence.authGeneration(scope.provider),
+      auth.status === "unavailable" && auth.definitive !== true
+        ? undefined
+        : auth,
+    );
+    clearOAuthCatalogs(scope);
   }
+
+  const reconcileSavedProfileOAuthLifecycle = async (
+    profileId: string,
+    provider: OAuthSubscriptionProvider | undefined,
+  ): Promise<void> => {
+    const modelAuthSendFence = modelAuthSendFenceFor(profileId);
+    try {
+      await modelBackendManager.invalidateOAuthProfile(profileId);
+    } catch (error) {
+      modelAuthSendFence.poison(error);
+      throw error;
+    }
+    if (storageDirectory !== undefined) {
+      if (provider === undefined) {
+        await deleteOAuthCredentialProfile(storageDirectory, profileId);
+      } else {
+        await retainOAuthCredentialForProfileProvider(
+          storageDirectory,
+          profileId,
+          provider,
+        );
+      }
+    }
+    const resetProviders = new Set(
+      provider === undefined
+        ? oauthSubscriptionProviders
+        : oauthSubscriptionProviders.filter((candidate) => candidate !== provider),
+    );
+    for (const resetProvider of resetProviders) {
+      const scope = { profileId, provider: resetProvider };
+      cancelOAuthBrowserLaunch(
+        scope,
+        new Error(
+          `${oauthProviderLabel(resetProvider)} Profile authorization retired.`,
+        ),
+      );
+      recordOwnedAuthMutation(scope, { status: "signed-out" });
+      oauthScopesUsed.delete(oauthScopeKey(scope));
+    }
+  };
+
+  const oauthProviderForSavedProfile = (
+    settings: AgentSettings,
+    profileId: string,
+  ): OAuthSubscriptionProvider | undefined => {
+    const profile = settings.profiles.find((candidate) => candidate.id === profileId);
+    return profile?.connection.kind === "oauth-subscription"
+      ? profile.connection.provider
+      : undefined;
+  };
+
+  const reconcileUnknownProfileOAuthLifecycle = async (
+    profileId: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    pendingProfileOAuthLifecycleReconciliation.add(profileId);
+    try {
+      await requestConfigurationFence.run(
+        requestConfigurationFenceKey,
+        signal,
+        async () => {
+          const current = await loadAgentSettings(storageDirectory);
+          await reconcileSavedProfileOAuthLifecycle(
+            profileId,
+            oauthProviderForSavedProfile(current, profileId),
+          );
+          pendingProfileOAuthLifecycleReconciliation.delete(profileId);
+        },
+      );
+    } catch {
+      // The unknown settings outcome remains pending for a later state read.
+    }
+  };
+
+  const retryPendingProfileOAuthLifecycle = async (
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    let firstFailure: unknown;
+    for (const profileId of [...pendingProfileOAuthLifecycleReconciliation]) {
+      const fence = modelAuthSendFenceFor(profileId);
+      let release: (() => void) | null = null;
+      try {
+        release = await fence.enterAuth(
+          modelAuthOwner,
+          fence.pendingLoginProvider() ?? "openai",
+          signal,
+          true,
+        );
+        if (!release) continue;
+        await requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          signal,
+          async () => {
+            const current = await loadAgentSettings(storageDirectory);
+            await reconcileSavedProfileOAuthLifecycle(
+              profileId,
+              oauthProviderForSavedProfile(current, profileId),
+            );
+            pendingProfileOAuthLifecycleReconciliation.delete(profileId);
+          },
+        );
+      } catch (error) {
+        throwIfAborted(signal);
+        firstFailure ??= error;
+      } finally {
+        release?.();
+      }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
+  };
 
   const unavailableOAuthAuth = (
     provider: OAuthSubscriptionProvider,
@@ -675,28 +918,34 @@ export async function runAgentFlow(
       };
 
   const readOAuthAuth = async (
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     signal?: AbortSignal,
     options: OAuthAuthReadOptions = {},
   ): Promise<OAuthAuthState> => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
     for (;;) {
-      const generation = await synchronizeAuthGeneration(provider, signal);
+      const generation = await synchronizeAuthGeneration(scope, signal);
       let auth: OAuthAuthState;
       try {
-        const backend = await modelBackendManager.oauth(provider, signal);
+        const backend = await modelBackendManager.oauth(
+          scope.profileId,
+          scope.provider,
+          signal,
+        );
         throwIfAborted(signal);
         auth = await backend.readAuthState(signal, options);
       } catch (error) {
         throwIfAborted(signal);
-        auth = unavailableOAuthAuth(provider, error);
+        auth = unavailableOAuthAuth(scope.provider, error);
       }
-      if (modelAuthSendFence.authGeneration() !== generation) continue;
-      oauthAuth = auth;
+      if (modelAuthSendFence.authGeneration(scope.provider) !== generation) continue;
+      cacheOAuthAuth(scope, generation, auth);
       if (auth.status !== "pending") {
         cancelOAuthBrowserLaunch(
-          provider,
-          new Error(`${oauthProviderLabel(provider)} OAuth authorization settled.`),
+          scope,
+          new Error(
+            `${oauthProviderLabel(scope.provider)} OAuth authorization settled.`,
+          ),
         );
       }
       return auth;
@@ -704,32 +953,33 @@ export async function runAgentFlow(
   };
 
   const reconcilePendingOAuthAuthWhileReading = async (
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     signal?: AbortSignal,
   ): Promise<OAuthAuthState | undefined> => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
-    if (!modelAuthSendFence.hasPendingLogin()) return undefined;
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+    if (!modelAuthSendFence.hasPendingLogin(scope.provider)) return undefined;
     const auth = await modelAuthSendFence.reconcilePendingAuthState(
+      scope.provider,
       (reconciliationSignal) =>
-        readOAuthAuth(provider, reconciliationSignal, { readiness: true }),
+        readOAuthAuth(scope, reconciliationSignal, { readiness: true }),
       signal,
     );
     if (auth === undefined) return undefined;
-    await synchronizeAuthGeneration(provider, signal);
-    oauthAuth = auth;
+    const generation = await synchronizeAuthGeneration(scope, signal);
+    cacheOAuthAuth(scope, generation, auth);
     return auth;
   };
 
   const withPendingOAuthAuthReconciliation = async <T>(
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     signal: AbortSignal | undefined,
     operation: (auth: OAuthAuthState) => Promise<T>,
   ): Promise<T | undefined> => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
-    if (!modelAuthSendFence.hasPendingLogin()) return undefined;
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+    if (!modelAuthSendFence.hasPendingLogin(scope.provider)) return undefined;
     const release = await modelAuthSendFence.enterRead(signal);
     try {
-      const auth = await reconcilePendingOAuthAuthWhileReading(provider, signal);
+      const auth = await reconcilePendingOAuthAuthWhileReading(scope, signal);
       return auth === undefined ? undefined : await operation(auth);
     } finally {
       release();
@@ -737,15 +987,17 @@ export async function runAgentFlow(
   };
 
   const runOAuthAuthOperation = async (
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     operation: "beginLogin" | "logout",
     signal: AbortSignal,
   ): Promise<OAuthAuthState> => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
     if (operation === "logout") {
       cancelOAuthBrowserLaunch(
-        provider,
-        new Error(`${oauthProviderLabel(provider)} sign-in was canceled.`),
+        scope,
+        new Error(
+          `${oauthProviderLabel(scope.provider)} sign-in was canceled.`,
+        ),
       );
     }
     let mutationAttempted = false;
@@ -755,7 +1007,12 @@ export async function runAgentFlow(
       retirementPromise ??= (async () => {
         try {
           if (retireBackend) await retireBackend();
-          else await modelBackendManager.invalidateOAuth(provider);
+          else {
+            await modelBackendManager.invalidateOAuth(
+              scope.profileId,
+              scope.provider,
+            );
+          }
         } catch (error) {
           modelAuthSendFence.poison(error);
           throw error;
@@ -764,7 +1021,11 @@ export async function runAgentFlow(
       return retirementPromise;
     };
     try {
-      const lease = await modelBackendManager.oauthLease(provider, signal);
+      const lease = await modelBackendManager.oauthLease(
+        scope.profileId,
+        scope.provider,
+        signal,
+      );
       const backend = lease.backend;
       retireBackend = lease.retire;
       mutationAttempted = true;
@@ -773,20 +1034,24 @@ export async function runAgentFlow(
       if (auth.status === "unavailable" && auth.definitive !== true) {
         await confirmUnknownMutationRetirement();
       }
-      recordOwnedAuthMutation(provider, auth);
+      recordOwnedAuthMutation(scope, auth);
       return auth;
     } catch (error) {
-      const auth = unavailableOAuthAuth(provider, error);
+      const auth = unavailableOAuthAuth(scope.provider, error);
       let retirementError: unknown;
       if (mutationAttempted) {
         try {
           await confirmUnknownMutationRetirement();
-          recordOwnedAuthMutation(provider, auth);
+          recordOwnedAuthMutation(scope, auth);
         } catch (retirementFailure) {
           retirementError = retirementFailure;
         }
       } else {
-        oauthAuth = auth;
+        cacheOAuthAuth(
+          scope,
+          modelAuthSendFence.authGeneration(scope.provider),
+          auth,
+        );
       }
       try {
         throwIfAborted(signal);
@@ -799,19 +1064,27 @@ export async function runAgentFlow(
   };
 
   const withExclusiveOAuthAuth = async <T>(
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     operation: () => Promise<T>,
     signal: AbortSignal,
+    allowPendingOwner = false,
   ): Promise<T> => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
-    const release = await modelAuthSendFence.enterAuth(modelAuthOwner, signal);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+    const release = await modelAuthSendFence.enterAuth(
+      modelAuthOwner,
+      scope.provider,
+      signal,
+      allowPendingOwner,
+    );
     if (!release) {
       throw new ChatBridgeConflictError(
-        `Stop every active agent request before changing ${oauthProviderLabel(provider)} sign-in.`,
+        modelAuthSendFence.hasPendingLogin()
+          ? "Cancel or finish this Profile's pending sign-in before starting another account operation."
+          : `Stop every active agent request before changing ${oauthProviderLabel(scope.provider)} sign-in for this Profile.`,
       );
     }
     try {
-      await synchronizeAuthGeneration(provider, signal);
+      await synchronizeAuthGeneration(scope, signal);
       return await operation();
     } finally {
       release();
@@ -833,6 +1106,9 @@ export async function runAgentFlow(
       await retryPendingSessionCleanup();
       throwIfAborted(options.signal);
     }
+    if (pendingProfileOAuthLifecycleReconciliation.size > 0) {
+      await retryPendingProfileOAuthLifecycle(options.signal);
+    }
     const settings = await loadAgentSettings(storageDirectory);
     throwIfAborted(options.signal);
     return settings;
@@ -847,31 +1123,39 @@ export async function runAgentFlow(
     throwIfAborted(signal);
     const activeProfile = activeSavedProfile(settings);
     const modelProfile = previewProfile ?? activeProfile;
-    if (modelProfile?.connection.kind === "oauth-subscription") {
-      await synchronizeAuthGeneration(modelProfile.connection.provider, signal);
-    }
-    if (
-      modelProfile?.connection.kind === "oauth-subscription" &&
-      !options.oauthAuthAlreadyResolved
-    ) {
-      if (modelAuthSendFenceFor(modelProfile.connection.provider).hasPendingLogin()) {
-        await reconcilePendingOAuthAuthWhileReading(
-          modelProfile.connection.provider,
-          signal,
-        );
-      } else if (oauthAuth === undefined) {
-        await readOAuthAuth(modelProfile.connection.provider, signal);
-      }
-    }
+    const modelAuthScope = modelProfile?.connection.kind === "oauth-subscription"
+      ? oauthProfileScope(modelProfile)
+      : undefined;
+    const modelIsActiveProfile = Boolean(
+      activeProfile &&
+      modelProfile?.id === activeProfile.id &&
+      connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile),
+    );
+    const separateActiveProfileProjection = activeProfile && !modelIsActiveProfile
+      ? await modelProjectionForProfile(activeProfile, signal)
+      : undefined;
     const modelProjection = modelProfile
       ? await modelProjectionForProfile(modelProfile, signal)
       : { models: [], ready: true };
-    const activeProfileProjection = activeProfile
-      ? modelProfile?.id === activeProfile.id &&
-          connectionFingerprint(modelProfile) === connectionFingerprint(activeProfile)
-        ? modelProjection
-        : await modelProjectionForProfile(activeProfile, signal)
-      : { models: [], ready: true };
+    const activeProfileProjection = modelIsActiveProfile
+      ? modelProjection
+      : separateActiveProfileProjection ?? { models: [], ready: true };
+    if (modelAuthScope) {
+      await synchronizeAuthGeneration(modelAuthScope, signal);
+      if (!options.oauthAuthAlreadyResolved) {
+        if (
+          modelAuthSendFenceFor(modelAuthScope.profileId).hasPendingLogin(
+            modelAuthScope.provider,
+          )
+        ) {
+          await reconcilePendingOAuthAuthWhileReading(modelAuthScope, signal);
+        } else if (
+          oauthAuthByScope.get(oauthScopeKey(modelAuthScope))?.auth === undefined
+        ) {
+          await readOAuthAuth(modelAuthScope, signal);
+        }
+      }
+    }
     const models = modelProjection.models;
     const activeProfileModels = activeProfileProjection.models;
     const capabilityPreview = modelProfile
@@ -993,10 +1277,14 @@ export async function runAgentFlow(
             effectiveSessionModelSelection(activeProfile, activeSession),
           )
         : null;
-      const projectedAuthGeneration =
-        observedAuthProvider === undefined
-          ? 0
-          : modelAuthSendFenceFor(observedAuthProvider).peekAuthGeneration();
+      const projectedAuthGeneration = modelAuthScope === undefined
+        ? 0
+        : modelAuthSendFenceFor(modelAuthScope.profileId).peekAuthGeneration(
+            modelAuthScope.provider,
+          );
+      const authProjection = modelAuthScope === undefined
+        ? undefined
+        : oauthAuthByScope.get(oauthScopeKey(modelAuthScope));
       return {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
@@ -1041,14 +1329,14 @@ export async function runAgentFlow(
           ? null
           : savedProfileRevision(activeProfile),
         settings,
-        ...(oauthAuth === undefined ||
-            observedAuthGeneration !== projectedAuthGeneration
+        ...(modelAuthScope === undefined ||
+            authProjection?.auth === undefined ||
+            authProjection.generation !== projectedAuthGeneration
           ? {}
           : {
-              oauthAuth,
-              ...(observedAuthProvider
-                ? { oauthAuthProvider: observedAuthProvider }
-                : {}),
+              oauthAuth: authProjection.auth,
+              oauthAuthProfileId: modelAuthScope.profileId,
+              oauthAuthProvider: modelAuthScope.provider,
             }),
         oauthAuthGeneration: projectedAuthGeneration,
         status,
@@ -1066,13 +1354,13 @@ export async function runAgentFlow(
     options,
   );
 
-  const stateOAuthProvider = (
+  const stateOAuthScope = (
     previewProfile: DraftProfile | undefined,
     settings: AgentSettings,
-  ): OAuthSubscriptionProvider | undefined => {
+  ): OAuthProfileScope | undefined => {
     const profile = previewProfile ?? activeSavedProfile(settings);
     return profile?.connection.kind === "oauth-subscription"
-      ? profile.connection.provider
+      ? oauthProfileScope(profile)
       : undefined;
   };
 
@@ -1082,11 +1370,12 @@ export async function runAgentFlow(
   ) => {
     const signal = options.signal;
     const settings = await prepareBuildStateSettings(options);
-    const provider = stateOAuthProvider(previewProfile, settings);
-    if (provider === undefined) {
+    const scope = stateOAuthScope(previewProfile, settings);
+    if (scope === undefined) {
       return buildStateFromSettings(settings, previewProfile, options);
     }
-    const releaseAuthRead = await modelAuthSendFenceFor(provider).enterRead(signal);
+    const releaseAuthRead = await modelAuthSendFenceFor(scope.profileId)
+      .enterRead(signal);
     try {
       return await buildStateFromSettings(settings, previewProfile, options);
     } finally {
@@ -1120,24 +1409,50 @@ export async function runAgentFlow(
     options: BuildStateOptions = {},
   ) => confirmCommandState(() => buildState(previewProfile, options));
 
+  const resolveCommittedProfileLifecycleFailure = async (
+    profileId: string,
+    message: string,
+    cause: unknown,
+    previewProfile: DraftProfile | undefined,
+    signal: AbortSignal,
+  ): Promise<ChatDialogState> => {
+    let authoritativeState: ChatDialogState | undefined;
+    try {
+      authoritativeState = await buildState(previewProfile, { signal });
+      if (!pendingProfileOAuthLifecycleReconciliation.has(profileId)) {
+        return authoritativeState;
+      }
+    } catch {
+      // The command remains explicit about the committed settings and asks the
+      // client to reconcile when OAuth cleanup cannot be safely confirmed.
+    }
+    throw new ChatBridgeCommandOutcomeUnknownError(message, {
+      cause,
+      authoritativeState,
+    });
+  };
+
   const withOAuthAuthProjection = (
     state: ChatDialogState,
-    provider: OAuthSubscriptionProvider,
+    scope: OAuthProfileScope,
     auth: OAuthAuthState,
   ): ChatDialogState => {
-    const modelAuthSendFence = modelAuthSendFenceFor(provider);
+    const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
     if (
-      state.oauthAuthProvider === provider &&
+      state.oauthAuthProfileId === scope.profileId &&
+      state.oauthAuthProvider === scope.provider &&
       state.oauthAuth !== undefined &&
-      state.oauthAuthGeneration === modelAuthSendFence.peekAuthGeneration()
+      state.oauthAuthGeneration ===
+        modelAuthSendFence.peekAuthGeneration(scope.provider)
     ) {
       return state;
     }
     return {
       ...state,
       oauthAuth: auth,
-      oauthAuthProvider: provider,
-      oauthAuthGeneration: modelAuthSendFence.peekAuthGeneration(),
+      oauthAuthProfileId: scope.profileId,
+      oauthAuthProvider: scope.provider,
+      oauthAuthGeneration: modelAuthSendFence.peekAuthGeneration(scope.provider),
     };
   };
 
@@ -1168,6 +1483,72 @@ export async function runAgentFlow(
         });
       },
     );
+    if (commandInput.kind === "discard_profile_oauth") {
+      const profileId = commandInput.profileId;
+      const profileFence = modelAuthSendFenceFor(profileId);
+      const hasOAuthLifecycle =
+        pendingProfileOAuthLifecycleReconciliation.has(profileId) ||
+        profileFence.hasPendingLogin() ||
+        oauthSubscriptionProviders.some(
+          (provider) => profileFence.hasAuthActivity(provider),
+        ) ||
+        [...oauthScopesUsed.values()].some(
+          (scope) => scope.profileId === profileId,
+        );
+      if (!hasOAuthLifecycle) {
+        status = undefined;
+        return buildStateAfterCommandMutation(undefined, { signal });
+      }
+      let releaseProfileMutation: (() => void) | undefined;
+      try {
+        releaseProfileMutation = await profileFence.enterAuth(
+          modelAuthOwner,
+          profileFence.pendingLoginProvider() ?? "openai",
+          signal,
+          true,
+        ) ?? undefined;
+      } catch (cause) {
+        throw new Error(
+          "OAuth cleanup for this discarded Profile draft could not be confirmed. Restart Live Smith before discarding it.",
+          { cause },
+        );
+      }
+      if (!releaseProfileMutation) {
+        throw new ChatBridgeConflictError(
+          "Stop active requests before discarding this Profile draft.",
+        );
+      }
+      try {
+        await requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          signal,
+          async () => {
+            try {
+              await waitForPromiseWithSignal(
+                prepareOAuthCredentialStoreForSavedProfiles(storageDirectory),
+                signal,
+              );
+              const settings = await loadAgentSettings(storageDirectory);
+              await reconcileSavedProfileOAuthLifecycle(
+                profileId,
+                oauthProviderForSavedProfile(settings, profileId),
+              );
+              pendingProfileOAuthLifecycleReconciliation.delete(profileId);
+            } catch (cause) {
+              pendingProfileOAuthLifecycleReconciliation.add(profileId);
+              throw new Error(
+                "OAuth cleanup for this discarded Profile draft could not be confirmed. Retry or restart Live Smith before discarding it.",
+                { cause },
+              );
+            }
+          },
+        );
+      } finally {
+        releaseProfileMutation();
+      }
+      status = undefined;
+      return buildStateAfterCommandMutation(undefined, { signal });
+    }
     if (commandInput.kind === "save_profile") {
       const settings = await loadAgentSettings(storageDirectory);
       const otherProfiles = settings.profiles.filter(
@@ -1177,10 +1558,41 @@ export async function runAgentFlow(
       const previousProfile = settings.profiles.find(
         (entry) => entry.id === profile.id,
       );
+      const profileFence = modelAuthSendFenceFor(profile.id);
+      const targetProvider = profile.connection.kind === "oauth-subscription"
+        ? profile.connection.provider
+        : undefined;
+      const previousProvider = previousProfile?.connection.kind ===
+          "oauth-subscription"
+        ? previousProfile.connection.provider
+        : undefined;
+      const requiresOAuthLifecycleReconciliation = (): boolean => {
+        const hasForeignOAuthActivity = oauthSubscriptionProviders.some(
+          (provider) =>
+            provider !== targetProvider &&
+            (
+              profileFence.hasAuthActivity(provider) ||
+              [...oauthScopesUsed.values()].some(
+                (scope) =>
+                  scope.profileId === profile.id && scope.provider === provider,
+              )
+            ),
+        );
+        return targetProvider === undefined
+          ? previousProvider !== undefined ||
+            profileFence.hasPendingLogin() ||
+            hasForeignOAuthActivity
+          : previousProvider !== undefined && previousProvider !== targetProvider ||
+            profileFence.pendingLoginProvider() !== undefined &&
+              profileFence.pendingLoginProvider() !== targetProvider ||
+            hasForeignOAuthActivity;
+      };
       const profileFingerprint = connectionFingerprint(profile);
       const saveWithCatalog = async (
         cachedModels: DiscoveredModelInfo[],
         subscriptionCatalogReady = false,
+        expectedOAuthGeneration?: number,
+        profileUseHeld = false,
       ): Promise<ChatDialogState> => {
         const previousModelsById = new Map(
           (previousProfile?.models ?? []).map((model) => [model.model, model]),
@@ -1240,27 +1652,102 @@ export async function runAgentFlow(
           );
         }
         throwIfAborted(signal);
-        try {
-          await runProfileSettingsMutation(() =>
-            saveSavedProfile(storageDirectory, profile, {
-              expectedCurrentProfileRevision:
-                commandInput.expectedProfileRevision,
-            })
+        const fenceProvider = profileFence.pendingLoginProvider() ??
+          (profile.connection.kind === "oauth-subscription"
+            ? profile.connection.provider
+            : previousProfile?.connection.kind === "oauth-subscription"
+              ? previousProfile.connection.provider
+              : "openai");
+        const releaseProfileMutation = profileUseHeld
+          ? undefined
+          : await profileFence.enterAuth(
+              modelAuthOwner,
+              fenceProvider,
+              signal,
+              true,
+            ) ?? undefined;
+        if (!profileUseHeld && !releaseProfileMutation) {
+          throw new ChatBridgeConflictError(
+            "Stop active requests or finish the pending sign-in before saving this Profile.",
           );
+        }
+        const oauthLifecycleRequired = profileUseHeld
+          ? false
+          : requiresOAuthLifecycleReconciliation();
+        let committedLifecycleFailure: { cause: unknown } | undefined;
+        try {
+          if (
+            targetProvider !== undefined &&
+            expectedOAuthGeneration !== undefined &&
+            profileFence.authGeneration(targetProvider) !==
+              expectedOAuthGeneration
+          ) {
+            throw new ChatBridgeConflictError(
+              `${oauthProviderLabel(targetProvider)} sign-in changed before this Profile could be saved. Load models again.`,
+            );
+          }
+          try {
+            await runProfileSettingsMutation(async () => {
+              if (oauthLifecycleRequired) {
+                await waitForPromiseWithSignal(
+                  prepareOAuthCredentialStoreForSavedProfiles(storageDirectory),
+                  signal,
+                );
+              }
+              return (dependencies.saveSavedProfile ?? saveSavedProfile)(
+                storageDirectory,
+                profile,
+                {
+                expectedCurrentProfileRevision:
+                  commandInput.expectedProfileRevision,
+                },
+              );
+            });
+          } catch (error) {
+            if (
+              oauthLifecycleRequired &&
+              isStorageCommitOutcomeUnknownError(error)
+            ) {
+              await reconcileUnknownProfileOAuthLifecycle(profile.id, signal);
+            }
+            throw error;
+          }
+          if (oauthLifecycleRequired) {
+            try {
+              await reconcileSavedProfileOAuthLifecycle(
+                profile.id,
+                targetProvider,
+              );
+            } catch (cause) {
+              pendingProfileOAuthLifecycleReconciliation.add(profile.id);
+              committedLifecycleFailure = { cause };
+            }
+          }
         } catch (error) {
           if (error instanceof SavedProfileConflictError) {
             throw new ChatBridgeConflictError(error.message);
           }
           throw error;
+        } finally {
+          releaseProfileMutation?.();
         }
         if (profile.connection.kind === "direct-api") {
           // Direct API catalogs are durable and are reloaded from storage after
           // Save. Subscription catalogs are modal-only and remain valid until
-          // the shared auth generation changes.
+          // this Profile's auth generation changes.
           modelsByConnection.delete(profileFingerprint);
         }
         status = `Profile ${profile.name} saved.`;
         openSettingsOnLoad = false;
+        if (committedLifecycleFailure) {
+          return resolveCommittedProfileLifecycleFailure(
+            profile.id,
+            "The Profile was saved, but OAuth account cleanup could not be confirmed. Restart Live Smith before using subscription sign-in again.",
+            committedLifecycleFailure.cause,
+            profile,
+            signal,
+          );
+        }
         return buildStateAfterCommandMutation(profile, { signal });
       };
 
@@ -1270,8 +1757,9 @@ export async function runAgentFlow(
         );
       }
 
+      const profileAuthScope = oauthProfileScope(profile);
       const releaseOAuthSave = await modelAuthSendFenceFor(
-        profile.connection.provider,
+        profileAuthScope.profileId,
       ).enterOAuthUse(signal);
       if (!releaseOAuthSave) {
         throw new ChatBridgeConflictError(
@@ -1280,16 +1768,24 @@ export async function runAgentFlow(
       }
       try {
         const generation = await synchronizeAuthGeneration(
-          profile.connection.provider,
+          profileAuthScope,
           signal,
         );
         const subscriptionCatalogReady =
-          oauthCatalogGenerationByConnection.get(profileFingerprint) === generation &&
+          oauthCatalogOwnershipByConnection.get(profileFingerprint)?.generation ===
+            generation &&
           modelsByConnection.has(profileFingerprint);
         const cachedModels = subscriptionCatalogReady
           ? modelsByConnection.get(profileFingerprint) ?? []
           : [];
-        return await saveWithCatalog(cachedModels, subscriptionCatalogReady);
+        const oauthLifecycleRequired = requiresOAuthLifecycleReconciliation();
+        if (oauthLifecycleRequired) releaseOAuthSave();
+        return await saveWithCatalog(
+          cachedModels,
+          subscriptionCatalogReady,
+          generation,
+          !oauthLifecycleRequired,
+        );
       } finally {
         releaseOAuthSave();
       }
@@ -1297,16 +1793,92 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "delete_profile") {
       throwIfAborted(signal);
-      await runProfileSettingsMutation(() =>
-        deleteSavedProfile(
-          storageDirectory,
-          commandInput.profileId,
-        )
+      const settings = await loadAgentSettings(storageDirectory);
+      const initialDeletedProfile = settings.profiles.find(
+        (profile) => profile.id === commandInput.profileId,
       );
+      const profileFence = modelAuthSendFenceFor(commandInput.profileId);
+      const releaseProfileMutation = await profileFence.enterAuth(
+        modelAuthOwner,
+        profileFence.pendingLoginProvider() ??
+          (initialDeletedProfile?.connection.kind === "oauth-subscription"
+            ? initialDeletedProfile.connection.provider
+            : "openai"),
+        signal,
+        true,
+      ) ?? undefined;
+      if (!releaseProfileMutation) {
+        throw new ChatBridgeConflictError(
+          "Stop active requests before deleting this Profile.",
+        );
+      }
+      let committedLifecycleFailure: { cause: unknown } | undefined;
+      try {
+        const currentSettings = await loadAgentSettings(storageDirectory);
+        const deletedProfile = currentSettings.profiles.find(
+          (profile) => profile.id === commandInput.profileId,
+        );
+        const oauthLifecycleRequired =
+          deletedProfile?.connection.kind === "oauth-subscription" ||
+          profileFence.hasPendingLogin() ||
+          oauthSubscriptionProviders.some(
+          (provider) => profileFence.hasAuthActivity(provider),
+          ) ||
+          [...oauthScopesUsed.values()].some(
+            (scope) => scope.profileId === commandInput.profileId,
+          );
+        try {
+          await runProfileSettingsMutation(async () => {
+            if (oauthLifecycleRequired) {
+              await waitForPromiseWithSignal(
+                prepareOAuthCredentialStoreForSavedProfiles(storageDirectory),
+                signal,
+              );
+            }
+            return (dependencies.deleteSavedProfile ?? deleteSavedProfile)(
+              storageDirectory,
+              commandInput.profileId,
+            );
+          });
+        } catch (error) {
+          if (
+            oauthLifecycleRequired &&
+            isStorageCommitOutcomeUnknownError(error)
+          ) {
+            await reconcileUnknownProfileOAuthLifecycle(
+              commandInput.profileId,
+              signal,
+            );
+          }
+          throw error;
+        }
+        if (oauthLifecycleRequired) {
+          try {
+            await reconcileSavedProfileOAuthLifecycle(
+              commandInput.profileId,
+              undefined,
+            );
+          } catch (cause) {
+            pendingProfileOAuthLifecycleReconciliation.add(commandInput.profileId);
+            committedLifecycleFailure = { cause };
+          }
+        }
+      } finally {
+        releaseProfileMutation?.();
+      }
       modelsByConnection.clear();
       modelCatalogLoadReceiptByConnection.clear();
       status = "Profile deleted.";
       openSettingsOnLoad = true;
+      if (committedLifecycleFailure) {
+        return resolveCommittedProfileLifecycleFailure(
+          commandInput.profileId,
+          "The Profile was deleted, but OAuth account cleanup could not be confirmed. Restart Live Smith before using subscription sign-in again.",
+          committedLifecycleFailure.cause,
+          undefined,
+          signal,
+        );
+      }
       return buildStateAfterCommandMutation();
     }
 
@@ -1533,9 +2105,8 @@ export async function runAgentFlow(
         return buildStateAfterCommandMutation(undefined, { signal });
       }
 
-      const modelAuthSendFence = modelAuthSendFenceFor(
-        profile.connection.provider,
-      );
+      const profileAuthScope = oauthProfileScope(profile);
+      const modelAuthSendFence = modelAuthSendFenceFor(profileAuthScope.profileId);
       const releaseOAuthLoad = await modelAuthSendFence.enterOAuthUse(signal);
       if (!releaseOAuthLoad) {
         throw new ChatBridgeConflictError(
@@ -1544,36 +2115,41 @@ export async function runAgentFlow(
       }
       try {
         const generation = await synchronizeAuthGeneration(
-          profile.connection.provider,
+          profileAuthScope,
           signal,
         );
         const fingerprint = connectionFingerprint(profile);
         if (
-          oauthCatalogGenerationByConnection.get(fingerprint) !== generation ||
+          oauthCatalogOwnershipByConnection.get(fingerprint)?.generation !==
+              generation ||
           !modelsByConnection.has(fingerprint)
         ) {
           const backend = await modelBackendManager.oauth(
-            profile.connection.provider,
+            profileAuthScope.profileId,
+            profileAuthScope.provider,
             signal,
           );
           const models = requireDiscoveredModelCatalog(
             await backend.listModels(profile, signal),
           );
           const auth = await backend.readAuthState(signal, { readiness: true });
-          oauthAuth = auth;
+          cacheOAuthAuth(profileAuthScope, generation, auth);
           const authError = subscriptionSendAuthError(
             auth,
             profile.connection.provider,
           );
           if (authError) throw new ChatBridgeConflictError(authError);
           throwIfAborted(signal);
-          if (modelAuthSendFence.authGeneration() !== generation) {
+          if (modelAuthSendFence.authGeneration(profileAuthScope.provider) !== generation) {
             throw new ChatBridgeConflictError(
               `${oauthProviderLabel(profile.connection.provider)} sign-in changed before model capabilities finished loading.`,
             );
           }
           modelsByConnection.set(fingerprint, models);
-          oauthCatalogGenerationByConnection.set(fingerprint, generation);
+          oauthCatalogOwnershipByConnection.set(fingerprint, {
+            generation,
+            scopeKey: oauthScopeKey(profileAuthScope),
+          });
         }
         status = undefined;
         openSettingsOnLoad = false;
@@ -1606,23 +2182,23 @@ export async function runAgentFlow(
             );
           }
           let oauthGeneration: number | undefined;
-          const initialOAuthProvider =
+          const initialOAuthScope =
             initialProfile.connection.kind === "oauth-subscription"
-              ? initialProfile.connection.provider
+              ? oauthProfileScope(initialProfile)
               : undefined;
-          if (initialProfile.connection.kind === "oauth-subscription") {
+          if (initialOAuthScope) {
             releaseOAuthSelection = await modelAuthSendFenceFor(
-              initialProfile.connection.provider,
+              initialOAuthScope.profileId,
             ).enterOAuthUse(
               signal,
             ) ?? undefined;
             if (!releaseOAuthSelection) {
               throw new ChatBridgeConflictError(
-                `Wait for the ${oauthProviderLabel(initialProfile.connection.provider)} sign-in operation to finish before changing this Session's model.`,
+                `Wait for the ${oauthProviderLabel(initialOAuthScope.provider)} sign-in operation to finish before changing this Session's model.`,
               );
             }
             oauthGeneration = await synchronizeAuthGeneration(
-              initialProfile.connection.provider,
+              initialOAuthScope,
               signal,
             );
           }
@@ -1659,11 +2235,12 @@ export async function runAgentFlow(
                 throwIfAborted(signal);
                 if (
                   oauthGeneration !== undefined &&
-                  modelAuthSendFenceFor(initialOAuthProvider!).authGeneration() !==
+                  modelAuthSendFenceFor(initialOAuthScope!.profileId)
+                      .authGeneration(initialOAuthScope!.provider) !==
                     oauthGeneration
                 ) {
                   throw new ChatBridgeConflictError(
-                    `${oauthProviderLabel(initialOAuthProvider!)} sign-in changed. Choose the model again.`,
+                    `${oauthProviderLabel(initialOAuthScope!.provider)} sign-in changed. Choose the model again.`,
                   );
                 }
                 const settings = await loadAgentSettings(storageDirectory);
@@ -2067,8 +2644,11 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "discover_models") {
       const profile = validateDraftProfileForDiscovery(commandInput.profile);
+      const profileAuthScope = profile.connection.kind === "oauth-subscription"
+        ? oauthProfileScope(profile)
+        : undefined;
       const releaseOAuthDiscovery = profile.connection.kind === "oauth-subscription"
-        ? await modelAuthSendFenceFor(profile.connection.provider).enterOAuthUse(signal)
+        ? await modelAuthSendFenceFor(profile.id).enterOAuthUse(signal)
         : () => undefined;
       if (!releaseOAuthDiscovery) {
         throw new ChatBridgeConflictError(
@@ -2077,8 +2657,8 @@ export async function runAgentFlow(
       }
       let cacheMutationCompleted = false;
       try {
-        const oauthGeneration = profile.connection.kind === "oauth-subscription"
-          ? await synchronizeAuthGeneration(profile.connection.provider, signal)
+        const oauthGeneration = profileAuthScope
+          ? await synchronizeAuthGeneration(profileAuthScope, signal)
           : undefined;
         const discovered = requireDiscoveredModelCatalog(await (
           dependencies.listModels ??
@@ -2111,10 +2691,10 @@ export async function runAgentFlow(
           commandContext.commandId,
         );
         if (profile.connection.kind === "oauth-subscription") {
-          oauthCatalogGenerationByConnection.set(
-            fingerprint,
-            oauthGeneration!,
-          );
+          oauthCatalogOwnershipByConnection.set(fingerprint, {
+            generation: oauthGeneration!,
+            scopeKey: oauthScopeKey(profileAuthScope!),
+          });
         }
         status = discovered.length
           ? `Discovered ${discovered.length} model${discovered.length === 1 ? "" : "s"}.`
@@ -2133,30 +2713,32 @@ export async function runAgentFlow(
 
     if (commandInput.kind === "start_oauth_login") {
       const provider = commandInput.provider;
+      const scope = { profileId: commandInput.profileId, provider };
       let resultAuth!: OAuthAuthState;
-      await withExclusiveOAuthAuth(provider, async () => {
-        const auth = await runOAuthAuthOperation(provider, "beginLogin", signal);
+      await withExclusiveOAuthAuth(scope, async () => {
+        const auth = await runOAuthAuthOperation(scope, "beginLogin", signal);
         resultAuth = auth;
         status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
       }, signal);
       if (resultAuth.status === "pending") {
         launchPendingOAuthBrowser(
-          provider,
+          scope,
           resultAuth.verificationUrl,
         );
       }
       return withOAuthAuthProjection(
         await buildStateAfterCommandMutation(undefined, { signal }),
-        provider,
+        scope,
         resultAuth,
       );
     }
 
     if (commandInput.kind === "refresh_oauth_account") {
       const provider = commandInput.provider;
+      const scope = { profileId: commandInput.profileId, provider };
       const pendingState = await withPendingOAuthAuthReconciliation(
-        provider,
+        scope,
         signal,
         async (pendingAuth) => {
           status = oauthAuthStatusMessage(pendingAuth, provider);
@@ -2166,38 +2748,42 @@ export async function runAgentFlow(
               oauthAuthAlreadyResolved: true,
               signal,
             })
-          ), provider, pendingAuth);
+          ), scope, pendingAuth);
         },
       );
       if (pendingState) return pendingState;
       let resultAuth!: OAuthAuthState;
-      await withExclusiveOAuthAuth(provider, async () => {
-        oauthAuth = undefined;
-        const auth = await readOAuthAuth(provider, signal, { readiness: true });
+      await withExclusiveOAuthAuth(scope, async () => {
+        cacheOAuthAuth(
+          scope,
+          modelAuthSendFenceFor(scope.profileId).authGeneration(scope.provider),
+        );
+        const auth = await readOAuthAuth(scope, signal, { readiness: true });
         resultAuth = auth;
-        recordOwnedAuthState(provider, auth);
+        recordOwnedAuthState(scope, auth);
         status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
       }, signal);
       return withOAuthAuthProjection(
         await buildStateAfterCommandMutation(undefined, { signal }),
-        provider,
+        scope,
         resultAuth,
       );
     }
 
     if (commandInput.kind === "logout_oauth") {
       const provider = commandInput.provider;
+      const scope = { profileId: commandInput.profileId, provider };
       let resultAuth!: OAuthAuthState;
-      await withExclusiveOAuthAuth(provider, async () => {
-        const auth = await runOAuthAuthOperation(provider, "logout", signal);
+      await withExclusiveOAuthAuth(scope, async () => {
+        const auth = await runOAuthAuthOperation(scope, "logout", signal);
         resultAuth = auth;
         status = oauthAuthStatusMessage(auth, provider);
         openSettingsOnLoad = true;
-      }, signal);
+      }, signal, true);
       return withOAuthAuthProjection(
         await buildStateAfterCommandMutation(undefined, { signal }),
-        provider,
+        scope,
         resultAuth,
       );
     }
@@ -2739,8 +3325,9 @@ export async function runAgentFlow(
         let requestBackend: OAuthSubscriptionBackend | undefined;
         let models: DiscoveredModelInfo[] | undefined;
         if (profile.connection.kind === "oauth-subscription") {
+          const profileAuthScope = oauthProfileScope(profile);
           const modelAuthSendFence = modelAuthSendFenceFor(
-            profile.connection.provider,
+            profileAuthScope.profileId,
           );
           releaseModelAuthFence = await modelAuthSendFence.enterOAuthUse(signal) ??
             undefined;
@@ -2750,11 +3337,12 @@ export async function runAgentFlow(
             );
           }
           const generation = await synchronizeAuthGeneration(
-            profile.connection.provider,
+            profileAuthScope,
             signal,
           );
           const lease = await modelBackendManager.oauthLease(
-            profile.connection.provider,
+            profileAuthScope.profileId,
+            profileAuthScope.provider,
             signal,
           );
           const oauthBackend = lease.backend;
@@ -2766,7 +3354,7 @@ export async function runAgentFlow(
             throwIfAborted(signal);
             auth = unavailableOAuthAuth(profile.connection.provider, error);
           }
-          oauthAuth = auth;
+          cacheOAuthAuth(profileAuthScope, generation, auth);
           const authError = subscriptionSendAuthError(
             auth,
             profile.connection.provider,
@@ -2776,13 +3364,16 @@ export async function runAgentFlow(
             await oauthBackend.listModels(profile, signal),
           );
           throwIfAborted(signal);
-          if (modelAuthSendFence.authGeneration() !== generation) {
+          if (modelAuthSendFence.authGeneration(profileAuthScope.provider) !== generation) {
             throw new ChatBridgeConflictError(
               `${oauthProviderLabel(profile.connection.provider)} sign-in changed before the subscription request could start.`,
             );
           }
           modelsByConnection.set(fingerprint, models);
-          oauthCatalogGenerationByConnection.set(fingerprint, generation);
+          oauthCatalogOwnershipByConnection.set(fingerprint, {
+            generation,
+            scopeKey: oauthScopeKey(profileAuthScope),
+          });
         } else {
           models = modelsByConnection.get(fingerprint);
           if (models === undefined) {
@@ -3073,7 +3664,7 @@ export async function runAgentFlow(
     unsubscribeGlobalState?.();
     releaseSessionClaims(storageDirectory, modalSessionOwner);
     oauthBrowserLaunchesClosing = true;
-    for (const launch of oauthBrowserLaunchByProvider.values()) {
+    for (const launch of oauthBrowserLaunchByScope.values()) {
       launch.controller.abort(
         new Error("Live Smith closed before the OAuth browser finished opening."),
       );
@@ -3087,19 +3678,38 @@ export async function runAgentFlow(
       await bridge?.close();
     } finally {
       let backendCleanupError: unknown;
+      const discardedOAuthProfiles = new Set<string>();
+      try {
+        const settings = await loadAgentSettings(storageDirectory);
+        for (const scope of oauthScopesUsed.values()) {
+          if (
+            oauthProviderForSavedProfile(settings, scope.profileId) !==
+              scope.provider
+          ) discardedOAuthProfiles.add(scope.profileId);
+        }
+      } catch {
+        for (const scope of oauthScopesUsed.values()) {
+          discardedOAuthProfiles.add(scope.profileId);
+        }
+      }
       if (
-        oauthProvidersUsed.size > 0 &&
+        oauthScopesUsed.size > 0 &&
         (dependencies.modelBackendManager !== undefined ||
           sharedBackendManagerLease !== undefined)
       ) {
-        const providers = [...oauthProvidersUsed];
+        const scopes = [...oauthScopesUsed.values()].filter(
+          (scope) => !discardedOAuthProfiles.has(scope.profileId),
+        );
         const cleanupResults = await Promise.allSettled(
-          providers.map(async (provider) => {
-            const modelAuthSendFence = modelAuthSendFenceFor(provider);
+          scopes.map(async (scope) => {
+            const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
             const releasePendingCleanup = await modelAuthSendFence
-              .enterPendingOwnerCleanup(modelAuthOwner);
+              .enterPendingOwnerCleanup(modelAuthOwner, scope.provider);
             if (releasePendingCleanup) try {
-              await modelBackendManager.invalidateOAuth(provider);
+              await modelBackendManager.invalidateOAuth(
+                scope.profileId,
+                scope.provider,
+              );
             } finally {
               releasePendingCleanup();
             }
@@ -3107,13 +3717,23 @@ export async function runAgentFlow(
         );
         for (const [index, result] of cleanupResults.entries()) {
           if (result.status === "fulfilled") continue;
-          const provider = providers[index]!;
-          modelAuthSendFenceFor(provider).poison(result.reason);
+          const scope = scopes[index]!;
+          modelAuthSendFenceFor(scope.profileId).poison(result.reason);
           backendCleanupError ??= result.reason;
         }
       }
-      for (const provider of oauthProvidersUsed) {
-        modelAuthSendFenceFor(provider).releaseOwner(modelAuthOwner);
+      for (const profileId of discardedOAuthProfiles) {
+        pendingProfileOAuthLifecycleReconciliation.add(profileId);
+      }
+      if (discardedOAuthProfiles.size > 0) {
+        try {
+          await retryPendingProfileOAuthLifecycle();
+        } catch (error) {
+          backendCleanupError ??= error;
+        }
+      }
+      for (const scope of oauthScopesUsed.values()) {
+        modelAuthSendFenceFor(scope.profileId).releaseOwner(modelAuthOwner);
       }
       try {
         if (dependencies.modelBackendManager) {
@@ -3127,8 +3747,8 @@ export async function runAgentFlow(
           await sharedBackendManagerLease?.release();
         }
       } catch (error) {
-        for (const provider of oauthProvidersUsed) {
-          modelAuthSendFenceFor(provider).poison(error);
+        for (const scope of oauthScopesUsed.values()) {
+          modelAuthSendFenceFor(scope.profileId).poison(error);
         }
         backendCleanupError ??= error;
       }

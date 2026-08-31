@@ -24,6 +24,7 @@
       let pendingCatalogApply = null;
       let renderedCatalogMatchesConnection = false;
       let renderedOAuthAuthKey = null;
+      const provisionalOAuthScopes = new Set();
       const controlIdByProfileField = {
         name: "profileName",
         connection: "connectionKind",
@@ -457,6 +458,32 @@
           : oauthProvider() === "google"
             ? "Gemini"
             : "ChatGPT";
+      }
+
+      function oauthScopeKey(profileId, provider) {
+        return `${profileId}:${provider}`;
+      }
+
+      function oauthScopeIsProvisional(profileId, provider) {
+        const saved = (getState().settings.profiles || []).find(
+          (profile) => profile.id === profileId,
+        );
+        return saved?.connection?.kind !== "oauth-subscription" ||
+          saved.connection.provider !== provider;
+      }
+
+      function clearProvisionalOAuthScopes(profileId, provider) {
+        if (provider) {
+          provisionalOAuthScopes.delete(oauthScopeKey(profileId, provider));
+          return;
+        }
+        for (const key of provisionalOAuthScopes) {
+          if (key.startsWith(`${profileId}:`)) provisionalOAuthScopes.delete(key);
+        }
+      }
+
+      function hasProvisionalOAuth() {
+        return provisionalOAuthScopes.size > 0;
       }
 
       function capabilityOverridesFromForm() {
@@ -1236,7 +1263,7 @@
       }
 
       function renderOAuthAuthState(settingsLocked = false) {
-        const auth = !getState().oauthAuthProvider ||
+        const auth = getState().oauthAuthProfileId === draftProfile?.id &&
             getState().oauthAuthProvider === oauthProvider()
           ? getState().oauthAuth
           : undefined;
@@ -1293,6 +1320,12 @@
             userCode.value = auth.userCode || "";
             document.querySelector(".subscription-auth-code-ticket").hidden =
               !auth.userCode;
+            document.querySelector(".subscription-auth-device-guidance").textContent =
+              auth.userCode
+                ? "Keep this window open. Return here after entering the code."
+                : providerLabel === "Gemini"
+                  ? "Keep this window open. Google returns here automatically; no one-time code is required."
+                  : "Keep this window open. Complete sign-in in the browser, then check the account.";
           } else {
             verificationLink.hidden = true;
             verificationLink.removeAttribute("href");
@@ -1303,6 +1336,27 @@
         }
 
         const subscription = isOAuthSubscription();
+        const pending = auth?.status === "pending";
+        setPropertyIfChanged(
+          document.getElementById("connectionKind"),
+          "disabled",
+          settingsLocked || pending,
+        );
+        setPropertyIfChanged(
+          document.getElementById("oauthProvider"),
+          "disabled",
+          settingsLocked || !subscription || pending,
+        );
+        for (const id of [
+          "profileSelector",
+          "addProfileButton",
+        ]) {
+          setPropertyIfChanged(
+            document.getElementById(id),
+            "disabled",
+            settingsLocked || pending,
+          );
+        }
         const signIn = document.getElementById("oauthSignInButton");
         const check = document.getElementById("oauthCheckAccountButton");
         const logout = document.getElementById("oauthLogoutButton");
@@ -1351,8 +1405,37 @@
       async function runOAuthAuthCommand(kind, sourceId, provider = oauthProvider()) {
         const source = document.getElementById(sourceId);
         const shouldRestoreFocus = document.activeElement === source;
-        await runCommand(kind, { provider });
+        if (!draftProfile?.id) throw new Error("OAuth requires a Profile ID.");
+        const profileId = draftProfile.id;
+        const provisional = oauthScopeIsProvisional(profileId, provider);
+        if (kind !== "logout_oauth" && provisional) {
+          provisionalOAuthScopes.add(oauthScopeKey(profileId, provider));
+        }
+        const completed = await runCommand(kind, { profileId, provider });
+        if (completed && kind === "logout_oauth") {
+          clearProvisionalOAuthScopes(profileId, provider);
+        } else if (
+          kind !== "logout_oauth" &&
+          (
+            !completed ||
+            oauthScopeIsProvisional(profileId, provider)
+          )
+        ) {
+          provisionalOAuthScopes.add(oauthScopeKey(profileId, provider));
+        }
         if (shouldRestoreFocus) focusAfterOAuthAuthCommand(source);
+      }
+
+      async function discardProvisionalOAuth() {
+        const profileIds = new Set(
+          [...provisionalOAuthScopes].map((key) => key.split(":", 1)[0]),
+        );
+        for (const profileId of profileIds) {
+          const cleaned = await runCommand("discard_profile_oauth", { profileId });
+          if (!cleaned) return false;
+          clearProvisionalOAuthScopes(profileId);
+        }
+        return true;
       }
 
       async function startOAuthLogin() {
@@ -1375,7 +1458,7 @@
         const providerLabel = oauthProviderLabel();
         if (!(await confirmAction({
           title: `Sign out of ${providerLabel}?`,
-          message: `Remove the ${providerLabel} OAuth session stored by Live Smith? Any pending login will be cancelled.`,
+          message: `Remove this Profile’s ${providerLabel} OAuth session? Any pending login for this Profile will be cancelled.`,
           acceptLabel: "Sign Out",
           danger: true,
         }))) return;
@@ -1388,6 +1471,7 @@
           message: "Create a new Profile and discard the current unsaved changes?",
           acceptLabel: "Discard & Add",
         }))) return;
+        if (hasProvisionalOAuth() && !(await discardProvisionalOAuth())) return;
         setDraftProfile(blankProfile(), null, true, null);
       }
 
@@ -1406,6 +1490,7 @@
           showProfileFormError(error);
           return;
         }
+        if (hasProvisionalOAuth() && !(await discardProvisionalOAuth())) return;
         setDraftProfile(
           blankProfile(current),
           null,
@@ -1415,7 +1500,8 @@
         );
       }
 
-      function discardProfileChanges() {
+      async function discardProfileChanges() {
+        if (hasProvisionalOAuth() && !(await discardProvisionalOAuth())) return;
         const target = draftProfileChangedElsewhere
           ? activeSavedProfile()
           : savedProfileSnapshot || activeSavedProfile();
@@ -1437,10 +1523,10 @@
           showProfileFormError(error);
           return;
         }
-        await runCommand("save_profile", {
+        if (await runCommand("save_profile", {
           profile,
           expectedProfileRevision: savedProfileRevisionSnapshot,
-        });
+        })) clearProvisionalOAuthScopes(profile.id);
       }
 
       async function deleteProfile() {
@@ -1451,7 +1537,9 @@
           acceptLabel: "Delete",
           danger: true,
         }))) return;
-        await runCommand("delete_profile", { profileId: savedProfileSnapshot.id });
+        if (await runCommand("delete_profile", {
+          profileId: savedProfileSnapshot.id,
+        })) clearProvisionalOAuthScopes(savedProfileSnapshot.id);
       }
 
       async function discoverModels() {
@@ -1488,6 +1576,10 @@
           message: `Switch to “${next.name}” and discard the current unsaved changes?`,
           acceptLabel: "Discard & Switch",
         }))) {
+          document.getElementById("profileSelector").value = draftProfile?.id || "";
+          return;
+        }
+        if (hasProvisionalOAuth() && !(await discardProvisionalOAuth())) {
           document.getElementById("profileSelector").value = draftProfile?.id || "";
           return;
         }
@@ -2115,28 +2207,31 @@
       function updateDraftActions() {
         const settingsOperationInProgress = isOperationInProgress() ||
           hasAnySendInProgress();
+        const pendingOAuthForDraft = getState().oauthAuth?.status === "pending" &&
+          getState().oauthAuthProfileId === draftProfile?.id &&
+          getState().oauthAuthProvider === oauthProvider();
         const hasSaved = Boolean(savedProfileSnapshot);
         setPropertyIfChanged(
           document.getElementById("saveProfileButton"),
           "disabled",
           settingsOperationInProgress || !draftProfile || !draftDirty ||
-            draftProfileBaselineChanged,
+            draftProfileBaselineChanged || pendingOAuthForDraft,
         );
         setPropertyIfChanged(
           document.getElementById("discardProfileButton"),
           "disabled",
-          settingsOperationInProgress || !draftDirty,
+          settingsOperationInProgress || !draftDirty || pendingOAuthForDraft,
         );
         setPropertyIfChanged(
           document.getElementById("deleteProfileButton"),
           "disabled",
           settingsOperationInProgress || !hasSaved ||
-            draftProfileBaselineChanged,
+            draftProfileBaselineChanged || pendingOAuthForDraft,
         );
         setPropertyIfChanged(
           document.getElementById("duplicateProfileButton"),
           "disabled",
-          settingsOperationInProgress || !draftProfile,
+          settingsOperationInProgress || !draftProfile || pendingOAuthForDraft,
         );
         const selected = draftProfile?.models?.[selectedModelIndex];
         updateManualModelActions();
@@ -2188,6 +2283,7 @@
         clearGlobalSettingsFieldError,
         clearFieldErrors,
         deleteProfile,
+        discardProvisionalOAuth,
         discardProfileChanges,
         discoverModels,
         duplicateProfile,
@@ -2196,6 +2292,7 @@
           savedProfile: savedProfileSnapshot,
           dirty: draftDirty,
         }),
+        hasProvisionalOAuth,
         handleApiFamilyChange,
         handleApiModeChange,
         handleConnectionKindChange,

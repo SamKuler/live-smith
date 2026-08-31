@@ -654,8 +654,9 @@
       }
 
       function adoptOAuthAuthProjection(target, current, state, preferred) {
-        const sameProvider = state.oauthAuthProvider === current.oauthAuthProvider;
-        const source = !sameProvider
+        const sameScope = state.oauthAuthProfileId === current.oauthAuthProfileId &&
+          state.oauthAuthProvider === current.oauthAuthProvider;
+        const source = !sameScope
           ? preferred
           : state.oauthAuthGeneration > current.oauthAuthGeneration
             ? state
@@ -665,6 +666,8 @@
               : state;
         if (source.oauthAuth === undefined) delete target.oauthAuth;
         else target.oauthAuth = source.oauthAuth;
+        if (source.oauthAuthProfileId === undefined) delete target.oauthAuthProfileId;
+        else target.oauthAuthProfileId = source.oauthAuthProfileId;
         if (source.oauthAuthProvider === undefined) delete target.oauthAuthProvider;
         else target.oauthAuthProvider = source.oauthAuthProvider;
         target.oauthAuthGeneration = source.oauthAuthGeneration;
@@ -704,16 +707,20 @@
         };
       }
 
-      function editorProjectionMatchesAuthGeneration(source, generation) {
-        return source.modelStateSource?.connection?.kind !==
-            "oauth-subscription" ||
-          source.oauthAuthGeneration === generation;
+      function editorProjectionMatchesOAuthScope(source, target) {
+        const modelSource = source.modelStateSource;
+        return modelSource?.connection?.kind !== "oauth-subscription" ||
+          modelSource.profileId === target.oauthAuthProfileId &&
+            modelSource.connection.provider === target.oauthAuthProvider &&
+            source.oauthAuthGeneration === target.oauthAuthGeneration;
       }
 
-      function runtimeProjectionMatchesAuthGeneration(source, generation) {
-        return source.runtimeProfile?.profile?.connectionKind !==
-            "oauth-subscription" ||
-          source.oauthAuthGeneration === generation;
+      function runtimeProjectionMatchesOAuthScope(source, target) {
+        const runtimeProfile = source.runtimeProfile?.profile;
+        return runtimeProfile?.connectionKind !== "oauth-subscription" ||
+          runtimeProfile.id === target.oauthAuthProfileId &&
+            runtimeProfile.apiFamily === target.oauthAuthProvider &&
+            source.oauthAuthGeneration === target.oauthAuthGeneration;
       }
 
       function runtimeProjectionOwnsTarget(source, target) {
@@ -785,6 +792,24 @@
         target.configuredModelsReady = false;
       }
 
+      function adoptUnavailableEditorModelProjection(target, source) {
+        target.capabilities = unverifiedModelCapabilities();
+        target.capabilityEvidence = {
+          temperature: "unverified",
+          maxOutputTokens: "unverified",
+          contextWindowTokens: "unverified",
+          reasoning: "unverified",
+          inputs: {
+            image: "unverified",
+            audio: "unverified",
+            pdf: "unverified",
+          },
+        };
+        target.availableModels = [];
+        delete target.modelCatalogLoadReceipt;
+        target.modelStateSource = source?.modelStateSource ?? null;
+      }
+
       function alternateProjectionSource(preferred, current, state) {
         return preferred === current ? state : current;
       }
@@ -802,15 +827,14 @@
           current,
           state,
         );
-        adoptEditorModelProjection(
-          target,
-          editorProjectionMatchesAuthGeneration(
-              preferredEditor,
-              target.oauthAuthGeneration,
-            )
-            ? preferredEditor
-            : alternateEditor,
+        const editorProjection = [preferredEditor, alternateEditor].find(
+          (source) => editorProjectionMatchesOAuthScope(source, target),
         );
+        if (editorProjection) {
+          adoptEditorModelProjection(target, editorProjection);
+        } else {
+          adoptUnavailableEditorModelProjection(target, preferredEditor);
+        }
         const alternateRuntime = alternateProjectionSource(
           preferredRuntime,
           current,
@@ -818,10 +842,8 @@
         );
         const runtimeProjection = [preferredRuntime, alternateRuntime].find(
           (source) =>
-            runtimeProjectionMatchesAuthGeneration(
-              source,
-              target.oauthAuthGeneration,
-            ) && runtimeProjectionOwnsTarget(source, target),
+            runtimeProjectionMatchesOAuthScope(source, target) &&
+              runtimeProjectionOwnsTarget(source, target),
         );
         if (runtimeProjection) {
           adoptRuntimeModelProjection(target, runtimeProjection);
@@ -1097,7 +1119,10 @@
           : provider === "google"
             ? "Gemini"
             : "ChatGPT";
-        if (state.oauthAuthProvider && state.oauthAuthProvider !== provider) {
+        if (
+          state.oauthAuthProfileId !== activeProfile.id ||
+          state.oauthAuthProvider !== provider
+        ) {
           return `Check the ${label} account before sending a subscription request.`;
         }
         const auth = state.oauthAuth;
@@ -2400,6 +2425,7 @@
             "settings",
             "activeProfileRevision",
             "oauthAuth",
+            "oauthAuthProfileId",
             "oauthAuthProvider",
             "oauthAuthGeneration",
             "openSettingsOnLoad",
@@ -2468,6 +2494,12 @@
               value.settings.activeProfileId !== null
           ) ||
           (value.oauthAuth !== undefined && !isWireOAuthAuth(value.oauthAuth)) ||
+          (value.oauthAuth !== undefined) !==
+            (value.oauthAuthProfileId !== undefined) ||
+          (value.oauthAuth !== undefined) !==
+            (value.oauthAuthProvider !== undefined) ||
+          (value.oauthAuthProfileId !== undefined &&
+            !isWireStorageId(value.oauthAuthProfileId)) ||
           (value.oauthAuthProvider !== undefined &&
             !["openai", "anthropic", "google"].includes(value.oauthAuthProvider)) ||
           !Number.isSafeInteger(value.oauthAuthGeneration) ||

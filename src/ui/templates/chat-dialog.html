@@ -2029,7 +2029,7 @@
         border-bottom: 1px solid var(--line-soft);
       }
 
-      .model-setup-guide + .settings-section {
+      .model-setup-guide:not([hidden]) + .settings-section {
         margin-top: 14px;
       }
 
@@ -3398,7 +3398,7 @@
             <div class="settings-scroll">
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
               <div class="settings">
-              <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading" tabindex="-1">
+              <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading">
                 <h2 id="modelSetupGuideHeading">Connect a model</h2>
                 <ol>
                   <li>Name the Profile and enter connection details.</li>
@@ -3414,7 +3414,7 @@
                     <select id="profileSelector" name="profileSelector" autocomplete="off" onchange="LiveSmithUI.handleProfileSelection()"></select>
                   </div>
                   <div class="profile-actions">
-                    <button class="secondary" type="button" onclick="LiveSmithUI.addProfile()">Add</button>
+                    <button id="addProfileButton" class="secondary" type="button" onclick="LiveSmithUI.addProfile()">Add</button>
                     <button id="duplicateProfileButton" class="secondary" type="button" onclick="LiveSmithUI.duplicateProfile()">Duplicate</button>
                     <button id="deleteProfileButton" class="secondary" type="button" data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()">Delete</button>
                   </div>
@@ -3499,7 +3499,7 @@
                         <label id="oauthDeviceCodeHeading" class="subscription-auth-code-label" for="oauthUserCode">One-time code<small>Select to copy</small></label>
                         <input id="oauthUserCode" name="oauthUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
                       </div>
-                      <p class="subscription-auth-device-guidance">Keep this window open. Return here after entering the code.</p>
+                      <p class="subscription-auth-device-guidance">Keep this window open while sign-in completes.</p>
                     </div>
                   </div>
                   <div class="subscription-auth-actions">

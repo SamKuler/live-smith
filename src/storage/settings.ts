@@ -24,12 +24,14 @@ import {
   writeJsonAtomically,
 } from "./persistence.js";
 import { decodeAgentSettings } from "./settings-migrations.js";
+import { prepareOAuthCredentialStoreInTransaction } from "./oauth-credentials.js";
 
 export type { AgentSettings, SavedProfile } from "../model/profile.js";
 export { activeSavedProfile } from "../model/profile.js";
 
 const settingsFileName = "live-smith-settings.json";
 let memorySettings = freshEmptyAgentSettings();
+const oauthCredentialPreparationByStorage = new Map<string, Promise<void>>();
 
 export class AgentSettingsCorruptionError extends Error {
   constructor(cause: unknown) {
@@ -80,6 +82,30 @@ export async function loadAgentSettings(
   storageDirectory: string | undefined,
 ): Promise<AgentSettings> {
   return loadAgentSettingsUnlocked(storageDirectory);
+}
+
+export function prepareOAuthCredentialStoreForSavedProfiles(
+  storageDirectory: string | undefined,
+): Promise<void> {
+  if (storageDirectory === undefined) return Promise.resolve();
+  const existing = oauthCredentialPreparationByStorage.get(storageDirectory);
+  if (existing) return existing;
+  const preparation = withStorageTransaction(storageDirectory, async (transaction) => {
+    const settings = await loadAgentSettingsUnlocked(storageDirectory);
+    await prepareOAuthCredentialStoreInTransaction(
+      transaction,
+      storageDirectory,
+      settings.profiles,
+      settings.activeProfileId,
+    );
+  });
+  oauthCredentialPreparationByStorage.set(storageDirectory, preparation);
+  void preparation.catch(() => {
+    if (oauthCredentialPreparationByStorage.get(storageDirectory) === preparation) {
+      oauthCredentialPreparationByStorage.delete(storageDirectory);
+    }
+  });
+  return preparation;
 }
 
 async function loadAgentSettingsUnlocked(

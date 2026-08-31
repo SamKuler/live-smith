@@ -319,7 +319,8 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
       true,
     );
-    assert.equal(harness.document.activeElement?.id, "modelSetupGuide");
+    assert.equal(guide?.hasAttribute("tabindex"), false);
+    assert.equal(harness.document.activeElement?.id, "profileName");
     assert.equal(
       harness.document.querySelector("#profileSettingsSection")?.nextElementSibling?.id,
       "connectionSettingsSection",

@@ -85,7 +85,7 @@ test("OAuth login publishes pending state then persists the completed credential
       };
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
 
   assert.deepEqual(await manager.beginLogin(), attempt.pending);
   assert.deepEqual(await manager.readAuthState(), attempt.pending);
@@ -99,6 +99,62 @@ test("OAuth login publishes pending state then persists the completed credential
     planType: "ChatGPT subscription",
     subscriptionEligible: true,
   });
+});
+
+test("same-provider credential managers isolate Profile auth and logout", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const adapter: OAuthProviderAdapter = {
+    provider: "openai",
+    displayName: "ChatGPT",
+    async beginLogin() {
+      throw new Error("unexpected login");
+    },
+    async refresh(credential) {
+      return credential;
+    },
+    authState(credential) {
+      return {
+        status: "signed-in",
+        accountLabel: credential.provider === "openai"
+          ? credential.accountId
+          : null,
+        planType: "ChatGPT subscription",
+        subscriptionEligible: true,
+      };
+    },
+  };
+  await saveOAuthCredential(directory, "profile-a", openAICredential());
+  const secondCredential: Extract<OAuthCredential, { provider: "openai" }> = {
+    provider: "openai",
+    accessToken: "access-2",
+    refreshToken: "refresh-2",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "account-2",
+  };
+  await saveOAuthCredential(directory, "profile-b", secondCredential);
+  const first = new OAuthCredentialManager(directory, "profile-a", adapter);
+  const second = new OAuthCredentialManager(directory, "profile-b", adapter);
+
+  assert.deepEqual(await first.readAuthState(), {
+    status: "signed-in",
+    accountLabel: "account-1",
+    planType: "ChatGPT subscription",
+    subscriptionEligible: true,
+  });
+  assert.deepEqual(await second.readAuthState(), {
+    status: "signed-in",
+    accountLabel: "account-2",
+    planType: "ChatGPT subscription",
+    subscriptionEligible: true,
+  });
+
+  await first.logout();
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
+  assert.equal(
+    (await loadOAuthCredential(directory, "profile-b", "openai"))?.accessToken,
+    "access-2",
+  );
+  await Promise.all([first.close(), second.close()]);
 });
 
 test("OAuth login acquisition failures are definitive, redacted, and immediately retryable", async (t) => {
@@ -131,7 +187,7 @@ test("OAuth login acquisition failures are definitive, redacted, and immediately
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   const failure = {
     status: "unavailable",
     message: "ChatGPT sign-in did not complete.",
@@ -171,7 +227,7 @@ test("OAuth login preserves only an explicitly safe network proxy diagnosis", as
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   const failure = {
     status: "unavailable",
     message:
@@ -212,7 +268,7 @@ test("OAuth login completion preserves an explicitly safe network proxy diagnosi
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   assert.equal((await manager.beginLogin()).status, "pending");
   completion.reject(error);
 
@@ -258,8 +314,8 @@ test("concurrent OAuth readiness reads share one rotated refresh", async (t) => 
       };
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
-  await saveOAuthCredential(directory, openAICredential(Date.now() - 1));
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await saveOAuthCredential(directory, "profile-a", openAICredential(Date.now() - 1));
 
   const [first, second] = await Promise.all([
     manager.requireCredential(),
@@ -291,8 +347,8 @@ test("OAuth logout aborts a detached refresh before deleting its credential", as
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
-  await saveOAuthCredential(directory, openAICredential(Date.now() - 1));
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await saveOAuthCredential(directory, "profile-a", openAICredential(Date.now() - 1));
   const caller = new AbortController();
   const pendingCredential = manager.requireCredential(caller.signal);
   await refreshStarted.promise;
@@ -307,7 +363,7 @@ test("OAuth logout aborts a detached refresh before deleting its credential", as
     accessToken: "late-refreshed-access",
   });
   assert.deepEqual(await loggedOut, { status: "signed-out" });
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
 });
 
 test("closing OAuth ownership aborts refresh and rejects its late credential write", async (t) => {
@@ -331,8 +387,8 @@ test("closing OAuth ownership aborts refresh and rejects its late credential wri
     },
   };
   const original = openAICredential(Date.now() - 1);
-  const manager = new OAuthCredentialManager(directory, adapter);
-  await saveOAuthCredential(directory, original);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await saveOAuthCredential(directory, "profile-a", original);
   const caller = new AbortController();
   const pendingCredential = manager.requireCredential(caller.signal);
   await refreshStarted.promise;
@@ -347,7 +403,7 @@ test("closing OAuth ownership aborts refresh and rejects its late credential wri
     accessToken: "late-refreshed-access",
   });
   await closed;
-  assert.deepEqual(await loadOAuthCredential(directory, "openai"), original);
+  assert.deepEqual(await loadOAuthCredential(directory, "profile-a", "openai"), original);
 });
 
 test("closing OAuth ownership rejects a refresh queued before its storage commit", async (t) => {
@@ -371,8 +427,8 @@ test("closing OAuth ownership rejects a refresh queued before its storage commit
     },
   };
   const original = openAICredential(Date.now() - 1);
-  const manager = new OAuthCredentialManager(directory, adapter);
-  await saveOAuthCredential(directory, original);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await saveOAuthCredential(directory, "profile-a", original);
   const pendingCredential = manager.requireCredential();
   await refreshStarted.promise;
   const heldTransaction = withStorageTransaction(directory, async () => {
@@ -390,7 +446,7 @@ test("closing OAuth ownership rejects a refresh queued before its storage commit
   releaseTransaction.resolve(undefined);
   await Promise.allSettled([pendingCredential, closed, heldTransaction]);
 
-  assert.deepEqual(await loadOAuthCredential(directory, "openai"), original);
+  assert.deepEqual(await loadOAuthCredential(directory, "profile-a", "openai"), original);
 });
 
 test("OAuth logout cancels pending login and removes persisted credentials", async (t) => {
@@ -416,8 +472,8 @@ test("OAuth logout cancels pending login and removes persisted credentials", asy
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
-  await saveOAuthCredential(directory, openAICredential());
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await saveOAuthCredential(directory, "profile-a", openAICredential());
   await manager.beginLogin();
 
   assert.deepEqual(await manager.logout(), { status: "signed-out" });
@@ -448,13 +504,13 @@ test("closing OAuth ownership prevents a late login from persisting credentials"
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   await manager.beginLogin();
   const closed = manager.close();
   completion.resolve(openAICredential());
   await closed;
 
-  const reopened = new OAuthCredentialManager(directory, adapter);
+  const reopened = new OAuthCredentialManager(directory, "profile-a", adapter);
   assert.deepEqual(await reopened.readAuthState(), { status: "signed-out" });
   await reopened.close();
 });
@@ -484,7 +540,7 @@ test("logout retires a login save queued behind another storage transaction", as
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   await manager.beginLogin();
   const heldTransaction = withStorageTransaction(directory, async () => {
     transactionStarted.resolve(undefined);
@@ -502,7 +558,7 @@ test("logout retires a login save queued behind another storage transaction", as
   releaseTransaction.resolve(undefined);
   await heldTransaction;
 
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
   await manager.close();
 });
 
@@ -528,7 +584,7 @@ test("logout owns and cancels login adapter acquisition before it returns", asyn
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   const login = manager.beginLogin();
   await acquisitionStarted.promise;
   const logout = manager.logout();
@@ -554,7 +610,7 @@ test("logout owns and cancels login adapter acquisition before it returns", asyn
       logoutResult.status === "fulfilled" ? logoutResult.value : undefined,
       { status: "signed-out" },
     );
-    assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+    assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
   } finally {
     await manager.close();
   }
@@ -589,7 +645,7 @@ test("logout called in the login admission turn sees ownership before acquisitio
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
 
   const login = manager.beginLogin();
   const logout = manager.logout();
@@ -602,7 +658,7 @@ test("logout called in the login admission turn sees ownership before acquisitio
   );
   assert.equal(beginCalls, 0);
   assert.equal(canceled, false);
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
   await manager.close();
 });
 
@@ -636,7 +692,7 @@ test("caller abort after logout settlement cannot start a resumed login", async 
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   await manager.beginLogin();
 
   const abandonedCaller = new AbortController();
@@ -658,7 +714,7 @@ test("caller abort after logout settlement cannot start a resumed login", async 
     await abortAfterCleanup;
     await assert.rejects(resumedLogin, (error: unknown) => error === resumedAbort);
     assert.equal(beginCalls, 1);
-    assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+    assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
   } finally {
     await manager.close();
   }
@@ -686,7 +742,7 @@ test("close owns and cancels login adapter acquisition before it returns", async
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   const login = manager.beginLogin();
   await acquisitionStarted.promise;
   let closeSettled = false;
@@ -713,7 +769,7 @@ test("close owns and cancels login adapter acquisition before it returns", async
   assert.equal(acquisitionAbortedBeforeReturn, true);
   assert.equal(canceled, true);
   assert.equal(loginResult.status, "rejected");
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
 });
 
 test("caller abort cancels an attempt returned after login acquisition lost ownership", async (t) => {
@@ -736,7 +792,7 @@ test("caller abort cancels an attempt returned after login acquisition lost owne
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   const caller = new AbortController();
   const login = manager.beginLogin(caller.signal);
   await acquisitionStarted.promise;
@@ -781,7 +837,7 @@ test("concurrent close callers share login retirement completion", async (t) => 
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   await manager.beginLogin();
   let firstCloseSettled = false;
   const firstClose = manager.close().then(() => {
@@ -799,7 +855,7 @@ test("concurrent close callers share login retirement completion", async (t) => 
 
   assert.equal(firstSettledBeforeLogin, false);
   assert.equal(secondSettledBeforeLogin, false);
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
 });
 
 test("caller cancellation does not detach logout cleanup from backend close", async (t) => {
@@ -825,7 +881,7 @@ test("caller cancellation does not detach logout cleanup from backend close", as
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   await manager.beginLogin();
 
   const caller = new AbortController();
@@ -844,13 +900,13 @@ test("caller cancellation does not detach logout cleanup from backend close", as
   await closed;
 
   assert.equal(closeSettledBeforeLogin, false);
-  assert.equal(await loadOAuthCredential(directory, "openai"), undefined);
+  assert.equal(await loadOAuthCredential(directory, "profile-a", "openai"), undefined);
 });
 
 test("OAuth refresh replaces credential-bearing adapter errors", async (t) => {
   const directory = await temporaryDirectory(t);
   const credential = openAICredential(Date.now() - 1);
-  await saveOAuthCredential(directory, credential);
+  await saveOAuthCredential(directory, "profile-a", credential);
   const adapter: OAuthProviderAdapter = {
     provider: "openai",
     displayName: "ChatGPT",
@@ -866,7 +922,7 @@ test("OAuth refresh replaces credential-bearing adapter errors", async (t) => {
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
 
   const error = await manager.requireCredential().then(
     () => undefined,
@@ -882,7 +938,7 @@ test("OAuth refresh replaces credential-bearing adapter errors", async (t) => {
 
 test("OAuth refresh preserves an explicitly safe network proxy diagnosis", async (t) => {
   const directory = await temporaryDirectory(t);
-  await saveOAuthCredential(directory, openAICredential(Date.now() - 1));
+  await saveOAuthCredential(directory, "profile-a", openAICredential(Date.now() - 1));
   const error = new NetworkProxyError(
     "macOS automatic proxy configuration is not supported; choose Manual proxy instead.",
   );
@@ -899,7 +955,7 @@ test("OAuth refresh preserves an explicitly safe network proxy diagnosis", async
       throw new Error("unexpected state");
     },
   };
-  const manager = new OAuthCredentialManager(directory, adapter);
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
 
   await assert.rejects(
     manager.requireCredential(),
@@ -910,7 +966,7 @@ test("OAuth refresh preserves an explicitly safe network proxy diagnosis", async
 
 async function waitForStoredCredential(directory: string): Promise<OAuthCredential> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const credential = await loadOAuthCredential(directory, "openai");
+    const credential = await loadOAuthCredential(directory, "profile-a", "openai");
     if (credential) return credential;
     await new Promise<void>((resolve) => setImmediate(resolve));
   }

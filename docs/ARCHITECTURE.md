@@ -55,9 +55,9 @@ src/
       Serializes the full same-Session send and lifecycle boundary across
       dialogs that share one storage directory.
     model-auth-send-fence.ts
-      Serializes provider-scoped OAuth auth reads/mutations and subscription
-      sends, including pending-login reconciliation, generation invalidation,
-      and poison.
+      Serializes one Profile's editable OAuth lifecycle and subscription sends,
+      with provider-tagged pending login, activity, generation invalidation,
+      and poison state.
     live-mutation-queue.ts
       Serializes validated Live plans across dialogs in one extension activation;
       the caller revalidates state after acquiring the queue.
@@ -125,15 +125,15 @@ src/
       API-mode fallbacks, known model policies, and manual override resolution.
     backend-registry.ts
       Exposes distinct Direct API and OAuth subscription backend contracts and
-      owns one lazily created slot per subscription provider.
+      owns one lazily created slot per subscription Profile/provider connection.
     shared-backend-manager.ts
       Ref-counts one OAuth backend manager per canonical storage directory.
     registry.ts
       Selects a Direct API transport from a validated API family/mode pair.
     oauth/
       credential-manager.ts, openai.ts, anthropic.ts, google.ts
-        Provider-scoped OAuth login, refresh, credential ownership, and safe
-        account-state projection.
+        Profile/provider-scoped OAuth login, refresh, credential ownership, and
+        safe account-state projection.
       openai-codex-protocol.ts, anthropic-protocol.ts, google-protocol.ts
         ChatGPT Codex Responses, Anthropic OAuth Messages, and Google Cloud
         Code Assist mapping into the common model-turn boundary.
@@ -183,8 +183,9 @@ src/
     settings.ts
       Explicit named-profile CRUD and global settings persistence.
     oauth-credentials.ts
-      Strict private OAuth credential storage, provider-scoped replacement,
-      refresh-token rotation, and logout deletion.
+      Strict private OAuth credential storage keyed by Profile and provider,
+      refresh-token rotation, connection-finalization cleanup, logout deletion,
+      and deterministic one-time legacy migration.
     settings-migrations.ts
       Current-schema validation plus registered adjacent-version migrations
       for historical settings files.
@@ -464,33 +465,53 @@ The OAuth backend is split by responsibility:
 
 - `model/shared-backend-manager.ts` owns one ref-counted
   `ModelBackendManager` per canonical storage directory.
-- `app/model-auth-send-fence.ts` serializes auth reads, sends, mutations,
-  pending-login ownership, generation changes and poison.
-- `storage/oauth-credentials.ts` owns strict private token persistence.
+- `app/model-auth-send-fence.ts` serializes each Profile's connection lifecycle,
+  with provider-tagged pending-login ownership, activity, generations, and
+  poison. Different Profile IDs remain independent.
+- `storage/oauth-credentials.ts` owns strict private token persistence in
+  Profile-ID/provider tuple slots. Provisional provider sign-ins do not replace
+  another provider tuple; authoritative Save and Delete finalize the retained
+  slots. Add, Duplicate, Discard, Profile switching, and modal close reconcile
+  provider scopes actually authorized by that modal against saved settings, so
+  an abandoned Draft cannot leave an unreachable refresh token.
+- One process-wide storage preparation starts independently of Direct state
+  hydration. OAuth operations and Profile mutations that change OAuth ownership
+  await it; it migrates legacy provider-global credentials only to Profiles
+  already saved in the same authoritative settings transaction and prunes
+  tuples orphaned by a prior process. A failed preparation blocks that ownership
+  mutation, while unrelated Direct state and sends remain independent.
 - `model/oauth/credential-manager.ts` owns login acquisition through completion
   and refresh single-flight, including manager-owned logout cleanup, abortable
   retirement, generation-checked writes, refresh-error redaction, and one shared
   close completion.
 - `model/oauth/openai.ts`, `anthropic.ts`, and `google.ts` own provider
-  authorization flows.
+  authorization flows. Google's desktop flow binds and redirects to the exact
+  `127.0.0.1` loopback endpoint and completes without a one-time or device code.
 - `model/oauth/openai-codex-protocol.ts`, `anthropic-protocol.ts`, and
   `google-protocol.ts` own product-backend request mapping and normalized model
   results.
 
 Each modal lazily leases the shared manager on its first OAuth operation.
-Auth mutations exclude same-provider subscription sends across modals; another
-provider's auth, catalog, and send ownership remain independent. Direct-only
+Auth mutations and connection lifecycle changes exclude subscription sends for
+the same Profile across modals; another Profile's auth, catalog, and send
+ownership remain independent, including when it uses the same provider. Direct-only
 state hydration, catalog access, and sends neither acquire that registry nor inspect
 the auth fence's health; they may read its credential-free
 generation solely to invalidate stale subscription projections;
 pending browser or device login and readiness reconciliation are single-flight.
+Modal auth projections are stored atomically by Profile, provider, and
+generation instead of splitting account state from its identity. Profile
+lifecycle paths use one lock order: the Profile auth/send fence precedes the
+request-configuration fence. Unknown or partial post-commit cleanup remains in
+a process-wide per-storage reconciliation set, survives modal closure, and is
+retried against authoritative settings before later state is trusted.
 Caller cancellation ends only its wait; backend retirement or final release
 cancels pending login, aborts detached refresh, rejects late credential writes,
 finishes any started logout deletion, and closes loopback authorization servers.
 Native and registry close calls share completion and include slots already
-undergoing invalidation. Registry shutdown waits every provider cleanup before
-propagating a failure, so a shared manager cannot be replaced before its prior
-backends finish retiring.
+undergoing invalidation. Registry shutdown and Profile-wide invalidation wait
+for every provider cleanup before propagating one failure, so a shared manager
+cannot be replaced before its prior backends finish retiring.
 
 Before prompt persistence, every new subscription send refreshes credential
 readiness and the provider model catalog and validates the current
@@ -859,13 +880,15 @@ the editor applies a catalog only when that receipt matches its own request.
 Direct API reloads merge newly discovered IDs for the same connection and
 replace after a Draft connection change. Subscription reloads reconcile to the
 current auth-generation catalog while retaining settings for model IDs that
-remain. Models from different APIs or OAuth providers/accounts therefore cannot mix.
+remain. Models from different APIs or OAuth Profiles/providers/accounts
+therefore cannot mix.
 The UI receives only the process-local numeric auth generation, never OAuth
 credentials, and keeps auth, editor catalog, and active subscription runtime
 projections generation-coherent across delayed HTTP and SSE state merges. An
-auth generation is provider-local: delayed projections compare generations only
-when their providers match, while an authoritative provider switch adopts that
-provider's projection regardless of its numeric generation.
+auth generation belongs to one exact Profile/provider connection: delayed
+projections compare generations only when both identities match, while an
+authoritative connection switch adopts that connection's projection regardless
+of its numeric generation.
 On window initialization, an eligible signed-in subscription with a missing
 catalog gets one background restoration attempt through
 `POST /session-model-capabilities`. This read-only route accepts only the strict
@@ -896,7 +919,7 @@ storage, and generation plus the active UI summary consume one materialized
 `oauth-subscription` discriminant. Model discovery uses the Draft connection
 gate and therefore does not require a Profile name or selected model. Secrets
 enumeration returns only Direct API keys; OAuth credentials stay inside private
-provider-scoped credential storage.
+Profile-ID/provider tuple storage.
 
 A Session's model selection stores only `profileId`, `model`, and an optional
 `reasoningEffort` override. It does not duplicate connection settings, generation
@@ -1208,7 +1231,7 @@ Concurrency boundaries have distinct ownership:
 | --- | --- | --- |
 | Storage transaction | Canonical storage directory | Serialize durable settings, Session, event, attachment, and Skill mutations. |
 | Session mutation fence | Storage directory and Session ID | Hold one Session's send, attachment, Skill activation, and lifecycle boundary through reconciliation. |
-| OAuth auth/send fence | Canonical storage directory and provider | Keep auth changes, generations, and pending-login ownership coherent with same-provider subscription sends. |
+| OAuth auth/send fence | Canonical storage directory and Profile ID | Keep one editable connection lifecycle coherent with its sends while tracking pending login, activity, and generations per provider. |
 | Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, including request-audio import and revalidation after import. |
 
 These are in-process coordination boundaries, not locks between independent

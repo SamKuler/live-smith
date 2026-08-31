@@ -332,6 +332,8 @@ function stateFixture(): ChatBridgeState {
     runtimeProfile: runtimeSummaryForHarnessProfile(profileFixture()),
     activeProfileRevision: profileRevisionFixture(profileFixture()),
     oauthAuth: { status: "signed-out" },
+    oauthAuthProfileId: "profile-1",
+    oauthAuthProvider: "openai",
     oauthAuthGeneration: 0,
     settings: {
       schemaVersion: 8,
@@ -1410,15 +1412,24 @@ async function createDialogHarness(
                 ].find((entry) => entry.id === command.sessionId);
                 if (session) session.editScopes = resolveEditScopes(command.editScopes);
               } else if (command.kind === "start_oauth_login") {
+                if (!command.profileId || !command.provider) {
+                  throw new Error("OAuth commands require a Profile and provider.");
+                }
                 serverState.oauthAuthGeneration += 1;
-                serverState.oauthAuthProvider = command.provider ?? "openai";
+                serverState.oauthAuthProfileId = command.profileId;
+                serverState.oauthAuthProvider = command.provider;
                 serverState.oauthAuth = cloneState(options.oauthLoginResult ?? {
                   status: "pending",
                   verificationUrl: "https://auth.openai.com/codex/device",
                   userCode: "ABCD-EFGH",
                 });
               } else if (command.kind === "refresh_oauth_account") {
+                if (!command.profileId || !command.provider) {
+                  throw new Error("OAuth commands require a Profile and provider.");
+                }
                 serverState.oauthAuthGeneration += 1;
+                serverState.oauthAuthProfileId = command.profileId;
+                serverState.oauthAuthProvider = command.provider;
                 serverState.oauthAuth = {
                   status: "signed-in",
                   accountLabel: "studio@example.test",
@@ -1426,7 +1437,12 @@ async function createDialogHarness(
                   subscriptionEligible: true,
                 };
               } else if (command.kind === "logout_oauth") {
+                if (!command.profileId || !command.provider) {
+                  throw new Error("OAuth commands require a Profile and provider.");
+                }
                 serverState.oauthAuthGeneration += 1;
+                serverState.oauthAuthProfileId = command.profileId;
+                serverState.oauthAuthProvider = command.provider;
                 serverState.oauthAuth = { status: "signed-out" };
               } else if (
                 command.kind === "set_session_model_selection" &&
