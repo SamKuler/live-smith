@@ -43,7 +43,8 @@ Select a track, Clip, device, or another supported Live object and choose
 - **Bring reference material.** Paste or drag images, documents, or audio into
   the composer. Input support depends on the model and connection.
 - **Keep work moving.** Queue a follow-up for the next turn, steer the response
-  already in progress, or stop it.
+  already in progress, or stop it. Long runs of tool and Apply activity collapse
+  into one expandable timeline item so the conversation stays readable.
 - **Search when needed.** Compatible Direct API connections can enable hosted
   Web Search, with search activity and citations visible in the conversation.
 

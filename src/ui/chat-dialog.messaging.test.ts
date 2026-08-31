@@ -382,31 +382,38 @@ test("the timeline distinguishes an Apply request from automatic approval", asyn
   ];
   const harness = await createDialogHarness(state);
   try {
-    assert.match(
-      harness.document.querySelector(".timeline-item.apply_requested summary")?.textContent ?? "",
-      /^Apply request —/,
+    const group = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    assert.ok(group);
+    harness.click(".timeline-activity-group > summary");
+    const proposalStep = group.querySelector(
+      '[data-activity-step-id="event-apply-proposal"]',
     );
     assert.equal(
-      harness.document.querySelector(
-        ".timeline-item.apply_requested .timeline-content",
+      proposalStep?.querySelector(".timeline-activity-title")?.textContent,
+      "Applying changes",
+    );
+    assert.equal(
+      proposalStep?.querySelector(".timeline-activity-excerpt")?.textContent,
+      "Set tempo to 128 BPM.",
+    );
+    assert.equal(
+      proposalStep?.querySelector(
+        '[data-event-id="event-apply-proposal"] .timeline-activity-detail-content',
       )?.textContent,
-      "Actions:\n1. Set tempo to 128 BPM.",
+      "Set tempo to 128 BPM.\n\nActions:\n1. Set tempo to 128 BPM.",
     );
-    const autoApproved = harness.document.querySelector(
-      ".timeline-item.apply_auto_approved",
-    );
-    const summary = autoApproved?.querySelector("summary")?.textContent ?? "";
-    assert.equal(summary, "Auto-approved — 1 change · Low Risk");
-    assert.doesNotMatch(summary, /Auto-approved.*Auto-approved/i);
-    assert.equal(
-      autoApproved?.querySelector(".timeline-content")?.textContent,
-      "Automatic approval. Standard safety checks completed.",
+    const legacyStep = group.querySelector(
+      '[data-activity-step-id="event-auto-approved-legacy"]',
     );
     assert.equal(
-      harness.document.querySelector(
-        '[data-event-id="event-auto-approved-legacy"] summary',
-      )?.textContent,
-      "Auto-approved — 21 changes · Accept Everything",
+      legacyStep?.querySelector(".timeline-activity-title")?.textContent,
+      "Applying changes",
+    );
+    assert.equal(
+      legacyStep?.querySelector(".timeline-activity-excerpt")?.textContent,
+      "Auto-approved 21 changes under Accept Everything mode without opening an approval prompt.",
     );
     assert.deepEqual(harness.errors, []);
   } finally {

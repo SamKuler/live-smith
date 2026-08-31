@@ -1336,6 +1336,141 @@
         return true;
       }
 
+      const timelineActivityKinds = new Set([
+        "tool_call",
+        "tool_result",
+        "apply_requested",
+        "apply_auto_approved",
+        "apply_result",
+        "error",
+      ]);
+
+      function isTimelineActivityEvent(event) {
+        return timelineActivityKinds.has(event?.kind);
+      }
+
+      function timelineActivityEntries(events) {
+        const entries = [];
+        for (let index = 0; index < events.length;) {
+          if (!isTimelineActivityEvent(events[index])) {
+            entries.push(events[index]);
+            index += 1;
+            continue;
+          }
+          const start = index;
+          while (index < events.length && isTimelineActivityEvent(events[index])) {
+            index += 1;
+          }
+          entries.push(...timelineActivityRunEntries(events.slice(start, index)));
+        }
+        return entries;
+      }
+
+      function timelineActivityRunEntries(run) {
+        const entries = [];
+        const steps = timelineActivitySteps(run);
+        const stepByEventId = new Map();
+        for (const step of steps) {
+          for (const event of step.events) stepByEventId.set(event.id, step);
+        }
+        let segment = [];
+        for (const event of run) {
+          segment.push(event);
+          const step = stepByEventId.get(event.id);
+          if (isExposedActivityTerminal(event, step)) {
+            appendTimelineActivitySegment(entries, segment, steps, event, step);
+            segment = [];
+          }
+        }
+        appendTimelineActivitySegment(entries, segment, steps);
+        return entries;
+      }
+
+      function appendTimelineActivitySegment(
+        entries,
+        events,
+        projectedSteps,
+        exposedTerminal,
+        exposedStep,
+      ) {
+        if (!events.length) return;
+        const eventIds = new Set(events.map((event) => event.id));
+        const steps = projectedSteps.filter((step) =>
+          step.events.some((event) => eventIds.has(event.id))
+        );
+        const displayTerminal = exposedTerminal
+          ? activityTerminalForDisplay(exposedTerminal, exposedStep)
+          : null;
+        if (steps.length >= 2) {
+          entries.push({
+            activitySteps: steps,
+            exposedEventIds: displayTerminal ? [displayTerminal.id] : [],
+          });
+          if (displayTerminal) entries.push(displayTerminal);
+          return;
+        }
+        entries.push(...events.map((event) =>
+          displayTerminal && event.id === displayTerminal.id
+            ? displayTerminal
+            : event
+        ));
+      }
+
+      function activityTerminalForDisplay(event, step) {
+        if (event.kind !== "tool_result" || event.name) return event;
+        const call = step?.events.find((item) => item.kind === "tool_call");
+        return call?.name ? { ...event, name: call.name } : event;
+      }
+
+      function timelineActivitySteps(events) {
+        const steps = [];
+        for (const event of events) {
+          const current = steps.at(-1);
+          if (event.kind === "error" && !current) continue;
+          if (event.kind === "tool_call" || !current) {
+            steps.push({ id: event.id, events: [event] });
+            continue;
+          }
+          const call = current.events.find((item) => item.kind === "tool_call");
+          const hasTerminal = current.events.some(
+            (item) =>
+              item.kind === "tool_result" ||
+              item.kind === "apply_result" ||
+              item.kind === "error",
+          );
+          if (
+            event.kind === "tool_result" &&
+            call &&
+            !hasTerminal &&
+            (!event.name || event.name === call.name)
+          ) {
+            current.events.push(event);
+          } else if (
+            event.kind.startsWith("apply_") &&
+            !hasTerminal &&
+            activityStepAcceptsApplyEvent(current, event) &&
+            !current.events.some((item) => item.kind === event.kind)
+          ) {
+            current.events.push(event);
+          } else if (event.kind === "error" && !hasTerminal) {
+            current.events.push(event);
+          } else if (event.kind === "error") {
+            continue;
+          } else {
+            steps.push({ id: event.id, events: [event] });
+          }
+        }
+        return steps;
+      }
+
+      function activityStepAcceptsApplyEvent(step, event) {
+        const call = step.events.find((item) => item.kind === "tool_call");
+        if (!call) {
+          return step.events.some((item) => item.kind.startsWith("apply_"));
+        }
+        return event.kind === "apply_result" || call.name === "apply_live_actions";
+      }
+
       function renderTimeline() {
         const state = getState();
         const assistantDraft = getAssistantDraft();
@@ -1369,12 +1504,32 @@
             "details.timeline-item.web_search[data-web-search-id]",
           )].map((details) => [details.dataset.webSearchId, details.open]),
         );
+        const activityGroupDetailsState = new Map(
+          [...timeline.querySelectorAll(
+            "details.timeline-activity-group[data-activity-group-id]",
+          )].map((details) => [details.dataset.activityGroupId, details.open]),
+        );
+        const activityStepDetailsState = new Map(
+          [...timeline.querySelectorAll(
+            "details.timeline-activity-step[data-activity-step-id]",
+          )].map((details) => [details.dataset.activityStepId, details.open]),
+        );
         const focusedSummaryDetails = focusBeforeRender?.matches("summary")
           ? focusBeforeRender.closest("details.timeline-item")
+          : null;
+        const focusedActivityGroup = focusBeforeRender?.matches("summary")
+          ? focusBeforeRender.closest("details.timeline-activity-group")
+          : null;
+        const focusedActivityStep = focusBeforeRender?.matches("summary")
+          ? focusBeforeRender.closest("details.timeline-activity-step")
           : null;
         const focusedSummaryEventId = focusedSummaryDetails?.dataset.eventId || null;
         const focusedSummaryWebSearchId =
           focusedSummaryDetails?.dataset.webSearchId || null;
+        const focusedActivityGroupId =
+          focusedActivityGroup?.dataset.activityGroupId || null;
+        const focusedActivityStepId =
+          focusedActivityStep?.dataset.activityStepId || null;
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
         timeline.replaceChildren();
@@ -1395,17 +1550,48 @@
           timeline.append(empty);
         }
 
-        for (const event of events) {
-          const item = buildTimelineItem(event);
-          if (item instanceof HTMLDetailsElement && detailsState.has(event.id)) {
-            item.open = detailsState.get(event.id);
-          } else if (
-            item instanceof HTMLDetailsElement &&
-            item.dataset.webSearchId &&
-            webSearchDetailsState.has(item.dataset.webSearchId)
-          ) {
-            item.open = webSearchDetailsState.get(item.dataset.webSearchId);
+        for (const entry of timelineActivityEntries(events)) {
+          if (entry.activitySteps) {
+            const steps = entry.activitySteps;
+            const exposedEventIds = new Set(entry.exposedEventIds || []);
+            const group = buildTimelineActivityGroup(steps);
+            const groupId = group.dataset.activityGroupId;
+            if (activityGroupDetailsState.has(groupId)) {
+              group.open = activityGroupDetailsState.get(groupId);
+            } else if (steps.some((step) =>
+              activityStepDetailsState.get(step.id) === true ||
+              step.events.some((event) =>
+                detailsState.get(event.id) === true ||
+                focusedSummaryEventId === event.id
+              )
+            )) {
+              group.open = true;
+            }
+            const items = group.querySelector(
+              ":scope > .timeline-activity-group-items",
+            );
+            for (const step of steps) {
+              const item = buildTimelineActivityStep(step, exposedEventIds);
+              if (activityStepDetailsState.has(step.id)) {
+                item.open = activityStepDetailsState.get(step.id);
+              } else if (step.events.some((event) =>
+                detailsState.get(event.id) === true ||
+                focusedSummaryEventId === event.id
+              )) {
+                item.open = true;
+              }
+              items.append(item);
+            }
+            timeline.append(group);
+            continue;
           }
+          const item = buildTimelineItem(entry);
+          restoreTimelineItemDetails(
+            item,
+            entry,
+            detailsState,
+            webSearchDetailsState,
+          );
           timeline.append(item);
         }
 
@@ -1464,7 +1650,31 @@
           } else if (focusedSummaryEventId) {
             const focusedDetails = [...timeline.querySelectorAll("details[data-event-id]")]
               .find((details) => details.dataset.eventId === focusedSummaryEventId);
-            focusedDetails?.querySelector("summary")?.focus({ preventScroll: true });
+            const focusedStep = [...timeline.querySelectorAll(
+              "details.timeline-activity-step[data-activity-step-id]",
+            )].find((details) =>
+              [...details.querySelectorAll("[data-event-id]")].some(
+                (event) => event.dataset.eventId === focusedSummaryEventId,
+              )
+            );
+            (focusedDetails ?? focusedStep)?.querySelector("summary")
+              ?.focus({ preventScroll: true });
+          } else if (focusedActivityStepId) {
+            const focusedStep = [...timeline.querySelectorAll(
+              "details.timeline-activity-step[data-activity-step-id]",
+            )].find((details) =>
+              details.dataset.activityStepId === focusedActivityStepId
+            );
+            focusedStep?.querySelector(":scope > summary")
+              ?.focus({ preventScroll: true });
+          } else if (focusedActivityGroupId) {
+            const focusedGroup = [...timeline.querySelectorAll(
+              "details.timeline-activity-group[data-activity-group-id]",
+            )].find((details) =>
+              details.dataset.activityGroupId === focusedActivityGroupId
+            );
+            focusedGroup?.querySelector(":scope > summary")
+              ?.focus({ preventScroll: true });
           } else if (focusedSummaryWebSearchId) {
             const focusedDetails = [...timeline.querySelectorAll(
               "details.timeline-item.web_search[data-web-search-id]",
@@ -1480,6 +1690,219 @@
         }
         renderedTimelineKey = renderKey;
         renderedAssistantDraft = assistantDraft;
+      }
+
+      function restoreTimelineItemDetails(
+        item,
+        event,
+        detailsState,
+        webSearchDetailsState,
+      ) {
+        if (!(item instanceof HTMLDetailsElement)) return;
+        if (detailsState.has(event.id)) {
+          item.open = detailsState.get(event.id);
+        } else if (
+          item.dataset.webSearchId &&
+          webSearchDetailsState.has(item.dataset.webSearchId)
+        ) {
+          item.open = webSearchDetailsState.get(item.dataset.webSearchId);
+        }
+      }
+
+      function buildTimelineActivityGroup(steps) {
+        const statuses = steps.map(activityStepStatus);
+        const pending = statuses.filter((status) => status === "pending").length;
+        const group = document.createElement("details");
+        group.className = "timeline-activity-group";
+        group.dataset.activityGroupId = steps[0].id;
+        group.dataset.status = pending ? "pending" : "complete";
+
+        const summary = document.createElement("summary");
+        summary.className = "timeline-activity-group-summary";
+        summary.textContent = pending
+          ? `Working · ${steps.length} steps`
+          : `Activity · ${steps.length} steps`;
+
+        const items = document.createElement("div");
+        items.className = "timeline-activity-group-items";
+        group.append(summary, items);
+        return group;
+      }
+
+      function buildTimelineActivityStep(step, exposedEventIds = new Set()) {
+        const status = activityStepStatus(step);
+        const titleText = activityStepTitle(step, status);
+        const excerptText = activityStepExcerpt(step);
+        const item = document.createElement("details");
+        item.className = "timeline-activity-step";
+        item.dataset.activityStepId = step.id;
+        item.dataset.status = status;
+
+        const summary = document.createElement("summary");
+        summary.className = "timeline-activity-step-summary";
+        summary.setAttribute(
+          "aria-label",
+          [activityStatusLabel(status), titleText, excerptText]
+            .filter(Boolean)
+            .join(": "),
+        );
+        const title = document.createElement("span");
+        title.className = "timeline-activity-title";
+        title.textContent = titleText;
+        summary.append(title);
+        if (excerptText) {
+          const excerpt = document.createElement("span");
+          excerpt.className = "timeline-activity-excerpt";
+          excerpt.textContent = truncate(excerptText, 112);
+          summary.append(excerpt);
+        }
+
+        const detail = document.createElement("div");
+        detail.className = "timeline-activity-detail";
+        for (const event of step.events) {
+          if (exposedEventIds.has(event.id)) continue;
+          const section = document.createElement("section");
+          section.className = "timeline-activity-detail-section";
+          section.dataset.eventId = event.id;
+          const label = document.createElement("div");
+          label.className = "timeline-activity-detail-label";
+          label.textContent = activityEventLabel(event);
+          const content = document.createElement("div");
+          content.className = "timeline-activity-detail-content";
+          content.textContent = event.content || "";
+          section.append(label, content);
+          detail.append(section);
+        }
+        item.append(summary, detail);
+        return item;
+      }
+
+      function activityStepStatus(step) {
+        const terminal = [...step.events].reverse().find(
+          (event) =>
+            event.kind === "tool_result" ||
+            event.kind === "apply_result" ||
+            event.kind === "error",
+        );
+        if (!terminal) return "pending";
+        return activityStepOutcome(step) === "success"
+          ? "complete"
+          : "stopped";
+      }
+
+      function activityStepOutcome(step) {
+        const call = step?.events.find((event) => event.kind === "tool_call");
+        const terminal = [...(step?.events || [])].reverse().find(
+          (event) =>
+            event.kind === "tool_result" ||
+            event.kind === "apply_result" ||
+            event.kind === "error",
+        );
+        if (!terminal) return "pending";
+        if (terminal.kind === "error") return "failed";
+        if (terminal.kind === "tool_result") {
+          if (call?.name === "apply_live_actions") return "failed";
+          if (call?.name === "resolve_live_recovery") return "stopped";
+        }
+        if (
+          terminal.kind === "apply_result" &&
+          call?.name === "resolve_live_recovery"
+        ) return "success";
+        return activityEventOutcome(terminal);
+      }
+
+      function activityStepTitle(step, status) {
+        const call = step.events.find((event) => event.kind === "tool_call");
+        const applyLifecycle = call?.name === "apply_live_actions" || (
+          !call && step.events.some((event) => event.kind.startsWith("apply_"))
+        );
+        if (applyLifecycle) {
+          if (status === "stopped") return "Apply stopped";
+          const count = activityStepChangeCount(step);
+          if (status === "complete") {
+            return count === undefined
+              ? "Applied changes"
+              : `Applied ${count} ${count === 1 ? "change" : "changes"}`;
+          }
+          if (step.events.some((event) => event.kind === "apply_auto_approved")) {
+            return "Applying changes";
+          }
+          if (step.events.some((event) => event.kind === "apply_requested")) {
+            return "Needs approval";
+          }
+          return "Prepare Live changes";
+        }
+        const named = call ?? step.events.find((event) => event.name);
+        return named?.name ? humanizeToolName(named.name) : "Tool activity";
+      }
+
+      function activityStepExcerpt(step) {
+        const call = step.events.find((event) => event.kind === "tool_call");
+        const applyLifecycle = call?.name === "apply_live_actions" || (
+          !call && step.events.some((event) => event.kind.startsWith("apply_"))
+        );
+        if (applyLifecycle) {
+          const callPreview = activityEventPreview(call);
+          if (callPreview) return callPreview;
+          const request = step.events.find(
+            (event) => event.kind === "apply_requested",
+          );
+          if (request) return activityEventPreview(request);
+          const approval = step.events.find(
+            (event) => event.kind === "apply_auto_approved",
+          );
+          return activityEventPreview(approval);
+        }
+        const result = [...step.events].reverse().find(
+          (event) => event.kind === "tool_result" || event.kind === "apply_result",
+        );
+        return activityEventPreview(result ?? call);
+      }
+
+      function activityEventPreview(event) {
+        const value = (event?.content || "").trim();
+        if (!value || value === "{}") return "";
+        if (event?.kind === "tool_call") {
+          try {
+            const parsed = JSON.parse(value);
+            if (typeof parsed?.message === "string" && parsed.message.trim()) {
+              return parsed.message.trim();
+            }
+          } catch {
+            // Non-JSON tool arguments still have a useful first line.
+          }
+        }
+        return value.split("\n")[0]?.trim() || "";
+      }
+
+      function activityStepChangeCount(step) {
+        for (const event of step.events) {
+          if (event.kind !== "apply_auto_approved") continue;
+          const match = /^(\d+) (?:change|changes)\b/u.exec(event.content || "");
+          if (match) return Number(match[1]);
+        }
+        return undefined;
+      }
+
+      function humanizeToolName(name) {
+        const words = name.split("_").filter(Boolean).join(" ");
+        return words ? `${words[0].toUpperCase()}${words.slice(1)}` : "Tool";
+      }
+
+      function activityStatusLabel(status) {
+        if (status === "pending") return "In progress";
+        if (status === "stopped") return "Stopped";
+        return "Completed";
+      }
+
+      function activityEventLabel(event) {
+        if (event.kind === "tool_call") return "Input";
+        if (event.kind === "tool_result") return "Result";
+        if (event.kind === "apply_requested") return "Approval request";
+        if (event.kind === "apply_auto_approved") return "Approval";
+        if (event.kind === "apply_result") return "Apply result";
+        if (event.kind === "error") return "Error";
+        return event.kind;
       }
 
       function buildConfirmCard(confirm) {
@@ -1589,9 +2012,7 @@
           item.dataset.eventId = event.id;
           if (
             event.kind === "error" ||
-            isFailedApplyResult(event) ||
-            isPartialApplyResult(event) ||
-            isRejectedToolResult(event)
+            isExposedActivityTerminal(event)
           ) item.open = true;
 
           const summary = document.createElement("summary");
@@ -1895,16 +2316,25 @@
         if (event.kind === "assistant") return "Live Smith";
         if (event.kind === "tool_call") return `Tool call${event.name ? ` / ${event.name}` : ""}`;
         if (event.kind === "tool_result") {
-          const label = isRejectedToolResult(event) ? "Tool input rejected" : "Tool result";
+          const outcome = activityEventOutcome(event);
+          const label = isRejectedToolResult(event)
+            ? "Tool input rejected"
+            : outcome === "failed"
+              ? "Tool failed"
+              : "Tool result";
+          if (isApplyToolTerminalResult(event) && !isRejectedToolResult(event)) {
+            return "Apply stopped";
+          }
+          if (isRecoveryToolTerminalResult(event)) return "Recovery stopped";
           return `${label}${event.name ? ` / ${event.name}` : ""}`;
         }
         if (event.kind === "apply_requested") return "Apply request";
         if (event.kind === "apply_auto_approved") return "Auto-approved";
         if (event.kind === "apply_result") {
-          if (isFailedApplyResult(event)) return "Apply Failed";
-          return isPartialApplyResult(event)
-            ? "Partial Apply"
-            : "Apply Result";
+          const outcome = activityEventOutcome(event);
+          if (outcome === "failed") return "Apply Failed";
+          if (outcome === "partial") return "Partial Apply";
+          return outcome === "stopped" ? "Apply Stopped" : "Apply Result";
         }
         if (event.kind === "error") return "Error";
         return event.kind;
@@ -1912,18 +2342,63 @@
 
       function isFailedApplyResult(event) {
         return event.kind === "apply_result" &&
-          /Live action plan could not complete its first (?:action|operation)|No (?:actions|operations) from this plan were completed/i
-            .test(event.content || "");
+          /^Live action plan could not complete its first (?:action|operation)\.?$/i
+            .test(activityEventFirstLine(event));
       }
 
       function isPartialApplyResult(event) {
         return event.kind === "apply_result" &&
-          /^Live action plan partially completed/i.test(event.content || "");
+          /^Live action plan partially completed after \d+ operation\(s\)\.?$/i
+            .test(activityEventFirstLine(event));
+      }
+
+      function isStoppedApplyResult(event) {
+        return event.kind === "apply_result" &&
+          /^(?:User cancelled the proposed Live actions\.|The proposed Live actions were not applied because )/i
+            .test(activityEventFirstLine(event));
+      }
+
+      function isApplyToolTerminalResult(event) {
+        return event.kind === "tool_result" && event.name === "apply_live_actions";
+      }
+
+      function isRecoveryToolTerminalResult(event) {
+        return event.kind === "tool_result" && event.name === "resolve_live_recovery";
       }
 
       function isRejectedToolResult(event) {
         return event.kind === "tool_result" &&
           /^Tool call .* has invalid arguments:/i.test(event.content || "");
+      }
+
+      function isExposedActivityTerminal(event, step) {
+        if (
+          event?.kind !== "tool_result" &&
+          event?.kind !== "apply_result" &&
+          event?.kind !== "error"
+        ) return false;
+        return (step ? activityStepOutcome(step) : activityEventOutcome(event)) !==
+          "success";
+      }
+
+      function activityEventOutcome(event) {
+        if (event?.kind === "error") return "failed";
+        if (event?.kind === "apply_result" && activityEventFirstLine(event) === "Applied:") {
+          return "success";
+        }
+        if (isFailedApplyResult(event)) return "failed";
+        if (isPartialApplyResult(event)) return "partial";
+        if (
+          isStoppedApplyResult(event) ||
+          isApplyToolTerminalResult(event) ||
+          isRecoveryToolTerminalResult(event) ||
+          isRejectedToolResult(event)
+        ) return "stopped";
+        return event?.kind === "apply_result" ? "stopped" : "success";
+      }
+
+      function activityEventFirstLine(event) {
+        return (event?.content || "").split("\n")[0]?.trim() || "";
       }
 
       return {
