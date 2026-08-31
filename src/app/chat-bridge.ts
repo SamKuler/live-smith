@@ -17,6 +17,7 @@ import type {
   ModelContextUsage,
   ModelHostedWebSearch,
 } from "../model/contracts.js";
+import type { OAuthAuthState } from "../model/provider.js";
 import {
   compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
@@ -33,6 +34,7 @@ import {
   type DefaultFollowUpBehaviorRevision,
   type NetworkProxyRevision,
   type NetworkProxySettings,
+  type OAuthSubscriptionProvider,
 } from "../model/profile.js";
 import { createHostAbortController } from "../runtime/host.js";
 import {
@@ -288,6 +290,12 @@ export interface ChatBridge {
   ): void;
   publishSessionStateInvalidation(sessionId: string): void;
   publishGlobalStateInvalidation(): void;
+  publishOAuthAuthState(
+    profileId: string,
+    provider: OAuthSubscriptionProvider,
+    generation: number,
+    auth: Extract<OAuthAuthState, { status: "pending" }>,
+  ): void;
   publishGlobalSettings(change: GlobalSettingsChange): void;
   publishProfileSettingsChange(change: ProfileSettingsChange): void;
   close(): Promise<void>;
@@ -467,6 +475,13 @@ type StateChangeSsePayloadBase =
     }
   | {
       type: "global_state_invalidated";
+    }
+  | {
+      type: "oauth_auth_changed";
+      profileId: string;
+      provider: OAuthSubscriptionProvider;
+      oauthAuthGeneration: number;
+      oauthAuth: Extract<OAuthAuthState, { status: "pending" }>;
     };
 
 type StateChangeSsePayload = StateChangeSsePayloadBase & {
@@ -591,6 +606,10 @@ export async function createChatBridge(
   let latestGlobalStateInvalidation:
     | Extract<StateChangeSsePayload, { type: "global_state_invalidated" }>
     | undefined;
+  const latestOAuthAuthChanges = new Map<
+    string,
+    Extract<StateChangeSsePayload, { type: "oauth_auth_changed" }>
+  >();
   const sendStopTombstones = new Map<string, PromptPersistence>();
   const activeAttachmentTerminals = new Map<string, Promise<void>>();
   const activeAttachmentControllers = new Map<string, AbortController>();
@@ -1319,6 +1338,9 @@ export async function createChatBridge(
         }
         if (latestGlobalStateInvalidation) {
           replay(latestGlobalStateInvalidation);
+        }
+        for (const published of latestOAuthAuthChanges.values()) {
+          replay(published);
         }
         for (const published of latestSessionStateInvalidations.values()) {
           replay(published);
@@ -2233,6 +2255,28 @@ export async function createChatBridge(
       });
       if (published?.type === "global_state_invalidated") {
         latestGlobalStateInvalidation = published;
+      }
+    },
+    publishOAuthAuthState: (profileId, provider, generation, auth) => {
+      const published = broadcastStateChange({
+        type: "oauth_auth_changed",
+        profileId,
+        provider,
+        oauthAuthGeneration: generation,
+        oauthAuth: {
+          status: "pending",
+          verificationUrl: auth.verificationUrl,
+          ...(auth.userCode === undefined ? {} : { userCode: auth.userCode }),
+          ...(auth.authorizationCodeInput === undefined
+            ? {}
+            : { authorizationCodeInput: true }),
+          ...(auth.browserLaunchFailed === undefined
+            ? {}
+            : { browserLaunchFailed: auth.browserLaunchFailed }),
+        },
+      });
+      if (published?.type === "oauth_auth_changed") {
+        latestOAuthAuthChanges.set(`${profileId}\u0000${provider}`, published);
       }
     },
     publishGlobalSettings: (change) => {

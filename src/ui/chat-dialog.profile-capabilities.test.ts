@@ -94,6 +94,17 @@ test("explicit model input evidence survives Save and Use", async () => {
     displayName: "Explicit model",
     capabilities: modelCapabilities,
     capabilityEvidence: modelEvidence,
+    providerReported: {
+      inputs: {
+        supportsVideo: true,
+        supportedMimeTypes: {
+          "image/png": true,
+          "audio/m4a": true,
+          "video/mp4": true,
+        },
+      },
+      reasoning: { supportsThinking: true, thinkingBudget: -1 },
+    },
   }];
   const harness = await createDialogHarness(state);
   try {
@@ -103,12 +114,55 @@ test("explicit model input evidence survives Save and Use", async () => {
       ["PDF ?", "unverified"],
     ];
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
+    const providerNote = harness.document.querySelector<HTMLElement>(
+      "#providerCapabilityNote",
+    );
+    assert.equal(providerNote?.hidden, false);
+    assert.match(providerNote?.textContent ?? "", /video input/i);
+    assert.match(providerNote?.textContent ?? "", /3 MIME capability entries/i);
+    assert.match(providerNote?.textContent ?? "", /reasoning metadata/i);
+    assert.match(providerNote?.title ?? "", /audio\/m4a/u);
 
     harness.input("#profileName", "Evidence renamed");
     harness.click("#saveProfileButton");
     await harness.settle();
 
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("provider MIME wildcards and conflicting video evidence remain visible", async () => {
+  const state = stateFixture();
+  const profile = state.settings.profiles[0]!;
+  state.availableModels = [{
+    id: profile.defaultModel,
+    displayName: "Broad provider evidence",
+    capabilities: capabilities(),
+    capabilityEvidence: capabilityEvidence(),
+    providerReported: {
+      inputs: {
+        supportsVideo: false,
+        supportedMimeTypes: {
+          "*/*": true,
+          "video/mp4": true,
+          "video/audio/s16le": true,
+        },
+      },
+    },
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const providerNote = harness.document.querySelector<HTMLElement>(
+      "#providerCapabilityNote",
+    );
+    assert.equal(providerNote?.hidden, false);
+    assert.match(providerNote?.textContent ?? "", /conflicting video capability/i);
+    assert.match(providerNote?.textContent ?? "", /3 MIME capability entries/i);
+    assert.match(providerNote?.title ?? "", /\*\/\*=true/u);
+    assert.match(providerNote?.title ?? "", /video\/audio\/s16le=true/u);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

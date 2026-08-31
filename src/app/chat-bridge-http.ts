@@ -118,6 +118,12 @@ export type ChatBridgeCommandInput =
       provider: OAuthSubscriptionProvider;
     }
   | {
+      kind: "submit_oauth_authorization_code";
+      profileId: string;
+      provider: "google";
+      authorizationCode: string;
+    }
+  | {
       kind: "logout_oauth";
       profileId: string;
       provider: OAuthSubscriptionProvider;
@@ -1026,6 +1032,30 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     }
     return { kind, profileId, provider };
   }
+  if (kind === "submit_oauth_authorization_code") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "profileId", "provider", "authorizationCode"],
+      `${kind} command`,
+    );
+    const profileId = input.profileId;
+    if (!isProfileId(profileId)) {
+      throw new ChatBridgeRequestValidationError(
+        "profileId must be a valid Profile ID.",
+      );
+    }
+    if (input.provider !== "google") {
+      throw new ChatBridgeRequestValidationError(
+        "submit_oauth_authorization_code provider must be google.",
+      );
+    }
+    return {
+      kind,
+      profileId,
+      provider: "google",
+      authorizationCode: inputAuthorizationCode(input),
+    };
+  }
   if (
     kind === "select_session" ||
     kind === "restore_session" ||
@@ -1112,6 +1142,16 @@ function inputString(record: Record<string, unknown>, key: string): string {
     throw new ChatBridgeRequestValidationError(`${key} must be a string.`);
   }
   return value;
+}
+
+function inputAuthorizationCode(record: Record<string, unknown>): string {
+  const code = inputString(record, "authorizationCode").trim();
+  if (!code || code.length > 4_096 || /[\s\u0000-\u001F\u007F]/u.test(code)) {
+    throw new ChatBridgeRequestValidationError(
+      "code must be a non-empty authorization code without whitespace.",
+    );
+  }
+  return code;
 }
 
 function assertOnlyInputKeys(

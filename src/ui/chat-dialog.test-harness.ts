@@ -705,7 +705,9 @@ async function createDialogHarness(
     "session_edit_scopes_changed",
     "confirm_request",
     "confirm_resolved",
+    "global_state_invalidated",
     "global_settings_changed",
+    "oauth_auth_changed",
     "progress",
     "profile_settings_changed",
     "session_event",
@@ -1354,6 +1356,7 @@ async function createDialogHarness(
                 profile?: SavedProfile;
                 profileId?: string;
                 provider?: "openai" | "anthropic" | "google";
+                authorizationCode?: string;
                 model?: string;
                 reasoningEffort?: "minimal" | "low" | "medium" | "high" |
                   "xhigh" | "max" | "ultra" | null;
@@ -1423,6 +1426,21 @@ async function createDialogHarness(
                   verificationUrl: "https://auth.openai.com/codex/device",
                   userCode: "ABCD-EFGH",
                 });
+              } else if (command.kind === "submit_oauth_authorization_code") {
+                if (
+                  !command.profileId ||
+                  command.provider !== "google" ||
+                  typeof command.authorizationCode !== "string" ||
+                  !command.authorizationCode
+                ) {
+                  throw new Error("Antigravity code submission is invalid.");
+                }
+                if (serverState.oauthAuth?.status !== "pending") {
+                  throw new Error("Antigravity sign-in is not pending.");
+                }
+                serverState.oauthAuthGeneration += 1;
+                delete serverState.oauthAuth.authorizationCodeInput;
+                delete serverState.oauthAuth.browserLaunchFailed;
               } else if (command.kind === "refresh_oauth_account") {
                 if (!command.profileId || !command.provider) {
                   throw new Error("OAuth commands require a Profile and provider.");

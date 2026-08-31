@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { TextDecoder } from "node:util";
 
 import type { LiveInteractionContext } from "../live/context.js";
 import type {
@@ -38,6 +39,7 @@ import {
   modelAuthSendFenceForStorage,
   type ModelAuthSendFence,
 } from "./model-auth-send-fence.js";
+import { subscribeGlobalStateInvalidations } from "./session-state-events.js";
 
 let bridgeRequestSequence = 0;
 
@@ -320,7 +322,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
   assert.deepEqual(openedUrls, ["https://auth.openai.com/codex/device"]);
 });
 
-test("a host browser failure preserves pending OAuth and retries its active link", {
+test("browser failure stays retryable and Antigravity code submission notifies peers", {
   timeout: 5_000,
 }, async (t) => {
   const directory = await fs.mkdtemp(
@@ -342,6 +344,15 @@ test("a host browser failure preserves pending OAuth and retries its active link
 
   let auth: OAuthAuthState = { status: "signed-out" };
   let browserOpenCalls = 0;
+  let peerStateInvalidations = 0;
+  const storageKey = await canonicalStorageDirectory(directory);
+  t.after(subscribeGlobalStateInvalidations(storageKey, () => {
+    peerStateInvalidations += 1;
+  }));
+  const failFirstBrowserLaunch = deferred<void>();
+  const thirdBrowserLaunchStarted = deferred<void>();
+  const holdThirdBrowserLaunch = deferred<void>();
+  const thirdBrowserLaunchSettled = deferred<void>();
   const backend: OAuthSubscriptionBackend = {
     kind: "oauth-subscription",
     async readAuthState() { return auth; },
@@ -349,6 +360,7 @@ test("a host browser failure preserves pending OAuth and retries its active link
       auth = {
         status: "pending",
         verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+        authorizationCodeInput: true,
       };
       return auth;
     },
@@ -361,6 +373,15 @@ test("a host browser failure preserves pending OAuth and retries its active link
           auth = pending;
         }
       }
+      return auth;
+    },
+    async submitLoginCode(code) {
+      assert.equal(code, "4/agent-flow-code");
+      if (auth.status !== "pending") throw new Error("login is not pending");
+      const pending = { ...auth };
+      delete pending.authorizationCodeInput;
+      delete pending.browserLaunchFailed;
+      auth = pending;
       return auth;
     },
     async logout() {
@@ -396,40 +417,80 @@ test("a host browser failure preserves pending OAuth and retries its active link
           headers: bridgeJsonHeaders(),
           body: JSON.stringify(body),
         });
+        const events = await fetch(bridgeEndpoint(url, "/events"));
+        const browserFailurePublished = readSsePayload(
+          events,
+          "oauth_auth_changed",
+        );
         const started = await command({
           kind: "start_oauth_login",
           profileId: profile.id,
           provider: "google",
         });
         assert.equal(started.status, 200);
+        const startedState = await started.json() as ChatDialogState;
+        assert.equal(startedState.oauthAuth?.status, "pending");
+        assert.equal(startedState.oauthAuth.browserLaunchFailed, undefined);
 
-        let state = await started.json() as ChatDialogState;
-        for (
-          let attempt = 0;
-          state.oauthAuth?.status !== "pending" ||
-            state.oauthAuth.browserLaunchFailed !== true;
-          attempt += 1
-        ) {
-          assert.ok(attempt < 100, "browser launch failure was not projected promptly");
-          await new Promise<void>((resolve) => setTimeout(resolve, 10));
-          const response = await fetch(bridgeEndpoint(url, "/state"));
-          assert.equal(response.status, 200);
-          state = await response.json() as ChatDialogState;
-        }
+        failFirstBrowserLaunch.resolve(undefined);
+        const browserFailure = await browserFailurePublished;
+        assert.deepEqual(
+          {
+            ...browserFailure,
+            bridgeStateRevision: "",
+          },
+          {
+            type: "oauth_auth_changed",
+            profileId: profile.id,
+            provider: "google",
+            oauthAuthGeneration: startedState.oauthAuthGeneration,
+            oauthAuth: {
+              status: "pending",
+              verificationUrl:
+                "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+              authorizationCodeInput: true,
+              browserLaunchFailed: true,
+            },
+            bridgeStateRevision: "",
+          },
+        );
+        const stateResponse = await fetch(bridgeEndpoint(url, "/state"));
+        assert.equal(stateResponse.status, 200);
+        const state = await stateResponse.json() as ChatDialogState;
         assert.deepEqual(state.oauthAuth, {
           status: "pending",
           verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+          authorizationCodeInput: true,
           browserLaunchFailed: true,
         });
+        await events.body?.cancel();
 
+        const invalidationsBeforeRetry = peerStateInvalidations;
         const fallback = await command({
           kind: "open_oauth_authorization",
           profileId: profile.id,
           provider: "google",
         });
         assert.equal(fallback.status, 200);
+        assert.equal(peerStateInvalidations, invalidationsBeforeRetry + 1);
         const retried = await fallback.json() as ChatDialogState;
         assert.deepEqual(retried.oauthAuth, {
+          status: "pending",
+          verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+          authorizationCodeInput: true,
+        });
+
+        const invalidationsBeforeSubmit = peerStateInvalidations;
+        const submitted = await command({
+          kind: "submit_oauth_authorization_code",
+          profileId: profile.id,
+          provider: "google",
+          authorizationCode: "4/agent-flow-code",
+        });
+        assert.equal(submitted.status, 200);
+        assert.equal(peerStateInvalidations, invalidationsBeforeSubmit + 1);
+        const submittedState = await submitted.json() as ChatDialogState;
+        assert.deepEqual(submittedState.oauthAuth, {
           status: "pending",
           verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
         });
@@ -437,7 +498,7 @@ test("a host browser failure preserves pending OAuth and retries its active link
         auth = {
           status: "signed-in",
           accountLabel: "listener@example.test",
-          planType: "Google Cloud Code Assist",
+          planType: "Google Antigravity",
           subscriptionEligible: true,
         };
         const completedOpen = await command({
@@ -450,6 +511,37 @@ test("a host browser failure preserves pending OAuth and retries its active link
           ((await completedOpen.json()) as ChatDialogState).oauthAuth?.status,
           "signed-in",
         );
+
+        const loggedOut = await command({
+          kind: "logout_oauth",
+          profileId: profile.id,
+          provider: "google",
+        });
+        assert.equal(loggedOut.status, 200);
+        const restarted = await command({
+          kind: "start_oauth_login",
+          profileId: profile.id,
+          provider: "google",
+        });
+        assert.equal(restarted.status, 200);
+        await thirdBrowserLaunchStarted.promise;
+        const resubmitted = await command({
+          kind: "submit_oauth_authorization_code",
+          profileId: profile.id,
+          provider: "google",
+          authorizationCode: "4/agent-flow-code",
+        });
+        assert.equal(resubmitted.status, 200);
+        await thirdBrowserLaunchSettled.promise;
+        const afterLateLaunch = await fetch(bridgeEndpoint(url, "/state"));
+        assert.equal(afterLateLaunch.status, 200);
+        assert.deepEqual(
+          ((await afterLateLaunch.json()) as ChatDialogState).oauthAuth,
+          {
+            status: "pending",
+            verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+          },
+        );
       },
     },
   };
@@ -457,14 +549,23 @@ test("a host browser failure preserves pending OAuth and retries its active link
   await runAgentFlow(context as never, interaction, {
     renderHtml: () => "<html></html>",
     modelBackendManager: manager,
-    openOAuthAuthorizationUrl: async () => {
+    openOAuthAuthorizationUrl: async (_url, signal) => {
       browserOpenCalls += 1;
       if (browserOpenCalls === 1) {
+        await failFirstBrowserLaunch.promise;
         throw new Error("host opener failed with private URL details");
+      }
+      if (browserOpenCalls === 3) {
+        thirdBrowserLaunchStarted.resolve(undefined);
+        try {
+          await waitForPromiseWithSignal(holdThirdBrowserLaunch.promise, signal);
+        } finally {
+          thirdBrowserLaunchSettled.resolve(undefined);
+        }
       }
     },
   });
-  assert.equal(browserOpenCalls, 2);
+  assert.equal(browserOpenCalls, 3);
 });
 
 test("a Direct API send does not enter the OAuth account fence", async (t) => {
@@ -2583,6 +2684,35 @@ test("OAuth poison from a modal close leaves a Direct API peer operational", {
     await Promise.allSettled([firstFlow, peerFlow]);
   }
 });
+
+async function readSsePayload(
+  response: Response,
+  type: string,
+): Promise<Record<string, unknown>> {
+  const reader = response.body?.getReader();
+  assert.ok(reader);
+  const decoder = new TextDecoder();
+  let pending = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      assert.equal(done, false, `SSE ended before ${type}.`);
+      pending += decoder.decode(value, { stream: true });
+      const frames = pending.split("\n\n");
+      pending = frames.pop() ?? "";
+      for (const frame of frames) {
+        const data = frame.split("\n")
+          .find((line) => line.startsWith("data: "))
+          ?.slice("data: ".length);
+        if (!data) continue;
+        const payload = JSON.parse(data) as { type?: string };
+        if (payload.type === type) return payload;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 function bridgeEndpoint(dialogUrl: string, pathname: string): string {
   const url = new URL(dialogUrl);

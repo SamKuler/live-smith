@@ -519,7 +519,7 @@ test("a provider switch adopts its auth state without comparing another provider
     google.oauthAuth = {
       status: "signed-in",
       accountLabel: "gemini@example.test",
-      planType: "Google Cloud Code Assist",
+      planType: "Google Antigravity",
       subscriptionEligible: true,
     };
     harness.setServerState(google);
@@ -611,7 +611,7 @@ test("provisional OAuth Draft exits discard the exact Profile before navigating"
         oauthLoginResult: {
           status: "signed-in",
           accountLabel: "draft@example.test",
-          planType: "Google Cloud Code Assist",
+          planType: "Google Antigravity",
           subscriptionEligible: true,
         },
       });
@@ -922,7 +922,7 @@ test("saved matching OAuth and Direct-only Draft exits do not request provisiona
     state.oauthAuth = {
       status: "signed-in",
       accountLabel: "peer@example.test",
-      planType: "Google Cloud Code Assist",
+      planType: "Google Antigravity",
       subscriptionEligible: true,
     };
     const harness = await createDialogHarness(state);
@@ -1037,12 +1037,20 @@ test("a delayed Profile auth response cannot reuse another Profile's same-genera
     planType: "ChatGPT subscription",
     subscriptionEligible: true,
   };
-  const harness = await createDialogHarness(state);
+  const pendingGoogleAuth = {
+    status: "pending" as const,
+    verificationUrl: "https://accounts.google.com/o/oauth2/auth?client_id=test",
+    authorizationCodeInput: true as const,
+  };
+  const harness = await createDialogHarness(state, undefined, {
+    oauthLoginResult: pendingGoogleAuth,
+  });
   let released = false;
   try {
     harness.click(".profile-actions button");
     await harness.settle();
     harness.select("#connectionKind", "oauth-subscription");
+    harness.select("#oauthProvider", "google");
     harness.holdNextCommandResponse();
     harness.click("#oauthSignInButton");
     await waitForCondition(
@@ -1058,6 +1066,31 @@ test("a delayed Profile auth response cannot reuse another Profile's same-genera
     assert.equal(
       harness.document.querySelector("#oauthAuthStateBadge")?.textContent,
       "Waiting",
+    );
+    const startedLogin = commandCalls(harness).find((call) =>
+      (call.body as { kind?: string }).kind === "start_oauth_login"
+    );
+    const draftProfileId = (startedLogin?.body as { profileId?: string })
+      .profileId;
+    assert.ok(draftProfileId);
+    const missedFailure = harness.deferServerEvent({
+      type: "oauth_auth_changed",
+      profileId: draftProfileId,
+      provider: "google",
+      oauthAuthGeneration: state.oauthAuthGeneration + 1,
+      oauthAuth: {
+        ...pendingGoogleAuth,
+        browserLaunchFailed: true,
+      },
+    });
+    harness.setServerState(cloneState(state));
+    harness.emitServerEvent({ type: "global_state_invalidated" });
+    await harness.settle();
+    harness.emitRawServerEvent(missedFailure);
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#oauthAuthStateDetail")?.textContent ?? "",
+      /could not open the system browser/i,
     );
     assert.match(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.title ?? "",
@@ -1653,7 +1686,7 @@ test("device-code links are limited to the verified OpenAI HTTPS host", async ()
   }
 });
 
-test("OAuth provider selection drives native Claude and Gemini commands", async () => {
+test("OAuth provider selection drives native Claude and Antigravity commands", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
     harness.select("#connectionKind", "oauth-subscription");
@@ -1676,7 +1709,7 @@ test("OAuth provider selection drives native Claude and Gemini commands", async 
     harness.select("#oauthProvider", "google");
     assert.match(
       harness.document.querySelector("#oauthAuthNote")?.textContent ?? "",
-      /Google account.*Cloud Code Assist/i,
+      /Google account.*Antigravity/i,
     );
     harness.click("#oauthCheckAccountButton");
     await harness.settle();
@@ -1760,7 +1793,7 @@ test("browser OAuth pending state supports a link without a device code", async 
   }
 });
 
-test("Gemini browser OAuth never shows a code and confirms the callback automatically", async () => {
+test("Antigravity browser OAuth accepts the hosted callback authorization code", async () => {
   const state = stateFixture();
   const profile = profileFixture({
     id: "gemini-profile",
@@ -1779,7 +1812,8 @@ test("Gemini browser OAuth never shows a code and confirms the callback automati
   const harness = await createDialogHarness(state, undefined, {
     oauthLoginResult: {
       status: "pending",
-      verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test",
+      verificationUrl: "https://accounts.google.com/o/oauth2/auth?client_id=test",
+      authorizationCodeInput: true,
     },
   });
   try {
@@ -1790,17 +1824,21 @@ test("Gemini browser OAuth never shows a code and confirms the callback automati
       harness.document.querySelector<HTMLElement>(
         ".subscription-auth-code-ticket",
       )?.hidden,
-      true,
+      false,
     );
     assert.match(
       harness.document.querySelector(
         ".subscription-auth-device-guidance",
       )?.textContent ?? "",
-      /does not use a one-time code.*check automatically/i,
+      /callback page displays this code/i,
     );
     assert.equal(
-      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
-      "",
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.readOnly,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>("#oauthSubmitCodeButton")?.hidden,
+      false,
     );
     harness.click("#oauthVerificationLink");
     await harness.settle();
@@ -1814,11 +1852,64 @@ test("Gemini browser OAuth never shows a code and confirms the callback automati
     });
     assert.deepEqual(harness.windowOpenAttempts, []);
 
+    await new Promise<void>((resolve) => setTimeout(resolve, 650));
+    assert.equal(
+      commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "refresh_oauth_account"
+      ),
+      false,
+    );
+
+    harness.input("#oauthUserCode", "4/test-antigravity-code");
+    const submitCode = harness.document.querySelector<HTMLButtonElement>(
+      "#oauthSubmitCodeButton",
+    );
+    assert.ok(submitCode);
+    submitCode.focus();
+    harness.click("#oauthSubmitCodeButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: {
+        kind: "submit_oauth_authorization_code",
+        profileId: profile.id,
+        provider: "google",
+        authorizationCode: "4/test-antigravity-code",
+      },
+    });
+    harness.emitServerEvent({
+      type: "oauth_auth_changed",
+      profileId: profile.id,
+      provider: "google",
+      oauthAuthGeneration: state.oauthAuthGeneration + 1,
+      oauthAuth: {
+        status: "pending",
+        verificationUrl: "https://accounts.google.com/o/oauth2/auth?client_id=test",
+        authorizationCodeInput: true,
+        browserLaunchFailed: true,
+      },
+    });
+    await harness.settle();
+    assert.equal(
+      harness.document.querySelector<HTMLElement>(
+        ".subscription-auth-code-ticket",
+      )?.hidden,
+      true,
+    );
+    assert.doesNotMatch(
+      harness.document.querySelector("#oauthAuthStateDetail")?.textContent ?? "",
+      /could not open the system browser/i,
+    );
+    const checkAccount = harness.document.querySelector<HTMLButtonElement>(
+      "#oauthCheckAccountButton",
+    );
+    assert.equal(harness.document.activeElement, checkAccount);
+
     await waitForCondition(
       () => commandCalls(harness).some((call) =>
         (call.body as { kind?: string }).kind === "refresh_oauth_account"
       ),
-      "Expected browser OAuth to check its callback automatically.",
+      "Expected Antigravity OAuth to check after code submission.",
     );
     await harness.settle();
     assert.equal(
@@ -1835,13 +1926,15 @@ test("Gemini browser OAuth never shows a code and confirms the callback automati
       )?.hidden,
       true,
     );
+    assert.equal(harness.document.activeElement, checkAccount);
+    assert.equal(checkAccount?.closest("[hidden]"), null);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
 });
 
-test("a failed Gemini browser launch keeps its active link retryable", async () => {
+test("a failed Antigravity browser launch keeps its active link retryable", async () => {
   const state = stateFixture();
   const profile = profileFixture({
     id: "gemini-browser-retry",
@@ -1856,28 +1949,81 @@ test("a failed Gemini browser launch keeps its active link retryable", async () 
   state.runtimeProfile = runtimeSummaryForHarnessProfile(profile);
   state.oauthAuthProfileId = profile.id;
   state.oauthAuthProvider = "google";
-  state.oauthAuth = {
-    status: "pending",
-    verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test",
-    browserLaunchFailed: true,
+  state.oauthAuth = { status: "signed-out" };
+  const pendingAuth = {
+    status: "pending" as const,
+    verificationUrl: "https://accounts.google.com/o/oauth2/auth?client_id=test",
+    authorizationCodeInput: true as const,
   };
-  const harness = await createDialogHarness(state);
+  const harness = await createDialogHarness(state, undefined, {
+    oauthLoginResult: pendingAuth,
+  });
+  let commandResponseReleased = false;
   try {
+    harness.holdNextCommandResponse();
+    harness.click("#oauthSignInButton");
+    await waitForCondition(
+      () => commandCalls(harness).some((call) =>
+        (call.body as { kind?: string }).kind === "start_oauth_login"
+      ),
+      "Expected Antigravity sign-in to reach the bridge.",
+    );
+
+    const stateCallsBeforeFailure = jsonCalls(harness, "/state").length;
+    harness.emitServerEvent({
+      type: "oauth_auth_changed",
+      profileId: profile.id,
+      provider: "google",
+      oauthAuthGeneration: state.oauthAuthGeneration + 1,
+      oauthAuth: {
+        ...pendingAuth,
+        browserLaunchFailed: true,
+      },
+    });
+    await harness.settle();
+    assert.equal(jsonCalls(harness, "/state").length, stateCallsBeforeFailure);
+    harness.input("#oauthUserCode", "code-being-pasted");
+
     assert.match(
       harness.document.querySelector("#oauthAuthStateDetail")?.textContent ?? "",
       /could not open the system browser/i,
     );
     assert.match(
       harness.document.querySelector("#oauthVerificationLinkLabel")?.textContent ?? "",
-      /retry opening Gemini sign-in page/i,
+      /retry opening Antigravity sign-in page/i,
     );
     assert.equal(
       harness.document.querySelector<HTMLElement>(
         ".subscription-auth-code-ticket",
       )?.hidden,
-      true,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
+      "code-being-pasted",
+    );
+    harness.releaseHeldCommandResponse();
+    commandResponseReleased = true;
+    await harness.settle();
+    assert.match(
+      harness.document.querySelector("#oauthAuthStateDetail")?.textContent ?? "",
+      /could not open the system browser/i,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#oauthUserCode")?.value,
+      "code-being-pasted",
     );
 
+    const coveredFailure = harness.deferServerEvent({
+      type: "oauth_auth_changed",
+      profileId: profile.id,
+      provider: "google",
+      oauthAuthGeneration: state.oauthAuthGeneration + 1,
+      oauthAuth: {
+        ...pendingAuth,
+        browserLaunchFailed: true,
+      },
+    });
     harness.click("#oauthVerificationLink");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
@@ -1888,12 +2034,15 @@ test("a failed Gemini browser launch keeps its active link retryable", async () 
         provider: "google",
       },
     });
+    harness.emitRawServerEvent(coveredFailure);
+    await harness.settle();
     assert.doesNotMatch(
       harness.document.querySelector("#oauthAuthStateDetail")?.textContent ?? "",
       /could not open the system browser/i,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
+    if (!commandResponseReleased) harness.releaseHeldCommandResponse();
     harness.close();
   }
 });
@@ -1966,7 +2115,7 @@ test("automatic OAuth checks do not turn a saved Profile provisional while anoth
   }
 });
 
-test("Gemini account verification is actionable without a one-time code", async () => {
+test("Antigravity account verification is actionable without a one-time code", async () => {
   const state = stateFixture();
   const profile = profileFixture({
     id: "gemini-validation-profile",
@@ -1983,7 +2132,7 @@ test("Gemini account verification is actionable without a one-time code", async 
   state.oauthAuthProvider = "google";
   state.oauthAuth = {
     status: "unavailable",
-    message: "Google requires an additional account verification before Gemini can be used.",
+    message: "Google requires an additional account verification before Antigravity can be used.",
     definitive: true,
     verificationUrl: "https://accounts.google.com/signin/continue?test=1",
     verificationLabel: "Verify Google account",

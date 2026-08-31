@@ -462,7 +462,7 @@
         return oauthProvider() === "anthropic"
           ? "Claude"
           : oauthProvider() === "google"
-            ? "Gemini"
+            ? "Antigravity"
             : "ChatGPT";
       }
 
@@ -1211,17 +1211,24 @@
         }
         if (auth.status === "pending") {
           const hasCode = Boolean(auth.userCode);
+          const needsAuthorizationCode = auth.authorizationCodeInput === true;
           return {
             state: "pending",
             badge: "Waiting",
             title: "Finish sign-in",
             detail: auth.browserLaunchFailed
               ? `Live Smith could not open the system browser. Retry the ${providerLabel} account link below or copy it into a browser.`
+              : needsAuthorizationCode
+                ? `Finish ${providerLabel} sign-in, then paste the authorization code shown in the browser.`
               : hasCode
                 ? `Open the ${providerLabel} page, enter the one-time code, then return here.`
                 : `Complete ${providerLabel} sign-in in the browser, then return here.`,
             signIn: { label: "Sign in", hidden: true, tone: "secondary" },
-            check: { label: "Check sign-in", hidden: false, tone: "primary" },
+            check: {
+              label: "Check sign-in",
+              hidden: needsAuthorizationCode,
+              tone: "primary",
+            },
             logout: {
               label: "Cancel sign-in",
               busyLabel: "Cancelling…",
@@ -1277,6 +1284,9 @@
           : undefined;
         const presentation = oauthAuthPresentation(auth);
         const panel = document.getElementById("oauthAuthPanel");
+        const focusedAuthControl = panel.contains(document.activeElement)
+          ? document.activeElement
+          : null;
         const ticket = document.getElementById("oauthDeviceCodeTicket");
         const verificationLink = document.getElementById("oauthVerificationLink");
         const verificationError = document.getElementById("oauthVerificationError");
@@ -1285,6 +1295,9 @@
           ".subscription-auth-device-guidance",
         );
         const userCode = document.getElementById("oauthUserCode");
+        const codeHeading = document.getElementById("oauthDeviceCodeHeading");
+        const codeHelp = document.getElementById("oauthDeviceCodeHelp");
+        const submitCode = document.getElementById("oauthSubmitCodeButton");
         const presentationKey = JSON.stringify(auth || null);
         const providerLabel = oauthProviderLabel();
         const headingText = `${providerLabel} account `;
@@ -1292,8 +1305,8 @@
         if (headingNode.textContent !== headingText) headingNode.textContent = headingText;
         const noteText = providerLabel === "Claude"
             ? "Uses Claude OAuth through Anthropic Messages. Extra Usage is account-billed when enabled."
-            : providerLabel === "Gemini"
-              ? "Uses your Google account through Cloud Code Assist."
+            : providerLabel === "Antigravity"
+              ? "Uses your Google account through Antigravity."
               : "Uses your ChatGPT account through the Codex backend API.";
         setPropertyIfChanged(
           document.getElementById("oauthAuthNote"),
@@ -1323,6 +1336,8 @@
           detail.textContent = presentation.detail;
           detail.hidden = !presentation.detail;
           const pending = auth?.status === "pending";
+          const authorizationCodeInput = pending &&
+            auth.authorizationCodeInput === true;
           const verificationAction = auth?.status === "unavailable" &&
             Boolean(auth.verificationUrl);
           ticket.hidden = !pending && !verificationAction;
@@ -1335,23 +1350,52 @@
             } else {
               verificationLink.removeAttribute("href");
             }
-            userCode.value = pending ? auth.userCode || "" : "";
-            codeTicket.hidden = !pending || !auth.userCode;
+            const enteringAuthorizationCodeInput = authorizationCodeInput &&
+              userCode.readOnly;
+            userCode.readOnly = !authorizationCodeInput;
+            userCode.placeholder = authorizationCodeInput
+              ? "Paste authorization code"
+              : "";
+            if (!authorizationCodeInput || enteringAuthorizationCodeInput) {
+              userCode.value = pending && !authorizationCodeInput
+                ? auth.userCode || ""
+                : "";
+            }
+            codeTicket.hidden = !pending ||
+              (!auth.userCode && !authorizationCodeInput);
+            toggleClassIfChanged(
+              codeTicket,
+              "authorization-code-entry",
+              authorizationCodeInput,
+            );
+            codeHeading.firstChild.textContent = authorizationCodeInput
+              ? "Authorization code"
+              : "One-time code";
+            codeHelp.textContent = authorizationCodeInput
+              ? "Paste from the browser"
+              : "Select to copy";
+            submitCode.hidden = !authorizationCodeInput;
             deviceGuidance.textContent = verificationAction
               ? `Complete the requested ${providerLabel} account step in the browser, then try sign-in again.`
               : auth.browserLaunchFailed
                 ? "The current sign-in attempt is still active. Retry the link or copy its address before it expires."
+                : authorizationCodeInput
+                  ? "The Antigravity callback page displays this code after Google sign-in."
                 : auth.userCode
                   ? "Keep this window open. Return here after entering the code."
-                  : providerLabel === "Gemini"
-                    ? "Gemini does not use a one-time code. Complete sign-in in the browser; Live Smith will check automatically."
-                    : "Complete sign-in in the browser; Live Smith will check automatically.";
+                  : "Complete sign-in in the browser; Live Smith will check automatically.";
           } else {
             verificationLink.hidden = true;
             verificationLink.removeAttribute("href");
             verificationError.hidden = true;
             userCode.value = "";
+            userCode.readOnly = true;
+            userCode.placeholder = "";
             codeTicket.hidden = true;
+            toggleClassIfChanged(codeTicket, "authorization-code-entry", false);
+            codeHeading.firstChild.textContent = "One-time code";
+            codeHelp.textContent = "Select to copy";
+            submitCode.hidden = true;
           }
         }
 
@@ -1398,6 +1442,17 @@
           "disabled",
           settingsLocked || !subscription || presentation.logout.hidden,
         );
+        setPropertyIfChanged(
+          submitCode,
+          "disabled",
+          settingsLocked || !subscription || submitCode.hidden,
+        );
+        if (focusedAuthControl?.closest("[hidden]")) {
+          const target = [check, logout, signIn].find(
+            (control) => !control.hidden && !control.disabled,
+          );
+          target?.focus({ preventScroll: true });
+        }
         syncOAuthPendingRecheck();
       }
 
@@ -1407,7 +1462,7 @@
             state.oauthAuthProvider === oauthProvider()
           ? state.oauthAuth
           : undefined;
-        return auth?.status === "pending"
+        return auth?.status === "pending" && !auth.authorizationCodeInput
           ? {
               key: `${draftProfile.id}:${state.oauthAuthProvider}:${state.oauthAuthGeneration}`,
               provider: state.oauthAuthProvider,
@@ -1481,8 +1536,11 @@
         const signIn = document.getElementById("oauthSignInButton");
         const check = document.getElementById("oauthCheckAccountButton");
         const verificationLink = document.getElementById("oauthVerificationLink");
+        const authorizationCode = document.getElementById("oauthUserCode");
         const target = auth?.status === "pending"
-          ? verificationLink.hidden ? check : verificationLink
+          ? auth.authorizationCodeInput
+            ? authorizationCode
+            : verificationLink.hidden ? check : verificationLink
           : !signIn.hidden
           ? signIn
           : check;
@@ -1491,7 +1549,12 @@
         }
       }
 
-      async function runOAuthAuthCommand(kind, sourceId, provider = oauthProvider()) {
+      async function runOAuthAuthCommand(
+        kind,
+        sourceId,
+        provider = oauthProvider(),
+        fields = {},
+      ) {
         if (isAnyOperationInProgress()) {
           showStatus("Wait for the current operation to finish.");
           return;
@@ -1504,7 +1567,11 @@
         if (kind !== "logout_oauth" && provisional) {
           provisionalOAuthScopes.add(oauthScopeKey(profileId, provider));
         }
-        const completed = await runCommand(kind, { profileId, provider });
+        const completed = await runCommand(kind, {
+          profileId,
+          provider,
+          ...fields,
+        });
         if (completed && kind === "logout_oauth") {
           clearProvisionalOAuthScopes(profileId, provider);
         } else if (
@@ -1541,6 +1608,22 @@
         await runOAuthAuthCommand(
           "refresh_oauth_account",
           "oauthCheckAccountButton",
+        );
+      }
+
+      async function submitOAuthAuthorizationCode() {
+        const input = document.getElementById("oauthUserCode");
+        const code = input.value.trim();
+        if (!code) {
+          showStatus("Paste the authorization code shown by Antigravity.", true);
+          input.focus({ preventScroll: true });
+          return;
+        }
+        await runOAuthAuthCommand(
+          "submit_oauth_authorization_code",
+          "oauthSubmitCodeButton",
+          "google",
+          { authorizationCode: code },
         );
       }
 
@@ -2153,7 +2236,7 @@
           if (overrides.inputs?.[key] !== undefined) {
             evidence.inputs[key] = overrides.inputs[key]
               ? "supported"
-              : "unsupported";
+            : "unsupported";
           }
         }
         capability.reasoning = capability.reasoning || {};
@@ -2166,13 +2249,15 @@
         return {
           capability,
           evidence,
+          providerReported: cloneValue(discovered?.providerReported),
           authoritative: {
             maxOutputTokens: evidence.maxOutputTokens === "verified",
             reasoning: evidence.reasoning !== "unverified",
             temperature: evidence.temperature !== "unverified",
             inputs: Object.fromEntries(["image", "audio", "pdf"].map((key) => [
               key,
-              evidence.inputs?.[key] !== "unverified",
+              evidence.inputs?.[key] !== undefined &&
+                evidence.inputs[key] !== "unverified",
             ])),
           },
         };
@@ -2209,6 +2294,7 @@
           ];
           synchronizeInputCapabilityPreview(inputPreview, statuses);
         }
+        updateProviderCapabilityNote(selection.providerReported);
         const outputTokensInput = document.getElementById("maxOutputTokens");
         const subscription = isOAuthSubscription();
         const trustedModelLimit = selection.authoritative.maxOutputTokens
@@ -2301,6 +2387,66 @@
         if (preview.getAttribute("aria-label") !== accessibleLabel) {
           preview.setAttribute("aria-label", accessibleLabel);
         }
+      }
+
+      function updateProviderCapabilityNote(providerReported) {
+        const note = document.getElementById("providerCapabilityNote");
+        if (!note) return;
+        const inputs = providerReported?.inputs || {};
+        const reasoning = providerReported?.reasoning || {};
+        const reportedMimeTypes = Object.entries(inputs.supportedMimeTypes || {})
+          .sort(([left], [right]) => left.localeCompare(right));
+        const enabledMimeTypes = reportedMimeTypes
+          .filter(([, supported]) => supported)
+          .map(([mimeType]) => mimeType);
+        const positiveVideoEvidence = inputs.supportsVideo === true ||
+          inputs.inputModalities?.includes("video") ||
+          enabledMimeTypes.some((mimeType) => mimeType.startsWith("video/"));
+        const conflictingVideoEvidence = inputs.supportsVideo === false &&
+          positiveVideoEvidence;
+        const messages = [
+          ...(conflictingVideoEvidence
+            ? ["Provider returned conflicting video capability evidence; Live Smith cannot send video attachments."]
+            : positiveVideoEvidence
+              ? ["Provider reports video input; Live Smith cannot send video attachments."]
+              : inputs.supportsVideo === false
+                ? ["Provider reports video input as unsupported."]
+                : []),
+          ...(reportedMimeTypes.length
+            ? [`Provider returned ${reportedMimeTypes.length} MIME capability ` +
+                `${reportedMimeTypes.length === 1 ? "entry" : "entries"}; ` +
+                "only the Supported input rows authorize formats Live Smith can send."]
+            : []),
+          ...(Object.keys(reasoning).length
+            ? ["Provider reasoning metadata is retained without enabling unverified controls."]
+            : []),
+        ];
+        setPropertyIfChanged(note, "hidden", messages.length === 0);
+        setPropertyIfChanged(note, "textContent", messages.join(" "));
+        const reasoningDetails = Object.entries(reasoning)
+          .map(([key, value]) => `${key}=${String(value)}`);
+        const inputDetails = [
+          ...["supportsImages", "supportsPdf", "supportsVideo"]
+            .filter((key) => inputs[key] !== undefined)
+            .map((key) => `${key}=${String(inputs[key])}`),
+          ...(Array.isArray(inputs.inputModalities)
+            ? [`inputModalities=${inputs.inputModalities.join(",")}`]
+            : []),
+        ];
+        const title = [
+          ...(inputDetails.length
+            ? [`Provider inputs: ${inputDetails.join(", ")}`]
+            : []),
+          ...(reportedMimeTypes.length
+            ? [`Provider MIME support: ${reportedMimeTypes.map(
+                ([mimeType, supported]) => `${mimeType}=${String(supported)}`
+              ).join(", ")}`]
+            : []),
+          ...(reasoningDetails.length
+            ? [`Provider reasoning: ${reasoningDetails.join(", ")}`]
+            : []),
+        ].join(". ");
+        setPropertyIfChanged(note, "title", title);
       }
 
       function updateDraftActions() {
@@ -2417,6 +2563,7 @@
         saveProfile,
         showFieldError,
         startOAuthLogin,
+        submitOAuthAuthorizationCode,
         setDefaultModel,
         syncModelStateSource,
         toggleApiKeyVisibility,

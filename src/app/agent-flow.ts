@@ -482,6 +482,7 @@ export async function runAgentFlow(
   >();
   const oauthBrowserLaunches = new Set<Promise<boolean>>();
   let oauthBrowserLaunchesClosing = false;
+  let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
   const cancelOAuthBrowserLaunch = (
     scope: OAuthProfileScope,
     reason: Error,
@@ -491,7 +492,7 @@ export async function runAgentFlow(
   const launchPendingOAuthBrowser = (
     scope: OAuthProfileScope,
     url: string,
-    onFailure?: () => Promise<void>,
+    onFailure?: (signal: AbortSignal) => Promise<void>,
   ): Promise<boolean> => {
     const open = dependencies.openOAuthAuthorizationUrl;
     if (!open || oauthBrowserLaunchesClosing) {
@@ -510,7 +511,7 @@ export async function runAgentFlow(
         () => true,
         async () => {
           if (!controller.signal.aborted && !oauthBrowserLaunchesClosing) {
-            await onFailure?.();
+            await onFailure?.(controller.signal);
           }
           return false;
         },
@@ -579,6 +580,27 @@ export async function runAgentFlow(
   };
   const notifyGlobalStateChanged = (): void => {
     invalidateGlobalState(storageDirectory, { source: modalSessionOwner });
+  };
+  const publishOAuthPendingState = (
+    scope: OAuthProfileScope,
+    generation: number,
+    auth: OAuthAuthState,
+  ): void => {
+    if (auth.status !== "pending") return;
+    bridge?.publishOAuthAuthState(
+      scope.profileId,
+      scope.provider,
+      generation,
+      auth,
+    );
+  };
+  const notifyOAuthAuthStateChanged = (
+    scope: OAuthProfileScope,
+    generation: number,
+    auth: OAuthAuthState,
+  ): void => {
+    publishOAuthPendingState(scope, generation, auth);
+    notifyGlobalStateChanged();
   };
   const runSessionStateChange = async <T>(
     sessionId: string,
@@ -1108,9 +1130,10 @@ export async function runAgentFlow(
     scope: OAuthProfileScope,
     failed: boolean,
     expectedGeneration: number,
-  ): Promise<void> => {
-    const controller = createHostAbortController();
+    signal: AbortSignal,
+  ): Promise<Extract<OAuthAuthState, { status: "pending" }> | undefined> => {
     try {
+      throwIfAborted(signal);
       const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
       if (
         !modelAuthSendFence.hasPendingLogin(scope.provider) ||
@@ -1119,24 +1142,28 @@ export async function runAgentFlow(
       const lease = await modelBackendManager.oauthLease(
         scope.profileId,
         scope.provider,
-        controller.signal,
+        signal,
       );
       const auth = lease.backend.setPendingLoginBrowserLaunchFailed
         ? await lease.backend.setPendingLoginBrowserLaunchFailed(
             failed,
-            controller.signal,
+            signal,
           )
-        : await lease.backend.readAuthState(controller.signal);
+        : await lease.backend.readAuthState(signal);
+      throwIfAborted(signal);
       if (
         auth.status === "pending" &&
         modelAuthSendFence.hasPendingLogin(scope.provider) &&
         modelAuthSendFence.authGeneration(scope.provider) === expectedGeneration
       ) {
         cacheOAuthAuth(scope, expectedGeneration, auth);
+        notifyOAuthAuthStateChanged(scope, expectedGeneration, auth);
+        return auth;
       }
     } catch {
       // Closing or a concurrent terminal auth result owns the final state.
     }
+    return undefined;
   };
 
   type BuildStateOptions = {
@@ -2773,16 +2800,60 @@ export async function runAgentFlow(
           void launchPendingOAuthBrowser(
             scope,
             verificationUrl,
-            () => setPendingOAuthBrowserLaunchFailed(
-              scope,
-              true,
-              generation,
-            ),
+            async (launchSignal) => {
+              const failedAuth = await setPendingOAuthBrowserLaunchFailed(
+                scope,
+                true,
+                generation,
+                launchSignal,
+              );
+              if (failedAuth) resultAuth = failedAuth;
+            },
           );
         }
         status = oauthAuthStatusMessage(resultAuth, provider);
         openSettingsOnLoad = true;
       }, signal);
+      return withOAuthAuthProjection(
+        await buildStateAfterCommandMutation(undefined, { signal }),
+        scope,
+        resultAuth,
+      );
+    }
+
+    if (commandInput.kind === "submit_oauth_authorization_code") {
+      const scope = {
+        profileId: commandInput.profileId,
+        provider: commandInput.provider,
+      };
+      let resultAuth!: OAuthAuthState;
+      await withExclusiveOAuthAuth(scope, async () => {
+        const lease = await modelBackendManager.oauthLease(
+          scope.profileId,
+          scope.provider,
+          signal,
+        );
+        if (!lease.backend.submitLoginCode) {
+          throw new Error("Antigravity sign-in cannot accept an authorization code.");
+        }
+        cancelOAuthBrowserLaunch(
+          scope,
+          new Error("Antigravity authorization code was submitted."),
+        );
+        resultAuth = await lease.backend.submitLoginCode(
+          commandInput.authorizationCode,
+          signal,
+        );
+        recordOwnedAuthMutation(scope, resultAuth);
+        publishOAuthPendingState(
+          scope,
+          modelAuthSendFenceFor(scope.profileId).authGeneration(scope.provider),
+          resultAuth,
+        );
+        notifyGlobalStateChanged();
+        status = "Antigravity authorization code submitted.";
+        openSettingsOnLoad = true;
+      }, signal, true);
       return withOAuthAuthProjection(
         await buildStateAfterCommandMutation(undefined, { signal }),
         scope,
@@ -2844,6 +2915,11 @@ export async function runAgentFlow(
               modelAuthSendFence.authGeneration(provider),
               resultAuth,
             );
+            notifyOAuthAuthStateChanged(
+              scope,
+              modelAuthSendFence.authGeneration(provider),
+              resultAuth,
+            );
           }
           throw new Error(
             "Live Smith could not open the system browser. Copy the account link and open it in a browser, then check sign-in again.",
@@ -2860,6 +2936,11 @@ export async function runAgentFlow(
             signal,
           );
           cacheOAuthAuth(
+            scope,
+            modelAuthSendFence.authGeneration(provider),
+            resultAuth,
+          );
+          notifyOAuthAuthStateChanged(
             scope,
             modelAuthSendFence.authGeneration(provider),
             resultAuth,
@@ -3703,7 +3784,6 @@ export async function runAgentFlow(
 
   const renderHtml = dependencies.renderHtml ??
     (await import("../ui/dialogs.js")).chatHtml;
-  let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
   let unsubscribeApprovalModes: (() => void) | undefined;
   let unsubscribeEditScopes: (() => void) | undefined;
   let unsubscribeModelSelections: (() => void) | undefined;
@@ -3912,6 +3992,9 @@ function oauthAuthStatusMessage(
       if (state.browserLaunchFailed) {
         return `Live Smith could not open the ${label} sign-in page in the system browser. Retry the account link below or copy it into a browser.`;
       }
+      if (state.authorizationCodeInput) {
+        return `Complete ${label} sign-in in your browser, then paste the authorization code below.`;
+      }
       return `Complete ${label} sign-in in your browser, then check again. ` +
         "If the browser did not open, use the sign-in link below.";
     case "signed-in":
@@ -3947,7 +4030,7 @@ function oauthProviderLabel(provider: OAuthSubscriptionProvider): string {
     case "anthropic":
       return "Claude";
     case "google":
-      return "Gemini";
+      return "Antigravity";
   }
 }
 

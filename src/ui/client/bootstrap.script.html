@@ -991,6 +991,7 @@
             "discoverModelsButton",
             "oauthSignInButton",
             "oauthCheckAccountButton",
+            "oauthSubmitCodeButton",
             "oauthLogoutButton",
           ].map((id) => document.getElementById(id)).filter(Boolean);
         }
@@ -1126,6 +1127,11 @@
           },
           open_oauth_authorization: {
             status: "Opening the account page…",
+          },
+          submit_oauth_authorization_code: {
+            controlId: "oauthSubmitCodeButton",
+            busyLabel: "Submitting…",
+            status: "Submitting Antigravity authorization code…",
           },
           logout_oauth: {
             controlId: "oauthLogoutButton",
@@ -1350,6 +1356,15 @@
             profileEditor.clearGlobalSettingsFieldError,
           clearFieldErrors: profileEditor.clearFieldErrors,
           ensureSessionModelCapabilities,
+          getOAuthDraftScope: () => {
+            const profile = profileEditor.getDraftState().profile;
+            return profile?.connection.kind === "oauth-subscription"
+              ? {
+                  profileId: profile.id,
+                  provider: profile.connection.provider,
+                }
+              : null;
+          },
           isDraftDirty: () => profileEditor.getDraftState().dirty,
           render: renderApplication,
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
@@ -1405,6 +1420,8 @@
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           saveNetworkProxySettings: bridgeClient.saveNetworkProxySettings,
           saveProfile: profileEditor.saveProfile,
+          submitOAuthAuthorizationCode:
+            profileEditor.submitOAuthAuthorizationCode,
           saveSessionModelSelection,
           removeModelConfig: profileEditor.removeModelConfig,
           setDefaultModel: profileEditor.setDefaultModel,

@@ -798,6 +798,60 @@ test("event stream publishes and replays the latest credential-free Profile chan
   }
 });
 
+test("event stream replays the latest Profile-scoped OAuth pending patch", async () => {
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async () => {},
+  });
+  const chatUrl = new URL(bridge.url);
+  const token = chatUrl.searchParams.get("token");
+  const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
+  let initialEvents: Response | undefined;
+  let reconnectedEvents: Response | undefined;
+
+  try {
+    initialEvents = await fetch(endpoint("/events"));
+    const firstPatch = readSsePayload(initialEvents, "oauth_auth_changed");
+    bridge.publishOAuthAuthState("profile-a", "google", 7, {
+      status: "pending",
+      verificationUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
+      authorizationCodeInput: true,
+      browserLaunchFailed: true,
+    });
+    const first = await firstPatch;
+    assert.equal(first.profileId, "profile-a");
+    assert.equal(first.oauthAuthGeneration, 7);
+
+    bridge.publishOAuthAuthState("profile-a", "google", 7, {
+      status: "pending",
+      verificationUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
+      authorizationCodeInput: true,
+    });
+    reconnectedEvents = await fetch(endpoint("/events"));
+    const replayed = await readSsePayload(
+      reconnectedEvents,
+      "oauth_auth_changed",
+    );
+    assert.deepEqual(replayed.oauthAuth, {
+      status: "pending",
+      verificationUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
+      authorizationCodeInput: true,
+    });
+    assert.equal(Object.hasOwn(replayed, "authorizationCode"), false);
+    assert.ok(
+      BigInt(replayed.bridgeStateRevision as string) >
+        BigInt(first.bridgeStateRevision as string),
+    );
+  } finally {
+    await initialEvents?.body?.cancel().catch(() => {});
+    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await bridge.close();
+  }
+});
+
 test("the originating Profile command relies on its correlated state instead of self-refreshing", async () => {
   const state = {} as ChatDialogState;
   let bridge: Awaited<ReturnType<typeof createChatBridge>>;

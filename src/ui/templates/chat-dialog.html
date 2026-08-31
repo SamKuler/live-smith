@@ -2265,7 +2265,8 @@
       .subscription-auth-device-ticket[hidden],
       .subscription-auth-open-link[hidden],
       .subscription-auth-device-error[hidden],
-      .subscription-auth-code-ticket[hidden] {
+      .subscription-auth-code-ticket[hidden],
+      .subscription-auth-code-ticket button[hidden] {
         display: none;
       }
 
@@ -2342,6 +2343,32 @@
         font-weight: 650;
         letter-spacing: 0.1em;
         line-height: 1.15;
+      }
+
+      .subscription-auth-code-ticket.authorization-code-entry {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+        gap: 6px;
+      }
+
+      .subscription-auth-code-ticket.authorization-code-entry label {
+        grid-column: 1 / -1;
+      }
+
+      .subscription-auth-code-ticket.authorization-code-entry input {
+        width: 100%;
+        height: 32px;
+        text-align: left;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+
+      .subscription-auth-code-ticket.authorization-code-entry button {
+        height: 32px;
+        padding: 0 11px;
+        white-space: nowrap;
       }
 
       .subscription-auth-device-guidance {
@@ -2458,6 +2485,10 @@
         min-width: 1em;
         font-weight: 700;
         text-align: center;
+      }
+
+      .provider-capability-note {
+        margin-top: 4px;
       }
 
       .hosted-tool-control {
@@ -3440,7 +3471,7 @@
                   <select id="oauthProvider" name="oauthProvider" autocomplete="off" onchange="LiveSmithUI.handleOAuthProviderChange()">
                     <option value="openai">ChatGPT / Codex</option>
                     <option value="anthropic">Claude</option>
-                    <option value="google">Google Gemini</option>
+                    <option value="google">Google Antigravity</option>
                   </select>
                 </div>
                 <div id="directApiFields" class="direct-api-fields">
@@ -3497,8 +3528,9 @@
                       </a>
                       <p id="oauthVerificationError" class="subscription-auth-device-error" hidden>Live Smith could not verify the sign-in page. Cancel this sign-in and start again.</p>
                       <div class="subscription-auth-code-ticket" hidden>
-                        <label id="oauthDeviceCodeHeading" class="subscription-auth-code-label" for="oauthUserCode">One-time code<small>Select to copy</small></label>
+                        <label id="oauthDeviceCodeHeading" class="subscription-auth-code-label" for="oauthUserCode">One-time code<small id="oauthDeviceCodeHelp">Select to copy</small></label>
                         <input id="oauthUserCode" name="oauthUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
+                        <button id="oauthSubmitCodeButton" class="secondary" type="button" data-idle-label="Complete sign-in" onclick="LiveSmithUI.submitOAuthAuthorizationCode()" hidden>Complete sign-in</button>
                       </div>
                       <p class="subscription-auth-device-guidance">Keep this window open while sign-in completes.</p>
                     </div>
@@ -3533,6 +3565,7 @@
                     <select id="modelConfigSelector" name="modelConfigSelector" autocomplete="off" onchange="LiveSmithUI.handleModelConfigSelection()"></select>
                     <span id="modelConfigDefault" class="model-config-default" role="status" aria-live="polite"></span>
                     <div id="inputCapabilitiesPreview" class="capability-preview" role="status" aria-live="polite" aria-atomic="true"></div>
+                    <div id="providerCapabilityNote" class="field-hint provider-capability-note" role="note" hidden></div>
                   </div>
                   <div class="model-config-actions">
                     <button id="removeModelConfigButton" class="secondary" type="button" onclick="LiveSmithUI.removeModelConfig()">Remove</button>

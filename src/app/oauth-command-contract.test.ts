@@ -46,6 +46,28 @@ test("OAuth commands require one explicit Profile and supported provider", () =>
   }
 });
 
+test("Antigravity code submission accepts only a bounded Google authorization code", () => {
+  const input = {
+    kind: "submit_oauth_authorization_code" as const,
+    profileId: "profile-oauth",
+    provider: "google" as const,
+    authorizationCode: " 4/test-code_123 ",
+  };
+  assert.deepEqual(parseCommandInput(input), {
+    ...input,
+    authorizationCode: "4/test-code_123",
+  });
+  for (const invalid of [
+    { ...input, provider: "openai" },
+    { ...input, authorizationCode: "" },
+    { ...input, authorizationCode: "contains whitespace" },
+    { ...input, authorizationCode: "x".repeat(4_097) },
+    { ...input, accessToken: "forbidden" },
+  ]) {
+    assert.throws(() => parseCommandInput(invalid));
+  }
+});
+
 test("discard_profile_oauth accepts only one exact Profile ID", () => {
   const input = {
     kind: "discard_profile_oauth" as const,

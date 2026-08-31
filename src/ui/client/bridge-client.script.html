@@ -6,6 +6,8 @@
         setState,
       }) {
       const maximumDiscoveredModelCount = __MAX_DISCOVERED_MODEL_COUNT__;
+      const maximumProviderReportedMimeTypeCount = 128;
+      const maximumProviderReportedModalityCount = 32;
       const maximumProfileModelCount = __MAX_PROFILE_MODEL_COUNT__;
       const maximumDiscoveredModelIdCodePoints =
         __MAX_DISCOVERED_MODEL_ID_CODE_POINTS__;
@@ -72,6 +74,8 @@
       const editScopesProjectionsBySession = new Map();
       const modelSelectionProjectionsBySession = new Map();
       const sessionUpdatedAtProjectionsBySession = new Map();
+      const oauthAuthProjectionsByScope = new Map();
+      const oauthAuthStateCoverageByScope = new Map();
       const modelSelectionRefreshesBySession = new Map();
       const sessionStateRefreshesBySession = new Map();
       const sessionFullStateCoverageBySession = new Map([
@@ -653,17 +657,65 @@
         target.activeProfileRevision = source.activeProfileRevision;
       }
 
+      function oauthAuthProjectionKey(profileId, provider) {
+        return `${profileId}\u0000${provider}`;
+      }
+
       function adoptOAuthAuthProjection(target, current, state, preferred) {
+        if (
+          state.oauthAuthProfileId !== undefined &&
+          state.oauthAuthProvider !== undefined &&
+          state.oauthAuth !== undefined
+        ) {
+          const stateProjectionKey = oauthAuthProjectionKey(
+            state.oauthAuthProfileId,
+            state.oauthAuthProvider,
+          );
+          oauthAuthStateCoverageByScope.set(
+            stateProjectionKey,
+            maxDecimalRevision(
+              oauthAuthStateCoverageByScope.get(stateProjectionKey) || "0",
+              state.bridgeStateCoveredThroughRevision,
+            ),
+          );
+        }
         const sameScope = state.oauthAuthProfileId === current.oauthAuthProfileId &&
           state.oauthAuthProvider === current.oauthAuthProvider;
-        const source = !sameScope
-          ? preferred
-          : state.oauthAuthGeneration > current.oauthAuthGeneration
-            ? state
-            : state.oauthAuthGeneration < current.oauthAuthGeneration ||
-                state.oauthAuth === undefined && current.oauthAuth !== undefined
-              ? current
-              : state;
+        const projectionKey = sameScope &&
+            current.oauthAuthProfileId !== undefined &&
+            current.oauthAuthProvider !== undefined
+          ? oauthAuthProjectionKey(
+              current.oauthAuthProfileId,
+              current.oauthAuthProvider,
+            )
+          : null;
+        const projection = projectionKey === null
+          ? undefined
+          : oauthAuthProjectionsByScope.get(projectionKey);
+        const projectionIsNewerThanState = projection !== undefined &&
+          current.oauthAuthGeneration === projection.generation &&
+          state.oauthAuthGeneration <= projection.generation &&
+          compareDecimalRevisions(
+            state.bridgeStateCoveredThroughRevision,
+            projection.revision,
+          ) < 0;
+        const source = projectionIsNewerThanState
+          ? current
+          : !sameScope
+            ? preferred
+            : state.oauthAuthGeneration > current.oauthAuthGeneration
+              ? state
+              : state.oauthAuthGeneration < current.oauthAuthGeneration ||
+                  state.oauthAuth === undefined && current.oauthAuth !== undefined
+                ? current
+                : state;
+        if (
+          projectionKey !== null &&
+          projection !== undefined &&
+          !projectionIsNewerThanState
+        ) {
+          oauthAuthProjectionsByScope.delete(projectionKey);
+        }
         if (source.oauthAuth === undefined) delete target.oauthAuth;
         else target.oauthAuth = source.oauthAuth;
         if (source.oauthAuthProfileId === undefined) delete target.oauthAuthProfileId;
@@ -1117,7 +1169,7 @@
         const label = provider === "anthropic"
           ? "Claude"
           : provider === "google"
-            ? "Gemini"
+            ? "Antigravity"
             : "ChatGPT";
         if (
           state.oauthAuthProfileId !== activeProfile.id ||
@@ -2251,6 +2303,7 @@
             "displayName",
             "capabilities",
             "capabilityEvidence",
+            "providerReported",
           ]) &&
           isWireModelDisplayString(
             value.id,
@@ -2264,6 +2317,80 @@
           isWireModelCapabilityEvidence(
             value.capabilityEvidence,
             value.capabilities,
+          ) &&
+          (value.providerReported === undefined ||
+            isWireProviderReportedModelMetadata(value.providerReported));
+      }
+
+      function isWireProviderReportedModelMetadata(value) {
+        if (!isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["inputs", "reasoning"])) return false;
+        if (value.inputs !== undefined) {
+          const inputs = value.inputs;
+          if (!isWireRecord(inputs) || !hasOnlyWireKeys(inputs, [
+            "inputModalities",
+            "supportsImages",
+            "supportsPdf",
+            "supportsVideo",
+            "supportedMimeTypes",
+          ])) return false;
+          for (const key of ["supportsImages", "supportsPdf", "supportsVideo"]) {
+            if (inputs[key] !== undefined && typeof inputs[key] !== "boolean") {
+              return false;
+            }
+          }
+          if (inputs.inputModalities !== undefined && (
+            !Array.isArray(inputs.inputModalities) ||
+            inputs.inputModalities.length > maximumProviderReportedModalityCount ||
+            !inputs.inputModalities.every((item) =>
+              isWireModelDisplayString(
+                item,
+                maximumDiscoveredModelIdCodePoints,
+              )
+            ) ||
+            new Set(inputs.inputModalities).size !== inputs.inputModalities.length
+          )) return false;
+          if (inputs.supportedMimeTypes !== undefined &&
+            !isWireProviderReportedMimeTypes(inputs.supportedMimeTypes)) return false;
+        }
+        if (value.reasoning !== undefined) {
+          const reasoning = value.reasoning;
+          if (!isWireRecord(reasoning) || !hasOnlyWireKeys(reasoning, [
+            "supportsThinking",
+            "supportsAdaptiveThinking",
+            "thinkingBudget",
+            "minThinkingBudget",
+            "thinkingLevel",
+          ])) return false;
+          for (const key of ["supportsThinking", "supportsAdaptiveThinking"]) {
+            if (reasoning[key] !== undefined && typeof reasoning[key] !== "boolean") {
+              return false;
+            }
+          }
+          for (const key of ["thinkingBudget", "minThinkingBudget", "thinkingLevel"]) {
+            if (reasoning[key] !== undefined && (
+              !Number.isInteger(reasoning[key]) ||
+              reasoning[key] < -2147483648 ||
+              reasoning[key] > 2147483647
+            )) return false;
+          }
+        }
+        return true;
+      }
+
+      function isWireProviderReportedMimeTypes(value) {
+        if (!isWireRecord(value)) return false;
+        const entries = Object.entries(value);
+        return entries.length <= maximumProviderReportedMimeTypeCount &&
+          entries.every(([mimeType, supported]) =>
+            typeof supported === "boolean" &&
+            isWireModelDisplayString(
+              mimeType,
+              maximumDiscoveredModelIdCodePoints,
+            ) &&
+            !/\s/.test(mimeType) &&
+            mimeType.indexOf("/") > 0 &&
+            mimeType.indexOf("/") < mimeType.length - 1
           );
       }
 
@@ -2376,10 +2503,13 @@
             "status",
             "verificationUrl",
             "userCode",
+            "authorizationCodeInput",
             "browserLaunchFailed",
           ]) &&
             typeof value.verificationUrl === "string" &&
             (value.userCode === undefined || typeof value.userCode === "string") &&
+            (value.authorizationCodeInput === undefined ||
+              value.authorizationCodeInput === true) &&
             (value.browserLaunchFailed === undefined ||
               typeof value.browserLaunchFailed === "boolean");
         }
@@ -6473,6 +6603,76 @@
               payload.sessionId,
               received.revision,
             );
+            return;
+          }
+          if (payload.type === "oauth_auth_changed") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "profileId",
+                "provider",
+                "oauthAuthGeneration",
+                "oauthAuth",
+                "bridgeStateRevision",
+              ]) ||
+              !isWireStorageId(payload.profileId) ||
+              !["openai", "anthropic", "google"].includes(payload.provider) ||
+              !Number.isSafeInteger(payload.oauthAuthGeneration) ||
+              payload.oauthAuthGeneration < 0 ||
+              !isWireOAuthAuth(payload.oauthAuth) ||
+              payload.oauthAuth.status !== "pending"
+            ) return;
+            const received = receiveStateChangeRevision(payload);
+            if (!received) return;
+            const state = getState();
+            const projectionKey = oauthAuthProjectionKey(
+              payload.profileId,
+              payload.provider,
+            );
+            const existingProjection = oauthAuthProjectionsByScope.get(
+              projectionKey,
+            );
+            const draftScope = requireView().getOAuthDraftScope();
+            const sameProjectedScope =
+              state.oauthAuthProfileId === payload.profileId &&
+              state.oauthAuthProvider === payload.provider;
+            if (
+              compareDecimalRevisions(
+                received.revision,
+                oauthAuthStateCoverageByScope.get(projectionKey) || "0",
+              ) <= 0 ||
+              (existingProjection !== undefined &&
+                compareDecimalRevisions(
+                  received.revision,
+                  existingProjection.revision,
+                ) <= 0) ||
+              draftScope?.profileId !== payload.profileId ||
+              draftScope.provider !== payload.provider ||
+              (sameProjectedScope &&
+                (
+                  payload.oauthAuthGeneration < state.oauthAuthGeneration ||
+                  payload.oauthAuthGeneration === state.oauthAuthGeneration &&
+                    state.oauthAuth?.status !== "pending"
+                ))
+            ) return;
+            oauthAuthProjectionsByScope.set(
+              projectionKey,
+              {
+                generation: payload.oauthAuthGeneration,
+                revision: received.revision,
+              },
+            );
+            state.oauthAuthProfileId = payload.profileId;
+            state.oauthAuthProvider = payload.provider;
+            state.oauthAuthGeneration = payload.oauthAuthGeneration;
+            state.oauthAuth = payload.oauthAuth;
+            if (!editorProjectionMatchesOAuthScope(state, state)) {
+              adoptUnavailableEditorModelProjection(state, state);
+            }
+            if (!runtimeProjectionMatchesOAuthScope(state, state)) {
+              adoptUnavailableRuntimeModelProjection(state, state);
+            }
+            requireView().render();
             return;
           }
           if (payload.type === "global_state_invalidated") {

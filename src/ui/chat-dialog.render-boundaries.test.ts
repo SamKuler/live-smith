@@ -435,6 +435,7 @@ test("an Approval change does not rewrite unrelated Settings or composer content
       "discoverModelsButton",
       "oauthSignInButton",
       "oauthCheckAccountButton",
+      "oauthSubmitCodeButton",
       "oauthLogoutButton",
       "defaultFollowUpBehavior",
       "showContextUsage",
