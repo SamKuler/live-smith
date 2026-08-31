@@ -201,16 +201,8 @@ export function resolveModelCapabilitiesWithEvidence(
     : undefined;
   const withKnown = mergeCapabilities(fallback, known);
   const capabilityEvidence = defaultModelCapabilityEvidence();
-  const knownInputs = useKnownDirectPolicy
-    ? knownInputCapabilitiesForModel(source)
-    : undefined;
-  const withKnownInputs = mergeCapabilities(
-    withKnown,
-    knownInputs,
-  );
   applyCapabilityEvidence(capabilityEvidence, known);
-  applyCapabilityEvidence(capabilityEvidence, knownInputs);
-  const withDiscovered = mergeCapabilities(withKnownInputs, discovered);
+  const withDiscovered = mergeCapabilities(withKnown, discovered);
   applyCapabilityEvidence(capabilityEvidence, discovered);
   const overrides = source.model.advanced.capabilityOverrides;
   const capabilities = mergeCapabilityOverrides(withDiscovered, overrides);
@@ -265,69 +257,6 @@ function applyInputCapabilityEvidence(
       evidence[kind] = value ? "supported" : "unsupported";
     }
   }
-}
-
-function knownInputCapabilitiesForModel(
-  source: ModelCapabilitySource,
-): ModelCapabilityHints | undefined {
-  const model = source.model.model.toLocaleLowerCase();
-  if (runtimeProvider(source) === "openai") {
-    const documentedImageModel = isExplicitAliasOrSnapshot(
-      model,
-      "gpt-5.6",
-      ["gpt-5.6-sol", "gpt-5.6-terra"],
-    ) ||
-      isBaseModelOrSnapshot(model, "gpt-5.5-pro") ||
-      isBaseModelOrSnapshot(model, "gpt-5.5") ||
-      isBaseModelOrSnapshot(model, "gpt-5.4-pro") ||
-      isBaseModelOrSnapshot(model, "gpt-5.4-mini") ||
-      isBaseModelOrSnapshot(model, "gpt-5.4-nano") ||
-      isBaseModelOrSnapshot(model, "gpt-5.4") ||
-      isBaseModelOrSnapshot(model, "gpt-5.3-codex") ||
-      isBaseModelOrSnapshot(model, "gpt-5.2-pro") ||
-      isBaseModelOrSnapshot(model, "gpt-5.2-codex") ||
-      isBaseModelOrSnapshot(model, "gpt-5.2") ||
-      isBaseModelOrSnapshot(model, "gpt-5.1") ||
-      isBaseModelOrSnapshot(model, "gpt-5");
-    return documentedImageModel ? { inputs: { image: true } } : undefined;
-  }
-
-  if (runtimeProvider(source) === "google") {
-    return model.startsWith("gemini-") ? { inputs: { image: true } } : undefined;
-  }
-
-  const documentedImageModel = [
-    "claude-fable-5",
-    "claude-mythos-5",
-    "claude-opus-4-0",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-opus-5",
-    "claude-sonnet-4-0",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-7",
-    "claude-sonnet-4-8",
-    "claude-sonnet-5",
-    "claude-haiku-4-5",
-  ].some((base) => isAnthropicBaseModelOrSnapshot(model, base));
-  return documentedImageModel ? { inputs: { image: true } } : undefined;
-}
-
-function isExplicitAliasOrSnapshot(
-  model: string,
-  base: string,
-  aliases: readonly string[],
-): boolean {
-  return aliases.includes(model) || isBaseModelOrSnapshot(model, base);
-}
-
-function isAnthropicBaseModelOrSnapshot(model: string, base: string): boolean {
-  return model === base || new RegExp(
-    `^${base.replaceAll(".", "\\.")}-\\d{8}$`,
-  ).test(model);
 }
 
 function mergeCapabilities(

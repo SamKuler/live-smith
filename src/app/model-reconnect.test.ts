@@ -45,7 +45,7 @@ test("model reconnect uses the fixed schedule and announces a proven response on
   assert.deepEqual(events, [
     "request:1",
     "reset",
-    "progress:Model connection lost. Reconnecting (1/5)…",
+    "progress:The model connection was interrupted. Reconnecting (1/5) in 500 ms…",
     "wait:500",
     "request:2",
     "progress:Reconnected. Reading model response",
@@ -81,7 +81,7 @@ test("model reconnect exhausts exactly five retries with a fixed safe error", as
       assert.equal(error instanceof ModelConnectionError, false);
       assert.equal(
         error instanceof Error && error.message,
-        "Model connection was lost after 5 reconnect attempts.",
+        "The model connection was interrupted. Reconnect limit reached after 5 attempts.",
       );
       return true;
     },
@@ -91,11 +91,11 @@ test("model reconnect exhausts exactly five retries with a fixed safe error", as
   assert.equal(resets, 5);
   assert.deepEqual(delays, [500, 1_000, 2_000, 4_000, 8_000]);
   assert.deepEqual(progress, [
-    "Model connection lost. Reconnecting (1/5)…",
-    "Model connection lost. Reconnecting (2/5)…",
-    "Model connection lost. Reconnecting (3/5)…",
-    "Model connection lost. Reconnecting (4/5)…",
-    "Model connection lost. Reconnecting (5/5)…",
+    "The model connection was interrupted. Reconnecting (1/5) in 500 ms…",
+    "The model connection was interrupted. Reconnecting (2/5) in 1000 ms…",
+    "The model connection was interrupted. Reconnecting (3/5) in 2000 ms…",
+    "The model connection was interrupted. Reconnecting (4/5) in 4000 ms…",
+    "The model connection was interrupted. Reconnecting (5/5) in 8000 ms…",
   ]);
 });
 
@@ -172,7 +172,7 @@ test("model reconnect announces a non-streaming recovery before resolving", asyn
   assert.deepEqual(events, [
     "request:1",
     "reset",
-    "progress:Model connection lost. Reconnecting (1/5)…",
+    "progress:The model connection was interrupted. Reconnecting (1/5) in 500 ms…",
     "request:2",
     "provider-resolved",
     "progress:Reconnected. Reading model response",
@@ -206,7 +206,7 @@ test("model retry honors a provider delay without calling it connection loss", a
   assert.deepEqual(result, { value: "recovered", reconnected: true });
   assert.deepEqual(delays, [3_000]);
   assert.deepEqual(progress, [
-    "Temporary model-provider failure. Retrying (1/5)…",
+    "Provider rate limit was reached. Retrying (1/5) in 3000 ms…",
     "Retry succeeded. Reading model response",
   ]);
 });

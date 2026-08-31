@@ -239,9 +239,9 @@ test("OAuth subscription capabilities require signed-in provider evidence", () =
   assert.equal(discovered.capabilityEvidence.inputs.audio, "supported");
 });
 
-test("input capabilities merge known policy, discovery, and partial overrides", () => {
-  const known = resolveModelCapabilities(profile({ model: "gpt-5.6" }));
-  assert.deepEqual(known.inputs, { image: true, audio: false, pdf: false });
+test("input capabilities merge discovery and partial overrides without model-name guesses", () => {
+  const nameOnly = resolveModelCapabilities(profile({ model: "gpt-5.6" }));
+  assert.deepEqual(nameOnly.inputs, { image: false, audio: false, pdf: false });
 
   const discovered = resolveModelCapabilities(profile(), {
     inputs: { image: true, pdf: true },
@@ -261,16 +261,16 @@ test("input capabilities merge known policy, discovery, and partial overrides", 
   assert.deepEqual(overridden.inputs, { image: false, audio: true, pdf: true });
 });
 
-test("input capability evidence follows override, discovery, known policy, then unverified fallback", () => {
+test("input capability evidence follows overrides and discovery, not model names", () => {
   const fallback = resolveModelCapabilitiesWithEvidence(profile());
   assert.equal(fallback.capabilities.inputs.image, false);
   assert.equal(fallback.capabilityEvidence.inputs.image, "unverified");
 
-  const known = resolveModelCapabilitiesWithEvidence(
+  const nameOnly = resolveModelCapabilitiesWithEvidence(
     profile({ model: "gpt-5.6" }),
   );
-  assert.equal(known.capabilities.inputs.image, true);
-  assert.equal(known.capabilityEvidence.inputs.image, "supported");
+  assert.equal(nameOnly.capabilities.inputs.image, false);
+  assert.equal(nameOnly.capabilityEvidence.inputs.image, "unverified");
 
   const discovered = resolveModelCapabilitiesWithEvidence(
     profile({ model: "gpt-5.6" }),
@@ -304,43 +304,25 @@ test("input capability evidence follows override, discovery, known policy, then 
   });
 });
 
-test("known input policy accepts only explicit aliases and legal snapshots", () => {
+test("model names never authorize binary input without evidence", () => {
   for (const model of [
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.4-mini-2026-03-17",
     "gpt-5.2-codex-2025-12-11",
-  ]) {
-    assert.equal(resolveModelCapabilities(profile({ model })).inputs.image, true, model);
-  }
-
-  for (const model of [
-    "gpt-5.6-text-only",
-    "gpt-5.6-sol-custom",
-    "gpt-5.4-mini-fake",
-    "gpt-5.2-codex-custom",
-  ]) {
-    assert.equal(resolveModelCapabilities(profile({ model })).inputs.image, false, model);
-  }
-
-  for (const model of [
     "claude-sonnet-4-6",
     "claude-sonnet-4-6-20260301",
     "claude-haiku-4-5-20251001",
   ]) {
+    const anthropic = model.startsWith("claude-");
     assert.equal(resolveModelCapabilities(profile({
-      apiFamily: "anthropic",
-      apiMode: "messages",
+      ...(anthropic
+        ? { apiFamily: "anthropic", apiMode: "messages" }
+        : {}),
       model,
-    })).inputs.image, true, model);
+    })).inputs.image, false, model);
   }
-
-  assert.equal(resolveModelCapabilities(profile({
-    apiFamily: "anthropic",
-    apiMode: "messages",
-    model: "claude-sonnet-4-6-text-only",
-  })).inputs.image, false);
 });
 
 test("unknown output limits do not cap requests while explicit limits still do", () => {

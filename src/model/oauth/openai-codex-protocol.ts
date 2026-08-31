@@ -19,6 +19,7 @@ import {
   ModelRetryableError,
 } from "../connection-error.js";
 import type { ModelTurn } from "../contracts.js";
+import { openAIResponsesInputSupport } from "../input-support.js";
 import {
   assertApiKeyCanBeUsedInHttpHeader,
   isReasoningEffort,
@@ -31,17 +32,24 @@ import type {
   TransportRequest,
 } from "../provider.js";
 import {
+  assertOpenAIResponsesTerminalWithoutPriorError,
   buildOpenAIResponsesBody,
+  decodeOpenAIResponsesFailedResponse,
   decodeOpenAIResponsesTerminalTurn,
+  openAIResponsesVisibleTextDelta,
 } from "../transports/openai-responses.js";
-import { openAIProviderFailure } from "../transports/openai-errors.js";
+import {
+  openAIErrorDiagnostic,
+  openAIProviderFailure,
+  type OpenAIErrorDiagnostic,
+} from "../transports/openai-errors.js";
+import { readBoundedProviderErrorJson } from "../transports/provider-error-body.js";
 import { readBoundedJsonResponse } from "../transports/response-body.js";
 import { providerRetryAfterMs } from "../transports/retry-after.js";
 import {
   assertServerSentEventResponse,
   parseServerSentEventData,
 } from "../transports/server-sent-events.js";
-import { cancelStreamBestEffort } from "../transports/stream-cancel.js";
 import { withTransportContext } from "../transports/errors.js";
 import {
   oauthDraftAsDirect,
@@ -171,24 +179,38 @@ async function assertCodexResponse(
   generationRequest = false,
 ): Promise<void> {
   if (response.ok) return;
-  cancelStreamBestEffort(response.body, signal?.reason);
-  throwIfAborted(signal);
+  const payload = await readBoundedProviderErrorJson(
+    response,
+    "ChatGPT Codex error response",
+    signal,
+  );
+  const label = `ChatGPT Codex HTTP ${response.status}`;
+  const diagnostic = openAIErrorDiagnostic(payload);
+  const hasDiagnostic = diagnostic.code !== undefined || diagnostic.type !== undefined;
+  const retryAfterMs = providerRetryAfterMs(response.headers);
   if (response.status === 401) {
-    throw new ModelAuthenticationError("ChatGPT Codex HTTP 401: request failed");
+    const failure = !hasDiagnostic
+      ? new Error(`${label}: request failed`)
+      : openAIProviderFailure(payload, label);
+    throw new ModelAuthenticationError(failure.message);
   }
-  if (
-    generationRequest &&
-    (response.status === 408 ||
-      response.status === 409 ||
-      response.status === 429 ||
-      response.status >= 500)
-  ) {
+  const retryableStatus = generationRequest && (
+    response.status === 408 || response.status === 409 ||
+    response.status === 429 || response.status >= 500
+  );
+  if (hasDiagnostic) {
+    throw openAIProviderFailure(payload, label, {
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      ...(retryableStatus ? { unknownIsRetryable: true } : {}),
+    });
+  }
+  if (retryableStatus) {
     throw new ModelRetryableError(
-      `ChatGPT Codex HTTP ${response.status}: retryable request failure`,
-      providerRetryAfterMs(response.headers),
+      `${label}: retryable request failure`,
+      retryAfterMs,
     );
   }
-  throw new Error(`ChatGPT Codex HTTP ${response.status}: request failed`);
+  throw new Error(`${label}: request failed`);
 }
 
 async function readCodexTurn(
@@ -198,6 +220,8 @@ async function readCodexTurn(
   reconnectState: object | undefined,
 ): Promise<ModelTurn> {
   const completedOutputItems = new Map<number, Record<string, unknown>>();
+  let pendingError: OpenAIErrorDiagnostic | undefined;
+  let malformedPendingError = false;
   let turnState = rememberCodexTurnState(
     reconnectState,
     priorTurnState ?? boundedTurnState(
@@ -214,7 +238,27 @@ async function readCodexTurn(
     if (!isRecord(event)) {
       throw new Error("ChatGPT Codex returned a non-object stream event.");
     }
-    if (event.type === "error") continue;
+    if (event.type === "error") {
+      const diagnostic = openAIErrorDiagnostic(event);
+      if (diagnostic.code === undefined && diagnostic.type === undefined) {
+        malformedPendingError = true;
+      } else if (
+        (pendingError?.code !== undefined && diagnostic.code !== undefined &&
+          pendingError.code !== diagnostic.code) ||
+        (pendingError?.type !== undefined && diagnostic.type !== undefined &&
+          pendingError.type !== diagnostic.type)
+      ) {
+        throw new Error("ChatGPT Codex returned conflicting error events.");
+      } else {
+        const code = pendingError?.code ?? diagnostic.code;
+        const type = pendingError?.type ?? diagnostic.type;
+        pendingError = {
+          ...(code === undefined ? {} : { code }),
+          ...(type === undefined ? {} : { type }),
+        };
+      }
+      continue;
+    }
     const metadataTurnState = codexTurnStateFromMetadata(event);
     if (!turnState && metadataTurnState) {
       turnState = rememberCodexTurnState(reconnectState, metadataTurnState);
@@ -233,11 +277,19 @@ async function readCodexTurn(
       completedOutputItems.set(outputIndex, event.item);
       continue;
     }
-    if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
-      await request.onDelta?.(event.delta);
+    const visibleDelta = openAIResponsesVisibleTextDelta(
+      event,
+      "ChatGPT Codex",
+    );
+    if (visibleDelta !== undefined) {
+      await request.onDelta?.(visibleDelta);
       continue;
     }
     if (event.type === "response.completed" || event.type === "response.incomplete") {
+      assertOpenAIResponsesTerminalWithoutPriorError(
+        malformedPendingError || pendingError !== undefined,
+        "ChatGPT Codex",
+      );
       const expectedStatus = event.type === "response.completed"
         ? "completed"
         : "incomplete";
@@ -251,18 +303,38 @@ async function readCodexTurn(
     }
     if (event.type === "response.failed") {
       const retryAfterMs = providerRetryAfterMs(response.headers);
-      throw openAIProviderFailure(event.response, "ChatGPT Codex", {
-        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-        unknownIsRetryable: true,
-      });
+      throw codexProviderFailure(event.response, retryAfterMs);
     }
     if (event.type === "response.cancelled") {
       throw new Error("ChatGPT Codex was cancelled.");
     }
   }
-  throw new ModelConnectionError(
-    "ChatGPT Codex stream ended without a terminal response.",
-  );
+  if (malformedPendingError) {
+    throw new Error("ChatGPT Codex returned a malformed error event.");
+  }
+  if (pendingError !== undefined) {
+    const retryAfterMs = providerRetryAfterMs(response.headers);
+    throw openAIProviderFailure(
+      pendingError,
+      "ChatGPT Codex",
+      {
+        unknownIsRetryable: true,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      },
+    );
+  }
+  throw new ModelConnectionError("ChatGPT Codex stream ended without a terminal response.");
+}
+
+function codexProviderFailure(
+  value: unknown,
+  retryAfterMs: number | undefined,
+): Error {
+  const response = decodeOpenAIResponsesFailedResponse(value, "ChatGPT Codex");
+  return openAIProviderFailure(response, "ChatGPT Codex", {
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    unknownIsRetryable: true,
+  });
 }
 
 function codexTerminalResponse(
@@ -423,6 +495,7 @@ function decodeCodexModel(
     streaming: true,
     temperature: "unsupported",
   };
+  let providerReported: DiscoveredModelInfo["providerReported"];
   const contextWindow = value.context_window ?? value.max_context_window;
   if (contextWindow !== undefined) {
     if (!Number.isSafeInteger(contextWindow) ||
@@ -466,19 +539,28 @@ function decodeCodexModel(
   }
   if (value.input_modalities !== undefined) {
     if (!Array.isArray(value.input_modalities) ||
-      !value.input_modalities.every((modality) => typeof modality === "string")) {
+      !value.input_modalities.every((modality) =>
+        typeof modality === "string" && modality.trim()
+      )) {
       return undefined;
     }
+    const inputModalities = [...new Set(
+      value.input_modalities.map((modality) => modality.trim().toLocaleLowerCase()),
+    )];
     capabilities.inputs = {
-      image: value.input_modalities.includes("image"),
-      audio: value.input_modalities.includes("audio"),
-      pdf: value.input_modalities.includes("pdf"),
+      image: openAIResponsesInputSupport.image &&
+        inputModalities.includes("image"),
+      audio: openAIResponsesInputSupport.audio &&
+        inputModalities.includes("audio"),
+      pdf: openAIResponsesInputSupport.pdf && inputModalities.includes("pdf"),
     };
+    providerReported = { inputs: { inputModalities } };
   }
   return {
     id: value.slug,
     displayName: value.display_name,
     capabilities,
+    ...(providerReported === undefined ? {} : { providerReported }),
   };
 }
 

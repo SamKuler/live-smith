@@ -249,6 +249,233 @@ test("OpenAI Responses rejects malformed terminal context usage", async () => {
   }
 });
 
+test("OpenAI Responses preserves canonical refusal parts and events as assistant content", async () => {
+  const sentinel = "responses-private-refusal-metadata";
+  const refusalMessage = {
+    id: "message-refusal",
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [
+      { type: "refusal", refusal: "I cannot help with that request." },
+      { type: "future_private_part", private_metadata: sentinel },
+    ],
+  };
+  const unknownOutputItem = {
+    type: "future_output_item",
+    opaque_state: sentinel,
+  };
+  const nonStreaming = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      status: "completed",
+      output_text: "",
+      output: [refusalMessage, unknownOutputItem],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const nonStreamingTurn = await nonStreaming.createToolTurn(request(profile()));
+  assert.equal(nonStreamingTurn.content, "I cannot help with that request.");
+  assert.deepEqual(
+    (nonStreamingTurn.providerState as { output: unknown[] }).output[1],
+    unknownOutputItem,
+  );
+  assert.doesNotMatch(nonStreamingTurn.content ?? "", new RegExp(sentinel));
+
+  const deltas: string[] = [];
+  const streaming = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({
+        type: "response.refusal.delta",
+        delta: "I cannot ",
+        private_metadata: sentinel,
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.refusal.delta",
+        delta: "help with that request.",
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output_text: "",
+          output: [refusalMessage, unknownOutputItem],
+        },
+      })}\n\n`,
+    ].join(""), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const streamingRequest = request(profile());
+  streamingRequest.onDelta = (delta) => { deltas.push(delta); };
+
+  const streamingTurn = await streaming.createToolTurn(streamingRequest);
+  assert.equal(streamingTurn.content, "I cannot help with that request.");
+  assert.deepEqual(deltas, ["I cannot ", "help with that request."]);
+  assert.deepEqual(
+    (streamingTurn.providerState as { output: unknown[] }).output[1],
+    unknownOutputItem,
+  );
+  assert.doesNotMatch(streamingTurn.content ?? "", new RegExp(sentinel));
+});
+
+test("OpenAI Responses rejects malformed known visible delta events", async () => {
+  for (const type of ["response.output_text.delta", "response.refusal.delta"]) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(
+        `data: ${JSON.stringify({
+          type,
+          delta: { private_value: "do-not-expose" },
+        })}\n\n`,
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ),
+    });
+    const req = request(profile());
+    req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) => {
+        assert.match(String(error), /invalid visible text delta/i);
+        assert.doesNotMatch(String(error), /do-not-expose/u);
+        return true;
+      },
+      type,
+    );
+  }
+});
+
+test("OpenAI Responses rejects non-object terminal output items", async () => {
+  const sentinel = "responses-private-primitive-output";
+  for (const streaming of [false, true]) {
+    const terminal = {
+      status: "completed",
+      output_text: "Safe text",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Safe text" }],
+      }, sentinel],
+    };
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => streaming
+        ? new Response(
+            `data: ${JSON.stringify({
+              type: "response.completed",
+              response: terminal,
+            })}\n\n`,
+            { status: 200, headers: { "Content-Type": "text/event-stream" } },
+          )
+        : new Response(JSON.stringify(terminal), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+    });
+    const req = request(profile());
+    if (streaming) req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) => {
+        assert.match(String(error), /non-object output item/i);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("OpenAI Responses rejects malformed known message content", async () => {
+  const cases = [{
+    status: "completed",
+    output: [{ type: "message", role: "assistant", content: ["not-an-object"] }],
+  }, {
+    status: "completed",
+    output: [{
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: 42, annotations: [] }],
+    }],
+  }, {
+    status: "completed",
+    output: [{
+      type: "message",
+      role: "assistant",
+      content: [{ type: "refusal", refusal: { private: true } }],
+    }],
+  }, {
+    status: "completed",
+    output_text: 42,
+    output: [{
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Done", annotations: [] }],
+    }],
+  }];
+  for (const terminal of cases) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify(terminal), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      /invalid (message content|output_text content|refusal content|output_text)/u,
+    );
+  }
+});
+
+test("OpenAI Responses rejects non-assistant output messages in every terminal mode", async () => {
+  const sentinel = "responses-private-invalid-message-role";
+  for (const status of ["completed", "incomplete"] as const) {
+    for (const streaming of [false, true]) {
+      const response = {
+        status,
+        ...(status === "incomplete"
+          ? { incomplete_details: { reason: "max_output_tokens" } }
+          : {}),
+        output: [{
+          id: `message-invalid-role-${status}`,
+          type: "message",
+          role: sentinel,
+          status,
+          content: [{ type: "output_text", text: "must not survive", annotations: [] }],
+        }],
+      };
+      const transport = createOpenAIResponsesTransport({
+        fetchImpl: async () => new Response(
+          streaming
+            ? `data: ${JSON.stringify({
+                type: status === "completed"
+                  ? "response.completed"
+                  : "response.incomplete",
+                response,
+              })}\n\n`
+            : JSON.stringify(response),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": streaming ? "text/event-stream" : "application/json",
+            },
+          },
+        ),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+
+      await assert.rejects(
+        transport.createToolTurn(req),
+        (error: unknown) => {
+          assert.match(String(error), /invalid message role/u);
+          assert.doesNotMatch(String(error), new RegExp(sentinel));
+          return true;
+        },
+      );
+    }
+  }
+});
+
 test("OpenAI Responses maps opted-in hosted Web Search independently of client tool capability", async () => {
   let body: Record<string, unknown> = {};
   const p = profile({ advanced: { hostedTools: { webSearch: true } } });
@@ -295,6 +522,8 @@ test("OpenAI Responses maps opted-in hosted Web Search independently of client t
         },
         {
           type: "url_citation",
+          start_index: 0,
+          end_index: 1,
           url: "javascript:alert(1)",
           title: "Unsafe",
         },
@@ -339,6 +568,192 @@ test("OpenAI Responses maps opted-in hosted Web Search independently of client t
     searchCall,
     message,
   ]);
+});
+
+test("OpenAI Responses rejects malformed known terminal Web Search calls", async () => {
+  const sentinel = "responses-private-web-search-field";
+  const valid = {
+    id: "search-strict-1",
+    type: "web_search_call",
+    status: "completed",
+    action: {
+      type: "search",
+      query: "Ableton Live release",
+      sources: [{ type: "url", url: "https://example.test/source", title: "Source" }],
+    },
+  };
+  const malformed = [
+    { ...valid, id: 42 },
+    { ...valid, status: "in_progress" },
+    { ...valid, status: sentinel },
+    { ...valid, action: undefined },
+    { ...valid, action: null },
+    { ...valid, action: { type: 42 } },
+    { ...valid, action: { type: "search", query: 42 } },
+    { ...valid, action: { type: "search", queries: ["valid", 42] } },
+    { ...valid, action: { type: "search", sources: [42] } },
+    { ...valid, action: { type: "search", sources: [{ type: "url", url: 42 }] } },
+    { ...valid, action: { type: "open_page", url: 42 } },
+    {
+      ...valid,
+      action: { type: "find_in_page", url: "https://example.test", pattern: 42 },
+    },
+  ];
+
+  for (const searchCall of malformed) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "completed",
+        output_text: "must not survive",
+        output: [searchCall],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.match(String(error), /invalid web_search_call/u);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("OpenAI Responses validates and replays incomplete Web Search states", async () => {
+  const transientStatuses = new Set(["in_progress", "searching", "incomplete"]);
+  for (const streaming of [false, true]) {
+    for (const itemStatus of [
+      "in_progress",
+      "searching",
+      "incomplete",
+      "completed",
+      "failed",
+    ]) {
+      const searchCall = {
+        id: `search-incomplete-${itemStatus}`,
+        type: "web_search_call",
+        status: itemStatus,
+        action: {
+          type: "search",
+          query: "Ableton Live release",
+          sources: [],
+        },
+      };
+      const response = {
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output_text: "Partial",
+        output: [searchCall],
+      };
+      const activity: unknown[] = [];
+      const transport = createOpenAIResponsesTransport({
+        fetchImpl: async () => new Response(
+          streaming
+            ? `data: ${JSON.stringify({ type: "response.incomplete", response })}\n\n`
+            : JSON.stringify(response),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": streaming ? "text/event-stream" : "application/json",
+            },
+          },
+        ),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+      req.onHostedWebSearch = (search) => { activity.push(search); };
+
+      const turn = await transport.createToolTurn(req);
+
+      assert.deepEqual(turn.continuation, { reason: "output_limit" });
+      assert.deepEqual(
+        (turn.providerState as { output: unknown[] }).output,
+        [searchCall],
+      );
+      if (transientStatuses.has(itemStatus)) {
+        assert.equal(turn.hostedWebSearches, undefined);
+        assert.deepEqual(activity, []);
+      } else {
+        assert.equal(turn.hostedWebSearches?.[0]?.status, itemStatus);
+        assert.equal(activity.length, 1);
+      }
+    }
+  }
+});
+
+test("OpenAI Responses rejects malformed incomplete Web Search replay", async () => {
+  const sentinel = "responses-private-incomplete-search";
+  const valid = {
+    id: "search-incomplete-valid",
+    type: "web_search_call",
+    status: "in_progress",
+    action: { type: "search", query: "Ableton", sources: [] },
+  };
+  for (const searchCall of [
+    { ...valid, id: 42 },
+    { ...valid, status: undefined },
+    { ...valid, status: sentinel },
+    { ...valid, action: undefined },
+    { ...valid, action: { type: "search", query: 42 } },
+  ]) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output_text: "Partial",
+        output: [searchCall],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.match(String(error), /invalid web_search_call/u);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("OpenAI Responses rejects malformed known URL citation fields", async () => {
+  const sentinel = "responses-private-url-citation-field";
+  const valid = {
+    type: "url_citation",
+    url: "https://example.test/source",
+    title: "Source",
+    start_index: 0,
+    end_index: 4,
+  };
+  const malformed = [
+    { ...valid, url: 42 },
+    { ...valid, title: 42 },
+    { ...valid, start_index: sentinel },
+    { ...valid, end_index: 1.5 },
+    { type: "url_citation", url: valid.url, title: valid.title },
+  ];
+
+  for (const citation of malformed) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "completed",
+        output: [{
+          id: "message-citation-strict",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Done", annotations: [citation] }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.match(String(error), /invalid url_citation/u);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
 });
 
 test("OpenAI Responses maps a reduced remaining Web Search allowance", async () => {
@@ -592,7 +1007,9 @@ test("OpenAI Responses accepts compatible-provider overflow above its request hi
   const p = profile({ advanced: { hostedTools: { webSearch: true } } });
   const req = request(p);
   req.tools.push({ type: "hosted_web_search", maxUses: 5 });
-  const output = Array.from({ length: 6 }, (_, index) => ({
+  const output: Array<Record<string, unknown>> = Array.from(
+    { length: 6 },
+    (_, index) => ({
     id: `search-overflow-${index + 1}`,
     type: "web_search_call",
     status: "completed",
@@ -601,21 +1018,22 @@ test("OpenAI Responses accepts compatible-provider overflow above its request hi
       query: `query ${index + 1}`,
       sources: [],
     },
-  }));
+    }),
+  );
   output.push({
     id: "message-overflow-1",
     type: "message",
     status: "completed",
-    action: {
-      type: "search",
-      query: "not relevant",
-      sources: [],
-    },
+    role: "assistant",
+    content: [{
+      type: "output_text",
+      text: "Too many searches.",
+      annotations: [],
+    }],
   });
   const transport = createOpenAIResponsesTransport({
     fetchImpl: async () => new Response(JSON.stringify({
       status: "completed",
-      output_text: "Too many searches.",
       output,
     }), { status: 200, headers: { "Content-Type": "application/json" } }),
   });
@@ -689,6 +1107,7 @@ test("OpenAI Responses serializes image input and preserves local tool state", a
     },
   });
   const req = request(profile());
+  req.runtimeProfile.capabilities.inputs.image = true;
   req.currentUserContent = [
     { type: "text", text: "User request:\ninspect image" },
     {
@@ -1519,6 +1938,7 @@ test("OpenAI Responses waits for the authoritative failed event and preserves re
     (error: unknown) => {
       assert.ok(error instanceof ModelRetryableError);
       assert.match(error.message, /OpenAI Responses.*retryable/u);
+      assert.match(error.message, /code=provider_failure/u);
       assert.doesNotMatch(error.message, new RegExp(sentinel));
       return true;
     },
@@ -1537,7 +1957,8 @@ test("OpenAI Responses failed events do not expose provider error details", asyn
   const sse = `data: ${JSON.stringify({
     type: "response.failed",
     response: {
-      error: { code: sentinel, message: sentinel },
+      status: "failed",
+      error: { code: "future_provider_failure", message: sentinel },
       output: [failedSearch],
     },
   })}\n\n`;
@@ -1560,7 +1981,8 @@ test("OpenAI Responses failed events do not expose provider error details", asyn
     (error: unknown) => {
       assert.equal(
         String(error),
-        "Error: openai/responses request failed: OpenAI Responses failed.",
+        "Error: openai/responses request failed: OpenAI Responses failed. " +
+          "[code=future_provider_failure]",
       );
       assert.doesNotMatch(String(error), new RegExp(sentinel));
       return true;
@@ -1595,12 +2017,58 @@ test("OpenAI Responses failed events with malformed output still use a fixed err
     (error: unknown) => {
       assert.equal(
         String(error),
-        "Error: openai/responses request failed: OpenAI Responses failed.",
+        "Error: openai/responses request failed: " +
+          "OpenAI Responses returned a malformed failed response.",
       );
       assert.doesNotMatch(String(error), new RegExp(sentinel));
       return true;
     },
   );
+});
+
+test("OpenAI Responses rejects a success terminal after an SSE error event", async () => {
+  const sentinel = "responses-private-contradictory-error";
+  for (const eventType of ["response.completed", "response.incomplete"] as const) {
+    const status = eventType === "response.completed" ? "completed" : "incomplete";
+    const response = {
+      status,
+      ...(status === "incomplete"
+        ? { incomplete_details: { reason: "max_output_tokens" } }
+        : {}),
+      output: [{
+        id: "message-after-error",
+        type: "message",
+        role: "assistant",
+        status,
+        content: [{ type: "output_text", text: "must not survive", annotations: [] }],
+      }],
+    };
+    const sse = [{
+      type: "error",
+      code: "provider_failure",
+      message: sentinel,
+    }, {
+      type: eventType,
+      response,
+    }].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(sse, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    });
+    const req = request(profile());
+    req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      (error: unknown) => {
+        assert.match(String(error), /terminal response after an error event/u);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
 });
 
 test("OpenAI Responses cancelled events do not expose provider error details", async () => {
@@ -1692,6 +2160,86 @@ test("OpenAI Responses returns replayable recovery state for max-output incomple
     (turn.providerState as { output: unknown[] }).output,
     [partialCall],
   );
+  assert.equal(
+    (turn.providerState as { outputLimited?: unknown }).outputLimited,
+    true,
+  );
+});
+
+test("OpenAI Responses rejects malformed known function calls in incomplete output", async () => {
+  const sentinel = "responses-private-incomplete-function-call";
+  const valid = {
+    id: "fc-incomplete",
+    type: "function_call",
+    call_id: "call-incomplete",
+    name: "inspect",
+    arguments: "{",
+    status: "incomplete",
+  };
+  const malformed = [
+    { ...valid, id: undefined },
+    { ...valid, id: "   " },
+    { ...valid, call_id: undefined },
+    { ...valid, call_id: "   " },
+    { ...valid, name: undefined },
+    { ...valid, name: "   " },
+    { ...valid, arguments: { private: sentinel } },
+  ];
+
+  for (const functionCall of malformed) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [functionCall],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      (error: unknown) => {
+        assert.match(String(error), /function_call.*(?:ID|call ID|name|arguments)/iu);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("OpenAI Responses rejects duplicate call IDs in incomplete output", async () => {
+  const response = {
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+    output: ["first", "second"].map((id) => ({
+      id: `fc-${id}`,
+      type: "function_call",
+      call_id: "duplicate-call",
+      name: "inspect",
+      arguments: "{",
+      status: "incomplete",
+    })),
+  };
+
+  for (const streaming of [false, true]) {
+    const payload = streaming
+      ? `data: ${JSON.stringify({ type: "response.incomplete", response })}\n\n`
+      : JSON.stringify(response);
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: {
+          "Content-Type": streaming ? "text/event-stream" : "application/json",
+        },
+      }),
+    });
+    const req = request(profile());
+    if (streaming) req.onDelta = () => {};
+
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /duplicate tool call ID/u,
+    );
+  }
 });
 
 test("OpenAI Responses never executes calls from an incomplete top-level response", async () => {
@@ -1761,6 +2309,7 @@ test("OpenAI Responses rejects non-recoverable and malformed tool-call statuses"
           : {}),
         output_text: "",
         output: [{
+          id: "fc-incomplete-status",
           type: "function_call",
           call_id: "call-incomplete",
           name: "inspect",
@@ -1802,6 +2351,26 @@ test("OpenAI Responses rejects every non-completed tool-call response status", a
     await assert.rejects(
       transport.createToolTurn(request(profile())),
       /invalid terminal response status/i,
+    );
+  }
+});
+
+test("OpenAI Responses rejects non-completed message items in a completed response", async () => {
+  for (const status of ["in_progress", "incomplete", "failed"]) {
+    const transport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "completed",
+        output: [{
+          type: "message",
+          role: "assistant",
+          status,
+          content: [{ type: "output_text", text: "Partial", annotations: [] }],
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    await assert.rejects(
+      transport.createToolTurn(request(profile())),
+      /message.*non-completed status/u,
     );
   }
 });
@@ -1848,10 +2417,77 @@ test("OpenAI Responses classifies a non-streaming failed response", async () => 
     (error: unknown) => {
       assert.ok(error instanceof ModelRetryableError);
       assert.match(error.message, /OpenAI Responses.*retryable/u);
+      assert.match(error.message, /code=rate_limit_exceeded/u);
       assert.doesNotMatch(error.message, new RegExp(sentinel));
       return true;
     },
   );
+});
+
+test("OpenAI Responses uses one strict failed-envelope shape for JSON and SSE", async () => {
+  const sentinel = "responses-private-failed-envelope";
+  for (const streaming of [false, true]) {
+    const valid = {
+      status: "failed",
+      error: { type: "server_error", message: sentinel },
+      output: [],
+    };
+    const validTransport = createOpenAIResponsesTransport({
+      fetchImpl: async () => new Response(
+        streaming
+          ? `data: ${JSON.stringify({ type: "response.failed", response: valid })}\n\n`
+          : JSON.stringify(valid),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": streaming ? "text/event-stream" : "application/json",
+          },
+        },
+      ),
+    });
+    const validRequest = request(profile());
+    if (streaming) validRequest.onDelta = () => {};
+    await assert.rejects(
+      validTransport.createToolTurn(validRequest),
+      (error: unknown) => {
+        assert.ok(error instanceof ModelRetryableError);
+        assert.match(error.message, /type=server_error/u);
+        assert.doesNotMatch(error.message, new RegExp(sentinel));
+        return true;
+      },
+    );
+
+    for (const malformed of [
+      { status: "failed", output: [] },
+      { status: "failed", error: "provider_failure", output: [] },
+      { status: "failed", error: {}, output: [] },
+      { status: "failed", error: { code: "BAD-CODE", message: sentinel }, output: [] },
+    ]) {
+      const transport = createOpenAIResponsesTransport({
+        fetchImpl: async () => new Response(
+          streaming
+            ? `data: ${JSON.stringify({ type: "response.failed", response: malformed })}\n\n`
+            : JSON.stringify(malformed),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": streaming ? "text/event-stream" : "application/json",
+            },
+          },
+        ),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+      await assert.rejects(
+        transport.createToolTurn(req),
+        (error: unknown) => {
+          assert.match(String(error), /malformed failed response/u);
+          assert.doesNotMatch(String(error), /BAD-CODE|private/u);
+          return true;
+        },
+      );
+    }
+  }
 });
 
 test("OpenAI Responses rejects SSE terminal events that contradict response status", async () => {
@@ -2073,6 +2709,7 @@ test("OpenAI Responses recovers streaming max-output tool calls and rejects othe
         incomplete_details: { reason: "content_filter" },
         output_text: "",
         output: [{
+          id: "fc-overall",
           type: "function_call", call_id: "call-overall", name: "inspect",
           arguments: "{}", status: "completed",
         }],
@@ -2084,6 +2721,7 @@ test("OpenAI Responses recovers streaming max-output tool calls and rejects othe
         status: "completed",
         output_text: "",
         output: [{
+          id: "fc-item",
           type: "function_call", call_id: "call-item", name: "inspect",
           arguments: "{}", status: "in_progress",
         }],
@@ -2095,6 +2733,7 @@ test("OpenAI Responses recovers streaming max-output tool calls and rejects othe
         status: "in_progress",
         output_text: "",
         output: [{
+          id: "fc-overall-progress",
           type: "function_call", call_id: "call-overall-progress", name: "inspect",
           arguments: "{}", status: "completed",
         }],
@@ -2106,6 +2745,7 @@ test("OpenAI Responses recovers streaming max-output tool calls and rejects othe
         status: "completed",
         output_text: "",
         output: [{
+          id: "fc-failed",
           type: "function_call", call_id: "call-failed", name: "inspect",
           arguments: "{}", status: "failed",
         }],
@@ -2199,6 +2839,13 @@ test("OpenAI Responses replays incomplete output locally before continuing", asy
     name: "inspect",
     arguments: "{\"trackName\":\"Le",
     status: "incomplete",
+  }, {
+    id: "fc-incomplete-2",
+    type: "function_call",
+    call_id: "call-incomplete-2",
+    name: "inspect",
+    arguments: "{\"trackName\":\"Ba",
+    status: "incomplete",
   }];
   let responseIndex = 0;
   const responses = [{
@@ -2227,6 +2874,10 @@ test("OpenAI Responses replays incomplete output locally before continuing", asy
   });
   const firstRequest = request(profile());
   const first = await transport.createToolTurn(firstRequest);
+  assert.equal(
+    (first.providerState as { outputLimited?: unknown }).outputLimited,
+    true,
+  );
   const secondRequest = request(profile());
   secondRequest.agentMessages = [{
     role: "assistant",
@@ -2237,11 +2888,79 @@ test("OpenAI Responses replays incomplete output locally before continuing", asy
   const second = await transport.createToolTurn(secondRequest);
 
   const secondInput = bodies[1]?.input as Array<Record<string, unknown>>;
-  assert.deepEqual(secondInput.slice(-partialOutput.length), partialOutput);
-  assert.equal(secondInput.some((item) => item.type === "function_call_output"), false);
+  assert.deepEqual(secondInput.slice(-5), [
+    partialOutput[0],
+    partialOutput[1],
+    partialOutput[2],
+    {
+      type: "function_call_output",
+      call_id: "call-incomplete",
+      output:
+        "Function call was not executed because the model response reached its output-token limit.",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call-incomplete-2",
+      output:
+        "Function call was not executed because the model response reached its output-token limit.",
+    },
+  ]);
   assert.equal(bodies[1]?.store, false);
   assert.equal("previous_response_id" in (bodies[1] ?? {}), false);
   assert.equal(second.toolCalls[0]?.id, "call-completed");
+});
+
+test("OpenAI Responses adds a user continuation after text-only incomplete output", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  let requestNumber = 0;
+  const partialOutput = [{
+    id: "message-incomplete",
+    type: "message",
+    role: "assistant",
+    status: "incomplete",
+    content: [{ type: "output_text", text: "Partial", annotations: [] }],
+  }];
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      requestNumber += 1;
+      return new Response(JSON.stringify(requestNumber === 1
+        ? {
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+            output: partialOutput,
+          }
+        : {
+            status: "completed",
+            output: [{
+              id: "message-completed",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: " complete", annotations: [] }],
+            }],
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  const first = await transport.createToolTurn(request(profile()));
+  const continuation = request(profile());
+  continuation.agentMessages = [{
+    role: "assistant",
+    content: first.content,
+    toolCalls: first.toolCalls,
+    providerState: first.providerState,
+  }];
+
+  await transport.createToolTurn(continuation);
+
+  const secondInput = bodies[1]?.input as Array<Record<string, unknown>>;
+  assert.deepEqual(secondInput.slice(-2), [
+    partialOutput[0],
+    {
+      role: "user",
+      content: "Continue the preceding response from where it was truncated.",
+    },
+  ]);
 });
 
 test("OpenAI Responses forwards the request abort signal", async () => {

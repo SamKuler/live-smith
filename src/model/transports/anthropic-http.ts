@@ -19,9 +19,15 @@ import {
   assertServerSentEventResponse,
   parseServerSentEventData,
 } from "./server-sent-events.js";
+import { readBoundedProviderErrorJson } from "./provider-error-body.js";
 import { readBoundedJsonResponse } from "./response-body.js";
 import { providerRetryAfterMs } from "./retry-after.js";
-import { cancelStreamBestEffort } from "./stream-cancel.js";
+import {
+  anthropicErrorDiagnostic,
+  isAnthropicSpendLimitError,
+  safeAnthropicErrorObject,
+  type SafeAnthropicError,
+} from "./anthropic-errors.js";
 
 const anthropicApiVersion = "2023-06-01";
 
@@ -203,12 +209,16 @@ async function assertAnthropicResponse(
   signal?: AbortSignal,
 ): Promise<void> {
   if (response.ok) return;
-  cancelStreamBestEffort(response.body, signal?.reason);
-  throwIfAborted(signal);
+  const payload = await readAnthropicErrorPayload(response, signal);
+  const providerError = safeAnthropicError(payload);
+  const context = anthropicHttpErrorContext(response.status, providerError);
   if (response.status === 401) {
-    throw new ModelAuthenticationError("Anthropic HTTP 401: request failed");
+    throw new ModelAuthenticationError(`${context}: request failed`);
   }
-  const message = `Anthropic HTTP ${response.status}: request failed`;
+  if (isAnthropicSpendLimitError(providerError)) {
+    throw new Error(`${context}: account usage limit was reached`);
+  }
+  const message = `${context}: request failed`;
   const retryAfterMs = providerRetryAfterMs(response.headers);
   const shouldRetry = response.headers.get("x-should-retry");
   if (shouldRetry === "false") throw new Error(message);
@@ -216,12 +226,40 @@ async function assertAnthropicResponse(
     shouldRetry === "true" ||
     response.status === 408 ||
     response.status === 409 ||
-    (response.status === 429 && retryAfterMs !== undefined) ||
+    response.status === 429 ||
     response.status >= 500
   ) {
     throw new ModelRetryableError(message, retryAfterMs);
   }
   throw new Error(message);
+}
+
+async function readAnthropicErrorPayload(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return readBoundedProviderErrorJson(
+    response,
+    "Anthropic error response",
+    signal,
+  );
+}
+
+function safeAnthropicError(value: unknown): SafeAnthropicError {
+  const envelope = isRecord(value) ? value : undefined;
+  if (
+    !envelope ||
+    (envelope.type !== undefined && envelope.type !== "error") ||
+    !isRecord(envelope.error)
+  ) return {};
+  return safeAnthropicErrorObject(envelope.error);
+}
+
+function anthropicHttpErrorContext(
+  status: number,
+  error: SafeAnthropicError,
+): string {
+  return `Anthropic HTTP ${status}${anthropicErrorDiagnostic(error)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

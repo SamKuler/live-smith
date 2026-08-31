@@ -14,7 +14,10 @@ import {
 } from "../../attachments/contracts.js";
 import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
 import { resolveModelCapabilities } from "../capabilities.js";
-import { ModelRetryableError } from "../connection-error.js";
+import {
+  ModelConnectionError,
+  ModelRetryableError,
+} from "../connection-error.js";
 import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
@@ -26,16 +29,18 @@ import type {
 } from "../profile.js";
 import type { RuntimeModelSource, TransportRequest } from "../provider.js";
 import { createOpenAIChatTransport } from "./openai-chat.js";
+import { createOpenAIResponsesTransport } from "./openai-responses.js";
 import { MAX_DIRECT_JSON_RESPONSE_BYTES } from "./response-body.js";
 
 type ProfileOverrides = Partial<DirectApiModelConfig> &
   Partial<{ id: string; name: string }> &
-  Partial<Pick<OpenAIDirectApiConnection, "baseUrl" | "apiKey">>;
+  Partial<Pick<OpenAIDirectApiConnection, "apiMode" | "baseUrl" | "apiKey">>;
 
 function profile(overrides: ProfileOverrides = {}): DirectApiProfile {
   const {
     baseUrl = "https://example.test/v1",
     apiKey = "secret",
+    apiMode = "chat-completions",
     id = "p1",
     name = "Compatible",
     model = "custom-model",
@@ -52,7 +57,7 @@ function profile(overrides: ProfileOverrides = {}): DirectApiProfile {
     connection: {
       kind: "direct-api",
       apiFamily: "openai",
-      apiMode: "chat-completions",
+      apiMode,
       baseUrl,
       apiKey,
     },
@@ -244,6 +249,53 @@ test("OpenAI Chat rejects malformed non-streaming context usage", async () => {
     transport.createToolTurn(req),
     /context usage/i,
   );
+});
+
+test("OpenAI Chat preserves canonical refusal text in both response modes", async () => {
+  const sentinel = "chat-private-refusal-metadata";
+  const nonStreaming = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: {
+          role: "assistant",
+          content: null,
+          refusal: "I cannot help with that request.",
+          private_metadata: sentinel,
+        },
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const nonStreamingTurn = await nonStreaming.createToolTurn(request(profile()));
+  assert.equal(nonStreamingTurn.content, "I cannot help with that request.");
+  assert.doesNotMatch(nonStreamingTurn.content ?? "", new RegExp(sentinel));
+
+  const deltas: string[] = [];
+  const streaming = createOpenAIChatTransport({
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({
+        choices: [{
+          finish_reason: null,
+          delta: { role: "assistant", refusal: "I cannot ", private_metadata: sentinel },
+        }],
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        choices: [{ finish_reason: "stop", delta: { refusal: "help with that request." } }],
+      })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const streamingRequest = request(profile());
+  streamingRequest.onDelta = (delta) => { deltas.push(delta); };
+
+  const streamingTurn = await streaming.createToolTurn(streamingRequest);
+  assert.equal(streamingTurn.content, "I cannot help with that request.");
+  assert.deepEqual(deltas, ["I cannot ", "help with that request."]);
+  assert.doesNotMatch(streamingTurn.content ?? "", new RegExp(sentinel));
 });
 
 test("OpenAI Chat omits authorization for a keyless loopback Profile", async () => {
@@ -838,6 +890,7 @@ test("Extra Body may override generation fields but not structural or audio-outp
     "messages",
     "tools",
     "tool_choice",
+    "stream_options",
     "modalities",
     "audio",
   ] as const) {
@@ -851,15 +904,173 @@ test("Extra Body may override generation fields but not structural or audio-outp
   }
 });
 
-test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => {
+test("OpenAI Chat closes non-streaming partial and complete output-limit tool calls before continuing", async () => {
+  for (const argumentsText of ["{", "{}", ""]) {
+    const rawToolCall = {
+      id: "call-output-limit",
+      type: "function",
+      function: { name: "inspect", arguments: argumentsText },
+    };
+    let callCount = 0;
+    let replayedMessages: Array<Record<string, unknown>> = [];
+    const transport = createOpenAIChatTransport({
+      fetchImpl: async (_input, init) => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Response(JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "length",
+              message: {
+                role: "assistant",
+                content: "Partial",
+                tool_calls: [rawToolCall],
+              },
+            }],
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        replayedMessages = (JSON.parse(String(init?.body)) as {
+          messages: Array<Record<string, unknown>>;
+        }).messages;
+        return completedChatResponse();
+      },
+    });
+
+    const turn = await transport.createToolTurn(request(profile()));
+
+    assert.equal(turn.content, "Partial");
+    assert.deepEqual(turn.toolCalls, []);
+    assert.deepEqual(turn.continuation, { reason: "output_limit" });
+    assert.deepEqual(turn.providerState, {
+      kind: "openai-chat",
+      message: {
+        role: "assistant",
+        content: "Partial",
+        tool_calls: [rawToolCall],
+      },
+      outputLimited: true,
+    });
+
+    await transport.createToolTurn(request(profile(), [{
+      role: "assistant",
+      content: turn.content,
+      toolCalls: turn.toolCalls,
+      providerState: turn.providerState,
+    }]));
+
+    assert.deepEqual(replayedMessages.slice(-2), [
+      {
+        role: "assistant",
+        content: "Partial",
+        tool_calls: [rawToolCall],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-output-limit",
+        content:
+          "Tool call was not executed because the response reached its output-token limit.",
+      },
+    ]);
+  }
+});
+
+test("OpenAI Chat adds a user continuation after text-only output-limit replay in both response modes", async () => {
+  for (const streaming of [false, true]) {
+    let callCount = 0;
+    let replayedMessages: Array<Record<string, unknown>> = [];
+    const outputLimitPayload = streaming
+      ? [
+          `data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "length",
+              delta: { role: "assistant", content: "Partial" },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join("")
+      : JSON.stringify({
+          choices: [{
+            index: 0,
+            finish_reason: "length",
+            message: { role: "assistant", content: "Partial" },
+          }],
+        });
+    const completedPayload = streaming
+      ? [
+          `data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "stop",
+              delta: { role: "assistant", content: "Done" },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join("")
+      : undefined;
+    const transport = createOpenAIChatTransport({
+      fetchImpl: async (_input, init) => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Response(outputLimitPayload, {
+            status: 200,
+            headers: {
+              "Content-Type": streaming
+                ? "text/event-stream"
+                : "application/json",
+            },
+          });
+        }
+        replayedMessages = (JSON.parse(String(init?.body)) as {
+          messages: Array<Record<string, unknown>>;
+        }).messages;
+        return streaming
+          ? new Response(completedPayload, {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            })
+          : completedChatResponse();
+      },
+    });
+    const firstRequest = request(profile());
+    if (streaming) firstRequest.onDelta = () => {};
+
+    const turn = await transport.createToolTurn(firstRequest);
+    assert.deepEqual(turn.providerState, {
+      kind: "openai-chat",
+      message: { role: "assistant", content: "Partial" },
+      outputLimited: true,
+    });
+
+    const secondRequest = request(profile(), [{
+      role: "assistant",
+      content: turn.content,
+      toolCalls: turn.toolCalls,
+      providerState: turn.providerState,
+    }]);
+    if (streaming) secondRequest.onDelta = () => {};
+    await transport.createToolTurn(secondRequest);
+
+    assert.deepEqual(replayedMessages.slice(-2), [
+      { role: "assistant", content: "Partial" },
+      {
+        role: "user",
+        content: "Continue the previous response from where it stopped.",
+      },
+    ]);
+  }
+});
+
+test("OpenAI Chat classifies non-streaming terminal finish failures safely", async () => {
   const sentinel = "chat-private-finish-reason";
-  for (const finishReason of [
-    "length",
-    "content_filter",
-    "function_call",
-    sentinel,
-    null,
-  ]) {
+  const cases: Array<{ finishReason: unknown; expected: RegExp }> = [
+    { finishReason: "content_filter", expected: /blocked by content filtering/i },
+    { finishReason: "function_call", expected: /legacy function_call/i },
+    { finishReason: sentinel, expected: /unsupported finish_reason/i },
+    { finishReason: 42, expected: /unsupported finish_reason/i },
+    { finishReason: null, expected: /finish_reason.*before completion/i },
+  ];
+  for (const { finishReason, expected } of cases) {
     const transport = createOpenAIChatTransport({
       fetchImpl: async () => new Response(JSON.stringify({
         choices: [{
@@ -872,12 +1083,7 @@ test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => 
     await assert.rejects(
       transport.createToolTurn(request(profile())),
       (error: unknown) => {
-        assert.match(
-          String(error),
-          finishReason === null
-            ? /finish_reason.*before completion/i
-            : /unsupported finish_reason/i,
-        );
+        assert.match(String(error), expected);
         assert.doesNotMatch(String(error), new RegExp(sentinel));
         return true;
       },
@@ -885,15 +1091,344 @@ test("OpenAI Chat rejects non-streaming incomplete finish reasons", async () => 
   }
 });
 
-test("OpenAI Chat rejects streaming incomplete finish reasons", async () => {
+test("OpenAI Chat preserves streaming output-limit state and authoritative usage", async () => {
+  const sentBodies: Array<Record<string, unknown>> = [];
+  let callCount = 0;
+  const rawToolCall = {
+    index: 0,
+    id: "call-partial",
+    type: "function",
+    extra_content: { google: { thought_signature: "signature-output-limit" } },
+    function: { name: "inspect", arguments: "{" },
+  };
+  const sse = [
+    `data: ${JSON.stringify({
+      usage: null,
+      choices: [{
+        index: 0,
+        finish_reason: "length",
+        delta: { role: "assistant", content: "Partial", tool_calls: [rawToolCall] },
+      }],
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 390, completion_tokens: 30, total_tokens: 420 },
+    })}\n\n`,
+    "data: [DONE]\n\n",
+  ].join("");
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async (_input, init) => {
+      callCount += 1;
+      sentBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(callCount === 1
+        ? sse
+        : [
+            `data: ${JSON.stringify({
+              choices: [{
+                index: 0,
+                finish_reason: "stop",
+                delta: { role: "assistant", content: "Done" },
+              }],
+            })}\n\n`,
+            "data: [DONE]\n\n",
+          ].join(""), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    },
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 8_192;
+  req.onDelta = () => {};
+
+  const turn = await transport.createToolTurn(req);
+
+  assert.equal(turn.content, "Partial");
+  assert.deepEqual(turn.toolCalls, []);
+  assert.deepEqual(turn.continuation, { reason: "output_limit" });
+  assert.deepEqual(turn.contextUsage, {
+    usedTokens: 420,
+    contextWindowTokens: 8_192,
+  });
+  assert.deepEqual(sentBodies[0]?.stream_options, { include_usage: true });
+  assert.deepEqual(
+    (turn.providerState as { message: { tool_calls?: unknown } }).message.tool_calls,
+    [{
+      id: "call-partial",
+      type: "function",
+      extra_content: { google: { thought_signature: "signature-output-limit" } },
+      function: { name: "inspect", arguments: "{" },
+    }],
+  );
+  assert.equal(
+    (turn.providerState as { outputLimited?: unknown }).outputLimited,
+    true,
+  );
+
+  const continuationRequest = request(profile(), [{
+    role: "assistant",
+    content: turn.content,
+    toolCalls: turn.toolCalls,
+    providerState: turn.providerState,
+  }]);
+  continuationRequest.onDelta = () => {};
+  await transport.createToolTurn(continuationRequest);
+
+  assert.deepEqual(
+    (sentBodies[1]?.messages as Array<Record<string, unknown>>).slice(-2),
+    [
+      {
+        role: "assistant",
+        content: "Partial",
+        tool_calls: [{
+          id: "call-partial",
+          type: "function",
+          extra_content: { google: { thought_signature: "signature-output-limit" } },
+          function: { name: "inspect", arguments: "{" },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-partial",
+        name: "inspect",
+        content:
+          "Tool call was not executed because the response reached its output-token limit.",
+      },
+    ],
+  );
+});
+
+test("OpenAI Chat rejects malformed output-limit tool-call invariants in both response modes", async () => {
+  const duplicateId = "private-duplicate-output-limit-call";
+  const malformedCalls: Array<Array<Record<string, unknown>>> = [
+    [{ type: "function", function: { name: "inspect", arguments: "{" } }],
+    [{ id: "", type: "function", function: { name: "inspect", arguments: "{" } }],
+    [
+      { id: duplicateId, type: "function", function: { name: "inspect", arguments: "{" } },
+      { id: duplicateId, type: "function", function: { name: "inspect", arguments: "{}" } },
+    ],
+    [{ id: "call-type", type: "custom", function: { name: "inspect", arguments: "{" } }],
+    [{ id: "call-function", type: "function" }],
+    [{ id: "call-name", type: "function", function: { name: " ", arguments: "{" } }],
+    [{ id: "call-arguments", type: "function", function: { name: "inspect", arguments: {} } }],
+  ];
+
+  for (const streaming of [false, true]) {
+    for (const calls of malformedCalls) {
+      const toolCalls = calls.map((call, index) =>
+        streaming ? { index, ...call } : call
+      );
+      const payload = streaming
+        ? [
+            `data: ${JSON.stringify({
+              choices: [{
+                index: 0,
+                finish_reason: "length",
+                delta: { role: "assistant", tool_calls: toolCalls },
+              }],
+            })}\n\n`,
+            "data: [DONE]\n\n",
+          ].join("")
+        : JSON.stringify({
+            choices: [{
+              index: 0,
+              finish_reason: "length",
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: toolCalls,
+              },
+            }],
+          });
+      const transport = createOpenAIChatTransport({
+        fetchImpl: async () => new Response(payload, {
+          status: 200,
+          headers: {
+            "Content-Type": streaming
+              ? "text/event-stream"
+              : "application/json",
+          },
+        }),
+      });
+      const req = request(profile());
+      if (streaming) req.onDelta = () => {};
+
+      await assert.rejects(
+        transport.createToolTurn(req),
+        (error: unknown) => {
+          assert.match(String(error), /tool call/i);
+          assert.doesNotMatch(String(error), new RegExp(duplicateId));
+          return true;
+        },
+      );
+    }
+  }
+});
+
+test("OpenAI Chat rejects invalid or missing assistant roles before replay", async () => {
+  const invalidRoles = [undefined, "user", 42] as const;
+  const terminalCases = [
+    {
+      finishReason: "stop",
+      content: "Done",
+      toolCalls: undefined,
+    },
+    {
+      finishReason: "tool_calls",
+      content: null,
+      toolCalls: [{
+        id: "call-role",
+        type: "function",
+        function: { name: "inspect", arguments: "{}" },
+      }],
+    },
+    {
+      finishReason: "length",
+      content: "Partial",
+      toolCalls: [{
+        id: "call-role-partial",
+        type: "function",
+        function: { name: "inspect", arguments: "{" },
+      }],
+    },
+  ] as const;
+
+  for (const streaming of [false, true]) {
+    for (const role of invalidRoles) {
+      for (const terminal of terminalCases) {
+        let fetchCalls = 0;
+        const message = {
+          ...(role === undefined ? {} : { role }),
+          content: terminal.content,
+          ...(terminal.toolCalls === undefined
+            ? {}
+            : {
+                tool_calls: terminal.toolCalls.map((call, index) =>
+                  streaming ? { index, ...call } : call
+                ),
+              }),
+        };
+        const payload = streaming
+          ? [
+              `data: ${JSON.stringify({
+                choices: [{
+                  index: 0,
+                  finish_reason: terminal.finishReason,
+                  delta: message,
+                }],
+              })}\n\n`,
+              "data: [DONE]\n\n",
+            ].join("")
+          : JSON.stringify({
+              choices: [{
+                index: 0,
+                finish_reason: terminal.finishReason,
+                message,
+              }],
+            });
+        const transport = createOpenAIChatTransport({
+          fetchImpl: async () => {
+            fetchCalls += 1;
+            return new Response(payload, {
+              status: 200,
+              headers: {
+                "Content-Type": streaming
+                  ? "text/event-stream"
+                  : "application/json",
+              },
+            });
+          },
+        });
+        const req = request(profile());
+        if (streaming) req.onDelta = () => {};
+
+        await assert.rejects(
+          transport.createToolTurn(req),
+          /message role/i,
+        );
+        assert.equal(fetchCalls, 1);
+      }
+    }
+  }
+});
+
+test("OpenAI Chat rejects invalid stored roles before a replay request reaches HTTP", async () => {
+  for (const role of [undefined, "user", 42] as const) {
+    for (const outputLimited of [false, true]) {
+      let fetchCalls = 0;
+      const transport = createOpenAIChatTransport({
+        fetchImpl: async () => {
+          fetchCalls += 1;
+          return completedChatResponse();
+        },
+      });
+      const rawToolCall = {
+        id: "call-invalid-replay-role",
+        type: "function",
+        function: { name: "inspect", arguments: outputLimited ? "{" : "{}" },
+      };
+      const req = request(profile(), [{
+        role: "assistant",
+        content: null,
+        toolCalls: outputLimited
+          ? []
+          : [{ id: rawToolCall.id, name: "inspect", arguments: "{}" }],
+        providerState: {
+          kind: "openai-chat",
+          message: {
+            ...(role === undefined ? {} : { role }),
+            content: null,
+            tool_calls: [rawToolCall],
+          },
+          ...(outputLimited ? { outputLimited: true } : {}),
+        },
+      }]);
+
+      await assert.rejects(
+        transport.createToolTurn(req),
+        /message role/i,
+      );
+      assert.equal(fetchCalls, 0);
+    }
+  }
+});
+
+test("OpenAI Chat rejects clean EOF after finish_reason but before usage and DONE", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(`data: ${JSON.stringify({
+      choices: [{
+        index: 0,
+        finish_reason: "stop",
+        delta: { role: "assistant", content: "Partial" },
+      }],
+    })}\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const req = request(profile());
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelConnectionError);
+      assert.match(error.message, /before \[DONE\]/u);
+      return true;
+    },
+  );
+});
+
+test("OpenAI Chat classifies streaming terminal finish failures safely", async () => {
   const sentinel = "chat-private-stream-finish-reason";
-  for (const finishReason of [
-    "length",
-    "content_filter",
-    "function_call",
-    sentinel,
-    null,
-  ]) {
+  const cases: Array<{ finishReason: unknown; expected: RegExp }> = [
+    { finishReason: "content_filter", expected: /blocked by content filtering/i },
+    { finishReason: "function_call", expected: /legacy function_call/i },
+    { finishReason: sentinel, expected: /unsupported finish_reason/i },
+    { finishReason: 42, expected: /unsupported finish_reason/i },
+    { finishReason: null, expected: /finish_reason.*before completion/i },
+  ];
+  for (const { finishReason, expected } of cases) {
     const chunk = {
       choices: [{
         index: 0,
@@ -913,12 +1448,7 @@ test("OpenAI Chat rejects streaming incomplete finish reasons", async () => {
     await assert.rejects(
       transport.createToolTurn(req),
       (error: unknown) => {
-        assert.match(
-          String(error),
-          finishReason === null
-            ? /\[DONE\].*before its protocol terminal event/i
-            : /unsupported finish_reason/i,
-        );
+        assert.match(String(error), expected);
         assert.doesNotMatch(String(error), new RegExp(sentinel));
         return true;
       },
@@ -1032,6 +1562,36 @@ test("OpenAI Chat rejects malformed declared calls even when text is present", a
         /tool call.*(?:name|arguments)/i,
       );
     }
+  }
+});
+
+test("OpenAI Chat rejects invalid streamed tool-call indexes", async () => {
+  for (const index of [-1, 1.5, null]) {
+    const payload = `data: ${JSON.stringify({
+      choices: [{
+        finish_reason: "tool_calls",
+        delta: {
+          tool_calls: [{
+            index,
+            id: "call-1",
+            type: "function",
+            function: { name: "inspect", arguments: "{}" },
+          }],
+        },
+      }],
+    })}\n\ndata: [DONE]\n\n`;
+    const transport = createOpenAIChatTransport({
+      fetchImpl: async () => new Response(payload, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    });
+    const req = request(profile());
+    req.onDelta = () => {};
+    await assert.rejects(
+      transport.createToolTurn(req),
+      /invalid tool call index/u,
+    );
   }
 });
 
@@ -1166,6 +1726,11 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
         tool_calls: [{ index: 0, function: { arguments: "}" } }],
       } }],
     },
+    {
+      id: "chunk-3", object: "chat.completion.chunk", created: 1, model: "custom-model",
+      choices: [],
+      usage: { prompt_tokens: 390, completion_tokens: 30, total_tokens: 420 },
+    },
   ];
   const sse = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
   const transport = createOpenAIChatTransport({
@@ -1196,8 +1761,11 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
     deltas.push(delta);
   };
   const turn = await transport.createToolTurn(req);
-  assert.equal(turn.contextUsage, undefined);
-  assert.equal("stream_options" in sentBody, false);
+  assert.deepEqual(turn.contextUsage, {
+    usedTokens: 420,
+    contextWindowTokens: 8_192,
+  });
+  assert.deepEqual(sentBody.stream_options, { include_usage: true });
   assert.deepEqual(sentMessages[1]?.content, [
     { type: "text", text: "Stream audio" },
     { type: "input_audio", input_audio: { data: "AAAA", format: "wav" } },
@@ -1207,6 +1775,33 @@ test("OpenAI Chat streaming emits text and assembles fragmented tool calls", asy
   assert.equal(
     (turn.providerState as { message: { reasoning_content: string } }).message.reasoning_content,
     "opaque state",
+  );
+});
+
+test("OpenAI Chat rejects malformed authoritative streaming usage", async () => {
+  const sse = [
+    `data: ${JSON.stringify({
+      choices: [{ finish_reason: "stop", delta: { content: "Done" } }],
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12.5 },
+    })}\n\n`,
+    "data: [DONE]\n\n",
+  ].join("");
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(sse, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  });
+  const req = request(profile());
+  req.runtimeProfile.capabilities.contextWindowTokens = 8_192;
+  req.onDelta = () => {};
+
+  await assert.rejects(
+    transport.createToolTurn(req),
+    /context usage/i,
   );
 });
 
@@ -1425,7 +2020,7 @@ test("OpenAI Chat accumulates indexed reasoning_details and replays them unchang
 test("OpenAI Chat stops and cancels a stream when DONE arrives before disconnect", async () => {
   let cancelled = false;
   const bytes = new TextEncoder().encode(
-    `data: ${JSON.stringify({ choices: [{ finish_reason: "stop", delta: { content: "Done" } }] })}\n\ndata: [DONE]\n\n`,
+    `data: ${JSON.stringify({ choices: [{ finish_reason: "stop", delta: { role: "assistant", content: "Done" } }] })}\n\ndata: [DONE]\n\n`,
   );
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -1511,6 +2106,7 @@ test("OpenAI Chat preserves retryable structured stream errors", async () => {
     (error: unknown) => {
       assert.ok(error instanceof ModelRetryableError);
       assert.match(error.message, /OpenAI Chat Completions.*retryable/u);
+      assert.match(error.message, /code=rate_limit_exceeded/u);
       assert.doesNotMatch(error.message, new RegExp(sentinel));
       return true;
     },
@@ -1549,27 +2145,111 @@ test("OpenAI profiles discover models through the shared model-list endpoint", a
   assert.equal(models[0]?.capabilities.maxOutputTokens, 32000);
   assert.equal(models[0]?.capabilities.reasoning, undefined);
   assert.deepEqual(models[0]?.capabilities.inputs, {
-    image: true,
-    audio: false,
-    pdf: true,
+    pdf: false,
   });
   assert.equal(requestSignal, controller.signal);
 });
 
-test("OpenAI malformed input modality arrays do not erase known policy", async () => {
+test("OpenAI-compatible discovery preserves returned MIME and context capabilities", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "dynamic-capabilities",
+        max_output_tokens: 65_536,
+        max_input_tokens: 1_048_576,
+        supportsImages: false,
+        supportsPdf: false,
+        supportsVideo: true,
+        supportsThinking: true,
+        thinkingBudget: -1,
+        supportedMimeTypes: {
+          "image/png": true,
+          "image/jpeg": true,
+          "image/webp": true,
+          "audio/wav": true,
+          "audio/mpeg": true,
+          "application/pdf": true,
+          "video/mp4": true,
+        },
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const [model] = await transport.listModels(profile());
+
+  assert.deepEqual(model?.capabilities, {
+    maxOutputTokens: 65_536,
+    contextWindowTokens: 1_048_576,
+    inputs: { image: false, audio: true, pdf: false },
+  });
+  assert.deepEqual(model?.providerReported, {
+    inputs: {
+      supportsImages: false,
+      supportsPdf: false,
+      supportsVideo: true,
+      supportedMimeTypes: {
+        "image/png": true,
+        "image/jpeg": true,
+        "image/webp": true,
+        "audio/wav": true,
+        "audio/mpeg": true,
+        "application/pdf": true,
+        "video/mp4": true,
+      },
+    },
+    reasoning: { supportsThinking: true, thinkingBudget: -1 },
+  });
+});
+
+test("OpenAI-compatible discovery intersects MIME evidence with Responses input mapping", async () => {
+  const transport = createOpenAIResponsesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "responses-inputs",
+        supportedMimeTypes: { "*/*": true },
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  const [model] = await transport.listModels(profile({ apiMode: "responses" }));
+
+  assert.deepEqual(model?.capabilities.inputs, {
+    image: true,
+    audio: false,
+    pdf: true,
+  });
+  assert.deepEqual(model?.providerReported?.inputs?.supportedMimeTypes, {
+    "*/*": true,
+  });
+});
+
+test("OpenAI rejects malformed input modality metadata instead of dropping it", async () => {
   const transport = createOpenAIChatTransport({
     fetchImpl: async () => new Response(JSON.stringify({
       data: [{ id: "gpt-5.6", input_modalities: ["text", 42] }],
     }), { status: 200, headers: { "Content-Type": "application/json" } }),
   });
 
-  const [model] = await transport.listModels(profile());
+  await assert.rejects(
+    transport.listModels(profile()),
+    /invalid input modality metadata/u,
+  );
+});
 
-  assert.equal(model?.capabilities.inputs, undefined);
-  assert.equal(resolveModelCapabilities(
-    runtimeSource(profile({ model: "gpt-5.6" })),
-    model?.capabilities,
-  ).inputs.image, true);
+test("OpenAI-compatible discovery reports malformed MIME metadata instead of dropping it", async () => {
+  const transport = createOpenAIChatTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [{
+        id: "malformed-mime-capabilities",
+        supportedMimeTypes: { "image/png": "yes" },
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+
+  await assert.rejects(
+    transport.listModels(profile()),
+    /invalid supported MIME metadata/u,
+  );
 });
 
 test("OpenAI model discovery rejects oversized catalogs before returning them", async () => {

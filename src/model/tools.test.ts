@@ -100,9 +100,15 @@ test("tool-produced audio follows verified protocol capability rather than model
     kind: "oauth-subscription" as const,
     provider: "openai" as const,
   };
+  const antigravity = {
+    kind: "oauth-subscription" as const,
+    provider: "google" as const,
+  };
 
   assert.equal(supportsAudioInputDelivery(runtime(chat, true, "supported")), true);
   assert.equal(supportsAudioInputDelivery(runtime(subscription, true, "supported")), false);
+  assert.equal(supportsAudioInputDelivery(runtime(antigravity, true, "supported")), true);
+  assert.equal(supportsAudioInputDelivery(runtime(antigravity, true, "unverified")), false);
   assert.equal(supportsAudioInputDelivery(runtime(responses, true, "supported")), false);
   assert.equal(supportsAudioInputDelivery(runtime(chat, false, "supported")), false);
   assert.equal(supportsAudioInputDelivery(runtime(chat, true, "unverified")), false);

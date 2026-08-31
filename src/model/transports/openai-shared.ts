@@ -1,10 +1,19 @@
-import type { ModelConversationMessage, ModelInputPart } from "../contracts.js";
+import type {
+  ModelConversationMessage,
+  ModelInputPart,
+  ModelToolCall,
+} from "../contracts.js";
 import {
   decodeDiscoveredModelCatalog,
   isDiscoveredModelId,
   MAX_DISCOVERED_MODEL_COUNT,
 } from "../catalog.js";
 import { cloneJsonValue } from "../json-clone.js";
+import {
+  inputTransportSupport,
+  mimeBackedInputCapabilities,
+  type InputTransportSupport,
+} from "../input-support.js";
 import type {
   DiscoveredModelInfo,
   ModelCapabilityHints,
@@ -21,6 +30,11 @@ import {
   openAIChatAudioPart,
   unsupportedInputPart,
 } from "./input-parts.js";
+
+const outputLimitContinuationText =
+  "Continue the previous response from where it stopped.";
+const outputLimitToolError =
+  "Tool call was not executed because the response reached its output-token limit.";
 
 export async function listOpenAIModels(
   profile: DraftProfile,
@@ -40,16 +54,27 @@ export async function listOpenAIModels(
       throw new Error("OpenAI-compatible model discovery returned too many models.");
     }
     const models: DiscoveredModelInfo[] = [];
+    const transportSupport = inputTransportSupport(profile.connection);
     for (const model of response.data) {
       if (!isRecord(model) || !isDiscoveredModelId(model.id)) {
         throw new Error(
           "OpenAI-compatible model discovery returned an invalid model entry.",
         );
       }
+      const capabilities = isRecord(model.capabilities)
+        ? model.capabilities
+        : undefined;
+      const providerReported = providerReportedFromMetadata(model, capabilities);
       models.push({
         id: model.id,
         displayName: stringMetadata(model, ["display_name", "displayName", "name"]) ?? model.id,
-        capabilities: capabilitiesFromMetadata(model) ?? {},
+        capabilities: capabilitiesFromMetadata(
+          model,
+          capabilities,
+          providerReported,
+          transportSupport,
+        ) ?? {},
+        ...(providerReported === undefined ? {} : { providerReported }),
       });
     }
     const catalog = decodeDiscoveredModelCatalog(models);
@@ -128,12 +153,84 @@ export function buildOpenAIChatMessages(
       continue;
     }
     messages.push(chatAssistantMessage(message));
+    const outputLimitCalls = openAIChatOutputLimitCalls(message);
+    if (outputLimitCalls) {
+      const includeToolNames = hasGeminiToolSignature(message);
+      if (outputLimitCalls.length) {
+        messages.push(...outputLimitCalls.map((toolCall) => ({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          ...(includeToolNames ? { name: toolCall.name } : {}),
+          content: outputLimitToolError,
+        })));
+      } else {
+        messages.push({
+          role: "user",
+          content: outputLimitContinuationText,
+        });
+      }
+      namedToolResults = undefined;
+      index += 1;
+      continue;
+    }
     namedToolResults = hasGeminiToolSignature(message)
       ? new Map(message.toolCalls.map((toolCall) => [toolCall.id, toolCall.name]))
       : undefined;
     index += 1;
   }
   return messages;
+}
+
+export function requireOpenAIChatToolCalls(
+  value: unknown,
+  label: string,
+  options: { allowIncompleteArguments?: boolean } = {},
+): ModelToolCall[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} returned tool_calls in an invalid format.`);
+  }
+  const seenIds = new Set<string>();
+  return value.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new Error(`${label} returned a malformed tool call.`);
+    }
+    if (entry.type !== "function") {
+      throw new Error(`${label} returned a tool call with invalid type.`);
+    }
+    const id = entry.id;
+    if (typeof id !== "string" || !id.trim()) {
+      throw new Error(`${label} returned a tool call ID that was missing or empty.`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`${label} returned a duplicate tool call ID.`);
+    }
+    seenIds.add(id);
+    const fn = isRecord(entry.function) ? entry.function : undefined;
+    if (typeof fn?.name !== "string" || !fn.name.trim()) {
+      throw new Error(`${label} returned a tool call with a missing or empty name.`);
+    }
+    if (typeof fn.arguments !== "string" ||
+      (!options.allowIncompleteArguments && !fn.arguments.trim())) {
+      throw new Error(`${label} returned a tool call with invalid arguments.`);
+    }
+    return {
+      id,
+      name: fn.name,
+      arguments: fn.arguments,
+    };
+  });
+}
+
+export function requireOpenAIChatAssistantMessage(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${label} returned no message.`);
+  if (value.role !== "assistant") {
+    throw new Error(`${label} returned an invalid message role.`);
+  }
+  return value;
 }
 
 function mapOpenAIChatParts(
@@ -173,7 +270,10 @@ function chatAssistantMessage(
     state.kind === "openai-chat" &&
     isRecord(state.message)
   ) {
-    return cloneJsonValue(state.message);
+    return cloneJsonValue(requireOpenAIChatAssistantMessage(
+      state.message,
+      "OpenAI Chat Completions replay",
+    ));
   }
   return {
     role: "assistant",
@@ -191,6 +291,25 @@ function chatAssistantMessage(
         }
       : {}),
   };
+}
+
+function openAIChatOutputLimitCalls(
+  message: Extract<ModelConversationMessage, { role: "assistant" }>,
+): ModelToolCall[] | undefined {
+  const state = message.providerState;
+  if (
+    !isRecord(state) ||
+    state.kind !== "openai-chat" ||
+    state.outputLimited !== true ||
+    !isRecord(state.message)
+  ) {
+    return undefined;
+  }
+  return requireOpenAIChatToolCalls(
+    state.message.tool_calls,
+    "OpenAI Chat Completions output-limit replay",
+    { allowIncompleteArguments: true },
+  );
 }
 
 function hasGeminiToolSignature(
@@ -214,13 +333,26 @@ function hasGeminiToolSignature(
 
 function capabilitiesFromMetadata(
   record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+  providerReported: DiscoveredModelInfo["providerReported"],
+  transportSupport: InputTransportSupport,
 ): ModelCapabilityHints | undefined {
-  const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
-  const inputs = inputCapabilitiesFromMetadata(record, capabilities);
+  const inputs = mimeBackedInputCapabilities(
+    providerReported?.inputs,
+    transportSupport,
+  );
   const maxOutputTokens = numberMetadata(record, [
     "max_output_tokens",
     "maxOutputTokens",
     "max_tokens",
+  ]);
+  const contextWindowTokens = numberMetadata(record, [
+    "max_input_tokens",
+    "maxInputTokens",
+    "context_window",
+    "contextWindow",
+    "max_context_window",
+    "maxContextWindow",
   ]);
   const tools = capabilities && typeof capabilities.tools === "boolean"
     ? capabilities.tools
@@ -230,6 +362,7 @@ function capabilitiesFromMetadata(
     : undefined;
   if (
     maxOutputTokens === undefined &&
+    contextWindowTokens === undefined &&
     tools === undefined &&
     streaming === undefined &&
     inputs === undefined
@@ -238,36 +371,154 @@ function capabilitiesFromMetadata(
   }
   return {
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
     ...(tools === undefined ? {} : { tools }),
     ...(streaming === undefined ? {} : { streaming }),
     ...(inputs === undefined ? {} : { inputs }),
   };
 }
 
-function inputCapabilitiesFromMetadata(
+function providerReportedFromMetadata(
   record: Record<string, unknown>,
   capabilities: Record<string, unknown> | undefined,
-): ModelCapabilityHints["inputs"] | undefined {
-  const value = [
-    record.input_modalities,
-    record.inputModalities,
-    capabilities?.input_modalities,
-    capabilities?.inputModalities,
-  ].find(Array.isArray);
-  if (!value || !value.every((item) => typeof item === "string")) {
+): DiscoveredModelInfo["providerReported"] {
+  const rawModalities = firstDefinedMetadata(record, capabilities, [
+    "input_modalities",
+    "inputModalities",
+  ]);
+  const inputModalities = normalizedInputModalities(rawModalities);
+  const supportedMimeTypes = supportedMimeTypeMap(firstDefinedMetadata(
+    record,
+    capabilities,
+    ["supported_mime_types", "supportedMimeTypes"],
+  ));
+  const supportsImages = optionalBooleanMetadata(record, capabilities, [
+    "supports_images",
+    "supportsImages",
+  ]);
+  const supportsPdf = optionalBooleanMetadata(record, capabilities, [
+    "supports_pdf",
+    "supportsPdf",
+  ]);
+  const supportsVideo = optionalBooleanMetadata(record, capabilities, [
+    "supports_video",
+    "supportsVideo",
+  ]);
+  const supportsThinking = optionalBooleanMetadata(record, capabilities, [
+    "supports_thinking",
+    "supportsThinking",
+  ]);
+  const supportsAdaptiveThinking = optionalBooleanMetadata(record, capabilities, [
+    "supports_adaptive_thinking",
+    "supportsAdaptiveThinking",
+  ]);
+  const thinkingBudget = optionalIntegerMetadata(record, capabilities, [
+    "thinking_budget",
+    "thinkingBudget",
+  ]);
+  const minThinkingBudget = optionalIntegerMetadata(record, capabilities, [
+    "min_thinking_budget",
+    "minThinkingBudget",
+  ]);
+  const thinkingLevel = optionalIntegerMetadata(record, capabilities, [
+    "thinking_level",
+    "thinkingLevel",
+  ]);
+  const inputs = {
+    ...(inputModalities === undefined ? {} : { inputModalities }),
+    ...(supportsImages === undefined ? {} : { supportsImages }),
+    ...(supportsPdf === undefined ? {} : { supportsPdf }),
+    ...(supportsVideo === undefined ? {} : { supportsVideo }),
+    ...(supportedMimeTypes === undefined ? {} : { supportedMimeTypes }),
+  };
+  const reasoning = {
+    ...(supportsThinking === undefined ? {} : { supportsThinking }),
+    ...(supportsAdaptiveThinking === undefined
+      ? {}
+      : { supportsAdaptiveThinking }),
+    ...(thinkingBudget === undefined ? {} : { thinkingBudget }),
+    ...(minThinkingBudget === undefined ? {} : { minThinkingBudget }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+  };
+  if (Object.keys(inputs).length === 0 && Object.keys(reasoning).length === 0) {
     return undefined;
   }
-  const modalities = new Set(
-    value.map((item) => item.trim().toLocaleLowerCase()),
-  );
   return {
-    image: modalities.has("image") ||
-      modalities.has("images") ||
-      modalities.has("vision") ||
-      modalities.has("image_url"),
-    audio: modalities.has("audio"),
-    pdf: modalities.has("pdf"),
+    ...(Object.keys(inputs).length === 0 ? {} : { inputs }),
+    ...(Object.keys(reasoning).length === 0 ? {} : { reasoning }),
   };
+}
+
+function normalizedInputModalities(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) ||
+    !value.every((item) => typeof item === "string" && item.trim())) {
+    throw new Error(
+      "OpenAI-compatible model discovery returned invalid input modality metadata.",
+    );
+  }
+  return [...new Set(
+    value.map((item) => item.trim().toLocaleLowerCase()),
+  )];
+}
+
+function firstDefinedMetadata(
+  record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): unknown {
+  for (const source of [record, capabilities]) {
+    if (!source) continue;
+    for (const key of keys) {
+      if (source[key] !== undefined) return source[key];
+    }
+  }
+  return undefined;
+}
+
+function supportedMimeTypeMap(
+  value: unknown,
+): Readonly<Record<string, boolean>> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) ||
+    !Object.values(value).every((supported) => typeof supported === "boolean")) {
+    throw new Error(
+      "OpenAI-compatible model discovery returned invalid supported MIME metadata.",
+    );
+  }
+  return value as Record<string, boolean>;
+}
+
+function optionalBooleanMetadata(
+  record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): boolean | undefined {
+  const value = firstDefinedMetadata(record, capabilities, keys);
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      "OpenAI-compatible model discovery returned invalid input capability metadata.",
+    );
+  }
+  return value;
+}
+
+function optionalIntegerMetadata(
+  record: Record<string, unknown>,
+  capabilities: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): number | undefined {
+  const value = firstDefinedMetadata(record, capabilities, keys);
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) ||
+    (value as number) < -2_147_483_648 ||
+    (value as number) > 2_147_483_647) {
+    throw new Error(
+      "OpenAI-compatible model discovery returned invalid reasoning metadata.",
+    );
+  }
+  return value as number;
 }
 
 function stringMetadata(

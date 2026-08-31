@@ -107,6 +107,8 @@ function completedChatResponse(): Response {
 
 function completedAnthropicResponse(): Response {
   return new Response(JSON.stringify({
+    type: "message",
+    role: "assistant",
     stop_reason: "end_turn",
     content: [{ type: "text", text: "Done" }],
   }), { status: 200, headers: { "Content-Type": "application/json" } });

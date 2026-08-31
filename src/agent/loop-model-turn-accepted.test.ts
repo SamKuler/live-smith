@@ -91,3 +91,33 @@ test("runAgentLoop rejects malformed context usage before the accepted callback"
 
   assert.equal(accepted, false);
 });
+
+test("runAgentLoop preserves partial output when the model reaches its context limit", async () => {
+  const events: Array<{ kind: string; content: string }> = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    askModel: async () => ({
+      content: "Partial answer with evidence.",
+      toolCalls: [],
+      contextUsage: { usedTokens: 1_000, contextWindowTokens: 1_000 },
+      termination: { reason: "context_limit" },
+      providerState: { kind: "test", output: ["partial"] },
+      citations: [{
+        url: "https://example.test/context-limit",
+        title: "Context source",
+      }],
+    }),
+    observe: async () => "",
+    confirmActions: async () => false,
+    executeActions: async () => ({ results: [], mutationCount: 0 }),
+    onEvent: (event) => {
+      events.push({ kind: event.kind, content: event.content });
+    },
+  });
+
+  assert.deepEqual(events.map((event) => event.kind), ["assistant", "error"]);
+  assert.equal(events[0]?.content, "Partial answer with evidence.");
+  assert.match(events[1]?.content ?? "", /context-window limit/i);
+  assert.match(result.message, /Partial answer with evidence/u);
+  assert.match(result.message, /context-window limit/i);
+});

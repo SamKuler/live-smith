@@ -416,6 +416,7 @@ export async function runAgentLoop(
     if (turn.continuation) {
       if (
         turn.continuation.reason !== "output_limit" ||
+        turn.termination !== undefined ||
         turn.toolCalls.length !== 0 ||
         turn.providerState === undefined
       ) {
@@ -429,16 +430,45 @@ export async function runAgentLoop(
         turn.citations ?? [],
       );
       if (consecutiveModelContinuations > maxModelContinuations) {
-        return stopAtSafetyLimit(
-          options,
-          `Stopped after ${maxModelContinuations} automatic continuation attempts because the model repeatedly reached its output-token limit. No incomplete tool call was executed. Increase this Profile's Max Output Tokens or continue in this Session.`,
-        );
+        const partialText = pendingContinuationContent.trim();
+        if (partialText) {
+          await emitTraceEvent(options, {
+            kind: "assistant",
+            content: partialText,
+            ...(pendingContinuationCitations.length
+              ? { citations: pendingContinuationCitations }
+              : {}),
+          });
+        }
+        const stopMessage =
+          `Stopped after ${maxModelContinuations} automatic continuation attempts because the model repeatedly reached its output-token limit. No incomplete tool call was executed. Increase this Profile's Max Output Tokens or continue in this Session.`;
+        const terminalMessage = recoveryState.unresolvedFailure
+          ? `${stopMessage}\n\n${unfinishedWorkMessage(
+              recoveryState.unresolvedFailure,
+              Boolean(partialText),
+            )}`
+          : stopMessage;
+        await emitTraceEvent(options, { kind: "error", content: terminalMessage });
+        return {
+          message: [partialText, terminalMessage].filter(Boolean).join("\n\n"),
+        };
       }
       planningProgressDeadline += 1;
       await options.onProgress?.(
         `Continuing model response after output limit (${consecutiveModelContinuations}/${maxModelContinuations})`,
       );
       continue;
+    }
+
+    if (
+      turn.termination !== undefined &&
+      (
+        (turn.termination.reason !== "context_limit" &&
+          turn.termination.reason !== "output_limit") ||
+        turn.toolCalls.length !== 0
+      )
+    ) {
+      throw new TypeError("Model termination state is invalid.");
     }
 
     const acceptedContextUsage = turn.contextUsage === undefined
@@ -458,6 +488,32 @@ export async function runAgentLoop(
     pendingContinuationContent = "";
     pendingContinuationCitations = [];
     pendingContinuationMessageStart = undefined;
+
+    if (turn.termination) {
+      const partialText = completedTurnContent.trim();
+      if (partialText) {
+        await emitTraceEvent(options, {
+          kind: "assistant",
+          content: partialText,
+          ...(completedTurnCitations.length
+            ? { citations: completedTurnCitations }
+            : {}),
+        });
+      }
+      const stopMessage = turn.termination.reason === "context_limit"
+        ? "The model stopped because this Session reached its context-window limit. Start a new Session or shorten the conversation before continuing."
+        : "The model stopped at its output-token limit while a provider-hosted tool was still unfinished. No incomplete tool call was executed. Increase this Profile's Max Output Tokens and try again.";
+      const terminalMessage = recoveryState.unresolvedFailure
+        ? `${stopMessage}\n\n${unfinishedWorkMessage(
+            recoveryState.unresolvedFailure,
+            Boolean(partialText),
+          )}`
+        : stopMessage;
+      await emitTraceEvent(options, { kind: "error", content: terminalMessage });
+      return {
+        message: [partialText, terminalMessage].filter(Boolean).join("\n\n"),
+      };
+    }
 
     if (!turn.toolCalls.length) {
       const finalText = completedTurnContent.trim();

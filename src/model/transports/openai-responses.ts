@@ -33,7 +33,10 @@ import {
   requestOpenAIJson,
   streamOpenAIEvents,
 } from "./openai-http.js";
-import { openAIProviderFailure } from "./openai-errors.js";
+import {
+  openAIErrorDiagnostic,
+  openAIProviderFailure,
+} from "./openai-errors.js";
 import {
   listOpenAIModels,
 } from "./openai-shared.js";
@@ -62,6 +65,10 @@ const protectedFields = [
 ] as const;
 const encryptedReasoningInclude = "reasoning.encrypted_content";
 const webSearchSourcesInclude = "web_search_call.action.sources";
+const outputLimitContinuationText =
+  "Continue the preceding response from where it was truncated.";
+const outputLimitFunctionCallError =
+  "Function call was not executed because the model response reached its output-token limit.";
 
 type ResponsesTerminalStatus = "completed" | "incomplete";
 
@@ -98,7 +105,10 @@ export function createOpenAIResponsesTransport(
         },
       );
       if (isRecord(response) && response.status === "failed") {
-        throw openAIProviderFailure(response, "OpenAI Responses");
+        throw openAIProviderFailure(
+          decodeOpenAIResponsesFailedResponse(response, "OpenAI Responses"),
+          "OpenAI Responses",
+        );
       }
       const terminal = requireResponsesTerminalResponse(
         response,
@@ -196,6 +206,43 @@ export function decodeOpenAIResponsesTerminalTurn(
   );
 }
 
+export function openAIResponsesVisibleTextDelta(
+  event: Record<string, unknown>,
+  label: string,
+): string | undefined {
+  if (
+    event.type !== "response.output_text.delta" &&
+    event.type !== "response.refusal.delta"
+  ) return undefined;
+  if (typeof event.delta !== "string") {
+    throw new Error(`${label} returned an invalid visible text delta.`);
+  }
+  return event.delta;
+}
+
+export function assertOpenAIResponsesTerminalWithoutPriorError(
+  hadErrorEvent: boolean,
+  label: string,
+): void {
+  if (hadErrorEvent) {
+    throw new Error(`${label} returned a terminal response after an error event.`);
+  }
+}
+
+export function decodeOpenAIResponsesFailedResponse(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  const response = isRecord(value) && value.status === "failed" ? value : undefined;
+  const error = isRecord(response?.error) ? response.error : undefined;
+  const diagnostic = openAIErrorDiagnostic(error);
+  if (!response || !error ||
+    (diagnostic.code === undefined && diagnostic.type === undefined)) {
+    throw new Error(`${label} returned a malformed failed response.`);
+  }
+  return response;
+}
+
 function mappedResponsesTools(
   request: TransportRequest,
 ): Array<Record<string, unknown>> {
@@ -258,7 +305,12 @@ function buildResponsesInput(
       state.kind === "openai-responses" &&
       Array.isArray(state.output)
     ) {
-      input.push(...cloneJsonValue(state.output));
+      const output = cloneJsonValue(state.output);
+      if (state.outputLimited === true) {
+        appendOutputLimitedResponsesInput(input, output);
+      } else {
+        input.push(...output);
+      }
       continue;
     }
     if (message.content?.trim()) {
@@ -274,6 +326,39 @@ function buildResponsesInput(
     );
   }
   return input;
+}
+
+function appendOutputLimitedResponsesInput(
+  input: Array<Record<string, unknown>>,
+  output: unknown[],
+): void {
+  const functionCallIds: string[] = [];
+  const seenFunctionCallIds = new Set<string>();
+  for (const item of output) {
+    if (!isRecord(item)) {
+      throw new Error("OpenAI Responses output-limit replay state is invalid.");
+    }
+    input.push(item);
+    if (item.type !== "function_call") continue;
+    if (typeof item.call_id !== "string" || !item.call_id.trim()) {
+      throw new Error("OpenAI Responses output-limit replay state is invalid.");
+    }
+    if (seenFunctionCallIds.has(item.call_id)) {
+      throw new Error("OpenAI Responses output-limit replay state is invalid.");
+    }
+    seenFunctionCallIds.add(item.call_id);
+    functionCallIds.push(item.call_id);
+  }
+  for (const callId of functionCallIds) {
+    input.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: outputLimitFunctionCallError,
+    });
+  }
+  if (functionCallIds.length === 0) {
+    input.push({ role: "user", content: outputLimitContinuationText });
+  }
 }
 
 function mapResponsesParts(
@@ -339,12 +424,20 @@ async function streamResponsesTurn(
       continue;
     }
     await reportWebSearch(webSearchUpdateFromOpenAIEvent(event));
-    if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
-      await request.onDelta?.(event.delta);
+    const visibleDelta = openAIResponsesVisibleTextDelta(
+      event,
+      "OpenAI Responses",
+    );
+    if (visibleDelta !== undefined) {
+      await request.onDelta?.(visibleDelta);
     } else if (
       event.type === "response.completed" ||
       event.type === "response.incomplete"
     ) {
+      assertOpenAIResponsesTerminalWithoutPriorError(
+        pendingError !== undefined,
+        "OpenAI Responses",
+      );
       const terminal = requireResponsesTerminalResponse(
         event.response,
         "OpenAI Responses",
@@ -361,15 +454,20 @@ async function streamResponsesTurn(
         request.runtimeProfile.capabilities.contextWindowTokens,
       );
     } else if (event.type === "response.failed") {
-      if (isRecord(event.response) && Array.isArray(event.response.output)) {
+      const failedResponse = decodeOpenAIResponsesFailedResponse(
+        event.response,
+        "OpenAI Responses",
+      );
+      if (Array.isArray(failedResponse.output) &&
+        failedResponse.output.every(isRecord)) {
         const hostedWebSearches = webSearchesFromResponsesOutput(
-          event.response.output as Array<Record<string, unknown>>,
+          failedResponse.output,
         );
         for (const search of hostedWebSearches) {
           await reportWebSearch(search);
         }
       }
-      throw openAIProviderFailure(event.response, "OpenAI Responses");
+      throw openAIProviderFailure(failedResponse, "OpenAI Responses");
     } else if (event.type === "response.cancelled") {
       throw new Error("OpenAI Responses was cancelled.");
     }
@@ -418,9 +516,15 @@ function turnFromResponse(
   contextWindowTokens?: number,
 ): ModelTurn {
   const { response: value, output, status } = terminal;
-  const content = typeof value.output_text === "string" && value.output_text.trim()
-    ? value.output_text
-    : textFromOutput(output);
+  const outputContent = textFromOutput(output);
+  if (value.output_text !== undefined && value.output_text !== null &&
+    typeof value.output_text !== "string") {
+    throw new Error(`${label} returned invalid output_text.`);
+  }
+  const content = outputContent ||
+    (typeof value.output_text === "string" && value.output_text.trim()
+      ? value.output_text
+      : "");
   const citations = citationsFromResponsesOutput(output);
   const contextUsage = openAIContextUsage(value.usage, contextWindowTokens);
   const terminalWebSearches = hostedWebSearches ?? webSearchesFromResponsesOutput(output);
@@ -449,10 +553,10 @@ function turnFromResponse(
       providerState: {
         kind: "openai-responses",
         output: cloneJsonValue(output),
+        outputLimited: true,
       },
     };
   }
-  assertCompletedFunctionCallStatuses(output, label);
   const toolCallIds = new Set<string>();
   const toolCalls = output.flatMap((item): ModelToolCall[] => {
     if (!isRecord(item) || item.type !== "function_call") return [];
@@ -489,9 +593,14 @@ function openAIContextUsage(
   value: unknown,
   contextWindowTokens: number | undefined,
 ): ModelTurn["contextUsage"] {
-  if (value === undefined || contextWindowTokens === undefined) return undefined;
-  const usage = isRecord(value) ? value : undefined;
-  return requireModelContextUsage(usage?.total_tokens, contextWindowTokens);
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !Number.isSafeInteger(value.total_tokens) ||
+    (value.total_tokens as number) < 0) {
+    throw new TypeError("OpenAI Responses context usage is invalid.");
+  }
+  return contextWindowTokens === undefined
+    ? undefined
+    : requireModelContextUsage(value.total_tokens, contextWindowTokens);
 }
 
 function requireResponsesTerminalResponse(
@@ -501,6 +610,9 @@ function requireResponsesTerminalResponse(
 ): ResponsesTerminalResponse {
   if (!isRecord(value) || !Array.isArray(value.output)) {
     throw new Error(`${label} returned no output items.`);
+  }
+  if (!value.output.every(isRecord)) {
+    throw new Error(`${label} returned a non-object output item.`);
   }
   if (value.status !== "completed" && value.status !== "incomplete") {
     throw new Error(`${label} returned an invalid terminal response status.`);
@@ -518,9 +630,10 @@ function requireResponsesTerminalResponse(
   ) {
     throw new Error(`${label} returned contradictory terminal response metadata.`);
   }
+  requireKnownResponsesOutputItems(value.output, value.status, label);
   return {
     response: value,
-    output: value.output as Array<Record<string, unknown>>,
+    output: value.output,
     status: value.status,
   };
 }
@@ -615,19 +728,136 @@ function citationsFromResponsesOutput(
   return normalizeModelCitations(candidates);
 }
 
-function assertCompletedFunctionCallStatuses(
+function requireKnownResponsesOutputItems(
   output: Array<Record<string, unknown>>,
+  terminalStatus: ResponsesTerminalStatus,
   label: string,
 ): void {
-  const functionCalls = output.filter((item) =>
-    isRecord(item) && item.type === "function_call"
-  );
-  for (const item of functionCalls) {
-    if (item.status !== undefined && item.status !== "completed") {
+  const incompleteCallIds = new Set<string>();
+  for (const item of output) {
+    if (item.type === "message") {
+      requireResponsesMessageContent(item, label);
+    }
+    if (terminalStatus === "completed" &&
+      (item.type === "function_call" || item.type === "message") &&
+      item.status !== undefined && item.status !== "completed") {
       throw new Error(
-        `${label} returned a function_call with non-completed status.`,
+        `${label} returned a ${item.type} with non-completed status.`,
       );
     }
+    if (terminalStatus === "incomplete" && item.type === "function_call") {
+      requireIncompleteResponsesFunctionCall(item, label);
+      requireUniqueToolCallId(item.call_id, incompleteCallIds, label);
+    }
+    if (item.type === "web_search_call") {
+      requireResponsesWebSearchCall(item, terminalStatus, label);
+    }
+  }
+}
+
+function requireResponsesMessageContent(
+  item: Record<string, unknown>,
+  label: string,
+): void {
+  if (item.role !== "assistant") {
+    throw new Error(`${label} returned an invalid message role.`);
+  }
+  if (!Array.isArray(item.content) || !item.content.every(isRecord)) {
+    throw new Error(`${label} returned invalid message content.`);
+  }
+  for (const part of item.content) {
+    if (part.type === "output_text") {
+      if (typeof part.text !== "string" ||
+        (part.annotations !== undefined &&
+          (!Array.isArray(part.annotations) ||
+            !part.annotations.every(isRecord)))) {
+        throw new Error(`${label} returned invalid output_text content.`);
+      }
+      for (const annotation of Array.isArray(part.annotations) ? part.annotations : []) {
+        if (annotation.type === "url_citation") {
+          requireResponsesUrlCitation(annotation, label);
+        }
+      }
+    } else if (part.type === "refusal" && typeof part.refusal !== "string") {
+      throw new Error(`${label} returned invalid refusal content.`);
+    }
+  }
+}
+
+function requireResponsesUrlCitation(
+  annotation: Record<string, unknown>,
+  label: string,
+): void {
+  if (typeof annotation.url !== "string" ||
+    typeof annotation.title !== "string" ||
+    !Number.isSafeInteger(annotation.start_index) ||
+    (annotation.start_index as number) < 0 ||
+    !Number.isSafeInteger(annotation.end_index) ||
+    (annotation.end_index as number) < 0) {
+    throw new Error(`${label} returned an invalid url_citation annotation.`);
+  }
+}
+
+function requireIncompleteResponsesFunctionCall(
+  item: Record<string, unknown>,
+  label: string,
+): void {
+  if (typeof item.id !== "string" || !item.id.trim()) {
+    throw new Error(`${label} returned an incomplete function_call with an invalid ID.`);
+  }
+  if (typeof item.call_id !== "string" || !item.call_id.trim()) {
+    throw new Error(`${label} returned an incomplete function_call with an invalid call ID.`);
+  }
+  if (typeof item.name !== "string" || !item.name.trim()) {
+    throw new Error(`${label} returned an incomplete function_call with an invalid name.`);
+  }
+  if (typeof item.arguments !== "string") {
+    throw new Error(`${label} returned an incomplete function_call with invalid arguments.`);
+  }
+  if (item.status !== undefined &&
+    item.status !== "completed" && item.status !== "incomplete") {
+    throw new Error(`${label} returned an incomplete function_call with invalid status.`);
+  }
+}
+
+function requireResponsesWebSearchCall(
+  item: Record<string, unknown>,
+  terminalStatus: ResponsesTerminalStatus,
+  label: string,
+): void {
+  const validStatus = terminalStatus === "completed"
+    ? item.status === "completed" || item.status === "failed"
+    : item.status === "in_progress" || item.status === "searching" ||
+      item.status === "incomplete" || item.status === "completed" ||
+      item.status === "failed";
+  if (typeof item.id !== "string" || !item.id.trim() ||
+    !validStatus || !isRecord(item.action)) {
+    throw new Error(`${label} returned an invalid web_search_call.`);
+  }
+  const action = item.action;
+  if (!isWebSearchAction(action.type)) {
+    throw new Error(`${label} returned an invalid web_search_call.`);
+  }
+  if ((action.query !== undefined && typeof action.query !== "string") ||
+    (action.queries !== undefined &&
+      (!Array.isArray(action.queries) ||
+        !action.queries.every((query) => typeof query === "string"))) ||
+    (action.sources !== undefined &&
+      (!Array.isArray(action.sources) || !action.sources.every(isRecord)))) {
+    throw new Error(`${label} returned an invalid web_search_call.`);
+  }
+  for (const source of Array.isArray(action.sources) ? action.sources : []) {
+    if (source.type === "url" &&
+      (typeof source.url !== "string" ||
+        (source.title !== undefined && source.title !== null &&
+          typeof source.title !== "string"))) {
+      throw new Error(`${label} returned an invalid web_search_call.`);
+    }
+  }
+  if ((action.type === "open_page" && typeof action.url !== "string") ||
+    (action.type === "find_in_page" &&
+      (typeof action.url !== "string" || typeof action.pattern !== "string"))) {
+    throw new Error(`${label} returned an invalid web_search_call.`);
   }
 }
 
@@ -646,13 +876,17 @@ function requireUniqueToolCallId(
   return value;
 }
 
-function textFromOutput(output: Array<Record<string, unknown>>): string {
+function textFromOutput(
+  output: Array<Record<string, unknown>>,
+): string {
   const parts: string[] = [];
   for (const item of output) {
-    if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
-    for (const part of item.content) {
-      if (isRecord(part) && part.type === "output_text" && typeof part.text === "string") {
-        parts.push(part.text);
+    if (item.type !== "message") continue;
+    for (const part of item.content as Array<Record<string, unknown>>) {
+      if (part.type === "output_text") {
+        parts.push(part.text as string);
+      } else if (part.type === "refusal") {
+        parts.push(part.refusal as string);
       }
     }
   }

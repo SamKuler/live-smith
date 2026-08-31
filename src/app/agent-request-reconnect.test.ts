@@ -119,7 +119,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   ]);
   const resetIndex = events.indexOf("reset");
   const reconnectingIndex = events.indexOf(
-    "progress:Model connection lost. Reconnecting (1/5)…",
+    "progress:The model connection was interrupted. Reconnecting (1/5) in 500 ms…",
   );
   const reconnectedIndex = events.indexOf(
     "progress:Reconnected. Reading model response",
@@ -222,7 +222,9 @@ test("steering during reconnect backoff cancels the retry and replans", {
   });
   assert.equal(assistantResets, 2);
   assert.equal(
-    progress.includes("Model connection lost. Reconnecting (1/5)…"),
+    progress.includes(
+      "The model connection was interrupted. Reconnecting (1/5) in 500 ms…",
+    ),
     true,
   );
   assert.equal(progress.includes("Replanning with new guidance"), true);
@@ -230,7 +232,7 @@ test("steering during reconnect backoff cancels the retry and replans", {
   assert.equal(storedEvents.some((event) => event.kind === "error"), false);
 });
 
-test("agent request exhausts five retries with one fixed durable error", {
+test("agent request exhausts five retries with one cause-preserving durable error", {
   timeout: 3_000,
 }, async (t) => {
   const storageDirectory = await fs.mkdtemp(
@@ -278,7 +280,8 @@ test("agent request exhausts five retries with one fixed durable error", {
     ),
     (error: unknown) =>
       error instanceof Error &&
-      error.message === "Model connection was lost after 5 reconnect attempts.",
+      error.message ===
+        "The model connection was interrupted. Reconnect limit reached after 5 attempts.",
   );
 
   assert.equal(modelRequests, 6);
@@ -288,7 +291,7 @@ test("agent request exhausts five retries with one fixed durable error", {
   assert.equal(storedErrors.length, 1);
   assert.equal(
     storedErrors[0]?.content,
-    "Model connection was lost after 5 reconnect attempts.",
+    "The model connection was interrupted. Reconnect limit reached after 5 attempts.",
   );
   assert.equal(published.filter((event) => event.kind === "error").length, 1);
 });

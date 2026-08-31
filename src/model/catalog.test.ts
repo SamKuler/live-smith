@@ -66,6 +66,22 @@ test("model catalog decoder rejects ambiguous or unusable model metadata", () =>
       ...validModel,
       capabilities: { reasoning: { efforts: ["high", "high"] } },
     }],
+    [{
+      ...validModel,
+      providerReported: { inputs: { supportedMimeTypes: { "image/png": "yes" } } },
+    }],
+    [{
+      ...validModel,
+      providerReported: { inputs: { supportedMimeTypes: { "not a mime": true } } },
+    }],
+    [{
+      ...validModel,
+      providerReported: { reasoning: { thinkingBudget: 1.5 } },
+    }],
+    [{
+      ...validModel,
+      providerReported: { unknown: true },
+    }],
   ];
 
   for (const catalog of invalidCatalogs) {

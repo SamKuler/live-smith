@@ -27,6 +27,7 @@ import {
   safeModelWebSearchId,
 } from "../web-search.js";
 import { cloneJsonValue } from "../json-clone.js";
+import { anthropicMessagesInputSupport } from "../input-support.js";
 import type {
   DiscoveredModelInfo,
   ModelCapabilityHints,
@@ -45,6 +46,13 @@ import {
   requestAnthropicModelPage,
   streamAnthropicEvents,
 } from "./anthropic-http.js";
+import {
+  anthropicErrorDiagnostic,
+  isAnthropicRetryableError,
+  isAnthropicSpendLimitError,
+  safeAnthropicErrorObject,
+  safeAnthropicIdentifier,
+} from "./anthropic-errors.js";
 import { mergeExtraBody } from "./request-body.js";
 import { withTransportContext } from "./errors.js";
 import {
@@ -65,6 +73,10 @@ const protectedFields = [
   "stream",
 ] as const;
 const maxPauseTurnContinuations = 3;
+const outputLimitContinuationText =
+  "Continue the previous response from where it stopped.";
+const outputLimitToolError =
+  "Tool call was not executed because the response reached its output-token limit.";
 
 type AnthropicContentBlock = Record<string, unknown>;
 
@@ -78,6 +90,17 @@ interface AnthropicToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
   content: string;
+}
+
+interface AnthropicPartialToolInput {
+  index: number;
+  partialJson: string;
+}
+
+interface StreamedAnthropicMessage {
+  message: Record<string, unknown>;
+  partialToolInputs: AnthropicPartialToolInput[];
+  hasPartialServerInput: boolean;
 }
 
 type AnthropicTool =
@@ -148,15 +171,22 @@ async function anthropicTurnWithContinuations(
       continuationContent.flat(),
       initialSearchCalls,
     );
-    const response = request.onDelta && request.runtimeProfile.capabilities.streaming
-      ? await streamAnthropicMessage(
+    let response: unknown;
+    let partialToolInputs: AnthropicPartialToolInput[] = [];
+    let hasPartialServerInput = false;
+    if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
+      const streamed = await streamAnthropicMessage(
           request,
           body,
           fetchImpl,
           priorSearchCalls,
           reportWebSearch,
-        )
-      : await requestAnthropicJson(
+        );
+      response = streamed.message;
+      partialToolInputs = streamed.partialToolInputs;
+      hasPartialServerInput = streamed.hasPartialServerInput;
+    } else {
+      response = await requestAnthropicJson(
           request.runtimeProfile.profile,
           fetchImpl,
           "/messages",
@@ -166,20 +196,34 @@ async function anthropicTurnWithContinuations(
             ...(request.signal ? { signal: request.signal } : {}),
           },
         );
-    if (!isRecord(response) || !Array.isArray(response.content)) {
-      throw new Error("Anthropic Messages returned no content blocks.");
+    }
+    if (isRecord(response) && response.type === "error") {
+      throw anthropicProviderError(response, "Anthropic Messages response");
+    }
+    const responseMessage = requireAnthropicMessageEnvelope(
+      response,
+      "Anthropic Messages returned an invalid message envelope.",
+    );
+    const responseContent = requireAnthropicContentBlocks(responseMessage.content);
+    if (responseMessage.stop_reason === "pause_turn" &&
+      responseContent.some((block) => block.type === "tool_use")) {
+      throw new Error(
+        "Anthropic Messages returned pause_turn with a client tool_use block.",
+      );
     }
     for (const search of completedAnthropicWebSearches(
-      response.content as AnthropicContentBlock[],
+      responseContent,
       priorSearchCalls,
     )) {
       await reportWebSearch(search);
     }
-    if (response.stop_reason !== "pause_turn") {
+    if (responseMessage.stop_reason !== "pause_turn") {
       const turn = turnFromAnthropicMessage(
-        response,
+        responseMessage,
         priorSearchCalls,
         request.runtimeProfile.capabilities.contextWindowTokens,
+        partialToolInputs,
+        hasPartialServerInput,
       );
       if (!continuationContent.length) return turn;
       const priorCitations = continuationContent.flatMap(
@@ -198,18 +242,21 @@ async function anthropicTurnWithContinuations(
       ]);
       const hostedWebSearches = completedAnthropicWebSearches([
         ...continuationContent.flat(),
-        ...(response.content as AnthropicContentBlock[]),
+        ...responseContent,
       ], initialSearchCalls);
       return {
         ...turn,
         content: combinedText || null,
         ...(citations.length ? { citations } : {}),
         ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
-        providerState: {
-          kind: "anthropic-messages",
-          content: cloneJsonValue(response.content),
-          continuationContent: cloneJsonValue(continuationContent),
-        },
+        ...(isRecord(turn.providerState)
+          ? {
+              providerState: {
+                ...turn.providerState,
+                continuationContent: cloneJsonValue(continuationContent),
+              },
+            }
+          : {}),
       };
     }
     if (continuation === maxPauseTurnContinuations) {
@@ -218,7 +265,7 @@ async function anthropicTurnWithContinuations(
       );
     }
     continuationContent.push(cloneJsonValue(
-      response.content as AnthropicContentBlock[],
+      responseContent,
     ));
   }
   throw new Error("Anthropic Messages continuation limit was reached.");
@@ -342,6 +389,13 @@ function buildAnthropicMessages(
       for (const stateContent of stateMessages) {
         messages.push({ role: "assistant", content: stateContent });
       }
+      const continuationUserContent = anthropicContinuationUserContent(
+        message,
+        content,
+      );
+      if (continuationUserContent.length) {
+        messages.push({ role: "user", content: continuationUserContent });
+      }
     } else {
       messages.push({ role: "assistant", content });
     }
@@ -432,12 +486,14 @@ async function listAnthropicModels(
           "Anthropic model discovery returned an invalid model entry.",
         );
       }
+      const providerReported = anthropicProviderReported(model);
       pageModels.push({
         id: model.id,
         displayName: typeof model.display_name === "string"
           ? model.display_name
           : model.id,
-        capabilities: anthropicCapabilitiesFromMetadata(model),
+        capabilities: anthropicCapabilitiesFromMetadata(model, providerReported),
+        ...(providerReported === undefined ? {} : { providerReported }),
       });
     }
     models.push(...pageModels);
@@ -466,6 +522,7 @@ async function listAnthropicModels(
 
 function anthropicCapabilitiesFromMetadata(
   record: Record<string, unknown>,
+  providerReported: DiscoveredModelInfo["providerReported"],
 ): ModelCapabilityHints {
   const maxOutputTokens = firstNumber(record, ["max_tokens", "max_output_tokens"]);
   const contextWindowTokens = Number.isSafeInteger(record.max_input_tokens) &&
@@ -475,7 +532,7 @@ function anthropicCapabilitiesFromMetadata(
     ? record.max_input_tokens as number
     : undefined;
   const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
-  const inputs = anthropicInputCapabilities(record, capabilities);
+  const inputs = anthropicInputCapabilities(providerReported?.inputs);
   const thinking = capabilities && isRecord(capabilities.thinking)
     ? capabilities.thinking
     : undefined;
@@ -535,19 +592,12 @@ function anthropicCapabilitiesFromMetadata(
 }
 
 function anthropicInputCapabilities(
-  record: Record<string, unknown>,
-  capabilities: Record<string, unknown> | undefined,
+  reported: NonNullable<DiscoveredModelInfo["providerReported"]>["inputs"],
 ): ModelCapabilityHints["inputs"] | undefined {
-  const image = supportStatus(capabilities?.image_input);
-  const pdf = supportStatus(capabilities?.pdf_input);
-  const value = [
-    record.input_modalities,
-    record.inputModalities,
-    capabilities?.input_modalities,
-    capabilities?.inputModalities,
-  ].find(Array.isArray);
-  const compatible = value && value.every((item) => typeof item === "string")
-    ? inputCapabilitiesFromModalities(value)
+  const image = reported?.supportsImages;
+  const pdf = reported?.supportsPdf;
+  const compatible = reported?.inputModalities
+    ? inputCapabilitiesFromModalities(reported.inputModalities)
     : undefined;
   if (image === undefined && pdf === undefined) return compatible;
   return {
@@ -557,14 +607,70 @@ function anthropicInputCapabilities(
   };
 }
 
+function anthropicProviderReported(
+  record: Record<string, unknown>,
+): DiscoveredModelInfo["providerReported"] {
+  const capabilities = isRecord(record.capabilities) ? record.capabilities : undefined;
+  const rawModalities = [
+    record.input_modalities,
+    record.inputModalities,
+    capabilities?.input_modalities,
+    capabilities?.inputModalities,
+  ].find((value) => value !== undefined);
+  if (rawModalities !== undefined &&
+    (!Array.isArray(rawModalities) ||
+      !rawModalities.every((item) => typeof item === "string" && item.trim()))) {
+    throw new Error(
+      "Anthropic model discovery returned invalid input modality metadata.",
+    );
+  }
+  const inputModalities = rawModalities === undefined
+    ? undefined
+    : [...new Set(
+        (rawModalities as string[])
+          .map((item) => item.trim().toLocaleLowerCase()),
+      )];
+  const supportsImages = supportStatus(capabilities?.image_input);
+  const supportsPdf = supportStatus(capabilities?.pdf_input);
+  const thinking = capabilities && isRecord(capabilities.thinking)
+    ? capabilities.thinking
+    : undefined;
+  const supportsThinking = supportStatus(thinking);
+  const supportsAdaptiveThinking = nestedSupportStatus(
+    thinking,
+    "types",
+    "adaptive",
+  );
+  const inputs = {
+    ...(inputModalities === undefined ? {} : { inputModalities }),
+    ...(supportsImages === undefined ? {} : { supportsImages }),
+    ...(supportsPdf === undefined ? {} : { supportsPdf }),
+    ...(inputModalities?.includes("video") ? { supportsVideo: true } : {}),
+  };
+  const reasoning = {
+    ...(supportsThinking === undefined ? {} : { supportsThinking }),
+    ...(supportsAdaptiveThinking === undefined
+      ? {}
+      : { supportsAdaptiveThinking }),
+  };
+  if (Object.keys(inputs).length === 0 && Object.keys(reasoning).length === 0) {
+    return undefined;
+  }
+  return {
+    ...(Object.keys(inputs).length === 0 ? {} : { inputs }),
+    ...(Object.keys(reasoning).length === 0 ? {} : { reasoning }),
+  };
+}
+
 function inputCapabilitiesFromModalities(
   value: string[],
 ): ModelCapabilityHints["inputs"] {
   const modalities = new Set(value.map((item) => item.trim().toLocaleLowerCase()));
   return {
-    image: modalities.has("image") || modalities.has("images") || modalities.has("vision"),
-    audio: modalities.has("audio"),
-    pdf: modalities.has("pdf"),
+    image: anthropicMessagesInputSupport.image &&
+      (modalities.has("image") || modalities.has("images") || modalities.has("vision")),
+    audio: anthropicMessagesInputSupport.audio && modalities.has("audio"),
+    pdf: anthropicMessagesInputSupport.pdf && modalities.has("pdf"),
   };
 }
 
@@ -593,10 +699,14 @@ async function streamAnthropicMessage(
   fetchImpl: typeof fetch,
   priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock>,
   reportWebSearch: (search: ModelHostedWebSearch) => Promise<void>,
-): Promise<Record<string, unknown>> {
+): Promise<StreamedAnthropicMessage> {
   const contentBlocks = new Map<number, AnthropicContentBlock>();
   const inputJson = new Map<number, string>();
+  const startedContentBlocks = new Set<number>();
+  const closedContentBlocks = new Set<number>();
   const seenWebSearchResultIds = new Set<string>();
+  let pendingToolInputError: Error | undefined;
+  let messageStarted = false;
   let stopped = false;
   let stopReason: unknown;
   let initialUsage: unknown;
@@ -608,93 +718,174 @@ async function streamAnthropicMessage(
     request.signal,
   )) {
     throwIfAborted(request.signal);
-    if (event.type === "message_start" && isRecord(event.message)) {
-      if (event.message.usage !== undefined) initialUsage = event.message.usage;
-      const initial = event.message.content;
-      if (Array.isArray(initial)) {
-        initial.forEach((block, index) => {
-          if (isRecord(block)) contentBlocks.set(index, cloneJsonValue(block));
-        });
+    if (event.type === "message_start") {
+      if (messageStarted) {
+        throw new Error("Anthropic stream returned duplicate message_start events.");
       }
+      const message = requireAnthropicMessageEnvelope(
+        event.message,
+        "Anthropic stream returned an invalid message_start event.",
+      );
+      if (message.usage !== undefined) initialUsage = message.usage;
+      if (message.content.length !== 0) {
+        throw new Error(
+          "Anthropic stream returned non-empty message_start content.",
+        );
+      }
+      messageStarted = true;
       continue;
+    }
+    if (event.type === "error") {
+      throw anthropicProviderError(event, "Anthropic stream");
+    }
+    if (!messageStarted && (
+      event.type === "content_block_start" ||
+      event.type === "content_block_delta" ||
+      event.type === "content_block_stop" ||
+      event.type === "message_delta" ||
+      event.type === "message_stop"
+    )) {
+      throw new Error("Anthropic stream returned an event before message_start.");
     }
     if (event.type === "content_block_start") {
       const index = eventIndex(event);
-      if (index !== undefined && isRecord(event.content_block)) {
-        contentBlocks.set(index, cloneJsonValue(event.content_block));
-        if (
-          event.content_block.type === "web_search_tool_result" &&
-          typeof event.content_block.tool_use_id === "string" &&
-          isAnthropicWebSearchResultContent(event.content_block.content)
-        ) {
-          if (seenWebSearchResultIds.has(event.content_block.tool_use_id)) {
-            throw duplicateAnthropicWebSearchResultError();
-          }
-          seenWebSearchResultIds.add(event.content_block.tool_use_id);
-          const search = anthropicWebSearchFromResult(
-            event.content_block,
-            [...contentBlocks.values()],
-            index,
-            priorSearchCalls,
-          );
-          if (search) {
-            await reportWebSearch(search);
-          }
+      if (index === undefined || !isRecord(event.content_block)) {
+        throw new Error("Anthropic stream returned an invalid content_block_start event.");
+      }
+      if (contentBlocks.has(index)) {
+        throw new Error("Anthropic stream returned a duplicate content block index.");
+      }
+      const contentBlock = requireAnthropicContentBlock(event.content_block);
+      startedContentBlocks.add(index);
+      contentBlocks.set(index, cloneJsonValue(contentBlock));
+      if (
+        contentBlock.type === "web_search_tool_result" &&
+        typeof contentBlock.tool_use_id === "string" &&
+        isAnthropicWebSearchResultContent(contentBlock.content)
+      ) {
+        if (seenWebSearchResultIds.has(contentBlock.tool_use_id)) {
+          throw duplicateAnthropicWebSearchResultError();
+        }
+        seenWebSearchResultIds.add(contentBlock.tool_use_id);
+        const search = anthropicWebSearchFromResult(
+          contentBlock,
+          [...contentBlocks.values()],
+          index,
+          priorSearchCalls,
+        );
+        if (search) {
+          await reportWebSearch(search);
         }
       }
       continue;
     }
-    if (event.type === "content_block_delta" && isRecord(event.delta)) {
+    if (event.type === "content_block_delta") {
       const index = eventIndex(event);
-      if (index === undefined) continue;
+      if (index === undefined || !isRecord(event.delta)) {
+        throw new Error("Anthropic stream returned an invalid content_block_delta event.");
+      }
       const block = contentBlocks.get(index);
-      if (!block) {
+      if (!block || !startedContentBlocks.has(index)) {
         throw new Error(`Anthropic stream sent a delta before block ${index} started.`);
       }
-      if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
-        appendBlockText(block, "text", event.delta.text);
-        await request.onDelta?.(event.delta.text);
-      } else if (
-        event.delta.type === "thinking_delta" &&
-        typeof event.delta.thinking === "string"
-      ) {
-        appendBlockText(block, "thinking", event.delta.thinking);
-      } else if (
-        event.delta.type === "signature_delta" &&
-        typeof event.delta.signature === "string"
-      ) {
-        appendBlockText(block, "signature", event.delta.signature);
-      } else if (
-        event.delta.type === "input_json_delta" &&
-        typeof event.delta.partial_json === "string"
-      ) {
-        inputJson.set(index, (inputJson.get(index) ?? "") + event.delta.partial_json);
-      } else if (
-        event.delta.type === "citations_delta" &&
-        isRecord(event.delta.citation)
-      ) {
-        const citations = Array.isArray(block.citations) ? block.citations : [];
-        citations.push(cloneJsonValue(event.delta.citation));
-        block.citations = citations;
+      if (closedContentBlocks.has(index)) {
+        throw new Error("Anthropic stream sent a delta after content block stop.");
+      }
+      switch (event.delta.type) {
+        case "text_delta":
+          requireAnthropicDeltaBlock(block, "text", "text_delta");
+          if (typeof event.delta.text !== "string") {
+            throw new Error("Anthropic stream returned an invalid text_delta event.");
+          }
+          appendBlockText(block, "text", event.delta.text);
+          await request.onDelta?.(event.delta.text);
+          break;
+        case "thinking_delta":
+          requireAnthropicDeltaBlock(block, "thinking", "thinking_delta");
+          if (typeof event.delta.thinking !== "string") {
+            throw new Error("Anthropic stream returned an invalid thinking_delta event.");
+          }
+          appendBlockText(block, "thinking", event.delta.thinking);
+          break;
+        case "signature_delta":
+          requireAnthropicDeltaBlock(block, "thinking", "signature_delta");
+          if (typeof event.delta.signature !== "string") {
+            throw new Error("Anthropic stream returned an invalid signature_delta event.");
+          }
+          appendBlockText(block, "signature", event.delta.signature);
+          break;
+        case "input_json_delta":
+          requireAnthropicDeltaBlock(
+            block,
+            ["tool_use", "server_tool_use"],
+            "input_json_delta",
+          );
+          if (typeof event.delta.partial_json !== "string") {
+            throw new Error("Anthropic stream returned an invalid input_json_delta event.");
+          }
+          inputJson.set(index, (inputJson.get(index) ?? "") + event.delta.partial_json);
+          break;
+        case "citations_delta": {
+          requireAnthropicDeltaBlock(block, "text", "citations_delta");
+          if (!isRecord(event.delta.citation)) {
+            throw new Error("Anthropic stream returned an invalid citations_delta event.");
+          }
+          requireAnthropicCitation(event.delta.citation);
+          const citations = Array.isArray(block.citations) ? block.citations : [];
+          citations.push(cloneJsonValue(event.delta.citation));
+          block.citations = citations;
+          break;
+        }
+        default: {
+          const deltaType = safeAnthropicIdentifier(event.delta.type);
+          throw new Error(
+            deltaType
+              ? `Anthropic stream returned an unsupported content delta. [type=${deltaType}]`
+              : "Anthropic stream returned an invalid content delta.",
+          );
+        }
       }
       continue;
     }
     if (event.type === "content_block_stop") {
       const index = eventIndex(event);
-      if (index !== undefined) finalizeToolInput(index, contentBlocks, inputJson);
+      if (index === undefined || !startedContentBlocks.has(index)) {
+        throw new Error("Anthropic stream returned an invalid content_block_stop event.");
+      }
+      if (closedContentBlocks.has(index)) {
+        throw new Error("Anthropic stream returned a duplicate content block stop.");
+      }
+      closedContentBlocks.add(index);
+      try {
+        finalizeToolInput(index, contentBlocks, inputJson);
+      } catch (error) {
+        pendingToolInputError ??= error instanceof Error
+          ? error
+          : new Error("Anthropic stream returned invalid tool input.");
+      }
       continue;
     }
-    if (event.type === "error") {
-      throw anthropicStreamError(event);
-    }
-    if (event.type === "message_delta" && isRecord(event.delta)) {
+    if (event.type === "message_delta") {
+      if (!isRecord(event.delta)) {
+        throw new Error("Anthropic stream returned an invalid message_delta event.");
+      }
       if (event.usage !== undefined) terminalUsage = event.usage;
       if (event.delta.stop_reason !== undefined) {
+        if (stopReason !== undefined && stopReason !== event.delta.stop_reason) {
+          throw new Error("Anthropic stream returned conflicting stop reasons.");
+        }
         stopReason = event.delta.stop_reason;
       }
       continue;
     }
     if (event.type === "message_stop") {
+      if ([...startedContentBlocks].some((index) =>
+        !closedContentBlocks.has(index)
+      )) {
+        throw new Error(
+          "Anthropic stream reached message_stop before content_block_stop.",
+        );
+      }
       stopped = true;
       break;
     }
@@ -702,17 +893,47 @@ async function streamAnthropicMessage(
   if (!stopped) {
     throw new ModelConnectionError("Anthropic stream ended before message_stop.");
   }
+  const terminalStopReason = requireAnthropicStopReason(stopReason);
   for (const index of inputJson.keys()) {
-    finalizeToolInput(index, contentBlocks, inputJson);
+    try {
+      finalizeToolInput(index, contentBlocks, inputJson);
+    } catch (error) {
+      pendingToolInputError ??= error instanceof Error
+        ? error
+        : new Error("Anthropic stream returned invalid tool input.");
+    }
   }
+  if (
+    pendingToolInputError &&
+    terminalStopReason !== "max_tokens" &&
+    terminalStopReason !== "model_context_window_exceeded"
+  ) throw pendingToolInputError;
   const content = [...contentBlocks.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, block]) => block);
+  const partialToolInputs = pendingToolInputError &&
+      terminalStopReason === "max_tokens"
+    ? [...inputJson.entries()]
+        .filter(([index]) => contentBlocks.get(index)?.type === "tool_use")
+        .sort(([left], [right]) => left - right)
+        .map(([index, partialJson]) => ({ index, partialJson }))
+    : [];
+  const hasPartialServerInput = pendingToolInputError !== undefined &&
+    terminalStopReason === "max_tokens" &&
+    [...inputJson.keys()].some((index) =>
+      contentBlocks.get(index)?.type === "server_tool_use"
+    );
   const usage = mergedAnthropicStreamUsage(initialUsage, terminalUsage);
   return {
-    content,
-    stop_reason: stopReason,
-    ...(usage === undefined ? {} : { usage }),
+    message: {
+      type: "message",
+      role: "assistant",
+      content,
+      stop_reason: terminalStopReason,
+      ...(usage === undefined ? {} : { usage }),
+    },
+    partialToolInputs,
+    hasPartialServerInput,
   };
 }
 
@@ -720,53 +941,132 @@ function turnFromAnthropicMessage(
   value: unknown,
   priorSearchCalls: ReadonlyMap<string, AnthropicContentBlock> = new Map(),
   contextWindowTokens?: number,
+  partialToolInputs: readonly AnthropicPartialToolInput[] = [],
+  hasPartialServerInput = false,
 ): ModelTurn {
-  if (!isRecord(value) || !Array.isArray(value.content)) {
-    throw new Error("Anthropic Messages returned no content blocks.");
-  }
-  const contentBlocks = value.content as Array<Record<string, unknown>>;
+  const message = requireAnthropicMessageEnvelope(
+    value,
+    "Anthropic Messages returned an invalid message envelope.",
+  );
+  const contentBlocks = requireAnthropicContentBlocks(message.content);
   const text = textFromAnthropicContent(contentBlocks);
   const contextUsage = anthropicContextUsage(
-    value.usage,
+    message.usage,
     contextWindowTokens,
   );
-  const seenToolCallIds = new Set<string>();
-  const toolCalls = contentBlocks.flatMap((block): ModelToolCall[] => {
-    if (block.type !== "tool_use") return [];
-    const id = requireUniqueToolCallId(block.id, seenToolCallIds);
-    if (typeof block.name !== "string" || !block.name.trim()) {
-      throw new Error(
-        "Anthropic Messages returned a tool_use with a missing or empty name.",
-      );
-    }
-    if (!isRecord(block.input)) {
-      throw new Error("Anthropic Messages returned a tool_use with invalid input.");
-    }
-    return [{
-      id,
-      name: block.name,
-      arguments: JSON.stringify(block.input),
-    }];
-  });
+  const stopReason = requireAnthropicStopReason(message.stop_reason);
   const citations = citationsFromAnthropicContent(contentBlocks);
   const hostedWebSearches = completedAnthropicWebSearches(
     contentBlocks,
     priorSearchCalls,
   );
-  assertCompleteAnthropicStopReason(value.stop_reason, toolCalls.length);
-  if (!text && !toolCalls.length) {
+  if (
+    stopReason === "max_tokens" ||
+    stopReason === "model_context_window_exceeded"
+  ) {
+    if (stopReason === "max_tokens" && contentBlocks.length === 0) {
+      throw new Error(
+        "Anthropic Messages reached its output-token limit without replayable content.",
+      );
+    }
+    if (stopReason === "max_tokens" && hasPartialServerInput) {
+      return {
+        content: text || null,
+        toolCalls: [],
+        termination: { reason: "output_limit" },
+        ...(citations.length ? { citations } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
+        ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
+      };
+    }
+    if (stopReason === "max_tokens" &&
+      !contentBlocks.some((block) => block.type === "tool_use") &&
+      hasUnresolvedAnthropicServerTool(contentBlocks)) {
+      return {
+        content: text || null,
+        toolCalls: [],
+        termination: { reason: "output_limit" },
+        ...(citations.length ? { citations } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
+        ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
+      };
+    }
+    return {
+      content: text || null,
+      toolCalls: [],
+      ...(stopReason === "max_tokens"
+        ? {
+            continuation: { reason: "output_limit" as const },
+            providerState: anthropicProviderState(
+              contentBlocks,
+              {
+                outputLimited: true,
+                partialToolInputs,
+              },
+            ),
+          }
+        : { termination: { reason: "context_limit" as const } }),
+      ...(citations.length ? { citations } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
+      ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
+    };
+  }
+  const toolCalls = contentBlocks.flatMap((block): ModelToolCall[] => {
+    if (block.type !== "tool_use") return [];
+    return [{
+      id: block.id as string,
+      name: block.name as string,
+      arguments: JSON.stringify(block.input),
+    }];
+  });
+  assertCompleteAnthropicStopReason(stopReason, toolCalls.length);
+  const assistantContent = text || (
+    stopReason === "refusal" ? "The model refused this request." : ""
+  );
+  if (!assistantContent && !toolCalls.length) {
     throw new Error("Anthropic Messages returned an empty response.");
   }
   return {
-    content: text || null,
+    content: assistantContent || null,
     toolCalls,
     ...(citations.length ? { citations } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(hostedWebSearches.length ? { hostedWebSearches } : {}),
-    providerState: {
-      kind: "anthropic-messages",
-      content: cloneJsonValue(contentBlocks),
-    },
+    providerState: anthropicProviderState(contentBlocks),
+  };
+}
+
+function hasUnresolvedAnthropicServerTool(
+  content: readonly AnthropicContentBlock[],
+): boolean {
+  const resultIds = new Set(content.flatMap((block) =>
+    typeof block.type === "string" && block.type.endsWith("_tool_result") &&
+        typeof block.tool_use_id === "string"
+      ? [block.tool_use_id]
+      : []
+  ));
+  return content.some((block) =>
+    block.type === "server_tool_use" &&
+    typeof block.id === "string" &&
+    !resultIds.has(block.id)
+  );
+}
+
+function anthropicProviderState(
+  content: readonly AnthropicContentBlock[],
+  options: {
+    outputLimited?: boolean;
+    partialToolInputs?: readonly AnthropicPartialToolInput[];
+  } = {},
+): Record<string, unknown> {
+  const partialToolInputs = options.partialToolInputs ?? [];
+  return {
+    kind: "anthropic-messages",
+    content: cloneJsonValue(content),
+    ...(options.outputLimited ? { outputLimited: true } : {}),
+    ...(partialToolInputs.length
+      ? { partialToolInputs: cloneJsonValue(partialToolInputs) }
+      : {}),
   };
 }
 
@@ -928,6 +1228,145 @@ function textFromAnthropicContent(
     .trim();
 }
 
+function requireAnthropicMessageEnvelope(
+  value: unknown,
+  errorMessage: string,
+): Record<string, unknown> & { content: unknown[] } {
+  if (!isRecord(value) || value.type !== "message" ||
+    value.role !== "assistant" || !Array.isArray(value.content)) {
+    throw new Error(errorMessage);
+  }
+  return value as Record<string, unknown> & { content: unknown[] };
+}
+
+function requireAnthropicContentBlocks(value: unknown[]): AnthropicContentBlock[] {
+  const blocks = value.map(requireAnthropicContentBlock);
+  const seenToolCallIds = new Set<string>();
+  for (const block of blocks) {
+    if (block.type === "tool_use") {
+      requireUniqueToolCallId(block.id, seenToolCallIds);
+    }
+  }
+  return blocks;
+}
+
+function requireAnthropicContentBlock(value: unknown): AnthropicContentBlock {
+  if (!isRecord(value) || typeof value.type !== "string" || !value.type) {
+    throw new Error("Anthropic Messages returned an invalid content block.");
+  }
+  switch (value.type) {
+    case "text":
+      if (typeof value.text !== "string" ||
+        (value.citations !== undefined && value.citations !== null &&
+          (!Array.isArray(value.citations) ||
+            !value.citations.every(isRecord)))) {
+        throw invalidAnthropicContentBlock("text");
+      }
+      for (const citation of Array.isArray(value.citations) ? value.citations : []) {
+        requireAnthropicCitation(citation);
+      }
+      break;
+    case "thinking":
+      if (typeof value.thinking !== "string" || typeof value.signature !== "string") {
+        throw invalidAnthropicContentBlock("thinking");
+      }
+      break;
+    case "redacted_thinking":
+      if (typeof value.data !== "string") {
+        throw invalidAnthropicContentBlock("redacted_thinking");
+      }
+      break;
+    case "tool_use":
+      if (typeof value.id !== "string" || !value.id.trim()) {
+        throw new Error(
+          "Anthropic Messages returned a tool call ID that was missing or empty.",
+        );
+      }
+      if (typeof value.name !== "string" || !value.name.trim()) {
+        throw new Error(
+          "Anthropic Messages returned a tool_use with a missing or empty name.",
+        );
+      }
+      if (!isRecord(value.input)) {
+        throw new Error("Anthropic Messages returned a tool_use with invalid input.");
+      }
+      break;
+    case "server_tool_use":
+      if (typeof value.id !== "string" || !value.id.trim() ||
+        typeof value.name !== "string" || !value.name.trim() ||
+        !isRecord(value.input)) {
+        throw invalidAnthropicContentBlock("server_tool_use");
+      }
+      break;
+    case "web_search_tool_result":
+      if (typeof value.tool_use_id !== "string" || !value.tool_use_id.trim() ||
+        !isAnthropicWebSearchResultContent(value.content)) {
+        throw invalidAnthropicContentBlock("web_search_tool_result");
+      }
+      requireAnthropicWebSearchResultContent(value.content);
+      break;
+  }
+  return value;
+}
+
+function requireAnthropicCitation(value: Record<string, unknown>): void {
+  if (typeof value.type !== "string" || !value.type) {
+    throw invalidAnthropicContentBlock("text");
+  }
+  if (value.type !== "web_search_result_location") return;
+  if (typeof value.url !== "string" || !value.url ||
+    (value.title !== undefined && value.title !== null &&
+      typeof value.title !== "string") ||
+    (value.cited_text !== undefined && typeof value.cited_text !== "string") ||
+    (value.encrypted_index !== undefined &&
+      typeof value.encrypted_index !== "string")) {
+    throw invalidAnthropicContentBlock("text");
+  }
+}
+
+function requireAnthropicWebSearchResultContent(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const result of value) {
+      if (!isRecord(result)) {
+        throw invalidAnthropicContentBlock("web_search_tool_result");
+      }
+      if (typeof result.type !== "string" || !result.type) {
+        throw invalidAnthropicContentBlock("web_search_tool_result");
+      }
+      if (result.type !== "web_search_result") continue;
+      if (typeof result.url !== "string" || !result.url ||
+        (result.title !== undefined && result.title !== null &&
+          typeof result.title !== "string") ||
+        (result.encrypted_content !== undefined &&
+          typeof result.encrypted_content !== "string") ||
+        (result.page_age !== undefined && result.page_age !== null &&
+          typeof result.page_age !== "string")) {
+        throw invalidAnthropicContentBlock("web_search_tool_result");
+      }
+    }
+    return;
+  }
+  if (!isRecord(value) || value.type !== "web_search_tool_result_error" ||
+    typeof value.error_code !== "string" || !value.error_code) {
+    throw invalidAnthropicContentBlock("web_search_tool_result");
+  }
+}
+
+function requireAnthropicDeltaBlock(
+  block: AnthropicContentBlock,
+  expected: string | readonly string[],
+  deltaType: string,
+): void {
+  const expectedTypes = typeof expected === "string" ? [expected] : expected;
+  if (!expectedTypes.includes(String(block.type))) {
+    throw new Error(`Anthropic stream returned an invalid ${deltaType} event.`);
+  }
+}
+
+function invalidAnthropicContentBlock(type: string): Error {
+  return new Error(`Anthropic Messages returned an invalid ${type} content block.`);
+}
+
 function requireUniqueToolCallId(value: unknown, seen: Set<string>): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("Anthropic Messages returned a tool call ID that was missing or empty.");
@@ -939,8 +1378,36 @@ function requireUniqueToolCallId(value: unknown, seen: Set<string>): string {
   return value;
 }
 
+type AnthropicTerminalStopReason =
+  | "end_turn"
+  | "max_tokens"
+  | "model_context_window_exceeded"
+  | "pause_turn"
+  | "refusal"
+  | "stop_sequence"
+  | "tool_use";
+
+function requireAnthropicStopReason(value: unknown): AnthropicTerminalStopReason {
+  switch (value) {
+    case "end_turn":
+    case "max_tokens":
+    case "model_context_window_exceeded":
+    case "pause_turn":
+    case "refusal":
+    case "stop_sequence":
+    case "tool_use":
+      return value;
+  }
+  if (typeof value === "string") {
+    throw new Error("Anthropic Messages returned an unsupported stop_reason.");
+  }
+  throw new Error(
+    "Anthropic Messages stop_reason was missing before completion.",
+  );
+}
+
 function assertCompleteAnthropicStopReason(
-  value: unknown,
+  value: AnthropicTerminalStopReason,
   toolCallCount: number,
 ): void {
   if (value === "tool_use") {
@@ -951,7 +1418,11 @@ function assertCompleteAnthropicStopReason(
     }
     return;
   }
-  if (value === "end_turn" || value === "stop_sequence") {
+  if (
+    value === "end_turn" ||
+    value === "refusal" ||
+    value === "stop_sequence"
+  ) {
     if (toolCallCount > 0) {
       throw new Error(
         "Anthropic Messages returned tool_use blocks with a non-tool stop_reason.",
@@ -959,12 +1430,7 @@ function assertCompleteAnthropicStopReason(
     }
     return;
   }
-  if (typeof value === "string") {
-    throw new Error("Anthropic Messages returned an unsupported stop_reason.");
-  }
-  throw new Error(
-    "Anthropic Messages stop_reason was missing before completion.",
-  );
+  throw new Error("Anthropic Messages returned an incomplete stop_reason.");
 }
 
 function anthropicThinking(
@@ -1005,14 +1471,61 @@ function anthropicStateMessages(
   ) {
     const continuationContent = Array.isArray(state.continuationContent) &&
         state.continuationContent.every(Array.isArray)
-      ? cloneJsonValue(state.continuationContent) as AnthropicContentBlock[][]
+      ? state.continuationContent.map((content) =>
+          cloneJsonValue(requireAnthropicContentBlocks(content))
+        )
       : [];
     return [
       ...continuationContent,
-      cloneJsonValue(state.content) as AnthropicContentBlock[],
+      cloneJsonValue(requireAnthropicContentBlocks(state.content)),
     ];
   }
   return undefined;
+}
+
+function anthropicContinuationUserContent(
+  message: Extract<ModelConversationMessage, { role: "assistant" }>,
+  content: readonly AnthropicContentBlock[],
+): AnthropicContentBlock[] {
+  const state = message.providerState;
+  if (!isRecord(state) || state.kind !== "anthropic-messages" ||
+    state.outputLimited !== true) {
+    return [];
+  }
+  if (state.partialToolInputs !== undefined &&
+    !Array.isArray(state.partialToolInputs)) {
+    throw new Error("Anthropic Messages output-limit replay state is invalid.");
+  }
+  const partialByIndex = new Map<number, string>();
+  for (const value of state.partialToolInputs ?? []) {
+    if (!isRecord(value) || !Number.isSafeInteger(value.index) ||
+      (value.index as number) < 0 || typeof value.partialJson !== "string" ||
+      partialByIndex.has(value.index as number)) {
+      throw new Error("Anthropic Messages output-limit replay state is invalid.");
+    }
+    partialByIndex.set(value.index as number, value.partialJson);
+  }
+
+  const results: AnthropicToolResultBlock[] = [];
+  for (const [index, value] of content.entries()) {
+    if (value.type !== "tool_use") continue;
+    const partialJson = partialByIndex.get(index);
+    results.push({
+      type: "tool_result",
+      tool_use_id: value.id as string,
+      is_error: true,
+      content: partialJson === undefined
+        ? outputLimitToolError
+        : JSON.stringify({ INVALID_JSON: partialJson }),
+    });
+    partialByIndex.delete(index);
+  }
+  if (partialByIndex.size) {
+    throw new Error("Anthropic Messages output-limit replay state is invalid.");
+  }
+  return results.length
+    ? results
+    : [{ type: "text", text: outputLimitContinuationText }];
 }
 
 function mapAnthropicTool(
@@ -1103,25 +1616,32 @@ function finalizeToolInput(
     throw new Error(`Anthropic stream ended unknown tool block ${index}.`);
   }
   try {
-    block.input = fragment ? JSON.parse(fragment) as unknown : {};
+    const input = fragment ? JSON.parse(fragment) as unknown : {};
+    if (!isRecord(input)) throw new Error("invalid tool input");
+    block.input = input;
   } catch {
     throw new Error(`Anthropic stream returned invalid tool input for block ${index}.`);
   }
   fragments.delete(index);
 }
 
-function anthropicStreamError(event: Record<string, unknown>): Error {
-  const error = isRecord(event.error) ? event.error : undefined;
-  switch (error?.type) {
-    case "overloaded_error":
-    case "rate_limit_error":
-    case "api_error":
-    case "timeout_error":
-      return new ModelRetryableError(
-        "Anthropic stream reported a retryable failure.",
-      );
+function anthropicProviderError(
+  envelope: Record<string, unknown>,
+  label: string,
+): Error {
+  const error = safeAnthropicErrorObject(envelope.error);
+  const diagnostic = anthropicErrorDiagnostic(error);
+  if (isAnthropicSpendLimitError(error)) {
+    return new Error(
+      `${label} account usage limit was reached.${diagnostic}`,
+    );
   }
-  return new Error("Anthropic stream error.");
+  if (isAnthropicRetryableError(error)) {
+    return new ModelRetryableError(
+      `${label} reported a retryable failure.${diagnostic}`,
+    );
+  }
+  return new Error(`${label} error.${diagnostic}`);
 }
 
 function firstNumber(

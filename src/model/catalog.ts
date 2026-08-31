@@ -5,7 +5,12 @@ import {
   isReasoningStrategy,
 } from "./profile.js";
 
-const discoveredModelKeys = new Set(["id", "displayName", "capabilities"]);
+const discoveredModelKeys = new Set([
+  "id",
+  "displayName",
+  "capabilities",
+  "providerReported",
+]);
 const capabilityKeys = new Set([
   "tools",
   "streaming",
@@ -23,6 +28,21 @@ const reasoningKeys = new Set([
   "budgetTokens",
   "strategy",
 ]);
+const providerReportedKeys = new Set(["inputs", "reasoning"]);
+const providerReportedInputKeys = new Set([
+  "inputModalities",
+  "supportsImages",
+  "supportsPdf",
+  "supportsVideo",
+  "supportedMimeTypes",
+]);
+const providerReportedReasoningKeys = new Set([
+  "supportsThinking",
+  "supportsAdaptiveThinking",
+  "thinkingBudget",
+  "minThinkingBudget",
+  "thinkingLevel",
+]);
 
 export const MAX_DISCOVERED_MODEL_COUNT = 1_000;
 export const MAX_DISCOVERED_MODEL_ID_CODE_POINTS = 256;
@@ -30,6 +50,8 @@ export const MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS = 256;
 export const MAX_MODEL_DISCOVERY_PAGE_COUNT = 20;
 export const MAX_DISCOVERED_MODEL_OUTPUT_TOKENS = 1_000_000;
 export const MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS = 10_000_000;
+export const MAX_PROVIDER_REPORTED_MIME_TYPE_COUNT = 128;
+export const MAX_PROVIDER_REPORTED_MODALITY_COUNT = 32;
 
 /** Decodes the one catalog shape shared by runtime selection, cache, and UI. */
 export function decodeDiscoveredModelCatalog(
@@ -51,7 +73,71 @@ function isDiscoveredModelInfo(value: unknown): value is DiscoveredModelInfo {
       value.displayName,
       MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS,
     ) &&
-    isModelCapabilityHints(value.capabilities);
+    isModelCapabilityHints(value.capabilities) &&
+    (value.providerReported === undefined ||
+      isProviderReportedModelMetadata(value.providerReported));
+}
+
+function isProviderReportedModelMetadata(value: unknown): boolean {
+  if (!isRecordWithOnlyKeys(value, providerReportedKeys)) return false;
+  if (value.inputs !== undefined) {
+    if (!isRecordWithOnlyKeys(value.inputs, providerReportedInputKeys)) return false;
+    const inputs = value.inputs;
+    for (const key of ["supportsImages", "supportsPdf", "supportsVideo"]) {
+      if (inputs[key] !== undefined && typeof inputs[key] !== "boolean") return false;
+    }
+    if (inputs.inputModalities !== undefined) {
+      if (!Array.isArray(inputs.inputModalities) ||
+        inputs.inputModalities.length > MAX_PROVIDER_REPORTED_MODALITY_COUNT ||
+        !inputs.inputModalities.every((item) =>
+          isBoundedDisplayString(item, MAX_DISCOVERED_MODEL_ID_CODE_POINTS)
+        ) ||
+        new Set(inputs.inputModalities).size !== inputs.inputModalities.length) {
+        return false;
+      }
+    }
+    if (inputs.supportedMimeTypes !== undefined &&
+      !isProviderReportedMimeTypes(inputs.supportedMimeTypes)) return false;
+  }
+  if (value.reasoning !== undefined) {
+    if (!isRecordWithOnlyKeys(value.reasoning, providerReportedReasoningKeys)) {
+      return false;
+    }
+    const reasoning = value.reasoning;
+    for (const key of ["supportsThinking", "supportsAdaptiveThinking"]) {
+      if (reasoning[key] !== undefined && typeof reasoning[key] !== "boolean") {
+        return false;
+      }
+    }
+    for (const key of ["thinkingBudget", "minThinkingBudget", "thinkingLevel"]) {
+      const number = reasoning[key];
+      if (number !== undefined &&
+        (!Number.isInteger(number) ||
+          (number as number) < -2_147_483_648 ||
+          (number as number) > 2_147_483_647)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function isProviderReportedMimeTypes(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const entries = Object.entries(value);
+  return entries.length <= MAX_PROVIDER_REPORTED_MIME_TYPE_COUNT &&
+    entries.every(([mimeType, supported]) =>
+      typeof supported === "boolean" &&
+      isBoundedDisplayString(
+        mimeType,
+        MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
+      ) &&
+      !/\s/u.test(mimeType) &&
+      mimeType.indexOf("/") > 0 &&
+      mimeType.indexOf("/") < mimeType.length - 1
+    );
 }
 
 /** Canonical model ID rule shared by provider decoders and catalog decoding. */

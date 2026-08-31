@@ -4,6 +4,7 @@ import type {
   RuntimeProfile,
   RuntimeModelSource,
 } from "./provider.js";
+import { inputTransportSupport } from "./input-support.js";
 
 export const HOSTED_WEB_SEARCH_REQUEST_MAX_USES = 20;
 export const HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND = 20;
@@ -38,11 +39,7 @@ export function isHostedWebSearchRequestMaxUses(value: number): boolean {
 }
 
 export function supportsAudioInputDelivery(runtime: RuntimeProfile): boolean {
-  const connection = runtime.profile.connection;
-  const protocolSupportsAudio = connection.kind === "direct-api" &&
-    connection.apiFamily === "openai" &&
-    connection.apiMode === "chat-completions";
-  return protocolSupportsAudio &&
+  return inputTransportSupport(runtime.profile.connection).audio &&
     runtime.capabilities.inputs.audio &&
     runtime.inputCapabilityEvidence.audio === "supported";
 }

@@ -88,6 +88,8 @@ export interface ModelTurn {
   contextUsage?: ModelContextUsage;
   /** The provider returned replayable state but needs another model turn to finish. */
   continuation?: { reason: "output_limit" };
+  /** The provider returned a valid partial turn that cannot safely continue. */
+  termination?: { reason: "context_limit" | "output_limit" };
   citations?: ModelCitation[];
   /** Terminal provider-hosted Web Search actions in this model turn. */
   hostedWebSearches?: ModelHostedWebSearch[];

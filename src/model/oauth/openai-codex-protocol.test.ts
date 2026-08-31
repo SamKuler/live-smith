@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { ReadableStream } from "node:stream/web";
+import { TextEncoder } from "node:util";
 import test from "node:test";
 
 import type { OAuthCredential } from "../../storage/oauth-credentials.js";
@@ -99,7 +101,7 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
               { effort: "high", description: "Deep" },
             ],
             context_window: 272_000,
-            input_modalities: ["text", "image"],
+            input_modalities: ["text", "image", "audio", "pdf"],
           },
           {
             slug: "gpt-subscription-only",
@@ -148,7 +150,10 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
           budgetTokens: false,
           strategy: "effort",
         },
-        inputs: { image: true, audio: false, pdf: false },
+        inputs: { image: true, audio: false, pdf: true },
+      },
+      providerReported: {
+        inputs: { inputModalities: ["text", "image", "audio", "pdf"] },
       },
     },
     {
@@ -435,6 +440,359 @@ test("ChatGPT OAuth preserves incomplete and contradictory terminal semantics", 
   );
 });
 
+test("ChatGPT OAuth answers a truncated function call before continuing", async () => {
+  const requestBodies: Array<Record<string, unknown>> = [];
+  let requestNumber = 0;
+  const partialCall = {
+    id: "fc-codex-incomplete",
+    type: "function_call",
+    call_id: "call-codex-incomplete",
+    name: "inspect_live_set",
+    arguments: "{",
+    status: "incomplete",
+  };
+  const secondPartialCall = {
+    id: "fc-codex-incomplete-2",
+    type: "function_call",
+    call_id: "call-codex-incomplete-2",
+    name: "inspect_live_set",
+    arguments: "{\"track",
+    status: "incomplete",
+  };
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      requestNumber += 1;
+      return requestNumber === 1
+        ? streamResponse([{
+          type: "response.output_item.done",
+          output_index: 0,
+          item: partialCall,
+        }, {
+          type: "response.output_item.done",
+          output_index: 1,
+          item: secondPartialCall,
+        }, {
+            type: "response.incomplete",
+            response: { incomplete_details: { reason: "max_output_tokens" } },
+          }])
+        : streamResponse([{
+            type: "response.output_item.done",
+            output_index: 0,
+            item: {
+              id: "message-codex-completed",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "Done", annotations: [] }],
+            },
+          }, {
+            type: "response.completed",
+            response: { status: "completed", output: [] },
+          }]);
+    },
+  });
+  const first = await protocol.createToolTurn(request(), credential);
+  assert.deepEqual(first.toolCalls, []);
+  assert.equal(
+    (first.providerState as { outputLimited?: unknown }).outputLimited,
+    true,
+  );
+  const next = request();
+  next.agentMessages = [{
+    role: "assistant",
+    content: first.content,
+    toolCalls: first.toolCalls,
+    providerState: first.providerState,
+  }];
+
+  await protocol.createToolTurn(next, credential);
+
+  const secondInput = requestBodies[1]?.input as Array<Record<string, unknown>>;
+  assert.deepEqual(secondInput.slice(-4), [
+    partialCall,
+    secondPartialCall,
+    {
+      type: "function_call_output",
+      call_id: "call-codex-incomplete",
+      output:
+        "Function call was not executed because the model response reached its output-token limit.",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call-codex-incomplete-2",
+      output:
+        "Function call was not executed because the model response reached its output-token limit.",
+    },
+  ]);
+});
+
+test("ChatGPT OAuth rejects duplicate call IDs in incomplete output", async () => {
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => streamResponse([{
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: "fc-duplicate-1",
+        type: "function_call",
+        call_id: "duplicate-call",
+        name: "inspect_live_set",
+        arguments: "{",
+        status: "incomplete",
+      },
+    }, {
+      type: "response.output_item.done",
+      output_index: 1,
+      item: {
+        id: "fc-duplicate-2",
+        type: "function_call",
+        call_id: "duplicate-call",
+        name: "inspect_live_set",
+        arguments: "{",
+        status: "incomplete",
+      },
+    }, {
+      type: "response.incomplete",
+      response: { incomplete_details: { reason: "max_output_tokens" } },
+    }]),
+  });
+
+  await assert.rejects(
+    protocol.createToolTurn(request(), credential),
+    /duplicate tool call ID/u,
+  );
+});
+
+test("ChatGPT OAuth rejects success terminals after an error event", async () => {
+  const sentinel = "codex-private-contradictory-error";
+  for (const eventType of ["response.completed", "response.incomplete"] as const) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([{
+        type: "error",
+        code: "provider_failure",
+        message: sentinel,
+      }, {
+        type: eventType,
+        response: {
+          ...(eventType === "response.incomplete"
+            ? { incomplete_details: { reason: "max_output_tokens" } }
+            : {}),
+          output: [{
+            id: "message-after-error",
+            type: "message",
+            role: "assistant",
+            status: eventType === "response.completed" ? "completed" : "incomplete",
+            content: [{ type: "output_text", text: "must not survive", annotations: [] }],
+          }],
+        },
+      }]),
+    });
+
+    await assert.rejects(
+      protocol.createToolTurn(request(), credential),
+      (error: unknown) => {
+        assert.match(String(error), /terminal response after an error event/u);
+        assert.doesNotMatch(String(error), new RegExp(sentinel));
+        return true;
+      },
+    );
+  }
+});
+
+test("ChatGPT OAuth shares strict terminal Web Search and citation decoding", async () => {
+  const malformedItems = [{
+    id: "search-invalid-status",
+    type: "web_search_call",
+    status: "in_progress",
+    action: { type: "search", query: "Ableton" },
+  }, {
+    id: "message-invalid-citation",
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [{
+      type: "output_text",
+      text: "Done",
+      annotations: [{ type: "url_citation", url: 42 }],
+    }],
+  }];
+  for (const item of malformedItems) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([{
+        type: "response.output_item.done",
+        output_index: 0,
+        item,
+      }, {
+        type: "response.completed",
+        response: { status: "completed", output: [] },
+      }]),
+    });
+    await assert.rejects(
+      protocol.createToolTurn(request(), credential),
+      /invalid (?:web_search_call|url_citation)/u,
+    );
+  }
+});
+
+test("ChatGPT OAuth shares incomplete message-role and Web Search replay validation", async () => {
+  const validSearch = {
+    id: "search-codex-in-progress",
+    type: "web_search_call",
+    status: "in_progress",
+    action: { type: "search", query: "Ableton", sources: [] },
+  };
+  const validProtocol = createOpenAICodexProtocol({
+    fetchImpl: async () => streamResponse([{
+      type: "response.output_item.done",
+      output_index: 0,
+      item: validSearch,
+    }, {
+      type: "response.incomplete",
+      response: { incomplete_details: { reason: "max_output_tokens" } },
+    }]),
+  });
+
+  const turn = await validProtocol.createToolTurn(request(), credential);
+
+  assert.deepEqual(turn.continuation, { reason: "output_limit" });
+  assert.equal(turn.hostedWebSearches, undefined);
+  assert.deepEqual(
+    (turn.providerState as { output: unknown[] }).output,
+    [validSearch],
+  );
+
+  for (const item of [{
+    id: "message-codex-invalid-role",
+    type: "message",
+    role: "user",
+    status: "incomplete",
+    content: [{ type: "output_text", text: "must not survive", annotations: [] }],
+  }, {
+    ...validSearch,
+    action: { type: "search", query: 42 },
+  }]) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([{
+        type: "response.output_item.done",
+        output_index: 0,
+        item,
+      }, {
+        type: "response.incomplete",
+        response: { incomplete_details: { reason: "max_output_tokens" } },
+      }]),
+    });
+    await assert.rejects(
+      protocol.createToolTurn(request(), credential),
+      /invalid (?:message role|web_search_call)/u,
+    );
+  }
+});
+
+test("ChatGPT OAuth preserves refusal events and unknown object output for replay", async () => {
+  const sentinel = "codex-private-refusal-metadata";
+  const deltas: string[] = [];
+  const refusalItem = {
+    type: "message",
+    role: "assistant",
+    content: [
+      { type: "refusal", refusal: "I cannot help with that request." },
+      { type: "future_private_part", private_metadata: sentinel },
+    ],
+  };
+  const unknownOutputItem = {
+    type: "future_output_item",
+    opaque_state: sentinel,
+  };
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => streamResponse([
+      {
+        type: "response.refusal.delta",
+        delta: "I cannot ",
+        private_metadata: sentinel,
+      },
+      {
+        type: "response.refusal.delta",
+        delta: "help with that request.",
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: refusalItem,
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 1,
+        item: unknownOutputItem,
+      },
+      {
+        type: "response.completed",
+        response: { status: "completed", output: [] },
+      },
+    ]),
+  });
+  const req = request();
+  req.onDelta = (delta) => { deltas.push(delta); };
+
+  const turn = await protocol.createToolTurn(req, credential);
+
+  assert.equal(turn.content, "I cannot help with that request.");
+  assert.deepEqual(deltas, ["I cannot ", "help with that request."]);
+  assert.deepEqual(
+    (turn.providerState as { output: unknown[] }).output,
+    [refusalItem, unknownOutputItem],
+  );
+  assert.doesNotMatch(turn.content ?? "", new RegExp(sentinel));
+});
+
+test("ChatGPT OAuth rejects malformed known visible delta events", async () => {
+  for (const type of ["response.output_text.delta", "response.refusal.delta"]) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([{
+        type,
+        delta: { private_value: "do-not-expose" },
+      }]),
+    });
+    const req = request();
+    req.onDelta = () => {};
+
+    await assert.rejects(
+      protocol.createToolTurn(req, credential),
+      (error: unknown) => {
+        assert.match(String(error), /invalid visible text delta/i);
+        assert.doesNotMatch(String(error), /do-not-expose/u);
+        return true;
+      },
+      type,
+    );
+  }
+});
+
+test("ChatGPT OAuth rejects non-object terminal output items", async () => {
+  const sentinel = "codex-private-primitive-output";
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => streamResponse([{
+      type: "response.completed",
+      response: {
+        status: "completed",
+        output: [{
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Safe text" }],
+        }, sentinel],
+      },
+    }]),
+  });
+
+  await assert.rejects(
+    protocol.createToolTurn(request(), credential),
+    (error: unknown) => {
+      assert.match(String(error), /non-object output item/i);
+      assert.doesNotMatch(String(error), new RegExp(sentinel));
+      return true;
+    },
+  );
+});
+
 test("ChatGPT OAuth preserves the first Codex turn state across reconnect", async () => {
   const requestHeaders: Headers[] = [];
   let requestNumber = 0;
@@ -533,6 +891,56 @@ test("ChatGPT OAuth classifies transient HTTP generation failures", async () => 
   }
 });
 
+test("ChatGPT OAuth decodes bounded headerless HTTP errors", async () => {
+  const sentinel = "codex-private-headerless-error";
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    error: {
+      code: "invalid_prompt",
+      type: "invalid_request_error",
+      message: sentinel,
+    },
+  }));
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }) as never, { status: 400 }),
+  });
+
+  await assert.rejects(protocol.createToolTurn(request(), credential), (failure: unknown) => {
+    assert.ok(failure instanceof Error);
+    assert.equal(failure instanceof ModelRetryableError, false);
+    assert.match(
+      failure.message,
+      /HTTP 400.*rejected.*code=invalid_prompt; type=invalid_request_error/u,
+    );
+    assert.doesNotMatch(failure.message, new RegExp(sentinel));
+    return true;
+  });
+});
+
+test("ChatGPT OAuth cancels a hanging headerless HTTP error body", {
+  timeout: 2_000,
+}, async () => {
+  let cancelled = false;
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    }) as never, { status: 503 }),
+  });
+
+  await assert.rejects(protocol.createToolTurn(request(), credential), (failure: unknown) => {
+    assert.ok(failure instanceof ModelRetryableError);
+    assert.match(failure.message, /HTTP 503/u);
+    return true;
+  });
+  assert.equal(cancelled, true);
+});
+
 test("ChatGPT OAuth replays turn state captured from a retryable HTTP response", async () => {
   const requestHeaders: Headers[] = [];
   let calls = 0;
@@ -606,6 +1014,7 @@ test("ChatGPT OAuth classifies response failures after their error envelope", as
         assert.equal(failure instanceof ModelConnectionError, false);
         assert.equal(failure.retryAfterMs, 1_500);
         assert.match(failure.message, /ChatGPT Codex.*retryable/u);
+        assert.match(failure.message, new RegExp(`code=${code}`));
         assert.doesNotMatch(failure.message, /sensitive/u);
         return true;
       },
@@ -645,6 +1054,7 @@ test("ChatGPT OAuth keeps fatal response failure categories safe and actionable"
         assert.ok(failure instanceof Error);
         assert.equal(failure instanceof ModelRetryableError, false);
         assert.match(failure.message, expected);
+        assert.match(failure.message, new RegExp(`code=${code}`));
         assert.doesNotMatch(failure.message, /sensitive/u);
         return true;
       },
@@ -653,21 +1063,89 @@ test("ChatGPT OAuth keeps fatal response failure categories safe and actionable"
   }
 });
 
-test("ChatGPT OAuth retries an unterminated error envelope", async () => {
+test("ChatGPT OAuth treats failed envelopes without a safe code or type as malformed", async () => {
+  const sentinel = "codex-private-malformed-failure";
+  const malformedResponses: unknown[] = [
+    undefined,
+    null,
+    {},
+    { status: "failed" },
+    { status: "failed", error: "provider_failure" },
+    { status: "failed", error: {} },
+    { status: "failed", error: { code: "BAD-CODE", message: sentinel } },
+    { status: "completed", error: { code: "provider_failure" } },
+    { status: "failed", code: "provider_failure", message: sentinel },
+  ];
+  for (const response of malformedResponses) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([{
+        type: "response.failed",
+        ...(response === undefined ? {} : { response }),
+      }]),
+    });
+
+    await assert.rejects(
+      protocol.createToolTurn(request(), credential),
+      (failure: unknown) => {
+        assert.ok(failure instanceof Error);
+        assert.equal(failure instanceof ModelRetryableError, false);
+        assert.match(failure.message, /malformed failed response/u);
+        assert.doesNotMatch(failure.message, /BAD-CODE|provider_failure|private/u);
+        return true;
+      },
+    );
+  }
+});
+
+test("ChatGPT OAuth accepts a canonical type-only failed envelope", async () => {
+  const sentinel = "codex-private-type-only-failure";
   const protocol = createOpenAICodexProtocol({
     fetchImpl: async () => streamResponse([{
-      type: "error",
-      error: { code: "provider_failure", message: "sensitive upstream detail" },
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: { type: "server_error", message: sentinel },
+      },
     }]),
   });
 
   await assert.rejects(
     protocol.createToolTurn(request(), credential),
     (failure: unknown) => {
-      assert.ok(failure instanceof ModelConnectionError);
-      assert.match(failure.message, /without a terminal response/u);
-      assert.doesNotMatch(failure.message, /sensitive/u);
+      assert.ok(failure instanceof ModelRetryableError);
+      assert.match(failure.message, /type=server_error/u);
+      assert.doesNotMatch(failure.message, new RegExp(sentinel));
       return true;
     },
   );
+});
+
+test("ChatGPT OAuth preserves top-level and nested unterminated error envelopes", async () => {
+  for (const event of [{
+    type: "error",
+    code: "provider_failure",
+    message: "sensitive upstream detail",
+  }, {
+    type: "error",
+    error: {
+      code: "provider_failure",
+      type: "server_error",
+      message: "sensitive upstream detail",
+    },
+  }]) {
+    const protocol = createOpenAICodexProtocol({
+      fetchImpl: async () => streamResponse([event]),
+    });
+
+    await assert.rejects(
+      protocol.createToolTurn(request(), credential),
+      (failure: unknown) => {
+        assert.ok(failure instanceof ModelRetryableError);
+        assert.match(failure.message, /retryable failure.*code=provider_failure/u);
+        if ("error" in event) assert.match(failure.message, /type=server_error/u);
+        assert.doesNotMatch(failure.message, /sensitive/u);
+        return true;
+      },
+    );
+  }
 });

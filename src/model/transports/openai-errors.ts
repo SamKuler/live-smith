@@ -1,12 +1,18 @@
 import { ModelRetryableError } from "../connection-error.js";
 
+export interface OpenAIErrorDiagnostic {
+  code?: string;
+  type?: string;
+}
+
 interface OpenAIProviderFailureOptions {
   retryAfterMs?: number;
   unknownIsRetryable?: boolean;
 }
 
-const retryableCodes = new Set([
+const retryableCategories = new Set([
   "provider_failure",
+  "rate_limit_error",
   "rate_limit_exceeded",
   "request_timeout",
   "server_error",
@@ -15,7 +21,7 @@ const retryableCodes = new Set([
   "timeout",
 ]);
 
-const usageLimitCodes = new Set([
+const usageLimitCategories = new Set([
   "billing_error",
   "billing_hard_limit_reached",
   "billing_not_active",
@@ -32,7 +38,7 @@ const usageLimitCodes = new Set([
   "usage_limit_reached",
 ]);
 
-const rejectedRequestCodes = new Set([
+const rejectedRequestCategories = new Set([
   "authentication_error",
   "bio_policy",
   "content_policy_violation",
@@ -48,42 +54,61 @@ export function openAIProviderFailure(
   label: string,
   options: OpenAIProviderFailureOptions = {},
 ): Error {
-  const code = openAIErrorCode(value);
-  if (code === "context_length_exceeded") {
-    return new Error(`${label} context window was exceeded.`);
+  const diagnostic = openAIErrorDiagnostic(value);
+  const categories = [diagnostic.code, diagnostic.type].filter(
+    (category): category is string => category !== undefined,
+  );
+  const fields = [
+    ...(diagnostic.code ? [`code=${diagnostic.code}`] : []),
+    ...(diagnostic.type ? [`type=${diagnostic.type}`] : []),
+  ];
+  const message = (summary: string): string => fields.length === 0
+    ? summary
+    : `${summary} [${fields.join("; ")}]`;
+  if (categories.includes("context_length_exceeded")) {
+    return new Error(message(`${label} context window was exceeded.`));
   }
-  if (code === "usage_not_included") {
-    return new Error(`${label} usage is not included for this account.`);
+  if (categories.includes("usage_not_included")) {
+    return new Error(message(`${label} usage is not included for this account.`));
   }
-  if (code && usageLimitCodes.has(code)) {
-    return new Error(`${label} account usage limit was reached.`);
+  if (categories.some((category) => usageLimitCategories.has(category))) {
+    return new Error(message(`${label} account usage limit was reached.`));
   }
-  if (code && rejectedRequestCodes.has(code)) {
-    return new Error(`${label} rejected the request.`);
+  if (categories.some((category) => rejectedRequestCategories.has(category))) {
+    return new Error(message(`${label} rejected the request.`));
   }
-  if (code && retryableCodes.has(code)) {
+  if (categories.some((category) => retryableCategories.has(category))) {
     return new ModelRetryableError(
-      `${label} reported a retryable failure.`,
+      message(`${label} reported a retryable failure.`),
       options.retryAfterMs,
     );
   }
   if (options.unknownIsRetryable) {
     return new ModelRetryableError(
-      `${label} reported a retryable failure.`,
+      message(`${label} reported a retryable failure.`),
       options.retryAfterMs,
     );
   }
-  return new Error(`${label} failed.`);
+  return new Error(message(`${label} failed.`));
 }
 
-export function openAIErrorCode(value: unknown): string | undefined {
+export function openAIErrorDiagnostic(value: unknown): OpenAIErrorDiagnostic {
   const record = isRecord(value) ? value : undefined;
   const error = isRecord(record?.error) ? record.error : record;
-  return typeof error?.code === "string"
-    ? error.code
-    : typeof error?.type === "string" && error.type !== "error"
-      ? error.type
-      : undefined;
+  const code = openAICanonicalErrorCode(error?.code);
+  const type = error?.type === "error"
+    ? undefined
+    : openAICanonicalErrorCode(error?.type);
+  return {
+    ...(code === undefined ? {} : { code }),
+    ...(type === undefined ? {} : { type }),
+  };
+}
+
+function openAICanonicalErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(value)
+    ? value
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -21,11 +21,11 @@ import {
 } from "./server-sent-events.js";
 import { readBoundedJsonResponse } from "./response-body.js";
 import {
-  openAIErrorCode,
+  openAIErrorDiagnostic,
   openAIProviderFailure,
 } from "./openai-errors.js";
+import { readBoundedProviderErrorJson } from "./provider-error-body.js";
 import { providerRetryAfterMs } from "./retry-after.js";
-import { cancelStreamBestEffort } from "./stream-cancel.js";
 
 type OpenAIResource = "/models" | "/chat/completions" | "/responses";
 
@@ -83,6 +83,7 @@ export async function* streamOpenAIEvents(
   resource: "/chat/completions" | "/responses",
   body: Record<string, unknown>,
   signal?: AbortSignal,
+  requireDone = false,
 ): AsyncGenerator<Record<string, unknown>> {
   const connection = requireDirectApiConnection(profile);
   const response = await fetchOpenAIResponse(
@@ -106,9 +107,7 @@ export async function* streamOpenAIEvents(
   for await (const data of parseServerSentEventData(response.body, signal)) {
     throwIfAborted(signal);
     if (data === "[DONE]") {
-      throw new Error(
-        "OpenAI-compatible stream sent [DONE] before its protocol terminal event.",
-      );
+      return;
     }
     let event: unknown;
     try {
@@ -120,6 +119,11 @@ export async function* streamOpenAIEvents(
       throw new Error("OpenAI-compatible endpoint returned a non-object event in its event stream.");
     }
     yield event;
+  }
+  if (requireDone) {
+    throw new ModelConnectionError(
+      "OpenAI-compatible stream ended before [DONE].",
+    );
   }
 }
 
@@ -195,57 +199,41 @@ async function assertOpenAIResponse(
   generationRequest = false,
 ): Promise<void> {
   if (response.ok) return;
-  if (response.status === 401) {
-    cancelStreamBestEffort(response.body, signal?.reason);
-    throwIfAborted(signal);
-    throw new ModelAuthenticationError("OpenAI-compatible HTTP 401: request failed");
-  }
-  if (!generationRequest) {
-    cancelStreamBestEffort(response.body, signal?.reason);
-    throwIfAborted(signal);
-    throw new Error(`OpenAI-compatible HTTP ${response.status}: request failed`);
-  }
+  const payload = await readBoundedProviderErrorJson(
+    response,
+    "OpenAI-compatible error response",
+    signal,
+  );
+  const label = `OpenAI-compatible HTTP ${response.status}`;
+  const diagnostic = openAIErrorDiagnostic(payload);
+  const hasDiagnostic = diagnostic.code !== undefined || diagnostic.type !== undefined;
   const retryAfterMs = providerRetryAfterMs(response.headers);
-  if (
+  if (response.status === 401) {
+    const failure = !hasDiagnostic
+      ? new Error(`${label}: request failed`)
+      : openAIProviderFailure(payload, label);
+    throw new ModelAuthenticationError(failure.message);
+  }
+  const retryableStatus = generationRequest && (
     response.status === 408 ||
     response.status === 409 ||
+    response.status === 429 ||
     response.status >= 500
-  ) {
-    cancelStreamBestEffort(response.body, signal?.reason);
-    throwIfAborted(signal);
+  );
+  if (hasDiagnostic) {
+    throw openAIProviderFailure(payload, label, {
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      ...(retryableStatus ? { unknownIsRetryable: true } : {}),
+    });
+  }
+  if (retryableStatus) {
     throw new ModelRetryableError(
-      `OpenAI-compatible HTTP ${response.status}: retryable failure`,
+      `${label}: retryable failure`,
       retryAfterMs,
     );
   }
-  const payload = await readOpenAIErrorPayload(response, signal);
-  if (response.status === 429) {
-    throw openAIProviderFailure(payload, "OpenAI-compatible endpoint", {
-      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-      unknownIsRetryable: true,
-    });
-  }
-  if (openAIErrorCode(payload) !== undefined) {
-    throw openAIProviderFailure(payload, "OpenAI-compatible endpoint");
-  }
   throwIfAborted(signal);
-  throw new Error(`OpenAI-compatible HTTP ${response.status}: request failed`);
-}
-
-async function readOpenAIErrorPayload(
-  response: Response,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  try {
-    return await readBoundedJsonResponse(response, {
-      label: "OpenAI-compatible error response",
-      maximumBytes: 64 * 1024,
-      ...(signal ? { signal } : {}),
-    });
-  } catch {
-    throwIfAborted(signal);
-    return undefined;
-  }
+  throw new Error(`${label}: request failed`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -250,6 +250,9 @@ export function resolveDiscoveredModels(
       displayName: model.displayName,
       capabilities: resolved.capabilities,
       capabilityEvidence: resolved.capabilityEvidence,
+      ...(model.providerReported === undefined
+        ? {}
+        : { providerReported: cloneJsonValue(model.providerReported) }),
     };
   });
 }

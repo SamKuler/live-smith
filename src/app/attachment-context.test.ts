@@ -35,6 +35,7 @@ function imageCapabilities(): ModelCapabilities {
 
 function runtimeProfile(input: {
   subscription?: boolean;
+  subscriptionProvider?: "openai" | "google";
   apiFamily?: "openai" | "anthropic";
   apiMode?: "responses" | "chat-completions" | "messages";
   image?: boolean;
@@ -72,7 +73,10 @@ function runtimeProfile(input: {
     ? {
         id: "profile-attachments",
         name: "Attachments",
-        connection: { kind: "oauth-subscription", provider: "openai" },
+        connection: {
+          kind: "oauth-subscription",
+          provider: input.subscriptionProvider ?? "openai",
+        },
         defaultModel: "test-model",
         models: [{
           model: "test-model",
@@ -520,6 +524,18 @@ test("current PDF context uses the saved Runtime Profile mode and preserves comp
     resolved.parts[1]?.type === "document" ? resolved.parts[1].fileName : "",
     "score.pdf",
   );
+
+  const antigravity = await resolveCurrentAttachmentParts({
+    storageDirectory: undefined,
+    sessionId,
+    refs: [pdf],
+    runtimeProfile: runtimeProfile({
+      subscription: true,
+      subscriptionProvider: "google",
+      pdf: true,
+    }),
+  });
+  assert.equal(antigravity.parts[0]?.type, "document");
 });
 
 test("current PDF context rejects disabled and Chat Profiles with profile_incompatible", async () => {
@@ -630,6 +646,19 @@ test("current audio context requires compatible saved Chat capability evidence b
     }),
     /cannot read audio attachments/i,
   );
+
+  const antigravity = await resolveCurrentAttachmentParts({
+    storageDirectory: directory,
+    sessionId,
+    refs: [stored],
+    runtimeProfile: runtimeProfile({
+      subscription: true,
+      subscriptionProvider: "google",
+      audio: true,
+      audioEvidence: "supported",
+    }),
+  });
+  assert.equal(antigravity.parts[0]?.type, "audio");
 });
 
 test("historical audio uses fixed incompatible, unavailable, and included outcomes", async () => {

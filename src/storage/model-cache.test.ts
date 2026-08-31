@@ -80,7 +80,18 @@ test("connection fingerprints isolate connection changes", () => {
 test("model cache is connection-fingerprint scoped without exposing identity", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
   const active = profile({ id: "profile/unsafe" });
-  const models: DiscoveredModelInfo[] = [{ id: "model-a", displayName: "A", capabilities }];
+  const models: DiscoveredModelInfo[] = [{
+    id: "model-a",
+    displayName: "A",
+    capabilities,
+    providerReported: {
+      inputs: {
+        supportsVideo: true,
+        supportedMimeTypes: { "video/mp4": true },
+      },
+      reasoning: { supportsThinking: true, thinkingBudget: -1 },
+    },
+  }];
   await saveModelCache(directory, active, models);
   assert.deepEqual(await loadModelCache(directory, active), models);
   assert.deepEqual(await loadModelCache(

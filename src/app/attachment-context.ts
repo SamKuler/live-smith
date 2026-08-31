@@ -16,7 +16,7 @@ import type {
   ModelInputPart,
 } from "../model/contracts.js";
 import type { RuntimeProfile } from "../model/provider.js";
-import { profileApiMode } from "../model/profile.js";
+import { inputTransportSupport } from "../model/input-support.js";
 import { supportsAudioInputDelivery } from "../model/tools.js";
 import { throwIfAborted } from "../runtime/host.js";
 import {
@@ -424,9 +424,8 @@ function historicalMarker(
 }
 
 function nativePdfAllowed(runtimeProfile: RuntimeProfile): boolean {
-  const apiMode = profileApiMode(runtimeProfile.profile);
   return runtimeProfile.capabilities.inputs.pdf &&
-    (apiMode === "responses" || apiMode === "messages");
+    inputTransportSupport(runtimeProfile.profile.connection).pdf;
 }
 
 function historicalPreflightMarker(

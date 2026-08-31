@@ -72,11 +72,30 @@ export type ModelCapabilityHints = Omit<
   inputs?: Partial<InputCapabilities>;
 };
 
+export interface ProviderReportedModelMetadata {
+  inputs?: {
+    inputModalities?: string[];
+    supportsImages?: boolean;
+    supportsPdf?: boolean;
+    supportsVideo?: boolean;
+    supportedMimeTypes?: Record<string, boolean>;
+  };
+  reasoning?: {
+    supportsThinking?: boolean;
+    supportsAdaptiveThinking?: boolean;
+    thinkingBudget?: number;
+    minThinkingBudget?: number;
+    thinkingLevel?: number;
+  };
+}
+
 export interface ModelInfo {
   id: string;
   displayName: string;
   capabilities: ModelCapabilities;
   capabilityEvidence: ModelCapabilityEvidence;
+  /** Bounded provider evidence that is informative but does not authorize input. */
+  providerReported?: ProviderReportedModelMetadata;
 }
 
 /** Credential-bearing connection identity without the persisted model collection. */
@@ -132,6 +151,8 @@ export interface DiscoveredModelInfo {
   id: string;
   displayName: string;
   capabilities: ModelCapabilityHints;
+  /** Bounded catalog evidence not representable as a usable capability. */
+  providerReported?: ProviderReportedModelMetadata;
 }
 
 export interface ModelFunctionTool {
@@ -191,6 +212,7 @@ export type OAuthAuthState =
       status: "pending";
       verificationUrl: string;
       userCode?: string;
+      authorizationCodeInput?: true;
       /** The current attempt remains valid, but the Host browser command failed. */
       browserLaunchFailed?: boolean;
     }
@@ -235,6 +257,10 @@ export interface OAuthSubscriptionBackend extends ModelBackendBase {
   beginLogin(signal?: AbortSignal): Promise<OAuthAuthState>;
   setPendingLoginBrowserLaunchFailed?(
     failed: boolean,
+    signal?: AbortSignal,
+  ): Promise<OAuthAuthState>;
+  submitLoginCode?(
+    code: string,
     signal?: AbortSignal,
   ): Promise<OAuthAuthState>;
   logout(signal?: AbortSignal): Promise<OAuthAuthState>;

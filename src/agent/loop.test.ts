@@ -279,6 +279,10 @@ test("runAgentLoop bounds repeated output-limit continuations", async () => {
         toolCalls: [],
         continuation: { reason: "output_limit" as const },
         providerState: { kind: "test", output: [calls] },
+        citations: [{
+          url: `https://example.test/partial-${calls}`,
+          title: `Partial ${calls}`,
+        }],
       };
     },
     observe: async () => "unused",
@@ -289,7 +293,15 @@ test("runAgentLoop bounds repeated output-limit continuations", async () => {
 
   assert.equal(calls, 3);
   assert.match(result.message, /2 automatic continuation attempts/i);
-  assert.equal(events.some((event) => event.kind === "assistant"), false);
+  assert.match(result.message, /partial-1partial-2partial-3/u);
+  assert.deepEqual(events.find((event) => event.kind === "assistant"), {
+    kind: "assistant",
+    content: "partial-1partial-2partial-3",
+    citations: [1, 2, 3].map((index) => ({
+      url: `https://example.test/partial-${index}`,
+      title: `Partial ${index}`,
+    })),
+  });
   assert.equal(events.at(-1)?.kind, "error");
 });
 
@@ -2704,6 +2716,69 @@ test("an unresolved Live rejection cannot silently end on stale assistant text",
   assert.match(result.message, /stopped with unfinished Live work/i);
   assert.match(result.message, /Failed to insert device/i);
   assert.notEqual(result.message, "Adding Drum Rack.");
+});
+
+test("model limit terminals preserve unresolved Live recovery context", async () => {
+  for (const limit of ["output", "context", "provider-output"] as const) {
+    let modelCalls = 0;
+    const result = await runAgentLoop({
+      maxConsecutiveFailures: 3,
+      ...(limit === "output" ? { maxModelContinuations: 0 } : {}),
+      askModel: async (): Promise<ModelTurn> => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            content: "Adding Drum Rack.",
+            toolCalls: [{
+              id: `drum-rack-${limit}`,
+              name: "apply_live_actions",
+              arguments: JSON.stringify({
+                message: "Add Drum Rack",
+                actions: [{
+                  type: "insert_device",
+                  trackName: "Drums",
+                  deviceName: "Drum Rack",
+                }],
+              }),
+            }],
+          };
+        }
+        return {
+          content: `Partial ${limit} response.`,
+          toolCalls: [],
+          ...(limit === "output"
+            ? {
+                continuation: { reason: "output_limit" as const },
+                providerState: { kind: "test-output-limit" },
+              }
+            : {
+                termination: {
+                  reason: limit === "context" ? "context_limit" as const : "output_limit" as const,
+                },
+              }),
+        };
+      },
+      observe: async () => 'Track "Drums" devices=none',
+      preflightActions: async () => async () => undefined,
+      confirmActions: async () => true,
+      executeActions: async (plan) => {
+        throw new AgentPartialCompletionError(
+          [],
+          new Error("Failed to insert device"),
+          0,
+          plan.actions[0],
+          "Drums",
+        );
+      },
+    });
+
+    assert.match(result.message, new RegExp(`Partial ${limit} response`, "u"));
+    assert.match(result.message, /stopped with unfinished Live work/i);
+    assert.match(result.message, /Failed to insert device/i);
+    if (limit === "provider-output") {
+      assert.match(result.message, /output-token limit.*provider-hosted tool/i);
+    }
+  }
 });
 
 test("a zero-mutation rejection is transient and a successful alternative clears it", async () => {

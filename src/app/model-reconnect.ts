@@ -9,8 +9,6 @@ import { throwIfAborted } from "../runtime/host.js";
 const reconnectDelaysMs = [500, 1_000, 2_000, 4_000, 8_000] as const;
 const reconnectAttemptLimit = reconnectDelaysMs.length;
 const maximumAutomaticRetryDelayMs = 300_000;
-const reconnectExhaustedMessage =
-  "Model connection was lost after 5 reconnect attempts.";
 
 export interface ModelReconnectAttempt {
   markResponseStarted(): Promise<void>;
@@ -72,7 +70,9 @@ export async function requestModelWithReconnect<T>(
       }
       if (reconnectAttempt >= reconnectAttemptLimit) {
         if (error instanceof ModelConnectionError) {
-          throw new Error(reconnectExhaustedMessage);
+          throw new Error(
+            `${error.message} Reconnect limit reached after ${reconnectAttemptLimit} attempts.`,
+          );
         }
         throw new Error(
           `${error.message} Retry limit reached after ${reconnectAttemptLimit} attempts.`,
@@ -82,16 +82,19 @@ export async function requestModelWithReconnect<T>(
       throwIfAborted(options.signal);
       reconnectAttempt += 1;
       retryKind = error instanceof ModelConnectionError ? "connection" : "provider";
+      const scheduledDelay = reconnectDelaysMs[reconnectAttempt - 1]!;
+      const retryDelayMs = Math.max(scheduledDelay, error.retryAfterMs ?? 0);
       await options.onProgress(
         retryKind === "connection"
-          ? `Model connection lost. Reconnecting (${reconnectAttempt}/${reconnectAttemptLimit})…`
-          : `Temporary model-provider failure. Retrying (${reconnectAttempt}/${reconnectAttemptLimit})…`,
+          ? `${error.message} Reconnecting ` +
+            `(${reconnectAttempt}/${reconnectAttemptLimit}) in ${retryDelayMs} ms…`
+          : `${error.message} Retrying ` +
+            `(${reconnectAttempt}/${reconnectAttemptLimit}) in ${retryDelayMs} ms…`,
       );
       throwIfAborted(options.signal);
       try {
-        const scheduledDelay = reconnectDelaysMs[reconnectAttempt - 1]!;
         await (options.waitForDelay ?? waitForReconnectDelay)(
-          Math.max(scheduledDelay, error.retryAfterMs ?? 0),
+          retryDelayMs,
           options.signal,
         );
       } catch (error) {

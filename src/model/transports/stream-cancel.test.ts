@@ -38,7 +38,7 @@ const anthropicProfile: RuntimeProfileIdentity = {
   },
 };
 
-test("non-2xx provider responses do not wait for body cancellation", async (t) => {
+test("non-2xx provider response cleanup remains nonblocking", async (t) => {
   await t.test("OpenAI", async () => {
     const stream = neverSettlingCancelStream();
     const response = new Response(stream.body as never, { status: 503 });

@@ -10,6 +10,7 @@ import {
   MAX_REQUEST_IMAGE_ATTACHMENT_BYTES,
 } from "../../attachments/contracts.js";
 import type { ModelInputPart } from "../contracts.js";
+import { isModelInputMediaType } from "../input-support.js";
 import type { TransportRequest } from "../provider.js";
 
 const MAX_BINARY_BASE64_CHARACTERS =
@@ -82,13 +83,8 @@ export function assertBinaryInputWithinLimits(
 function assertBinaryPartMediaType(
   part: Extract<ModelInputPart, { type: "image" | "document" | "audio" }>,
 ): void {
-  const valid = part.type === "image"
-    ? part.mediaType === "image/png" ||
-      part.mediaType === "image/jpeg" ||
-      part.mediaType === "image/webp"
-    : part.type === "document"
-      ? part.mediaType === "application/pdf"
-      : part.mediaType === "audio/wav" || part.mediaType === "audio/mpeg";
+  const kind = part.type === "document" ? "pdf" : part.type;
+  const valid = isModelInputMediaType(kind, part.mediaType);
   if (!valid) {
     throw new Error("Binary input has an invalid media type.");
   }

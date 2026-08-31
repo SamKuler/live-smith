@@ -1,6 +1,5 @@
 import {
   requireModelContextUsage,
-  type ModelToolCall,
   type ModelTurn,
 } from "../contracts.js";
 import { ModelConnectionError } from "../connection-error.js";
@@ -25,6 +24,8 @@ import { openAIProviderFailure } from "./openai-errors.js";
 import {
   buildOpenAIChatMessages,
   listOpenAIModels,
+  requireOpenAIChatAssistantMessage,
+  requireOpenAIChatToolCalls,
 } from "./openai-shared.js";
 import {
   allModelInputParts,
@@ -34,10 +35,12 @@ import {
 
 const protectedFields = [
   "model",
+  "n",
   "messages",
   "tools",
   "tool_choice",
   "stream",
+  "stream_options",
   "modalities",
   "audio",
 ] as const;
@@ -55,8 +58,11 @@ export function createOpenAIChatTransport(
       assertNoHostedWebSearch(request);
       assertNoPdfInput(request);
       assertBinaryInputWithinLimits(request);
-      const body = buildChatBody(request);
-      if (request.onDelta && request.runtimeProfile.capabilities.streaming) {
+      const streaming = Boolean(
+        request.onDelta && request.runtimeProfile.capabilities.streaming,
+      );
+      const body = buildChatBody(request, streaming);
+      if (streaming) {
         return streamChatTurn(request, body, fetchImpl);
       }
 
@@ -77,15 +83,23 @@ export function createOpenAIChatTransport(
       if (!choice) {
         throw new Error("OpenAI Chat Completions returned no message.");
       }
-      const turn = turnFromRawMessage(
-        choice.message,
-        "OpenAI Chat Completions",
-      );
-      assertCompleteChatFinishReason(choice.finish_reason, turn.toolCalls.length);
+      const finishReason = requireChatFinishReason(choice.finish_reason, false);
       const contextUsage = openAIChatContextUsage(
         completion,
         request.runtimeProfile.capabilities.contextWindowTokens,
       );
+      if (finishReason === "length") {
+        return outputLimitTurnFromRawMessage(
+          choice.message,
+          "OpenAI Chat Completions",
+          contextUsage,
+        );
+      }
+      const turn = turnFromRawMessage(
+        choice.message,
+        "OpenAI Chat Completions",
+      );
+      assertCompleteChatFinishReason(finishReason, turn.toolCalls.length);
       return {
         ...turn,
         ...(contextUsage ? { contextUsage } : {}),
@@ -99,10 +113,17 @@ function openAIChatContextUsage(
   value: unknown,
   contextWindowTokens: number | undefined,
 ): ModelTurn["contextUsage"] {
-  if (contextWindowTokens === undefined || !isRecord(value)) return undefined;
-  if (value.usage === undefined) return undefined;
-  const usage = isRecord(value.usage) ? value.usage : undefined;
-  return requireModelContextUsage(usage?.total_tokens, contextWindowTokens);
+  if (!isRecord(value) || value.usage === undefined || value.usage === null) {
+    return undefined;
+  }
+  if (!isRecord(value.usage) ||
+    !Number.isSafeInteger(value.usage.total_tokens) ||
+    (value.usage.total_tokens as number) < 0) {
+    throw new TypeError("OpenAI Chat Completions context usage is invalid.");
+  }
+  return contextWindowTokens === undefined
+    ? undefined
+    : requireModelContextUsage(value.usage.total_tokens, contextWindowTokens);
 }
 
 function assertNoHostedWebSearch(request: TransportRequest): void {
@@ -122,6 +143,7 @@ function assertNoPdfInput(request: TransportRequest): void {
 
 function buildChatBody(
   request: TransportRequest,
+  streaming: boolean,
 ): Record<string, unknown> {
   const runtime = request.runtimeProfile;
   if (!isDirectRuntimeModelSource(runtime)) {
@@ -131,8 +153,10 @@ function buildChatBody(
   const reasoning = model.parameters.reasoning;
   const generated: Record<string, unknown> = {
     model: model.model,
+    n: 1,
     messages: buildOpenAIChatMessages(request),
     max_completion_tokens: model.parameters.maxOutputTokens,
+    ...(streaming ? { stream_options: { include_usage: true } } : {}),
     ...(model.parameters.temperature !== undefined &&
     capabilities.temperature === "supported"
       ? { temperature: model.parameters.temperature }
@@ -162,11 +186,14 @@ async function streamChatTurn(
   fetchImpl: typeof fetch,
 ): Promise<ModelTurn> {
   const rawMessage: Record<string, unknown> = {
-    role: "assistant",
     content: null,
   };
+  let visibleContent = "";
+  let visibleContentKind: "content" | "refusal" | undefined;
   let content = "";
+  let refusal = "";
   let finishReason: unknown;
+  let contextUsage: ModelTurn["contextUsage"];
   const rawToolCalls = new Map<number, Record<string, unknown>>();
 
   for await (const chunk of streamOpenAIEvents(
@@ -175,24 +202,58 @@ async function streamChatTurn(
     "/chat/completions",
     body,
     request.signal,
+    true,
   )) {
     throwIfAborted(request.signal);
     if (isOpenAIChatError(chunk)) {
       throw openAIProviderFailure(chunk, "OpenAI Chat Completions");
     }
-    const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-    const choice = isRecord(choices[0]) ? choices[0] : undefined;
-    let reachedTerminal = false;
+    const chunkUsage = openAIChatContextUsage(
+      chunk,
+      request.runtimeProfile.capabilities.contextWindowTokens,
+    );
+    if (chunkUsage) contextUsage = chunkUsage;
+    const choice = streamedChatChoice(chunk);
     if (choice?.finish_reason !== undefined && choice.finish_reason !== null) {
+      if (finishReason !== undefined && finishReason !== choice.finish_reason) {
+        throw new Error(
+          "OpenAI Chat Completions returned conflicting finish reasons.",
+        );
+      }
       finishReason = choice.finish_reason;
-      reachedTerminal = true;
+    }
+    if (choice?.delta !== undefined && !isRecord(choice.delta)) {
+      throw new Error("OpenAI Chat Completions returned a malformed delta.");
     }
     const delta = choice && isRecord(choice.delta) ? choice.delta : undefined;
     if (delta) {
+      if (delta.role !== undefined) {
+        requireOpenAIChatAssistantMessage(delta, "OpenAI Chat Completions");
+        rawMessage.role = "assistant";
+      }
+      assertChatDeltaText(delta, "content");
+      assertChatDeltaText(delta, "refusal");
       if (typeof delta.content === "string" && delta.content) {
         content += delta.content;
+        if (visibleContentKind && visibleContentKind !== "content") {
+          visibleContent += "\n";
+          await request.onDelta?.("\n");
+        }
+        visibleContent += delta.content;
+        visibleContentKind = "content";
         rawMessage.content = content;
         await request.onDelta?.(delta.content);
+      }
+      if (typeof delta.refusal === "string" && delta.refusal) {
+        refusal += delta.refusal;
+        if (visibleContentKind && visibleContentKind !== "refusal") {
+          visibleContent += "\n";
+          await request.onDelta?.("\n");
+        }
+        visibleContent += delta.refusal;
+        visibleContentKind = "refusal";
+        rawMessage.refusal = refusal;
+        await request.onDelta?.(delta.refusal);
       }
       accumulateUnknownDelta(rawMessage, delta);
       const calls = toolCallsArray(delta.tool_calls, "OpenAI Chat Completions");
@@ -201,6 +262,10 @@ async function streamChatTurn(
           throw new Error("OpenAI Chat Completions returned a malformed tool call.");
         }
         // Compatible streams may omit OpenAI's per-call index while preserving order.
+        if (entry.index !== undefined &&
+          (!Number.isSafeInteger(entry.index) || (entry.index as number) < 0)) {
+          throw new Error("OpenAI Chat Completions returned an invalid tool call index.");
+        }
         const index = typeof entry.index === "number" ? entry.index : position;
         rawToolCalls.set(
           index,
@@ -208,37 +273,41 @@ async function streamChatTurn(
         );
       }
     }
-    if (reachedTerminal) break;
   }
 
-  if (finishReason === undefined) {
-    throw new ModelConnectionError(
-      "OpenAI Chat Completions finish_reason was missing before completion.",
-    );
-  }
+  const completedFinishReason = requireChatFinishReason(finishReason, true);
   const completedRawToolCalls = [...rawToolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, toolCall]) => toolCall);
-  const toolCalls = normalizedToolCalls(
+  if (completedRawToolCalls.length) {
+    rawMessage.tool_calls = completedRawToolCalls;
+  }
+  if (completedFinishReason === "length") {
+    return outputLimitTurnFromRawMessage(
+      rawMessage,
+      "OpenAI Chat Completions",
+      contextUsage,
+    );
+  }
+  requireOpenAIChatAssistantMessage(rawMessage, "OpenAI Chat Completions");
+  const toolCalls = requireOpenAIChatToolCalls(
     completedRawToolCalls,
     "OpenAI Chat Completions",
   );
   assertCompleteChatFinishReason(
     // Some compatible streams report stop after emitting complete tool calls.
-    finishReason === "stop" && toolCalls.length > 0
+    completedFinishReason === "stop" && toolCalls.length > 0
       ? "tool_calls"
-      : finishReason,
+      : completedFinishReason,
     toolCalls.length,
   );
-  if (completedRawToolCalls.length) {
-    rawMessage.tool_calls = completedRawToolCalls;
-  }
-  if (!content && !toolCalls.length) {
+  if (!visibleContent && !toolCalls.length) {
     throw new Error("OpenAI Chat Completions returned an empty response.");
   }
   return {
-    content: content || null,
+    content: visibleContent || null,
     toolCalls,
+    ...(contextUsage ? { contextUsage } : {}),
     providerState: { kind: "openai-chat", message: rawMessage },
   };
 }
@@ -250,12 +319,44 @@ function isOpenAIChatError(value: unknown): boolean {
 
 function chatCompletionChoice(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value) || !Array.isArray(value.choices)) return undefined;
+  if (value.choices.length > 1) {
+    throw new Error("OpenAI Chat Completions returned multiple choices.");
+  }
   const choice = value.choices[0];
   return isRecord(choice) ? choice : undefined;
 }
 
+function streamedChatChoice(
+  chunk: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (chunk.choices === undefined) return undefined;
+  if (!Array.isArray(chunk.choices)) {
+    throw new Error("OpenAI Chat Completions returned malformed choices.");
+  }
+  if (chunk.choices.length > 1) {
+    throw new Error("OpenAI Chat Completions returned multiple choices.");
+  }
+  const choice = chunk.choices[0];
+  if (choice !== undefined && !isRecord(choice)) {
+    throw new Error("OpenAI Chat Completions returned a malformed choice.");
+  }
+  return choice;
+}
+
+function assertChatDeltaText(
+  delta: Record<string, unknown>,
+  field: "content" | "refusal",
+): void {
+  const value = delta[field];
+  if (value !== undefined && value !== null && typeof value !== "string") {
+    throw new Error(
+      `OpenAI Chat Completions returned malformed delta ${field}.`,
+    );
+  }
+}
+
 function assertCompleteChatFinishReason(
-  value: unknown,
+  value: "stop" | "tool_calls",
   toolCallCount: number,
 ): void {
   if (value === "tool_calls") {
@@ -274,13 +375,38 @@ function assertCompleteChatFinishReason(
     }
     return;
   }
+}
+
+function requireChatFinishReason(
+  value: unknown,
+  missingIsConnectionFailure: boolean,
+): "stop" | "tool_calls" | "length" {
+  if (value === "stop" || value === "tool_calls" || value === "length") {
+    return value;
+  }
+  if (value === "content_filter") {
+    throw new Error(
+      "OpenAI Chat Completions response was blocked by content filtering.",
+    );
+  }
+  if (value === "function_call") {
+    throw new Error(
+      "OpenAI Chat Completions returned an unsupported legacy function_call finish reason.",
+    );
+  }
   if (typeof value === "string") {
     throw new Error(
       "OpenAI Chat Completions returned an unsupported finish_reason.",
     );
   }
+  if (value === undefined || value === null) {
+    const message =
+      "OpenAI Chat Completions finish_reason was missing before completion.";
+    if (missingIsConnectionFailure) throw new ModelConnectionError(message);
+    throw new Error(message);
+  }
   throw new Error(
-    "OpenAI Chat Completions finish_reason was missing before completion.",
+    "OpenAI Chat Completions returned an unsupported finish_reason.",
   );
 }
 
@@ -288,21 +414,63 @@ function turnFromRawMessage(
   value: unknown,
   label: string,
 ): ModelTurn {
-  if (!isRecord(value)) throw new Error(`${label} returned no message.`);
-  const content = typeof value.content === "string" && value.content.trim()
-    ? value.content
-    : null;
-  const rawCalls = toolCallsArray(value.tool_calls, label);
-  const toolCalls = normalizedToolCalls(rawCalls, label);
+  const message = requireOpenAIChatAssistantMessage(value, label);
+  const content = chatAssistantContent(message, label);
+  const toolCalls = requireOpenAIChatToolCalls(message.tool_calls, label);
   if (!content && !toolCalls.length) throw new Error(`${label} returned an empty response.`);
   return {
     content,
     toolCalls,
     providerState: {
       kind: "openai-chat",
-      message: cloneJsonValue(value),
+      message: cloneJsonValue(message),
     },
   };
+}
+
+function outputLimitTurnFromRawMessage(
+  value: unknown,
+  label: string,
+  contextUsage: ModelTurn["contextUsage"],
+): ModelTurn {
+  const message = requireOpenAIChatAssistantMessage(value, label);
+  requireOpenAIChatToolCalls(message.tool_calls, label, {
+    allowIncompleteArguments: true,
+  });
+  return {
+    content: chatAssistantContent(message, label),
+    toolCalls: [],
+    continuation: { reason: "output_limit" },
+    ...(contextUsage ? { contextUsage } : {}),
+    providerState: {
+      kind: "openai-chat",
+      message: cloneJsonValue(message),
+      outputLimited: true,
+    },
+  };
+}
+
+function chatAssistantContent(
+  value: Record<string, unknown>,
+  label: string,
+): string | null {
+  const content = optionalChatMessageText(value.content, "content", label);
+  const refusal = optionalChatMessageText(value.refusal, "refusal", label);
+  return content && refusal
+    ? `${content}\n${refusal}`
+    : content || refusal || null;
+}
+
+function optionalChatMessageText(
+  value: unknown,
+  field: "content" | "refusal",
+  label: string,
+): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") {
+    throw new Error(`${label} returned malformed message ${field}.`);
+  }
+  return value.trim() ? value : "";
 }
 
 function toolCallsArray(value: unknown, label: string): unknown[] {
@@ -313,55 +481,15 @@ function toolCallsArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-function normalizedToolCalls(
-  rawCalls: unknown[],
-  label: string,
-): ModelToolCall[] {
-  const seenIds = new Set<string>();
-  return rawCalls.map((entry) => {
-    if (!isRecord(entry)) {
-      throw new Error(`${label} returned a malformed tool call.`);
-    }
-    if (entry.type !== "function") {
-      throw new Error(`${label} returned a tool call with invalid type.`);
-    }
-    const id = requireUniqueToolCallId(entry.id, seenIds, label);
-    const fn = isRecord(entry.function) ? entry.function : undefined;
-    if (typeof fn?.name !== "string" || !fn.name.trim()) {
-      throw new Error(`${label} returned a tool call with a missing or empty name.`);
-    }
-    if (typeof fn.arguments !== "string" || !fn.arguments.trim()) {
-      throw new Error(`${label} returned a tool call with invalid arguments.`);
-    }
-    return {
-      id,
-      name: fn.name,
-      arguments: fn.arguments,
-    };
-  });
-}
-
-function requireUniqueToolCallId(
-  value: unknown,
-  seen: Set<string>,
-  label: string,
-): string {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${label} returned a tool call ID that was missing or empty.`);
-  }
-  if (seen.has(value)) {
-    throw new Error(`${label} returned a duplicate tool call ID.`);
-  }
-  seen.add(value);
-  return value;
-}
-
 function accumulateUnknownDelta(
   message: Record<string, unknown>,
   delta: Record<string, unknown>,
 ): void {
   for (const [key, value] of Object.entries(delta)) {
-    if (key === "role" || key === "content" || key === "tool_calls" || value === undefined) {
+    if (
+      key === "role" || key === "content" || key === "refusal" ||
+      key === "tool_calls" || value === undefined
+    ) {
       continue;
     }
     message[key] = key === "reasoning_details" && Array.isArray(value)

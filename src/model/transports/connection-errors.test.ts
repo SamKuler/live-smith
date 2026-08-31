@@ -162,6 +162,16 @@ function erroredBody(secret: string): ReadableStream<Uint8Array> {
   });
 }
 
+function headerlessJsonResponse(value: unknown, status: number): Response {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  }) as never, { status });
+}
+
 test("transport context preserves safe connection-error identity", async () => {
   const profile = openAIProfile();
 
@@ -350,7 +360,7 @@ test("clean EOF before the required terminal is typed in every streaming mode", 
       profile: anthropicProfile(),
       transport: createAnthropicMessagesTransport({
         fetchImpl: async () => sseResponse([
-          { type: "message_start", message: { content: [] } },
+          { type: "message_start", message: { type: "message", role: "assistant", content: [] } },
           {
             type: "content_block_start",
             index: 0,
@@ -558,6 +568,9 @@ test("provider failures preserve retryable and fatal protocol semantics", async 
         transport: createOpenAIResponsesTransport({
           fetchImpl: async () => sseResponse("data: [DONE]\n\n"),
         }),
+        expected(error: unknown) {
+          return assertConnectionError(error, /terminal response/i);
+        },
       },
       {
         name: "Anthropic Messages",
@@ -565,12 +578,15 @@ test("provider failures preserve retryable and fatal protocol semantics", async 
         transport: createAnthropicMessagesTransport({
           fetchImpl: async () => sseResponse("data: [DONE]\n\n"),
         }),
+        expected(error: unknown) {
+          return assertOrdinaryError(error, /protocol terminal/i);
+        },
       },
     ];
     for (const item of fixtures) {
       await assert.rejects(
         item.transport.createToolTurn(request(item.profile, { streaming: true })),
-        (error: unknown) => assertOrdinaryError(error, /protocol terminal|invalid JSON/i),
+        item.expected,
         item.name,
       );
     }
@@ -629,6 +645,99 @@ test("OpenAI HTTP errors distinguish transient limits from account limits", asyn
   }
 });
 
+test("OpenAI Direct decodes bounded headerless JSON errors without exposing messages", async () => {
+  const sentinel = "openai-private-headerless-error";
+  for (const apiMode of ["responses", "chat-completions"] as const) {
+    const fetchImpl = async () => headerlessJsonResponse({
+      error: {
+        code: "invalid_prompt",
+        type: "invalid_request_error",
+        message: sentinel,
+      },
+    }, 400);
+    const transport = apiMode === "responses"
+      ? createOpenAIResponsesTransport({ fetchImpl })
+      : createOpenAIChatTransport({ fetchImpl });
+
+    await assert.rejects(
+      transport.createToolTurn(request(openAIProfile(apiMode))),
+      (error: unknown) => {
+        assertOrdinaryError(
+          error,
+          /HTTP 400.*rejected.*code=invalid_prompt; type=invalid_request_error/u,
+          sentinel,
+        );
+        return true;
+      },
+      apiMode,
+    );
+  }
+});
+
+test("OpenAI Direct cancels a hanging headerless error body before classification", {
+  timeout: 2_000,
+}, async () => {
+  for (const apiMode of ["responses", "chat-completions"] as const) {
+    let cancelled = false;
+    const fetchImpl = async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    }) as never, { status: 503 });
+    const transport = apiMode === "responses"
+      ? createOpenAIResponsesTransport({ fetchImpl })
+      : createOpenAIChatTransport({ fetchImpl });
+
+    await assert.rejects(
+      transport.createToolTurn(request(openAIProfile(apiMode))),
+      (error: unknown) => assertProviderRetryableError(error, /HTTP 503/u),
+      apiMode,
+    );
+    assert.equal(cancelled, true, apiMode);
+  }
+});
+
+test("Anthropic HTTP errors distinguish transient limits from account limits", async () => {
+  const privateMessage = "anthropic-private-rate-limit-message";
+  const transient = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error", message: privateMessage },
+      request_id: "private-request-id",
+    }), {
+      status: 429,
+      headers: { "retry-after-ms": "2750" },
+    }),
+  });
+  await assert.rejects(
+    transient.createToolTurn(request(anthropicProfile())),
+    (error: unknown) => {
+      assertProviderRetryableError(error, /rate_limit_error/i, privateMessage);
+      assert.equal((error as ModelRetryableError).retryAfterMs, 2_750);
+      return true;
+    },
+  );
+
+  const exhausted = createAnthropicMessagesTransport({
+    fetchImpl: async () => new Response(JSON.stringify({
+      type: "error",
+      error: {
+        type: "rate_limit_error",
+        message: privateMessage,
+        details: { error_code: "enforced_spend_limit_reached" },
+      },
+    }), { status: 429 }),
+  });
+  await assert.rejects(
+    exhausted.createToolTurn(request(anthropicProfile())),
+    (error: unknown) => assertOrdinaryError(
+      error,
+      /enforced_spend_limit_reached.*account usage limit was reached/i,
+      privateMessage,
+    ),
+  );
+});
+
 test("an explicit incompatible streaming Content-Type is ordinary in every Direct mode", async () => {
   const fetchImpl = (async () => new Response("<html>gateway</html>", {
     status: 200,
@@ -664,15 +773,18 @@ test("a missing streaming Content-Type remains compatible with valid SSE", async
       name: "OpenAI Chat Completions",
       profile: openAIProfile("chat-completions"),
       payload: `data: ${JSON.stringify({
-        choices: [{ finish_reason: "stop", delta: { content: "Done" } }],
-      })}\n\n`,
+        choices: [{
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "Done" },
+        }],
+      })}\n\ndata: [DONE]\n\n`,
       transport: (fetchImpl) => createOpenAIChatTransport({ fetchImpl }),
     },
     {
       name: "Anthropic Messages",
       profile: anthropicProfile(),
       payload: [
-        { type: "message_start", message: { content: [] } },
+        { type: "message_start", message: { type: "message", role: "assistant", content: [] } },
         {
           type: "content_block_start",
           index: 0,
@@ -724,20 +836,26 @@ test("JSON, protocol, oversize, and callback failures remain ordinary", async (t
     );
   });
 
-  await t.test("explicit incomplete protocol terminal", async () => {
+  await t.test("explicit output-limit protocol terminal", async () => {
     const transport = createOpenAIChatTransport({
       fetchImpl: async () => sseResponse(
-        `data: ${JSON.stringify({
-          choices: [{ finish_reason: "length", delta: { content: "partial" } }],
-        })}\n\n`,
+        [
+          `data: ${JSON.stringify({
+            choices: [{
+              finish_reason: "length",
+              delta: { role: "assistant", content: "partial" },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
       ),
     });
-    await assert.rejects(
-      transport.createToolTurn(request(openAIProfile("chat-completions"), {
-        streaming: true,
-      })),
-      (error: unknown) => assertOrdinaryError(error, /unsupported finish_reason/),
+    const turn = await transport.createToolTurn(
+      request(openAIProfile("chat-completions"), { streaming: true }),
     );
+    assert.equal(turn.content, "partial");
+    assert.deepEqual(turn.toolCalls, []);
+    assert.deepEqual(turn.continuation, { reason: "output_limit" });
   });
 
   await t.test("declared oversized JSON", async () => {

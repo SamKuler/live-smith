@@ -103,7 +103,12 @@ const hostSafeFetch = (async (input: string | URL | Request) => {
   }
   if (url.endsWith("/chat/completions")) {
     return eventStreamResponse([
-      { choices: [{ finish_reason: "stop", delta: { content: "chat safe" } }] },
+      {
+        choices: [{
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "chat safe" },
+        }],
+      },
     ]);
   }
   if (url.endsWith("/responses")) {
