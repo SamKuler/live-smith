@@ -8,6 +8,7 @@ test("OAuth commands require one explicit Profile and supported provider", () =>
   for (const kind of [
     "start_oauth_login",
     "refresh_oauth_account",
+    "open_oauth_authorization",
     "logout_oauth",
   ] as const) {
     assert.throws(
@@ -28,15 +29,20 @@ test("OAuth commands require one explicit Profile and supported provider", () =>
       () => parseCommandInput({ kind, profileId, provider: "other" }),
       /provider must be openai, anthropic, or google/i,
     );
-    assert.throws(
-      () => parseCommandInput({
-        kind,
-        profileId,
-        provider: "openai",
-        apiKey: "forbidden",
-      }),
-      /does not support property apiKey/i,
-    );
+    for (const extra of [
+      { apiKey: "forbidden" },
+      { verificationUrl: "https://example.test/forbidden" },
+    ]) {
+      assert.throws(
+        () => parseCommandInput({
+          kind,
+          profileId,
+          provider: "openai",
+          ...extra,
+        }),
+        /does not support property/i,
+      );
+    }
   }
 });
 

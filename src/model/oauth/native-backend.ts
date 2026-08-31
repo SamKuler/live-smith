@@ -45,6 +45,10 @@ export function createNativeOAuthBackend(
       assertOpen();
       return credentials.beginLogin(signal);
     },
+    setPendingLoginBrowserLaunchFailed(failed, signal) {
+      assertOpen();
+      return credentials.setPendingLoginBrowserLaunchFailed(failed, signal);
+    },
     logout(signal) {
       assertOpen();
       return credentials.logout(signal);

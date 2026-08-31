@@ -14,6 +14,7 @@ import { withStorageTransaction } from "../../storage/persistence.js";
 import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import {
   OAuthCredentialManager,
+  OAuthLoginError,
   type OAuthLoginAttempt,
   type OAuthProviderAdapter,
 } from "./credential-manager.js";
@@ -282,6 +283,128 @@ test("OAuth login completion preserves an explicitly safe network proxy diagnosi
     message: error.message,
     definitive: true,
   });
+  await manager.close();
+});
+
+test("OAuth login completion preserves a trusted account-verification action", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const completion = deferred<OAuthCredential>();
+  const adapter: OAuthProviderAdapter = {
+    provider: "google",
+    displayName: "Gemini",
+    async beginLogin() {
+      return {
+        pending: {
+          status: "pending",
+          verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        },
+        completion: completion.promise,
+        cancel(reason) {
+          completion.reject(reason);
+        },
+      };
+    },
+    async refresh(credential) {
+      return credential;
+    },
+    authState() {
+      throw new Error("unexpected state");
+    },
+  };
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  assert.equal((await manager.beginLogin()).status, "pending");
+  completion.reject(new OAuthLoginError(
+    "Google requires an additional account verification before Gemini can be used.",
+    {
+      verificationUrl: "https://accounts.google.com/signin/continue?flow=test",
+      verificationLabel: "Verify Google account",
+    },
+  ));
+
+  let state = await manager.readAuthState();
+  for (let attempt = 0; state.status === "pending" && attempt < 20; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    state = await manager.readAuthState();
+  }
+  assert.deepEqual(state, {
+    status: "unavailable",
+    message: "Google requires an additional account verification before Gemini can be used.",
+    definitive: true,
+    verificationUrl: "https://accounts.google.com/signin/continue?flow=test",
+    verificationLabel: "Verify Google account",
+  });
+  await manager.close();
+});
+
+test("a host browser failure preserves the pending login and its completion", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const completion = deferred<OAuthCredential>();
+  let canceled = false;
+  const adapter: OAuthProviderAdapter = {
+    provider: "google",
+    displayName: "Gemini",
+    async beginLogin() {
+      return {
+        pending: {
+          status: "pending",
+          verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        },
+        completion: completion.promise,
+        cancel(reason) {
+          canceled = true;
+          completion.reject(reason);
+        },
+      };
+    },
+    async refresh(credential) {
+      return credential;
+    },
+    authState(credential) {
+      return {
+        status: "signed-in",
+        accountLabel: credential.provider === "google"
+          ? credential.accountLabel
+          : null,
+        planType: "Google Cloud Code Assist",
+        subscriptionEligible: true,
+      };
+    },
+  };
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+  await manager.beginLogin();
+  const marked = {
+    status: "pending",
+    verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    browserLaunchFailed: true,
+  } as const;
+
+  assert.deepEqual(
+    await manager.setPendingLoginBrowserLaunchFailed(true),
+    marked,
+  );
+  assert.equal(canceled, false);
+  assert.deepEqual(await manager.readAuthState(), marked);
+  assert.deepEqual(
+    await manager.setPendingLoginBrowserLaunchFailed(false),
+    {
+      status: "pending",
+      verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    },
+  );
+  completion.resolve({
+    provider: "google",
+    accessToken: "google-access",
+    refreshToken: "google-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    projectId: "google-project",
+    accountLabel: "listener@example.test",
+  });
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await loadOAuthCredential(directory, "profile-a", "google")) break;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.ok(await loadOAuthCredential(directory, "profile-a", "google"));
+  assert.equal((await manager.readAuthState()).status, "signed-in");
   await manager.close();
 });
 

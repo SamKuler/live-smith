@@ -2264,7 +2264,8 @@
 
       .subscription-auth-device-ticket[hidden],
       .subscription-auth-open-link[hidden],
-      .subscription-auth-device-error[hidden] {
+      .subscription-auth-device-error[hidden],
+      .subscription-auth-code-ticket[hidden] {
         display: none;
       }
 
@@ -3490,12 +3491,12 @@
                       <strong id="oauthAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
                       <span id="oauthAuthStateDetail" class="subscription-auth-state-detail" hidden></span>
                     </div>
-                    <div id="oauthDeviceCodeTicket" class="subscription-auth-device-ticket" aria-labelledby="oauthDeviceCodeHeading" hidden>
-                      <a id="oauthVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden>
+                    <div id="oauthDeviceCodeTicket" class="subscription-auth-device-ticket" aria-label="Account authorization" hidden>
+                      <a id="oauthVerificationLink" class="subscription-auth-open-link" target="_blank" rel="noopener noreferrer" hidden onclick="return LiveSmithUI.openOAuthVerification(event)">
                         <span id="oauthVerificationLinkLabel">Open sign-in page</span><span aria-hidden="true">↗</span>
                       </a>
                       <p id="oauthVerificationError" class="subscription-auth-device-error" hidden>Live Smith could not verify the sign-in page. Cancel this sign-in and start again.</p>
-                      <div class="subscription-auth-code-ticket">
+                      <div class="subscription-auth-code-ticket" hidden>
                         <label id="oauthDeviceCodeHeading" class="subscription-auth-code-label" for="oauthUserCode">One-time code<small>Select to copy</small></label>
                         <input id="oauthUserCode" name="oauthUserCode" type="text" readonly autocomplete="off" spellcheck="false" translate="no" />
                       </div>

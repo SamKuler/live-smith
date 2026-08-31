@@ -25,6 +25,24 @@ export interface OAuthLoginAttempt {
   cancel(reason?: unknown): void;
 }
 
+export class OAuthLoginError extends Error {
+  readonly verificationUrl: string | undefined;
+  readonly verificationLabel: string | undefined;
+
+  constructor(
+    message: string,
+    options: {
+      verificationUrl?: string;
+      verificationLabel?: string;
+    } = {},
+  ) {
+    super(message);
+    this.name = "OAuthLoginError";
+    this.verificationUrl = options.verificationUrl;
+    this.verificationLabel = options.verificationLabel;
+  }
+}
+
 export interface OAuthProviderAdapter {
   readonly provider: OAuthProvider;
   readonly displayName: string;
@@ -57,7 +75,7 @@ export class OAuthCredentialManager {
   private activeLogin: ActiveLogin | undefined;
   private activeRefresh: ActiveRefresh | undefined;
   private credentialGeneration = 0;
-  private loginError: string | undefined;
+  private loginFailure: Extract<OAuthAuthState, { status: "unavailable" }> | undefined;
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private logoutPromise: Promise<void> | undefined;
@@ -96,7 +114,7 @@ export class OAuthCredentialManager {
       credential = await this.refreshCredential(credential, generation, signal);
     }
     if (credential) return this.adapter.authState(credential);
-    if (this.loginError) return this.loginFailureState();
+    if (this.loginFailure) return { ...this.loginFailure };
     return { status: "signed-out" };
   }
 
@@ -107,7 +125,7 @@ export class OAuthCredentialManager {
     throwIfAborted(signal);
     this.assertOpen();
     if (this.activeLogin) return this.pendingLoginState(this.activeLogin, signal);
-    this.loginError = undefined;
+    this.loginFailure = undefined;
     const controller = createHostAbortController();
     const relayAbort = (): void => controller.abort(signal?.reason);
     signal?.addEventListener("abort", relayAbort, { once: true });
@@ -124,6 +142,25 @@ export class OAuthCredentialManager {
     this.activeLogin = active;
     void settled.catch(() => undefined);
     return this.pendingLoginState(active, signal);
+  }
+
+  async setPendingLoginBrowserLaunchFailed(
+    failed: boolean,
+    signal?: AbortSignal,
+  ): Promise<OAuthAuthState> {
+    throwIfAborted(signal);
+    this.assertOpen();
+    const active = this.activeLogin;
+    if (!active) return this.readAuthState(signal);
+    const attempt = active.attempt ?? await waitForPromiseWithSignal(
+      active.acquired,
+      signal,
+    );
+    throwIfAborted(signal);
+    if (!this.ownsLogin(active)) return this.readAuthState(signal);
+    if (failed) attempt.pending.browserLaunchFailed = true;
+    else delete attempt.pending.browserLaunchFailed;
+    return { ...attempt.pending };
   }
 
   async requireCredential(signal?: AbortSignal): Promise<OAuthCredential> {
@@ -249,14 +286,8 @@ export class OAuthCredentialManager {
     } catch (error) {
       throwIfAborted(signal);
       if (!this.ownsLogin(active)) throw this.loginOwnershipError();
-      active.failure = error instanceof NetworkProxyError
-        ? {
-            status: "unavailable",
-            message: error.message,
-            definitive: true,
-          }
-        : this.loginFailureState();
-      this.loginError = active.failure.message;
+      active.failure = this.loginFailureState(error);
+      this.loginFailure = active.failure;
       throw new Error(active.failure.message);
     }
     active.attempt = attempt;
@@ -291,21 +322,41 @@ export class OAuthCredentialManager {
         { shouldCommit: () => this.ownsLogin(active) },
       );
       if (!committed) throw this.loginOwnershipError();
-      this.loginError = undefined;
+      this.loginFailure = undefined;
     } catch (error) {
       if (this.ownsLogin(active) && !active.controller.signal.aborted) {
-        this.loginError = error instanceof NetworkProxyError
-          ? error.message
-          : this.loginFailureState().message;
+        this.loginFailure = active.failure ?? this.loginFailureState(error);
       }
       throw error;
     }
   }
 
-  private loginFailureState(): Extract<OAuthAuthState, { status: "unavailable" }> {
+  private loginFailureState(
+    error?: unknown,
+  ): Extract<OAuthAuthState, { status: "unavailable" }> {
+    if (error instanceof NetworkProxyError) {
+      return {
+        status: "unavailable",
+        message: error.message,
+        definitive: true,
+      };
+    }
+    if (error instanceof OAuthLoginError) {
+      return {
+        status: "unavailable",
+        message: error.message,
+        definitive: true,
+        ...(error.verificationUrl
+          ? { verificationUrl: error.verificationUrl }
+          : {}),
+        ...(error.verificationLabel
+          ? { verificationLabel: error.verificationLabel }
+          : {}),
+      };
+    }
     return {
       status: "unavailable",
-      message: this.loginError ?? `${this.adapter.displayName} sign-in did not complete.`,
+      message: `${this.adapter.displayName} sign-in did not complete.`,
       definitive: true,
     };
   }
@@ -344,7 +395,7 @@ export class OAuthCredentialManager {
         this.profileId,
         this.adapter.provider,
       );
-      this.loginError = undefined;
+      this.loginFailure = undefined;
     });
     this.logoutPromise = cleanup;
     void cleanup.catch(() => undefined);

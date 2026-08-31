@@ -2357,18 +2357,31 @@
           return hasOnlyWireKeys(value, ["status"]);
         }
         if (value.status === "unavailable") {
-          return hasOnlyWireKeys(value, ["status", "message", "definitive"]) &&
+          return hasOnlyWireKeys(value, [
+            "status",
+            "message",
+            "definitive",
+            "verificationUrl",
+            "verificationLabel",
+          ]) &&
             typeof value.message === "string" &&
-            (value.definitive === undefined || typeof value.definitive === "boolean");
+            (value.definitive === undefined || typeof value.definitive === "boolean") &&
+            (value.verificationUrl === undefined ||
+              typeof value.verificationUrl === "string") &&
+            (value.verificationLabel === undefined ||
+              typeof value.verificationLabel === "string");
         }
         if (value.status === "pending") {
           return hasOnlyWireKeys(value, [
             "status",
             "verificationUrl",
             "userCode",
+            "browserLaunchFailed",
           ]) &&
             typeof value.verificationUrl === "string" &&
-            (value.userCode === undefined || typeof value.userCode === "string");
+            (value.userCode === undefined || typeof value.userCode === "string") &&
+            (value.browserLaunchFailed === undefined ||
+              typeof value.browserLaunchFailed === "boolean");
         }
         return value.status === "signed-in" &&
           hasOnlyWireKeys(value, [

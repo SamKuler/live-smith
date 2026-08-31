@@ -247,6 +247,7 @@
           createCommandId: bridgeClient.createCommandId,
           getState,
           hasAnySendInProgress: bridgeClient.hasRunnableSendWork,
+          isAnyOperationInProgress: bridgeClient.isOperationInProgress,
           isOperationInProgress: bridgeClient.isProfileSettingsOperationInProgress,
           requestSendPresentation: renderSendPresentation,
           runCommand: bridgeClient.runCommand,
@@ -1123,6 +1124,9 @@
             busyLabel: "Checking…",
             status: "Checking account sign-in…",
           },
+          open_oauth_authorization: {
+            status: "Opening the account page…",
+          },
           logout_oauth: {
             controlId: "oauthLogoutButton",
             busyLabel: "Signing out…",
@@ -1391,6 +1395,7 @@
           markDraftDirty: profileEditor.markDraftDirty,
           addManualModel: profileEditor.addManualModel,
           logoutOAuth: profileEditor.logoutOAuth,
+          openOAuthVerification: profileEditor.openOAuthVerification,
           openInspector,
           refreshOAuthAccount: profileEditor.refreshOAuthAccount,
           requestClose,

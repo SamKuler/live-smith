@@ -480,7 +480,7 @@ export async function runAgentFlow(
     string,
     OAuthBrowserLaunch
   >();
-  const oauthBrowserLaunches = new Set<Promise<void>>();
+  const oauthBrowserLaunches = new Set<Promise<boolean>>();
   let oauthBrowserLaunchesClosing = false;
   const cancelOAuthBrowserLaunch = (
     scope: OAuthProfileScope,
@@ -491,19 +491,31 @@ export async function runAgentFlow(
   const launchPendingOAuthBrowser = (
     scope: OAuthProfileScope,
     url: string,
-  ): void => {
+    onFailure?: () => Promise<void>,
+  ): Promise<boolean> => {
     const open = dependencies.openOAuthAuthorizationUrl;
-    if (!open || oauthBrowserLaunchesClosing) return;
+    if (!open || oauthBrowserLaunchesClosing) {
+      return Promise.resolve(false);
+    }
     cancelOAuthBrowserLaunch(
       scope,
       new Error(`${oauthProviderLabel(scope.provider)} OAuth browser launch was replaced.`),
     );
     const controller = createHostAbortController();
     let active!: OAuthBrowserLaunch;
-    let launch!: Promise<void>;
+    let launch!: Promise<boolean>;
     launch = Promise.resolve()
       .then(() => open(url, controller.signal))
-      .catch(() => undefined)
+      .then(
+        () => true,
+        async () => {
+          if (!controller.signal.aborted && !oauthBrowserLaunchesClosing) {
+            await onFailure?.();
+          }
+          return false;
+        },
+      )
+      .catch(() => false)
       .finally(() => {
         oauthBrowserLaunches.delete(launch);
         const key = oauthScopeKey(scope);
@@ -514,6 +526,7 @@ export async function runAgentFlow(
     active = { controller };
     oauthBrowserLaunchByScope.set(oauthScopeKey(scope), active);
     oauthBrowserLaunches.add(launch);
+    return launch;
   };
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
@@ -1088,6 +1101,41 @@ export async function runAgentFlow(
       return await operation();
     } finally {
       release();
+    }
+  };
+
+  const setPendingOAuthBrowserLaunchFailed = async (
+    scope: OAuthProfileScope,
+    failed: boolean,
+    expectedGeneration: number,
+  ): Promise<void> => {
+    const controller = createHostAbortController();
+    try {
+      const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+      if (
+        !modelAuthSendFence.hasPendingLogin(scope.provider) ||
+        modelAuthSendFence.authGeneration(scope.provider) !== expectedGeneration
+      ) return;
+      const lease = await modelBackendManager.oauthLease(
+        scope.profileId,
+        scope.provider,
+        controller.signal,
+      );
+      const auth = lease.backend.setPendingLoginBrowserLaunchFailed
+        ? await lease.backend.setPendingLoginBrowserLaunchFailed(
+            failed,
+            controller.signal,
+          )
+        : await lease.backend.readAuthState(controller.signal);
+      if (
+        auth.status === "pending" &&
+        modelAuthSendFence.hasPendingLogin(scope.provider) &&
+        modelAuthSendFence.authGeneration(scope.provider) === expectedGeneration
+      ) {
+        cacheOAuthAuth(scope, expectedGeneration, auth);
+      }
+    } catch {
+      // Closing or a concurrent terminal auth result owns the final state.
     }
   };
 
@@ -2718,15 +2766,108 @@ export async function runAgentFlow(
       await withExclusiveOAuthAuth(scope, async () => {
         const auth = await runOAuthAuthOperation(scope, "beginLogin", signal);
         resultAuth = auth;
-        status = oauthAuthStatusMessage(auth, provider);
+        if (resultAuth.status === "pending") {
+          const verificationUrl = resultAuth.verificationUrl;
+          const generation = modelAuthSendFenceFor(scope.profileId)
+            .authGeneration(provider);
+          void launchPendingOAuthBrowser(
+            scope,
+            verificationUrl,
+            () => setPendingOAuthBrowserLaunchFailed(
+              scope,
+              true,
+              generation,
+            ),
+          );
+        }
+        status = oauthAuthStatusMessage(resultAuth, provider);
         openSettingsOnLoad = true;
       }, signal);
-      if (resultAuth.status === "pending") {
-        launchPendingOAuthBrowser(
-          scope,
-          resultAuth.verificationUrl,
+      return withOAuthAuthProjection(
+        await buildStateAfterCommandMutation(undefined, { signal }),
+        scope,
+        resultAuth,
+      );
+    }
+
+    if (commandInput.kind === "open_oauth_authorization") {
+      const provider = commandInput.provider;
+      const scope = { profileId: commandInput.profileId, provider };
+      let resultAuth!: OAuthAuthState;
+      await withExclusiveOAuthAuth(scope, async () => {
+        const modelAuthSendFence = modelAuthSendFenceFor(scope.profileId);
+        const pendingBeforeRead = modelAuthSendFence.hasPendingLogin(provider);
+        const lease = await modelBackendManager.oauthLease(
+          scope.profileId,
+          scope.provider,
+          signal,
         );
-      }
+        try {
+          resultAuth = await lease.backend.readAuthState(signal, {
+            readiness: true,
+          });
+        } catch (error) {
+          throwIfAborted(signal);
+          resultAuth = unavailableOAuthAuth(scope.provider, error);
+        }
+        if (resultAuth.status !== "pending") {
+          if (pendingBeforeRead) recordOwnedAuthState(scope, resultAuth);
+          else {
+            cacheOAuthAuth(
+              scope,
+              modelAuthSendFence.authGeneration(provider),
+              resultAuth,
+            );
+          }
+        }
+        const verificationUrl = resultAuth.status === "pending"
+          ? resultAuth.verificationUrl
+          : resultAuth.status === "unavailable"
+            ? resultAuth.verificationUrl
+            : undefined;
+        if (!verificationUrl) {
+          status = oauthAuthStatusMessage(resultAuth, provider);
+          openSettingsOnLoad = true;
+          return;
+        }
+        if (!(await launchPendingOAuthBrowser(scope, verificationUrl))) {
+          if (
+            resultAuth.status === "pending" &&
+            lease.backend.setPendingLoginBrowserLaunchFailed
+          ) {
+            resultAuth = await lease.backend.setPendingLoginBrowserLaunchFailed(
+              true,
+              signal,
+            );
+            cacheOAuthAuth(
+              scope,
+              modelAuthSendFence.authGeneration(provider),
+              resultAuth,
+            );
+          }
+          throw new Error(
+            "Live Smith could not open the system browser. Copy the account link and open it in a browser, then check sign-in again.",
+          );
+        }
+        throwIfAborted(signal);
+        if (
+          resultAuth.status === "pending" &&
+          resultAuth.browserLaunchFailed &&
+          lease.backend.setPendingLoginBrowserLaunchFailed
+        ) {
+          resultAuth = await lease.backend.setPendingLoginBrowserLaunchFailed(
+            false,
+            signal,
+          );
+          cacheOAuthAuth(
+            scope,
+            modelAuthSendFence.authGeneration(provider),
+            resultAuth,
+          );
+        }
+        status = `Opened the ${oauthProviderLabel(provider)} account page.`;
+        openSettingsOnLoad = true;
+      }, signal, true);
       return withOAuthAuthProjection(
         await buildStateAfterCommandMutation(undefined, { signal }),
         scope,
@@ -3768,6 +3909,9 @@ function oauthAuthStatusMessage(
     case "signed-out":
       return `Signed out of ${label}.`;
     case "pending":
+      if (state.browserLaunchFailed) {
+        return `Live Smith could not open the ${label} sign-in page in the system browser. Retry the account link below or copy it into a browser.`;
+      }
       return `Complete ${label} sign-in in your browser, then check again. ` +
         "If the browser did not open, use the sign-in link below.";
     case "signed-in":

@@ -7,10 +7,12 @@ import {
   throwIfAborted,
   waitForPromiseWithSignal,
 } from "../../runtime/host.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import type { OAuthCredential } from "../../storage/oauth-credentials.js";
-import type {
-  OAuthLoginAttempt,
-  OAuthProviderAdapter,
+import {
+  OAuthLoginError,
+  type OAuthLoginAttempt,
+  type OAuthProviderAdapter,
 } from "./credential-manager.js";
 import {
   formBody,
@@ -120,7 +122,7 @@ async function beginGoogleLogin(
     path: callbackPath,
     expectedState: state,
     signal: controller.signal,
-    successMessage: "Gemini sign-in completed. You can close this window.",
+    successMessage: "Google authorization was received. Return to Live Smith while Gemini account setup finishes.",
     listenHost: "127.0.0.1",
     redirectHost: "127.0.0.1",
   });
@@ -134,30 +136,59 @@ async function beginGoogleLogin(
   authorization.searchParams.set("state", state);
   authorization.searchParams.set("access_type", "offline");
   authorization.searchParams.set("prompt", "consent");
-  const completion = loopback.completion.then(async (code): Promise<OAuthCredential> => {
-    const response = await fetchImpl(tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: formBody({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: loopback.redirectUri,
-        code_verifier: verifier,
-      }),
-      signal: controller.signal,
-    });
-    const tokens = tokensFromResponse(
-      await requireOAuthJson(response, "Google token exchange", controller.signal),
-      "Google token exchange",
+  const authorizationCode = loopback.completion.catch((error: unknown) => {
+    throwIfAborted(controller.signal);
+    if (error instanceof OAuthLoginError || error instanceof NetworkProxyError) {
+      throw error;
+    }
+    throw new OAuthLoginError(
+      "Google sign-in did not return to Live Smith. Keep the Live Smith window open and try again.",
     );
-    const projectId = await discoverCodeAssistProject(
-      fetchImpl,
-      wait,
-      tokens.accessToken,
-      controller.signal,
-    );
+  });
+  const completion = authorizationCode.then(async (code): Promise<OAuthCredential> => {
+    let tokens: ReturnType<typeof tokensFromResponse>;
+    try {
+      const response = await fetchImpl(tokenUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: formBody({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          grant_type: "authorization_code",
+          redirect_uri: loopback.redirectUri,
+          code_verifier: verifier,
+        }),
+        signal: controller.signal,
+      });
+      tokens = tokensFromResponse(
+        await requireOAuthJson(response, "Google token exchange", controller.signal),
+        "Google token exchange",
+      );
+    } catch (error) {
+      throwIfAborted(controller.signal);
+      if (error instanceof NetworkProxyError) throw error;
+      throw new OAuthLoginError(
+        "Google authorized the account, but Live Smith could not finish the token exchange. Check the network proxy and try again.",
+      );
+    }
+    let projectId: string;
+    try {
+      projectId = await discoverCodeAssistProject(
+        fetchImpl,
+        wait,
+        tokens.accessToken,
+        controller.signal,
+      );
+    } catch (error) {
+      throwIfAborted(controller.signal);
+      if (error instanceof NetworkProxyError || error instanceof OAuthLoginError) {
+        throw error;
+      }
+      throw new OAuthLoginError(
+        "Google authorization succeeded, but Cloud Code Assist account setup failed. Try sign-in again.",
+      );
+    }
     const accountLabel = await readAccountLabel(
       fetchImpl,
       tokens.accessToken,
@@ -216,22 +247,42 @@ async function discoverCodeAssistProject(
     signal,
   });
   const load = await requireOAuthJson(loadResponse, "Google Cloud Code Assist", signal);
-  if (isRecord(load.currentTier)) {
+  const ineligibleTiers = Array.isArray(load.ineligibleTiers)
+    ? load.ineligibleTiers.filter(isRecord)
+    : [];
+  const currentTier = isRecord(load.currentTier) ? load.currentTier : undefined;
+  const validationTier = currentTier === undefined
+    ? ineligibleTiers.find(
+        (entry) => entry.reasonCode === "VALIDATION_REQUIRED",
+      )
+    : undefined;
+  if (validationTier !== undefined) {
+    const verificationUrl = trustedGoogleVerificationUrl(validationTier.validationUrl);
+    throw new OAuthLoginError(
+      "Google requires an additional account verification before Gemini can be used.",
+      verificationUrl
+        ? { verificationUrl, verificationLabel: "Verify Google account" }
+        : {},
+    );
+  }
+  if (currentTier) {
     if (typeof load.cloudaicompanionProject === "string" && load.cloudaicompanionProject) {
       return load.cloudaicompanionProject;
     }
-    throw new Error(
-      "This Google account requires an explicit Google Cloud project, which is not configured in the subscription Profile.",
+    throw new OAuthLoginError(
+      "This Google account requires a Google Cloud project and cannot use the project-free Gemini subscription flow.",
     );
   }
   const allowedTiers = Array.isArray(load.allowedTiers)
     ? load.allowedTiers.filter(isRecord)
     : [];
   const tier = allowedTiers.find((entry) => entry.isDefault === true) ??
-    allowedTiers[0] ?? { id: "legacy-tier" };
+    { id: "legacy-tier" };
   if (tier.id !== "free-tier") {
-    throw new Error(
-      "This Google account requires an explicit Google Cloud project, which is not configured in the subscription Profile.",
+    throw new OAuthLoginError(
+      ineligibleTiers.length > 0
+        ? "This Google account is not eligible for Gemini Code Assist subscription access."
+        : "This Google account requires a Google Cloud project and cannot use the project-free Gemini subscription flow.",
     );
   }
   const onboardResponse = await fetchImpl(`${codeAssistBaseUrl}/v1internal:onboardUser`, {
@@ -267,15 +318,32 @@ async function discoverCodeAssistProject(
       signal,
     );
   }
-  throw new Error("Google Cloud Code Assist did not provide a project.");
+  throw new OAuthLoginError(
+    "Google authorization succeeded, but Gemini account setup did not finish. Try sign-in again.",
+  );
 }
 
 function projectIdFromOperation(operation: Record<string, unknown>): string | undefined {
   const response = isRecord(operation.response) ? operation.response : undefined;
-  const project = isRecord(response?.cloudaicompanionProject)
-    ? response.cloudaicompanionProject
-    : undefined;
+  const rawProject = response?.cloudaicompanionProject;
+  if (typeof rawProject === "string" && rawProject) return rawProject;
+  const project = isRecord(rawProject) ? rawProject : undefined;
   return typeof project?.id === "string" && project.id ? project.id : undefined;
+}
+
+function trustedGoogleVerificationUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+        url.hostname === "accounts.google.com" &&
+        !url.username &&
+        !url.password
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function codeAssistHeaders(accessToken: string): Record<string, string> {

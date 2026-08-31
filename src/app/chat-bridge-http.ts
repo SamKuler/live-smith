@@ -113,6 +113,11 @@ export type ChatBridgeCommandInput =
       provider: OAuthSubscriptionProvider;
     }
   | {
+      kind: "open_oauth_authorization";
+      profileId: string;
+      provider: OAuthSubscriptionProvider;
+    }
+  | {
       kind: "logout_oauth";
       profileId: string;
       provider: OAuthSubscriptionProvider;
@@ -999,6 +1004,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (
     kind === "start_oauth_login" ||
     kind === "refresh_oauth_account" ||
+    kind === "open_oauth_authorization" ||
     kind === "logout_oauth"
   ) {
     assertOnlyInputKeys(

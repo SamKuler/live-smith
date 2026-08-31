@@ -1436,6 +1436,13 @@ async function createDialogHarness(
                   planType: "pro",
                   subscriptionEligible: true,
                 };
+              } else if (command.kind === "open_oauth_authorization") {
+                if (!command.profileId || !command.provider) {
+                  throw new Error("OAuth commands require a Profile and provider.");
+                }
+                if (serverState.oauthAuth?.status === "pending") {
+                  delete serverState.oauthAuth.browserLaunchFailed;
+                }
               } else if (command.kind === "logout_oauth") {
                 if (!command.profileId || !command.provider) {
                   throw new Error("OAuth commands require a Profile and provider.");

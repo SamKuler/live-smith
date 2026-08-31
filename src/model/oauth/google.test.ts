@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { OAuthLoginError } from "./credential-manager.js";
 import { createGoogleOAuthAdapter } from "./google.js";
 import type { LoopbackAuthorization } from "./oauth-utils.js";
 
@@ -32,11 +33,17 @@ test("Google OAuth resolves the Cloud Code Assist project and account", async ()
       return response({
         currentTier: { id: "standard-tier" },
         cloudaicompanionProject: "project-1",
+        ineligibleTiers: [{
+          reasonCode: "VALIDATION_REQUIRED",
+          validationUrl: "https://accounts.google.com/signin/continue?ignored=1",
+        }],
       });
     },
     startLoopback: async (options): Promise<LoopbackAuthorization> => {
       assert.equal(options.listenHost, "127.0.0.1");
       assert.equal(options.redirectHost, "127.0.0.1");
+      assert.match(options.successMessage, /authorization was received/i);
+      assert.doesNotMatch(options.successMessage, /sign-in completed/i);
       return {
         redirectUri: "http://127.0.0.1:8085/oauth2callback",
         completion: Promise.resolve("authorization-code"),
@@ -110,8 +117,97 @@ test("Google OAuth rejects accounts that require an explicit Cloud project", asy
   const attempt = await adapter.beginLogin(new AbortController().signal);
   await assert.rejects(
     attempt.completion,
-    /requires an explicit Google Cloud project/i,
+    /requires a Google Cloud project/i,
   );
+});
+
+test("Google OAuth surfaces account validation as a trusted browser action", async () => {
+  const adapter = createGoogleOAuthAdapter({
+    fetchImpl: async (input) => String(input) === "https://oauth2.googleapis.com/token"
+      ? response({
+          access_token: "google-access",
+          refresh_token: "google-refresh",
+          expires_in: 3_600,
+        })
+      : response({
+          ineligibleTiers: [{
+            reasonCode: "VALIDATION_REQUIRED",
+            reasonMessage: "remote message must not be exposed",
+            validationUrl: "https://accounts.google.com/signin/continue?flow=test",
+          }],
+        }),
+    startLoopback: async (): Promise<LoopbackAuthorization> => ({
+      redirectUri: "http://127.0.0.1:8085/oauth2callback",
+      completion: Promise.resolve("authorization-code"),
+      cancel() {},
+    }),
+  });
+
+  const attempt = await adapter.beginLogin(new AbortController().signal);
+  await assert.rejects(attempt.completion, (error: unknown) => {
+    assert.ok(error instanceof OAuthLoginError);
+    assert.match(error.message, /additional account verification/i);
+    assert.doesNotMatch(error.message, /remote message/i);
+    assert.equal(
+      error.verificationUrl,
+      "https://accounts.google.com/signin/continue?flow=test",
+    );
+    assert.equal(error.verificationLabel, "Verify Google account");
+    return true;
+  });
+});
+
+test("Google OAuth does not treat a non-default free tier as the onboarding choice", async () => {
+  let onboardingCalls = 0;
+  const adapter = createGoogleOAuthAdapter({
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url === "https://oauth2.googleapis.com/token") {
+        return response({
+          access_token: "google-access",
+          refresh_token: "google-refresh",
+          expires_in: 3_600,
+        });
+      }
+      if (url.endsWith(":onboardUser")) {
+        onboardingCalls += 1;
+        return response({});
+      }
+      return response({
+        allowedTiers: [{ id: "free-tier", isDefault: false }],
+      });
+    },
+    startLoopback: async (): Promise<LoopbackAuthorization> => ({
+      redirectUri: "http://127.0.0.1:8085/oauth2callback",
+      completion: Promise.resolve("authorization-code"),
+      cancel() {},
+    }),
+  });
+
+  const attempt = await adapter.beginLogin(new AbortController().signal);
+  await assert.rejects(attempt.completion, /requires a Google Cloud project/i);
+  assert.equal(onboardingCalls, 0);
+});
+
+test("Google OAuth reports token exchange failures without remote details", async () => {
+  const adapter = createGoogleOAuthAdapter({
+    fetchImpl: async () => response({
+      error: "invalid_grant sensitive authorization details",
+    }, 400),
+    startLoopback: async (): Promise<LoopbackAuthorization> => ({
+      redirectUri: "http://127.0.0.1:8085/oauth2callback",
+      completion: Promise.resolve("authorization-code"),
+      cancel() {},
+    }),
+  });
+
+  const attempt = await adapter.beginLogin(new AbortController().signal);
+  await assert.rejects(attempt.completion, (error: unknown) => {
+    assert.ok(error instanceof OAuthLoginError);
+    assert.match(error.message, /token exchange/i);
+    assert.doesNotMatch(error.message, /sensitive|invalid_grant/i);
+    return true;
+  });
 });
 
 test("Google OAuth preserves cancellation while optional account lookup is pending", async () => {
@@ -182,6 +278,6 @@ test("Google OAuth does not start optional account lookup before project discove
   });
 
   const attempt = await adapter.beginLogin(new AbortController().signal);
-  await assert.rejects(attempt.completion, /Cloud Code Assist HTTP 500/u);
+  await assert.rejects(attempt.completion, /account setup failed/u);
   assert.equal(accountLookupStarted, false);
 });

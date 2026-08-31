@@ -320,6 +320,153 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
   assert.deepEqual(openedUrls, ["https://auth.openai.com/codex/device"]);
 });
 
+test("a host browser failure preserves pending OAuth and retries its active link", {
+  timeout: 5_000,
+}, async (t) => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "live-smith-oauth-browser-failure-"),
+  );
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const profile: SavedProfile = {
+    id: "gemini-browser-failure",
+    name: "Gemini browser failure",
+    connection: { kind: "oauth-subscription", provider: "google" },
+    defaultModel: "gemini-test",
+    models: [{
+      model: "gemini-test",
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    }],
+  };
+  await saveSavedProfile(directory, profile);
+
+  let auth: OAuthAuthState = { status: "signed-out" };
+  let browserOpenCalls = 0;
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    async readAuthState() { return auth; },
+    async beginLogin() {
+      auth = {
+        status: "pending",
+        verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+      };
+      return auth;
+    },
+    async setPendingLoginBrowserLaunchFailed(failed) {
+      if (auth.status === "pending") {
+        if (failed) auth = { ...auth, browserLaunchFailed: true };
+        else {
+          const pending = { ...auth };
+          delete pending.browserLaunchFailed;
+          auth = pending;
+        }
+      }
+      return auth;
+    },
+    async logout() {
+      auth = { status: "signed-out" };
+      return auth;
+    },
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() {},
+  };
+  const manager = {
+    async oauth() { return backend; },
+    async oauthLease() {
+      return { backend, async retire() { return true; } };
+    },
+    async forProfile() { return backend; },
+    async invalidateOAuth() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    summary: "Track: Lead",
+    target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      showModalDialog: async (url: string) => {
+        const command = (body: unknown) => fetch(bridgeEndpoint(url, "/command"), {
+          method: "POST",
+          headers: bridgeJsonHeaders(),
+          body: JSON.stringify(body),
+        });
+        const started = await command({
+          kind: "start_oauth_login",
+          profileId: profile.id,
+          provider: "google",
+        });
+        assert.equal(started.status, 200);
+
+        let state = await started.json() as ChatDialogState;
+        for (
+          let attempt = 0;
+          state.oauthAuth?.status !== "pending" ||
+            state.oauthAuth.browserLaunchFailed !== true;
+          attempt += 1
+        ) {
+          assert.ok(attempt < 100, "browser launch failure was not projected promptly");
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+          const response = await fetch(bridgeEndpoint(url, "/state"));
+          assert.equal(response.status, 200);
+          state = await response.json() as ChatDialogState;
+        }
+        assert.deepEqual(state.oauthAuth, {
+          status: "pending",
+          verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+          browserLaunchFailed: true,
+        });
+
+        const fallback = await command({
+          kind: "open_oauth_authorization",
+          profileId: profile.id,
+          provider: "google",
+        });
+        assert.equal(fallback.status, 200);
+        const retried = await fallback.json() as ChatDialogState;
+        assert.deepEqual(retried.oauthAuth, {
+          status: "pending",
+          verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+        });
+
+        auth = {
+          status: "signed-in",
+          accountLabel: "listener@example.test",
+          planType: "Google Cloud Code Assist",
+          subscriptionEligible: true,
+        };
+        const completedOpen = await command({
+          kind: "open_oauth_authorization",
+          profileId: profile.id,
+          provider: "google",
+        });
+        assert.equal(completedOpen.status, 200);
+        assert.equal(
+          ((await completedOpen.json()) as ChatDialogState).oauthAuth?.status,
+          "signed-in",
+        );
+      },
+    },
+  };
+
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>",
+    modelBackendManager: manager,
+    openOAuthAuthorizationUrl: async () => {
+      browserOpenCalls += 1;
+      if (browserOpenCalls === 1) {
+        throw new Error("host opener failed with private URL details");
+      }
+    },
+  });
+  assert.equal(browserOpenCalls, 2);
+});
+
 test("a Direct API send does not enter the OAuth account fence", async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-direct-auth-boundary-"),

@@ -120,9 +120,10 @@ Credentials never enter Profiles, Session model selections, model caches,
 Session events, model requests as data, bridge command bodies, dialog state, or
 logs. The browser receives only credential-free auth state: signed out,
 pending authorization URL and optional device code, signed in account label and
-service label, or a fixed unavailable description. An unavailable account keeps
-an explicit Sign out action so a revoked or malformed refresh credential can be
-cleared before starting a new authorization.
+service label, or a fixed unavailable description with an optional trusted
+account-verification URL. An unavailable account keeps an explicit Sign out
+action so a revoked or malformed refresh credential can be cleared before
+starting a new authorization.
 
 Credential-store schema v1 used provider-global slots. Before the first OAuth
 operation in a process, and before any Profile Save or Delete that changes OAuth
@@ -162,13 +163,17 @@ and closes after success, denial, cancellation, timeout, or backend shutdown.
 The dialog does not depend on popup support in Ableton's embedded WebView.
 After login acquisition returns a validated pending HTTPS URL, the Extension
 Host launches it through a fixed system browser command: `/usr/bin/open` on
-macOS or the System32 URL handler on Windows. Launch failure does not cancel the
-Profile-owned login; the pending dialog state retains the verified URL and
-optional device code as a fallback. Closing the owning modal stops admitting
-new browser launches, cancels an unfinished launch, and waits for it to settle
-before OAuth cleanup completes. Sign-out, replacement, or completed account
-reconciliation likewise cancels that Profile connection's unfinished browser
-launch.
+macOS or the System32 URL handler on Windows. A rejected launch cancels the
+browser command but keeps the provider-owned pending attempt, loopback listener,
+PKCE state, and verified URL active. The dialog marks that launch failure;
+selecting the link retries the same Host browser command and a successful retry
+clears the marker, while the address remains available to copy manually.
+Pending auth states are checked automatically with bounded backoff; ChatGPT
+still requires entering its device code before that check can complete. Closing
+the owning modal stops admitting new browser launches, cancels an unfinished
+launch, and waits for it to settle before OAuth cleanup completes. Sign-out,
+replacement, or completed account reconciliation likewise cancels that Profile
+connection's unfinished browser launch.
 
 One Profile/provider backend owns an in-flight login from adapter acquisition
 through credential commit, plus one refresh single-flight. Login ownership is
@@ -244,9 +249,11 @@ Smith's system instructions. It reuses the same strict streaming, tool replay,
 thinking-block replay, pagination, and response bounds as Direct Anthropic
 Messages. OAuth is never sent in `x-api-key`.
 
-Google OAuth discovers or provisions the account's Cloud Code Assist project,
-then performs the optional account-label lookup,
-then sends to
+Google OAuth discovers or provisions the account's Cloud Code Assist project.
+If Google reports `VALIDATION_REQUIRED` during that setup, Live Smith exposes
+only its allowlisted `accounts.google.com` verification URL and a fixed local
+description; after verification, starting sign-in again completes setup. It
+then performs the optional account-label lookup and sends to
 `https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`.
 The request uses the Gemini CLI `user_prompt_id` product envelope. The adapter
 creates that ID once per local agent turn and reuses it across connection

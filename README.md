@@ -98,7 +98,10 @@ After the provider returns a pending authorization, the Extension Host opens
 the default system browser on macOS or Windows. ChatGPT displays its device
 code in the dialog. Claude and Google complete browser PKCE through a local
 callback; Google returns automatically to `127.0.0.1` and does not issue a
-one-time or device code.
+one-time or device code. Live Smith checks browser-based sign-in automatically.
+If Google requires an additional account verification before enabling Cloud
+Code Assist, the dialog shows the verified Google page and asks you to sign in
+again after completing it.
 
 ChatGPT uses the Codex backend API, Claude uses OAuth-authenticated Anthropic
 Messages, and Gemini uses Google Cloud Code Assist. Anthropic currently assigns

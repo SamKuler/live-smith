@@ -182,12 +182,17 @@ export type OAuthAuthState =
       message: string;
       /** The backend observed a terminal auth result, not an indeterminate read. */
       definitive?: boolean;
+      /** Trusted provider page for resolving an account requirement. */
+      verificationUrl?: string;
+      verificationLabel?: string;
     }
   | { status: "signed-out" }
   | {
       status: "pending";
       verificationUrl: string;
       userCode?: string;
+      /** The current attempt remains valid, but the Host browser command failed. */
+      browserLaunchFailed?: boolean;
     }
   | {
       status: "signed-in";
@@ -228,6 +233,10 @@ export interface OAuthSubscriptionBackend extends ModelBackendBase {
     options?: OAuthAuthReadOptions,
   ): Promise<OAuthAuthState>;
   beginLogin(signal?: AbortSignal): Promise<OAuthAuthState>;
+  setPendingLoginBrowserLaunchFailed?(
+    failed: boolean,
+    signal?: AbortSignal,
+  ): Promise<OAuthAuthState>;
   logout(signal?: AbortSignal): Promise<OAuthAuthState>;
 }
 

@@ -4,6 +4,7 @@
         createCommandId,
         getState,
         hasAnySendInProgress,
+        isAnyOperationInProgress,
         isOperationInProgress,
         requestSendPresentation,
         runCommand,
@@ -24,7 +25,12 @@
       let pendingCatalogApply = null;
       let renderedCatalogMatchesConnection = false;
       let renderedOAuthAuthKey = null;
+      let oauthPendingRecheckTimer = null;
+      let oauthPendingRecheckKey = null;
+      let oauthPendingRecheckAttempt = 0;
+      let oauthPendingRecheckInFlight = false;
       const provisionalOAuthScopes = new Set();
+      const oauthPendingRecheckDelays = [500, 1_000, 2_000, 4_000, 8_000, 10_000];
       const controlIdByProfileField = {
         name: "profileName",
         connection: "connectionKind",
@@ -1209,9 +1215,11 @@
             state: "pending",
             badge: "Waiting",
             title: "Finish sign-in",
-            detail: hasCode
-              ? `Open the ${providerLabel} page, enter the one-time code, then return here.`
-              : `Complete ${providerLabel} sign-in in the browser, then return here.`,
+            detail: auth.browserLaunchFailed
+              ? `Live Smith could not open the system browser. Retry the ${providerLabel} account link below or copy it into a browser.`
+              : hasCode
+                ? `Open the ${providerLabel} page, enter the one-time code, then return here.`
+                : `Complete ${providerLabel} sign-in in the browser, then return here.`,
             signIn: { label: "Sign in", hidden: true, tone: "secondary" },
             check: { label: "Check sign-in", hidden: false, tone: "primary" },
             logout: {
@@ -1272,6 +1280,10 @@
         const ticket = document.getElementById("oauthDeviceCodeTicket");
         const verificationLink = document.getElementById("oauthVerificationLink");
         const verificationError = document.getElementById("oauthVerificationError");
+        const codeTicket = document.querySelector(".subscription-auth-code-ticket");
+        const deviceGuidance = document.querySelector(
+          ".subscription-auth-device-guidance",
+        );
         const userCode = document.getElementById("oauthUserCode");
         const presentationKey = JSON.stringify(auth || null);
         const providerLabel = oauthProviderLabel();
@@ -1291,7 +1303,11 @@
         setPropertyIfChanged(
           document.getElementById("oauthVerificationLinkLabel"),
           "textContent",
-          `Open ${providerLabel} sign-in page`,
+          auth?.status === "pending" && auth.browserLaunchFailed
+            ? `Retry opening ${providerLabel} sign-in page`
+            : auth?.status === "unavailable" && auth.verificationLabel
+              ? auth.verificationLabel
+              : `Open ${providerLabel} sign-in page`,
         );
         setDataIfChanged(panel, "authState", presentation.state);
         setPropertyIfChanged(
@@ -1307,8 +1323,10 @@
           detail.textContent = presentation.detail;
           detail.hidden = !presentation.detail;
           const pending = auth?.status === "pending";
-          ticket.hidden = !pending;
-          if (pending) {
+          const verificationAction = auth?.status === "unavailable" &&
+            Boolean(auth.verificationUrl);
+          ticket.hidden = !pending && !verificationAction;
+          if (pending || verificationAction) {
             const verificationUrl = safeVerificationUrl(auth.verificationUrl);
             verificationLink.hidden = !verificationUrl;
             verificationError.hidden = Boolean(verificationUrl);
@@ -1317,21 +1335,23 @@
             } else {
               verificationLink.removeAttribute("href");
             }
-            userCode.value = auth.userCode || "";
-            document.querySelector(".subscription-auth-code-ticket").hidden =
-              !auth.userCode;
-            document.querySelector(".subscription-auth-device-guidance").textContent =
-              auth.userCode
-                ? "Keep this window open. Return here after entering the code."
-                : providerLabel === "Gemini"
-                  ? "Keep this window open. Google returns here automatically; no one-time code is required."
-                  : "Keep this window open. Complete sign-in in the browser, then check the account.";
+            userCode.value = pending ? auth.userCode || "" : "";
+            codeTicket.hidden = !pending || !auth.userCode;
+            deviceGuidance.textContent = verificationAction
+              ? `Complete the requested ${providerLabel} account step in the browser, then try sign-in again.`
+              : auth.browserLaunchFailed
+                ? "The current sign-in attempt is still active. Retry the link or copy its address before it expires."
+                : auth.userCode
+                  ? "Keep this window open. Return here after entering the code."
+                  : providerLabel === "Gemini"
+                    ? "Gemini does not use a one-time code. Complete sign-in in the browser; Live Smith will check automatically."
+                    : "Complete sign-in in the browser; Live Smith will check automatically.";
           } else {
             verificationLink.hidden = true;
             verificationLink.removeAttribute("href");
             verificationError.hidden = true;
             userCode.value = "";
-            document.querySelector(".subscription-auth-code-ticket").hidden = false;
+            codeTicket.hidden = true;
           }
         }
 
@@ -1378,6 +1398,75 @@
           "disabled",
           settingsLocked || !subscription || presentation.logout.hidden,
         );
+        syncOAuthPendingRecheck();
+      }
+
+      function oauthPendingForDraft() {
+        const state = getState();
+        const auth = state.oauthAuthProfileId === draftProfile?.id &&
+            state.oauthAuthProvider === oauthProvider()
+          ? state.oauthAuth
+          : undefined;
+        return auth?.status === "pending"
+          ? {
+              key: `${draftProfile.id}:${state.oauthAuthProvider}:${state.oauthAuthGeneration}`,
+              provider: state.oauthAuthProvider,
+            }
+          : null;
+      }
+
+      function cancelOAuthPendingRecheck() {
+        if (oauthPendingRecheckTimer !== null) {
+          window.clearTimeout(oauthPendingRecheckTimer);
+          oauthPendingRecheckTimer = null;
+        }
+        oauthPendingRecheckKey = null;
+        oauthPendingRecheckAttempt = 0;
+      }
+
+      function syncOAuthPendingRecheck() {
+        const pending = oauthPendingForDraft();
+        if (!pending) {
+          if (!oauthPendingRecheckInFlight) cancelOAuthPendingRecheck();
+          return;
+        }
+        if (oauthPendingRecheckKey !== pending.key) {
+          if (oauthPendingRecheckTimer !== null) {
+            window.clearTimeout(oauthPendingRecheckTimer);
+            oauthPendingRecheckTimer = null;
+          }
+          oauthPendingRecheckKey = pending.key;
+          oauthPendingRecheckAttempt = 0;
+        }
+        if (oauthPendingRecheckTimer !== null || oauthPendingRecheckInFlight) return;
+        const delay = oauthPendingRecheckDelays[
+          Math.min(
+            oauthPendingRecheckAttempt,
+            oauthPendingRecheckDelays.length - 1,
+          )
+        ];
+        oauthPendingRecheckTimer = window.setTimeout(() => {
+          oauthPendingRecheckTimer = null;
+          const current = oauthPendingForDraft();
+          if (!current || current.key !== oauthPendingRecheckKey) {
+            syncOAuthPendingRecheck();
+            return;
+          }
+          if (isAnyOperationInProgress() || hasAnySendInProgress()) {
+            syncOAuthPendingRecheck();
+            return;
+          }
+          oauthPendingRecheckInFlight = true;
+          void runOAuthAuthCommand(
+            "refresh_oauth_account",
+            "oauthCheckAccountButton",
+            current.provider,
+          ).finally(() => {
+            oauthPendingRecheckInFlight = false;
+            oauthPendingRecheckAttempt += 1;
+            syncOAuthPendingRecheck();
+          });
+        }, delay);
       }
 
       function focusAfterOAuthAuthCommand(source) {
@@ -1403,6 +1492,10 @@
       }
 
       async function runOAuthAuthCommand(kind, sourceId, provider = oauthProvider()) {
+        if (isAnyOperationInProgress()) {
+          showStatus("Wait for the current operation to finish.");
+          return;
+        }
         const source = document.getElementById(sourceId);
         const shouldRestoreFocus = document.activeElement === source;
         if (!draftProfile?.id) throw new Error("OAuth requires a Profile ID.");
@@ -1416,10 +1509,7 @@
           clearProvisionalOAuthScopes(profileId, provider);
         } else if (
           kind !== "logout_oauth" &&
-          (
-            !completed ||
-            oauthScopeIsProvisional(profileId, provider)
-          )
+          oauthScopeIsProvisional(profileId, provider)
         ) {
           provisionalOAuthScopes.add(oauthScopeKey(profileId, provider));
         }
@@ -1452,6 +1542,15 @@
           "refresh_oauth_account",
           "oauthCheckAccountButton",
         );
+      }
+
+      function openOAuthVerification(event) {
+        event?.preventDefault();
+        void runOAuthAuthCommand(
+          "open_oauth_authorization",
+          "oauthVerificationLink",
+        );
+        return false;
       }
 
       async function logoutOAuth() {
@@ -2303,6 +2402,7 @@
         handleWebSearchChange,
         markDraftDirty,
         logoutOAuth,
+        openOAuthVerification,
         refreshOAuthAccount,
         renderOAuthAuthState,
         updateApprovalModePresentation,
