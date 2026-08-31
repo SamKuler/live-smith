@@ -10,8 +10,8 @@ import { OAuthCredentialManager, type OAuthProviderAdapter } from "./credential-
 import {
   createAnthropicOAuthProtocol,
 } from "./anthropic-protocol.js";
-import { createGoogleOAuthAdapter } from "./google.js";
-import { createGoogleCloudCodeAssistProtocol } from "./google-protocol.js";
+import { createGoogleAntigravityOAuthAdapter } from "./google.js";
+import { createGoogleAntigravityProtocol } from "./google-protocol.js";
 import { createOpenAIOAuthAdapter } from "./openai.js";
 import { createOpenAICodexProtocol } from "./openai-codex-protocol.js";
 import type { OAuthModelProtocol } from "./protocol.js";
@@ -48,6 +48,10 @@ export function createNativeOAuthBackend(
     setPendingLoginBrowserLaunchFailed(failed, signal) {
       assertOpen();
       return credentials.setPendingLoginBrowserLaunchFailed(failed, signal);
+    },
+    submitLoginCode(code, signal) {
+      assertOpen();
+      return credentials.submitLoginCode(code, signal);
     },
     logout(signal) {
       assertOpen();
@@ -110,7 +114,7 @@ function adapterFor(
     case "anthropic":
       return createAnthropicOAuthAdapter(options);
     case "google":
-      return createGoogleOAuthAdapter(options);
+      return createGoogleAntigravityOAuthAdapter(options);
   }
 }
 
@@ -124,7 +128,7 @@ function protocolFor(
     case "anthropic":
       return createAnthropicOAuthProtocol(options);
     case "google":
-      return createGoogleCloudCodeAssistProtocol(options);
+      return createGoogleAntigravityProtocol(options);
   }
 }
 

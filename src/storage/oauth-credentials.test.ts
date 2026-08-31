@@ -48,6 +48,61 @@ const credentials: OAuthCredential[] = [
   },
 ];
 
+test("legacy Gemini CLI Google credentials are not reused for Antigravity", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const oauthDirectory = path.join(directory, "oauth");
+  await fs.mkdir(oauthDirectory, { recursive: true });
+  const legacyGoogle = {
+    provider: "google",
+    accessToken: "legacy-google-access",
+    refreshToken: "legacy-google-refresh",
+    expiresAt: 2_000_000_000_000,
+    projectId: "legacy-project",
+    accountLabel: "listener@example.com",
+  };
+  await fs.writeFile(
+    path.join(oauthDirectory, "credentials.json"),
+    JSON.stringify({
+      schemaVersion: 2,
+      credentials: {
+        "google-profile": { google: legacyGoogle },
+        "openai-profile": { openai: credentials[0] },
+        "anthropic-profile": { anthropic: credentials[1] },
+      },
+      legacyCredentials: {
+        google: legacyGoogle,
+        openai: credentials[0],
+        anthropic: credentials[1],
+      },
+    }),
+  );
+
+  assert.equal(
+    await loadOAuthCredential(directory, "google-profile", "google"),
+    undefined,
+  );
+  assert.deepEqual(
+    await loadOAuthCredential(directory, "openai-profile", "openai"),
+    credentials[0],
+  );
+  const migrated = JSON.parse(
+    await fs.readFile(path.join(oauthDirectory, "credentials.json"), "utf8"),
+  ) as {
+    schemaVersion: number;
+    credentials: Record<string, Record<string, OAuthCredential>>;
+    legacyCredentials: Record<string, OAuthCredential>;
+  };
+  assert.equal(migrated.schemaVersion, 3);
+  assert.deepEqual(migrated.credentials, {
+    "openai-profile": { openai: credentials[0] },
+    "anthropic-profile": { anthropic: credentials[1] },
+  });
+  assert.deepEqual(migrated.legacyCredentials, {
+    openai: credentials[0],
+    anthropic: credentials[1],
+  });
+});
+
 test("OAuth credentials are private, Profile-scoped, and replace atomically", async (t) => {
   const directory = await temporaryDirectory(t);
   for (const credential of credentials) {
@@ -198,7 +253,7 @@ test("legacy provider credentials migrate only to a deterministic saved Profile"
     credentials: Record<string, Record<string, OAuthCredential>>;
     legacyCredentials: Record<string, OAuthCredential>;
   };
-  assert.equal(persisted.schemaVersion, 2);
+  assert.equal(persisted.schemaVersion, 3);
   assert.deepEqual(persisted.credentials, {
     "profile-b": { openai: credentials[0] },
   });

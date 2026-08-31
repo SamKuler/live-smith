@@ -1,121 +1,199 @@
-import type { DiscoveredModelInfo, ReasoningCapabilities } from "../provider.js";
+import type { DiscoveredModelInfo } from "../provider.js";
 import {
   decodeDiscoveredModelCatalog,
   isDiscoveredModelId,
   MAX_DISCOVERED_MODEL_COUNT,
 } from "../catalog.js";
+import {
+  googleAntigravityInputSupport,
+  mimeBackedInputCapabilities,
+} from "../input-support.js";
 import { isRecord } from "./oauth-utils.js";
 
-const googleModels: ReadonlyArray<{
-  id: string;
-  displayName: string;
-  reasoning: Pick<
-    ReasoningCapabilities,
-    "canDisable" | "efforts" | "strategy"
-  >;
-  maxOutputTokens: number;
-}> = [
-  {
-    id: "gemini-2.5-flash",
-    displayName: "Gemini 2.5 Flash (Cloud Code Assist)",
-    reasoning: {
-      canDisable: true,
-      efforts: ["minimal", "low", "medium", "high"],
-      strategy: "budget-thinking",
-    },
-    maxOutputTokens: 65_535,
-  },
-  {
-    id: "gemini-2.5-pro",
-    displayName: "Gemini 2.5 Pro (Cloud Code Assist)",
-    reasoning: {
-      canDisable: false,
-      efforts: ["minimal", "low", "medium", "high"],
-      strategy: "budget-thinking",
-    },
-    maxOutputTokens: 65_535,
-  },
-  {
-    id: "gemini-3-flash-preview",
-    displayName: "Gemini 3 Flash Preview (Cloud Code Assist)",
-    reasoning: {
-      canDisable: false,
-      efforts: ["minimal", "low", "medium", "high"],
-      strategy: "effort",
-    },
-    maxOutputTokens: 65_535,
-  },
-  {
-    id: "gemini-3-pro-preview",
-    displayName: "Gemini 3 Pro Preview (Cloud Code Assist)",
-    reasoning: {
-      canDisable: false,
-      efforts: ["low", "high"],
-      strategy: "effort",
-    },
-    maxOutputTokens: 65_535,
-  },
-  {
-    id: "gemini-3.1-flash-lite-preview",
-    displayName: "Gemini 3.1 Flash Lite Preview (Cloud Code Assist)",
-    reasoning: {
-      canDisable: false,
-      efforts: ["minimal", "low", "medium", "high"],
-      strategy: "effort",
-    },
-    maxOutputTokens: 65_535,
-  },
-  {
-    id: "gemini-3.1-pro-preview",
-    displayName: "Gemini 3.1 Pro Preview (Cloud Code Assist)",
-    reasoning: {
-      canDisable: false,
-      efforts: ["low", "medium", "high"],
-      strategy: "effort",
-    },
-    maxOutputTokens: 65_535,
-  },
-];
-
-const googleModelsById = new Map(googleModels.map((model) => [model.id, model]));
-
-export function decodeGoogleCloudCodeAssistCatalog(
+export function decodeGoogleAntigravityCatalog(
   value: unknown,
 ): DiscoveredModelInfo[] | undefined {
-  if (!isRecord(value) || !Array.isArray(value.buckets)) return undefined;
-  const modelIds: string[] = [];
-  const seen = new Set<string>();
-  for (const bucket of value.buckets) {
-    if (!isRecord(bucket)) return undefined;
-    if (bucket.modelId === undefined) continue;
-    if (!isDiscoveredModelId(bucket.modelId)) return undefined;
-    if (seen.has(bucket.modelId)) continue;
-    seen.add(bucket.modelId);
-    modelIds.push(bucket.modelId);
-    if (modelIds.length > MAX_DISCOVERED_MODEL_COUNT) return undefined;
-  }
-  return decodeDiscoveredModelCatalog(modelIds.map((id) => {
-    const model = googleModelsById.get(id);
-    return {
+  if (!isRecord(value) || !isRecord(value.models)) return undefined;
+  const entries = Object.entries(value.models);
+  if (entries.length > MAX_DISCOVERED_MODEL_COUNT) return undefined;
+  const imageGenerationModelIds = specializedModelIds(
+    value.imageGenerationModelIds,
+  );
+  const audioTranscriptionModelIds = specializedModelIds(
+    value.audioTranscriptionModelIds,
+  );
+  if (
+    imageGenerationModelIds === "invalid" ||
+    audioTranscriptionModelIds === "invalid"
+  ) return undefined;
+  const excludedModelIds = new Set([
+    ...(imageGenerationModelIds ?? []),
+    ...(audioTranscriptionModelIds ?? []),
+  ]);
+  const models: DiscoveredModelInfo[] = [];
+  for (const [catalogId, rawModel] of entries) {
+    if (!isRecord(rawModel)) return undefined;
+    if (rawModel.isInternal !== undefined && typeof rawModel.isInternal !== "boolean") {
+      return undefined;
+    }
+    if (rawModel.isInternal === true) continue;
+    if (!isDiscoveredModelId(catalogId)) return undefined;
+    const id = catalogId;
+    if (excludedModelIds.has(id)) continue;
+    const displayName = typeof rawModel.displayName === "string" &&
+        rawModel.displayName.trim()
+      ? rawModel.displayName.trim()
+      : id;
+    const providerReported = antigravityProviderReported(rawModel);
+    if (providerReported === "invalid") return undefined;
+    const returned = returnedAntigravityCapabilities(rawModel, providerReported);
+    if (!returned) return undefined;
+    models.push({
       id,
-      displayName: model?.displayName ?? id,
-      capabilities: model
-        ? {
-            tools: true,
-            streaming: true,
-            temperature: "supported" as const,
-            maxOutputTokens: model.maxOutputTokens,
-            contextWindowTokens: 1_048_576,
-            reasoning: {
-              supported: true,
-              canDisable: model.reasoning.canDisable,
-              efforts: [...model.reasoning.efforts],
-              budgetTokens: false,
-              strategy: model.reasoning.strategy,
-            },
-            inputs: { image: true, audio: false, pdf: false },
-          }
-        : {},
-    };
-  }));
+      displayName,
+      capabilities: returned,
+      ...(providerReported === undefined ? {} : { providerReported }),
+    });
+  }
+  return decodeDiscoveredModelCatalog(models);
+}
+
+function returnedAntigravityCapabilities(
+  rawModel: Record<string, unknown>,
+  providerReported: DiscoveredModelInfo["providerReported"],
+): DiscoveredModelInfo["capabilities"] | undefined {
+  const maxOutputTokens = optionalPositiveInteger(rawModel, "maxOutputTokens");
+  const contextWindowTokens = optionalPositiveInteger(rawModel, "maxTokens");
+  if (
+    maxOutputTokens === "invalid" ||
+    contextWindowTokens === "invalid"
+  ) return undefined;
+
+  const reportedInputs = providerReported?.inputs;
+  const reportedReasoning = providerReported?.reasoning;
+  const inputs = mimeBackedInputCapabilities(
+    reportedInputs,
+    googleAntigravityInputSupport,
+  );
+  return {
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(reportedReasoning?.supportsThinking === false
+      ? {
+          reasoning: {
+            supported: false,
+            canDisable: false,
+            efforts: [],
+            budgetTokens: false,
+            strategy: "none",
+          },
+        }
+      : {}),
+    ...(inputs === undefined ? {} : { inputs }),
+  };
+}
+
+function antigravityProviderReported(
+  rawModel: Record<string, unknown>,
+): DiscoveredModelInfo["providerReported"] | "invalid" | undefined {
+  const supportsImages = optionalBoolean(rawModel, "supportsImages");
+  const supportsPdf = optionalBoolean(rawModel, "supportsPdf");
+  const supportsVideo = optionalBoolean(rawModel, "supportsVideo");
+  const supportedMimeTypes = optionalMimeTypeMap(rawModel.supportedMimeTypes);
+  const supportsThinking = optionalBoolean(rawModel, "supportsThinking");
+  const supportsAdaptiveThinking = optionalBoolean(
+    rawModel,
+    "supportsAdaptiveThinking",
+  );
+  const thinkingBudget = optionalInt32(rawModel, "thinkingBudget");
+  const minThinkingBudget = optionalInt32(rawModel, "minThinkingBudget");
+  const thinkingLevel = optionalInt32(rawModel, "thinkingLevel");
+  if (
+    supportsImages === "invalid" ||
+    supportsPdf === "invalid" ||
+    supportsVideo === "invalid" ||
+    supportedMimeTypes === "invalid" ||
+    supportsThinking === "invalid" ||
+    supportsAdaptiveThinking === "invalid" ||
+    thinkingBudget === "invalid" ||
+    minThinkingBudget === "invalid" ||
+    thinkingLevel === "invalid"
+  ) return "invalid";
+  const inputs = {
+    ...(supportsImages === undefined ? {} : { supportsImages }),
+    ...(supportsPdf === undefined ? {} : { supportsPdf }),
+    ...(supportsVideo === undefined ? {} : { supportsVideo }),
+    ...(supportedMimeTypes === undefined ? {} : { supportedMimeTypes }),
+  };
+  const reasoning = {
+    ...(supportsThinking === undefined ? {} : { supportsThinking }),
+    ...(supportsAdaptiveThinking === undefined
+      ? {}
+      : { supportsAdaptiveThinking }),
+    ...(thinkingBudget === undefined ? {} : { thinkingBudget }),
+    ...(minThinkingBudget === undefined ? {} : { minThinkingBudget }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+  };
+  if (Object.keys(inputs).length === 0 && Object.keys(reasoning).length === 0) {
+    return undefined;
+  }
+  return {
+    ...(Object.keys(inputs).length === 0 ? {} : { inputs }),
+    ...(Object.keys(reasoning).length === 0 ? {} : { reasoning }),
+  };
+}
+
+function optionalPositiveInteger(
+  record: Record<string, unknown>,
+  key: string,
+): number | "invalid" | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  return Number.isSafeInteger(value) && (value as number) > 0
+    ? value as number
+    : "invalid";
+}
+
+function optionalBoolean(
+  record: Record<string, unknown>,
+  key: string,
+): boolean | "invalid" | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  return typeof value === "boolean" ? value : "invalid";
+}
+
+function optionalInt32(
+  record: Record<string, unknown>,
+  key: string,
+): number | "invalid" | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  return Number.isInteger(value) &&
+      (value as number) >= -2_147_483_648 &&
+      (value as number) <= 2_147_483_647
+    ? value as number
+    : "invalid";
+}
+
+function optionalMimeTypeMap(
+  value: unknown,
+): Readonly<Record<string, boolean>> | "invalid" | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return "invalid";
+  return Object.values(value).every((supported) => typeof supported === "boolean")
+    ? value as Record<string, boolean>
+    : "invalid";
+}
+
+function specializedModelIds(
+  value: unknown,
+): string[] | "invalid" | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_DISCOVERED_MODEL_COUNT ||
+    !value.every(isDiscoveredModelId)
+  ) return "invalid";
+  return value;
 }

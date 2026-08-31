@@ -48,7 +48,7 @@ test("the OAuth browser rejects untrusted URLs before launching", async () => {
   assert.equal(calls, 0);
 });
 
-test("the Windows OAuth browser uses the fixed System32 URL handler", async () => {
+test("the Windows OAuth browser uses the fixed System32 handler for Antigravity", async () => {
   const calls: Array<{ executable: string; args: readonly string[] }> = [];
   const openOAuthAuthorizationUrl = createOAuthBrowserOpener({
     platform: "win32",
@@ -58,13 +58,14 @@ test("the Windows OAuth browser uses the fixed System32 URL handler", async () =
     },
   });
 
-  await openOAuthAuthorizationUrl("https://auth.openai.com/codex/device");
+  const target = "https://accounts.google.com/o/oauth2/auth?state=antigravity-state";
+  await openOAuthAuthorizationUrl(target);
 
   assert.deepEqual(calls, [{
     executable: "C:\\Windows\\System32\\rundll32.exe",
     args: [
       "url.dll,FileProtocolHandler",
-      "https://auth.openai.com/codex/device",
+      target,
     ],
   }]);
 });

@@ -53,8 +53,17 @@ interface OAuthCredentialStoreV2 {
   legacyCredentials: Partial<Record<OAuthProvider, OAuthCredential>>;
 }
 
-const emptyStore = (): OAuthCredentialStoreV2 => ({
-  schemaVersion: 2,
+interface OAuthCredentialStoreV3 {
+  schemaVersion: 3;
+  credentials: Record<
+    string,
+    Partial<Record<OAuthProvider, OAuthCredential>>
+  >;
+  legacyCredentials: Partial<Record<OAuthProvider, OAuthCredential>>;
+}
+
+const emptyStore = (): OAuthCredentialStoreV3 => ({
+  schemaVersion: 3,
   credentials: {},
   legacyCredentials: {},
 });
@@ -207,7 +216,7 @@ export async function retainOAuthCredentialForProfileProvider(
 
 async function persistOrRemoveStore(
   storageDirectory: string,
-  store: OAuthCredentialStoreV2,
+  store: OAuthCredentialStoreV3,
 ): Promise<void> {
   if (
     Object.keys(store.credentials).length === 0 &&
@@ -219,7 +228,7 @@ async function persistOrRemoveStore(
   await writeJsonAtomically(credentialsPath(storageDirectory), store);
 }
 
-async function readStore(storageDirectory: string): Promise<OAuthCredentialStoreV2> {
+async function readStore(storageDirectory: string): Promise<OAuthCredentialStoreV3> {
   const target = credentialsPath(storageDirectory);
   let parsed: unknown;
   try {
@@ -231,17 +240,66 @@ async function readStore(storageDirectory: string): Promise<OAuthCredentialStore
     if (error instanceof SyntaxError) throw invalidStore();
     throw error;
   }
-  return decodeStore(parsed);
+  const decoded = decodeStore(parsed);
+  if (decoded.migrated) {
+    await persistOrRemoveStore(storageDirectory, decoded.store);
+  }
+  return decoded.store;
 }
 
-function decodeStore(value: unknown): OAuthCredentialStoreV2 {
+function decodeStore(value: unknown): {
+  store: OAuthCredentialStoreV3;
+  migrated: boolean;
+} {
   if (!isRecord(value)) {
     throw invalidStore();
   }
-  if (value.schemaVersion === 1) return migrateStoreV1(decodeStoreV1(value));
-  if (value.schemaVersion !== 2 ||
+  if (value.schemaVersion === 1) {
+    return {
+      store: migrateStoreV2(migrateStoreV1(decodeStoreV1(value))),
+      migrated: true,
+    };
+  }
+  if (value.schemaVersion === 2) {
+    return { store: migrateStoreV2(decodeStoreV2(value)), migrated: true };
+  }
+  if (value.schemaVersion !== 3 ||
     !hasOnlyKeys(value, ["schemaVersion", "credentials", "legacyCredentials"]) ||
     !isRecord(value.credentials) || !isRecord(value.legacyCredentials)) {
+    throw invalidStore();
+  }
+  const credentials: OAuthCredentialStoreV3["credentials"] = {};
+  for (const [profileId, rawCredentials] of Object.entries(value.credentials)) {
+    if (!isProfileId(profileId) || !isRecord(rawCredentials)) {
+      throw invalidStore();
+    }
+    const scoped = decodeProviderCredentials(rawCredentials);
+    if (Object.keys(scoped).length === 0) throw invalidStore();
+    credentials[profileId] = scoped;
+  }
+  const legacyCredentials = decodeProviderCredentials(value.legacyCredentials);
+  return {
+    store: { schemaVersion: 3, credentials, legacyCredentials },
+    migrated: false,
+  };
+}
+
+function decodeStoreV1(value: Record<string, unknown>): OAuthCredentialStoreV1 {
+  if (!hasOnlyKeys(value, ["schemaVersion", "credentials"]) ||
+    value.schemaVersion !== 1 || !isRecord(value.credentials)) {
+    throw invalidStore();
+  }
+  return {
+    schemaVersion: 1,
+    credentials: decodeProviderCredentials(value.credentials),
+  };
+}
+
+function decodeStoreV2(value: Record<string, unknown>): OAuthCredentialStoreV2 {
+  if (!hasOnlyKeys(value, ["schemaVersion", "credentials", "legacyCredentials"]) ||
+    value.schemaVersion !== 2 ||
+    !isRecord(value.credentials) ||
+    !isRecord(value.legacyCredentials)) {
     throw invalidStore();
   }
   const credentials: OAuthCredentialStoreV2["credentials"] = {};
@@ -253,18 +311,10 @@ function decodeStore(value: unknown): OAuthCredentialStoreV2 {
     if (Object.keys(scoped).length === 0) throw invalidStore();
     credentials[profileId] = scoped;
   }
-  const legacyCredentials = decodeProviderCredentials(value.legacyCredentials);
-  return { schemaVersion: 2, credentials, legacyCredentials };
-}
-
-function decodeStoreV1(value: Record<string, unknown>): OAuthCredentialStoreV1 {
-  if (!hasOnlyKeys(value, ["schemaVersion", "credentials"]) ||
-    value.schemaVersion !== 1 || !isRecord(value.credentials)) {
-    throw invalidStore();
-  }
   return {
-    schemaVersion: 1,
-    credentials: decodeProviderCredentials(value.credentials),
+    schemaVersion: 2,
+    credentials,
+    legacyCredentials: decodeProviderCredentials(value.legacyCredentials),
   };
 }
 
@@ -287,6 +337,17 @@ function migrateStoreV1(store: OAuthCredentialStoreV1): OAuthCredentialStoreV2 {
     credentials: {},
     legacyCredentials: store.credentials,
   };
+}
+
+function migrateStoreV2(store: OAuthCredentialStoreV2): OAuthCredentialStoreV3 {
+  const credentials: OAuthCredentialStoreV3["credentials"] = {};
+  for (const [profileId, scoped] of Object.entries(store.credentials)) {
+    const { google: _retiredGoogle, ...retained } = scoped;
+    if (Object.keys(retained).length > 0) credentials[profileId] = retained;
+  }
+  const { google: _retiredLegacyGoogle, ...legacyCredentials } =
+    store.legacyCredentials;
+  return { schemaVersion: 3, credentials, legacyCredentials };
 }
 
 function validateCredential(
@@ -357,7 +418,7 @@ function requireProfileId(profileId: string): void {
 }
 
 function ownProfileCredentials(
-  credentials: OAuthCredentialStoreV2["credentials"],
+  credentials: OAuthCredentialStoreV3["credentials"],
   profileId: string,
 ): Partial<Record<OAuthProvider, OAuthCredential>> {
   return Object.prototype.hasOwnProperty.call(credentials, profileId)

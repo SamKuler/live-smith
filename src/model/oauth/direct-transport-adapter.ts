@@ -23,7 +23,7 @@ export function oauthRequestAsDirect(
     ? request.runtimeProfile.profile.connection.provider
     : undefined;
   if (credential.provider === "google") {
-    throw new Error("Google OAuth uses the Cloud Code Assist protocol.");
+    throw new Error("Google OAuth uses the Antigravity protocol.");
   }
   if (provider !== credential.provider) {
     throw new Error("OAuth request provider does not match its credential.");
@@ -48,7 +48,7 @@ export function oauthDraftAsDirect(
   credential: OAuthCredential,
 ): DraftProfile & { requestHeaders: Readonly<Record<string, string>> } {
   if (credential.provider === "google") {
-    throw new Error("Google OAuth uses the Cloud Code Assist protocol.");
+    throw new Error("Google OAuth uses the Antigravity protocol.");
   }
   if (profile.connection.kind !== "oauth-subscription" ||
     profile.connection.provider !== credential.provider) {

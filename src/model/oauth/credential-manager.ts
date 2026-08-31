@@ -22,6 +22,7 @@ const refreshSkewMs = 5 * 60 * 1_000;
 export interface OAuthLoginAttempt {
   pending: Extract<OAuthAuthState, { status: "pending" }>;
   completion: Promise<OAuthCredential>;
+  submitAuthorizationCode?(code: string): void;
   cancel(reason?: unknown): void;
 }
 
@@ -160,6 +161,32 @@ export class OAuthCredentialManager {
     if (!this.ownsLogin(active)) return this.readAuthState(signal);
     if (failed) attempt.pending.browserLaunchFailed = true;
     else delete attempt.pending.browserLaunchFailed;
+    return { ...attempt.pending };
+  }
+
+  async submitLoginCode(
+    code: string,
+    signal?: AbortSignal,
+  ): Promise<OAuthAuthState> {
+    throwIfAborted(signal);
+    this.assertOpen();
+    const active = this.activeLogin;
+    if (!active) {
+      throw new Error(`${this.adapter.displayName} has no pending sign-in.`);
+    }
+    const attempt = active.attempt ?? await waitForPromiseWithSignal(
+      active.acquired,
+      signal,
+    );
+    throwIfAborted(signal);
+    if (!this.ownsLogin(active)) throw this.loginOwnershipError();
+    if (!attempt.pending.authorizationCodeInput ||
+      !attempt.submitAuthorizationCode) {
+      throw new Error(
+        `${this.adapter.displayName} sign-in is not waiting for an authorization code.`,
+      );
+    }
+    attempt.submitAuthorizationCode(code);
     return { ...attempt.pending };
   }
 

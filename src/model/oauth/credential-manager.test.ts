@@ -90,6 +90,11 @@ test("OAuth login publishes pending state then persists the completed credential
 
   assert.deepEqual(await manager.beginLogin(), attempt.pending);
   assert.deepEqual(await manager.readAuthState(), attempt.pending);
+  await assert.rejects(
+    manager.submitLoginCode("not-for-device-auth"),
+    /not waiting for an authorization code/i,
+  );
+  assert.deepEqual(await manager.readAuthState(), attempt.pending);
 
   completion.resolve(openAICredential());
   await waitForStoredCredential(directory);
@@ -100,6 +105,73 @@ test("OAuth login publishes pending state then persists the completed credential
     planType: "ChatGPT subscription",
     subscriptionEligible: true,
   });
+  await assert.rejects(
+    manager.submitLoginCode("not-pending"),
+    /no pending sign-in/i,
+  );
+});
+
+test("OAuth login submits a provider-owned Antigravity authorization code", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const completion = deferred<OAuthCredential>();
+  let submittedCode = "";
+  const pending: OAuthLoginAttempt["pending"] = {
+    status: "pending",
+    verificationUrl: "https://accounts.google.com/o/oauth2/auth",
+    authorizationCodeInput: true,
+  };
+  const adapter: OAuthProviderAdapter = {
+    provider: "google",
+    displayName: "Antigravity",
+    async beginLogin() {
+      return {
+        pending,
+        completion: completion.promise,
+        submitAuthorizationCode(code) {
+          submittedCode = code;
+          delete pending.authorizationCodeInput;
+          completion.resolve({
+            provider: "google",
+            accessToken: "google-access",
+            refreshToken: "google-refresh",
+            expiresAt: Date.now() + 3_600_000,
+            projectId: "google-project",
+            accountLabel: "studio@example.test",
+          });
+        },
+        cancel(reason) {
+          completion.reject(reason);
+        },
+      };
+    },
+    async refresh(credential) {
+      return credential;
+    },
+    authState(credential) {
+      return {
+        status: "signed-in",
+        accountLabel: credential.provider === "google"
+          ? credential.accountLabel
+          : null,
+        planType: "Google Antigravity",
+        subscriptionEligible: true,
+      };
+    },
+  };
+  const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
+
+  assert.equal((await manager.beginLogin()).status, "pending");
+  assert.deepEqual(await manager.submitLoginCode("4/test-code"), {
+    status: "pending",
+    verificationUrl: "https://accounts.google.com/o/oauth2/auth",
+  });
+  assert.equal(submittedCode, "4/test-code");
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await loadOAuthCredential(directory, "profile-a", "google")) break;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal((await manager.readAuthState()).status, "signed-in");
+  await manager.close();
 });
 
 test("same-provider credential managers isolate Profile auth and logout", async (t) => {
@@ -249,7 +321,7 @@ test("OAuth login completion preserves an explicitly safe network proxy diagnosi
   );
   const adapter: OAuthProviderAdapter = {
     provider: "google",
-    displayName: "Gemini",
+    displayName: "Antigravity",
     async beginLogin() {
       return {
         pending: {
@@ -291,7 +363,7 @@ test("OAuth login completion preserves a trusted account-verification action", a
   const completion = deferred<OAuthCredential>();
   const adapter: OAuthProviderAdapter = {
     provider: "google",
-    displayName: "Gemini",
+    displayName: "Antigravity",
     async beginLogin() {
       return {
         pending: {
@@ -314,7 +386,7 @@ test("OAuth login completion preserves a trusted account-verification action", a
   const manager = new OAuthCredentialManager(directory, "profile-a", adapter);
   assert.equal((await manager.beginLogin()).status, "pending");
   completion.reject(new OAuthLoginError(
-    "Google requires an additional account verification before Gemini can be used.",
+    "Google requires an additional account verification before Antigravity can be used.",
     {
       verificationUrl: "https://accounts.google.com/signin/continue?flow=test",
       verificationLabel: "Verify Google account",
@@ -328,7 +400,7 @@ test("OAuth login completion preserves a trusted account-verification action", a
   }
   assert.deepEqual(state, {
     status: "unavailable",
-    message: "Google requires an additional account verification before Gemini can be used.",
+    message: "Google requires an additional account verification before Antigravity can be used.",
     definitive: true,
     verificationUrl: "https://accounts.google.com/signin/continue?flow=test",
     verificationLabel: "Verify Google account",
@@ -342,7 +414,7 @@ test("a host browser failure preserves the pending login and its completion", as
   let canceled = false;
   const adapter: OAuthProviderAdapter = {
     provider: "google",
-    displayName: "Gemini",
+    displayName: "Antigravity",
     async beginLogin() {
       return {
         pending: {
@@ -365,7 +437,7 @@ test("a host browser failure preserves the pending login and its completion", as
         accountLabel: credential.provider === "google"
           ? credential.accountLabel
           : null,
-        planType: "Google Cloud Code Assist",
+        planType: "Google Antigravity",
         subscriptionEligible: true,
       };
     },
