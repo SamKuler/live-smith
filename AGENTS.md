@@ -54,8 +54,10 @@ connection owns family, mode, base URL, and API key. An `oauth-subscription`
 connection owns only an OpenAI, Anthropic, or Google provider identity; its
 credential, backend, auth generation, and signed-in catalog are isolated to the
 exact Profile ID and provider. Credentials remain in private OAuth storage.
-Google desktop OAuth uses browser PKCE with an exact `127.0.0.1` loopback
-callback and never presents a one-time or device code.
+Google subscription OAuth uses Antigravity browser PKCE with the registered
+hosted callback; the user pastes its one-time authorization code into the exact
+pending Profile. Its catalog and generation requests use the Antigravity
+product protocol without bundling or requiring the Antigravity runtime.
 Do not add endpoint or vendor presets. OpenAI-compatible services use an
 ordinary Direct API OpenAI Profile with the protocol they implement.
 

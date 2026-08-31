@@ -135,17 +135,18 @@ src/
         Profile/provider-scoped OAuth login, refresh, credential ownership, and
         safe account-state projection.
       openai-codex-protocol.ts, anthropic-protocol.ts, google-protocol.ts
-        ChatGPT Codex Responses, Anthropic OAuth Messages, and Google Cloud
-        Code Assist mapping into the common model-turn boundary.
+        ChatGPT Codex Responses, Anthropic OAuth Messages, and Google
+        Antigravity mapping into the common model-turn boundary.
       direct-transport-adapter.ts, google-catalog.ts
         Request-scoped adaptation into shared Direct transports and the bounded
-        Cloud Code Assist catalog.
+        Antigravity catalog.
     transports/
       openai-responses.ts
       openai-chat.ts
       anthropic-messages.ts
       Protocol serialization, streaming, tool calls, and opaque state replay.
-      openai-http.ts, anthropic-http.ts, openai-errors.ts, retry-after.ts,
+      openai-http.ts, anthropic-http.ts, provider-error-body.ts,
+      openai-errors.ts, anthropic-errors.ts, retry-after.ts,
       server-sent-events.ts
       Explicit HTTP headers, endpoint resolution, bounded provider-error
       classification, and shared SSE framing without provider SDK runtime
@@ -260,9 +261,16 @@ else.
    never enter a model request.
 3. `capabilities.ts` resolves effective model capabilities and their evidence,
    then validates saved generation parameters from manual overrides, raw
-   discovery metadata, known policy, and conservative fallback. A fallback
+   discovery metadata, known reasoning policy, and conservative fallback. A fallback
    Boolean can keep a protocol usable without being presented as verified
-   provider support.
+   provider support. Bounded `providerReported` catalog evidence retains MIME,
+   video, and reasoning scalars that do not authorize a Live Smith request;
+   concrete input support is intersected with one shared format list and the
+   selected transport's encoder boundary, and model names never authorize
+   binary input;
+   Direct API caches keep it in their exact connection slot, while OAuth keeps
+   it only in the current modal/auth generation. The Settings UI identifies
+   provider-reported formats or controls that Live Smith cannot use.
 4. Before attachment reads or event append, `skill-context.ts` unions sorted
    persistent Session IDs with available `$skill-id` mentions. It resolves
    selected bundled definitions and copies/hash-validates selected User Skill
@@ -282,8 +290,8 @@ else.
 7. A Direct API transport maps normalized client function tools and
    provider-hosted tools, messages, and parameters to its wire protocol. OAuth
    backends obtain a refreshed credential and map the same normalized request
-   directly to ChatGPT Codex Responses, Anthropic Messages, or Google Cloud
-   Code Assist. They expose no provider CLI workspace or tool runtime.
+   directly to ChatGPT Codex Responses, Anthropic Messages, or Google
+   Antigravity. They expose no provider CLI workspace or tool runtime.
 8. Either backend returns the same normalized text and client tool-call
    boundary. Direct API transports can additionally return bounded citations
    and opaque replay state. Provider replay state remains transport-owned and
@@ -377,20 +385,45 @@ access, or Live mutations. Wire mappings and citation contracts are detailed in
 ### Protocol state and connection recovery
 
 OpenAI Responses always uses `store: false`. Responses output items, Chat raw
-assistant messages, and Anthropic content blocks are stored only inside the
-current local agent loop and replayed unchanged when their protocol requires it.
+assistant messages, Anthropic content blocks, and Google Antigravity parts are
+stored only inside the current local agent loop and replayed unchanged when
+their protocol requires it.
 An OpenAI Responses `incomplete` terminal with reason `max_output_tokens` becomes
 a provider-neutral continuation turn: the loop replays every returned output
 item, preserves partial text and citations, and makes at most two additional
 model requests. A function-call item is executable only if its own protocol
 status is `completed`; partial items are replayed but never executed. Other
-incomplete reasons fail closed.
+incomplete reasons fail closed. Chat `length`, Anthropic `max_tokens`, and Google
+`MAX_TOKENS` use the same bounded continuation path. If continuation attempts
+remain incomplete, the accumulated text and citations are emitted before the
+explicit stop notice rather than discarded. Chat continuation replay closes
+every returned function call with a fixed local non-execution result; a
+text-only response instead receives a fixed local user continuation marker.
+The transport validates the IDs and names needed for that pairing, retains
+partial arguments as opaque protocol state, and exposes no truncated call for
+execution. Anthropic
+`model_context_window_exceeded` similarly preserves the valid partial turn and
+ends with a visible context-limit notice instead of retaining replay state for
+an impossible continuation. If Anthropic truncates streamed client-tool JSON,
+the raw `partial_json` remains transport-owned replay state. The next
+continuation ends with a local user marker when no client tool was emitted. If
+the truncated response contains any client tool, every call instead receives a
+local `is_error` result saying that it was not executed; an incomplete call's
+result also returns its exact raw JSON. No truncated call is normalized into or
+executed as a client tool call. An unresolved server-only tool turn cannot
+accept a client result or text marker, so it terminates after preserving partial
+output and tells the user to increase the output limit. A truncated server-tool
+input forces the same termination even when the response also contains client
+tools; only a complete mixed server/client turn can continue through client
+error results. Canonical provider refusals are returned as assistant output;
+unknown terminal values still fail closed.
 Non-2xx provider response bodies are untrusted and are never logged or
-persisted. OpenAI-compatible and Google generation may decode at most 64 KiB of
-JSON to select a fixed local classification from bounded code, status, reason,
-and retry-delay fields. Other paths do not read the body. Transport errors
-retain only family/mode context, numeric HTTP status, and fixed local text;
-remote messages, metadata, and HTTP reason phrases are never propagated.
+persisted. OpenAI-compatible, Anthropic, and Google paths may decode at most
+64 KiB of JSON to select a fixed local classification and retain strictly
+validated code, type, status, reason, quota, and retry-delay fields. Transport
+errors retain family/mode context, numeric HTTP status, and fixed local text;
+remote messages, arbitrary metadata, and HTTP reason phrases are never
+propagated.
 
 Connection recovery sits inside one provider-neutral `askModel` step. A
 transport or OAuth product protocol gives a private typed identity to eligible
@@ -416,12 +449,11 @@ The reconnect owner creates one opaque object for those physical attempts and
 passes it through request assembly without inspecting provider state. The
 ChatGPT Codex protocol weakly associates its first bounded turn-state token
 with that object as soon as a response header or metadata event arrives, so an
-early EOF retry replays the same token. Google Cloud Code Assist likewise
-associates one `user_prompt_id` with the object so physical retries keep one
-prompt identity, then carries that ID in its opaque assistant state across tool
-and output-limit continuations. A steering user message ends that identity.
-The object and associations are not persisted or shared with a later agent
-turn.
+early EOF retry replays the same token. Google Antigravity likewise associates
+one `requestId` with the object so physical retries keep one request identity.
+Tool-result and output-limit continuations are new logical requests and receive
+new IDs. The object and associations are not persisted or shared with a later
+agent turn.
 
 This recovery never re-enters `/send` or its one-time request-start
 preparation. Each retry rebuilds the provider request from the same prompt,
@@ -485,8 +517,9 @@ The OAuth backend is split by responsibility:
   retirement, generation-checked writes, refresh-error redaction, and one shared
   close completion.
 - `model/oauth/openai.ts`, `anthropic.ts`, and `google.ts` own provider
-  authorization flows. Google's desktop flow binds and redirects to the exact
-  `127.0.0.1` loopback endpoint and completes without a one-time or device code.
+  authorization flows. Antigravity uses its hosted Google callback; the user
+  pastes its one-time authorization code into the exact pending Google Profile.
+  Claude remains the only browser-PKCE provider using a local callback.
 - `model/oauth/openai-codex-protocol.ts`, `anthropic-protocol.ts`, and
   `google-protocol.ts` own product-backend request mapping and normalized model
   results.
@@ -648,9 +681,10 @@ snapshot that could race Session creation. POSIX directories are tightened to
 PDFs receive bounded envelope checks and an encryption-token check before use;
 this is not PDF sanitization, page-count validation, or visual rendering. A PDF
 is carried as a native binary model part only when the active saved
-`RuntimeProfile` resolves `inputs.pdf === true` and its mode is OpenAI Responses
-or Anthropic Messages. Live Smith does not support PDF input through OpenAI Chat
-Completions, regardless of what a compatible endpoint may offer.
+`RuntimeProfile` resolves `inputs.pdf === true` and its protocol is OpenAI
+Responses, Anthropic Messages, or Google Antigravity. Live Smith does not
+support PDF input through OpenAI Chat Completions, regardless of what a
+compatible endpoint may offer.
 
 Audio inspection accepts only RIFF/WAVE with PCM format tag 1 or IEEE-float
 format tag 3, and MP3 with MPEG-1 or MPEG-2 Layer III frames. The inspector
@@ -707,11 +741,12 @@ markers instead of failing the new send. Assistant history is text-only.
 The provider-neutral model contract carries typed user text, image, native PDF,
 and audio parts. Transports recheck the corresponding input capability before
 network I/O. OAuth OpenAI and Google map verified images to product-backend
-inline data, while OAuth Anthropic uses the same image blocks as Messages.
+input parts, while OAuth Anthropic uses the same image blocks as Messages.
+Antigravity maps catalog-verified images, PDFs, WAV, and MP3 as inline data.
 Audio additionally requires explicit `supported` evidence on the active saved
-`RuntimeProfile` and Direct OpenAI Chat Completions; subscription backends,
-OpenAI Responses, and Anthropic Messages reject audio locally. Model tool
-support is unrelated and is not a gate. Office content is locally
+`RuntimeProfile`; only Direct OpenAI Chat Completions and Google Antigravity
+deliver it. OpenAI Responses and Anthropic Messages reject audio locally.
+Model tool support is unrelated and is not a gate. Office content is locally
 extracted and encoded with its filename and media type in a JSON-escaped block
 explicitly labelled untrusted. File names, embedded metadata, document text,
 audio, and other binary content have no instruction authority. Attachment IDs

@@ -14,7 +14,7 @@ Every Profile selects one explicit connection kind:
   refresh, logout, and direct HTTP requests to the provider product backend.
 
 No subscription connection starts, bundles, discovers, or requires Codex CLI,
-Claude Code, Gemini CLI, or another provider runtime.
+Claude Code, Gemini CLI, Antigravity, or another provider runtime.
 
 ## Network routing
 
@@ -55,12 +55,13 @@ variables and `.env` files are not credential or endpoint fallbacks.
 
 #### Errors, bounds, cancellation, and recovery
 
-Non-2xx response bodies are untrusted. OpenAI-compatible and Google generation
-may decode at most 64 KiB of JSON only to recognize fixed error codes, reasons,
-and retry delays; remote messages and metadata are never returned or logged.
-Other non-2xx generation and discovery paths retain only the protocol and
-numeric status. Request bodies, authorization headers, API keys, OAuth tokens,
-and credential-bearing causes never enter Session events or WebView state.
+Non-2xx response bodies are untrusted. OpenAI-compatible, Anthropic, and Google
+paths may decode at most 64 KiB of JSON only to retain strictly bounded canonical
+error types, codes, reasons, quota identifiers, and retry delays; remote messages
+and arbitrary metadata are never returned or logged. Malformed error envelopes
+fall back to the protocol and numeric HTTP status. Request bodies, authorization
+headers, API keys, OAuth tokens, and credential-bearing causes never enter
+Session events or WebView state.
 
 Successful JSON responses have a 16 MiB byte budget. SSE events must reach a
 delimiter within 1 MiB. Discovery accepts at most 1,000 unique bounded model
@@ -76,13 +77,17 @@ The retry does not restart `/send`, append the prompt twice, replay an accepted
 client tool, or repeat a Live mutation. Authentication, quota/account limits,
 policy or validation failures, malformed protocol data, and local
 request-construction failures remain fatal.
+Non-success provider JSON is read through one size- and time-bounded diagnostic
+path. Validated safe identifiers can refine the error; a missing, malformed, or
+stalled body falls back to the HTTP status without blocking cancellation or
+exposing provider messages.
 
 OpenAI-compatible generation retries HTTP 408, 409, 429, and 5xx plus fixed
 transient stream codes; on 429 and decoded 4xx responses, a structured quota,
 billing, usage, context, or policy code overrides the HTTP default and remains
-fatal. Anthropic generation honors
-`x-should-retry`, retries HTTP 408, 409, and 5xx, and, absent an explicit
-header override, retries 429 only when it provides a valid `Retry-After`.
+fatal. Anthropic generation honors `x-should-retry` and otherwise retries HTTP
+408, 409, 429, and 5xx. A valid `Retry-After` supplies the provider delay but is
+not required for a 429 retry.
 Anthropic stream retries are limited to
 `overloaded_error`, `rate_limit_error`, `api_error`, and `timeout_error`.
 
@@ -96,7 +101,7 @@ backend:
 | --- | --- | --- |
 | OpenAI | ChatGPT device authorization | ChatGPT Codex Responses |
 | Anthropic | Claude browser PKCE | Anthropic Messages with OAuth identity |
-| Google | Google browser PKCE | Cloud Code Assist streamGenerateContent |
+| Google | Antigravity browser PKCE | Antigravity streamGenerateContent |
 
 OAuth traffic is not silently rerouted to a saved Direct API Profile. Direct
 API billing and subscription-account usage therefore remain distinct
@@ -113,12 +118,14 @@ It stores discriminated credentials in exact Profile-ID/provider slots:
 
 - OpenAI: access token, refresh token, expiry, and ChatGPT account ID.
 - Anthropic: access token, refresh token, and expiry.
-- Google: access token, refresh token, expiry, Cloud Code Assist project ID,
+- Google: access token, refresh token, expiry, Antigravity companion project ID,
   and an optional account label.
 
-Credentials never enter Profiles, Session model selections, model caches,
-Session events, model requests as data, bridge command bodies, dialog state, or
-logs. The browser receives only credential-free auth state: signed out,
+Access and refresh credentials never enter Profiles, Session model selections,
+model caches, Session events, model requests as data, bridge command bodies,
+dialog state, or logs. Antigravity's one-time authorization code crosses only
+its strict, bounded submit command and is not stored, logged, or projected into
+state. The browser receives only credential-free auth state: signed out,
 pending authorization URL and optional device code, signed in account label and
 service label, or a fixed unavailable description with an optional trusted
 account-verification URL. An unavailable account keeps an explicit Sign out
@@ -128,12 +135,18 @@ starting a new authorization.
 Credential-store schema v1 used provider-global slots. Before the first OAuth
 operation in a process, and before any Profile Save or Delete that changes OAuth
 ownership, one serialized preparation reads the current saved settings and
-assigns each validated legacy credential to the active matching saved Profile,
-or the first matching saved Profile when the active Profile uses another
-connection. A legacy credential with no saved owner is discarded, so a future
-Draft cannot inherit it. The preparation also removes tuple credentials left
-from a prior process when they no longer match a saved connection. Preparation
-failure prevents the ownership-changing settings mutation from committing.
+assigns each retained, validated legacy credential to the active matching saved
+Profile, or the first matching saved Profile when the active Profile uses
+another connection. A legacy credential with no saved owner is discarded, so a
+future Draft cannot inherit it. The preparation also removes tuple credentials
+left from a prior process when they no longer match a saved connection.
+Preparation failure prevents the ownership-changing settings mutation from
+committing.
+
+Credential-store schema v3 retires only Google credentials issued by the
+former Gemini CLI OAuth client because they cannot be refreshed as Antigravity
+credentials. OpenAI and Anthropic Profile tuples survive that migration;
+Google subscription Profiles require one new Antigravity sign-in.
 
 While one Profile is being edited, signing in to another provider writes a
 separate provisional tuple and does not overwrite the saved provider's refresh
@@ -154,26 +167,30 @@ or silently reusing the old credential.
 #### Login and refresh lifecycle
 
 OpenAI uses device authorization. Claude uses its registered fixed loopback
-port. Google uses browser PKCE with an available ephemeral port and the exact
-`http://127.0.0.1:<port>/oauth2callback` redirect; Google does not issue a
-one-time or device code. Both loopback flows use exact state validation. The
-callback accepts only its one path and expected state, returns inert local HTML,
-and closes after success, denial, cancellation, timeout, or backend shutdown.
+port. Antigravity uses Google browser PKCE with the registered hosted
+`https://antigravity.google/oauth-callback` redirect. That page displays an
+authorization code which the user pastes into Live Smith; the code is bounded,
+submitted only to the active Google Profile's pending attempt, and never stored
+or projected back into dialog state. Claude's loopback callback accepts only
+its exact path and state, returns inert local HTML, and closes after success,
+denial, cancellation, timeout, or backend shutdown.
 
 The dialog does not depend on popup support in Ableton's embedded WebView.
 After login acquisition returns a validated pending HTTPS URL, the Extension
 Host launches it through a fixed system browser command: `/usr/bin/open` on
 macOS or the System32 URL handler on Windows. A rejected launch cancels the
-browser command but keeps the provider-owned pending attempt, loopback listener,
-PKCE state, and verified URL active. The dialog marks that launch failure;
+browser command but keeps the provider-owned pending attempt, PKCE state,
+callback or authorization-code wait, and verified URL active. The dialog marks
+that launch failure;
 selecting the link retries the same Host browser command and a successful retry
 clears the marker, while the address remains available to copy manually.
-Pending auth states are checked automatically with bounded backoff; ChatGPT
-still requires entering its device code before that check can complete. Closing
-the owning modal stops admitting new browser launches, cancels an unfinished
-launch, and waits for it to settle before OAuth cleanup completes. Sign-out,
-replacement, or completed account reconciliation likewise cancels that Profile
-connection's unfinished browser launch.
+Pending auth states that do not require local input are checked automatically
+with bounded backoff; ChatGPT still requires entering its device code before
+that check can complete, while Antigravity waits for the pasted authorization
+code before checking. Closing the owning modal stops admitting new browser
+launches, cancels an unfinished launch, and waits for it to settle before OAuth
+cleanup completes. Sign-out, replacement, or completed account reconciliation
+likewise cancels that Profile connection's unfinished browser launch.
 
 One Profile/provider backend owns an in-flight login from adapter acquisition
 through credential commit, plus one refresh single-flight. Login ownership is
@@ -223,10 +240,13 @@ JSON content type, `store: false`, full local conversation input, and Live Smith
 function tools. An `error` envelope is treated as provisional while awaiting
 the authoritative `response.failed` event; that terminal's fixed error code
 separates transient provider failures from context, usage, and policy failures
-without returning the provider message. A stream that ends before either
-terminal remains connection loss. Generation HTTP 408, 409, 429, and 5xx
-responses use the same bounded provider-retry path; catalog loading remains an
-explicit read operation rather than an accepted model turn.
+without returning the provider message. If the stream instead ends after a
+well-formed canonical `error` event, Live Smith preserves and classifies that
+bounded provider error. A clean stream with neither a terminal nor a canonical
+error remains connection loss, while malformed error events fail closed.
+Generation HTTP 408, 409, 429, and 5xx responses use the same bounded
+provider-retry path; catalog loading remains an explicit read operation rather
+than an accepted model turn.
 Device login reads ChatGPT account identity from the ID token, with an access
 token claim as fallback. If neither `expires_in` nor a JWT expiry is available,
 the token remains usable until the bounded HTTP 401 refresh path replaces it.
@@ -249,28 +269,45 @@ Smith's system instructions. It reuses the same strict streaming, tool replay,
 thinking-block replay, pagination, and response bounds as Direct Anthropic
 Messages. OAuth is never sent in `x-api-key`.
 
-Google OAuth discovers or provisions the account's Cloud Code Assist project.
-If Google reports `VALIDATION_REQUIRED` during that setup, Live Smith exposes
-only its allowlisted `accounts.google.com` verification URL and a fixed local
-description; after verification, starting sign-in again completes setup. It
-then performs the optional account-label lookup and sends to
-`https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`.
-The request uses the Gemini CLI `user_prompt_id` product envelope. The adapter
-creates that ID once per local agent turn and reuses it across connection
-retries, tool-result requests, and output-limit continuations. Steering starts
-a new ID. It requires a terminal finish reason, classifies a missing terminal
-as connection loss, classifies bounded HTTP and SSE code/status/reason fields,
-and accepts only `STOP` or `MAX_TOKENS` as successful finish reasons. Prompt
-policy feedback, malformed or unknown terminals, exhausted daily quota or model
-capacity, and required account validation remain fatal. Per-minute quota hints,
-transient rate, abort, timeout, unavailable, and server failures retry.
+Google OAuth uses Antigravity's installed-app client, hosted callback, and
+the Cloud, account, Code logging, experiment/config, AI Code, and OpenID scopes
+required by the product. It first resolves the account's managed companion
+project and fails closed if Antigravity does not return one. If Google reports
+`VALIDATION_REQUIRED`, Live Smith exposes only its allowlisted
+`accounts.google.com` verification URL and a fixed local description; after
+verification, starting sign-in again completes setup.
+
+Account bootstrap uses `cloudcode-pa.googleapis.com`; Antigravity catalog and
+generation traffic use its `daily-cloudcode-pa.googleapis.com` product route.
+Generation sends SSE requests to
+`https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
+with Antigravity CLI 1.1.22's consumer HTTP identity. The request envelope
+contains `requestType: "agent"`, `userAgent: "antigravity"`, and one opaque
+`requestId` in `agent/<UUID>` form for each logical model request. Only physical
+connection retries reuse that ID; tool-result and output-limit continuations
+start new IDs. The adapter
+requires a terminal finish reason, treats a missing terminal as connection
+loss, classifies bounded HTTP and SSE code/status/reason fields, and accepts
+only `STOP` or `MAX_TOKENS` as successful finish reasons. Prompt policy
+feedback, malformed or unknown terminals, exhausted daily quota or model
+account quota, and required account validation remain fatal. Temporary model
+capacity, per-minute quota hints, transient rate, abort, timeout, unavailable,
+and server failures retry. Safe canonical status/reason/finish values remain in
+errors; raw provider messages and credential-bearing metadata do not. An empty
+HTTP 429 uses a bounded one-minute rate-limit delay instead of immediately
+exhausting the retry loop. Retry
+progress and final exhaustion preserve that safe normalized cause and the
+scheduled wait instead of replacing it with a generic failure label.
+
 The adapter owns Google content-role mapping, function declarations,
 function-call/result replay, thought signatures, thinking levels or budgets,
-usage projection, SSE parsing, and fixed safe errors. Workspace accounts that
-require an explicit Cloud project fail with a configuration error rather than
-reading an environment variable implicitly. Provider-supplied function-call
-IDs are replayed on both call and result; a Live Smith ID synthesized for an
-ID-less call remains internal and is omitted from both Google wire parts.
+usage projection, bounded citation/grounding-source normalization, SSE parsing,
+and fixed safe errors. Present malformed tool arguments, candidate parts,
+citations, usage, or conflicting terminals fail explicitly instead of being
+discarded or coerced. Provider-supplied
+function-call IDs are replayed on both call and result; a Live Smith ID
+synthesized for an ID-less call remains internal and is omitted from both
+Google wire parts.
 
 #### Catalogs and send admission
 
@@ -281,12 +318,32 @@ refreshes or loads the provider catalog before prompt persistence and rejects a
 Session model that is no longer available.
 
 OpenAI and Anthropic use OAuth-authenticated product catalogs. Google loads the
-signed-in project's bounded `retrieveUserQuota` model buckets; only returned
-model IDs are selectable. Recognized IDs receive the Cloud Code Assist
-capabilities the product protocol can encode, while a newly returned unknown ID
-remains selectable with conservative, unverified capability evidence. Every
-catalog is decoded through the same normalized `DiscoveredModelInfo` contract
-before it can reach Profile or Session selection.
+signed-in Antigravity account's bounded `fetchAvailableModels` catalog and
+exposes every returned agent model regardless of model-name family. Internal
+entries and the IDs in the provider's `imageGenerationModelIds` and
+`audioTranscriptionModelIds` lists are excluded because this transport cannot
+use those specialized protocols. Every exposed model, including a newly
+returned ID, consumes the catalog's `maxTokens`, `maxOutputTokens`, thinking
+support, legacy image/PDF flags, and `supportedMimeTypes`. Direct
+OpenAI-compatible discovery likewise consumes
+returned context/output limits, input modalities, MIME maps, and legacy input
+flags. Anthropic discovery consumes its official input and reasoning capability
+objects. Missing fields remain unverified instead of being inferred from a
+model name. Every catalog is decoded through the same normalized
+`DiscoveredModelInfo` contract before it can reach Profile or Session selection.
+Exact MIME and wildcard entries are retained in bounded provider evidence. A
+coarse Live Smith image or audio capability becomes supported only when the
+catalog covers every format that the corresponding attachment type can emit;
+partial or coarse-only provider support remains visible without authorizing an
+incompatible format. Usable capabilities are also intersected with the selected
+wire protocol: Chat supports image/audio, Responses and Messages support
+image/PDF, and Antigravity supports image/audio/PDF. A positive thinking flag or
+scalar is retained as provider evidence but does not expose an explicit
+reasoning control unless the catalog also defines a complete encodable strategy.
+
+Live Smith sends the exact account project and lets Antigravity select the
+account's default entitlement and region. It does not import or guess the
+Antigravity CLI's separate local license-tier or project-region overrides.
 
 An OAuth product request rejected with HTTP 401 refreshes its credential and
 replays at most once, before any response body has been accepted. Other HTTP or
@@ -326,20 +383,61 @@ tool results, encrypted reasoning replay, output-limit continuation, citations,
 and hosted Web Search state remain provider protocol data until normalized into
 `ModelTurn`. Direct API Extra Body cannot override protected request ownership
 such as model, input, tools, store, instructions, or replay state.
+An incomplete `max_output_tokens` turn validates every known output item, then
+replays it with a fixed non-execution output for each returned function call or
+with a fixed user continuation marker when no call was returned. Incomplete
+function calls are never exposed for local execution. Codex subscription uses
+the same terminal decoder and continuation contract. Known message items must
+remain assistant output. Incomplete Web Search items retain only validated
+provider states (`in_progress`, `searching`, `incomplete`, `completed`, or
+`failed`); non-terminal states are replayed but are not reported as completed
+search activity.
 
 ### OpenAI Chat Completions
 
 Chat Completions maps local messages and function tools to delta streams. It
 supports OpenAI-compatible services, including compatible Gemini endpoints,
 when the service implements the wire contract. This Direct API mode is separate
-from Google account OAuth and Cloud Code Assist.
+from Google account OAuth and Antigravity. Streaming requests ask for the final
+usage chunk and read through the terminal `[DONE]`, so authoritative token usage
+is not lost after the first `finish_reason` chunk. A `length` response preserves
+its raw assistant message but exposes no executable tool calls. Its continuation
+replays that assistant message followed by a fixed user continuation marker, or
+by a fixed non-execution result for every complete or partial function call.
+Ordinary `tool_calls` responses remain paired with their real client results.
+Both response modes require the assembled provider message to identify itself
+as an assistant before any text, function call, or opaque state can be replayed.
 
 ### Anthropic Messages
 
 Messages requests preserve signed thinking blocks, tool-use IDs, pause-turn
 continuations, and exact tool-result ordering. OAuth and Direct API connections
 share this protocol implementation but supply different request authentication
-and identity headers.
+and identity headers. Canonical refusal and truncation stop reasons preserve the
+returned content, citations, and usage. Successful JSON responses and streaming
+`message_start` envelopes require
+`type: "message"` and `role: "assistant"`. A 200 `type: "error"` envelope is
+classified through the same bounded safe-error contract as other Anthropic
+failures. Every stream content block started after `message_start` must close
+exactly once before `message_stop`; an unclosed tool block is never executable.
+`max_tokens` also preserves replay blocks; the following request ends with a
+local continuation marker, or with
+`is_error` results for every returned client tool so none can execute. An
+error result for an incomplete streamed tool input also contains its exact raw
+JSON. A mixed turn with a complete server-tool input returns only the client
+error results and leaves the server block for Anthropic to continue. A truncated
+server-tool input terminates even when client tools are also present. An
+unresolved server-only turn likewise terminates with an output-limit notice
+because a client result or text marker would close the provider-owned server
+turn incorrectly.
+Context-window termination retains no unusable replay state. Malformed known
+content blocks, their known fields, stream-delta shapes, or events for an
+already closed block fail explicitly, while unknown object block types remain
+opaque replay data.
+Streaming must begin with exactly one canonical `message_start`, whose `content`
+is empty. Every returned content block must then pass through its own start,
+delta, and stop lifecycle before `message_stop`, so a missing start or an
+unclosed tool block can never become executable.
 
 ### Follow-ups and steering
 
@@ -361,21 +459,26 @@ keep a protocol usable without claiming provider verification. Subscription
 catalog evidence is account/auth-generation scoped and cannot be restored from
 the persistent Direct API model cache.
 
-Recognized Google catalog models advertise image input, tools, streaming, a
-1,048,576 token context window, and model-specific thinking controls. Unknown
-account-returned models keep those fields unverified. OpenAI and Anthropic
-OAuth evidence comes from their signed-in catalog metadata; their known model
-policy remains available to Direct API Profiles.
+Google catalog models advertise the context/output limits, thinking support,
+legacy input flags, and supported MIME types returned for that exact account.
+Google model names do not fill missing input or thinking controls. OpenAI and
+Anthropic OAuth evidence comes from their signed-in catalog metadata; their
+known reasoning policy remains available to Direct API Profiles. Model names do
+not authorize binary input for any connection.
+Provider-reported video support is preserved for display even though Live Smith
+does not yet define a video attachment part.
 
 ## Input mapping
 
 Images are supported only when the saved runtime capability and evidence allow
 them. OpenAI Responses uses image data URLs, Anthropic uses base64 image source
-blocks, and Cloud Code Assist uses inline data parts. Native PDF input remains
-limited to verified Direct OpenAI Responses or Anthropic Messages Profiles.
+blocks, and Antigravity uses inline data parts. Native PDF input uses OpenAI
+Responses, Anthropic Messages, or Antigravity inline data only when the loaded
+catalog or Direct API metadata supports `application/pdf`.
 
-Audio input remains limited to verified Direct OpenAI Chat Completions
-connections. OAuth subscription backends do not advertise audio input. Office
+Audio input uses OpenAI Chat Completions or Antigravity inline data only when
+the loaded metadata explicitly supports WAV or MP3. Other subscription
+backends, OpenAI Responses, and Anthropic Messages reject audio locally. Office
 documents are extracted locally into bounded untrusted text and do not require
 native provider document support.
 
@@ -402,7 +505,7 @@ key.
 Gemini Developer API can be configured separately through Google's OpenAI Chat
 Completions compatibility endpoint and an API key. This path uses developer API
 billing and is unrelated to the Google OAuth subscription connection, which
-uses Cloud Code Assist.
+uses the Antigravity product backend.
 
 ## Credential storage
 
@@ -421,5 +524,5 @@ credential-bearing causes.
 
 No environment variable selects a provider or supplies OAuth credentials. Run
 Live Smith normally, create an Account subscription Profile, choose ChatGPT,
-Claude, or Google Gemini, and use the in-dialog sign-in action. Direct API keys
-remain configured only in explicit Direct API Profiles.
+Claude, or Google Antigravity, and use the in-dialog sign-in action. Direct API
+keys remain configured only in explicit Direct API Profiles.

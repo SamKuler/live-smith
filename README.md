@@ -87,28 +87,32 @@ Messages connections. It is off by default and configured per model.
 
 ### Account subscription — experimental
 
-Sign in inside Live Smith with ChatGPT, Claude, or Google. Live Smith owns the
-OAuth session and calls the provider product backend directly; customers do not
-install Codex CLI, Claude Code, Gemini CLI, or provide an API key.
+Sign in inside Live Smith with ChatGPT, Claude, or Google Antigravity. Live
+Smith owns the OAuth session and calls the provider product backend directly;
+customers do not install Codex CLI, Claude Code, Gemini CLI, Antigravity, or
+provide an API key.
 Each subscription Profile has its own sign-in state, even when another Profile
 uses the same provider. Creating a new Profile therefore starts signed out, and
 signing out affects only that Profile.
 
 After the provider returns a pending authorization, the Extension Host opens
 the default system browser on macOS or Windows. ChatGPT displays its device
-code in the dialog. Claude and Google complete browser PKCE through a local
-callback; Google returns automatically to `127.0.0.1` and does not issue a
-one-time or device code. Live Smith checks browser-based sign-in automatically.
-If Google requires an additional account verification before enabling Cloud
-Code Assist, the dialog shows the verified Google page and asks you to sign in
-again after completing it.
+code in the dialog. Claude completes browser PKCE through a local callback.
+Antigravity returns to Google's hosted callback page; copy
+the authorization code shown there into Live Smith to finish sign-in. Live
+Smith checks the account automatically after that submission. If Google
+requires an additional account verification before
+enabling Antigravity, the dialog shows the verified Google page and asks you to
+sign in again after completing it.
 
 ChatGPT uses the Codex backend API, Claude uses OAuth-authenticated Anthropic
-Messages, and Gemini uses Google Cloud Code Assist. Anthropic currently assigns
-third-party OAuth traffic to Claude Extra Usage when it is enabled. Hosted Web
-Search is not exposed through subscription Profiles. If an account check is
-unavailable, use Sign out to clear its saved OAuth session before signing in
-again.
+Messages, and Google uses the Antigravity product backend. Anthropic currently
+assigns third-party OAuth traffic to Claude Extra Usage when it is enabled.
+Antigravity uses the account's default entitlement and region; Live Smith does
+not import CLI-local license-tier or project-region overrides.
+Hosted Web Search is not exposed through subscription Profiles. If an account
+check is unavailable, use Sign out to clear its saved OAuth session before
+signing in again.
 
 See [model connections](docs/MODEL_PROVIDERS.md) for setup requirements and
 provider-specific limitations.
@@ -215,7 +219,13 @@ Skills do not grant additional permissions or tools.
 **Attachments** support PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 Office documents are read as text. Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
-sent to every model. Use paste or drag-and-drop rather than a system file picker.
+sent to every model. Model loading consumes provider-returned input modalities
+and MIME support for both Direct API and subscription Profiles. Raw provider
+evidence remains visible, while a usable input is marked Supported only when the
+provider covers Live Smith's concrete formats and the selected protocol can
+encode them; missing or coarse-only evidence stays unverified. Provider-reported
+video capability is shown, but Live Smith does not yet accept video attachments.
+Use paste or drag-and-drop rather than a system file picker.
 The Extensions SDK does not expose selected Audio Clip, Sample, or Simpler source
 bytes to extensions, so export or locate the source file and drop it into the
 composer when you need the original file as an attachment.
