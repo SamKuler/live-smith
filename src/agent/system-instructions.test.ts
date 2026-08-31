@@ -31,6 +31,13 @@ test("empty Skill context preserves the complete built-in instructions byte for 
   );
 });
 
+test("the action contract does not guess Session View for ambiguous Clip creation", () => {
+  assert.match(
+    actionSystemPrompt(),
+    /If neither the user nor Live context explicitly identifies Session View, create new Clips in Arrangement/,
+  );
+});
+
 test("active Skill guidance stays below built-in safety and above the action contract", () => {
   const instructionBlock = [
     '<skill id="arrangement-review">',

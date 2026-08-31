@@ -121,8 +121,40 @@ test("selected Audio Clip context includes source markers and readable Warp mode
 
   const result = objectInteractionContext(context, clip.handle);
 
+  assert.match(result.summary, /Clip location: Arrangement View\./);
   assert.match(result.summary, /startMarker=1\.5, endMarker=9\.5/);
   assert.match(result.summary, /warping=true, warpMode=complex_pro, warpMarkers=1/);
+});
+
+test("selected Session Clip context identifies Session View", () => {
+  const track = Object.defineProperties(Object.create(MidiTrack.prototype), {
+    handle: { enumerable: true, value: { id: 60n } },
+    name: { enumerable: true, value: "Drums" },
+  }) as MidiTrack<"1.0.0">;
+  const slot = Object.defineProperties(Object.create(ClipSlot.prototype), {
+    handle: { enumerable: true, value: { id: 61n } },
+    parent: { enumerable: true, value: track },
+  }) as ClipSlot<"1.0.0">;
+  const clip = Object.defineProperties(Object.create(MidiClip.prototype), {
+    handle: { enumerable: true, value: { id: 62n } },
+    parent: { enumerable: true, value: slot },
+    name: { enumerable: true, value: "Session beat" },
+    startTime: { enumerable: true, value: 0 },
+    endTime: { enumerable: true, value: 4 },
+    duration: { enumerable: true, value: 4 },
+    startMarker: { enumerable: true, value: 0 },
+    endMarker: { enumerable: true, value: 4 },
+    looping: { enumerable: true, value: true },
+    muted: { enumerable: true, value: false },
+    color: { enumerable: true, value: 1 },
+    notes: { enumerable: true, value: [] },
+  }) as MidiClip<"1.0.0">;
+  Object.defineProperty(slot, "clip", { enumerable: true, value: clip });
+  const context = { getObjectFromHandle: () => clip } as never;
+
+  const result = objectInteractionContext(context, clip.handle);
+
+  assert.match(result.summary, /Clip location: Session View\./);
 });
 
 test("interactionContextForScope resolves a Clip inside a Track take lane", () => {
@@ -168,6 +200,10 @@ test("interactionContextForScope resolves a Clip inside a Track take lane", () =
   });
   assert.equal(resolved?.target.track, track);
   assert.equal(resolved?.target.clip, clip);
+  assert.match(
+    resolved?.summary ?? "",
+    /Clip location: Arrangement View \(Take Lane\)\./,
+  );
   assert.match(resolved?.summary ?? "", /MIDI clip "Take phrase"/);
 });
 

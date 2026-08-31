@@ -357,6 +357,12 @@ Live context as a JSON string inside a labelled data block, and system
 instructions forbid following instructions embedded in Live object names, MIDI
 data, parameter labels, or tool output.
 
+The SDK does not expose Live's current Arrangement/Session view. Selection
+context names an explicit Arrangement range or Session Clip Slot, while a Clip
+opened by handle reports its actual parent location. Without an explicit Session
+request or location, new Clip creation targets Arrangement rather than guessing
+a Session slot.
+
 Provider-hosted Web Search uses a separate discriminated member of the
 provider-neutral tool union from client-executed Live function tools. A Saved
 Profile must explicitly opt in. The ordinary path exposes the tool with

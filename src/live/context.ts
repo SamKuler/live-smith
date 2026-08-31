@@ -320,7 +320,9 @@ function summarizeObject(
   object: DataModelObject<"1.0.0">,
   song?: Api["application"]["song"],
 ): string {
-  if (object instanceof Clip) return summarizeClip(object);
+  if (object instanceof Clip) {
+    return [clipLocationSummary(object), summarizeClip(object)].join("\n");
+  }
   if (object instanceof Track) return summarizeTrack(object, song);
   if (object instanceof ClipSlot) {
     return object.clip
@@ -338,6 +340,16 @@ function summarizeObject(
     return `Drum Rack "${object.name}" with ${object.chains.length} chains.`;
   }
   return `Live object: ${object.constructor.name}`;
+}
+
+function clipLocationSummary(clip: Clip<"1.0.0">): string {
+  const parent = clip.parent;
+  if (parent instanceof ClipSlot) return "Clip location: Session View.";
+  if (parent instanceof TakeLane) {
+    return "Clip location: Arrangement View (Take Lane).";
+  }
+  if (parent instanceof Track) return "Clip location: Arrangement View.";
+  return "Clip location: unavailable.";
 }
 
 function summarizeTrack(
