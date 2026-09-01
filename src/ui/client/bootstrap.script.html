@@ -32,7 +32,9 @@
         let eventStreamOverlay = null;
         let composerOperationState = {
           attachmentInProgress: false,
+          commandCanStop: false,
           commandKind: null,
+          commandStopInProgress: false,
           sendInProgress: false,
           skillInProgress: false,
         };
@@ -204,11 +206,14 @@
           }, true);
         }
 
+        const composerInput = factories.createComposerInput({ getState });
         let bridgeClient;
         try {
           bridgeClient = factories.createBridgeClient({
             bridgeConfig,
+            closeComposerAutocomplete: composerInput.closeAutocomplete,
             getState,
+            parseComposerInput: composerInput.parse,
             presentStatus,
             setState,
           });
@@ -240,6 +245,7 @@
           installSkill: bridgeClient.installSkill,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
+          updateComposerAutocomplete: composerInput.updateAutocomplete,
         });
 
         const profileEditor = factories.createProfileEditor({
@@ -282,15 +288,54 @@
           if (!button) return;
           const label = document.getElementById("sendButtonLabel");
           const running = composerOperationState.sendInProgress;
+          const commandCanStop = composerOperationState.commandCanStop;
           if (label) {
-            setPropertyIfChanged(label, "textContent", running ? "Stop" : "Send");
+            setPropertyIfChanged(
+              label,
+              "textContent",
+              running || commandCanStop
+                ? composerOperationState.commandStopInProgress
+                  ? "Stopping…"
+                  : "Stop"
+                : "Send",
+            );
           }
-          setDataIfChanged(button, "action", running ? "stop" : "send");
-          toggleClassIfChanged(button, "stop", running);
+          setDataIfChanged(
+            button,
+            "action",
+            running || commandCanStop ? "stop" : "send",
+          );
+          toggleClassIfChanged(button, "stop", running || commandCanStop);
           if (running) {
             setPropertyIfChanged(button, "disabled", false);
             setAttributeIfChanged(button, "aria-label", "Stop current response");
             setPropertyIfChanged(button, "title", "Stop current response");
+            if (button.hasAttribute("aria-keyshortcuts")) {
+              button.removeAttribute("aria-keyshortcuts");
+            }
+            presentProfileGate("");
+            return;
+          }
+          if (commandCanStop) {
+            setPropertyIfChanged(
+              button,
+              "disabled",
+              composerOperationState.commandStopInProgress,
+            );
+            setAttributeIfChanged(
+              button,
+              "aria-label",
+              composerOperationState.commandStopInProgress
+                ? "Stopping current operation"
+                : "Stop current operation",
+            );
+            setPropertyIfChanged(
+              button,
+              "title",
+              composerOperationState.commandStopInProgress
+                ? "Stopping current operation…"
+                : "Stop current operation",
+            );
             if (button.hasAttribute("aria-keyshortcuts")) {
               button.removeAttribute("aria-keyshortcuts");
             }
@@ -305,13 +350,9 @@
             "Meta+Enter Control+Enter",
           );
           const draft = profileEditor.getDraftState();
-          const noActiveProfile = !getState().settings.activeProfileId;
-          const subscriptionGate = bridgeClient.getSubscriptionSendGateMessage();
-          const profileGate = noActiveProfile
-            ? "Create and save a model profile before sending."
-            : draft.dirty
-              ? "Save or discard profile changes before sending."
-              : subscriptionGate;
+          const profileGate = bridgeClient.getComposerProfileGateMessage(
+            draft.dirty,
+          );
           const composerBlocked = Boolean(composerOperationState.commandKind) &&
               composerOperationState.commandKind !== "save_global_settings" ||
             composerOperationState.attachmentInProgress ||
@@ -323,11 +364,7 @@
           );
           const title = composerBlocked
             ? "Wait for the current operation to finish."
-            : draft.dirty
-              ? "Save or discard profile changes before sending."
-              : noActiveProfile
-                ? "Create and save a profile before sending."
-                : subscriptionGate || "Send (Cmd/Ctrl+Enter)";
+            : profileGate || "Send (Cmd/Ctrl+Enter)";
           setPropertyIfChanged(button, "title", title);
           presentProfileGate(composerBlocked ? "" : profileGate);
         }
@@ -1143,6 +1180,7 @@
             controlId: "newSessionButton",
             status: "Creating Session…",
           },
+          compact_session: { status: "Compacting Session context…" },
           restore_session: { busyLabel: "Restoring…", status: "Restoring Session…" },
           delete_session: { status: "Deleting Session…" },
           rename_session: { status: "Renaming Session…" },
@@ -1212,7 +1250,6 @@
             : focusedControl;
           if (
             focusedControl &&
-            focusedControl === activeCommandControl &&
             focusedControl.id
           ) {
             retainedCommandControlFocus = {
@@ -1238,7 +1275,9 @@
         function setOperationState({
           anySendInProgress,
           attachmentInProgress,
+          commandCanStop,
           commandKind,
+          commandStopInProgress,
           profileSettingsInProgress,
           sendInProgress,
           skillInProgress,
@@ -1246,7 +1285,9 @@
         }) {
           composerOperationState = {
             attachmentInProgress,
+            commandCanStop,
             commandKind,
+            commandStopInProgress,
             sendInProgress,
             skillInProgress,
           };
@@ -1376,6 +1417,7 @@
           reconcileSettingsForm: reconcileSettingsFormFromState,
           renderSettingsForm: renderSettingsFormFromState,
           renderTimeline: sessionTimeline.renderTimeline,
+          renderSendPresentation,
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
           showFieldError: (field, message) => {
@@ -1435,6 +1477,7 @@
         window.addEventListener("DOMContentLoaded", () => {
           initializeAppConfirmation();
           initializeEditScopes();
+          composerInput.initialize();
           skillManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();
@@ -1454,14 +1497,10 @@
               (event.metaKey || event.ctrlKey) &&
               event.key === "Enter"
             ) {
-              if (bridgeClient.isSendInProgress()) {
+              if (!bridgeClient.isOperationInProgress() ||
+                  bridgeClient.isSendInProgress()) {
                 event.preventDefault();
-                bridgeClient.submitFollowUp();
-              } else if (
-                !bridgeClient.isOperationInProgress()
-              ) {
-                event.preventDefault();
-                bridgeClient.handleSendButton();
+                bridgeClient.submitComposer();
               }
             }
           });

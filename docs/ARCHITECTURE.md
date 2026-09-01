@@ -220,8 +220,9 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus Profile/model settings, bridge lifecycle,
-      attachment, local Skill, and session/timeline factories. Bootstrap owns
-      final composer/status presentation and explicit dependency wiring.
+      attachment, local Skill, composer command/completion, and session/timeline
+      factories. Bootstrap owns final composer/status presentation and explicit
+      dependency wiring.
     client/markdown-renderer.ts
       Shared sanitized Markdown rendering for conversation content and the
       read-only built-in Skill viewer.
@@ -1400,6 +1401,26 @@ scope; Send, Skills, model tool arguments, and confirmation cannot broaden it.
 
 ### Queued follow-ups
 
+Composer control commands use one fixed registry and parser. They are recognized
+only when `/` is the first character; unknown commands and invalid arguments stay
+in the draft and never fall through to `/send`. `/steer <message>` and
+`/queue <message>` select the existing active-send path explicitly and send their
+argument as an ordinary request when the Session is idle. Their active-send
+forms use that Send's already admitted runtime context, while their idle forms
+retain the ordinary Profile and auth admission gates. A failed idle submission
+keeps the transport prompt in recovery while restoring the exact Slash source
+draft to an untouched composer. `/clear` invokes the
+existing `new_session` command, so the previous Session is retained and an old
+background send remains bound to it. `/compact [instructions]` invokes the strict
+`compact_session` Session command and never creates a user event. Skill and Slash
+completion share one accessible listbox, while `$skill` mentions remain ordinary
+prompt content. The active-send button remains Stop; Cmd/Ctrl+Enter submits
+follow-ups and control commands. A running manual compaction also owns the Stop
+control. Stop is correlated to the exact command ID and requests cancellation;
+it cannot abort a different or later command. The bridge retains a bounded set
+of recently admitted or pre-stopped command IDs and rejects reuse, so a delayed
+Stop cannot cross command generations.
+
 The composer has one follow-up dispatcher and one running control, Stop. Its
 persisted global default is Queue. A Queue submission is captured in a
 Session-scoped, window-local FIFO and is not appended to the event log early.
@@ -1552,7 +1573,18 @@ provider-specific compact endpoint. A later large Tool result can trigger anothe
 checkpoint in the same send. A successful checkpoint is persisted before
 in-memory history is replaced, clears the stale exact meter, and the next ordinary
 accepted turn restores an exact value. A failed summary writes no checkpoint and
-does not silently discard history.
+does not silently discard history. The manual `compact_session` command acquires
+the same Session mutation boundary and saved Profile/model/OAuth requester as a
+Send, but disables tools and appends only a compaction event. Its optional
+instructions add one-time preservation priorities without becoming a user turn.
+A new manual checkpoint requires conversation activity after the latest
+checkpoint, so repeated `/compact` commands cannot accumulate empty checkpoint
+markers. Model reconnect notices for a manual checkpoint use command-correlated,
+transient SSE updates. They are neither Session activity nor durable state and are
+not replayed after reconnect. Stop is definitive only while cancellation is
+observed before checkpoint persistence begins. Once the checkpoint append starts,
+an acknowledged durable commit wins; an indeterminate commit continues through
+the existing unknown-outcome state reconciliation path.
 
 `model_turn_state` is an ephemeral recovery snapshot: it neither advances the
 dialog-wide state cut nor claims durable Session history. The bridge does not

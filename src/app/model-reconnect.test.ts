@@ -145,6 +145,29 @@ test("model reconnect keeps an initial success outside reconnect UX", async () =
   assert.deepEqual(progress, []);
 });
 
+test("model reconnect rejects a late success after cancellation", async () => {
+  const controller = createHostAbortController();
+  const cancellation = new Error("dialog closed");
+  let releaseRequest!: () => void;
+  const requestGate = new Promise<void>((resolve) => {
+    releaseRequest = resolve;
+  });
+
+  const request = requestModelWithReconnect({
+    signal: controller.signal,
+    request: async () => {
+      await requestGate;
+      return "late provider response";
+    },
+    resetTransient: () => {},
+    onProgress: () => {},
+  });
+
+  controller.abort(cancellation);
+  releaseRequest();
+  await assert.rejects(request, (error: unknown) => error === cancellation);
+});
+
 test("model reconnect announces a non-streaming recovery before resolving", async () => {
   const controller = createHostAbortController();
   const events: string[] = [];

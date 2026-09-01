@@ -430,6 +430,90 @@ test("authoritative Session removal clears retained context usage", async () => 
   }
 });
 
+test("manual compaction clears retained context usage at its checkpoint boundary", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(harness, "Measure context before compacting");
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 1, 250));
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(usageValue(harness), "25%");
+
+    harness.input("#prompt", "/compact preserve exact bar ranges");
+    harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.dispatchEvent(
+      new harness.window.KeyboardEvent("keydown", {
+        key: "Enter",
+        ctrlKey: true,
+        bubbles: true,
+      }),
+    );
+    await harness.settle();
+
+    assert.equal(usageValue(harness), "?");
+    assert.deepEqual(commandCalls(harness).at(-1), {
+      path: "/command",
+      body: {
+        kind: "compact_session",
+        sessionId: "session-1",
+        instructions: "preserve exact bar ranges",
+      },
+    });
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("automatic compaction retains exact usage accepted after its incremental checkpoint", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  try {
+    const sendId = await startHeldSend(harness, "Build past the context threshold");
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 1, 250));
+    assert.equal(usageValue(harness), "25%");
+
+    const checkpoint = {
+      id: "event-auto-compaction",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      kind: "compaction",
+      content: "Automatic checkpoint",
+    };
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 1,
+      event: checkpoint,
+    });
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 2, null));
+    harness.emitServerEvent(usageUpdate(sendId, "session-1", 3, 300));
+    assert.equal(usageValue(harness), "30%");
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 3,
+      event: checkpoint,
+    });
+    assert.equal(usageValue(harness), "30%", "a replayed checkpoint is idempotent");
+
+    harness.releaseHeldSend();
+    await harness.settle();
+    assert.equal(
+      usageValue(harness),
+      "30%",
+      "terminal state keeps post-checkpoint exact usage",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("changing the active Profile endpoint clears context usage for the same model id", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;

@@ -80,7 +80,7 @@ import {
   sendIdForRequest,
   steeringIdForRequest,
   steeringSendIdForRequest,
-  stopSendIdForRequest,
+  stopTargetForRequest,
   tokenForRequest,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
@@ -112,6 +112,7 @@ const sensitiveResponseHeaders = {
   "X-Content-Type-Options": "nosniff",
 } as const;
 const maxRetainedSendStopTombstones = 64;
+const maxRetainedCommandIds = 64;
 const stateSnapshotCommandId = "bridge-state-snapshot";
 const globalStateCoverageHeader = "x-live-smith-global-state-covered-through";
 const sessionStateCoverageHeader = "x-live-smith-session-state-covered-through";
@@ -141,6 +142,7 @@ export interface ChatBridgeSendContext {
 
 export interface ChatBridgeCommandContext {
   commandId: string;
+  progress(message: string): Promise<void>;
 }
 
 export interface ChatBridgeSteeringReceiptLookupInput {
@@ -163,6 +165,7 @@ export interface ChatBridgeSkillInstallResult {
 
 export type PromptPersistence = "persisted" | "not_persisted" | "unknown";
 export type ChatBridgeSendFailureKind = "session_unavailable" | "state_stale";
+type ChatBridgeCommandOutcome = "stopped" | "unknown";
 
 export class ChatBridgePromptPersistenceUnknownError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -225,6 +228,13 @@ export class ChatBridgeCommandOutcomeUnknownError extends Error {
     this.authoritativeState = options?.authoritativeState;
     this.authoritativeStateAttempted = options !== undefined &&
       Object.prototype.hasOwnProperty.call(options, "authoritativeState");
+  }
+}
+
+class ChatBridgeCommandStoppedError extends ChatBridgeConflictError {
+  constructor() {
+    super("Command stopped by user.");
+    this.name = "ChatBridgeCommandStoppedError";
   }
 }
 
@@ -552,6 +562,11 @@ type SsePayload =
       progress: string;
       resolvedConfirmationGeneration: number;
     }
+  | {
+      type: "command_progress";
+      commandId: string;
+      message: string;
+    }
   | StateChangeSsePayload
   | { type: "state"; commandId: string; state: ChatBridgeState }
   | { type: "done"; sendId: string; sessionId: string; state: ChatBridgeState }
@@ -564,7 +579,7 @@ type SsePayload =
       field?: string;
       promptPersistence?: PromptPersistence;
       sendFailureKind?: ChatBridgeSendFailureKind;
-      commandOutcome?: "unknown";
+      commandOutcome?: ChatBridgeCommandOutcome;
       state?: ChatBridgeState;
       reconciliationRequired?: boolean;
     };
@@ -611,11 +626,13 @@ export async function createChatBridge(
     Extract<StateChangeSsePayload, { type: "oauth_auth_changed" }>
   >();
   const sendStopTombstones = new Map<string, PromptPersistence>();
+  const retainedCommandIds = new Map<string, "stopped" | "used">();
   const activeAttachmentTerminals = new Map<string, Promise<void>>();
   const activeAttachmentControllers = new Map<string, AbortController>();
   const sessionActivities = new Map<string, ChatSessionActivity>();
   let activeCommandAbort: AbortController | null = null;
   let activeCommandId: string | null = null;
+  let activeCommandStopRequested = false;
   let activeCommandTerminal: Promise<void> | null = null;
   let latestGlobalSettingsChange: GlobalSettingsChange | undefined;
   let latestGlobalSettingsFromState = false;
@@ -633,6 +650,21 @@ export async function createChatBridge(
     if (sendStopTombstones.size <= maxRetainedSendStopTombstones) return;
     const oldestSendId = sendStopTombstones.keys().next().value;
     if (oldestSendId !== undefined) sendStopTombstones.delete(oldestSendId);
+  };
+
+  const retainCommandId = (
+    commandId: string,
+    outcome: "stopped" | "used",
+  ): void => {
+    if (closing) return;
+    const retainedOutcome = retainedCommandIds.get(commandId) ?? outcome;
+    retainedCommandIds.delete(commandId);
+    retainedCommandIds.set(commandId, retainedOutcome);
+    if (retainedCommandIds.size <= maxRetainedCommandIds) return;
+    const oldestCommandId = retainedCommandIds.keys().next().value;
+    if (oldestCommandId !== undefined) {
+      retainedCommandIds.delete(oldestCommandId);
+    }
   };
 
   const beginReadOnlyBuild = (
@@ -742,6 +774,30 @@ export async function createChatBridge(
       return await readJsonBody<T>(request);
     } finally {
       pendingRequestBodies.delete(request);
+    }
+  };
+
+  const readCommandRequestBody = async <T>(
+    request: IncomingMessage,
+    signal: AbortSignal,
+  ): Promise<T> => {
+    const onAbort = (): void => {
+      const reason = "reason" in signal ? signal.reason : undefined;
+      request.destroy(
+        reason instanceof Error ? reason : new Error("Command body read stopped."),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    try {
+      const value = await readRequestBody<T>(request);
+      throwIfBridgeAborted(signal);
+      return value;
+    } catch (error) {
+      throwIfBridgeAborted(signal);
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   };
 
@@ -1184,6 +1240,7 @@ export async function createChatBridge(
     let sendSessionId: string | undefined;
     let sendAdmission: PendingSendAdmission | undefined;
     let commandId: string | undefined;
+    let ownsActiveCommand = false;
     let attachmentSessionId: string | undefined;
     let sendPromptPersistence: PromptPersistence | undefined;
     let attachmentBodyMayBeUnread = false;
@@ -1294,7 +1351,10 @@ export async function createChatBridge(
           );
         }
         throwIfBridgeAborted(signal);
-        const state = await options.handleCommand(input, signal, { commandId });
+        const state = await options.handleCommand(input, signal, {
+          commandId,
+          progress: async () => {},
+        });
         if (closing || response.destroyed) return;
         sendJson(response, finalizeBridgeState(state, stateSnapshotCutRevision));
         return;
@@ -1564,55 +1624,83 @@ export async function createChatBridge(
           sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
           return;
         }
+        const retainedCommandOutcome = retainedCommandIds.get(commandId);
+        if (retainedCommandOutcome === "stopped") {
+          request.resume();
+          throw new ChatBridgeCommandStoppedError();
+        }
+        if (retainedCommandOutcome === "used") {
+          request.resume();
+          throw new ChatBridgeConflictError(
+            "That command correlation ID was already used and cannot be reused.",
+          );
+        }
+        retainCommandId(commandId, "used");
         inFlightMutationHandlers.add(handlerTerminal);
         activeCommandTerminal = handlerTerminal;
-        const input = parseCommandInput(await readRequestBody<unknown>(request));
-        if (closing) {
-          sendJson(response, { error: "Live Smith bridge is closing." }, 503);
-          return;
-        }
-        if (activeCommandTerminal !== handlerTerminal) {
-          sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
-          return;
-        }
-        if (activeAttachmentTerminals.size > 0) {
-          sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
-          return;
-        }
-        if (activeSendsBySession.size > 0 && !isCommandAllowedDuringSend(input)) {
-          sendJson(response, {
-            error: "Profile settings cannot change while an agent request is active.",
-          }, 409);
-          return;
-        }
-        if (
-          (
-            input.kind === "delete_session" ||
-            input.kind === "archive_session" ||
-            input.kind === "set_session_model_selection" ||
-            input.kind === "load_session_model_capabilities"
-          ) &&
-          activeSendsBySession.has(input.sessionId)
-        ) {
-          sendJson(response, {
-            error: input.kind === "set_session_model_selection"
-              ? "Wait for this Session's active request to finish before changing its model."
-              : input.kind === "load_session_model_capabilities"
-              ? "Wait for this Session's active request to finish before loading model capabilities."
-              : `Stop this Session's active request before ${
-                input.kind === "delete_session" ? "deleting" : "archiving"
-              } it.`,
-          }, 409);
-          return;
-        }
         const controller = createHostAbortController();
         activeCommandAbort = controller;
         activeCommandId = commandId;
+        activeCommandStopRequested = false;
+        ownsActiveCommand = true;
         try {
+          const input = parseCommandInput(
+            await readCommandRequestBody<unknown>(request, controller.signal),
+          );
+          if (closing) {
+            sendJson(response, { error: "Live Smith bridge is closing." }, 503);
+            return;
+          }
+          throwIfBridgeAborted(controller.signal);
+          if (activeCommandTerminal !== handlerTerminal) {
+            sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
+            return;
+          }
+          if (activeAttachmentTerminals.size > 0) {
+            sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
+            return;
+          }
+          if (activeSendsBySession.size > 0 && !isCommandAllowedDuringSend(input)) {
+            sendJson(response, {
+              error: "Profile settings cannot change while an agent request is active.",
+            }, 409);
+            return;
+          }
+          if (
+            (
+              input.kind === "delete_session" ||
+              input.kind === "archive_session" ||
+              input.kind === "set_session_model_selection" ||
+              input.kind === "load_session_model_capabilities"
+            ) &&
+            activeSendsBySession.has(input.sessionId)
+          ) {
+            sendJson(response, {
+              error: input.kind === "set_session_model_selection"
+                ? "Wait for this Session's active request to finish before changing its model."
+                : input.kind === "load_session_model_capabilities"
+                ? "Wait for this Session's active request to finish before loading model capabilities."
+                : `Stop this Session's active request before ${
+                  input.kind === "delete_session" ? "deleting" : "archiving"
+                } it.`,
+            }, 409);
+            return;
+          }
           const commandState = await options.handleCommand(
             input,
             controller.signal,
-            { commandId },
+            {
+              commandId,
+              progress: async (message) => {
+                if (
+                  activeCommandAbort !== controller ||
+                  activeCommandId !== commandId ||
+                  activeCommandStopRequested ||
+                  controller.signal.aborted
+                ) return;
+                broadcast({ type: "command_progress", commandId, message });
+              },
+            },
           );
           if (input.kind === "select_session") {
             const activity = sessionActivities.get(input.sessionId);
@@ -1631,7 +1719,6 @@ export async function createChatBridge(
           sendJson(response, state);
         } finally {
           if (activeCommandAbort === controller) activeCommandAbort = null;
-          if (activeCommandId === commandId) activeCommandId = null;
         }
         return;
       }
@@ -1989,11 +2076,26 @@ export async function createChatBridge(
       if (request.method === "POST" && url.pathname === "/stop") {
         assertExactQueryParameters(url, ["token"], "Stop request");
         assertJsonContentType(request);
-        const stoppedSendId = stopSendIdForRequest(request);
+        const stopTarget = stopTargetForRequest(request);
         assertEmptyInput(
           await readRequestBody<unknown>(request),
           "Stop request",
         );
+        if (stopTarget.kind === "command") {
+          const matchesActiveCommand = activeCommandId === stopTarget.id;
+          if (!matchesActiveCommand) retainCommandId(stopTarget.id, "stopped");
+          if (matchesActiveCommand && activeCommandAbort) {
+            activeCommandStopRequested = true;
+            activeCommandAbort.abort(new ChatBridgeCommandStoppedError());
+          }
+          sendJson(response, {
+            ok: true,
+            terminal: !matchesActiveCommand,
+            commandId: stopTarget.id,
+          });
+          return;
+        }
+        const stoppedSendId = stopTarget.id;
         const activeSend = activeSendsById.get(stoppedSendId);
         const pendingAdmission = pendingSendAdmissions.get(stoppedSendId);
         if (pendingAdmission) pendingAdmission.stopRequested = true;
@@ -2040,14 +2142,17 @@ export async function createChatBridge(
         requestPath.startsWith("/attachments/");
       const skillMutation = requestPath === "/skills" ||
         requestPath.startsWith("/skills/");
-      const commandOutcome =
+      const commandOutcome: ChatBridgeCommandOutcome | undefined =
         (requestPath === "/command" || attachmentMutation || skillMutation) &&
-          (
-            isStorageCommitOutcomeUnknownError(reportedError) ||
-            reportedError instanceof ChatBridgeCommandOutcomeUnknownError
-          )
-        ? "unknown" as const
-        : undefined;
+            (
+              isStorageCommitOutcomeUnknownError(reportedError) ||
+              reportedError instanceof ChatBridgeCommandOutcomeUnknownError
+            )
+          ? "unknown"
+          : requestPath === "/command" &&
+              reportedError instanceof ChatBridgeCommandStoppedError
+            ? "stopped"
+            : undefined;
       const message = attachmentMutation
         ? safeAttachmentErrorMessage(reportedError, commandOutcome)
         : skillMutation
@@ -2178,6 +2283,15 @@ export async function createChatBridge(
         }
       }
       if (activeCommandTerminal === handlerTerminal) activeCommandTerminal = null;
+      if (
+        ownsActiveCommand &&
+        commandId !== undefined &&
+        activeCommandId === commandId
+      ) {
+        activeCommandAbort = null;
+        activeCommandId = null;
+        activeCommandStopRequested = false;
+      }
       if (
         attachmentSessionId !== undefined &&
         activeAttachmentTerminals.get(attachmentSessionId) === handlerTerminal
@@ -2377,6 +2491,7 @@ export async function createChatBridge(
       clients.clear();
       backpressuredClients.clear();
       sendStopTombstones.clear();
+      retainedCommandIds.clear();
       for (const request of pendingRequestBodies) request.destroy();
       pendingRequestBodies.clear();
       resolveAllConfirmations(false);
@@ -2479,7 +2594,7 @@ function sendJson(
 
 function safeAttachmentErrorMessage(
   error: unknown,
-  commandOutcome: "unknown" | undefined,
+  commandOutcome: ChatBridgeCommandOutcome | undefined,
 ): string {
   if (commandOutcome === "unknown") {
     return error instanceof ChatBridgeCommandOutcomeUnknownError
@@ -2501,7 +2616,7 @@ function safeAttachmentErrorMessage(
 
 function safeSkillErrorMessage(
   error: unknown,
-  commandOutcome: "unknown" | undefined,
+  commandOutcome: ChatBridgeCommandOutcome | undefined,
 ): string {
   if (commandOutcome === "unknown") {
     return error instanceof ChatBridgeCommandOutcomeUnknownError
@@ -2528,6 +2643,7 @@ function throwIfBridgeAborted(signal: AbortSignal): void {
 
 function isSessionCommand(input: ChatBridgeCommandInput): boolean {
   return input.kind === "new_session" ||
+    input.kind === "compact_session" ||
     input.kind === "select_session" ||
     input.kind === "restore_session" ||
     input.kind === "delete_session" ||

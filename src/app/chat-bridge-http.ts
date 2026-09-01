@@ -35,6 +35,7 @@ import {
 
 const maxRequestBodyBytes = 1024 * 1024;
 const maxSteeringPromptUtf8Bytes = 64 * 1024;
+const maxCompactionInstructionsUtf8Bytes = 16 * 1024;
 const maxAttachmentFileNameUtf8Bytes = 160;
 const maxAttachmentQueryUtf8Bytes = 2048;
 const maxConcurrentAttachmentBodyReads = 2;
@@ -45,6 +46,7 @@ const defaultSkillBodyReadTimeoutMs = 15_000;
 const initialUnknownSkillBodyCapacity = 8 * 1024;
 const mimeTypePattern =
   /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const correlationIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 let activeAttachmentBodyReads = 0;
 let activeSkillBodyReads = 0;
 
@@ -57,6 +59,10 @@ export interface ChatBridgeSteeringInput {
   prompt: string;
   sessionId: string;
 }
+
+export type ChatBridgeStopTarget =
+  | { kind: "send"; id: string }
+  | { kind: "command"; id: string };
 
 export interface ChatBridgeAttachmentInput {
   sessionId: string;
@@ -169,6 +175,7 @@ export type ChatBridgeCommandInput =
       profileId: string;
     }
   | { kind: "new_session" }
+  | { kind: "compact_session"; sessionId: string; instructions?: string }
   | { kind: "select_session"; sessionId: string }
   | { kind: "restore_session"; sessionId: string }
   | { kind: "delete_session"; sessionId: string }
@@ -226,12 +233,27 @@ export function sendIdForRequest(request: IncomingMessage): string {
   );
 }
 
-export function stopSendIdForRequest(request: IncomingMessage): string {
-  return requiredCorrelationId(
+export function stopTargetForRequest(
+  request: IncomingMessage,
+): ChatBridgeStopTarget {
+  const sendId = optionalCorrelationId(
     request,
     "x-live-smith-send-id",
     "X-Live-Smith-Send-Id must identify the send to stop.",
   );
+  const commandId = optionalCorrelationId(
+    request,
+    "x-live-smith-command-id",
+    "X-Live-Smith-Command-Id must identify the command to stop.",
+  );
+  if ((sendId === undefined) === (commandId === undefined)) {
+    throw new ChatBridgeRequestValidationError(
+      "Stop requests require exactly one Send ID or Command ID.",
+    );
+  }
+  return sendId === undefined
+    ? { kind: "command", id: commandId! }
+    : { kind: "send", id: sendId };
 }
 
 export function steeringSendIdForRequest(request: IncomingMessage): string {
@@ -256,10 +278,19 @@ function requiredCorrelationId(
   errorMessage: string,
 ): string {
   const raw = singleHeaderValue(request, headerName, true);
-  if (
-    raw === undefined ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw)
-  ) {
+  if (raw === undefined || !correlationIdPattern.test(raw)) {
+    throw new ChatBridgeRequestValidationError(errorMessage);
+  }
+  return raw;
+}
+
+function optionalCorrelationId(
+  request: IncomingMessage,
+  headerName: string,
+  errorMessage: string,
+): string | undefined {
+  const raw = singleHeaderValue(request, headerName, false);
+  if (raw !== undefined && !correlationIdPattern.test(raw)) {
     throw new ChatBridgeRequestValidationError(errorMessage);
   }
   return raw;
@@ -269,7 +300,7 @@ export function commandIdForRequest(request: IncomingMessage): string {
   return requiredCorrelationId(
     request,
     "x-live-smith-command-id",
-    "X-Live-Smith-Command-Id must be a valid correlation ID.",
+    "X-Live-Smith-Command-Id must be a valid unique correlation ID.",
   );
 }
 
@@ -1006,6 +1037,31 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "new_session") {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);
     return { kind };
+  }
+  if (kind === "compact_session") {
+    assertOnlyInputKeys(
+      input,
+      ["kind", "sessionId", "instructions"],
+      `${kind} command`,
+    );
+    const sessionId = inputString(input, "sessionId");
+    if (input.instructions === undefined) return { kind, sessionId };
+    if (typeof input.instructions !== "string") {
+      throw new ChatBridgeRequestValidationError(
+        "instructions must be a string when provided.",
+      );
+    }
+    const instructions = input.instructions.trim();
+    if (Buffer.byteLength(instructions, "utf8") > maxCompactionInstructionsUtf8Bytes) {
+      throw new ChatBridgeRequestValidationError(
+        `instructions may not exceed ${maxCompactionInstructionsUtf8Bytes} UTF-8 bytes.`,
+      );
+    }
+    return {
+      kind,
+      sessionId,
+      ...(instructions ? { instructions } : {}),
+    };
   }
   if (
     kind === "start_oauth_login" ||

@@ -87,12 +87,19 @@ test("Session edit-scope commands are strict, normalized, and available during a
     buildState: async () => state,
     renderHtml: () => "<html></html>",
     handleCommand: async (input, _signal, context) => {
-      received.push({ input, context });
+      received.push({
+        input,
+        context: {
+          commandId: context.commandId,
+          progress: typeof context.progress,
+        },
+      });
       return state;
     },
     handleSend: async () => { markStarted(); await gate; },
   });
   const endpoint = endpointFor(bridge.url);
+  let commandSequence = 0;
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: {
@@ -105,7 +112,7 @@ test("Session edit-scope commands are strict, normalized, and available during a
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Live-Smith-Command-Id": "scope-command",
+      "X-Live-Smith-Command-Id": `scope-command-${++commandSequence}`,
     },
     body: JSON.stringify(body),
   });
@@ -119,9 +126,12 @@ test("Session edit-scope commands are strict, normalized, and available during a
       assert.equal(response.status, 200);
     }
     assert.deepEqual(received, [["midi", "mixer"], [], [...EDIT_SCOPES]].map(
-      (editScopes) => ({
+      (editScopes, index) => ({
         input: { kind: "set_session_edit_scopes", sessionId: "session-1", editScopes },
-        context: { commandId: "scope-command" },
+        context: {
+          commandId: `scope-command-${index + 1}`,
+          progress: "function",
+        },
       }),
     ));
 

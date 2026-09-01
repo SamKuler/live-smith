@@ -77,7 +77,10 @@ test("global follow-up settings are strict commands allowed during an active sen
     renderHtml: () => "<html></html>",
     handleCommand: async (input, _signal, context) => {
       received.push(input);
-      commandContexts.push(context);
+      commandContexts.push({
+        commandId: context.commandId,
+        progress: typeof context.progress,
+      });
       return state;
     },
     handleSend: async () => {
@@ -154,10 +157,10 @@ test("global follow-up settings are strict commands allowed during an active sen
       },
     ]);
     assert.deepEqual(commandContexts, [
-      { commandId: "global-queue" },
-      { commandId: "global-steer" },
-      { commandId: "global-context-usage" },
-      { commandId: "global-network-proxy" },
+      { commandId: "global-queue", progress: "function" },
+      { commandId: "global-steer", progress: "function" },
+      { commandId: "global-context-usage", progress: "function" },
+      { commandId: "global-network-proxy", progress: "function" },
     ]);
 
     const invalidProxyResponse = await fetch(endpoint("/command"), {
@@ -178,7 +181,7 @@ test("global follow-up settings are strict commands allowed during an active sen
       field: "networkProxy.url",
     });
 
-    for (const body of [
+    for (const [index, body] of [
       { kind: "save_global_settings", defaultFollowUpBehavior: "unsafe" },
       { kind: "save_global_settings", showContextUsage: "yes" },
       {
@@ -207,12 +210,12 @@ test("global follow-up settings are strict commands allowed during an active sen
         sessionId: "session-1",
       },
       { kind: "save_global_settings", followUpBehavior: "queue" },
-    ]) {
+    ].entries()) {
       const response = await fetch(endpoint("/command"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Live-Smith-Command-Id": `settings-command-${body.defaultFollowUpBehavior}`,
+          "X-Live-Smith-Command-Id": `settings-invalid-${index}`,
         },
         body: JSON.stringify(body),
       });

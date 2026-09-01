@@ -27,6 +27,7 @@ import type {
   OAuthSubscriptionBackend,
   OAuthAuthReadOptions,
   OAuthAuthState,
+  RuntimeProfile,
 } from "../model/provider.js";
 import {
   ProfileValidationError,
@@ -81,6 +82,7 @@ import {
   UnsupportedAttachmentError,
 } from "../storage/attachments.js";
 import {
+  appendSessionEvent,
   deleteSessionEvents,
   listSessionEventLogIds,
   loadSessionEvents,
@@ -191,6 +193,7 @@ import {
   runtimeProfileForSavedProfile,
 } from "./model-request.js";
 import {
+  recoveryContextFromEvents,
   getOrCreateDefaultSession,
   isReusableEmptySessionMetadata,
   sessionSummaries,
@@ -230,6 +233,9 @@ import {
   type AgentModelTurnRequester,
 } from "./agent-request.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
+import { resolveConversationHistory } from "./attachment-context.js";
+import { createConversationCheckpoint } from "./context-compaction.js";
+import { requestModelWithReconnect } from "./model-reconnect.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
@@ -279,6 +285,7 @@ function effectiveSessionModelSelection(
 }
 
 export interface AgentFlowDependencies {
+  appendSessionEvent?: typeof appendSessionEvent;
   deleteSession?: typeof deleteSession;
   getOrCreateDefaultSession?: typeof getOrCreateDefaultSession;
   loadSessionEvents?: typeof loadSessionEvents;
@@ -1531,6 +1538,133 @@ export async function runAgentFlow(
     };
   };
 
+  const acquireSessionModelRequester = async (
+    session: AgentSession,
+    settings: AgentSettings,
+    signal: AbortSignal,
+    activity: "sending" | "compacting",
+  ): Promise<{
+    runtimeProfile: RuntimeProfile;
+    requestTurn: AgentModelTurnRequester;
+    release(): void;
+  }> => {
+    const profile = requireActiveSavedProfile(settings);
+    const modelSelection = effectiveSessionModelSelection(profile, session);
+    const fingerprint = connectionFingerprint(profile);
+    let releaseModelAuthFence: (() => void) | undefined;
+    let requestBackend: OAuthSubscriptionBackend | undefined;
+    try {
+      let models: DiscoveredModelInfo[] | undefined;
+      if (profile.connection.kind === "oauth-subscription") {
+        const profileAuthScope = oauthProfileScope(profile);
+        const modelAuthSendFence = modelAuthSendFenceFor(
+          profileAuthScope.profileId,
+        );
+        releaseModelAuthFence = await modelAuthSendFence.enterOAuthUse(signal) ??
+          undefined;
+        if (!releaseModelAuthFence) {
+          throw new ChatBridgeConflictError(
+            `Wait for the ${oauthProviderLabel(profile.connection.provider)} sign-in operation to finish before ${activity}.`,
+          );
+        }
+        const generation = await synchronizeAuthGeneration(
+          profileAuthScope,
+          signal,
+        );
+        const lease = await modelBackendManager.oauthLease(
+          profileAuthScope.profileId,
+          profileAuthScope.provider,
+          signal,
+        );
+        const oauthBackend = lease.backend;
+        requestBackend = oauthBackend;
+        let auth: OAuthAuthState;
+        try {
+          auth = await oauthBackend.readAuthState(signal, { readiness: true });
+        } catch (error) {
+          throwIfAborted(signal);
+          auth = unavailableOAuthAuth(profile.connection.provider, error);
+        }
+        cacheOAuthAuth(profileAuthScope, generation, auth);
+        const authError = subscriptionSendAuthError(
+          auth,
+          profile.connection.provider,
+        );
+        if (authError) throw new ChatBridgeConflictError(authError);
+        models = requireDiscoveredModelCatalog(
+          await oauthBackend.listModels(profile, signal),
+        );
+        throwIfAborted(signal);
+        if (
+          modelAuthSendFence.authGeneration(profileAuthScope.provider) !==
+            generation
+        ) {
+          throw new ChatBridgeConflictError(
+            `${oauthProviderLabel(profile.connection.provider)} sign-in changed before the subscription request could start.`,
+          );
+        }
+        modelsByConnection.set(fingerprint, models);
+        oauthCatalogOwnershipByConnection.set(fingerprint, {
+          generation,
+          scopeKey: oauthScopeKey(profileAuthScope),
+        });
+      } else {
+        models = modelsByConnection.get(fingerprint);
+        if (models === undefined) {
+          models = await loadModelCache(storageDirectory, profile);
+          modelsByConnection.set(fingerprint, models);
+        }
+      }
+      if (models === undefined) {
+        throw new Error("The active model catalog is unavailable.");
+      }
+      if (
+        profile.connection.kind === "oauth-subscription" &&
+        !models.some((model) => model.id === modelSelection.model)
+      ) {
+        throw new ChatBridgeConflictError(
+          `The selected subscription model is not available for the signed-in ${oauthProviderLabel(profile.connection.provider)} account. Choose an available model before ${activity}.`,
+        );
+      }
+      const runtimeProfile = runtimeProfileForSavedProfile(
+        profile,
+        models,
+        modelSelection,
+      );
+      validateGenerationParameters(
+        runtimeProfile,
+        runtimeProfile.capabilities,
+      );
+      const requestTurnImplementation = dependencies.requestModelTurn ??
+        requestModelTurn;
+      let preflightBackendForFirstTurn = requestBackend;
+      const requestTurn: AgentModelTurnRequester = async (input) => {
+        const backend = preflightBackendForFirstTurn ??
+          await modelBackendManager.forProfile(profile, input.signal);
+        preflightBackendForFirstTurn = undefined;
+        try {
+          return await requestTurnImplementation({
+            ...input,
+            turnExecutor: backend,
+          });
+        } finally {
+          if (backend.kind === "direct-api") await backend.close();
+        }
+      };
+      return {
+        runtimeProfile,
+        requestTurn,
+        release() {
+          releaseModelAuthFence?.();
+          releaseModelAuthFence = undefined;
+        },
+      };
+    } catch (error) {
+      releaseModelAuthFence?.();
+      throw error;
+    }
+  };
+
   const handleCommand = async (
     commandInput: ChatBridgeCommandInput,
     signal: AbortSignal,
@@ -2399,6 +2533,168 @@ export async function runAgentFlow(
           releaseOAuthSelection?.();
         }
       });
+    }
+
+    if (commandInput.kind === "compact_session") {
+      if (
+        sessionMutationFence.hasQueuedOrActive(
+          sessionMutationFenceKey(storageDirectory, commandInput.sessionId),
+          "send",
+        )
+      ) {
+        throw new ChatBridgeConflictError(
+          "Wait for this Session's active request to finish before compacting.",
+        );
+      }
+      return withNamedSessionMutation(
+        commandInput.sessionId,
+        "compact",
+        signal,
+        async () => {
+          const snapshot = await requestConfigurationFence.run(
+            requestConfigurationFenceKey,
+            signal,
+            () => withStorageTransaction(
+              storageDirectory,
+              async (transaction) => {
+                const session = (await listSessionsInTransaction(
+                  transaction,
+                  storageDirectory,
+                  projectKey,
+                )).find((entry) =>
+                  entry.id === commandInput.sessionId && !entry.archivedAt
+                );
+                const settings = await loadAgentSettings(storageDirectory);
+                const skillContext = session === undefined
+                  ? undefined
+                  : await resolveSkillContextInTransaction(transaction, {
+                      storageDirectory,
+                      sessionSkillIds: session.activeSkillIds ?? [],
+                      prompt: "",
+                    });
+                return { session, settings, skillContext };
+              },
+            ),
+          );
+          const session = snapshot.session;
+          if (!session) {
+            throw new ChatBridgeResourceNotFoundError(
+              "That Session is not available in this Live Set.",
+            );
+          }
+          const sessionInteraction = resolveSessionInteraction(session);
+          if (!sessionInteraction) {
+            throw new ChatBridgeResourceNotFoundError(
+              `The Live object for this Session is no longer available: ${session.scope.label}.`,
+            );
+          }
+          const events = await (
+            dependencies.loadSessionEvents ?? loadSessionEvents
+          )(storageDirectory, session.id);
+          const latestCompactionIndex = events.findLastIndex(
+            (event) => event.kind === "compaction",
+          );
+          if (!events.slice(latestCompactionIndex + 1).some((event) =>
+            event.kind === "user" ||
+            event.kind === "assistant" ||
+            event.kind === "tool_call" ||
+            event.kind === "tool_result" ||
+            event.kind === "apply_result"
+          )) {
+            throw new ChatBridgeConflictError(
+              "This Session has no new conversation context to compact.",
+            );
+          }
+          const modelRequest = await acquireSessionModelRequester(
+            session,
+            snapshot.settings,
+            signal,
+            "compacting",
+          );
+          try {
+            const { runtimeProfile, requestTurn } = modelRequest;
+            const history = await resolveConversationHistory({
+              storageDirectory,
+              sessionId: session.id,
+              events,
+              currentAttachmentRefs: [],
+              currentDocumentTextCharacters: 0,
+              runtimeProfile,
+              signal,
+            });
+            const recoveryContext = recoveryContextFromEvents(events);
+            const liveContext = recoveryContext
+              ? `${sessionInteraction.summary}\n\n${recoveryContext}`
+              : sessionInteraction.summary;
+            const checkpoint = await createConversationCheckpoint({
+              prompt: "Compact this Session for its next user request.",
+              liveContext,
+              runtimeProfile,
+              history,
+              attachmentParts: [],
+              ...(snapshot.skillContext === undefined
+                ? {}
+                : { skillContext: snapshot.skillContext }),
+              editScopes: resolveEditScopes(session.editScopes),
+              agentMessages: [],
+              ...(commandInput.instructions === undefined
+                ? {}
+                : { instructions: commandInput.instructions }),
+              signal,
+              requestTurn: async (input) => (
+                await requestModelWithReconnect({
+                  signal,
+                  resetTransient: () => {},
+                  onProgress: commandContext.progress,
+                  request: ({ reconnectState }) => requestTurn({
+                    ...input,
+                    reconnectState,
+                  }),
+                })
+              ).value,
+            });
+            throwIfAborted(signal);
+            await (
+              dependencies.appendSessionEvent ?? appendSessionEvent
+            )(storageDirectory, session.id, {
+              kind: "compaction",
+              content: checkpoint,
+            });
+          } catch (error) {
+            if (!isStorageCommitOutcomeUnknownError(error)) throw error;
+            notifySessionStateChanged(session.id);
+            let authoritativeState: ChatDialogState | undefined;
+            try {
+              authoritativeState = await buildStateAfterCommandMutation(undefined, {
+                heldSessionId: session.id,
+                sessionMutationHeld: true,
+              });
+            } catch {
+              // The command remains unknown when its durable event cannot be read.
+            }
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "The Session may have been compacted, but the saved checkpoint could not be confirmed.",
+              { cause: error, authoritativeState },
+            );
+          } finally {
+            modelRequest.release();
+          }
+          notifySessionStateChanged(session.id);
+          status = "Session context compacted.";
+          openSettingsOnLoad = false;
+          try {
+            return await buildStateAfterCommandMutation(undefined, {
+              heldSessionId: session.id,
+              sessionMutationHeld: true,
+            });
+          } catch (cause) {
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "The Session was compacted, but its current state could not be confirmed.",
+              { cause },
+            );
+          }
+        },
+      );
     }
 
     if (commandInput.kind === "new_session") {
@@ -3541,109 +3837,14 @@ export async function runAgentFlow(
             `The Live object for this Session is no longer available: ${session.scope.label}.`,
           );
         }
-        const profile = requireActiveSavedProfile(requestSnapshot.settings);
-        const modelSelection = effectiveSessionModelSelection(profile, session);
-        const fingerprint = connectionFingerprint(profile);
-        let requestBackend: OAuthSubscriptionBackend | undefined;
-        let models: DiscoveredModelInfo[] | undefined;
-        if (profile.connection.kind === "oauth-subscription") {
-          const profileAuthScope = oauthProfileScope(profile);
-          const modelAuthSendFence = modelAuthSendFenceFor(
-            profileAuthScope.profileId,
-          );
-          releaseModelAuthFence = await modelAuthSendFence.enterOAuthUse(signal) ??
-            undefined;
-          if (!releaseModelAuthFence) {
-            throw new ChatBridgeConflictError(
-              `Wait for the ${oauthProviderLabel(profile.connection.provider)} sign-in operation to finish before sending.`,
-            );
-          }
-          const generation = await synchronizeAuthGeneration(
-            profileAuthScope,
-            signal,
-          );
-          const lease = await modelBackendManager.oauthLease(
-            profileAuthScope.profileId,
-            profileAuthScope.provider,
-            signal,
-          );
-          const oauthBackend = lease.backend;
-          requestBackend = oauthBackend;
-          let auth: OAuthAuthState;
-          try {
-            auth = await oauthBackend.readAuthState(signal, { readiness: true });
-          } catch (error) {
-            throwIfAborted(signal);
-            auth = unavailableOAuthAuth(profile.connection.provider, error);
-          }
-          cacheOAuthAuth(profileAuthScope, generation, auth);
-          const authError = subscriptionSendAuthError(
-            auth,
-            profile.connection.provider,
-          );
-          if (authError) throw new ChatBridgeConflictError(authError);
-          models = requireDiscoveredModelCatalog(
-            await oauthBackend.listModels(profile, signal),
-          );
-          throwIfAborted(signal);
-          if (modelAuthSendFence.authGeneration(profileAuthScope.provider) !== generation) {
-            throw new ChatBridgeConflictError(
-              `${oauthProviderLabel(profile.connection.provider)} sign-in changed before the subscription request could start.`,
-            );
-          }
-          modelsByConnection.set(fingerprint, models);
-          oauthCatalogOwnershipByConnection.set(fingerprint, {
-            generation,
-            scopeKey: oauthScopeKey(profileAuthScope),
-          });
-        } else {
-          models = modelsByConnection.get(fingerprint);
-          if (models === undefined) {
-            models = await loadModelCache(
-              storageDirectory,
-              profile,
-            );
-            modelsByConnection.set(fingerprint, models);
-          }
-        }
-        if (models === undefined) {
-          throw new Error("The active model catalog is unavailable.");
-        }
-        if (
-          profile.connection.kind === "oauth-subscription" &&
-          !models.some((model) => model.id === modelSelection.model)
-        ) {
-          throw new ChatBridgeConflictError(
-            `The selected subscription model is not available for the signed-in ${oauthProviderLabel(profile.connection.provider)} account. Choose an available model before sending.`,
-          );
-        }
-        const runtimeProfile = runtimeProfileForSavedProfile(
-          profile,
-          models,
-          modelSelection,
+        const modelRequest = await acquireSessionModelRequester(
+          session,
+          requestSnapshot.settings,
+          signal,
+          "sending",
         );
-        validateGenerationParameters(
-          runtimeProfile,
-          runtimeProfile.capabilities,
-        );
-        const requestTurnImplementation = dependencies.requestModelTurn ??
-          requestModelTurn;
-        let preflightBackendForFirstTurn = requestBackend;
-        const requestTurn = async (
-          input: Parameters<AgentModelTurnRequester>[0],
-        ) => {
-          const backend = preflightBackendForFirstTurn ??
-            await modelBackendManager.forProfile(profile, input.signal);
-          preflightBackendForFirstTurn = undefined;
-          try {
-            return await requestTurnImplementation({
-              ...input,
-              turnExecutor: backend,
-            });
-          } finally {
-            if (backend.kind === "direct-api") await backend.close();
-          }
-        };
+        releaseModelAuthFence = modelRequest.release;
+        const { runtimeProfile, requestTurn } = modelRequest;
         let requestFailed = false;
         let requestError: unknown;
         try {

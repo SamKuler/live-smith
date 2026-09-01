@@ -1,7 +1,9 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createBridgeClient = function createBridgeClient({
         bridgeConfig,
+        closeComposerAutocomplete,
         getState,
+        parseComposerInput,
         presentStatus,
         setState,
       }) {
@@ -24,6 +26,12 @@
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
       const editScopeIds = __EDIT_SCOPES__;
+      if (
+        typeof parseComposerInput !== "function" ||
+        typeof closeComposerAutocomplete !== "function"
+      ) {
+        throw new Error("Composer command support is unavailable.");
+      }
       if (!isWireChatBridgeState(getState())) {
         throw new Error("Initial Live Smith state is invalid.");
       }
@@ -62,6 +70,8 @@
       let eventSource = null;
       const assistantDraftsBySession = new Map();
       const contextUsageBySession = new Map();
+      const compactionBoundaryBySession = new Map();
+      const contextUsageBoundaryBySession = new Map();
       const runtimeSourceBySession = new Map();
       const webSearchUpdatesBySession = new Map();
       const webSearchEventIdsAtSendStartBySession = new Map();
@@ -104,12 +114,14 @@
         "set_session_edit_scopes",
         "set_session_model_selection",
         "load_session_model_capabilities",
+        "compact_session",
       ]);
       let confirmedDefaultFollowUpBehavior = isDefaultFollowUpBehavior(
         getState().settings?.defaultFollowUpBehavior,
       )
         ? getState().settings.defaultFollowUpBehavior
         : "queue";
+      recordCompactionBoundary(getState());
       let confirmedShowContextUsage =
         typeof getState().settings?.showContextUsage === "boolean"
           ? getState().settings.showContextUsage
@@ -2813,7 +2825,7 @@
             ]) ||
             !isWireCorrelationId(payload.commandId) ||
             (payload.commandOutcome !== undefined &&
-              payload.commandOutcome !== "unknown") ||
+              !["stopped", "unknown"].includes(payload.commandOutcome)) ||
             (payload.reconciliationRequired !== undefined &&
               payload.reconciliationRequired !== true) ||
             (payload.state !== undefined &&
@@ -2824,9 +2836,14 @@
               payload.state !== undefined ||
               payload.reconciliationRequired !== undefined
             ) return null;
+          } else if (payload.commandOutcome === "unknown") {
+            if (
+              (payload.state === undefined) ===
+                (payload.reconciliationRequired === undefined)
+            ) return null;
           } else if (
-            (payload.state === undefined) ===
-              (payload.reconciliationRequired === undefined)
+            payload.state !== undefined ||
+            payload.reconciliationRequired !== undefined
           ) return null;
           return "command";
         }
@@ -2842,8 +2859,8 @@
         const error = new Error(envelope.error);
         error.httpStatus = response.status;
         if (typeof envelope.field === "string") error.field = envelope.field;
-        if (envelope.commandOutcome === "unknown") {
-          error.commandOutcome = "unknown";
+        if (["stopped", "unknown"].includes(envelope.commandOutcome)) {
+          error.commandOutcome = envelope.commandOutcome;
         }
         if (envelope.steeringOutcome === "unknown") {
           error.steeringOutcome = "unknown";
@@ -2878,6 +2895,15 @@
         }
         if (path === "/stop") {
           const terminal = value.terminal;
+          if (context.commandId !== undefined) {
+            if (
+              hasOnlyWireKeys(value, ["ok", "terminal", "commandId"]) &&
+              value.ok === true &&
+              typeof terminal === "boolean" &&
+              value.commandId === context.commandId
+            ) return value;
+            throw invalidBridgeHttpResponse(path);
+          }
           const promptPersistence = value.promptPersistence;
           if (
             hasOnlyWireKeys(value, [
@@ -2969,7 +2995,7 @@
                 value.commandId !== context.commandId) ||
             (value.field !== undefined && typeof value.field !== "string") ||
             (value.commandOutcome !== undefined &&
-              value.commandOutcome !== "unknown") ||
+              !["stopped", "unknown"].includes(value.commandOutcome)) ||
             (value.state !== undefined && !isWireChatBridgeState(value.state)) ||
             (value.reconciliationRequired !== undefined &&
               value.reconciliationRequired !== true)
@@ -2979,9 +3005,14 @@
               value.state !== undefined ||
               value.reconciliationRequired !== undefined
             ) throw invalidBridgeHttpResponse(path);
+          } else if (value.commandOutcome === "unknown") {
+            if (
+              (value.state === undefined) ===
+                (value.reconciliationRequired === undefined)
+            ) throw invalidBridgeHttpResponse(path);
           } else if (
-            (value.state === undefined) ===
-              (value.reconciliationRequired === undefined)
+            value.state !== undefined ||
+            value.reconciliationRequired !== undefined
           ) throw invalidBridgeHttpResponse(path);
           return value;
         }
@@ -3315,6 +3346,7 @@
       function handleComposerInput() {
         const prompt = document.getElementById("prompt");
         if (prompt) recordComposerDraft(activeSessionId(), prompt.value);
+        requireView().renderSendPresentation();
       }
 
       function hasSessionLocalWork(sessionId) {
@@ -3513,6 +3545,11 @@
                 : "session_state_refresh"
               : null) ||
             (commandReconciliationBlocked ? "reconciliation_required" : null),
+          commandCanStop: Boolean(activeCommandAttempt?.cancellable),
+          commandStopInProgress: Boolean(
+            activeCommandAttempt?.stopRequestInProgress ||
+              activeCommandAttempt?.stopRequested,
+          ),
           anySendInProgress: sendAttemptsBySession.size > 0 ||
             runnableQueuedFollowUpCount() > 0,
           attachmentInProgress: attachmentOperationInProgress,
@@ -3621,6 +3658,7 @@
             : null;
         let resolveSseOutcome;
         let resolveSseUnavailable;
+        let resolveStopAcknowledged;
         const targetSessionId = typeof extra?.sessionId === "string"
           ? extra.sessionId
           : null;
@@ -3656,6 +3694,9 @@
         const attempt = {
           id: options?.commandId || createCorrelationId("command"),
           kind,
+          cancellable: options?.cancellable === true,
+          stopRequested: false,
+          stopRequestInProgress: false,
           profileMutationTarget,
           ownedSessionMembershipIds,
           ownedSessionFields,
@@ -3696,6 +3737,13 @@
             resolveSseUnavailable = resolve;
           }),
           resolveSseUnavailable: () => resolveSseUnavailable({ type: "reconcile" }),
+          stopAcknowledged: new Promise((resolve) => {
+            resolveStopAcknowledged = resolve;
+          }),
+          resolveStopAcknowledged: (terminal) => resolveStopAcknowledged({
+            type: "stop_acknowledged",
+            terminal,
+          }),
         };
 
         activeCommandAttempt = attempt;
@@ -3710,7 +3758,9 @@
         }
         let commandError = null;
         let commandWarning = null;
+        let commandStopped = false;
         let commandSucceeded = false;
+        let commandOutcomeKnown = false;
         const applyOutcomeState = async (state, commandOutcomeKnown) => {
           let applied = false;
           try {
@@ -3738,7 +3788,31 @@
             (state) => ({ type: "state", state, source: "http" }),
             (error) => ({ type: "error", error, source: "http" }),
           );
-          let outcome = await Promise.race([httpOutcome, attempt.sseOutcome]);
+          let outcome = await Promise.race([
+            httpOutcome,
+            attempt.sseOutcome,
+            attempt.stopAcknowledged,
+          ]);
+          if (outcome.type === "stop_acknowledged") {
+            const stopError = new Error(
+              outcome.terminal
+                ? "Stop reached a terminal command state before its original outcome was received."
+                : "Stop was accepted, but the command's terminal outcome was not received.",
+            );
+            const terminalOutcome = await waitForCommandSseOutcome(
+              attempt,
+              httpOutcome,
+              { ignoreSseUnavailable: true },
+            );
+            outcome = terminalOutcome.type === "reconcile"
+              ? await recoverLostCommandResponse(
+                  attempt,
+                  kind,
+                  stopError,
+                  false,
+                )
+              : terminalOutcome;
+          }
           if (
             outcome.type === "state" &&
             !isWireChatBridgeState(outcome.state)
@@ -3781,6 +3855,7 @@
           if (activeCommandAttempt !== attempt) return false;
           if (outcome.type === "state") {
             commandSucceeded = await applyOutcomeState(outcome.state, true);
+            commandOutcomeKnown = commandSucceeded;
           } else if (outcome.type === "reconciled") {
             commandWarning = outcome.message;
             commandSucceeded = true;
@@ -3795,6 +3870,9 @@
             if (commandSucceeded) {
               commandWarning = outcome.error.message || String(outcome.error);
             }
+          } else if (outcome.error.commandOutcome === "stopped") {
+            commandOutcomeKnown = true;
+            commandStopped = true;
           } else {
             commandError = outcome.error;
             if (
@@ -3828,6 +3906,9 @@
             canceledFollowUpCount: attempt.canceledFollowUpCount || 0,
           });
         }
+        if (commandStopped) {
+          showStatus("Command stopped.");
+        }
         if (commandError) {
           const message = commandError.message || String(commandError);
           if (
@@ -3839,10 +3920,19 @@
             showStatus("");
           }
         }
+        options?.onOutcome?.({
+          known: commandOutcomeKnown,
+          succeeded: commandSucceeded,
+          stopped: commandStopped,
+        });
         return commandSucceeded;
       }
 
-      async function waitForCommandSseOutcome(attempt) {
+      async function waitForCommandSseOutcome(
+        attempt,
+        concurrentOutcome,
+        { ignoreSseUnavailable = false } = {},
+      ) {
         let timeoutId;
         const timeout = new Promise((resolve) => {
           timeoutId = window.setTimeout(
@@ -3853,7 +3943,8 @@
         try {
           return await Promise.race([
             attempt.sseOutcome,
-            attempt.sseUnavailable,
+            ...(ignoreSseUnavailable ? [] : [attempt.sseUnavailable]),
+            ...(concurrentOutcome ? [concurrentOutcome] : []),
             timeout,
           ]);
         } finally {
@@ -3944,16 +4035,73 @@
         return canceledFollowUpCount;
       }
 
+      function latestCompactionBoundary(state) {
+        if (!Array.isArray(state?.events)) return null;
+        for (let index = state.events.length - 1; index >= 0; index -= 1) {
+          const event = state.events[index];
+          if (event?.kind === "compaction" && typeof event.id === "string") {
+            return event.id;
+          }
+        }
+        return null;
+      }
+
+      function recordCompactionBoundary(state) {
+        const sessionId = state?.activeSessionId;
+        if (typeof sessionId !== "string") return;
+        compactionBoundaryBySession.set(
+          sessionId,
+          latestCompactionBoundary(state),
+        );
+      }
+
+      function recordIncrementalCompactionBoundary(sessionId, eventId) {
+        if (compactionBoundaryBySession.get(sessionId) === eventId) return;
+        clearContextUsage(sessionId);
+        compactionBoundaryBySession.set(sessionId, eventId);
+      }
+
+      function reconcileCompactionBoundaryWithState(state) {
+        const sessionId = state?.activeSessionId;
+        if (typeof sessionId !== "string") return;
+        const boundary = latestCompactionBoundary(state);
+        if (
+          contextUsageBySession.has(sessionId) &&
+          contextUsageBoundaryBySession.get(sessionId) !== boundary
+        ) {
+          clearContextUsage(sessionId);
+        }
+        compactionBoundaryBySession.set(sessionId, boundary);
+      }
+
+      function setContextUsage(sessionId, usage) {
+        contextUsageBySession.set(sessionId, { ...usage });
+        contextUsageBoundaryBySession.set(
+          sessionId,
+          compactionBoundaryBySession.get(sessionId) ?? null,
+        );
+      }
+
+      function clearContextUsage(sessionId) {
+        contextUsageBySession.delete(sessionId);
+        contextUsageBoundaryBySession.delete(sessionId);
+      }
+
       function reconcileContextUsageWithState(state) {
         const availableSessionIds = sessionStateIds(state);
         for (const sessionId of contextUsageBySession.keys()) {
           if (!availableSessionIds.has(sessionId)) {
-            contextUsageBySession.delete(sessionId);
+            clearContextUsage(sessionId);
           }
         }
         for (const sessionId of runtimeSourceBySession.keys()) {
           if (!availableSessionIds.has(sessionId)) {
             runtimeSourceBySession.delete(sessionId);
+          }
+        }
+        for (const sessionId of compactionBoundaryBySession.keys()) {
+          if (!availableSessionIds.has(sessionId)) {
+            compactionBoundaryBySession.delete(sessionId);
           }
         }
       }
@@ -4001,7 +4149,7 @@
         const previous = runtimeSourceBySession.get(sessionId);
         const next = runtimeSourceForState(state);
         if (previous !== undefined && previous !== next) {
-          contextUsageBySession.delete(sessionId);
+          clearContextUsage(sessionId);
         }
         if (next === null) runtimeSourceBySession.delete(sessionId);
         else runtimeSourceBySession.set(sessionId, next);
@@ -4023,7 +4171,7 @@
           state,
           projection.modelSelection,
         );
-        if (previousSource !== nextSource) contextUsageBySession.delete(sessionId);
+        if (previousSource !== nextSource) clearContextUsage(sessionId);
         if (nextSource === null) runtimeSourceBySession.delete(sessionId);
         else runtimeSourceBySession.set(sessionId, nextSource);
         refreshActiveModelSelection(sessionId);
@@ -4107,6 +4255,7 @@
             (activeCommandAttempt.canceledFollowUpCount || 0) +
             canceledFollowUpCount;
         }
+        reconcileCompactionBoundaryWithState(reconciledState);
         reconcileContextUsageWithState(reconciledState);
         reconcileRuntimeSourceWithState(reconciledState);
         adoptGlobalSettingsFromState(reconciledState);
@@ -4221,6 +4370,7 @@
           return false;
         }
         if (visible) {
+          reconcileCompactionBoundaryWithState(reconciledState);
           reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
           requireView().syncModelStateSource(reconciledState.modelStateSource);
@@ -4410,10 +4560,151 @@
         }
       }
 
-      function sendPrompt() {
+      function submitComposer() {
+        const promptControl = document.getElementById("prompt");
+        const parsed = parseComposerInput(promptControl?.value ?? "");
+        if (parsed.kind === "invalid") {
+          showStatus(parsed.message, true);
+          promptControl?.focus({ preventScroll: true });
+          return;
+        }
+        if (parsed.kind === "command") {
+          const profileGate = composerProfileGateMessage(
+            parsed,
+            requireView().isDraftDirty(),
+          );
+          if (profileGate) {
+            showStatus(profileGate, true);
+            promptControl?.focus({ preventScroll: true });
+            return;
+          }
+          void executeComposerCommand(parsed);
+          return;
+        }
+        if (activeSendAttempt()) submitFollowUp();
+        else sendPrompt();
+      }
+
+      function composerProfileGateMessage(parsed, profileDraftDirty) {
+        if (parsed?.kind === "invalid") return "";
+        const admission = parsed?.kind === "command"
+          ? parsed.admission
+          : {
+              requiresSavedRuntime: true,
+              allowsUnsavedProfileDraft: false,
+            };
+        if (
+          activeSendAttempt() &&
+          admission?.usesActiveSendContext === true
+        ) return "";
+        if (
+          admission?.requiresSavedRuntime !== false &&
+          !getState().settings.activeProfileId
+        ) return "Create and save a model profile before sending.";
+        if (
+          profileDraftDirty &&
+          admission?.allowsUnsavedProfileDraft !== true
+        ) return "Save or discard profile changes before sending.";
+        return admission?.requiresSavedRuntime === false
+          ? ""
+          : subscriptionSendGateMessage();
+      }
+
+      function activeComposerProfileGateMessage(profileDraftDirty) {
+        const prompt = document.getElementById("prompt");
+        return composerProfileGateMessage(
+          parseComposerInput(prompt?.value ?? ""),
+          profileDraftDirty,
+        );
+      }
+
+      async function executeComposerCommand(command) {
+        const sessionId = activeSessionId();
+        if (command.name === "steer" || command.name === "queue") {
+          if (!activeSendAttempt()) {
+            sendPrompt(command.argument, command.source);
+          } else {
+            submitFollowUp(command.name, command.argument, command.source);
+          }
+          return;
+        }
+        if (command.name === "compact" && activeSendAttempt()) {
+          showStatus(
+            "Wait for this Session's active request to finish before compacting.",
+            true,
+          );
+          return;
+        }
+        let bridgeCommand;
+        let bridgeCommandInput;
+        switch (command.name) {
+          case "clear":
+            bridgeCommand = "new_session";
+            break;
+          case "compact":
+            bridgeCommand = "compact_session";
+            bridgeCommandInput = {
+              sessionId,
+              ...(command.argument ? { instructions: command.argument } : {}),
+            };
+            break;
+          default:
+            showStatus(`Unknown command /${command.name}.`, true);
+            return;
+        }
+        const sourceRevision = prepareComposerCommandDraft(
+          sessionId,
+          command.source,
+        );
+        if (sourceRevision === null) return;
+        let commandOutcomeKnown = false;
+        const succeeded = await runCommand(bridgeCommand, bridgeCommandInput, {
+          cancellable: command.name === "compact",
+          onOutcome: (outcome) => {
+            commandOutcomeKnown = outcome.known;
+          },
+        });
+        const reconciledEffect = command.name === "clear" &&
+          activeSessionId() !== sessionId;
+        if (succeeded && (commandOutcomeKnown || reconciledEffect)) {
+          consumeComposerCommandDraft(
+            sessionId,
+            command.source,
+            sourceRevision,
+          );
+        }
+      }
+
+      function prepareComposerCommandDraft(sessionId, source) {
+        const promptControl = document.getElementById("prompt");
+        if (
+          activeSessionId() !== sessionId ||
+          promptControl?.value !== source ||
+          composerDraftsBySession.get(sessionId) !== source
+        ) return null;
+        closeComposerAutocomplete();
+        return composerDraftRevisionsBySession.get(sessionId) ?? null;
+      }
+
+      function consumeComposerCommandDraft(sessionId, source, sourceRevision) {
+        if (
+          composerDraftRevisionsBySession.get(sessionId) !== sourceRevision ||
+          composerDraftsBySession.get(sessionId) !== source
+        ) return;
+        if (activeSessionId() === sessionId) {
+          const promptControl = document.getElementById("prompt");
+          if (!promptControl || promptControl.value !== source) return;
+          promptControl.value = "";
+        }
+        recordComposerDraft(sessionId, "");
+        closeComposerAutocomplete();
+        requireView().renderSessions();
+      }
+
+      function sendPrompt(promptOverride, sourceDraft = promptOverride) {
         const sessionId = activeSessionId();
         const promptControl = document.getElementById("prompt");
-        const prompt = promptControl.value;
+        const prompt = promptOverride ?? promptControl.value;
         if (!prompt.trim()) {
           showStatus("Enter a request for Live Smith.", true);
           promptControl.focus({ preventScroll: true });
@@ -4459,6 +4750,7 @@
         void startSend({
           id: createCorrelationId("send"),
           prompt,
+          sourceDraft: sourceDraft ?? prompt,
           queueId: resumedQueueId,
           queuedFollowUp: resumesQueuedFollowUp,
           sessionId,
@@ -4468,6 +4760,7 @@
       async function startSend({
         id,
         prompt,
+        sourceDraft = prompt,
         queueId = null,
         queuedFollowUp = false,
         sessionId,
@@ -4506,6 +4799,7 @@
           modelTurnEpoch: 0,
           resolvedConfirmationGeneration: 0,
           payload,
+          sourceDraft,
           eventIdsAtStart: visible
             ? new Set((getState().events || []).map((event) => event.id))
             : null,
@@ -4522,8 +4816,9 @@
         sendAttemptsBySession.set(sessionId, attempt);
         if (visible) {
           const promptControl = document.getElementById("prompt");
-          if (promptControl.value === prompt) promptControl.value = "";
+          if (promptControl.value === sourceDraft) promptControl.value = "";
           recordComposerDraft(sessionId, promptControl.value);
+          closeComposerAutocomplete();
         } else {
           recordComposerDraft(sessionId, composerDraftsBySession.get(sessionId) || "");
         }
@@ -4617,7 +4912,7 @@
         }
       }
 
-      function queueFollowUpPrompt() {
+      function queueFollowUpPrompt(promptOverride, sourceDraft = promptOverride) {
         const attempt = activeSendAttempt();
         if (
           !attempt ||
@@ -4627,7 +4922,7 @@
           skillOperationInProgress
         ) return;
         const promptControl = document.getElementById("prompt");
-        const prompt = promptControl.value;
+        const prompt = promptOverride ?? promptControl.value;
         if (!prompt.trim()) {
           showStatus("Enter a follow-up for the active request.", true);
           promptControl.focus({ preventScroll: true });
@@ -4636,8 +4931,11 @@
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
         entries.push({ queueId: createCorrelationId("queue"), prompt });
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
-        promptControl.value = "";
-        recordComposerDraft(attempt.sessionId, "");
+        if (promptControl.value === (sourceDraft ?? prompt)) {
+          promptControl.value = "";
+          recordComposerDraft(attempt.sessionId, "");
+          closeComposerAutocomplete();
+        }
         captureAttemptComposerBaseline(attempt);
         setAttemptStatus(
           attempt,
@@ -4689,9 +4987,9 @@
         void Promise.resolve().then(startQueuedFollowUpsForIdleSessions);
       }
 
-      function submitFollowUp() {
+      function submitFollowUp(behaviorOverride, promptOverride, sourceDraft) {
         const attempt = activeSendAttempt();
-        const behavior = effectiveDefaultFollowUpBehavior();
+        const behavior = behaviorOverride ?? effectiveDefaultFollowUpBehavior();
         if (attempt?.steering && behavior !== "steer") {
           showStatus(
             "Resolve the earlier guidance first: switch Follow-ups to Steer and retry that unchanged guidance.",
@@ -4700,9 +4998,9 @@
           return;
         }
         if (behavior === "steer") {
-          void steerPrompt();
+          void steerPrompt(promptOverride, sourceDraft);
         } else {
-          queueFollowUpPrompt();
+          queueFollowUpPrompt(promptOverride, sourceDraft);
         }
       }
 
@@ -4872,15 +5170,16 @@
         if (
           submittedDraftIsCurrent &&
           activeSessionId() === attempt.sessionId &&
-          promptControl.value === steering.prompt
+          promptControl.value === steering.composerValue
         ) {
           promptControl.value = "";
           recordComposerDraft(attempt.sessionId, "");
+          closeComposerAutocomplete();
         } else if (activeSessionId() === attempt.sessionId) {
           composerDraftsBySession.set(attempt.sessionId, promptControl.value);
         } else if (
           submittedDraftIsCurrent &&
-          composerDraftsBySession.get(attempt.sessionId) === steering.prompt
+          composerDraftsBySession.get(attempt.sessionId) === steering.composerValue
         ) {
           recordComposerDraft(attempt.sessionId, "");
         }
@@ -4963,7 +5262,7 @@
           event.content === steering.prompt;
       }
 
-      async function steerPrompt() {
+      async function steerPrompt(promptOverride, sourceDraft = promptOverride) {
         const attempt = activeSendAttempt();
         const activeResolution = attempt
           ? confirmationResolutionsBySession.get(attempt.sessionId)
@@ -4985,7 +5284,8 @@
           return;
         }
         const promptControl = document.getElementById("prompt");
-        const prompt = promptControl.value;
+        const prompt = promptOverride ?? promptControl.value;
+        const composerValue = sourceDraft ?? prompt;
         if (!prompt.trim()) {
           showStatus("Enter guidance for the active request.", true);
           promptControl.focus({ preventScroll: true });
@@ -5019,10 +5319,11 @@
             : pendingConfirmation?.sendId === attempt.id
               ? pendingConfirmation.confirmationGeneration
               : null,
+          composerValue,
         };
         attempt.steering = steering;
         attempt.steerInProgress = true;
-        composerDraftsBySession.set(attempt.sessionId, prompt);
+        composerDraftsBySession.set(attempt.sessionId, composerValue);
         if (pendingConfirmation?.sendId === attempt.id) {
           requireView().setConfirmationState(true);
         }
@@ -5331,6 +5632,7 @@
           queueId: attempt.queueId || createCorrelationId("queue"),
           prompt: attempt.payload.prompt,
         };
+        const restoredDraft = attempt.sourceDraft ?? entry.prompt;
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
         if (entries[0]?.queueId !== entry.queueId) entries.unshift(entry);
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
@@ -5341,13 +5643,14 @@
           composerDraftRevisionsBySession.get(attempt.sessionId) ===
             attempt.composerDraftRevisionAtStart;
         if (canRestoreToComposer) {
-          recordComposerDraft(attempt.sessionId, entry.prompt);
+          recordComposerDraft(attempt.sessionId, restoredDraft);
           if (activeSessionId() === attempt.sessionId) {
-            document.getElementById("prompt").value = entry.prompt;
+            document.getElementById("prompt").value = restoredDraft;
           }
         }
         const recovery = {
           entry,
+          restoredDraft,
           restoredToComposer: canRestoreToComposer,
         };
         failedSendRecoveriesBySession.set(attempt.sessionId, recovery);
@@ -5441,7 +5744,7 @@
             ...current.archivedSessions,
           ];
         } else {
-          contextUsageBySession.delete(sessionId);
+          clearContextUsage(sessionId);
         }
         current.sessionActivities = (current.sessionActivities || []).filter(
           (activity) => activity.sessionId !== sessionId,
@@ -5507,7 +5810,8 @@
           if (refreshStaleState) refreshGlobalState("0");
           if (activeSessionId() === attempt.sessionId) {
             if (failedRecovery.restoredToComposer) {
-              document.getElementById("prompt").value = attempt.payload.prompt;
+              document.getElementById("prompt").value =
+                failedRecovery.restoredDraft;
             }
             if (!field || !requireView().showFieldError(field, message)) {
               showStatus(
@@ -5552,7 +5856,8 @@
           if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
           if (activeSessionId() === attempt.sessionId) {
             if (queuedRecovery.restoredToComposer) {
-              document.getElementById("prompt").value = attempt.payload.prompt;
+              document.getElementById("prompt").value =
+                queuedRecovery.restoredDraft;
             }
             requireView().renderTimeline();
             showStatus(
@@ -6070,8 +6375,42 @@
       function handleSendButton() {
         if (activeSendAttempt()) {
           void stopAgent();
+        } else if (activeCommandAttempt?.cancellable) {
+          void stopActiveCommand();
         } else {
-          void sendPrompt();
+          submitComposer();
+        }
+      }
+
+      async function stopActiveCommand() {
+        const attempt = activeCommandAttempt;
+        if (
+          !attempt?.cancellable ||
+          attempt.stopRequested ||
+          attempt.stopRequestInProgress
+        ) return;
+        attempt.stopRequested = true;
+        attempt.stopRequestInProgress = true;
+        showStatus("Stopping current operation…");
+        syncOperationState();
+        try {
+          const outcome = await postBridge(
+            "/stop",
+            {},
+            { "X-Live-Smith-Command-Id": attempt.id },
+          );
+          if (activeCommandAttempt === attempt) {
+            attempt.resolveStopAcknowledged(outcome.terminal);
+          }
+        } catch (error) {
+          if (activeCommandAttempt !== attempt) return;
+          attempt.stopRequested = false;
+          showStatus(error.message || String(error), true);
+        } finally {
+          if (activeCommandAttempt === attempt) {
+            attempt.stopRequestInProgress = false;
+            syncOperationState();
+          }
         }
       }
 
@@ -6231,6 +6570,9 @@
       }
 
       function appendSessionEvent(sessionId, event, reconcileTransient) {
+        if (event.kind === "compaction") {
+          recordIncrementalCompactionBoundary(sessionId, event.id);
+        }
         const session = sessionStateEntry(getState(), sessionId)?.session;
         if (session) session.hasContent = true;
         reconcilePendingUserMessage(
@@ -6918,7 +7260,7 @@
                 payload.modelSelection,
               );
               if (previousSource !== nextSource) {
-                contextUsageBySession.delete(payload.sessionId);
+                clearContextUsage(payload.sessionId);
                 requireView().renderContextUsage();
               }
               runtimeSourceBySession.set(payload.sessionId, nextSource);
@@ -6968,12 +7310,9 @@
             );
             if (Object.prototype.hasOwnProperty.call(payload, "contextUsage")) {
               if (payload.contextUsage === null) {
-                contextUsageBySession.delete(payload.sessionId);
+                clearContextUsage(payload.sessionId);
               } else {
-                contextUsageBySession.set(
-                  payload.sessionId,
-                  { ...payload.contextUsage },
-                );
+                setContextUsage(payload.sessionId, payload.contextUsage);
               }
             }
             cancelAssistantDraftRender(payload.sessionId);
@@ -7017,9 +7356,9 @@
               payload.modelTurnEpoch,
             );
             if (payload.usage === null) {
-              contextUsageBySession.delete(payload.sessionId);
+              clearContextUsage(payload.sessionId);
             } else {
-              contextUsageBySession.set(payload.sessionId, { ...payload.usage });
+              setContextUsage(payload.sessionId, payload.usage);
             }
             if (activeSessionId() === payload.sessionId) {
               if (advanced.advanced) requireView().renderTimeline();
@@ -7374,6 +7713,22 @@
             applyConfirmationResolvedPayload(attempt, payload);
             return;
           }
+          if (payload.type === "command_progress") {
+            if (
+              !hasOnlyWireKeys(payload, [
+                "type",
+                "commandId",
+                "message",
+              ]) ||
+              !activeCommandAttempt ||
+              activeCommandAttempt.stopRequested ||
+              payload.commandId !== activeCommandAttempt.id ||
+              typeof payload.message !== "string" ||
+              !payload.message
+            ) return;
+            showStatus(payload.message);
+            return;
+          }
           if (payload.type === "state") {
             if (
               !activeCommandAttempt ||
@@ -7468,7 +7823,9 @@
               ) return;
               const error = new Error(payload.message);
               if (typeof payload.field === "string") error.field = payload.field;
-              if (payload.commandOutcome === "unknown") error.commandOutcome = "unknown";
+              if (["stopped", "unknown"].includes(payload.commandOutcome)) {
+                error.commandOutcome = payload.commandOutcome;
+              }
               if (payload.state !== undefined) error.state = payload.state;
               if (payload.reconciliationRequired === true) {
                 error.reconciliationRequired = true;
@@ -7521,6 +7878,7 @@
         },
         getQueuedFollowUps: () => [...activeQueuedFollowUps()],
         getQueuedFollowUpCount: queuedFollowUpCount,
+        getComposerProfileGateMessage: activeComposerProfileGateMessage,
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
         getPendingUserMessage: activePendingUserMessage,
@@ -7551,13 +7909,13 @@
         saveContextUsageVisibility,
         saveDefaultFollowUpBehavior,
         saveNetworkProxySettings,
+        submitComposer,
         setCloseDecisionPending: (pending) => {
           closeDecisionPending = Boolean(pending);
           if (!closeDecisionPending) startQueuedFollowUpsForIdleSessions();
         },
         showStatus,
         startEventStream,
-        submitFollowUp,
         installSkill,
         uploadAttachments,
       };

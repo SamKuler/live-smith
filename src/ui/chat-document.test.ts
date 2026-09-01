@@ -20,6 +20,7 @@ const scripts: ChatClientScripts = {
   attachments: "",
   bootstrap: "",
   bridgeClient: "",
+  composerInput: "",
   hostAdapter: "",
   markdownRenderer: "",
   profileEditor: "",

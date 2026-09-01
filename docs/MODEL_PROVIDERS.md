@@ -377,10 +377,14 @@ Automatic compaction uses the same active model connection as generation. It
 requests a bounded checkpoint with no tools or visible streaming output,
 persists that checkpoint as the history boundary, and continues with only the
 checkpoint and newer user, assistant, and provider-neutral Tool activity tail.
-Further activity can cross the threshold and create a newer checkpoint. This
-common request path covers Direct API plus
-OpenAI, Anthropic, and Google subscriptions; Live Smith does not depend on an
-OpenAI-only compact endpoint.
+Further activity can cross the threshold and create a newer checkpoint. The
+manual `/compact [instructions]` command uses this same saved Profile, selected
+model, account generation, and requester; its optional instructions only add
+one-time preservation priorities and are not stored as a user turn. Retry and
+reconnect notices are transient command progress, and the user may request Stop
+until checkpoint persistence begins. This common request path covers Direct API
+plus OpenAI, Anthropic, and Google subscriptions; Live Smith does not depend on
+an OpenAI-only compact endpoint.
 
 Schema version 7 stores `oauth-subscription`. A schema-v6
 `codex-subscription` Profile migrates to

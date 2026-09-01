@@ -58,6 +58,21 @@ Try requests such as:
 >
 > “Inspect this device and explain what its current settings are doing.”
 
+Composer commands are recognized only at the start of a message:
+
+- `/compact [instructions]` compacts the current Session now and can name what
+  the checkpoint should preserve. The Session must have no active request and
+  new conversation activity since its latest checkpoint. While manual
+  compaction is running, the composer’s Stop control requests cancellation;
+  once checkpoint persistence has begun, a successfully saved checkpoint takes
+  priority.
+- `/steer <message>` guides an active response immediately; while idle, it starts
+  an ordinary request.
+- `/queue <message>` schedules a turn after the active response; while idle, it
+  starts an ordinary request.
+- `/clear` switches to a fresh Session. The previous Session and any work still
+  running there remain available in History.
+
 ## Getting started
 
 1. Install and run the extension using the [development guide](docs/DEVELOPMENT.md).

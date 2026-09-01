@@ -12,6 +12,7 @@
       __HOST_ADAPTER_SCRIPT__
       __PROFILE_EDITOR_SCRIPT__
       __ATTACHMENTS_SCRIPT__
+      __COMPOSER_INPUT_SCRIPT__
       __SKILL_MANAGER_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
@@ -1943,45 +1944,64 @@
         color: var(--warn);
       }
 
-      .skill-autocomplete {
-        position: absolute;
-        z-index: 8;
-        right: 12px;
-        bottom: 54px;
-        left: 12px;
+      .composer-autocomplete {
         display: grid;
-        max-height: 210px;
+        width: min(440px, 100%);
+        max-height: min(128px, 32vh);
+        margin-bottom: 6px;
+        overflow-x: hidden;
         overflow-y: auto;
-        padding: 4px;
+        grid-template-columns: minmax(0, 1fr);
+        padding: 3px;
         background: var(--field);
         border: 1px solid var(--line-soft);
-        border-radius: 6px;
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+        border-radius: 7px;
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.32);
       }
 
-      .skill-autocomplete[hidden] {
+      .composer-autocomplete[hidden] {
         display: none;
       }
 
-      .skill-suggestion {
-        display: grid;
-        gap: 2px;
+      .composer-suggestion {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         width: 100%;
-        min-height: 40px;
-        padding: 6px 8px;
+        min-width: 0;
+        min-height: 28px;
+        overflow: hidden;
+        padding: 4px 7px;
         color: var(--text);
+        font-size: 11px;
+        line-height: 1.2;
         text-align: left;
         background: transparent;
         border-radius: 4px;
       }
 
-      .skill-suggestion span {
-        color: var(--quiet);
+      .composer-suggestion strong {
+        flex: 0 0 auto;
+        max-width: 48%;
+        overflow: hidden;
         font-size: 11px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
-      .skill-suggestion[aria-selected="true"],
-      .skill-suggestion:hover {
+      .composer-suggestion span {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--quiet);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .composer-suggestion[aria-selected="true"],
+      .composer-suggestion:hover {
         background: var(--accent-soft);
       }
 
@@ -3499,9 +3519,9 @@
           <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden></div>
+            <div id="composerAutocomplete" class="composer-autocomplete" role="listbox" aria-label="Composer suggestions" hidden></div>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
-            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="skillAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
-            <div id="skillAutocomplete" class="skill-autocomplete" role="listbox" aria-label="Skill suggestions" hidden></div>
+            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
             <div class="composer-toolbar">
               <div class="composer-live-controls">
                 <div id="attachmentMenuShell" class="attachment-menu-shell">

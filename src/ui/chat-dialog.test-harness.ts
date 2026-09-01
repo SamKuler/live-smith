@@ -42,6 +42,7 @@ interface DialogHarness {
   calls: BridgeCall[];
   clipboardWrites: string[];
   commandIds: string[];
+  commandStopIds: string[];
   click(selector: string): void;
   clickButton(label: string): void;
   close(): void;
@@ -59,7 +60,7 @@ interface DialogHarness {
     error: string,
     field?: string,
     details?: {
-      commandOutcome?: "unknown";
+      commandOutcome?: "stopped" | "unknown";
       reconciliationRequired?: boolean;
       state?: ChatBridgeState;
       status?: number;
@@ -117,6 +118,7 @@ interface DialogHarness {
   releaseHeldState(): void;
   releaseHeldAttachment(): void;
   queueStopTerminals(...values: boolean[]): void;
+  queueCommandStopTerminals(...values: boolean[]): void;
   queueStopOutcomes(
     ...values: Array<{
       terminal: boolean;
@@ -151,6 +153,7 @@ const clientScripts = {
   attachments: readClientScript("attachments"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
+  composerInput: readClientScript("composer-input"),
   hostAdapter: readClientScript("host-adapter"),
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
@@ -418,6 +421,7 @@ async function createDialogHarness(
   const calls: BridgeCall[] = [];
   const clipboardWrites: string[] = [];
   const commandIds: string[] = [];
+  const commandStopIds: string[] = [];
   const errors: unknown[] = [];
   const eventSourceUrls: string[] = [];
   const windowOpenAttempts: string[] = [];
@@ -431,6 +435,7 @@ async function createDialogHarness(
   const hostMessages: unknown[] = [];
   const animationFrames = new Map<number, FrameRequestCallback>();
   let nextAnimationFrameId = 1;
+  let nextCompactionEventId = 1;
   let nextBridgeStateRevision = BigInt(initialState.bridgeStateRevision) + 1n;
   const queuedStatePublications: Array<{
     bridgeStateRevision: string;
@@ -439,7 +444,7 @@ async function createDialogHarness(
   let nextCommandError: {
     error: string;
     field?: string;
-    commandOutcome?: "unknown";
+    commandOutcome?: "stopped" | "unknown";
     reconciliationRequired?: boolean;
     state?: ChatBridgeState;
     status?: number;
@@ -506,6 +511,7 @@ async function createDialogHarness(
   let releaseState: (() => void) | null = null;
   let releaseAttachment: (() => void) | null = null;
   const stopTerminals: boolean[] = [];
+  const commandStopTerminals: boolean[] = [];
   const stopOutcomes: Array<{
     terminal: boolean;
     promptPersistence?: "persisted" | "not_persisted" | "unknown";
@@ -1123,8 +1129,11 @@ async function createDialogHarness(
               sendIds.push(headers?.["X-Live-Smith-Send-Id"] ?? "");
             }
             if (url.pathname === "/stop") {
-              const headers = init?.headers as Record<string, string> | undefined;
-              stopIds.push(headers?.["X-Live-Smith-Send-Id"] ?? "");
+              const headers = new Headers(init?.headers);
+              const sendId = headers.get("X-Live-Smith-Send-Id");
+              const commandId = headers.get("X-Live-Smith-Command-Id");
+              if (sendId !== null) stopIds.push(sendId);
+              if (commandId !== null) commandStopIds.push(commandId);
             }
             if (url.pathname === "/command") {
               const headers = init?.headers as Record<string, string> | undefined;
@@ -1366,6 +1375,7 @@ async function createDialogHarness(
                 provider?: "openai" | "anthropic" | "google";
                 authorizationCode?: string;
                 model?: string;
+                instructions?: string;
                 reasoningEffort?: "minimal" | "low" | "medium" | "high" |
                   "xhigh" | "max" | "ultra" | null;
                 sessionId?: string;
@@ -1505,6 +1515,16 @@ async function createDialogHarness(
                 command.profileId
               ) {
                 serverState.configuredModelsReady = true;
+              } else if (
+                command.kind === "compact_session" &&
+                command.sessionId === serverState.activeSessionId
+              ) {
+                serverState.events.push({
+                  id: `event-compaction-${nextCompactionEventId++}`,
+                  createdAt: "2026-08-02T00:00:00.000Z",
+                  kind: "compaction",
+                  content: command.instructions || "Conversation checkpoint",
+                });
               } else if (command.kind === "save_profile" && command.profile) {
                 const profiles = serverState.settings.profiles.filter(
                   (profile) => profile.id !== command.profile?.id,
@@ -1915,6 +1935,14 @@ async function createDialogHarness(
             if (url.pathname === "/stop") {
               const outcome = stopOutcomes.shift();
               const headers = new Headers(init?.headers);
+              const commandId = headers.get("X-Live-Smith-Command-Id");
+              if (commandId !== null) {
+                return response({
+                  ok: true,
+                  terminal: commandStopTerminals.shift() ?? false,
+                  commandId,
+                });
+              }
               const terminal = outcome?.terminal ?? stopTerminals.shift() ?? true;
               const sendId = outcome?.sendId ??
                 headers.get("X-Live-Smith-Send-Id") ?? "";
@@ -1961,6 +1989,7 @@ async function createDialogHarness(
     calls,
     clipboardWrites,
     commandIds,
+    commandStopIds,
     click(selector) {
       required<HTMLElement>(selector).click();
     },
@@ -2191,6 +2220,9 @@ async function createDialogHarness(
     },
     queueStopTerminals(...values) {
       stopTerminals.push(...values);
+    },
+    queueCommandStopTerminals(...values) {
+      commandStopTerminals.push(...values);
     },
     queueStopOutcomes(...values) {
       stopOutcomes.push(...values);

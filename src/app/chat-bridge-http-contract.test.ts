@@ -345,7 +345,13 @@ test("held capability reads allow Session navigation, state hydration, and sendi
     buildState: async () => current,
     renderHtml: () => "<html></html>",
     handleCommand: async (input, _signal, context) => {
-      commands.push({ input, context });
+      commands.push({
+        input,
+        context: {
+          commandId: context.commandId,
+          progress: typeof context.progress,
+        },
+      });
       if (input.kind === "load_session_model_capabilities") {
         const captured = current;
         markStarted();
@@ -411,10 +417,13 @@ test("held capability reads allow Session navigation, state hydration, and sendi
     assert.equal(state.bridgeStateCoveredThroughRevision, baseline.bridgeStateRevision);
     assert.ok(BigInt(state.bridgeStateRevision) > BigInt(selectedState.bridgeStateRevision));
     assert.deepEqual(commands, [
-      { input: capabilityReadInput, context: { commandId: "capability-read" } },
+      {
+        input: capabilityReadInput,
+        context: { commandId: "capability-read", progress: "function" },
+      },
       {
         input: { kind: "select_session", sessionId: "session-2" },
-        context: { commandId: "parallel-navigation" },
+        context: { commandId: "parallel-navigation", progress: "function" },
       },
     ]);
     assert.deepEqual(sends, [{ prompt: "Keep typing", sessionId: "session-2" }]);

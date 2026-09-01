@@ -3,6 +3,7 @@ import chatDialog from "./templates/chat-dialog.html";
 import hostAdapterScript from "./client/host-adapter.script.html";
 import profileEditorScript from "./client/profile-editor.script.html";
 import attachmentsScript from "./client/attachments.script.html";
+import composerInputScript from "./client/composer-input.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
 import skillManagerScript from "./client/skill-manager.script.html";
@@ -29,6 +30,7 @@ export function chatHtml(
     attachments: attachmentsScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,
+    composerInput: composerInputScript,
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     profileEditor: profileEditorScript,

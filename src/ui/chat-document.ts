@@ -40,6 +40,7 @@ export interface ChatClientScripts {
   attachments: string;
   bootstrap: string;
   bridgeClient: string;
+  composerInput: string;
   hostAdapter: string;
   markdownRenderer: string;
   profileEditor: string;
@@ -207,6 +208,7 @@ export function composeChatDocument(
     .replace("__HOST_ADAPTER_SCRIPT__", () => scripts.hostAdapter)
     .replace("__PROFILE_EDITOR_SCRIPT__", () => profileEditorScript)
     .replace("__ATTACHMENTS_SCRIPT__", () => attachmentsScript)
+    .replace("__COMPOSER_INPUT_SCRIPT__", () => scripts.composerInput)
     .replace("__SKILL_MANAGER_SCRIPT__", () => skillManagerScript)
     .replace("__BRIDGE_CLIENT_SCRIPT__", () => bridgeClientScript)
     .replace("__MARKDOWN_RENDERER_SCRIPT__", () => scripts.markdownRenderer)
@@ -216,7 +218,7 @@ export function composeChatDocument(
     )
     .replace("__BOOTSTRAP_SCRIPT__", () => injectEditScopeContract(scripts.bootstrap));
 
-  if (/__(?:STATE|BRIDGE|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {
+  if (/__(?:STATE|BRIDGE|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|COMPOSER_INPUT_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {
     throw new Error("Chat document composition left an unresolved placeholder.");
   }
   return document;

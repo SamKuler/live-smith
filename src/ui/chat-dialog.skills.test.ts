@@ -87,7 +87,7 @@ test("built-in Skills participate in prompt autocomplete", async () => {
   const harness = await createDialogHarness(state);
   try {
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
-    const listbox = harness.document.querySelector<HTMLElement>("#skillAutocomplete");
+    const listbox = harness.document.querySelector<HTMLElement>("#composerAutocomplete");
     assert.ok(prompt && listbox);
     prompt.focus();
     harness.input("#prompt", "$arr");
@@ -698,7 +698,7 @@ test("Skill autocomplete is accessible and skips numeric IDs and Markdown code",
   const harness = await createDialogHarness(state);
   try {
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
-    const listbox = harness.document.querySelector<HTMLElement>("#skillAutocomplete");
+    const listbox = harness.document.querySelector<HTMLElement>("#composerAutocomplete");
     assert.ok(prompt && listbox);
     prompt.focus();
     harness.input("#prompt", "$mi");
@@ -750,7 +750,7 @@ test("Cmd or Ctrl Enter sends the unchanged prompt instead of accepting a Skill 
   const harness = await createDialogHarness(state);
   try {
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
-    const listbox = harness.document.querySelector<HTMLElement>("#skillAutocomplete");
+    const listbox = harness.document.querySelector<HTMLElement>("#composerAutocomplete");
     assert.ok(prompt && listbox);
     prompt.focus();
     harness.input("#prompt", "$mi");

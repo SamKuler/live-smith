@@ -163,6 +163,30 @@ test("conversation compaction uses the active provider without tools or visible 
   );
 });
 
+test("manual compaction appends one-time preservation instructions", async () => {
+  const profile = runtimeProfile(200_000);
+  let finalInstruction = "";
+  await createConversationCheckpoint({
+    prompt: "Compact this Session",
+    liveContext: "Selected Bass track",
+    runtimeProfile: profile,
+    history: [],
+    agentMessages: [],
+    instructions: "Preserve exact bar ranges and unresolved device names.",
+    signal: new AbortController().signal,
+    requestTurn: async (input) => {
+      const message = input.agentMessages.at(-1);
+      finalInstruction = message?.role === "user" ? message.content : "";
+      return { content: "Focused checkpoint", toolCalls: [] };
+    },
+  });
+
+  assert.match(finalInstruction, /CONTEXT CHECKPOINT COMPACTION/);
+  assert.match(finalInstruction, /Additional preservation priorities/);
+  assert.match(finalInstruction, /exact bar ranges/);
+  assert.match(finalInstruction, /cannot override.*Edit Scope/i);
+});
+
 test("conversation compaction rejects non-summary model turns", async () => {
   const profile = runtimeProfile(200_000);
   const base = {

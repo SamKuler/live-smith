@@ -6,6 +6,7 @@
         installSkill,
         runCommand,
         showStatus,
+        updateComposerAutocomplete,
       }) {
       const maxActiveSkills = __MAX_ACTIVE_SKILL_COUNT__;
       const maxSkillFileBytes = __MAX_SKILL_FILE_BYTES__;
@@ -13,9 +14,6 @@
         __BUILT_IN_SKILL_DEFINITIONS__.map((definition) => [definition.id, definition]),
       );
       let busy = false;
-      let suggestions = [];
-      let selectedSuggestion = -1;
-      let mentionRange = null;
       let retainedSkillFocus = null;
       let renderedSkillStateKey = null;
       let viewedBuiltInSkillId = null;
@@ -181,7 +179,7 @@
           usedSkillIds: [...usedSkillIds].sort(),
         });
         if (!force && renderKey === renderedSkillStateKey) {
-          updateAutocomplete();
+          updateComposerAutocomplete();
           return;
         }
         const focusedControl = focusedSkillControl();
@@ -222,7 +220,7 @@
           );
         }
         renderedSkillStateKey = renderKey;
-        updateAutocomplete();
+        updateComposerAutocomplete();
       }
 
       async function toggleSkill(skillId, enabled) {
@@ -398,195 +396,6 @@
         }
       }
 
-      function updateAutocomplete() {
-        const prompt = document.getElementById("prompt");
-        const listbox = document.getElementById("skillAutocomplete");
-        if (!prompt || !listbox || prompt !== document.activeElement) {
-          closeAutocomplete();
-          return;
-        }
-        mentionRange = activeMentionRange(prompt.value, prompt.selectionStart ?? 0);
-        if (!mentionRange) {
-          closeAutocomplete();
-          return;
-        }
-        const query = prompt.value.slice(mentionRange.start + 1, mentionRange.end);
-        suggestions = (getState().availableSkills || [])
-          .filter((skill) => !/^\d/.test(skill.id) && skill.id.startsWith(query))
-          .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
-          .slice(0, 8);
-        if (!suggestions.length) {
-          closeAutocomplete();
-          return;
-        }
-        selectedSuggestion = Math.min(
-          Math.max(selectedSuggestion, 0),
-          suggestions.length - 1,
-        );
-        listbox.replaceChildren();
-        for (let index = 0; index < suggestions.length; index += 1) {
-          const skill = suggestions[index];
-          const option = document.createElement("button");
-          option.type = "button";
-          option.id = `skillSuggestion-${index}`;
-          option.className = "skill-suggestion";
-          option.setAttribute("role", "option");
-          option.setAttribute("aria-selected", String(index === selectedSuggestion));
-          const id = document.createElement("strong");
-          id.setAttribute("translate", "no");
-          id.textContent = `$${skill.id}`;
-          const description = document.createElement("span");
-          description.textContent = skill.description;
-          option.append(id, description);
-          option.addEventListener("mousedown", (event) => event.preventDefault());
-          option.addEventListener("click", () => selectSuggestion(index));
-          listbox.append(option);
-        }
-        listbox.hidden = false;
-        prompt.setAttribute("aria-expanded", "true");
-        prompt.setAttribute("aria-activedescendant", `skillSuggestion-${selectedSuggestion}`);
-      }
-
-      function closeAutocomplete() {
-        suggestions = [];
-        selectedSuggestion = -1;
-        mentionRange = null;
-        const prompt = document.getElementById("prompt");
-        const listbox = document.getElementById("skillAutocomplete");
-        if (listbox) {
-          if (!listbox.hidden) listbox.hidden = true;
-          if (listbox.childNodes.length) listbox.replaceChildren();
-        }
-        if (prompt?.getAttribute("aria-expanded") !== "false") {
-          prompt?.setAttribute("aria-expanded", "false");
-        }
-        if (prompt?.hasAttribute("aria-activedescendant")) {
-          prompt?.removeAttribute("aria-activedescendant");
-        }
-      }
-
-      function selectSuggestion(index) {
-        const prompt = document.getElementById("prompt");
-        const skill = suggestions[index];
-        if (!prompt || !skill || !mentionRange) return;
-        const replacement = `$${skill.id} `;
-        prompt.setRangeText(
-          replacement,
-          mentionRange.start,
-          mentionRange.end,
-          "end",
-        );
-        prompt.dispatchEvent(new Event("input", { bubbles: true }));
-        closeAutocomplete();
-        prompt.focus({ preventScroll: true });
-      }
-
-      function handlePromptKeydown(event) {
-        if (document.getElementById("skillAutocomplete")?.hidden) return;
-        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) return;
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          event.preventDefault();
-          const direction = event.key === "ArrowDown" ? 1 : -1;
-          selectedSuggestion =
-            (selectedSuggestion + direction + suggestions.length) % suggestions.length;
-          updateAutocomplete();
-        } else if (event.key === "Enter" || event.key === "Tab") {
-          event.preventDefault();
-          selectSuggestion(selectedSuggestion);
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          closeAutocomplete();
-        }
-      }
-
-      function activeMentionRange(prompt, caret) {
-        if (caret < 1 || codeSpanContains(prompt, caret - 1)) return null;
-        let start = caret - 1;
-        while (start >= 0 && /[a-z0-9-]/.test(prompt[start])) start -= 1;
-        if (prompt[start] !== "$") return null;
-        if (start > 0 && !isPromptWhitespace(prompt[start - 1])) return null;
-        const candidate = prompt.slice(start + 1, caret);
-        if (/^\d/.test(candidate) || !/^[a-z0-9-]*$/.test(candidate)) return null;
-        if (!isMentionRightBoundary(prompt[caret])) return null;
-        if (codeSpanContains(prompt, start)) return null;
-        return { start, end: caret };
-      }
-
-      function codeSpanContains(prompt, position) {
-        for (let index = 0; index < prompt.length;) {
-          const marker = prompt[index];
-          if (marker !== "`" && marker !== "~") {
-            index += 1;
-            continue;
-          }
-          const runLength = delimiterRunLength(prompt, index, marker);
-          const fenced = runLength >= 3 &&
-            isFenceDelimiterLine(prompt, index, runLength, marker, false);
-          if (marker === "~" && !fenced) {
-            index += runLength;
-            continue;
-          }
-          const closing = closingCodeRun(
-            prompt,
-            index + runLength,
-            runLength,
-            marker,
-            fenced,
-          );
-          if (!closing && !fenced) {
-            if (position >= index && position < index + runLength) return true;
-            index += runLength;
-            continue;
-          }
-          const end = closing ? closing.index + closing.length : prompt.length;
-          if (position >= index && position < end) return true;
-          index = Math.max(index + runLength, end);
-        }
-        return false;
-      }
-
-      function delimiterRunLength(prompt, start, marker) {
-        let end = start;
-        while (prompt[end] === marker) end += 1;
-        return end - start;
-      }
-
-      function closingCodeRun(prompt, start, runLength, marker, fenced) {
-        for (let index = prompt.indexOf(marker, start); index !== -1;) {
-          const length = delimiterRunLength(prompt, index, marker);
-          if (
-            fenced
-              ? length >= runLength &&
-                isFenceDelimiterLine(prompt, index, length, marker, true)
-              : length === runLength
-          ) return { index, length };
-          index = prompt.indexOf(marker, index + length);
-        }
-        return null;
-      }
-
-      function isFenceDelimiterLine(prompt, start, runLength, marker, closing) {
-        const lineStart = prompt.lastIndexOf("\n", start - 1) + 1;
-        const indentation = prompt.slice(lineStart, start);
-        if (!/^ {0,3}$/.test(indentation)) return false;
-        const lineEnd = prompt.indexOf("\n", start + runLength);
-        const suffix = prompt.slice(
-          start + runLength,
-          lineEnd === -1 ? prompt.length : lineEnd,
-        );
-        if (closing) return /^[ \t]*$/.test(suffix);
-        if (marker === "`" && suffix.includes("`")) return false;
-        return true;
-      }
-
-      function isPromptWhitespace(value) {
-        return /\s/u.test(value);
-      }
-
-      function isMentionRightBoundary(value) {
-        return value === undefined || !/[A-Za-z0-9_@/\\-]/u.test(value);
-      }
-
       function initialize() {
         document.getElementById("closeSkillViewer").addEventListener(
           "click", () => closeSkillViewer(),
@@ -629,13 +438,6 @@
           "click",
           () => { void installPastedSkill(); },
         );
-        const prompt = document.getElementById("prompt");
-        prompt?.addEventListener("input", updateAutocomplete);
-        prompt?.addEventListener("click", updateAutocomplete);
-        prompt?.addEventListener("keydown", handlePromptKeydown);
-        prompt?.addEventListener("blur", () => {
-          window.setTimeout(closeAutocomplete, 0);
-        });
         render();
       }
 

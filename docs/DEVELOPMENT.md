@@ -71,7 +71,7 @@ credentials or call a model provider. Focused suites are available as
 After editing dialog client fragments, also check the composed JavaScript:
 
 ```sh
-node -e "const fs=require('fs');const files=['host-adapter','profile-editor','bridge-client','attachments','skill-manager','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
+node -e "const fs=require('fs');const files=['host-adapter','profile-editor','attachments','composer-input','skill-manager','bridge-client','session-timeline','bootstrap'];new Function(files.map((name)=>fs.readFileSync('src/ui/client/'+name+'.script.html','utf8')).join('\\n'));"
 ```
 
 DOM tests prove interaction and state behavior, not rendered geometry or live

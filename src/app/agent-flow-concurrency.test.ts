@@ -899,6 +899,257 @@ test("two bridges serialize a same-Session send and delete without recreating ev
   }
 });
 
+test("a compact from another bridge is rejected while the same Session is sending", async () => {
+  const modelStarted = deferred<void>();
+  const releaseModel = deferred<void>();
+  let compactRequests = 0;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-send-compact-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        modelStarted.resolve();
+        await releaseModel.promise;
+        return { content: "Done", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => {
+        compactRequests += 1;
+        return { content: "Unexpected checkpoint", toolCalls: [] };
+      },
+    },
+  });
+
+  try {
+    const send = fetch(fixture.first.endpoint("/send"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        prompt: "Hold this Session while generating",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(modelStarted.promise, "active Session model request");
+
+    const compact = await resolvesWithin(fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        kind: "compact_session",
+        sessionId: fixture.sessionId,
+      }),
+    }), "cross-window compact rejection");
+    assert.equal(compact.status, 409, await compact.text());
+    assert.equal(compactRequests, 0);
+    assert.equal(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).some(
+        (event) => event.kind === "compaction",
+      ),
+      false,
+    );
+
+    releaseModel.resolve();
+    assert.equal((await send).status, 200);
+  } finally {
+    releaseModel.resolve();
+    await fixture.close();
+  }
+});
+
+test("two concurrent compact commands append only one checkpoint", async () => {
+  const compactStarted = deferred<void>();
+  const releaseCompact = deferred<void>();
+  let firstRequests = 0;
+  let secondRequests = 0;
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-double-compact-",
+    firstDependencies: {
+      requestModelTurn: async () => {
+        firstRequests += 1;
+        compactStarted.resolve();
+        await releaseCompact.promise;
+        return { content: "Shared checkpoint", toolCalls: [] };
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async () => {
+        secondRequests += 1;
+        return { content: "Duplicate checkpoint", toolCalls: [] };
+      },
+    },
+  });
+
+  try {
+    await appendSessionEvent(fixture.directory, fixture.sessionId, {
+      kind: "user",
+      content: "Preserve the current arrangement plan",
+    });
+    await appendSessionEvent(fixture.directory, fixture.sessionId, {
+      kind: "assistant",
+      content: "The plan is ready.",
+    });
+    const first = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        kind: "compact_session",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(compactStarted.promise, "first compact model request");
+
+    let secondSettled = false;
+    const second = fetch(fixture.second.endpoint("/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        kind: "compact_session",
+        sessionId: fixture.sessionId,
+      }),
+    }).then((response) => {
+      secondSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      second.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]), "pending");
+    assert.equal(secondSettled, false);
+
+    releaseCompact.resolve();
+    assert.equal((await first).status, 200);
+    const secondResponse = await second;
+    assert.equal(secondResponse.status, 409, await secondResponse.text());
+    assert.equal(firstRequests, 1);
+    assert.equal(secondRequests, 0);
+    assert.deepEqual(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).map(
+        (event) => event.kind,
+      ),
+      ["user", "assistant", "compaction"],
+    );
+  } finally {
+    releaseCompact.resolve();
+    await fixture.close();
+  }
+});
+
+test("an unknown compact commit holds the Session fence through authoritative readback", async () => {
+  const checkpointPersisted = deferred<void>();
+  const readbackStarted = deferred<void>();
+  const releaseReadback = deferred<void>();
+  let blockReadback = false;
+  let secondModelCalls = 0;
+  const secondHistories: unknown[] = [];
+  const fixture = await openCrossBridgeFixture({
+    directoryPrefix: "live-smith-cross-bridge-compact-unknown-",
+    firstDependencies: {
+      requestModelTurn: async () => ({
+        content: "Unknown durable checkpoint",
+        toolCalls: [],
+      }),
+      appendSessionEvent: async (...args) => {
+        await appendSessionEvent(...args);
+        blockReadback = true;
+        checkpointPersisted.resolve();
+        throw new StorageCommitOutcomeUnknownError(
+          new Error("directory sync failed after checkpoint rename"),
+        );
+      },
+      loadSessionEvents: async (...args) => {
+        if (blockReadback) {
+          readbackStarted.resolve();
+          await releaseReadback.promise;
+        }
+        return loadSessionEvents(...args);
+      },
+    },
+    secondDependencies: {
+      requestModelTurn: async (input) => {
+        secondModelCalls += 1;
+        secondHistories.push(input.history);
+        return { content: "Continued after checkpoint", toolCalls: [] };
+      },
+    },
+  });
+
+  try {
+    await appendSessionEvent(fixture.directory, fixture.sessionId, {
+      kind: "user",
+      content: "Preserve this exact plan",
+    });
+    await appendSessionEvent(fixture.directory, fixture.sessionId, {
+      kind: "assistant",
+      content: "The exact plan is ready.",
+    });
+    const compact = fetch(fixture.first.endpoint("/command"), {
+      method: "POST",
+      headers: bridgeJsonHeaders(),
+      body: JSON.stringify({
+        kind: "compact_session",
+        sessionId: fixture.sessionId,
+      }),
+    });
+    await resolvesWithin(checkpointPersisted.promise, "checkpoint persistence");
+    await resolvesWithin(readbackStarted.promise, "unknown commit readback");
+    const secondState = await (
+      await fetch(fixture.second.endpoint("/state"))
+    ).json() as ChatBridgeState;
+
+    let sendSettled = false;
+    const send = fetch(fixture.second.endpoint("/send"), {
+      method: "POST",
+      headers: bridgeSendHeaders(secondState),
+      body: JSON.stringify({
+        prompt: "Continue from the durable checkpoint",
+        sessionId: fixture.sessionId,
+      }),
+    }).then((response) => {
+      sendSettled = true;
+      return response;
+    });
+    assert.equal(await Promise.race([
+      send.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 100);
+      }),
+    ]), "pending");
+    assert.equal(sendSettled, false);
+    assert.equal(secondModelCalls, 0);
+
+    releaseReadback.resolve();
+    const compactResponse = await compact;
+    const compactBody = await compactResponse.json() as {
+      commandOutcome?: string;
+      state?: ChatDialogState;
+    };
+    assert.equal(compactResponse.status, 500);
+    assert.equal(compactBody.commandOutcome, "unknown");
+    assert.equal(
+      compactBody.state?.events.filter((event) => event.kind === "compaction").length,
+      1,
+    );
+
+    assert.equal((await send).status, 200);
+    assert.equal(secondModelCalls, 1);
+    assert.match(
+      JSON.stringify(secondHistories[0]),
+      /Unknown durable checkpoint/,
+    );
+    assert.equal(
+      (await loadSessionEvents(fixture.directory, fixture.sessionId)).filter(
+        (event) => event.kind === "compaction",
+      ).length,
+      1,
+    );
+  } finally {
+    releaseReadback.resolve();
+    await fixture.close();
+  }
+});
+
 test("a second dialog opens while an existing Session send holds its fence", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-dialog-startup-fence-"));
   await saveSavedProfile(directory, profile({

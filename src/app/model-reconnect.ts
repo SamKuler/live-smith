@@ -54,7 +54,9 @@ export async function requestModelWithReconnect<T>(
 
     try {
       const value = await options.request({ markResponseStarted, reconnectState });
+      throwIfAborted(options.signal);
       await markResponseStarted();
+      throwIfAborted(options.signal);
       return { value, reconnected };
     } catch (error) {
       throwIfAborted(options.signal);
