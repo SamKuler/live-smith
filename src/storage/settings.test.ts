@@ -891,6 +891,12 @@ test("settings mutations preserve the original bytes when one stored Profile is 
 test("saveSavedProfile normalizes, persists, and activates the complete profile", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-settings-"));
   const saved = await saveSavedProfile(directory, profile({
+    parameters: {
+      maxOutputTokens: 8192,
+      contextWindowTokens: 240_000,
+      autoCompactTokenLimit: 180_000,
+      reasoning: { mode: "default" },
+    },
     advanced: { hostedTools: { webSearch: true } },
   }));
 
@@ -904,6 +910,14 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
   assert.deepEqual(saved.profiles[0]?.models[0]?.advanced.hostedTools, {
     webSearch: true,
   });
+  assert.equal(
+    saved.profiles[0]?.models[0]?.parameters.contextWindowTokens,
+    240_000,
+  );
+  assert.equal(
+    saved.profiles[0]?.models[0]?.parameters.autoCompactTokenLimit,
+    180_000,
+  );
   const persisted = JSON.parse(
     await fs.readFile(path.join(directory, "live-smith-settings.json"), "utf8"),
   ) as Record<string, unknown>;

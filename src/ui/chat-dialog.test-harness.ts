@@ -252,7 +252,15 @@ function profileFixture(overrides: ProfileFixtureOverrides = {}): SavedProfile {
   const models = overrides.models ?? [{
     model,
     parameters: connection.kind === "oauth-subscription"
-      ? { reasoning: parameters.reasoning }
+      ? {
+          ...(parameters.contextWindowTokens === undefined
+            ? {}
+            : { contextWindowTokens: parameters.contextWindowTokens }),
+          ...(parameters.autoCompactTokenLimit === undefined
+            ? {}
+            : { autoCompactTokenLimit: parameters.autoCompactTokenLimit }),
+          reasoning: parameters.reasoning,
+        }
       : parameters as GenerationParameters & { maxOutputTokens: number },
     advanced: connection.kind === "oauth-subscription"
       ? {}

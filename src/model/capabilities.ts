@@ -207,6 +207,10 @@ export function resolveModelCapabilitiesWithEvidence(
   const overrides = source.model.advanced.capabilityOverrides;
   const capabilities = mergeCapabilityOverrides(withDiscovered, overrides);
   applyCapabilityEvidence(capabilityEvidence, overrides);
+  if (source.model.parameters.contextWindowTokens !== undefined) {
+    capabilities.contextWindowTokens = source.model.parameters.contextWindowTokens;
+    capabilityEvidence.contextWindowTokens = "configured";
+  }
   return { capabilities, capabilityEvidence };
 }
 
@@ -286,6 +290,16 @@ export function validateGenerationParameters(
   const configuredMaxOutputTokens = isDirectRuntimeModelSource(source)
     ? parameters.maxOutputTokens
     : undefined;
+  if (
+    parameters.autoCompactTokenLimit !== undefined &&
+    capabilities.contextWindowTokens !== undefined &&
+    parameters.autoCompactTokenLimit >= capabilities.contextWindowTokens
+  ) {
+    throw new ProfileValidationError(
+      "parameters.autoCompactTokenLimit",
+      `Auto compact token limit must be below the context window of ${capabilities.contextWindowTokens}.`,
+    );
+  }
   if (
     configuredMaxOutputTokens !== undefined &&
     capabilities.maxOutputTokens !== undefined &&

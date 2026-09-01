@@ -75,6 +75,8 @@ export interface AgentLoopInitialRecoveryState {
 export interface AgentLoopModelInput {
   messages: ModelConversationMessage[];
   iteration: number;
+  /** True only while replaying an output-limit continuation chain. */
+  continuation: boolean;
 }
 
 export interface AgentLoopResult {
@@ -350,6 +352,7 @@ export async function runAgentLoop(
       turn = await options.askModel({
         messages: [...messages],
         iteration,
+        continuation: consecutiveModelContinuations > 0,
       });
     } catch (error) {
       if (!(error instanceof AgentSteeringInterruptError)) throw error;
@@ -501,7 +504,7 @@ export async function runAgentLoop(
         });
       }
       const stopMessage = turn.termination.reason === "context_limit"
-        ? "The model stopped because this Session reached its context-window limit. Start a new Session or shorten the conversation before continuing."
+        ? "The model stopped because this Session reached its context-window limit. Configure an accurate Context Window and Compact At threshold for this model, or start a new Session before continuing."
         : "The model stopped at its output-token limit while a provider-hosted tool was still unfinished. No incomplete tool call was executed. Increase this Profile's Max Output Tokens and try again.";
       const terminalMessage = recoveryState.unresolvedFailure
         ? `${stopMessage}\n\n${unfinishedWorkMessage(

@@ -36,7 +36,9 @@ Select a track, Clip, device, or another supported Live object and choose
   of your Set, revisit their history, or collapse the Sessions panel for more space.
 - **Choose models in the composer.** Save several models in one connection
   Profile, then switch models and supported reasoning levels below the message box.
-  The context meter shows reported usage when available.
+  The context meter shows the active model context when reported. Each model can
+  override its context-window size and auto-compaction threshold; a blank
+  threshold defaults to 90% when the context window is known.
 - **Guide the musical approach.** Enable arrangement Skills per Session or
   mention one for a single request. Open a built-in Skill to read its instructions
   before enabling it.

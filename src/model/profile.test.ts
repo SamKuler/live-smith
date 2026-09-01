@@ -173,6 +173,72 @@ test("Profile validation does not depend on an ambient URL constructor", () => {
   }
 });
 
+test("Direct and subscription models retain shared context management settings", () => {
+  const direct = validateDraftProfileForSave(withDefaultModel(
+    profile("https://api.deepseek.com/anthropic"),
+    {
+      parameters: {
+        maxOutputTokens: 8192,
+        contextWindowTokens: 200_000,
+        autoCompactTokenLimit: 150_000,
+        reasoning: { mode: "default" },
+      },
+    },
+  ));
+  assert.deepEqual(configuredModel(direct).parameters, {
+    maxOutputTokens: 8192,
+    contextWindowTokens: 200_000,
+    autoCompactTokenLimit: 150_000,
+    reasoning: { mode: "default" },
+  });
+
+  const subscription = validateDraftProfileForSave({
+    id: "subscription-context",
+    name: "Subscription context",
+    connection: { kind: "oauth-subscription", provider: "openai" },
+    defaultModel: "gpt-subscription",
+    models: [{
+      model: "gpt-subscription",
+      parameters: {
+        contextWindowTokens: 180_000,
+        autoCompactTokenLimit: 140_000,
+        reasoning: { mode: "default" },
+      },
+      advanced: {},
+    }],
+  });
+  assert.deepEqual(configuredModel(subscription).parameters, {
+    contextWindowTokens: 180_000,
+    autoCompactTokenLimit: 140_000,
+    reasoning: { mode: "default" },
+  });
+});
+
+test("context management settings reject invalid or self-defeating limits", () => {
+  for (const [contextWindowTokens, autoCompactTokenLimit, pattern] of [
+    [0, 1, /contextWindowTokens/],
+    [10_000_001, 1, /contextWindowTokens/],
+    [100_000, 0, /autoCompactTokenLimit/],
+    [100_000, 100_000, /below the context window/i],
+    [100_000, 100_001, /below the context window/i],
+  ] as const) {
+    assert.throws(
+      () => validateDraftProfileForSave(withDefaultModel(
+        profile("https://api.deepseek.com/anthropic"),
+        {
+          parameters: {
+            maxOutputTokens: 8192,
+            contextWindowTokens,
+            autoCompactTokenLimit,
+            reasoning: { mode: "default" },
+          },
+        },
+      )),
+      pattern,
+    );
+  }
+});
+
 test("Profile validation still rejects malformed and non-HTTP Base URLs", () => {
   assert.throws(
     () => validateDraftProfileForSave(profile("not a URL")),

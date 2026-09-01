@@ -44,7 +44,7 @@ export type InputCapabilityEvidence = {
   [Kind in keyof InputCapabilities]: InputCapabilityEvidenceValue;
 };
 
-export type NumericCapabilityEvidenceValue = "verified" | "unverified";
+export type NumericCapabilityEvidenceValue = "verified" | "configured" | "unverified";
 
 export interface ModelCapabilityEvidence {
   temperature: CapabilitySupportEvidenceValue;

@@ -96,6 +96,7 @@ import {
 } from "./chat-bridge.js";
 import { sessionErrorMessage } from "./error-routing.js";
 import {
+  buildModelRequest,
   requestModelTurn,
   type ModelTurnRequestInput,
 } from "./model-request.js";
@@ -128,6 +129,12 @@ import {
   SteeringPersistenceOutcomeUnknownError,
   type SteeringChannel,
 } from "./steering.js";
+import {
+  conversationCheckpointMessage,
+  createConversationCheckpoint,
+  estimateTransportContextTokens,
+  resolveAutoCompactTokenLimit,
+} from "./context-compaction.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;
@@ -252,6 +259,13 @@ export async function handleAgentRequest(
     };
   };
   const prepared = await prepareRequest();
+  let activeHistory = prepared.history;
+  let activePrompt = prompt;
+  let activeAttachmentParts = prepared.attachmentParts;
+  let compactedAgentMessageCount = 0;
+  let latestAcceptedContextUsage: ModelContextUsage | undefined;
+  let latestAcceptedProjectionTokens: number | undefined;
+  let pendingAcceptedProjectionTokens: number | undefined;
   const requestAudioSources = createRequestAudioSampleSources({
     context,
     storageDirectory,
@@ -265,7 +279,7 @@ export async function handleAgentRequest(
   const audioSampleSourceInstructions = requestAudioSampleSourceInstructions(
     requestAudioSources,
   );
-  const requestAttachmentQuota = binaryQuotaItems(
+  let requestAttachmentQuota = binaryQuotaItems(
     prepared.history,
     prepared.attachmentParts,
   );
@@ -337,6 +351,87 @@ export async function handleAgentRequest(
   const requestLiveContext = prepared.recoveryContext
     ? `${interaction.summary}\n\n${prepared.recoveryContext}`
     : interaction.summary;
+  const autoCompactTokenLimit = resolveAutoCompactTokenLimit(runtimeProfile);
+  const maybeCompactContext = async (
+    agentMessages: Parameters<typeof buildModelRequest>[0]["agentMessages"],
+    tools: Parameters<typeof buildModelRequest>[0]["tools"],
+    editScopes: readonly EditScope[],
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (autoCompactTokenLimit === undefined) return;
+    const activeAgentMessages = agentMessages.slice(compactedAgentMessageCount);
+    const estimatedTokens = estimateTransportContextTokens(buildModelRequest({
+      prompt: activePrompt,
+      liveContext: requestLiveContext,
+      runtimeProfile,
+      history: activeHistory,
+      attachmentParts: activeAttachmentParts,
+      ...(audioSampleSourceInstructions
+        ? {
+          requestAudioSampleSourceInstructions:
+            audioSampleSourceInstructions,
+        }
+        : {}),
+      skillContext: prepared.skillContext,
+      editScopes,
+      agentMessages: activeAgentMessages,
+      tools,
+    }));
+    const activeTokens = latestAcceptedContextUsage === undefined
+      ? estimatedTokens
+      : latestAcceptedContextUsage.usedTokens + Math.max(
+          0,
+          estimatedTokens - (latestAcceptedProjectionTokens ?? estimatedTokens),
+        );
+    if (activeTokens < autoCompactTokenLimit) return;
+
+    await callbacks.onProgress("Compacting conversation context");
+    const checkpoint = await createConversationCheckpoint({
+      prompt: activePrompt,
+      liveContext: requestLiveContext,
+      runtimeProfile,
+      history: activeHistory,
+      attachmentParts: activeAttachmentParts,
+      skillContext: prepared.skillContext,
+      editScopes,
+      agentMessages: activeAgentMessages,
+      signal,
+      requestTurn: async (input) => (await requestModelWithReconnect({
+        signal,
+        resetTransient: () => {},
+        onProgress: callbacks.onProgress,
+        ...(waitForReconnectDelay
+          ? { waitForDelay: waitForReconnectDelay }
+          : {}),
+        request: ({ reconnectState }) => requestTurn({
+          ...input,
+          reconnectState,
+        }),
+      })).value,
+    });
+    const event = await appendTraceEvent(storageDirectory, session.id, {
+      kind: "compaction",
+      content: checkpoint,
+    });
+    knownEventIds.add(event.id);
+    await callbacks.onSessionEvent(event);
+
+    activeHistory = [{
+      role: "user",
+      content: [{
+        type: "text",
+        text: conversationCheckpointMessage(checkpoint),
+      }],
+    }];
+    activePrompt = "Continue the current request from the conversation checkpoint.";
+    activeAttachmentParts = [];
+    requestAttachmentQuota = [];
+    compactedAgentMessageCount = agentMessages.length;
+    latestAcceptedContextUsage = undefined;
+    latestAcceptedProjectionTokens = undefined;
+    pendingAcceptedProjectionTokens = undefined;
+    await callbacks.onModelTurnAccepted?.(undefined);
+  };
   // Committed changes update the synchronous action boundary without inserting
   // a disk await after the final Live-state drift check.
   const unsubscribeEditScopes = subscribeSessionEditScopesChanges(
@@ -425,18 +520,42 @@ export async function handleAgentRequest(
           },
         }
         : {}),
-      ...(callbacks.onModelTurnAccepted
-        ? { onModelTurnAccepted: callbacks.onModelTurnAccepted }
-        : {}),
+      onModelTurnAccepted: async (usage) => {
+        latestAcceptedContextUsage = usage;
+        latestAcceptedProjectionTokens = usage === undefined
+          ? undefined
+          : pendingAcceptedProjectionTokens;
+        pendingAcceptedProjectionTokens = undefined;
+        await callbacks.onModelTurnAccepted?.(usage);
+      },
       askModel: async (input) => {
+        pendingAcceptedProjectionTokens = undefined;
         await callbacks.onProgress(
           `Thinking with ${profile.name} / ${runtimeProfile.model.model}`,
         );
+        const editScopes = await readEditScopes();
+        const toolsForCurrentState = () => modelToolsForProfile(
+          runtimeProfile,
+          liveSmithTools({
+            readArrangementAudio: canReadArrangementAudio(),
+          }),
+          Math.min(
+            HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
+            Math.max(
+              0,
+              HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
+            ),
+          ),
+        );
+        const tools = toolsForCurrentState();
         const modelTurn = callbacks.steering?.beginModelTurn(callbacks.signal);
         const turnSignal = modelTurn?.signal ?? callbacks.signal;
         let turn: ModelTurn;
         let reconnected = false;
         try {
+          if (!input.continuation) {
+            await maybeCompactContext(input.messages, tools, editScopes, turnSignal);
+          }
           const result = await requestModelWithReconnect({
             signal: turnSignal,
             resetTransient: () => callbacks.onAssistantReset?.(),
@@ -445,16 +564,12 @@ export async function handleAgentRequest(
               ? { waitForDelay: waitForReconnectDelay }
               : {}),
             request: async ({ markResponseStarted, reconnectState }) => {
-              const remainingWebSearchEvents = Math.max(
-                0,
-                HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND - observedWebSearchIds.size,
-              );
-              return requestTurn({
-                prompt,
+              const requestInput: Omit<ModelTurnRequestInput, "turnExecutor"> = {
+                prompt: activePrompt,
                 liveContext: requestLiveContext,
                 runtimeProfile,
-                history: prepared.history,
-                attachmentParts: prepared.attachmentParts,
+                history: activeHistory,
+                attachmentParts: activeAttachmentParts,
                 ...(audioSampleSourceInstructions
                   ? {
                     requestAudioSampleSourceInstructions:
@@ -463,17 +578,8 @@ export async function handleAgentRequest(
                   : {}),
                 skillContext: prepared.skillContext,
                 editScopes: await readEditScopes(),
-                agentMessages: input.messages,
-                tools: modelToolsForProfile(
-                  runtimeProfile,
-                  liveSmithTools({
-                    readArrangementAudio: canReadArrangementAudio(),
-                  }),
-                  Math.min(
-                    HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
-                    remainingWebSearchEvents,
-                  ),
-                ),
+                agentMessages: input.messages.slice(compactedAgentMessageCount),
+                tools: toolsForCurrentState(),
                 reconnectState,
                 signal: turnSignal,
                 onDelta: async (delta) => {
@@ -498,7 +604,25 @@ export async function handleAgentRequest(
                   }
                   await callbacks.onProgress(webSearchProgressMessage(update));
                 },
-              });
+              };
+              const value = await requestTurn(requestInput);
+              pendingAcceptedProjectionTokens = estimateTransportContextTokens(
+                buildModelRequest({
+                  ...requestInput,
+                  agentMessages: [
+                    ...requestInput.agentMessages,
+                    {
+                      role: "assistant",
+                      content: value.content,
+                      toolCalls: value.toolCalls,
+                      ...(value.providerState === undefined
+                        ? {}
+                        : { providerState: value.providerState }),
+                    },
+                  ],
+                }),
+              );
+              return value;
             },
           });
           turn = result.value;

@@ -897,8 +897,16 @@
       .timeline-item.apply_requested,
       .timeline-item.apply_auto_approved,
       .timeline-item.apply_result,
+      .timeline-item.compaction,
       .timeline-item.error {
         max-width: 96%;
+      }
+
+      .timeline-item.compaction > summary {
+        color: var(--quiet);
+        font-size: 11px;
+        letter-spacing: normal;
+        text-transform: none;
       }
 
       details.timeline-item {
@@ -3834,6 +3842,16 @@
                       <label for="maxOutputTokens">Requested max output tokens</label>
                       <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
                       <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div class="field">
+                      <label for="contextWindowTokens">Context window tokens</label>
+                      <input id="contextWindowTokens" name="contextWindowTokens" type="number" min="1" max="10000000" step="1" placeholder="Model default…" aria-describedby="contextWindowTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="contextWindowTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div class="field">
+                      <label for="autoCompactTokenLimit">Compact at tokens</label>
+                      <input id="autoCompactTokenLimit" name="autoCompactTokenLimit" type="number" min="1" max="10000000" step="1" placeholder="Automatic (90%)…" aria-describedby="autoCompactTokenLimitHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="autoCompactTokenLimitHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
                     </div>
                     <div id="reasoningModeRow" class="field">
                       <label for="reasoningMode">Reasoning</label>

@@ -244,7 +244,7 @@ test("attachment context rejects current images for a text-only Profile", async 
   );
 });
 
-test("conversation history caps the live multimodal path to recent messages", async () => {
+test("conversation history keeps the complete uncompacted conversation", async () => {
   const events = Array.from({ length: 50 }, (_, index): SessionEvent => ({
     id: `event-${index}`,
     kind: index % 2 === 0 ? "user" : "assistant",
@@ -261,12 +261,167 @@ test("conversation history caps the live multimodal path to recent messages", as
     runtimeProfile: runtimeProfile(),
   });
 
-  assert.equal(history.length, 24);
+  assert.equal(history.length, 50);
   assert.deepEqual(history[0], {
     role: "user",
-    content: [{ type: "text", text: "message-26" }],
+    content: [{ type: "text", text: "message-0" }],
   });
   assert.equal(history.at(-1)?.content, "message-49");
+});
+
+test("conversation history resumes from the latest compaction checkpoint", async () => {
+  const history = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-compacted-history",
+    events: [
+      {
+        id: "event-old-user",
+        kind: "user",
+        content: "Old request that the checkpoint replaces",
+        createdAt: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        id: "event-first-compaction",
+        kind: "compaction",
+        content: "First checkpoint",
+        createdAt: "2026-08-10T00:00:01.000Z",
+      },
+      {
+        id: "event-between",
+        kind: "user",
+        content: "Work after the first checkpoint",
+        createdAt: "2026-08-10T00:00:02.000Z",
+      },
+      {
+        id: "event-latest-compaction",
+        kind: "compaction",
+        content: "Latest checkpoint",
+        createdAt: "2026-08-10T00:00:03.000Z",
+      },
+      {
+        id: "event-tail-user",
+        kind: "user",
+        content: "Tail request",
+        createdAt: "2026-08-10T00:00:04.000Z",
+      },
+      {
+        id: "event-tail-assistant",
+        kind: "assistant",
+        content: "Tail response",
+        createdAt: "2026-08-10T00:00:05.000Z",
+      },
+    ],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile(),
+  });
+
+  assert.equal(history.length, 3);
+  assert.equal(history[0]?.role, "user");
+  assert.match(
+    history[0]?.role === "user" && history[0].content[0]?.type === "text"
+      ? history[0].content[0].text
+      : "",
+    /Latest checkpoint/,
+  );
+  assert.doesNotMatch(JSON.stringify(history), /Old request|First checkpoint|Work after/);
+  assert.deepEqual(history.slice(1), [
+    { role: "user", content: [{ type: "text", text: "Tail request" }] },
+    { role: "assistant", content: "Tail response" },
+  ]);
+});
+
+test("conversation history preserves prior tool activity as provider-neutral text", async () => {
+  const history = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-tool-history",
+    events: [
+      {
+        id: "event-user",
+        kind: "user",
+        content: "Inspect the Set",
+        createdAt: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        id: "event-call",
+        kind: "tool_call",
+        name: "inspect_live_set",
+        content: "{}",
+        createdAt: "2026-08-10T00:00:01.000Z",
+      },
+      {
+        id: "event-result",
+        kind: "tool_result",
+        name: "inspect_live_set",
+        content: "Live Set has a Bass track",
+        createdAt: "2026-08-10T00:00:02.000Z",
+      },
+      {
+        id: "event-apply",
+        kind: "apply_result",
+        content: "Applied:\n- Set tempo to 120 BPM",
+        createdAt: "2026-08-10T00:00:03.000Z",
+      },
+      {
+        id: "event-assistant",
+        kind: "assistant",
+        content: "The Set is ready.",
+        createdAt: "2026-08-10T00:00:04.000Z",
+      },
+    ],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile(),
+  });
+
+  assert.equal(history.length, 3);
+  const activity = history[1];
+  assert.equal(activity?.role, "user");
+  const text = activity?.role === "user" && activity.content[0]?.type === "text"
+    ? activity.content[0].text
+    : "";
+  assert.match(text, /Historical Live Smith activity/);
+  assert.match(text, /tool_call \/ inspect_live_set[\s\S]*\{\}/);
+  assert.match(text, /tool_result \/ inspect_live_set[\s\S]*Bass track/);
+  assert.match(text, /apply_result[\s\S]*120 BPM/);
+  assert.match(text, /untrusted[\s\S]*re-observe Live/i);
+});
+
+test("the latest checkpoint replaces older raw tool activity but keeps its tail", async () => {
+  const history = await resolveConversationHistory({
+    storageDirectory: undefined,
+    sessionId: "session-tool-checkpoint-history",
+    events: [
+      {
+        id: "event-old-result",
+        kind: "tool_result",
+        name: "inspect_live_set",
+        content: "Old raw tool result",
+        createdAt: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        id: "event-compaction",
+        kind: "compaction",
+        content: "Checkpoint containing the old decision",
+        createdAt: "2026-08-10T00:00:01.000Z",
+      },
+      {
+        id: "event-new-result",
+        kind: "tool_result",
+        name: "inspect_track",
+        content: "New tail tool result",
+        createdAt: "2026-08-10T00:00:02.000Z",
+      },
+    ],
+    currentAttachmentRefs: [],
+    currentDocumentTextCharacters: 0,
+    runtimeProfile: runtimeProfile(),
+  });
+
+  assert.equal(history.length, 2);
+  assert.match(JSON.stringify(history[0]), /Checkpoint containing the old decision/);
+  assert.match(JSON.stringify(history[1]), /New tail tool result/);
+  assert.doesNotMatch(JSON.stringify(history), /Old raw tool result/);
 });
 
 test("steering receipts remain storage metadata and replay only user text", async () => {

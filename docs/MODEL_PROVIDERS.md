@@ -360,9 +360,27 @@ A Profile stores:
 
 Direct API model configurations may store maximum output tokens, temperature,
 reasoning, capability overrides, hosted-tool policy, and Extra Body.
-Subscription model configurations store only the selected model and reasoning
-settings. Tokens, endpoint overrides, temperature, Extra Body, hosted
-tools, and manual capability overrides are rejected for subscription Profiles.
+Direct and subscription model configurations may both store a local context
+window and automatic compaction threshold. Subscription model configurations
+otherwise store only the selected model and reasoning settings: output-token
+requests, endpoint overrides, temperature, Extra Body, hosted tools, and manual
+capability overrides remain rejected.
+
+The configured context window supplies the denominator when provider metadata
+is absent or intentionally overridden. A blank auto-compaction threshold uses
+90% of the effective context window; without either a known window or an
+explicit threshold, automatic compaction remains unavailable instead of
+guessing a provider limit. The threshold must stay below an explicitly
+configured or resolved window.
+
+Automatic compaction uses the same active model connection as generation. It
+requests a bounded checkpoint with no tools or visible streaming output,
+persists that checkpoint as the history boundary, and continues with only the
+checkpoint and newer user, assistant, and provider-neutral Tool activity tail.
+Further activity can cross the threshold and create a newer checkpoint. This
+common request path covers Direct API plus
+OpenAI, Anthropic, and Google subscriptions; Live Smith does not depend on an
+OpenAI-only compact endpoint.
 
 Schema version 7 stores `oauth-subscription`. A schema-v6
 `codex-subscription` Profile migrates to

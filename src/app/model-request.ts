@@ -261,9 +261,11 @@ function withoutManualCapabilityOverrides(
   source: ModelCapabilitySource,
 ): ModelCapabilitySource {
   const { capabilityOverrides: _ignored, ...advanced } = source.model.advanced;
+  const { contextWindowTokens: _contextWindow, ...parameters } =
+    source.model.parameters;
   return {
     ...source,
-    model: { ...source.model, advanced },
+    model: { ...source.model, parameters, advanced },
   };
 }
 

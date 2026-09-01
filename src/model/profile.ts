@@ -60,6 +60,8 @@ export interface ReasoningSettings {
 
 export interface GenerationParameters {
   maxOutputTokens?: number;
+  contextWindowTokens?: number;
+  autoCompactTokenLimit?: number;
   temperature?: number;
   reasoning: ReasoningSettings;
 }
@@ -169,6 +171,7 @@ export type SavedProfile = DirectApiProfile | OAuthSubscriptionProfile;
 
 /** A legacy/manual set plus one complete provider discovery catalog. */
 export const MAX_PROFILE_MODEL_COUNT = 2_000;
+export const MAX_CONFIGURED_MODEL_CONTEXT_WINDOW_TOKENS = 10_000_000;
 
 export type ApprovalMode = "manual" | "low-risk" | "everything";
 export type DefaultFollowUpBehavior = "queue" | "steer";
@@ -655,8 +658,14 @@ function savedModelConfig(
   assertOnlyKeys(
     parameters,
     connection.kind === "oauth-subscription"
-      ? ["reasoning"]
-      : ["maxOutputTokens", "temperature", "reasoning"],
+      ? ["contextWindowTokens", "autoCompactTokenLimit", "reasoning"]
+      : [
+          "maxOutputTokens",
+          "contextWindowTokens",
+          "autoCompactTokenLimit",
+          "temperature",
+          "reasoning",
+        ],
     parametersField,
   );
   assertOnlyKeys(
@@ -674,9 +683,11 @@ function savedModelConfig(
 
   if (connection.kind === "oauth-subscription") {
     assertOnlyKeys(advanced, [], advancedField);
+    const context = contextManagementParameters(parameters, parametersField);
     return {
       model,
       parameters: {
+        ...context,
         reasoning: reasoningSettings(reasoning, reasoningField),
       },
       advanced: {},
@@ -691,6 +702,7 @@ function savedModelConfig(
         `${parametersField}.maxOutputTokens`,
         1_000_000,
       ),
+      ...contextManagementParameters(parameters, parametersField),
       ...(parameters.temperature === undefined
         ? {}
         : {
@@ -875,6 +887,7 @@ function draftDirectApiParameters(
     : "default";
   return {
     maxOutputTokens,
+    ...draftContextManagementParameters(value),
     ...(temperature === undefined ? {} : { temperature }),
     reasoning: {
       mode,
@@ -891,16 +904,65 @@ function draftDirectApiParameters(
 function draftOAuthSubscriptionParameters(
   value: unknown,
 ): OAuthSubscriptionModelConfig["parameters"] {
-  const rawReasoning = isRecord(value) && isRecord(value.reasoning)
-    ? value.reasoning
+  const parameters = isRecord(value) ? value : {};
+  const rawReasoning = isRecord(parameters.reasoning)
+    ? parameters.reasoning
     : {};
   return {
+    ...draftContextManagementParameters(parameters),
     reasoning: {
       mode: rawReasoning.mode === "enabled" ? "enabled" : "default",
       ...(isReasoningEffort(rawReasoning.effort)
         ? { effort: rawReasoning.effort }
         : {}),
     },
+  };
+}
+
+function draftContextManagementParameters(
+  value: Record<string, unknown>,
+): Pick<GenerationParameters, "contextWindowTokens" | "autoCompactTokenLimit"> {
+  return {
+    ...(typeof value.contextWindowTokens === "number"
+      ? { contextWindowTokens: value.contextWindowTokens }
+      : {}),
+    ...(typeof value.autoCompactTokenLimit === "number"
+      ? { autoCompactTokenLimit: value.autoCompactTokenLimit }
+      : {}),
+  };
+}
+
+function contextManagementParameters(
+  parameters: Record<string, unknown>,
+  field: string,
+): Pick<GenerationParameters, "contextWindowTokens" | "autoCompactTokenLimit"> {
+  const contextWindowTokens = parameters.contextWindowTokens === undefined
+    ? undefined
+    : positiveInteger(
+        parameters.contextWindowTokens,
+        `${field}.contextWindowTokens`,
+        MAX_CONFIGURED_MODEL_CONTEXT_WINDOW_TOKENS,
+      );
+  const autoCompactTokenLimit = parameters.autoCompactTokenLimit === undefined
+    ? undefined
+    : positiveInteger(
+        parameters.autoCompactTokenLimit,
+        `${field}.autoCompactTokenLimit`,
+        MAX_CONFIGURED_MODEL_CONTEXT_WINDOW_TOKENS,
+      );
+  if (
+    contextWindowTokens !== undefined &&
+    autoCompactTokenLimit !== undefined &&
+    autoCompactTokenLimit >= contextWindowTokens
+  ) {
+    throw new ProfileValidationError(
+      `${field}.autoCompactTokenLimit`,
+      "Auto compact token limit must be below the context window.",
+    );
+  }
+  return {
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(autoCompactTokenLimit === undefined ? {} : { autoCompactTokenLimit }),
   };
 }
 

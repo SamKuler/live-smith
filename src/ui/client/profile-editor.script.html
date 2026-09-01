@@ -11,6 +11,8 @@
         showStatus,
       }) {
       const maximumProfileModelCount = __MAX_PROFILE_MODEL_COUNT__;
+      const maximumContextWindowTokens =
+        __MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS__;
       let draftProfile = null;
       let savedProfileSnapshot = null;
       let savedProfileRevisionSnapshot = null;
@@ -52,6 +54,8 @@
         model: "modelConfigSelector",
         "parameters.temperature": "temperature",
         "parameters.maxOutputTokens": "maxOutputTokens",
+        "parameters.contextWindowTokens": "contextWindowTokens",
+        "parameters.autoCompactTokenLimit": "autoCompactTokenLimit",
         "parameters.reasoning.mode": "reasoningMode",
         "parameters.reasoning.effort": "reasoningEffort",
         "parameters.reasoning.budgetTokens": "reasoningBudgetTokens",
@@ -381,14 +385,27 @@
           }
         }
         const temperature = Number(temperatureRaw);
+        const contextWindowRaw = document.getElementById("contextWindowTokens")
+          .value.trim();
+        const autoCompactRaw = document.getElementById("autoCompactTokenLimit")
+          .value.trim();
+        const contextParameters = {
+          ...(contextWindowRaw
+            ? { contextWindowTokens: Number(contextWindowRaw) }
+            : {}),
+          ...(autoCompactRaw
+            ? { autoCompactTokenLimit: Number(autoCompactRaw) }
+            : {}),
+        };
         return {
           model: selectedDraftModelId(),
           parameters: subscription
-            ? { reasoning }
+            ? { ...contextParameters, reasoning }
             : {
                 maxOutputTokens: Number(
                   document.getElementById("maxOutputTokens").value,
                 ),
+                ...contextParameters,
                 ...(temperatureRaw && Number.isFinite(temperature)
                   ? { temperature }
                   : {}),
@@ -603,6 +620,10 @@
           entry.parameters?.temperature ?? "";
         document.getElementById("maxOutputTokens").value =
           entry.parameters?.maxOutputTokens ?? "";
+        document.getElementById("contextWindowTokens").value =
+          entry.parameters?.contextWindowTokens ?? "";
+        document.getElementById("autoCompactTokenLimit").value =
+          entry.parameters?.autoCompactTokenLimit ?? "";
         document.getElementById("reasoningBudgetTokens").value =
           entry.parameters?.reasoning?.budgetTokens || "";
         document.getElementById("reasoningMode").dataset.requestedValue =
@@ -684,6 +705,12 @@
         config.model = modelId;
         if (isOAuthSubscription()) {
           config.parameters = {
+            ...(config.parameters?.contextWindowTokens === undefined
+              ? {}
+              : { contextWindowTokens: config.parameters.contextWindowTokens }),
+            ...(config.parameters?.autoCompactTokenLimit === undefined
+              ? {}
+              : { autoCompactTokenLimit: config.parameters.autoCompactTokenLimit }),
             reasoning: config.parameters?.reasoning || { mode: "default" },
           };
           config.advanced = {};
@@ -1054,9 +1081,23 @@
           return {
             model: entry.model || "",
             parameters: subscription
-              ? { reasoning }
+              ? {
+                  ...(entry.parameters?.contextWindowTokens === undefined
+                    ? {}
+                    : { contextWindowTokens: entry.parameters.contextWindowTokens }),
+                  ...(entry.parameters?.autoCompactTokenLimit === undefined
+                    ? {}
+                    : { autoCompactTokenLimit: entry.parameters.autoCompactTokenLimit }),
+                  reasoning,
+                }
               : {
                   maxOutputTokens: entry.parameters?.maxOutputTokens || 8192,
+                  ...(entry.parameters?.contextWindowTokens === undefined
+                    ? {}
+                    : { contextWindowTokens: entry.parameters.contextWindowTokens }),
+                  ...(entry.parameters?.autoCompactTokenLimit === undefined
+                    ? {}
+                    : { autoCompactTokenLimit: entry.parameters.autoCompactTokenLimit }),
                   ...(entry.parameters?.temperature === undefined
                     ? {}
                     : { temperature: entry.parameters.temperature }),
@@ -1089,6 +1130,8 @@
         });
         document.getElementById("temperature").disabled = settingsLocked || subscription;
         document.getElementById("maxOutputTokens").disabled = settingsLocked || subscription;
+        document.getElementById("contextWindowTokens").disabled = settingsLocked;
+        document.getElementById("autoCompactTokenLimit").disabled = settingsLocked;
         document.getElementById("reasoningBudgetTokens").disabled =
           settingsLocked || document.getElementById("reasoningBudgetRow").hidden;
         renderOAuthAuthState(settingsLocked);
@@ -2252,6 +2295,7 @@
           providerReported: cloneValue(discovered?.providerReported),
           authoritative: {
             maxOutputTokens: evidence.maxOutputTokens === "verified",
+            contextWindowTokens: evidence.contextWindowTokens === "verified",
             reasoning: evidence.reasoning !== "unverified",
             temperature: evidence.temperature !== "unverified",
             inputs: Object.fromEntries(["image", "audio", "pdf"].map((key) => [
@@ -2330,6 +2374,46 @@
           document.getElementById("maxOutputTokensHint"),
           "textContent",
           outputLimitHint,
+        );
+        const contextWindowInput = document.getElementById("contextWindowTokens");
+        const autoCompactInput = document.getElementById("autoCompactTokenLimit");
+        setPropertyIfChanged(contextWindowInput, "disabled", settingsLocked);
+        setPropertyIfChanged(autoCompactInput, "disabled", settingsLocked);
+        setPropertyIfChanged(
+          contextWindowInput,
+          "max",
+          String(maximumContextWindowTokens),
+        );
+        const configuredWindow = Number(contextWindowInput.value);
+        const detectedWindow = selection.authoritative.contextWindowTokens
+          ? capability.contextWindowTokens
+          : undefined;
+        const effectiveWindow = Number.isInteger(configuredWindow) && configuredWindow > 0
+          ? configuredWindow
+          : detectedWindow;
+        setPropertyIfChanged(
+          autoCompactInput,
+          "max",
+          String(effectiveWindow ? Math.max(1, effectiveWindow - 1) : maximumContextWindowTokens),
+        );
+        setPropertyIfChanged(
+          document.getElementById("contextWindowTokensHint"),
+          "textContent",
+          Number.isInteger(configuredWindow) && configuredWindow > 0
+            ? `Configured context window: ${configuredWindow} tokens.`
+            : detectedWindow
+              ? `Model context window: ${detectedWindow} tokens.`
+              : "Context window is unknown. Set it to enable an exact meter and automatic compaction.",
+        );
+        const configuredCompactAt = Number(autoCompactInput.value);
+        setPropertyIfChanged(
+          document.getElementById("autoCompactTokenLimitHint"),
+          "textContent",
+          Number.isInteger(configuredCompactAt) && configuredCompactAt > 0
+            ? `Compacts before the next model turn at ${configuredCompactAt} tokens.`
+            : effectiveWindow
+              ? `Automatic threshold: ${Math.floor(effectiveWindow * 0.9)} tokens (90%).`
+              : "Set a token threshold to enable automatic compaction.",
         );
       }
 

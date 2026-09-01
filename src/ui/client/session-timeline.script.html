@@ -1973,6 +1973,7 @@
           kind === "apply_requested" ||
           kind === "apply_auto_approved" ||
           kind === "apply_result" ||
+          kind === "compaction" ||
           kind === "error"
         );
       }
@@ -2303,6 +2304,7 @@
       }
 
       function summaryLineForEvent(event, firstLine) {
+        if (event.kind === "compaction") return "Conversation checkpoint";
         if (event.kind !== "apply_auto_approved") return firstLine;
         const legacy = /^Auto-approved (\d+) (change|changes) under (Low Risk|Accept Everything) mode without opening an approval prompt\.$/
           .exec(firstLine);
@@ -2336,6 +2338,7 @@
           if (outcome === "partial") return "Partial Apply";
           return outcome === "stopped" ? "Apply Stopped" : "Apply Result";
         }
+        if (event.kind === "compaction") return "Context compacted";
         if (event.kind === "error") return "Error";
         return event.kind;
       }

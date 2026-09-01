@@ -53,6 +53,7 @@ export type SessionEventKind =
   | "apply_requested"
   | "apply_auto_approved"
   | "apply_result"
+  | "compaction"
   | "error";
 
 export interface SessionRecoveryLedger {
@@ -617,6 +618,7 @@ function isSessionEventKind(value: unknown): value is SessionEventKind {
     value === "apply_requested" ||
     value === "apply_auto_approved" ||
     value === "apply_result" ||
+    value === "compaction" ||
     value === "error"
   );
 }

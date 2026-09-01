@@ -51,6 +51,9 @@ src/
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
       context from events.
+    context-compaction.ts
+      Estimates provider-neutral request context and creates bounded model
+      checkpoints through the active Direct API or OAuth backend.
     session-mutation-fence.ts
       Serializes the full same-Session send and lifecycle boundary across
       dialogs that share one storage directory.
@@ -890,9 +893,11 @@ proxy selection, and an independent canonical nonnegative
 decimal-string revision for each global setting. It validates legacy
 `approvalMode` for compatibility, but runtime authorization never reads that
 field. Subscription model configurations persist reasoning mode and optional
-effort but no unconsumed output-token placeholder; the decoder removes that
-historical field from older nested subscription Profiles without rewriting on
-read.
+effort but no unconsumed output-token placeholder. Direct and subscription
+models may both store an optional configured context-window size and automatic
+compaction threshold; these fields are local context policy and never become
+provider request-body overrides. The decoder removes the historical subscription
+output field from older nested Profiles without rewriting on read.
 
 Persisted settings use adjacent migrations: v1 maps `autoApprove` into v2, v2
 wraps flat Profiles into the nested v3 connection shape, and v3 is
@@ -1280,10 +1285,16 @@ Extension Host processes. Different Sessions may observe and plan in parallel;
 the Live mutation queue serializes their writes. Session Approval changes have
 their own intent fence and remain available during a send as described below.
 
-Model context uses the latest 24 user/assistant events plus a separate bounded
-projection of the latest 12 persisted Apply results, rejected tool inputs, and
-errors (at most 12,000 characters). Recovery records are labelled untrusted
-bookkeeping data and never gain instruction authority. The bridge permits one
+Model context uses the complete uncompacted user/assistant history plus
+provider-neutral text records of Tool calls, Tool results, and Apply results, or
+the latest persisted compaction checkpoint followed by that same newer tail.
+Historical activity is labelled untrusted and potentially stale, never restores
+opaque provider replay state or binary Tool output, and requires a fresh Live
+observation before mutation. A checkpoint's position in the event log is its
+boundary; a later checkpoint never reimports raw events already represented by
+an older one. The separate recovery projection still uses the latest 12 persisted
+Apply results, rejected tool inputs, and errors (at most 12,000 characters).
+Recovery records never gain instruction authority. The bridge permits one
 active send per Session while different Sessions may observe and plan in
 parallel. A process-wide lease keyed by normalized storage directory and
 Session ID spans exact Session lookup, attachment consumption, the provider/tool
@@ -1519,7 +1530,8 @@ Context utilization is scoped to the latest accepted, non-continuation model
 turn. A transport attaches it only when both provider-reported used tokens and
 an authoritative context-window size are available. Direct API and OAuth
 protocol adapters normalize terminal protocol usage when their model metadata
-supplies the denominator. Output-limit continuations, reconnect attempts, and
+or the selected model's explicit local context setting supplies the denominator.
+Output-limit continuations, reconnect attempts, and
 turns superseded by Steer do not advance the meter. The bridge keeps the value
 for active-send recovery, while the WebView retains the latest value per Session
 for that window. A newly started send preserves the prior value until its first
@@ -1527,6 +1539,20 @@ accepted turn; an accepted turn without authoritative usage clears it and
 renders unavailable. It is not persisted in Session history and is not a
 traffic or billing accumulator. Missing evidence renders as unavailable rather
 than zero or an estimated percentage.
+
+Before each ordinary sampling request, the app compares a provider-neutral
+estimate of the assembled request with the selected model's compaction threshold.
+After an accepted provider turn, its exact usage is the baseline and only the
+estimated newer context is added. Binary wire encodings and duplicate opaque
+replay state are not treated as text tokens. The explicit threshold is used when
+present; otherwise a known context window defaults to 90%. The active model and
+connection summarize the current history with tools and visible deltas disabled,
+so Direct API and every OAuth subscription backend share one behavior without a
+provider-specific compact endpoint. A later large Tool result can trigger another
+checkpoint in the same send. A successful checkpoint is persisted before
+in-memory history is replaced, clears the stale exact meter, and the next ordinary
+accepted turn restores an exact value. A failed summary writes no checkpoint and
+does not silently discard history.
 
 `model_turn_state` is an ephemeral recovery snapshot: it neither advances the
 dialog-wide state cut nor claims durable Session history. The bridge does not

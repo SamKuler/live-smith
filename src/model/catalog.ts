@@ -1,6 +1,7 @@
 import { cloneJsonValue } from "./json-clone.js";
 import type { DiscoveredModelInfo } from "./provider.js";
 import {
+  MAX_CONFIGURED_MODEL_CONTEXT_WINDOW_TOKENS,
   isReasoningEffort,
   isReasoningStrategy,
 } from "./profile.js";
@@ -49,7 +50,8 @@ export const MAX_DISCOVERED_MODEL_ID_CODE_POINTS = 256;
 export const MAX_DISCOVERED_MODEL_DISPLAY_NAME_CODE_POINTS = 256;
 export const MAX_MODEL_DISCOVERY_PAGE_COUNT = 20;
 export const MAX_DISCOVERED_MODEL_OUTPUT_TOKENS = 1_000_000;
-export const MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS = 10_000_000;
+export const MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS =
+  MAX_CONFIGURED_MODEL_CONTEXT_WINDOW_TOKENS;
 export const MAX_PROVIDER_REPORTED_MIME_TYPE_COUNT = 128;
 export const MAX_PROVIDER_REPORTED_MODALITY_COUNT = 32;
 

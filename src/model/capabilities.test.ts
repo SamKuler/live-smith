@@ -146,6 +146,55 @@ test("capability evidence distinguishes conservative fallback from explicit supp
   });
 });
 
+test("configured context windows override model metadata without claiming provider evidence", () => {
+  const direct = profile({
+    parameters: {
+      maxOutputTokens: 4096,
+      contextWindowTokens: 240_000,
+      autoCompactTokenLimit: 180_000,
+      reasoning: { mode: "default" },
+    },
+  });
+  const directResolved = resolveModelCapabilitiesWithEvidence(direct, {
+    contextWindowTokens: 200_000,
+  });
+  assert.equal(directResolved.capabilities.contextWindowTokens, 240_000);
+  assert.equal(
+    directResolved.capabilityEvidence.contextWindowTokens,
+    "configured",
+  );
+
+  const subscription = subscriptionProfile();
+  subscription.model.parameters.contextWindowTokens = 180_000;
+  subscription.model.parameters.autoCompactTokenLimit = 140_000;
+  const subscriptionResolved = resolveModelCapabilitiesWithEvidence(
+    subscription,
+    { contextWindowTokens: 160_000 },
+  );
+  assert.equal(subscriptionResolved.capabilities.contextWindowTokens, 180_000);
+  assert.equal(
+    subscriptionResolved.capabilityEvidence.contextWindowTokens,
+    "configured",
+  );
+});
+
+test("runtime validation keeps auto compaction below a discovered context window", () => {
+  const source = profile({
+    parameters: {
+      maxOutputTokens: 4096,
+      autoCompactTokenLimit: 200_000,
+      reasoning: { mode: "default" },
+    },
+  });
+  const capabilities = resolveModelCapabilities(source, {
+    contextWindowTokens: 200_000,
+  });
+  assert.throws(
+    () => validateGenerationParameters(source, capabilities),
+    /below the context window/i,
+  );
+});
+
 test("manual overrides update capability evidence after discovery", () => {
   const resolved = resolveModelCapabilitiesWithEvidence(profile({
     advanced: {
