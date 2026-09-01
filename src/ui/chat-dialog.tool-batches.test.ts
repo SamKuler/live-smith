@@ -21,7 +21,205 @@ function toolEvent(
   };
 }
 
-test("consecutive tool activity collapses as one batch only when it becomes noisy", async () => {
+test("one tool step starts in a collapsed activity group", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent(
+      "event-tool-1",
+      "tool_call",
+      "inspect_song_info",
+      "Inspect the current Song",
+    ),
+    toolEvent(
+      "event-tool-2",
+      "tool_result",
+      "inspect_song_info",
+      "Song observed",
+    ),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    const group = harness.document.querySelector<HTMLDetailsElement>(
+      "#timeline > .timeline-activity-group",
+    );
+    assert.ok(group);
+    assert.equal(group.open, false);
+    assert.equal(
+      group.querySelector(":scope > summary .timeline-activity-title")?.textContent,
+      "Inspect song info",
+    );
+    assert.equal(
+      group.querySelector(":scope > summary .timeline-activity-excerpt")?.textContent,
+      "Song observed",
+    );
+    assert.match(
+      group.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
+      /1 activity step in history/,
+    );
+    harness.click(".timeline-activity-group > summary");
+    const step = group.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    assert.ok(step);
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_call"),
+      null,
+    );
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
+      null,
+    );
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-activity-step"),
+      null,
+    );
+    assert.doesNotMatch(step.textContent ?? "", /tool call/i);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("one unsuccessful tool step opens its group and detail without a legacy card", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent(
+      "event-tool-1",
+      "tool_call",
+      "inspect_song_info",
+      "Inspect the current Song",
+    ),
+    toolEvent(
+      "event-tool-2",
+      "tool_result",
+      "inspect_song_info",
+      'Tool call "inspect_song_info" has invalid arguments:\nCorrect the fields.',
+    ),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    const group = harness.document.querySelector<HTMLDetailsElement>(
+      "#timeline > .timeline-activity-group",
+    );
+    const step = group?.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    assert.equal(group?.open, true);
+    assert.equal(step?.dataset.status, "stopped");
+    assert.equal(step?.open, true);
+    assert.match(step?.textContent ?? "", /invalid arguments/);
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
+      null,
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("activity keeps one collapsed group while a second tool step arrives", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
+    toolEvent("event-tool-2", "tool_result", "inspect_track", "Bass observed"),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Continue checking");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    const initialGroup = harness.document.querySelector<HTMLDetailsElement>(
+      "#timeline > .timeline-activity-group",
+    );
+    const initialSummary = initialGroup?.querySelector<HTMLElement>(
+      ":scope > summary",
+    );
+    assert.equal(initialGroup?.dataset.activityGroupId, "event-tool-1");
+    assert.equal(initialGroup?.open, false);
+    assert.ok(initialSummary);
+    assert.equal(
+      initialGroup?.querySelector(":scope > summary .timeline-activity-excerpt")
+        ?.textContent,
+      "Bass observed",
+    );
+    initialSummary.focus();
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-3",
+        "tool_call",
+        "inspect_track",
+        "Inspect Lead",
+      ),
+    });
+
+    let group = harness.document.querySelector<HTMLDetailsElement>(
+      "#timeline > .timeline-activity-group",
+    );
+    assert.equal(group?.dataset.activityGroupId, "event-tool-1");
+    assert.equal(group?.open, false);
+    assert.equal(
+      harness.document.activeElement,
+      group?.querySelector(":scope > summary"),
+    );
+    assert.equal(
+      harness.document.querySelectorAll("#timeline > .timeline-activity-group").length,
+      1,
+    );
+    assert.equal(
+      group?.querySelector(":scope > summary .timeline-activity-excerpt")
+        ?.textContent,
+      "Inspect Lead",
+    );
+
+    harness.click(".timeline-activity-group > summary");
+    assert.equal(
+      group?.querySelectorAll(":scope > .timeline-activity-group-items > .timeline-activity-step")
+        .length,
+      2,
+    );
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-4",
+        "tool_result",
+        "inspect_track",
+        "Lead observed",
+      ),
+    });
+
+    group = harness.document.querySelector<HTMLDetailsElement>(
+      "#timeline > .timeline-activity-group",
+    );
+    assert.equal(group?.open, true);
+    assert.equal(
+      group?.querySelector(":scope > summary .timeline-activity-excerpt")
+        ?.textContent,
+      "Lead observed",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("each consecutive tool run stays in one group with the latest step in its summary", async () => {
   const state = stateFixture();
   state.events = [
     {
@@ -49,13 +247,23 @@ test("consecutive tool activity collapses as one batch only when it becomes nois
     const groups = harness.document.querySelectorAll<HTMLDetailsElement>(
       "#timeline > details.timeline-activity-group",
     );
-    assert.equal(groups.length, 1);
+    assert.equal(groups.length, 2);
     assert.equal(groups[0]?.open, false);
     assert.equal(
-      groups[0]?.querySelector(":scope > summary")?.textContent,
-      "Activity · 2 steps",
+      groups[0]?.querySelector(
+        ":scope > summary .timeline-activity-title",
+      )?.textContent,
+      "Inspect track",
     );
-    harness.click(".timeline-activity-group > summary");
+    assert.equal(
+      groups[0]?.querySelector(
+        ":scope > summary .timeline-activity-excerpt",
+      )?.textContent,
+      "Lead observed",
+    );
+    harness.click(
+      '.timeline-activity-group[data-activity-group-id="event-tool-1"] > summary',
+    );
     assert.equal(groups[0]?.open, true);
     const activitySteps = groups[0]?.querySelectorAll(
       ".timeline-activity-step",
@@ -78,7 +286,20 @@ test("consecutive tool activity collapses as one batch only when it becomes nois
       [...harness.document.querySelectorAll<HTMLElement>(
         "#timeline > .timeline-item[data-event-id]",
       )].map((item) => item.dataset.eventId),
-      ["event-user", "event-assistant", "event-tool-5", "event-tool-6"],
+      ["event-user", "event-assistant"],
+    );
+    const standaloneGroup = groups[1];
+    assert.equal(
+      standaloneGroup?.querySelector(
+        ":scope > summary .timeline-activity-title",
+      )?.textContent,
+      "Inspect song info",
+    );
+    assert.equal(
+      standaloneGroup?.querySelector(
+        ":scope > summary .timeline-activity-excerpt",
+      )?.textContent,
+      "Song observed",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -160,7 +381,7 @@ test("compact activity hides empty arguments and surfaces an apply message", asy
   }
 });
 
-test("a rejected tool result stays visible outside collapsed activity", async () => {
+test("a rejected tool result opens inside compact activity", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -180,16 +401,15 @@ test("a rejected tool result stays visible outside collapsed activity", async ()
     const group = harness.document.querySelector<HTMLDetailsElement>(
       ".timeline-activity-group",
     );
-    assert.equal(group?.open, false);
-    assert.equal(
-      harness.document.querySelector<HTMLDetailsElement>(
-        '#timeline > [data-event-id="event-tool-5"]',
-      )?.open,
-      true,
+    assert.equal(group?.open, true);
+    const rejectedStep = group?.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-5"]',
     );
-    assert.match(
-      harness.document.querySelector('[data-event-id="event-tool-5"]')?.textContent ?? "",
-      /invalid arguments/,
+    assert.equal(rejectedStep?.open, true);
+    assert.match(rejectedStep?.textContent ?? "", /invalid arguments/);
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
+      null,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -258,7 +478,170 @@ test("tool activity keeps its expanded state and summary focus across live updat
   }
 });
 
-test("a growing tool run does not hide an expanded event when it becomes a batch", async () => {
+test("a live terminal failure opens a pending step once and preserves a later user close", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Continue checking");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    const initialStep = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    const initialGroup = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    assert.equal(initialGroup?.open, false);
+    assert.match(
+      initialGroup?.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
+      /^In progress: .*1 activity step in history$/,
+    );
+    assert.equal(initialStep?.dataset.status, "pending");
+    assert.equal(initialStep?.open, false);
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    assert.ok(prompt);
+    prompt.focus();
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-2",
+        "tool_result",
+        "inspect_track",
+        'Tool call "inspect_track" has invalid arguments:\nFirst rejection.',
+      ),
+    });
+
+    let renderedStep = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    assert.equal(renderedStep?.dataset.status, "stopped");
+    assert.equal(renderedStep?.open, true);
+    assert.equal(
+      harness.document.querySelector<HTMLDetailsElement>(
+        ".timeline-activity-group",
+      )?.open,
+      true,
+    );
+    assert.equal(harness.document.activeElement, prompt);
+    harness.click('[data-activity-step-id="event-tool-1"] > summary');
+    assert.equal(renderedStep?.open, false);
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-2",
+        "tool_result",
+        "inspect_track",
+        'Tool call "inspect_track" has invalid arguments:\nUpdated rejection.',
+      ),
+    });
+
+    renderedStep = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    assert.equal(renderedStep?.open, false);
+    assert.match(renderedStep?.textContent ?? "", /Updated rejection/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a live grouped failure opens the group once and preserves a later user close", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
+    toolEvent("event-tool-2", "tool_call", "inspect_track", "Inspect Lead"),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Continue checking");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    const initialGroup = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    assert.equal(initialGroup?.open, false);
+    assert.equal(
+      initialGroup?.querySelector(
+        ":scope > summary .timeline-activity-excerpt",
+      )?.textContent,
+      "Inspect Lead",
+    );
+    assert.match(
+      initialGroup?.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
+      /2 activity steps in history/,
+    );
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-3",
+        "tool_result",
+        "inspect_track",
+        'Tool call "inspect_track" has invalid arguments:\nFirst rejection.',
+      ),
+    });
+
+    let renderedGroup = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    const failedStep = renderedGroup?.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-2"]',
+    );
+    assert.equal(renderedGroup?.open, true);
+    assert.equal(failedStep?.open, true);
+    harness.click(".timeline-activity-group > summary");
+    assert.equal(renderedGroup?.open, false);
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-3",
+        "tool_result",
+        "inspect_track",
+        'Tool call "inspect_track" has invalid arguments:\nUpdated rejection.',
+      ),
+    });
+
+    renderedGroup = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    assert.equal(renderedGroup?.open, false);
+    assert.match(renderedGroup?.textContent ?? "", /Updated rejection/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a focused history step stays visible when its activity group grows", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -274,8 +657,66 @@ test("a growing tool run does not hide an expanded event when it becomes a batch
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
+    harness.click(".timeline-activity-group > summary");
+    const step = harness.document.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    const summary = step?.querySelector<HTMLElement>("summary");
+    assert.equal(step?.open, false);
+    assert.ok(summary);
+    summary.focus();
+
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      event: toolEvent(
+        "event-tool-3",
+        "tool_call",
+        "inspect_track",
+        "Inspect Lead",
+      ),
+    });
+
+    const group = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
+    const renderedStep = group?.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-1"]',
+    );
+    assert.equal(group?.open, true);
+    assert.equal(renderedStep?.open, false);
+    assert.equal(
+      harness.document.activeElement,
+      renderedStep?.querySelector("summary"),
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
+    harness.close();
+  }
+});
+
+test("a growing activity group does not hide an expanded history step", async () => {
+  const state = stateFixture();
+  state.events = [
+    toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
+    toolEvent("event-tool-2", "tool_result", "inspect_track", "Bass observed"),
+  ];
+
+  const harness = await createDialogHarness(state);
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Continue checking");
+    harness.click("#sendButton");
+    await Promise.resolve();
+    const sendId = harness.sendIds[0];
+    assert.ok(sendId);
+
+    harness.click(".timeline-activity-group > summary");
     const focusedEvent = harness.document.querySelector<HTMLDetailsElement>(
-      '[data-event-id="event-tool-1"]',
+      '[data-activity-step-id="event-tool-1"]',
     );
     const focusedSummary = focusedEvent?.querySelector<HTMLElement>("summary");
     assert.ok(focusedEvent);
@@ -370,7 +811,7 @@ test("an expanded batch preserves focus on an individual tool event", async () =
   }
 });
 
-test("a rejected Apply closes its activity step and stays visible", async () => {
+test("a rejected Apply opens its compact activity detail", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -398,20 +839,27 @@ test("a rejected Apply closes its activity step and stays visible", async () => 
       ".timeline-activity-group",
     );
     assert.ok(group);
-    assert.equal(group.dataset.status, "complete");
     assert.equal(
-      group.querySelector(":scope > summary")?.textContent,
-      "Activity · 2 steps",
+      group.querySelector(
+        ":scope > summary .timeline-activity-title",
+      )?.textContent,
+      "Apply failed",
     );
     const applyStep = group.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-3"]',
     );
-    assert.equal(applyStep?.dataset.status, "stopped");
-    const visibleResult = harness.document.querySelector<HTMLDetailsElement>(
-      '#timeline > [data-event-id="event-tool-4"]',
+    assert.equal(applyStep?.dataset.status, "failed");
+    assert.equal(
+      applyStep?.querySelector(".timeline-activity-title")?.textContent,
+      "Apply failed",
     );
-    assert.equal(visibleResult?.open, true);
-    assert.match(visibleResult?.textContent ?? "", /Edit Scope/);
+    assert.equal(group.open, true);
+    assert.equal(applyStep?.open, true);
+    assert.match(applyStep?.textContent ?? "", /Edit Scope/);
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
+      null,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -424,6 +872,7 @@ test("an unsuccessful Apply result ends the compact step without hiding the resu
     "Live action plan could not complete its first operation.\nNo operations from this plan were completed.",
     "Live action plan partially completed after 1 operation(s).\nCompleted: Set tempo to 128 BPM.",
   ];
+  const expectedStatuses = ["stopped", "failed", "partial"];
 
   for (const [index, terminalContent] of terminalContents.entries()) {
     const state = stateFixture();
@@ -453,20 +902,24 @@ test("an unsuccessful Apply result ends the compact step without hiding the resu
         ".timeline-activity-group",
       );
       assert.ok(group);
-      assert.equal(group.dataset.status, "complete");
       assert.equal(
-        group.querySelector(
+        group.querySelector<HTMLDetailsElement>(
           '[data-activity-step-id="event-tool-3"]',
         )?.getAttribute("data-status"),
-        "stopped",
+        expectedStatuses[index],
       );
-      const visibleResult = harness.document.querySelector<HTMLDetailsElement>(
-        `#timeline > [data-event-id="event-apply-result-${index}"]`,
+      const applyStep = group.querySelector<HTMLDetailsElement>(
+        '[data-activity-step-id="event-tool-3"]',
       );
-      assert.equal(visibleResult?.open, true);
-      assert.match(visibleResult?.textContent ?? "", new RegExp(
+      assert.equal(group.open, true);
+      assert.equal(applyStep?.open, true);
+      assert.match(applyStep?.textContent ?? "", new RegExp(
         terminalContent.split("\n")[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
       ));
+      assert.equal(
+        harness.document.querySelector("#timeline > .timeline-item.apply_result"),
+        null,
+      );
       assert.deepEqual(harness.errors, []);
     } finally {
       harness.close();
@@ -495,8 +948,10 @@ test("recovery resolution pairs its Apply result with the recovery call", async 
     );
     assert.ok(group);
     assert.equal(
-      group.querySelector(":scope > summary")?.textContent,
-      "Activity · 2 steps",
+      group.querySelector(
+        ":scope > summary .timeline-activity-title",
+      )?.textContent,
+      "Resolve live recovery",
     );
     const recoveryStep = group.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-3"]',
@@ -518,7 +973,7 @@ test("recovery resolution pairs its Apply result with the recovery call", async 
   }
 });
 
-test("a terminal error closes the active step and remains top-level", async () => {
+test("a terminal error opens inside its compact activity step", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -552,20 +1007,24 @@ test("a terminal error closes the active step and remains top-level", async () =
       ".timeline-activity-group",
     );
     assert.ok(group);
-    assert.equal(group.dataset.status, "complete");
+    const applyStep = group.querySelector<HTMLDetailsElement>(
+      '[data-activity-step-id="event-tool-3"]',
+    );
+    assert.equal(applyStep?.dataset.status, "failed");
     assert.equal(
-      group.querySelector(
-        '[data-activity-step-id="event-tool-3"]',
-      )?.getAttribute("data-status"),
-      "stopped",
+      applyStep?.querySelector(".timeline-activity-title")?.textContent,
+      "Apply failed",
     );
-    const error = harness.document.querySelector<HTMLDetailsElement>(
-      '#timeline > [data-event-id="event-error"]',
-    );
-    assert.equal(error?.open, true);
+    assert.equal(group.open, true);
+    assert.equal(applyStep?.open, true);
+    assert.match(applyStep?.textContent ?? "", /preflight failed/);
     assert.equal(
       harness.document.querySelectorAll('[data-event-id="event-error"]').length,
       1,
+    );
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.error"),
+      null,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -573,7 +1032,7 @@ test("a terminal error closes the active step and remains top-level", async () =
   }
 });
 
-test("a declined recovery closes its step and keeps the result visible", async () => {
+test("a declined recovery opens its compact activity detail", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -593,7 +1052,6 @@ test("a declined recovery closes its step and keeps the result visible", async (
       ".timeline-activity-group",
     );
     assert.ok(group);
-    assert.equal(group.dataset.status, "complete");
     const recoveryStep = group.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-3"]',
     );
@@ -602,13 +1060,16 @@ test("a declined recovery closes its step and keeps the result visible", async (
       recoveryStep?.querySelector(".timeline-activity-title")?.textContent,
       "Resolve live recovery",
     );
-    const visibleResult = harness.document.querySelector<HTMLDetailsElement>(
-      '#timeline > [data-event-id="event-tool-4"]',
-    );
-    assert.equal(visibleResult?.open, true);
+    assert.equal(group.open, true);
+    assert.equal(recoveryStep?.open, true);
+    assert.match(recoveryStep?.textContent ?? "", /kept the unfinished operation/);
     assert.equal(
       harness.document.querySelectorAll('[data-event-id="event-tool-4"]').length,
       1,
+    );
+    assert.equal(
+      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
+      null,
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -648,7 +1109,6 @@ test("successful Apply details cannot be mistaken for a stopped result", async (
       ".timeline-activity-group",
     );
     assert.ok(group);
-    assert.equal(group.dataset.status, "complete");
     assert.equal(
       group.querySelector(
         '[data-activity-step-id="event-tool-3"]',

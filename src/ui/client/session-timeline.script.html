@@ -1374,52 +1374,26 @@
           for (const event of step.events) stepByEventId.set(event.id, step);
         }
         let segment = [];
+        const flushSegment = () => {
+          appendTimelineActivitySegment(entries, segment);
+          segment = [];
+        };
         for (const event of run) {
-          segment.push(event);
           const step = stepByEventId.get(event.id);
-          if (isExposedActivityTerminal(event, step)) {
-            appendTimelineActivitySegment(entries, segment, steps, event, step);
-            segment = [];
+          if (!step) {
+            flushSegment();
+            entries.push(event);
+            continue;
           }
+          if (segment.at(-1) !== step) segment.push(step);
         }
-        appendTimelineActivitySegment(entries, segment, steps);
+        flushSegment();
         return entries;
       }
 
-      function appendTimelineActivitySegment(
-        entries,
-        events,
-        projectedSteps,
-        exposedTerminal,
-        exposedStep,
-      ) {
-        if (!events.length) return;
-        const eventIds = new Set(events.map((event) => event.id));
-        const steps = projectedSteps.filter((step) =>
-          step.events.some((event) => eventIds.has(event.id))
-        );
-        const displayTerminal = exposedTerminal
-          ? activityTerminalForDisplay(exposedTerminal, exposedStep)
-          : null;
-        if (steps.length >= 2) {
-          entries.push({
-            activitySteps: steps,
-            exposedEventIds: displayTerminal ? [displayTerminal.id] : [],
-          });
-          if (displayTerminal) entries.push(displayTerminal);
-          return;
-        }
-        entries.push(...events.map((event) =>
-          displayTerminal && event.id === displayTerminal.id
-            ? displayTerminal
-            : event
-        ));
-      }
-
-      function activityTerminalForDisplay(event, step) {
-        if (event.kind !== "tool_result" || event.name) return event;
-        const call = step?.events.find((item) => item.kind === "tool_call");
-        return call?.name ? { ...event, name: call.name } : event;
+      function appendTimelineActivitySegment(entries, steps) {
+        if (!steps.length) return;
+        entries.push({ activitySteps: steps });
       }
 
       function timelineActivitySteps(events) {
@@ -1512,7 +1486,10 @@
         const activityStepDetailsState = new Map(
           [...timeline.querySelectorAll(
             "details.timeline-activity-step[data-activity-step-id]",
-          )].map((details) => [details.dataset.activityStepId, details.open]),
+          )].map((details) => [details.dataset.activityStepId, {
+            open: details.open,
+            status: details.dataset.status,
+          }]),
         );
         const focusedSummaryDetails = focusBeforeRender?.matches("summary")
           ? focusBeforeRender.closest("details.timeline-item")
@@ -1553,13 +1530,17 @@
         for (const entry of timelineActivityEntries(events)) {
           if (entry.activitySteps) {
             const steps = entry.activitySteps;
-            const exposedEventIds = new Set(entry.exposedEventIds || []);
             const group = buildTimelineActivityGroup(steps);
             const groupId = group.dataset.activityGroupId;
-            if (activityGroupDetailsState.has(groupId)) {
-              group.open = activityGroupDetailsState.get(groupId);
+            const previousGroupOpen = activityGroupDetailsState.get(groupId);
+            if (activityStepsGainedAttention(steps, activityStepDetailsState)) {
+              group.open = true;
+            } else if (previousGroupOpen !== undefined) {
+              group.open = previousGroupOpen;
             } else if (steps.some((step) =>
-              activityStepDetailsState.get(step.id) === true ||
+              activityStepNeedsAttention(step) ||
+              activityStepDetailsState.get(step.id)?.open === true ||
+              focusedActivityStepId === step.id ||
               step.events.some((event) =>
                 detailsState.get(event.id) === true ||
                 focusedSummaryEventId === event.id
@@ -1571,15 +1552,14 @@
               ":scope > .timeline-activity-group-items",
             );
             for (const step of steps) {
-              const item = buildTimelineActivityStep(step, exposedEventIds);
-              if (activityStepDetailsState.has(step.id)) {
-                item.open = activityStepDetailsState.get(step.id);
-              } else if (step.events.some((event) =>
-                detailsState.get(event.id) === true ||
-                focusedSummaryEventId === event.id
-              )) {
-                item.open = true;
-              }
+              const item = buildTimelineActivityStep(step);
+              restoreTimelineActivityStepDetails(
+                item,
+                step,
+                activityStepDetailsState,
+                detailsState,
+                focusedSummaryEventId,
+              );
               items.append(item);
             }
             timeline.append(group);
@@ -1709,19 +1689,53 @@
         }
       }
 
+      function restoreTimelineActivityStepDetails(
+        item,
+        step,
+        activityStepDetailsState,
+        detailsState,
+        focusedSummaryEventId,
+      ) {
+        const previousState = activityStepDetailsState.get(step.id);
+        if (
+          previousState &&
+          !activityStatusNeedsAttention(previousState.status) &&
+          activityStepNeedsAttention(step)
+        ) {
+          item.open = true;
+          return;
+        }
+        if (previousState) {
+          item.open = previousState.open;
+          return;
+        }
+        if (
+          activityStepNeedsAttention(step) ||
+          step.events.some((event) =>
+            detailsState.get(event.id) === true ||
+            focusedSummaryEventId === event.id
+          )
+        ) item.open = true;
+      }
+
       function buildTimelineActivityGroup(steps) {
-        const statuses = steps.map(activityStepStatus);
-        const pending = statuses.filter((status) => status === "pending").length;
         const group = document.createElement("details");
         group.className = "timeline-activity-group";
         group.dataset.activityGroupId = steps[0].id;
-        group.dataset.status = pending ? "pending" : "complete";
 
-        const summary = document.createElement("summary");
-        summary.className = "timeline-activity-group-summary";
-        summary.textContent = pending
-          ? `Working · ${steps.length} steps`
-          : `Activity · ${steps.length} steps`;
+        const currentStep = [...steps].reverse().find(
+          (step) => activityStepStatus(step) === "pending",
+        ) ?? steps.at(-1);
+        const summary = buildTimelineActivitySummary(
+          currentStep,
+          "timeline-activity-group-summary",
+        );
+        summary.setAttribute(
+          "aria-label",
+          `${summary.getAttribute("aria-label")}. ${steps.length} activity ${
+            steps.length === 1 ? "step" : "steps"
+          } in history`,
+        );
 
         const items = document.createElement("div");
         items.className = "timeline-activity-group-items";
@@ -1729,38 +1743,21 @@
         return group;
       }
 
-      function buildTimelineActivityStep(step, exposedEventIds = new Set()) {
+      function buildTimelineActivityStep(step) {
         const status = activityStepStatus(step);
-        const titleText = activityStepTitle(step, status);
-        const excerptText = activityStepExcerpt(step);
         const item = document.createElement("details");
         item.className = "timeline-activity-step";
         item.dataset.activityStepId = step.id;
         item.dataset.status = status;
 
-        const summary = document.createElement("summary");
-        summary.className = "timeline-activity-step-summary";
-        summary.setAttribute(
-          "aria-label",
-          [activityStatusLabel(status), titleText, excerptText]
-            .filter(Boolean)
-            .join(": "),
+        const summary = buildTimelineActivitySummary(
+          step,
+          "timeline-activity-step-summary",
         );
-        const title = document.createElement("span");
-        title.className = "timeline-activity-title";
-        title.textContent = titleText;
-        summary.append(title);
-        if (excerptText) {
-          const excerpt = document.createElement("span");
-          excerpt.className = "timeline-activity-excerpt";
-          excerpt.textContent = truncate(excerptText, 112);
-          summary.append(excerpt);
-        }
 
         const detail = document.createElement("div");
         detail.className = "timeline-activity-detail";
         for (const event of step.events) {
-          if (exposedEventIds.has(event.id)) continue;
           const section = document.createElement("section");
           section.className = "timeline-activity-detail-section";
           section.dataset.eventId = event.id;
@@ -1777,6 +1774,31 @@
         return item;
       }
 
+      function buildTimelineActivitySummary(step, className) {
+        const status = activityStepStatus(step);
+        const titleText = activityStepTitle(step, status);
+        const excerptText = activityStepExcerpt(step);
+        const summary = document.createElement("summary");
+        summary.className = className;
+        summary.setAttribute(
+          "aria-label",
+          [activityStatusLabel(status), titleText, excerptText]
+            .filter(Boolean)
+            .join(": "),
+        );
+        const title = document.createElement("span");
+        title.className = "timeline-activity-title";
+        title.textContent = titleText;
+        summary.append(title);
+        if (excerptText) {
+          const excerpt = document.createElement("span");
+          excerpt.className = "timeline-activity-excerpt";
+          excerpt.textContent = truncate(excerptText, 112);
+          summary.append(excerpt);
+        }
+        return summary;
+      }
+
       function activityStepStatus(step) {
         const terminal = [...step.events].reverse().find(
           (event) =>
@@ -1785,9 +1807,24 @@
             event.kind === "error",
         );
         if (!terminal) return "pending";
-        return activityStepOutcome(step) === "success"
-          ? "complete"
-          : "stopped";
+        const outcome = activityStepOutcome(step);
+        return outcome === "success" ? "complete" : outcome;
+      }
+
+      function activityStepNeedsAttention(step) {
+        return activityStatusNeedsAttention(activityStepStatus(step));
+      }
+
+      function activityStatusNeedsAttention(status) {
+        return ["failed", "partial", "stopped"].includes(status);
+      }
+
+      function activityStepsGainedAttention(steps, previousStates) {
+        return steps.some((step) => {
+          if (!activityStepNeedsAttention(step)) return false;
+          const previousStatus = previousStates.get(step.id)?.status;
+          return !activityStatusNeedsAttention(previousStatus);
+        });
       }
 
       function activityStepOutcome(step) {
@@ -1813,10 +1850,21 @@
 
       function activityStepTitle(step, status) {
         const call = step.events.find((event) => event.kind === "tool_call");
+        const terminal = [...step.events].reverse().find(
+          (event) =>
+            event.kind === "tool_result" ||
+            event.kind === "apply_result" ||
+            event.kind === "error",
+        );
+        if (!call && terminal && isRejectedToolResult(terminal)) {
+          return "Tool input rejected";
+        }
         const applyLifecycle = call?.name === "apply_live_actions" || (
           !call && step.events.some((event) => event.kind.startsWith("apply_"))
         );
         if (applyLifecycle) {
+          if (status === "failed") return "Apply failed";
+          if (status === "partial") return "Apply partially completed";
           if (status === "stopped") return "Apply stopped";
           const count = activityStepChangeCount(step);
           if (status === "complete") {
@@ -1892,6 +1940,8 @@
       function activityStatusLabel(status) {
         if (status === "pending") return "In progress";
         if (status === "stopped") return "Stopped";
+        if (status === "failed") return "Failed";
+        if (status === "partial") return "Partially completed";
         return "Completed";
       }
 
@@ -1967,15 +2017,7 @@
       }
 
       function isCollapsedKind(kind) {
-        return (
-          kind === "tool_call" ||
-          kind === "tool_result" ||
-          kind === "apply_requested" ||
-          kind === "apply_auto_approved" ||
-          kind === "apply_result" ||
-          kind === "compaction" ||
-          kind === "error"
-        );
+        return kind === "compaction" || kind === "error";
       }
 
       function buildTimelineItem(event) {
@@ -1994,9 +2036,6 @@
         const content = document.createElement("div");
         content.className = "timeline-content";
         const detailLines = contentLines.slice(1);
-        if (event.kind === "apply_requested" && detailLines[0] === "") {
-          detailLines.shift();
-        }
         const visibleContent = collapsed &&
             contentLines.length > 1 &&
             firstLine.length <= summaryLimit
@@ -2011,10 +2050,7 @@
           const item = document.createElement("details");
           item.className = `timeline-item ${event.kind}`;
           item.dataset.eventId = event.id;
-          if (
-            event.kind === "error" ||
-            isExposedActivityTerminal(event)
-          ) item.open = true;
+          if (event.kind === "error") item.open = true;
 
           const summary = document.createElement("summary");
           summary.className = "timeline-label";
@@ -2305,39 +2341,12 @@
 
       function summaryLineForEvent(event, firstLine) {
         if (event.kind === "compaction") return "Conversation checkpoint";
-        if (event.kind !== "apply_auto_approved") return firstLine;
-        const legacy = /^Auto-approved (\d+) (change|changes) under (Low Risk|Accept Everything) mode without opening an approval prompt\.$/
-          .exec(firstLine);
-        return legacy
-          ? `${legacy[1]} ${legacy[2]} · ${legacy[3]}`
-          : firstLine;
+        return firstLine;
       }
 
       function eventLabel(event) {
         if (event.kind === "user") return "You";
         if (event.kind === "assistant") return "Live Smith";
-        if (event.kind === "tool_call") return `Tool call${event.name ? ` / ${event.name}` : ""}`;
-        if (event.kind === "tool_result") {
-          const outcome = activityEventOutcome(event);
-          const label = isRejectedToolResult(event)
-            ? "Tool input rejected"
-            : outcome === "failed"
-              ? "Tool failed"
-              : "Tool result";
-          if (isApplyToolTerminalResult(event) && !isRejectedToolResult(event)) {
-            return "Apply stopped";
-          }
-          if (isRecoveryToolTerminalResult(event)) return "Recovery stopped";
-          return `${label}${event.name ? ` / ${event.name}` : ""}`;
-        }
-        if (event.kind === "apply_requested") return "Apply request";
-        if (event.kind === "apply_auto_approved") return "Auto-approved";
-        if (event.kind === "apply_result") {
-          const outcome = activityEventOutcome(event);
-          if (outcome === "failed") return "Apply Failed";
-          if (outcome === "partial") return "Partial Apply";
-          return outcome === "stopped" ? "Apply Stopped" : "Apply Result";
-        }
         if (event.kind === "compaction") return "Context compacted";
         if (event.kind === "error") return "Error";
         return event.kind;
@@ -2372,16 +2381,6 @@
       function isRejectedToolResult(event) {
         return event.kind === "tool_result" &&
           /^Tool call .* has invalid arguments:/i.test(event.content || "");
-      }
-
-      function isExposedActivityTerminal(event, step) {
-        if (
-          event?.kind !== "tool_result" &&
-          event?.kind !== "apply_result" &&
-          event?.kind !== "error"
-        ) return false;
-        return (step ? activityStepOutcome(step) : activityEventOutcome(event)) !==
-          "success";
       }
 
       function activityEventOutcome(event) {

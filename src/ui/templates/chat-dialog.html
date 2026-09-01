@@ -892,12 +892,7 @@
         background: var(--line-soft);
       }
 
-      .timeline-item.tool_call,
-      .timeline-item.tool_result,
       .timeline-item.web_search,
-      .timeline-item.apply_requested,
-      .timeline-item.apply_auto_approved,
-      .timeline-item.apply_result,
       .timeline-item.compaction,
       .timeline-item.error {
         max-width: 96%;
@@ -996,17 +991,6 @@
         background: rgba(255, 255, 255, 0.045);
       }
 
-      .timeline-activity-group-summary {
-        padding: 4px 8px 4px 18px;
-        color: var(--quiet);
-        font-size: 11px;
-        line-height: 1.35;
-      }
-
-      .timeline-activity-group[data-status="pending"] > summary {
-        color: var(--trace);
-      }
-
       .timeline-activity-group-items {
         display: grid;
         gap: 1px;
@@ -1015,16 +999,24 @@
         border-left: 1px solid var(--line-soft);
       }
 
+      .timeline-activity-group-summary,
       .timeline-activity-step-summary {
         display: grid;
         grid-template-columns: minmax(105px, max-content) minmax(0, 1fr);
         align-items: baseline;
         gap: 7px;
         min-height: 24px;
-        padding: 4px 6px 4px 17px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 13px;
         line-height: 1.35;
+      }
+
+      .timeline-activity-group-summary {
+        padding: 4px 8px 4px 18px;
+      }
+
+      .timeline-activity-step-summary {
+        padding: 4px 6px 4px 17px;
       }
 
       .timeline-activity-title,
@@ -1036,20 +1028,12 @@
       }
 
       .timeline-activity-title {
-        color: #cbd6de;
+        color: var(--muted);
         font-weight: 500;
       }
 
       .timeline-activity-excerpt {
         color: var(--quiet);
-      }
-
-      .timeline-activity-step[data-status="pending"] .timeline-activity-title {
-        color: var(--trace);
-      }
-
-      .timeline-activity-step[data-status="stopped"] .timeline-activity-title {
-        color: var(--warn);
       }
 
       .timeline-activity-detail {
@@ -1070,17 +1054,16 @@
 
       .timeline-activity-detail-label {
         color: var(--quiet);
-        font-size: 9px;
+        font-size: 12px;
         font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+        letter-spacing: normal;
       }
 
       .timeline-activity-detail-content {
         overflow-wrap: anywhere;
         color: var(--muted);
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 10px;
+        font-size: 12px;
         line-height: 1.45;
         white-space: pre-wrap;
       }
@@ -1429,8 +1412,6 @@
         font-size: 12px;
       }
 
-      .timeline-item.tool_call > summary,
-      .timeline-item.tool_result > summary,
       .timeline-item.web_search > summary {
         color: var(--trace);
       }
@@ -1439,32 +1420,15 @@
         color: var(--accent);
       }
 
-      .timeline-item.apply_requested > summary,
-      .timeline-item.apply_auto_approved > summary,
-      .timeline-item.apply_result > summary {
-        color: var(--warn);
-      }
-
       .timeline-item.error > summary {
         color: var(--danger);
       }
 
-      .timeline-item.tool_call .timeline-content,
-      .timeline-item.tool_result .timeline-content,
       .timeline-item.web_search .timeline-content {
         padding: 8px 10px;
         color: #d9ecfb;
         background: rgba(124, 184, 232, 0.08);
         border-color: rgba(124, 184, 232, 0.35);
-      }
-
-      .timeline-item.apply_requested .timeline-content,
-      .timeline-item.apply_auto_approved .timeline-content,
-      .timeline-item.apply_result .timeline-content {
-        padding: 8px 10px;
-        color: #fff3c8;
-        background: rgba(255, 209, 102, 0.08);
-        border-color: rgba(255, 209, 102, 0.35);
       }
 
       .timeline-item.error .timeline-content {
@@ -1572,8 +1536,6 @@
         gap: 0;
         min-width: 0;
         padding: 9px 12px 10px;
-        border-top: 1px solid var(--line);
-        background: var(--chrome);
       }
 
       .composer.drop-target {

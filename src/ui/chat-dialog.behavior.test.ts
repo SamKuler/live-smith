@@ -1995,7 +1995,9 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     await Promise.resolve();
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
-    const priorSummary = harness.document.querySelector<HTMLElement>(".timeline-item summary");
+    const priorSummary = harness.document.querySelector<HTMLElement>(
+      ".timeline-activity-group > summary",
+    );
     priorSummary?.focus();
     assert.equal(harness.document.activeElement, priorSummary);
     harness.emitServerEvent({
@@ -2580,7 +2582,9 @@ test("a full timeline render preserves expanded details and summary focus", asyn
   }];
   const harness = await createDialogHarness(state);
   try {
-    const details = harness.document.querySelector<HTMLDetailsElement>(".timeline-item");
+    const details = harness.document.querySelector<HTMLDetailsElement>(
+      ".timeline-activity-group",
+    );
     const summary = details?.querySelector<HTMLElement>("summary");
     assert.ok(details);
     assert.ok(summary);
@@ -2591,7 +2595,7 @@ test("a full timeline render preserves expanded details and summary focus", asyn
     await harness.settle();
 
     const renderedDetails = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-item",
+      ".timeline-activity-group",
     );
     const renderedSummary = renderedDetails?.querySelector("summary");
     assert.equal(renderedDetails?.open, true);

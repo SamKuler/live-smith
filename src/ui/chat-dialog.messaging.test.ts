@@ -437,16 +437,18 @@ test("a rejected tool input is labelled and keeps its complete first line", asyn
   const harness = await createDialogHarness(state);
   try {
     const details = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-item.tool_result",
+      ".timeline-activity-step",
     );
     assert.equal(details?.open, true);
     assert.equal(
-      details?.querySelector(".timeline-content")?.textContent,
+      details?.querySelector(
+        '[data-event-id="event-long-error"] .timeline-activity-detail-content',
+      )?.textContent,
       `${firstLine}\nCorrect the tool fields and types, then retry.`,
     );
-    assert.match(
-      details?.querySelector("summary")?.textContent ?? "",
-      /^Tool input rejected \/ apply_live_actions — .*…$/,
+    assert.equal(
+      details?.querySelector(".timeline-activity-title")?.textContent,
+      "Tool input rejected",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -780,9 +782,17 @@ test("the timeline preserves persisted event chronology", async () => {
   ];
   const harness = await createDialogHarness(state);
   try {
+    const renderedEventIds = [
+      ...harness.document.querySelectorAll<HTMLElement>("#timeline > *"),
+    ].flatMap((item) => {
+      if (item.matches(".timeline-activity-group, .timeline-activity-step")) {
+        return [...item.querySelectorAll<HTMLElement>("[data-event-id]")]
+          .map((event) => event.dataset.eventId);
+      }
+      return item.dataset.eventId ? [item.dataset.eventId] : [];
+    });
     assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLElement>("#timeline > .timeline-item")]
-        .map((item) => item.dataset.eventId),
+      renderedEventIds,
       [
         "event-research-user",
         "event-research-search",
@@ -1427,10 +1437,13 @@ test("an expanded partial Apply Result does not repeat its summary line", async 
   const harness = await createDialogHarness(state);
   try {
     const item = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-item.apply_result",
+      ".timeline-activity-step",
     );
     assert.equal(item?.open, true);
-    assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Partial Apply —"), true);
+    assert.equal(
+      item?.querySelector(".timeline-activity-title")?.textContent,
+      "Apply partially completed",
+    );
     const itemText = item?.textContent ?? "";
     assert.equal(
       itemText.match(/Live action plan partially completed after 9 operation\(s\)\./g)?.length,
@@ -1459,10 +1472,13 @@ test("a zero-completion Apply failure is labeled failed and opened by default", 
   const harness = await createDialogHarness(state);
   try {
     const item = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-item.apply_result",
+      ".timeline-activity-step",
     );
     assert.equal(item?.open, true);
-    assert.equal(item?.querySelector("summary")?.textContent?.startsWith("Apply Failed —"), true);
+    assert.equal(
+      item?.querySelector(".timeline-activity-title")?.textContent,
+      "Apply failed",
+    );
     assert.match(item?.textContent ?? "", /No operations from this plan were completed/);
     assert.deepEqual(harness.errors, []);
   } finally {
