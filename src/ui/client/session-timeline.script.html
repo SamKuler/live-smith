@@ -29,7 +29,9 @@
       let nextSessionSelectionStatusId = 0;
       let renderedTimelineKey = null;
       let renderedAssistantDraft = "";
+      let timelineScrollbarIdleTimer = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
+      const timelineScrollbarIdleDelayMs = 650;
 
       function retainActiveSessionForWindow() {
         activeSessionIdsThisWindow.add(getState().activeSessionId);
@@ -362,6 +364,34 @@
       document.addEventListener("keydown", handleSessionMenuEscape);
       document.addEventListener("keydown", handleSessionDeleteShortcut);
       document.addEventListener("scroll", () => closeSessionMenus(), true);
+      window.addEventListener("DOMContentLoaded", () => {
+        const timeline = document.getElementById("timeline");
+        if (!timeline) return;
+        const supportsScrollend = typeof timeline.onscrollend !== "undefined";
+        const hideTimelineScrollbar = () => {
+          if (timelineScrollbarIdleTimer !== null) {
+            window.clearTimeout(timelineScrollbarIdleTimer);
+            timelineScrollbarIdleTimer = null;
+          }
+          timeline.classList.remove("is-scrolling");
+        };
+        timeline.addEventListener("scroll", () => {
+          timeline.classList.add("is-scrolling");
+          if (supportsScrollend) return;
+          if (timelineScrollbarIdleTimer !== null) {
+            window.clearTimeout(timelineScrollbarIdleTimer);
+          }
+          timelineScrollbarIdleTimer = window.setTimeout(() => {
+            timelineScrollbarIdleTimer = null;
+            timeline.classList.remove("is-scrolling");
+          }, timelineScrollbarIdleDelayMs);
+        }, { passive: true });
+        if (supportsScrollend) {
+          timeline.addEventListener("scrollend", hideTimelineScrollbar, {
+            passive: true,
+          });
+        }
+      });
       window.addEventListener("resize", () => {
         closeSessionMenus();
         updateSessionMetaOverflow(document.getElementById("sessions"));

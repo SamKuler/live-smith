@@ -171,7 +171,8 @@ test("composer selections stay visible while their Session update is pending", a
     );
     assert.equal(model.value, "model-b");
     assert.equal(model.getAttribute("aria-busy"), "true");
-    assert.equal(status.hidden, true);
+    assert.equal(status.hidden, false);
+    assert.equal(status.textContent, "");
     assert.deepEqual([...model.options], modelOptions);
     assert.deepEqual([...reasoning.options], reasoningOptions);
     harness.releaseHeldCommandResponse();
@@ -189,7 +190,8 @@ test("composer selections stay visible while their Session update is pending", a
     );
     assert.equal(reasoning.value, "high");
     assert.equal(reasoning.getAttribute("aria-busy"), "true");
-    assert.equal(status.hidden, true);
+    assert.equal(status.hidden, false);
+    assert.equal(status.textContent, "");
     assert.deepEqual([...model.options], modelOptions);
     assert.deepEqual([...reasoning.options], reasoningOptions);
     harness.releaseHeldCommandResponse();

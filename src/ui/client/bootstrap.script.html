@@ -110,7 +110,6 @@
           const status = document.getElementById("status");
           if (!status) return;
           setPropertyIfChanged(status, "textContent", renderedMessage);
-          setPropertyIfChanged(status, "hidden", !renderedMessage);
           toggleClassIfChanged(
             status,
             "error",

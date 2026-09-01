@@ -13,6 +13,62 @@ import {
   waitForCondition,
 } from "./chat-dialog.test-harness.js";
 
+test("the conversation scrollbar uses an idle fallback without scrollend", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state, undefined, {
+    scrollendSupported: false,
+  });
+  try {
+    const timeline = harness.document.querySelector<HTMLElement>("#timeline");
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    assert.ok(timeline);
+    assert.ok(prompt);
+    prompt.focus();
+    assert.equal(timeline.classList.contains("is-scrolling"), false);
+
+    timeline.dispatchEvent(new harness.window.Event("scroll"));
+    assert.equal(timeline.classList.contains("is-scrolling"), true);
+    assert.equal(harness.document.activeElement, prompt);
+    await new Promise((resolve) => harness.window.setTimeout(resolve, 400));
+    timeline.dispatchEvent(new harness.window.Event("scroll"));
+    await new Promise((resolve) => harness.window.setTimeout(resolve, 400));
+    assert.equal(timeline.classList.contains("is-scrolling"), true);
+    assert.equal(harness.document.activeElement, prompt);
+    await new Promise((resolve) => harness.window.setTimeout(resolve, 300));
+    assert.equal(timeline.classList.contains("is-scrolling"), false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("scrollend keeps the conversation scrollbar visible through a paused gesture", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state, undefined, {
+    scrollendSupported: true,
+  });
+  try {
+    const timeline = harness.document.querySelector<HTMLElement>("#timeline");
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
+    assert.ok(timeline);
+    assert.ok(prompt);
+    prompt.focus();
+
+    timeline.dispatchEvent(new harness.window.Event("scroll"));
+    await new Promise((resolve) => harness.window.setTimeout(resolve, 700));
+    assert.equal(timeline.classList.contains("is-scrolling"), true);
+    assert.equal(harness.document.activeElement, prompt);
+
+    timeline.dispatchEvent(new harness.window.Event("scrollend"));
+    assert.equal(timeline.classList.contains("is-scrolling"), false);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
 test("selecting a Session shows pending feedback before authoritative state arrives", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
@@ -363,7 +419,8 @@ test("an Approval change keeps Scope and runtime controls independent", async ()
     assert.equal(approval.value, "everything");
     assert.equal(harness.document.querySelector("#editScopeButton")?.textContent, "All scopes");
     assert.equal(harness.document.querySelector<HTMLElement>("#editScopePanel")?.hidden, true);
-    assert.equal(status.hidden, true);
+    assert.equal(status.hidden, false);
+    assert.equal(status.textContent, "");
     assert.equal(model.value, modelValue);
     assert.equal(reasoning.value, reasoningValue);
     assert.deepEqual([...model.options], modelOptions);
@@ -374,7 +431,8 @@ test("an Approval change keeps Scope and runtime controls independent", async ()
     assert.equal(approval.value, "everything");
     assert.equal(harness.document.querySelector("#editScopeButton")?.textContent, "All scopes");
     assert.equal(harness.document.querySelector<HTMLElement>("#editScopePanel")?.hidden, true);
-    assert.equal(status.hidden, true);
+    assert.equal(status.hidden, false);
+    assert.equal(status.textContent, "");
     assert.deepEqual([...model.options], modelOptions);
     assert.deepEqual([...reasoning.options], reasoningOptions);
     assert.deepEqual(harness.errors, []);

@@ -257,7 +257,7 @@ test("Session switching does not flash a global status message", async () => {
     assert.equal(harness.document.querySelector("#status")?.textContent, "");
     assert.equal(
       harness.document.querySelector<HTMLElement>("#status")?.hidden,
-      true,
+      false,
     );
     harness.releaseHeldCommandResponse();
     released = true;

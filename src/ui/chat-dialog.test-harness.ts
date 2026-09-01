@@ -410,6 +410,7 @@ async function createDialogHarness(
   bridge = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
     oauthLoginResult?: NonNullable<ChatBridgeState["oauthAuth"]>;
+    scrollendSupported?: boolean;
     webCryptoAvailable?: boolean;
     webCryptoDigestFails?: boolean;
     serverState?: ChatBridgeState;
@@ -1036,6 +1037,16 @@ async function createDialogHarness(
       pretendToBeVisual: true,
       virtualConsole,
       beforeParse(window) {
+        if (options.scrollendSupported !== undefined) {
+          window.addEventListener("DOMContentLoaded", () => {
+            const timeline = window.document.getElementById("timeline");
+            if (!timeline) return;
+            Object.defineProperty(timeline, "onscrollend", {
+              configurable: true,
+              value: options.scrollendSupported ? null : undefined,
+            });
+          }, { once: true });
+        }
         Object.defineProperty(window, "__LIVE_SMITH_STATE__", {
           configurable: true,
           get: () => bootstrappedClientStateReference,

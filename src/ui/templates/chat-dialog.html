@@ -43,6 +43,12 @@
         --trace: #78b9e8;
       }
 
+      @property --timeline-scrollbar-thumb-color {
+        syntax: "<color>";
+        inherits: true;
+        initial-value: transparent;
+      }
+
       * {
         box-sizing: border-box;
       }
@@ -666,12 +672,47 @@
       }
 
       .timeline {
+        --timeline-scrollbar-thumb-color: transparent;
         min-height: 0;
         overflow: auto;
         overscroll-behavior: contain;
         padding: 18px;
         background: var(--bg);
         scrollbar-gutter: stable;
+        transition: --timeline-scrollbar-thumb-color 220ms ease-out;
+      }
+
+      .timeline.is-scrolling {
+        --timeline-scrollbar-thumb-color: rgba(198, 198, 198, 0.46);
+        transition-duration: 100ms;
+      }
+
+      .timeline::-webkit-scrollbar {
+        width: 7px;
+        height: 7px;
+      }
+
+      .timeline::-webkit-scrollbar-track,
+      .timeline::-webkit-scrollbar-corner {
+        background: transparent;
+      }
+
+      .timeline::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background-color: var(--timeline-scrollbar-thumb-color);
+        background-clip: padding-box;
+      }
+
+      @supports not selector(::-webkit-scrollbar) {
+        .timeline {
+          scrollbar-color: transparent transparent;
+          scrollbar-width: thin;
+        }
+
+        .timeline.is-scrolling {
+          scrollbar-color: rgba(198, 198, 198, 0.46) transparent;
+        }
       }
 
       .timeline-item {
@@ -1513,8 +1554,9 @@
         min-height: 0;
         overflow: auto;
         overscroll-behavior: contain;
-        padding: 0 18px 8px;
+        padding: 4px 18px;
         color: var(--muted);
+        line-height: 1.35;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
@@ -1523,8 +1565,7 @@
         color: var(--danger);
       }
 
-      .status[hidden] {
-        display: none;
+      .status:empty {
         padding: 0;
       }
 
