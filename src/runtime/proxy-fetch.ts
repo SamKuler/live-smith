@@ -12,7 +12,7 @@ import {
 const manualProxyFailureMessage =
   "The Manual proxy could not be reached. Start the proxy app, check the proxy URL, or choose No proxy.";
 const systemProxyFailureMessage =
-  "The macOS system proxy could not reach the provider. Check System Settings or choose another proxy mode.";
+  "The system proxy could not reach the provider. Check operating system proxy settings or choose another proxy mode.";
 
 interface ProxyAwareFetchOptions {
   readSystemProxy?: () => Promise<SystemProxyConfiguration>;
@@ -79,7 +79,12 @@ function proxyForTarget(
 ): string | null {
   const effectivePort = target.port ||
     (target.protocol === "https:" ? "443" : target.protocol === "http:" ? "80" : "");
-  if (shouldBypassProxy(target.hostname, effectivePort, configuration.noProxy)) {
+  if (shouldBypassProxy(
+    target.hostname,
+    effectivePort,
+    configuration.noProxy,
+    configuration.bypassSyntax,
+  )) {
     return null;
   }
   if (target.protocol === "https:") {
@@ -95,6 +100,7 @@ function shouldBypassProxy(
   rawHostname: string,
   port: string,
   exceptions: string[],
+  bypassSyntax: SystemProxyConfiguration["bypassSyntax"] = undefined,
 ): boolean {
   const hostname = rawHostname.replace(/^\[|\]$/gu, "").toLowerCase();
   if (isLoopbackHost(hostname)) return true;
@@ -123,6 +129,9 @@ function shouldBypassProxy(
       if (port !== exception.slice(portSeparator + 1)) return false;
       exception = exception.slice(0, portSeparator);
     }
+    if (bypassSyntax === "wininet" && exception.includes("*")) {
+      return matchesWildcard(hostname, exception);
+    }
     if (exception.startsWith("*.")) exception = exception.slice(1);
     if (exception.startsWith(".")) {
       return hostname === exception.slice(1) || hostname.endsWith(exception);
@@ -130,6 +139,35 @@ function shouldBypassProxy(
     if (matchesIpv4Cidr(hostname, exception)) return true;
     return hostname === exception;
   });
+}
+
+function matchesWildcard(value: string, pattern: string): boolean {
+  let valueIndex = 0;
+  let patternIndex = 0;
+  let starIndex = -1;
+  let retryValueIndex = 0;
+  while (valueIndex < value.length) {
+    if (
+      patternIndex < pattern.length &&
+      pattern[patternIndex] === value[valueIndex]
+    ) {
+      patternIndex += 1;
+      valueIndex += 1;
+      continue;
+    }
+    if (pattern[patternIndex] === "*") {
+      starIndex = patternIndex;
+      patternIndex += 1;
+      retryValueIndex = valueIndex;
+      continue;
+    }
+    if (starIndex < 0) return false;
+    patternIndex = starIndex + 1;
+    retryValueIndex += 1;
+    valueIndex = retryValueIndex;
+  }
+  while (pattern[patternIndex] === "*") patternIndex += 1;
+  return patternIndex === pattern.length;
 }
 
 function isLoopbackHost(rawHostname: string): boolean {

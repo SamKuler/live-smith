@@ -60,19 +60,19 @@ test("proxy-aware fetch gives none, manual, and system modes distinct routes", a
       kind: "proxy",
       url: "http://system-http.example:8080",
       proxyFailureMessage:
-        "The macOS system proxy could not reach the provider. Check System Settings or choose another proxy mode.",
+        "The system proxy could not reach the provider. Check operating system proxy settings or choose another proxy mode.",
     },
     {
       kind: "proxy",
       url: "http://system-https.example:8443",
       proxyFailureMessage:
-        "The macOS system proxy could not reach the provider. Check System Settings or choose another proxy mode.",
+        "The system proxy could not reach the provider. Check operating system proxy settings or choose another proxy mode.",
     },
     {
       kind: "direct",
       url: "https://service.internal.example/v1",
       proxyFailureMessage:
-        "The macOS system proxy could not reach the provider. Check System Settings or choose another proxy mode.",
+        "The system proxy could not reach the provider. Check operating system proxy settings or choose another proxy mode.",
     },
   ]);
 });
@@ -99,7 +99,7 @@ test("system mode falls back to SOCKS only when the target protocol has no route
   assert.deepEqual(routes, ["socks5://127.0.0.1:1080"]);
 });
 
-test("system mode bypasses loopback, localhost subdomains, and macOS exceptions", async () => {
+test("system mode preserves macOS loopback, CIDR, and suffix bypasses", async () => {
   const routes: string[] = [];
   let systemReads = 0;
   const proxyFetch = createProxyAwareFetch(
@@ -140,6 +140,7 @@ test("system mode bypasses loopback, localhost subdomains, and macOS exceptions"
   await proxyFetch("https://printer/v1");
   await proxyFetch("https://secure.example/v1");
   await proxyFetch("https://api.corp.example/v1");
+  await proxyFetch("https://corp.example/v1");
   await proxyFetch("https://[2001:db8::2]/v1");
   await proxyFetch("https://[2001:db8::3]/v1");
   await proxyFetch("https://[2001:db8::4]/v1");
@@ -149,7 +150,41 @@ test("system mode bypasses loopback, localhost subdomains, and macOS exceptions"
     true,
   );
   assert.equal(routes.at(-1)?.startsWith("http://proxy.example:8080:"), true);
-  assert.equal(systemReads, 13);
+  assert.equal(systemReads, 14);
+});
+
+test("Windows system bypass uses anchored WinINet wildcard patterns", async () => {
+  const routes: string[] = [];
+  const proxyFetch = createProxyAwareFetch(
+    async () => ({ mode: "system", url: "" }),
+    {
+      fetchWithNetworkRoute: async (input, _init, _key, selectProxy) => {
+        routes.push(selectProxy(new URL(requestUrl(input))) ?? "direct");
+        return new Response("ok");
+      },
+      readSystemProxy: async () => ({
+        httpsProxy: "http://proxy.example:8080",
+        noProxy: ["*.corp.example", "ms*", "*int*"],
+        bypassSyntax: "wininet",
+      }),
+    },
+  );
+
+  for (const url of [
+    "https://api.corp.example/v1",
+    "https://corp.example/v1",
+    "https://msedge.example/v1",
+    "https://printserver.example/v1",
+    "https://public.example/v1",
+  ]) await proxyFetch(url);
+
+  assert.deepEqual(routes, [
+    "direct",
+    "http://proxy.example:8080",
+    "direct",
+    "direct",
+    "http://proxy.example:8080",
+  ]);
 });
 
 test("manual mode leaves loopback Direct API endpoints local", async () => {

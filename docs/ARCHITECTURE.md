@@ -177,8 +177,12 @@ src/
       Supplies explicit Node URL, Blob, immediate, and microtask bindings to the
       bundled dispatcher graph for the restricted Extension Host VM.
     system-proxy.ts
-      Reads the active macOS proxy dictionary through the fixed system
-      `scutil --proxy` command and returns only validated, credential-free routes.
+      Reads static macOS routes through fixed `scutil --proxy`, or current-user
+      Windows Internet Settings through a fixed, read-only `reg.exe query`, and
+      returns only validated, credential-free routes. Windows machine-scoped,
+      connection-specific, and automatic PAC/WPAD routes remain outside this
+      static reader; visible root automatic settings are rejected, not
+      evaluated.
 
   storage/
     scope.ts
@@ -247,9 +251,9 @@ Web APIs, while the runtime suite sends real direct and CONNECT-proxy requests
 through an equivalent restricted VM. A successful Node import alone is not
 proof of Extension Host compatibility. Production child processes are limited
 to the fixed macOS and Windows default-browser commands in
-`runtime/oauth-browser.ts` and the macOS system-proxy query in
-`runtime/system-proxy.ts`; the build rejects `node:child_process` everywhere
-else.
+`runtime/oauth-browser.ts` and the fixed read-only macOS/Windows system-proxy
+queries in `runtime/system-proxy.ts`; the build rejects `node:child_process`
+everywhere else.
 
 ## Model request flow
 

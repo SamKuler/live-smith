@@ -19,17 +19,28 @@ Claude Code, Gemini CLI, Antigravity, or another provider runtime.
 ## Network routing
 
 The global network setting is independent of Profiles and has three explicit
-modes: no proxy, the active macOS system proxy, or one credential-free Manual
-proxy URL. The selected route is resolved at request time and is shared by
+modes: no proxy, System proxy (static macOS routes or the current Windows
+user's static settings), or one credential-free Manual proxy URL. The selected
+route is resolved at request time and is shared by
 Direct API discovery/generation and OAuth login, refresh, catalog, and product
 traffic. It never changes which provider or protocol a Profile owns.
 
-System mode reads static HTTP, HTTPS, and SOCKS routes from macOS. Loopback
-targets remain direct. PAC/WPAD-only configuration fails with an actionable
-error instead of silently connecting directly. Manual mode accepts HTTP, HTTPS,
-or SOCKS proxy URLs without user information; proxy credentials never enter
-dialog state. No proxy is the migration default, so upgrading does not silently
-change an existing connection's route.
+System mode reads static HTTP, HTTPS, and SOCKS routes from macOS. On Windows it
+uses one fixed, read-only `reg.exe query` and recognizes the current user's
+`ProxyEnable`, `ProxyServer`, `ProxyOverride`, `AutoConfigURL`, and `AutoDetect`
+Internet Settings values when present. It never invokes a shell or writes the
+registry. It does not read machine-scoped or connection-specific Windows
+settings. Loopback targets remain direct. PAC/WPAD is not evaluated. A non-empty
+`AutoConfigURL` or enabled `AutoDetect` value returned by the queried key is
+rejected; automatic settings outside that key cannot supply a route to this
+static reader. When the reader finds no applicable static route, System mode is
+direct. Manual mode accepts a concrete proxy URL, not a PAC/WPAD URL. Windows
+System mode accepts static HTTP and HTTPS destination entries as ordinary HTTP
+proxy transports. It rejects an unqualified SOCKS entry whenever HTTP or HTTPS
+would need that fallback because Live Smith supports SOCKS5, not Windows'
+SOCKS4 system syntax. Choose Manual mode for an HTTPS proxy transport or
+SOCKS5. Proxy credentials never enter dialog state. No proxy is the migration
+default, so upgrading does not silently change an existing connection's route.
 
 Manual and System modes never fall back to a direct route when an applicable
 proxy hop fails. Pre-response proxy failures become fixed credential-free

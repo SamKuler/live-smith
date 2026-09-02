@@ -212,7 +212,7 @@ test("only pre-response ProxyAgent failures become safe proxy errors", async (t)
     `http://127.0.0.1:${unavailableAddress.port}`;
   const messages = [
     "The Manual proxy could not be reached. Start the proxy app, check the proxy URL, or choose No proxy.",
-    "The macOS system proxy could not reach the provider. Check System Settings or choose another proxy mode.",
+    "The system proxy could not reach the provider. Check operating system proxy settings or choose another proxy mode.",
   ];
 
   for (const [index, message] of messages.entries()) {

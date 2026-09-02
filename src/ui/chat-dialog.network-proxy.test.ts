@@ -121,7 +121,8 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
       },
     });
     assert.equal(urlField?.hidden, true);
-    assert.match(routeHint?.textContent ?? "", /macOS.*no PAC\/WPAD/i);
+    assert.match(routeHint?.textContent ?? "", /system.*no PAC\/WPAD/i);
+    assert.doesNotMatch(routeHint?.textContent ?? "", /macOS/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

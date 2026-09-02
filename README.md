@@ -143,11 +143,18 @@ Direct API requests and to subscription sign-in, token refresh, model catalog,
 and model traffic. Loopback endpoints remain direct so local model servers keep
 working.
 
-System proxy discovery currently follows the active macOS HTTP, HTTPS, or SOCKS
-settings. Automatic PAC/WPAD configuration is not evaluated; use Manual proxy
-for that route instead. Manual proxy accepts an `http://`, `https://`,
-`socks://`, or `socks5://` URL without embedded credentials. Existing installs
-remain on No proxy until this setting is changed.
+System proxy discovery follows static macOS HTTP, HTTPS, or SOCKS settings and
+the current Windows user's static Internet Settings. It uses a fixed, read-only
+Windows registry query; it does not run a shell or modify the registry.
+Automatic PAC/WPAD configuration is not evaluated. An automatic setting found
+in this static key is rejected; connection-specific or machine-scoped settings
+are not read and provide no static route. PAC/WPAD URLs cannot be entered in
+Manual mode; enter the concrete proxy URL instead. Windows System mode supports
+static HTTP and HTTPS destination entries through ordinary HTTP proxies; use
+Manual mode for an HTTPS proxy transport or SOCKS5.
+Manual proxy accepts an `http://`, `https://`, `socks://`, or `socks5://` URL
+without embedded credentials. Existing installs remain on No proxy until this
+setting is changed.
 
 Proxy modes are strict: Live Smith does not silently fall back to a different
 route. If the selected Manual or System proxy cannot be reached, provider
