@@ -77,13 +77,13 @@ Composer commands are recognized only at the start of a message:
 
 1. Install and run the extension using the [development guide](docs/DEVELOPMENT.md).
 2. In Live, right-click a supported object and choose **Ask Live Smith**.
-3. Open **Settings**, create a named Profile, and choose a connection.
+3. Open **Inspector → Agent**, create a named Profile, and choose a connection.
 4. Use **Load Models**, choose a default model, and **Save & Use** the Profile.
    Direct API connections also allow entering a model ID manually.
 5. Ask for help. Review proposed edits according to the Session’s approval mode.
 
 A Profile groups one connection and its model settings. Once it is saved, the
-composer lets you change the active Session’s model without returning to Settings.
+composer lets you change the active Session’s model without returning to Inspector.
 
 See [model settings](docs/MODEL_PROVIDERS.md#named-profiles) for catalog loading,
 generation options, and capability indicators.
@@ -137,8 +137,8 @@ provider-specific limitations.
 
 ## Network proxy
 
-**Settings → Network** provides three global modes: **No proxy**, **System
-proxy**, and **Manual proxy**. The selected route applies consistently to
+**Inspector → App → Network Proxy** provides three global modes: **No proxy**,
+**System proxy**, and **Manual proxy**. The selected route applies consistently to
 Direct API requests and to subscription sign-in, token refresh, model catalog,
 and model traffic. Loopback endpoints remain direct so local model servers keep
 working.
@@ -264,7 +264,8 @@ validation or a later Live action stops the plan, an unused project copy may
 remain because the beta SDK does not expose deletion or rollback for imported
 files.
 
-Queue and Steer are configured under **Settings → Conversation Behavior**.
+Queue and Steer are configured under
+**Inspector → App → Conversation & Display**.
 The same section can show or hide the compact context-window indicator in the
 composer.
 Queued follow-ups belong to the open window; Live Smith warns before closing

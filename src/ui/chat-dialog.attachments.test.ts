@@ -1442,7 +1442,7 @@ test("unverified attachment guidance separates subscription model reloads from D
       const status = subscriptionHarness.document.querySelector("#status")?.textContent ?? "";
       assert.match(status, entry.removeGuidance);
       if (entry.capability === "image") {
-        assert.match(status, /load models/i);
+        assert.match(status, /load models in Inspector → Agent/i);
         assert.match(
           status,
           /select a model with verified image input support/i,

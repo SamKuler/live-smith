@@ -34,14 +34,14 @@ Adjust the Live application path for your installation. `npm start` builds the
 development bundle and starts the Extensions CLI. Enable the extension in the
 CLI, then right-click a supported object in Live and choose **Ask Live Smith**.
 
-Configure a Profile in Live Smith Settings to use model features. Subscription
-Profiles complete OAuth in the browser and require no provider CLI installation.
+Configure a Profile under **Inspector → Agent** to use model features.
+Subscription Profiles complete OAuth in the browser and require no provider CLI installation.
 Building and running tests do not require a model connection.
 
 Instead of passing `--live`, copy [.env.example](../.env.example) to `.env` and
 set `EXTENSION_HOST_PATH` to your Live application. This variable is for host
 discovery only. Model endpoints, keys, and parameters are configured through
-saved Profiles in Live Smith Settings, not environment variables.
+saved Profiles in Live Smith Inspector, not environment variables.
 
 For a production build without starting Live:
 

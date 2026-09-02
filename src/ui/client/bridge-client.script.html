@@ -4419,13 +4419,6 @@
         const running = Boolean(activeSendAttempt());
         const control = document.getElementById("defaultFollowUpBehavior");
         if (control && control.value !== behavior) control.value = behavior;
-        const hint = document.getElementById("defaultFollowUpBehaviorHint");
-        if (hint) {
-          const hintText = behavior === "steer"
-            ? "Steer redirects the response that is currently in progress."
-            : "Queue sends the message as a new turn after the current response finishes.";
-          if (hint.textContent !== hintText) hint.textContent = hintText;
-        }
         const prompt = document.getElementById("prompt");
         if (prompt) {
           const placeholder = running
@@ -4502,12 +4495,22 @@
         }
         const hint = document.getElementById("networkProxyHint");
         if (hint) {
-          const text = mode === "none"
-            ? "Connect to providers directly."
-            : mode === "system"
-              ? "Use the active macOS HTTP, HTTPS, or SOCKS proxy. PAC/WPAD is not supported."
-              : "Use one proxy URL for provider traffic. Local endpoints stay direct.";
+          const showHint = mode !== "none";
+          const text = mode === "system"
+            ? "Uses macOS HTTP(S)/SOCKS settings · no PAC/WPAD."
+            : mode === "manual"
+              ? "Provider traffic uses this URL · local endpoints stay direct."
+              : "";
           if (hint.textContent !== text) hint.textContent = text;
+          if (hint.hidden !== !showHint) hint.hidden = !showHint;
+          const modeGroup = document.getElementById("networkProxyMode");
+          if (showHint) {
+            if (modeGroup.getAttribute("aria-describedby") !== "networkProxyHint") {
+              modeGroup.setAttribute("aria-describedby", "networkProxyHint");
+            }
+          } else {
+            modeGroup.removeAttribute("aria-describedby");
+          }
         }
         syncOperationState();
       }

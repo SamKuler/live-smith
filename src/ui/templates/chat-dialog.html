@@ -1181,6 +1181,7 @@
         text-align: left;
         text-transform: none;
         opacity: 0;
+        visibility: hidden;
         pointer-events: none;
         transform: translateY(-2px);
         transition: opacity 100ms ease, transform 100ms ease;
@@ -1201,12 +1202,8 @@
       .inline-help:hover::after,
       .inline-help:focus-visible::after {
         opacity: 1;
+        visibility: visible;
         transform: translateY(0);
-      }
-
-      .conversation-settings-section .inline-help::after {
-        top: auto;
-        bottom: calc(100% + 7px);
       }
 
       .context-usage-setting {
@@ -1305,25 +1302,6 @@
       .network-proxy-option input:disabled + .network-proxy-option-label {
         opacity: 0.45;
         cursor: default;
-      }
-
-      .network-proxy-route-hint {
-        display: grid;
-        grid-template-columns: 12px minmax(0, 1fr);
-        align-items: start;
-        gap: 5px;
-      }
-
-      .network-proxy-route-hint::before {
-        width: 12px;
-        height: 2px;
-        margin-top: 6px;
-        background: linear-gradient(
-          90deg,
-          var(--accent) 0 4px,
-          var(--line-soft) 4px 12px
-        );
-        content: "";
       }
 
       .network-proxy-commit {
@@ -2132,6 +2110,8 @@
 
       .tab-bar {
         display: flex;
+        gap: 3px;
+        padding: 4px;
         border-bottom: 1px solid var(--line-soft);
         background: var(--chrome);
       }
@@ -2139,26 +2119,27 @@
       .tab-bar button {
         flex: 1;
         min-width: 0;
-        height: 36px;
-        padding: 0 10px;
+        height: 28px;
+        padding: 0 8px;
         color: var(--quiet);
         background: transparent;
-        border: 0;
-        border-bottom: 2px solid transparent;
-        border-radius: 0;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        transition: color 120ms, border-color 120ms;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        font-size: 11px;
+        text-transform: none;
+        letter-spacing: 0;
+        transition: color 120ms, background-color 120ms, border-color 120ms;
       }
 
       .tab-bar button:hover {
         color: var(--text);
+        background: rgba(255, 255, 255, 0.035);
       }
 
       .tab-bar button.active {
-        color: var(--accent);
-        border-bottom-color: var(--accent);
+        color: var(--text);
+        background: var(--pane-2);
+        border-color: var(--line-soft);
       }
 
       .tab-panel {
@@ -2172,26 +2153,53 @@
         display: none;
       }
 
-      .settings-panel {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: minmax(0, 1fr) auto;
-        overflow: hidden;
+      #contextPanel {
         scrollbar-gutter: auto;
-      }
-
-      .settings-scroll {
-        min-height: 0;
-        overflow-y: auto;
-        scrollbar-gutter: stable;
-        overscroll-behavior: contain;
       }
 
       .settings {
         display: grid;
         gap: 0;
         padding: 12px;
-        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .settings-scope {
+        display: grid;
+        min-width: 0;
+      }
+
+      .model-profile-controls {
+        display: grid;
+        min-width: 0;
+      }
+
+      .settings-scope + .settings-scope {
+        margin-top: 22px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .inspector-scope-header {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding-left: 10px;
+        border-left: 2px solid var(--accent);
+      }
+
+      .settings-scope > .inspector-scope-header {
+        margin-bottom: 12px;
+      }
+
+      .inspector-scope-header h2 {
+        margin: 0;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 680;
+        letter-spacing: 0;
+        line-height: 1.25;
+        text-transform: none;
       }
 
       .model-setup-guide:not([hidden]) + .settings-section {
@@ -2213,7 +2221,7 @@
         line-height: 1.4;
       }
 
-      .model-setup-guide h2 {
+      .model-setup-guide h3 {
         color: var(--text);
         font-size: 12px;
         margin: 0;
@@ -2242,7 +2250,7 @@
       }
 
       .settings-lock-notice {
-        margin: 12px 12px 0;
+        margin: 0 0 12px;
         padding: 8px 10px;
         color: var(--warn);
         background: rgba(255, 209, 102, 0.08);
@@ -2260,29 +2268,20 @@
         gap: 9px;
       }
 
-      .settings-section + .settings-section {
-        margin-top: 10px;
-        padding-top: 10px;
-        border-top: 1px solid #5a5a5a;
+      .settings-scope .settings-section + .settings-section {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line-soft);
       }
 
-      .settings-section + .settings-disclosure,
-      .settings-disclosure + .settings-section {
-        margin-top: 12px;
-      }
-
-      .settings-disclosure + .settings-section {
-        padding-top: 12px;
-        border-top: 1px solid #5a5a5a;
-      }
-
-      .settings-section h2 {
+      .settings-scope .settings-section h3 {
         margin: 0;
         color: var(--text);
         font-size: 12px;
         font-weight: 650;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
+        letter-spacing: 0;
+        line-height: 1.3;
+        text-transform: none;
       }
 
       .field {
@@ -2340,7 +2339,6 @@
 
       .subscription-auth-panel[hidden],
       .direct-api-fields[hidden],
-      .anthropic-subscription-hint[hidden],
       .field[hidden] {
         display: none;
       }
@@ -2361,7 +2359,7 @@
         text-transform: uppercase;
       }
 
-      .subscription-auth-panel h3 {
+      .subscription-auth-panel h4 {
         margin: 0;
         color: var(--text);
         font-size: 12px;
@@ -2626,6 +2624,10 @@
         text-transform: uppercase;
       }
 
+      .tab-panel[hidden] .capability-preview::before {
+        content: none;
+      }
+
       .capability-status {
         display: inline-flex;
         align-items: center;
@@ -2879,11 +2881,11 @@
 
       .skill-group h3 {
         margin: 0;
-        color: var(--muted);
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0;
+        text-transform: none;
       }
 
       .skill-list {
@@ -2955,7 +2957,7 @@
 
       .skill-viewer-header {
         position: sticky;
-        top: -12px;
+        top: 0;
         z-index: 1;
         display: flex;
         align-items: center;
@@ -3011,6 +3013,21 @@
         color: var(--accent);
       }
 
+      .settings-actions-status {
+        display: grid;
+        gap: 1px;
+        min-width: 0;
+      }
+
+      .settings-actions-owner {
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        line-height: 1.2;
+        text-transform: uppercase;
+      }
+
       .settings-actions {
         position: static;
         z-index: 2;
@@ -3018,9 +3035,10 @@
         grid-template-columns: minmax(0, 1fr) auto auto;
         align-items: center;
         gap: 6px;
-        padding: 10px 12px;
-        border-top: 1px solid var(--line);
-        background: var(--chrome);
+        margin-top: 14px;
+        padding: 10px 0 0;
+        border-top: 1px solid var(--line-soft);
+        background: transparent;
       }
 
       .settings-actions button,
@@ -3042,9 +3060,9 @@
       .settings-disclosure {
         margin: 0;
         overflow: hidden;
-        background: var(--pane-2);
+        background: rgba(255, 255, 255, 0.018);
         border: 1px solid var(--line-soft);
-        border-radius: 7px;
+        border-radius: 5px;
       }
 
       .settings-disclosure > summary {
@@ -3052,9 +3070,9 @@
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 10px;
-        min-height: 50px;
+        min-height: 44px;
         margin: 0 !important;
-        padding: 9px 10px;
+        padding: 8px 9px;
         color: var(--text) !important;
         font-weight: 600;
         border-bottom: 1px solid transparent;
@@ -3084,16 +3102,7 @@
 
       .settings-disclosure-title {
         font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-      }
-
-      .settings-disclosure > summary small {
-        color: var(--quiet);
-        font-size: 10px;
-        font-weight: 400;
-        line-height: 1.35;
+        font-weight: 650;
         letter-spacing: 0;
         text-transform: none;
       }
@@ -3101,25 +3110,22 @@
       .settings-disclosure-chevron {
         display: grid;
         place-items: center;
-        width: 22px;
-        height: 22px;
+        width: 18px;
+        height: 18px;
         color: var(--muted);
-        border: 1px solid #5f5f5f;
-        border-radius: 999px;
+        border: 0;
         font-size: 18px;
         line-height: 1;
         transform: rotate(0deg);
-        transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
+        transition: color 120ms ease, transform 120ms ease;
       }
 
       .settings-disclosure > summary:hover .settings-disclosure-chevron {
         color: var(--accent);
-        border-color: rgba(255, 159, 26, 0.65);
       }
 
       .settings-disclosure[open] .settings-disclosure-chevron {
         color: var(--accent);
-        border-color: rgba(255, 159, 26, 0.65);
         transform: rotate(90deg);
       }
 
@@ -3128,14 +3134,11 @@
       }
 
       .capability-settings-section > .settings-disclosure {
-        margin-top: 2px;
+        margin-top: 8px;
       }
 
-      .advanced-note {
-        margin: 0;
-        color: var(--quiet);
-        font-size: 11px;
-        line-height: 1.4;
+      .capability-settings-section > .settings-disclosure + .settings-disclosure {
+        margin-top: 7px;
       }
 
       .advanced-groups {
@@ -3210,10 +3213,6 @@
         text-transform: uppercase;
       }
 
-      .skills-panel {
-        padding: 12px;
-      }
-
       .skill-drop-zone {
         display: grid;
         gap: 3px;
@@ -3235,11 +3234,6 @@
       .skill-drop-zone strong {
         color: var(--text);
         font-size: 12px;
-      }
-
-      .skill-drop-zone span {
-        color: var(--quiet);
-        font-size: 10px;
       }
 
       .skill-paste {
@@ -3271,7 +3265,7 @@
         font-size: 11px;
       }
 
-      .settings textarea {
+      #modelProfileSettings textarea {
         height: 100px;
         resize: vertical;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3302,64 +3296,29 @@
       }
 
       .context {
-        display: grid;
         align-content: start;
-        gap: 10px;
         min-height: 0;
-        overflow: auto;
-        padding: 12px;
         color: var(--muted);
-        scrollbar-gutter: stable;
-        overscroll-behavior: contain;
       }
 
-      .context-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-      }
-
-      .context-kicker {
-        color: var(--text);
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.07em;
-        text-transform: uppercase;
-      }
-
-      .context-snapshot-label {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        color: var(--quiet);
-        font-size: 9px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .context-snapshot-label::before {
-        width: 6px;
-        height: 6px;
-        content: "";
-        background: var(--accent);
-        border-radius: 50%;
-        box-shadow: 0 0 0 2px var(--accent-soft);
+      .context-shell {
+        justify-self: center;
+        width: 100%;
       }
 
       .context-card {
+        width: 100%;
         min-width: 0;
-        padding: 12px 12px 12px 15px;
+        padding: 11px;
         background: var(--field);
         border: 1px solid var(--line-soft);
         border-radius: 5px;
-        box-shadow: inset 3px 0 0 var(--accent);
       }
 
       .context-title {
         margin: 0;
         color: var(--text);
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 650;
         line-height: 1.35;
         overflow-wrap: anywhere;
@@ -3468,7 +3427,7 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
-        .settings-actions .draft-status {
+        .settings-actions-status {
           grid-column: 1 / -1;
         }
 
@@ -3498,7 +3457,7 @@
         <h1>Live Smith</h1>
         <div class="header-actions">
           <button id="sessionsToggleButton" class="icon-button header-tool-button sessions-toggle-button" type="button" title="Collapse Sessions" aria-label="Collapse Sessions" aria-controls="sessionsPane" aria-expanded="true" onclick="LiveSmithUI.toggleSessionsPane()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="4" width="17" height="16" rx="2"></rect><path d="M9 4v16M6 8h.01M6 12h.01"></path></svg></button>
-          <button id="settingsButton" class="icon-button header-tool-button settings-button" type="button" title="Settings" aria-label="Open Settings" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6"></path></svg></button>
+          <button id="settingsButton" class="icon-button header-tool-button settings-button" type="button" title="Inspector" aria-label="Open Inspector" aria-controls="inspectorPane" aria-expanded="false" onclick="LiveSmithUI.toggleInspector()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6"></path></svg></button>
           <button id="closeButton" class="icon-button header-tool-button" type="button" title="Close" aria-label="Close Live Smith" onclick="LiveSmithUI.requestClose()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
         </div>
       </header>
@@ -3587,24 +3546,28 @@
 
         <aside id="inspectorPane" class="inspector-pane" aria-label="Inspector" hidden>
           <div class="tab-bar" role="tablist" aria-label="Inspector Views">
-            <button id="settingsTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel" tabindex="0" onclick="LiveSmithUI.openInspector('settings')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Settings</button>
-            <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Skills</button>
+            <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Agent</button>
+            <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">App</button>
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)">Context</button>
           </div>
-          <div id="settingsPanel" class="tab-panel settings-panel" role="tabpanel" aria-labelledby="settingsTab" aria-busy="false" tabindex="0">
-            <div class="settings-scroll">
+          <div id="agentPanel" class="tab-panel agent-panel" role="tabpanel" aria-labelledby="agentTab" tabindex="0">
+            <div class="settings">
+              <section id="modelProfileSettings" class="settings-scope settings-scope-profile" aria-labelledby="modelProfileSettingsHeading">
+                <div class="inspector-scope-header">
+                  <h2 id="modelProfileSettingsHeading">Model Profile</h2>
+                </div>
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden>Profile settings are locked while another Session is running. You can keep working in this Session.</div>
-              <div class="settings">
+              <div id="modelProfileControls" class="model-profile-controls" role="group" aria-labelledby="modelProfileSettingsHeading" aria-busy="false">
               <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading">
-                <h2 id="modelSetupGuideHeading">Connect a model</h2>
+                <h3 id="modelSetupGuideHeading">Connect a model</h3>
                 <ol>
-                  <li>Name the Profile and enter connection details.</li>
-                  <li>Click Load Models.</li>
+                  <li>Enter connection details.</li>
+                  <li>Load Models.</li>
                   <li>Save &amp; Use.</li>
                 </ol>
               </section>
               <section id="profileSettingsSection" class="settings-section" aria-labelledby="profileSettingsHeading">
-                <h2 id="profileSettingsHeading">Profile</h2>
+                <h3 id="profileSettingsHeading">Profile Details</h3>
                 <div id="savedProfileControls" class="saved-profile-controls">
                   <div class="field">
                     <label for="profileSelector">Saved profile</label>
@@ -3623,7 +3586,7 @@
               </section>
 
               <section id="connectionSettingsSection" class="settings-section" aria-labelledby="connectionSettingsHeading">
-                <h2 id="connectionSettingsHeading">Connection</h2>
+                <h3 id="connectionSettingsHeading">Connection</h3>
                 <div class="field">
                   <label for="connectionKind">Type</label>
                   <select id="connectionKind" name="connectionKind" autocomplete="off" onchange="LiveSmithUI.handleConnectionKindChange()">
@@ -3653,7 +3616,6 @@
                 <div class="field">
                   <div class="field-label-row">
                     <label for="apiMode">Request format</label>
-                    <span id="apiModeHelp" class="inline-help" tabindex="0" role="note" aria-label="OpenAI endpoints can use Responses or Chat Completions. Anthropic endpoints use Messages." data-tooltip="OpenAI endpoints can use Responses or Chat Completions. Anthropic endpoints use Messages.">?</span>
                   </div>
                   <select id="apiMode" name="apiMode" autocomplete="off" onchange="LiveSmithUI.handleApiModeChange()"></select>
                 </div>
@@ -3674,14 +3636,13 @@
                   </div>
                   <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" oninput="LiveSmithUI.markDraftDirty(this)" />
                 </div>
-                <span id="anthropicSubscriptionHint" class="field-hint anthropic-subscription-hint" hidden>To sign in with a Claude account instead of an API key, choose Account subscription (OAuth).</span>
                 </div>
                 <section id="oauthAuthPanel" class="subscription-auth-panel" data-auth-state="unchecked" aria-labelledby="oauthAuthHeading" hidden>
                   <div class="subscription-auth-header">
-                    <h3 id="oauthAuthHeading">Account <span class="subscription-auth-experimental">Experimental</span></h3>
+                    <h4 id="oauthAuthHeading">Account <span class="subscription-auth-experimental">Experimental</span></h4>
                     <span id="oauthAuthStateBadge" class="subscription-auth-state-badge">Not checked</span>
                   </div>
-                  <p id="oauthAuthNote" class="subscription-auth-note">Uses the selected account through OAuth.</p>
+                  <p id="oauthAuthNote" class="subscription-auth-note" hidden></p>
                   <div id="oauthAuthStatus" class="subscription-auth-status">
                     <div id="oauthAuthState" class="subscription-auth-state" role="status" aria-live="polite" aria-atomic="true">
                       <strong id="oauthAuthStateLabel" class="subscription-auth-state-title">Account not checked</strong>
@@ -3716,7 +3677,7 @@
               </section>
 
               <section id="modelSettingsSection" class="settings-section" aria-labelledby="modelSettingsHeading">
-                <h2 id="modelSettingsHeading">Models</h2>
+                <h3 id="modelSettingsHeading">Models</h3>
                 <div class="model-load-row">
                   <div class="model-load-copy">
                     <span id="profileModelCount" class="field-hint" role="status" aria-live="polite"></span>
@@ -3742,33 +3703,73 @@
                   <div class="manual-model-entry-body">
                     <input id="manualModelId" name="manualModelId" autocomplete="off" spellcheck="false" translate="no" placeholder="Exact model ID" aria-label="Exact model ID to add" aria-describedby="manualModelIdHint" oninput="LiveSmithUI.updateManualModelActions()" onkeydown="LiveSmithUI.handleManualModelIdKeydown(event)" />
                     <button id="addManualModelButton" class="secondary" type="button" onclick="LiveSmithUI.addManualModel()">Add</button>
-                    <span id="manualModelIdHint" class="field-hint" role="status" aria-live="polite">Use this only when the provider does not list the model.</span>
+                    <span id="manualModelIdHint" class="field-hint" role="status" aria-live="polite">For models missing from the provider list.</span>
                   </div>
                 </details>
               </section>
 
               <section id="capabilitySettingsSection" class="settings-section capability-settings-section" aria-labelledby="capabilitySettingsHeading">
-                <h2 id="capabilitySettingsHeading">Capabilities</h2>
+                <h3 id="capabilitySettingsHeading">Model Behavior</h3>
                 <div class="hosted-tool-control">
                   <label class="hosted-tool-toggle" for="webSearchEnabled">
-                    <input id="webSearchEnabled" name="webSearchEnabled" type="checkbox" aria-describedby="webSearchHint webSearchBoundaryHint" onchange="LiveSmithUI.handleWebSearchChange(this)" />
-                    <span><strong>Web Search</strong>The model decides when to search.</span>
+                    <input id="webSearchEnabled" name="webSearchEnabled" type="checkbox" aria-describedby="webSearchHint" onchange="LiveSmithUI.handleWebSearchChange(this)" />
+                    <span><strong>Allow Web Search</strong></span>
                   </label>
-                  <span id="webSearchHint" class="field-hint" role="status" aria-live="polite" aria-atomic="true">Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support.</span>
-                  <span id="webSearchBoundaryHint" class="field-hint" hidden>OAuth subscription connections do not expose provider-hosted Web Search in Live Smith. Use a Direct API Profile with OpenAI Responses or Anthropic Messages for provider-hosted Web Search.</span>
+                  <span id="webSearchHint" class="field-hint" role="status" aria-live="polite" aria-atomic="true">Unavailable with Chat Completions.</span>
                 </div>
+                <details id="generationSettings" class="settings-disclosure top-level-settings">
+                  <summary>
+                    <span class="settings-disclosure-copy">
+                      <span class="settings-disclosure-title">Generation</span>
+                    </span>
+                    <span class="settings-disclosure-chevron" aria-hidden="true">›</span>
+                  </summary>
+                  <div class="advanced-fields">
+                    <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
+                    <div class="field">
+                      <label for="temperature">Temperature</label>
+                      <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="Provider default…" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    </div>
+                    <div class="field">
+                      <label for="maxOutputTokens">Requested max output tokens</label>
+                      <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div class="field">
+                      <label for="contextWindowTokens">Context window tokens</label>
+                      <input id="contextWindowTokens" name="contextWindowTokens" type="number" min="1" max="10000000" step="1" placeholder="Model default…" aria-describedby="contextWindowTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="contextWindowTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div class="field">
+                      <label for="autoCompactTokenLimit">Compact at tokens</label>
+                      <input id="autoCompactTokenLimit" name="autoCompactTokenLimit" type="number" min="1" max="10000000" step="1" placeholder="Automatic (90%)…" aria-describedby="autoCompactTokenLimitHint" oninput="LiveSmithUI.markDraftDirty(this)" />
+                      <span id="autoCompactTokenLimitHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
+                    </div>
+                    <div id="reasoningModeRow" class="field">
+                      <label for="reasoningMode">Reasoning</label>
+                      <select id="reasoningMode" name="reasoningMode" aria-describedby="reasoningHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                      <span id="reasoningHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true" hidden>Unavailable. Use provider default or Compatibility Overrides.</span>
+                    </div>
+                    <div id="reasoningEffortRow" class="field" hidden>
+                      <label for="reasoningEffort">Reasoning effort</label>
+                      <select id="reasoningEffort" name="reasoningEffort" onchange="LiveSmithUI.markDraftDirty(this)"></select>
+                    </div>
+                    <div id="reasoningBudgetRow" class="field" hidden>
+                      <label for="reasoningBudgetTokens">Thinking budget</label>
+                      <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
+                    </div>
+                  </div>
+                </details>
                 <details id="advancedSettings" class="settings-disclosure top-level-settings advanced-settings">
                   <summary id="advancedSettingsHeading">
                     <span class="settings-disclosure-copy">
-                      <span class="settings-disclosure-title">Advanced Overrides</span>
-                      <small>Inputs, tools, reasoning &amp; request JSON</small>
+                      <span class="settings-disclosure-title">Compatibility Overrides</span>
                     </span>
                     <span class="settings-disclosure-chevron" aria-hidden="true">›</span>
                   </summary>
                   <div class="advanced-groups">
                     <fieldset class="advanced-group">
                       <legend>Input support</legend>
-                      <p class="advanced-note">Leave these on Automatic unless your provider documents different behavior.</p>
                       <div class="field">
                         <label for="overrideInputImage">Image input</label>
                         <select id="overrideInputImage" name="overrideInputImage" onchange="LiveSmithUI.markDraftDirty(this)">
@@ -3840,84 +3841,92 @@
                     </fieldset>
                     <fieldset class="advanced-group">
                       <legend>Raw request JSON</legend>
-                      <p class="advanced-note">Expert use only. Values are merged into the provider request after protected fields are applied.</p>
+                      <span class="field-hint">Cannot override protected request fields.</span>
                       <div class="field"><label for="extraBody">Extra Body JSON</label><textarea id="extraBody" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
                     </fieldset>
                   </div>
                 </details>
               </section>
+              <div class="settings-actions" role="group" aria-labelledby="settingsProfileActionsLabel">
+                <span class="settings-actions-status">
+                  <span id="settingsProfileActionsLabel" class="settings-actions-owner">Profile</span>
+                  <span id="draftStatus" class="draft-status"></span>
+                </span>
+                <button id="discardProfileButton" class="secondary" type="button" onclick="LiveSmithUI.discardProfileChanges()">Discard</button>
+                <button id="saveProfileButton" class="primary" type="button" data-idle-label="Save &amp; Use" onclick="LiveSmithUI.saveProfile()">Save &amp; Use</button>
+              </div>
+              </div>
+              </section>
 
-              <details id="generationSettings" class="settings-disclosure top-level-settings">
-                  <summary>
-                    <span class="settings-disclosure-copy">
-                      <span class="settings-disclosure-title">Generation</span>
-                      <small>Temperature, output &amp; reasoning</small>
-                    </span>
-                    <span class="settings-disclosure-chevron" aria-hidden="true">›</span>
-                  </summary>
-                  <div class="advanced-fields">
-                    <span id="draftPreviewLabel" class="draft-status dirty" role="status" hidden></span>
-                    <div class="field">
-                      <label for="temperature">Temperature</label>
-                      <input id="temperature" name="temperature" type="number" min="0" max="2" step="0.1" placeholder="Provider default…" oninput="LiveSmithUI.markDraftDirty(this)" />
+              <section id="skillManager" class="settings-scope skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
+                <div class="inspector-scope-header">
+                  <h2 id="skillsHeading">Session Skills</h2>
+                  <span class="inline-help" tabindex="0" role="note" aria-label="Enable for this Session, or use $skill-id for one turn." data-tooltip="Enable for this Session, or use $skill-id for one turn.">?</span>
+                </div>
+                <section class="skill-group" aria-labelledby="builtInSkillsHeading">
+                  <h3 id="builtInSkillsHeading">Built-in</h3>
+                  <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
+                  <p id="builtInSkillEmptyState" class="skill-empty" hidden>Same-ID User Skills are shown below.</p>
+                </section>
+                <section class="skill-group" aria-labelledby="userSkillsHeading">
+                  <h3 id="userSkillsHeading">User Skills</h3>
+                  <div id="userSkillList" class="skill-list" role="list" aria-labelledby="userSkillsHeading"></div>
+                  <p id="userSkillEmptyState" class="skill-empty">No user Skills.</p>
+                  <details class="skill-paste">
+                    <summary>Import Skill</summary>
+                    <div class="skill-import-body">
+                      <div id="skillDropZone" class="skill-drop-zone">
+                        <strong>Drop SKILL.md</strong>
+                      </div>
+                      <div class="skill-paste-fields">
+                        <label for="skillPasteText">Paste SKILL.md</label>
+                        <textarea id="skillPasteText" name="skillMarkdown" autocomplete="off" spellcheck="false" placeholder="---&#10;name: my-skill&#10;description: What this Skill does&#10;---&#10;Instructions…"></textarea>
+                        <button id="installPastedSkillButton" class="secondary" type="button" disabled>Install Skill</button>
+                      </div>
                     </div>
-                    <div class="field">
-                      <label for="maxOutputTokens">Requested max output tokens</label>
-                      <input id="maxOutputTokens" name="maxOutputTokens" type="number" min="1" max="1000000" step="1" aria-describedby="maxOutputTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
-                      <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
-                    </div>
-                    <div class="field">
-                      <label for="contextWindowTokens">Context window tokens</label>
-                      <input id="contextWindowTokens" name="contextWindowTokens" type="number" min="1" max="10000000" step="1" placeholder="Model default…" aria-describedby="contextWindowTokensHint" oninput="LiveSmithUI.markDraftDirty(this)" />
-                      <span id="contextWindowTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
-                    </div>
-                    <div class="field">
-                      <label for="autoCompactTokenLimit">Compact at tokens</label>
-                      <input id="autoCompactTokenLimit" name="autoCompactTokenLimit" type="number" min="1" max="10000000" step="1" placeholder="Automatic (90%)…" aria-describedby="autoCompactTokenLimitHint" oninput="LiveSmithUI.markDraftDirty(this)" />
-                      <span id="autoCompactTokenLimitHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
-                    </div>
-                    <div id="reasoningModeRow" class="field">
-                      <label for="reasoningMode">Reasoning</label>
-                      <select id="reasoningMode" name="reasoningMode" aria-describedby="reasoningHint" onchange="LiveSmithUI.markDraftDirty(this)"></select>
-                      <span id="reasoningHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true" hidden>Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced.</span>
-                    </div>
-                    <div id="reasoningEffortRow" class="field" hidden>
-                      <label for="reasoningEffort">Reasoning effort</label>
-                      <select id="reasoningEffort" name="reasoningEffort" onchange="LiveSmithUI.markDraftDirty(this)"></select>
-                    </div>
-                    <div id="reasoningBudgetRow" class="field" hidden>
-                      <label for="reasoningBudgetTokens">Thinking budget</label>
-                      <input id="reasoningBudgetTokens" name="reasoningBudgetTokens" type="number" min="1024" step="1" oninput="LiveSmithUI.markDraftDirty(this)" />
-                    </div>
-                  </div>
-              </details>
-
+                  </details>
+                </section>
+              </section>
+              <section id="skillViewer" class="settings-scope skill-viewer" aria-labelledby="skillViewerId" hidden>
+                <div class="skill-viewer-header">
+                  <button id="closeSkillViewer" class="secondary" type="button" aria-label="Back to Skills">← Skills</button>
+                  <span>Built-in · Read-only</span>
+                </div>
+                <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
+                <p id="skillViewerDescription" class="skill-viewer-description"></p>
+                <div id="skillViewerBody" class="skill-viewer-body"></div>
+              </section>
+            </div>
+          </div>
+          <div id="appPanel" class="tab-panel app-panel" role="tabpanel" aria-labelledby="appTab" tabindex="0" hidden>
+            <div class="settings">
+              <section id="appPreferencesSettings" class="settings-scope settings-scope-app" aria-labelledby="appPreferencesSettingsHeading">
+                <div class="inspector-scope-header">
+                  <h2 id="appPreferencesSettingsHeading">App Preferences</h2>
+                </div>
               <section id="followUpSettingsSection" class="settings-section conversation-settings-section" aria-labelledby="followUpSettingsHeading">
-                <h2 id="followUpSettingsHeading">Conversation Behavior</h2>
+                <h3 id="followUpSettingsHeading">Conversation &amp; Display</h3>
                 <div class="field">
                   <div class="field-label-row">
                     <label for="defaultFollowUpBehavior">While Live Smith is working</label>
-                    <span id="followUpSettingsOwnerHelp" class="inline-help" tabindex="0" role="note" aria-label="This setting saves immediately and applies across Live Smith windows." data-tooltip="This setting saves immediately and applies across Live Smith windows.">?</span>
                   </div>
-                  <select id="defaultFollowUpBehavior" name="defaultFollowUpBehavior" aria-describedby="defaultFollowUpBehaviorHint" onchange="LiveSmithUI.saveDefaultFollowUpBehavior()">
-                    <option value="queue">Queue</option>
-                    <option value="steer">Steer</option>
+                  <select id="defaultFollowUpBehavior" name="defaultFollowUpBehavior" onchange="LiveSmithUI.saveDefaultFollowUpBehavior()">
+                    <option value="queue">Queue after response</option>
+                    <option value="steer">Steer current response</option>
                   </select>
-                  <span id="defaultFollowUpBehaviorHint" class="field-hint" role="status" aria-live="polite">Queue sends the message as a new turn after the current response finishes.</span>
                 </div>
                 <label class="context-usage-setting" for="showContextUsage">
                   <input id="showContextUsage" name="showContextUsage" type="checkbox" onchange="LiveSmithUI.saveContextUsageVisibility()" />
-                  <span>Show context window</span>
+                  <span>Show context meter</span>
                 </label>
               </section>
               <section id="networkSettingsSection" class="settings-section" aria-labelledby="networkSettingsHeading">
-                <h2 id="networkSettingsHeading">Network</h2>
+                <h3 id="networkSettingsHeading">Network Proxy</h3>
                 <div class="network-proxy-panel">
                   <div class="field-label-row">
                     <span id="networkProxyModeLabel" class="network-proxy-control-label">Proxy mode</span>
-                    <span class="inline-help" tabindex="0" role="note" aria-label="Applies to Direct API and account subscription requests in every Live Smith window." data-tooltip="Applies to Direct API and account subscription requests in every Live Smith window.">?</span>
                   </div>
-                  <fieldset id="networkProxyMode" class="network-proxy-mode" aria-labelledby="networkProxyModeLabel" aria-describedby="networkProxyHint">
+                  <fieldset id="networkProxyMode" class="network-proxy-mode" aria-labelledby="networkProxyModeLabel">
                     <legend class="visually-hidden">Proxy mode</legend>
                     <label class="network-proxy-option" for="networkProxyModeNone">
                       <input id="networkProxyModeNone" name="networkProxyMode" type="radio" value="none" onchange="LiveSmithUI.handleNetworkProxyModeChange()" checked />
@@ -3932,7 +3941,7 @@
                       <span class="network-proxy-option-label">Manual</span>
                     </label>
                   </fieldset>
-                  <span id="networkProxyHint" class="field-hint network-proxy-route-hint" role="status" aria-live="polite">Connect to providers directly.</span>
+                  <span id="networkProxyHint" class="field-hint" role="status" aria-live="polite" hidden></span>
                   <div class="network-proxy-commit">
                     <div id="networkProxyUrlField" class="field network-proxy-url-field" hidden>
                       <label class="visually-hidden" for="networkProxyUrl">Proxy URL</label>
@@ -3943,60 +3952,11 @@
                   </div>
                 </div>
               </section>
-            </div>
-            </div>
-            <div class="settings-actions">
-              <span id="draftStatus" class="draft-status"></span>
-              <button id="discardProfileButton" class="secondary" type="button" onclick="LiveSmithUI.discardProfileChanges()">Discard</button>
-              <button id="saveProfileButton" class="primary" type="button" data-idle-label="Save &amp; Use" onclick="LiveSmithUI.saveProfile()">Save &amp; Use</button>
-            </div>
-          </div>
-          <div id="skillsPanel" class="tab-panel skills-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
-            <section id="skillManager" class="settings-section skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
-              <div class="field-label-row">
-                <h2 id="skillsHeading">Session Skills</h2>
-                <span class="inline-help" tabindex="0" role="note" aria-label="Enable workflows for this Session. Use $skill-id in a message for one-time guidance." data-tooltip="Enable workflows for this Session. Use $skill-id in a message for one-time guidance.">?</span>
-              </div>
-              <section class="skill-group" aria-labelledby="builtInSkillsHeading">
-                <div class="field-label-row">
-                  <h3 id="builtInSkillsHeading">Built-in</h3>
-                  <span class="inline-help" tabindex="0" role="note" aria-label="Included with Live Smith and off by default. View opens the instructions without enabling the Skill." data-tooltip="Included with Live Smith and off by default. View opens the instructions without enabling the Skill.">?</span>
-                </div>
-                <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
-                <p id="builtInSkillEmptyState" class="skill-empty" hidden>Same-ID User Skills are shown below.</p>
               </section>
-              <section class="skill-group" aria-labelledby="userSkillsHeading">
-                <h3 id="userSkillsHeading">User Skills</h3>
-                <div id="userSkillList" class="skill-list" role="list" aria-labelledby="userSkillsHeading"></div>
-                <p id="userSkillEmptyState" class="skill-empty">No user Skills.</p>
-                <details class="skill-paste">
-                  <summary>Import User Skill</summary>
-                  <div class="skill-import-body">
-                    <div id="skillDropZone" class="skill-drop-zone">
-                      <strong>Drop a SKILL.md file here</strong>
-                      <span>File browsing is not available in this Ableton window.</span>
-                    </div>
-                    <div class="skill-paste-fields">
-                      <label for="skillPasteText">Or paste SKILL.md</label>
-                      <textarea id="skillPasteText" name="skillMarkdown" autocomplete="off" spellcheck="false" placeholder="---&#10;name: my-skill&#10;description: What this Skill does&#10;---&#10;Instructions…"></textarea>
-                      <button id="installPastedSkillButton" class="secondary" type="button" disabled>Install Skill</button>
-                    </div>
-                  </div>
-                </details>
-              </section>
-            </section>
-            <section id="skillViewer" class="skill-viewer" aria-labelledby="skillViewerId" hidden>
-              <div class="skill-viewer-header">
-                <button id="closeSkillViewer" class="secondary" type="button" aria-label="Back to Skills">← Skills</button>
-                <span>Built-in · Read-only</span>
-              </div>
-              <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
-              <p id="skillViewerDescription" class="skill-viewer-description"></p>
-              <div id="skillViewerBody" class="skill-viewer-body"></div>
-            </section>
+            </div>
           </div>
           <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
-            <div id="context" class="context"></div>
+            <div id="context" class="context settings"></div>
           </div>
         </aside>
       </main>

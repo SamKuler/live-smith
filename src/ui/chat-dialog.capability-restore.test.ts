@@ -549,8 +549,8 @@ test("a failed startup capability load stays unknown without looping and can be 
     assert.match(harness.document.querySelector("#status")?.textContent ?? "", /temporarily unavailable/);
     assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.disabled, false);
     harness.input("#prompt", "Keep working while the catalog is unavailable");
-    harness.click("#skillsTab");
-    harness.click("#settingsTab");
+    harness.click("#appTab");
+    harness.click("#agentTab");
     await harness.settle();
     assert.equal(capabilityCalls(harness).length, 1);
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#discoverModelsButton")?.disabled, false);

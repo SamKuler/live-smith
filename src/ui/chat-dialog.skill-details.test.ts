@@ -24,23 +24,43 @@ function readerElements(harness: Harness) {
   return { manager, viewer, back, body };
 }
 
-test("Skills guidance is available through focusable question-mark hints", async () => {
+test("Skills keeps one compact Session-level help affordance", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#skillsTab");
-    for (const id of ["skillsHeading", "builtInSkillsHeading"]) {
-      const heading = harness.document.getElementById(id);
-      const help = heading?.parentElement?.querySelector<HTMLElement>(".inline-help");
-      assert.ok(help);
-      assert.equal(heading?.nextElementSibling, help);
-      assert.equal(help.textContent, "?");
-      assert.equal(help.getAttribute("role"), "note");
-      assert.equal(help.getAttribute("tabindex"), "0");
-      assert.ok(help.dataset.tooltip);
-      assert.equal(help.getAttribute("aria-label"), help.dataset.tooltip);
-      help.focus();
-      assert.equal(harness.document.activeElement, help);
-    }
+    harness.click("#agentTab");
+    const heading = harness.document.getElementById("skillsHeading");
+    const help = heading?.parentElement?.querySelector<HTMLElement>(".inline-help");
+    assert.ok(help);
+    assert.equal(heading?.nextElementSibling, help);
+    assert.equal(help.textContent, "?");
+    assert.equal(help.getAttribute("role"), "note");
+    assert.equal(help.getAttribute("tabindex"), "0");
+    assert.equal(
+      help.dataset.tooltip,
+      "Enable for this Session, or use $skill-id for one turn.",
+    );
+    assert.equal(help.getAttribute("aria-label"), help.dataset.tooltip);
+    assert.equal(
+      harness.document.getElementById("builtInSkillsHeading")?.parentElement
+        ?.querySelector(".inline-help"),
+      null,
+    );
+    assert.equal(heading?.closest(".inspector-scope-header") !== null, true);
+    assert.equal(harness.document.getElementById("builtInSkillsHeading")?.tagName, "H3");
+    assert.equal(harness.document.getElementById("userSkillsHeading")?.tagName, "H3");
+    assert.equal(
+      harness.document.querySelector(".skill-paste > summary")?.textContent,
+      "Import Skill",
+    );
+    assert.equal(
+      harness.document.querySelector("#skillDropZone strong")?.textContent,
+      "Drop SKILL.md",
+    );
+    assert.equal(harness.document.querySelector("#skillDropZone span"), null);
+    assert.equal(
+      harness.document.querySelector('label[for="skillPasteText"]')?.textContent,
+      "Paste SKILL.md",
+    );
     assert.equal(harness.document.querySelectorAll("#skillManager p.skill-note").length, 0);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -51,7 +71,7 @@ test("Skills guidance is available through focusable question-mark hints", async
 test("every built-in opens its full canonical Markdown without enabling it or calling the bridge", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#skillsTab");
+    harness.click("#agentTab");
     harness.input("#prompt", "Keep this draft");
     const { manager, viewer, back, body } = readerElements(harness);
     assert.equal(viewer.hidden, true);
@@ -104,7 +124,7 @@ test("every built-in opens its full canonical Markdown without enabling it or ca
 test("Escape returns from Skill details to its View button", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#skillsTab");
+    harness.click("#agentTab");
     harness.click(viewSelector);
     const { viewer, back } = readerElements(harness);
     const escape = new harness.window.KeyboardEvent("keydown", {
@@ -114,7 +134,7 @@ test("Escape returns from Skill details to its View button", async () => {
     assert.equal(escape.defaultPrevented, true);
     assert.equal(viewer.hidden, true);
     assert.equal(harness.document.activeElement, harness.document.querySelector(viewSelector));
-    assert.equal(harness.document.querySelector<HTMLElement>("#skillsPanel")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#agentPanel")?.hidden, false);
   } finally {
     harness.close();
   }
@@ -126,11 +146,11 @@ test("Skill details remain mounted across Session changes and busy operations", 
   const harness = await createDialogHarness(state);
   let sendHeld = false;
   try {
-    harness.click("#skillsTab");
+    harness.click("#agentTab");
     harness.click(viewSelector);
     const { viewer, back, body } = readerElements(harness);
     const content = body.firstChild;
-    const panel = harness.document.querySelector<HTMLElement>("#skillsPanel");
+    const panel = harness.document.querySelector<HTMLElement>("#agentPanel");
     assert.ok(panel);
     panel.scrollTop = 120;
     await harness.window.LiveSmithUI.runCommand("select_session", { sessionId: "session-2" });
@@ -175,7 +195,7 @@ test("read-only Skill controls keep focus while a pending operation completes", 
   const harness = await createDialogHarness();
   let commandHeld = false;
   try {
-    harness.click("#skillsTab");
+    harness.click("#agentTab");
     const view = harness.document.querySelector<HTMLButtonElement>(viewSelector);
     assert.ok(view);
     view.focus();
@@ -200,7 +220,7 @@ test("Skill details close when the available entry disappears or becomes a User 
     for (const moveFocusAway of [false, true]) {
       const harness = await createDialogHarness();
       try {
-        harness.click("#skillsTab");
+        harness.click("#agentTab");
         harness.click(viewSelector);
         const { viewer, body } = readerElements(harness);
         const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
@@ -232,7 +252,7 @@ test("Skill details close when the available entry disappears or becomes a User 
 test("Skill Markdown falls back to readable text if the renderer fails", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#skillsTab");
+    harness.click("#agentTab");
     const renderer = harness.window.LiveSmithMarkdown;
     assert.ok(renderer);
     renderer.renderInto = () => { throw new Error("Renderer unavailable"); };

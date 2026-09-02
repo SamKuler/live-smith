@@ -790,7 +790,7 @@ test("a matching OAuth command becomes provisional when its saved Profile change
             );
           } catch {
             assert.fail(`Add stayed locked after ${change}: ${JSON.stringify({
-              settingsBusy: harness.document.querySelector("#settingsPanel")
+              profileBusy: harness.document.querySelector("#modelProfileControls")
                 ?.getAttribute("aria-busy"),
               status: harness.document.querySelector("#status")?.textContent,
               stateCalls: jsonCalls(harness, "/state").length,
@@ -1154,15 +1154,6 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     assert.equal(harness.document.querySelector<HTMLElement>("#oauthAuthPanel")?.hidden, true);
 
     harness.select("#apiFamily", "anthropic");
-    assert.equal(
-      harness.document.querySelector<HTMLElement>("#anthropicSubscriptionHint")?.hidden,
-      false,
-    );
-    assert.match(
-      harness.document.querySelector("#anthropicSubscriptionHint")?.textContent ?? "",
-      /choose Account subscription \(OAuth\)/i,
-    );
-
     harness.select("#apiFamily", "openai");
     harness.select("#apiMode", "responses");
     harness.input("#temperature", "0.8");
@@ -1184,7 +1175,7 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
     assert.equal(harness.document.querySelector<HTMLInputElement>("#maxOutputTokens")?.disabled, true);
     assert.match(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
-      /subscription backend owns the output limit/i,
+      /set by the subscription backend/i,
     );
     assert.equal(harness.document.querySelector<HTMLInputElement>("#reasoningBudgetTokens")?.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#reasoningBudgetTokens")?.disabled, true);
@@ -1211,8 +1202,8 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
       "Account subscription (OAuth)",
     );
     assert.equal(
-      harness.document.querySelector(".subscription-auth-note")?.textContent,
-      "Uses your ChatGPT account through the Codex backend API.",
+      harness.document.querySelector<HTMLElement>(".subscription-auth-note")?.hidden,
+      true,
     );
     assert.equal(
       harness.document.querySelector(".subscription-auth-details summary")?.textContent,
@@ -1380,7 +1371,7 @@ test("device-code login controls send strict commands and render backend state s
     );
     assert.equal(
       harness.document.querySelector("#oauthAuthHeading")?.tagName,
-      "H3",
+      "H4",
     );
     assert.equal(
       harness.document.querySelector("#oauthAuthState")?.getAttribute("role"),
@@ -1691,10 +1682,9 @@ test("OAuth provider selection drives native Claude and Antigravity commands", a
   try {
     harness.select("#connectionKind", "oauth-subscription");
     harness.select("#oauthProvider", "anthropic");
-    assert.match(
-      harness.document.querySelector("#oauthAuthNote")?.textContent ?? "",
-      /Claude OAuth.*Anthropic Messages/i,
-    );
+    const authNote = harness.document.querySelector<HTMLElement>("#oauthAuthNote");
+    assert.equal(authNote?.hidden, false);
+    assert.match(authNote?.textContent ?? "", /Extra Usage.*billed/i);
     harness.click("#oauthSignInButton");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
@@ -1707,10 +1697,8 @@ test("OAuth provider selection drives native Claude and Antigravity commands", a
     });
 
     harness.select("#oauthProvider", "google");
-    assert.match(
-      harness.document.querySelector("#oauthAuthNote")?.textContent ?? "",
-      /Google account.*Antigravity/i,
-    );
+    assert.equal(authNote?.hidden, true);
+    assert.equal(authNote?.textContent, "");
     harness.click("#oauthCheckAccountButton");
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1), {
@@ -2276,6 +2264,18 @@ test("Apply confirmation locks Profile and auth controls but permits follow-up s
       harness.document.querySelector<HTMLSelectElement>(
         "#defaultFollowUpBehavior",
       )?.disabled,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#showContextUsage")?.disabled,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>("#networkProxyModeSystem")?.disabled,
+      false,
+    );
+    assert.equal(
+      harness.document.querySelector<HTMLButtonElement>(".skill-view")?.disabled,
       false,
     );
 

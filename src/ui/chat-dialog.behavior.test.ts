@@ -86,10 +86,10 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
     assert.equal(profileControl?.getAttribute("aria-expanded"), "true");
     assert.equal(
       profileControl?.getAttribute("aria-label"),
-      "Close Settings",
+      "Close Inspector",
     );
     assert.equal(
-      harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
       "true",
     );
     profileControl?.click();
@@ -110,10 +110,10 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       new harness.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
     );
     assert.equal(
-      harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
       "true",
     );
-    harness.document.querySelector("#settingsTab")?.dispatchEvent(
+    harness.document.querySelector("#agentTab")?.dispatchEvent(
       new harness.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
     );
     assert.equal(
@@ -148,7 +148,7 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
 
     settings?.click();
     assert.equal(chat?.hasAttribute("inert"), true);
-    assert.equal(harness.document.activeElement?.id, "settingsTab");
+    assert.equal(harness.document.activeElement?.id, "agentTab");
 
     setViewportWidth(1039);
     assert.equal(chat?.hasAttribute("inert"), false);
@@ -157,7 +157,7 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
 
     setViewportWidth(1038);
     assert.equal(chat?.hasAttribute("inert"), true);
-    assert.equal(harness.document.activeElement?.id, "settingsTab");
+    assert.equal(harness.document.activeElement?.id, "agentTab");
 
     settings?.click();
     assert.equal(chat?.hasAttribute("inert"), false);
@@ -194,18 +194,22 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       harness.document.querySelector(".tab-bar")?.getAttribute("role"),
       "tablist",
     );
-    assert.equal(harness.document.querySelector("#settingsTab")?.getAttribute("role"), "tab");
-    assert.equal(harness.document.querySelector("#skillsTab")?.getAttribute("role"), "tab");
+    assert.equal(harness.document.querySelector("#agentTab")?.getAttribute("role"), "tab");
+    assert.equal(harness.document.querySelector("#appTab")?.getAttribute("role"), "tab");
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("role"),
+      harness.document.querySelector("#agentPanel")?.getAttribute("role"),
       "tabpanel",
     );
-    for (const selector of ["#settingsPanel", "#skillsPanel", "#contextPanel"]) {
+    for (const selector of ["#agentPanel", "#appPanel", "#contextPanel"]) {
       assert.equal(harness.document.querySelector(selector)?.getAttribute("tabindex"), "0");
     }
     assert.equal(
       harness.document.querySelector("#modelSetupGuideHeading")?.tagName,
-      "H2",
+      "H3",
+    );
+    assert.equal(
+      harness.document.querySelector("#oauthAuthHeading")?.tagName,
+      "H4",
     );
     assert.equal(
       harness.document.querySelector("#apiMode")?.getAttribute("aria-describedby"),
@@ -215,12 +219,9 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       harness.document.querySelector("#baseUrl")?.getAttribute("aria-describedby"),
       null,
     );
-    for (const id of [
-      "apiModeHelp",
-      "baseUrlHelp",
-      "discoverModelsHelp",
-      "followUpSettingsOwnerHelp",
-    ]) {
+    assert.equal(harness.document.getElementById("apiModeHelp"), null);
+    assert.equal(harness.document.getElementById("followUpSettingsOwnerHelp"), null);
+    for (const id of ["baseUrlHelp", "discoverModelsHelp"]) {
       const help = harness.document.getElementById(id);
       assert.equal(help?.tabIndex, 0);
       assert.equal(help?.getAttribute("role"), "note");
@@ -307,14 +308,14 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       false,
     );
     assert.equal(
-      harness.document.querySelector("#settingsTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
       "true",
     );
     const guide = harness.document.querySelector("#modelSetupGuide");
-    assert.equal(guide?.querySelectorAll("li").length, 3);
-    assert.match(guide?.textContent ?? "", /name the profile.*connection details/i);
-    assert.match(guide?.textContent ?? "", /load models/i);
-    assert.match(guide?.textContent ?? "", /save & use/i);
+    assert.deepEqual(
+      [...(guide?.querySelectorAll("li") ?? [])].map((item) => item.textContent),
+      ["Enter connection details.", "Load Models.", "Save & Use."],
+    );
     assert.equal(
       harness.document.querySelector<HTMLElement>("#savedProfileControls")?.hidden,
       true,
@@ -353,19 +354,19 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       "#extraBodySettings",
     ]) assert.equal(harness.document.querySelector(removedDisclosure), null);
     assert.equal(
-      harness.document.querySelector("#skillManager")?.closest("#skillsPanel")?.id,
-      "skillsPanel",
+      harness.document.querySelector("#skillManager")?.closest("#agentPanel")?.id,
+      "agentPanel",
     );
-    harness.click("#skillsTab");
+    harness.click("#appTab");
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#skillsPanel")?.hidden,
+      harness.document.querySelector<HTMLElement>("#appPanel")?.hidden,
       false,
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#settingsPanel")?.hidden,
+      harness.document.querySelector<HTMLElement>("#agentPanel")?.hidden,
       true,
     );
-    harness.click("#settingsTab");
+    harness.click("#agentTab");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -390,7 +391,7 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
     const connectionHelp = [...harness.document.querySelectorAll<HTMLElement>(
       "#connectionSettingsSection .inline-help",
     )];
-    assert.equal(connectionHelp.length, 4);
+    assert.equal(connectionHelp.length, 3);
     assert.ok(connectionHelp.some((help) =>
       /official and compatible endpoints/i.test(help.getAttribute("aria-label") ?? "")
     ));
@@ -425,28 +426,33 @@ test("the compact workbench prioritizes chat and makes model connection sequenti
   }
 });
 
-test("Capabilities and Generation expose clear disclosure rows", async () => {
+test("Model Behavior exposes generation before compatibility overrides", async () => {
   const harness = await createDialogHarness();
   try {
     assert.equal(harness.document.querySelector("#generationSettingsSection"), null);
-    const disclosures = ["#advancedSettings", "#generationSettings"].map(
+    const disclosures = ["#generationSettings", "#advancedSettings"].map(
       (selector) => harness.document.querySelector<HTMLDetailsElement>(selector)!,
     );
     assert.deepEqual(
       disclosures.map((details) =>
         details.querySelector(".settings-disclosure-title")?.textContent
       ),
-      ["Advanced Overrides", "Generation"],
+      ["Generation", "Compatibility Overrides"],
     );
     for (const details of disclosures) {
+      assert.equal(details.parentElement?.id, "capabilitySettingsSection");
       assert.equal(details.classList.contains("top-level-settings"), true);
       const summary = details.querySelector("summary")!;
       const chevron = summary.querySelector(".settings-disclosure-chevron");
       assert.equal(chevron?.getAttribute("aria-hidden"), "true");
-      assert.notEqual(summary.querySelector("small")?.textContent?.trim(), "");
+      assert.equal(summary.querySelector("small"), null);
       summary.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }));
       assert.equal(details.open, true);
     }
+    assert.match(
+      disclosures[1]?.textContent ?? "",
+      /Cannot override protected request fields/i,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -464,6 +470,10 @@ test("Context renders a safe Live-object card with scannable properties", async 
   const harness = await createDialogHarness(state);
   try {
     harness.click("#contextTab");
+    const shell = harness.document.querySelector("#context > .context-shell");
+    assert.ok(shell);
+    assert.equal(shell.querySelector(":scope > .context-header") !== null, true);
+    assert.equal(shell.querySelector(":scope > .context-card") !== null, true);
     assert.equal(
       harness.document.querySelector("#context .context-title")?.textContent,
       'MIDI track "Bass <img src=x onerror=alert(1)>"',
@@ -485,9 +495,14 @@ test("Context renders a safe Live-object card with scannable properties", async 
       ],
     );
     assert.equal(
-      harness.document.querySelector("#context .context-kicker")?.textContent,
-      "Current Live Context",
+      harness.document.querySelector("#context .context-header h2")?.textContent,
+      "Live Context",
     );
+    assert.equal(
+      harness.document.querySelector("#context .context-title")?.tagName,
+      "H3",
+    );
+    assert.equal(harness.document.querySelector("#context .context-snapshot-label"), null);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -513,7 +528,7 @@ test("first-run setup connects, selects a discovered model, and saves it for use
 
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "1 model in this Profile",
+      "1 model",
     );
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLOptionElement>(
@@ -647,23 +662,26 @@ test("a Session approval update from another dialog refreshes the active control
   }
 });
 
-test("Profile actions stay outside the scrollable Settings form", async () => {
+test("Profile actions stay local to Model Profile before Session Skills", async () => {
   const harness = await createDialogHarness();
   try {
-    const panel = harness.document.querySelector<HTMLElement>("#settingsPanel");
-    const scroll = harness.document.querySelector<HTMLElement>(".settings-scroll");
+    const panel = harness.document.querySelector<HTMLElement>("#agentPanel");
+    const profile = harness.document.querySelector<HTMLElement>("#modelProfileSettings");
     const actions = harness.document.querySelector<HTMLElement>(".settings-actions");
-    const generation = harness.document.querySelector<HTMLElement>(
-      "#generationSettings",
-    );
+    const skills = harness.document.querySelector<HTMLElement>("#skillManager");
 
     assert.ok(panel);
-    assert.ok(scroll);
+    assert.ok(profile);
     assert.ok(actions);
-    assert.ok(generation);
-    assert.equal(actions.parentElement, panel);
-    assert.equal(scroll.contains(actions), false);
-    assert.equal(scroll.contains(generation), true);
+    assert.ok(skills);
+    assert.equal(actions.parentElement?.id, "modelProfileControls");
+    assert.equal(profile.contains(actions), true);
+    assert.equal(panel.contains(actions), true);
+    assert.equal(
+      Boolean(actions.compareDocumentPosition(skills) &
+        harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
+      true,
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -2801,7 +2819,7 @@ test("an unreconciled command outcome keeps sends and settings blocked", async (
       true,
     );
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "true",
     );
     assert.match(
@@ -2840,7 +2858,7 @@ test("a command network error reconciles through state after the event stream di
       false,
     );
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "false",
     );
     assert.doesNotMatch(
@@ -3023,7 +3041,7 @@ test("a command network error blocks mutations when stream and state reconciliat
       true,
     );
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "true",
     );
     assert.match(
@@ -3127,7 +3145,7 @@ test("Load Models permits a local keyless Draft with blank name and model", asyn
     harness.input("#baseUrl", "http://127.0.0.1:1234/v1");
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.title,
-      "Configure a model Profile in Settings",
+      "Configure a model Profile in Agent",
     );
     assert.equal(
       harness.document.querySelector<HTMLSelectElement>("#composerModel")?.value,
@@ -3405,11 +3423,15 @@ test("Web Search is a single automatic Profile capability", async () => {
     assert.ok(control);
     assert.equal(control.checked, false);
     assert.equal(control.disabled, false);
-    assert.match(control.labels?.[0]?.textContent ?? "", /model decides when to search/i);
-    assert.match(hint?.textContent ?? "", /endpoint.*support/i);
+    assert.equal(control.labels?.[0]?.textContent?.trim(), "Allow Web Search");
+    assert.equal((hint as HTMLElement | null)?.hidden, true);
+    assert.equal(control.getAttribute("aria-describedby"), null);
     assert.equal(hint?.getAttribute("aria-live"), "polite");
 
     control.click();
+    assert.equal((hint as HTMLElement | null)?.hidden, false);
+    assert.match(hint?.textContent ?? "", /endpoint support.*verified/i);
+    assert.equal(control.getAttribute("aria-describedby"), "webSearchHint");
     harness.click("#saveProfileButton");
     await harness.settle();
     const saved = (commandCalls(harness).at(-1)?.body as {
@@ -3620,6 +3642,11 @@ test("Profile command errors identify and focus the invalid field", async () => 
       harness.document.querySelector<HTMLElement>("#inspectorPane")?.hidden,
       false,
     );
+    assert.equal(
+      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
+      "true",
+    );
+    assert.equal(harness.document.querySelector<HTMLElement>("#agentPanel")?.hidden, false);
 
     harness.input("#profileName", "Another name");
     assert.equal(baseUrl?.getAttribute("aria-invalid"), "true");
@@ -3660,7 +3687,7 @@ test("Save exposes pending feedback until the Profile command completes", async 
     await harness.cancelAppConfirmation();
     assert.deepEqual(harness.hostMessages, []);
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "true",
     );
     assert.match(harness.document.querySelector("#status")?.textContent ?? "", /saving/i);
@@ -3672,7 +3699,7 @@ test("Save exposes pending feedback until the Profile command completes", async 
     assert.equal(save?.disabled, true);
     assert.equal(close?.disabled, false);
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "false",
     );
     assert.deepEqual(harness.errors, []);
@@ -3746,7 +3773,7 @@ test("unknown model output limits allow values above the 8192 profile default", 
     );
     assert.match(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
-      /model output limit is unknown/i,
+      /unknown.*validated by the provider/i,
     );
 
     harness.input("#maxOutputTokens", "64000");
@@ -3791,7 +3818,7 @@ test("discovered model output limits still constrain the Profile input", async (
     );
     assert.equal(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent,
-      "Model output limit: 24000.",
+      "Model limit: 24000.",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -3860,27 +3887,6 @@ test("capability cleanup clears stale field errors from values it removes or cla
   }
 });
 
-test("dynamic capability hints describe their controls and announce changes", async () => {
-  const harness = await createDialogHarness();
-  try {
-    const output = harness.document.querySelector("#maxOutputTokens");
-    const outputHint = harness.document.querySelector("#maxOutputTokensHint");
-    const reasoning = harness.document.querySelector("#reasoningMode");
-    const reasoningHint = harness.document.querySelector("#reasoningHint");
-
-    assert.equal(output?.getAttribute("aria-describedby"), "maxOutputTokensHint");
-    assert.equal(reasoning?.getAttribute("aria-describedby"), "reasoningHint");
-    for (const hint of [outputHint, reasoningHint]) {
-      assert.equal(hint?.getAttribute("role"), "status");
-      assert.equal(hint?.getAttribute("aria-live"), "polite");
-      assert.equal(hint?.getAttribute("aria-atomic"), "true");
-    }
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 for (const [field, value, label] of [
   ["#baseUrl", "https://another-provider.example/v1", "Base URL"],
   ["#apiKey", "another-provider-key", "API key"],
@@ -3909,7 +3915,7 @@ for (const [field, value, label] of [
       );
       assert.match(
         harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
-        /model output limit is unknown/i,
+        /unknown.*validated by the provider/i,
       );
       harness.input(field, originalValue);
 

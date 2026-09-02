@@ -318,7 +318,7 @@ test("an Approval change keeps unrelated UI nodes mounted", async () => {
       false,
     );
     assert.equal(
-      harness.document.querySelector<HTMLElement>("#settingsPanel")
+      harness.document.querySelector<HTMLElement>("#modelProfileControls")
         ?.getAttribute("aria-busy"),
       "false",
     );
@@ -441,14 +441,14 @@ test("an Approval change keeps Scope and runtime controls independent", async ()
   }
 });
 
-test("an Approval change does not rewrite unrelated Settings or composer content", async () => {
+test("an Approval change does not rewrite unrelated Model Profile or composer content", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
   let commandReleased = false;
   try {
     harness.click("#editScopeButton");
-    const settings = harness.document.querySelector("#settingsPanel");
+    const settings = harness.document.querySelector("#modelProfileSettings");
     const composer = harness.document.querySelector(".composer");
     assert.ok(settings);
     assert.ok(composer);

@@ -60,7 +60,10 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
       "#networkProxyUrl",
     );
     assert.equal(mode?.tagName, "FIELDSET");
-    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHint");
+    const routeHint = harness.document.querySelector<HTMLElement>("#networkProxyHint");
+    assert.equal(routeHint?.classList.contains("network-proxy-route-hint"), false);
+    assert.equal(mode?.getAttribute("aria-describedby"), null);
+    assert.equal(routeHint?.hidden, true);
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLInputElement>(
         'input[name="networkProxyMode"]',
@@ -81,6 +84,9 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
     chooseProxyMode(harness, "manual");
     await harness.settle();
     assert.equal(urlField?.hidden, false);
+    assert.equal(routeHint?.hidden, false);
+    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHint");
+    assert.match(routeHint?.textContent ?? "", /local endpoints.*direct/i);
     assert.equal(harness.document.activeElement, manual);
     assert.deepEqual(proxyCommands(harness), []);
     assert.equal(apply?.disabled, false);
@@ -115,10 +121,7 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
       },
     });
     assert.equal(urlField?.hidden, true);
-    assert.match(
-      harness.document.querySelector("#networkProxyHint")?.textContent ?? "",
-      /active macOS.*proxy/,
-    );
+    assert.match(routeHint?.textContent ?? "", /macOS.*no PAC\/WPAD/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -129,6 +132,7 @@ test("a peer Network setting is adopted by its independent revision", async () =
   const state = stateFixture();
   const harness = await createDialogHarness(state);
   try {
+    harness.click("#contextTab");
     chooseProxyMode(harness, "manual");
     harness.input("#networkProxyUrl", "ftp://stale.example:21");
     harness.failNextCommand(
@@ -139,6 +143,11 @@ test("a peer Network setting is adopted by its independent revision", async () =
     await harness.settle();
     assert.equal(harness.document.activeElement?.id, "networkProxyUrl");
     assert.ok(harness.document.querySelector("#networkProxyUrlError"));
+    assert.equal(
+      harness.document.querySelector("#appTab")?.getAttribute("aria-selected"),
+      "true",
+    );
+    assert.equal(harness.document.querySelector<HTMLElement>("#appPanel")?.hidden, false);
 
     harness.emitServerEvent({
       type: "global_settings_changed",

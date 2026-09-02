@@ -413,14 +413,15 @@
           renderedContextSummary = summary;
           const context = document.getElementById("context");
           const header = document.createElement("div");
-          header.className = "context-header";
-          const kicker = document.createElement("span");
-          kicker.className = "context-kicker";
-          kicker.textContent = "Current Live Context";
-          const snapshotLabel = document.createElement("span");
-          snapshotLabel.className = "context-snapshot-label";
-          snapshotLabel.textContent = "Session snapshot";
-          header.append(kicker, snapshotLabel);
+          header.className = "context-header inspector-scope-header";
+          const heading = document.createElement("h2");
+          heading.id = "contextHeading";
+          heading.textContent = "Live Context";
+          header.append(heading);
+          const shell = document.createElement("section");
+          shell.className = "context-shell settings-scope";
+          shell.setAttribute("aria-labelledby", "contextHeading");
+          shell.append(header);
 
           const lines = String(summary)
             .split(/\r?\n/)
@@ -430,13 +431,14 @@
             const empty = document.createElement("p");
             empty.className = "context-empty";
             empty.textContent = "No Live context is available for this Session.";
-            context.replaceChildren(header, empty);
+            shell.append(empty);
+            context.replaceChildren(shell);
             return;
           }
 
           const card = document.createElement("section");
           card.className = "context-card";
-          const title = document.createElement("h2");
+          const title = document.createElement("h3");
           title.className = "context-title";
           title.textContent = lines[0];
           card.append(title);
@@ -471,7 +473,8 @@
             }
             card.append(details);
           }
-          context.replaceChildren(header, card);
+          shell.append(card);
+          context.replaceChildren(shell);
         }
 
         function contextPropertiesForLine(line) {
@@ -651,7 +654,7 @@
               ? subscriptionCatalogPending
                 ? `${runtime.profile.name} · ${selectedLabel} · Open to load capabilities`
                 : `${runtime.profile.name} · ${selectedLabel}`
-              : "Configure a model Profile in Settings";
+              : "Configure a model Profile in Agent";
             const reasoningTitle = runtime
               ? `Reasoning · ${reasoningLabel(reasoning)}`
               : "Reasoning unavailable";
@@ -760,20 +763,20 @@
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
             "aria-label",
-            open ? "Close Settings" : "Open Settings",
+            open ? "Close Inspector" : "Open Inspector",
           );
           synchronizeInspectorDrawerIsolation();
           if (focusWasInside) settingsButton.focus({ preventScroll: true });
         }
 
         function openInspector(tab) {
-          sessionTimeline.switchInspectorTab(tab || "settings");
+          sessionTimeline.switchInspectorTab(tab || "agent");
           setInspectorOpen(true);
         }
 
         function toggleInspector() {
           const inspector = document.getElementById("inspectorPane");
-          if (inspector.hidden) openInspector("settings");
+          if (inspector.hidden) openInspector("agent");
           else setInspectorOpen(false);
         }
 
@@ -1037,7 +1040,7 @@
           profileSettingsLocked = locked;
           if (!changed && !force) return;
           document.querySelectorAll(
-            "#settingsPanel button, #settingsPanel input, #settingsPanel select, #settingsPanel textarea",
+            "#modelProfileControls button, #modelProfileControls input, #modelProfileControls select, #modelProfileControls textarea",
           ).forEach((control) => {
             if (control.disabled !== locked) control.disabled = locked;
           });
@@ -1310,15 +1313,10 @@
           if (sessionsPane?.getAttribute("aria-busy") !== sessionBusyValue) {
             sessionsPane?.setAttribute("aria-busy", sessionBusyValue);
           }
-          const settingsPanel = document.getElementById("settingsPanel");
+          const modelProfileControls = document.getElementById("modelProfileControls");
           const settingsBusyValue = String(settingsBusy);
-          if (settingsPanel.getAttribute("aria-busy") !== settingsBusyValue) {
-            settingsPanel.setAttribute("aria-busy", settingsBusyValue);
-          }
-          const skillsPanel = document.getElementById("skillsPanel");
-          const skillsBusyValue = String(skillsBusy);
-          if (skillsPanel.getAttribute("aria-busy") !== skillsBusyValue) {
-            skillsPanel.setAttribute("aria-busy", skillsBusyValue);
+          if (modelProfileControls.getAttribute("aria-busy") !== settingsBusyValue) {
+            modelProfileControls.setAttribute("aria-busy", settingsBusyValue);
           }
           const settingsLockNotice = document.getElementById("settingsLockNotice");
           const settingsLockNoticeHidden = !(
@@ -1420,7 +1418,7 @@
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
           showFieldError: (field, message) => {
-            openInspector("settings");
+            openInspector(profileEditor.inspectorTabForField(field));
             return profileEditor.showFieldError(field, message);
           },
           syncModelStateSource: profileEditor.syncModelStateSource,
@@ -1483,7 +1481,7 @@
           renderApplication();
           setSessionsPaneCollapsed(false);
           setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));
-          sessionTimeline.switchInspectorTab("settings");
+          sessionTimeline.switchInspectorTab("agent");
           window.addEventListener("resize", synchronizeInspectorDrawerIsolation);
           const prompt = document.getElementById("prompt");
           prompt.value = "";

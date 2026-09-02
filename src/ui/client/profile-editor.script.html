@@ -87,6 +87,24 @@
         if (element.dataset[key] !== value) element.dataset[key] = value;
       }
 
+      function setDescribedByToken(control, token, enabled) {
+        const tokens = new Set(
+          (control.getAttribute("aria-describedby") || "")
+            .split(/\s+/)
+            .filter(Boolean),
+        );
+        if (enabled) tokens.add(token);
+        else tokens.delete(token);
+        const description = [...tokens].join(" ");
+        if (description) {
+          if (control.getAttribute("aria-describedby") !== description) {
+            control.setAttribute("aria-describedby", description);
+          }
+        } else {
+          control.removeAttribute("aria-describedby");
+        }
+      }
+
       function toggleClassIfChanged(element, className, enabled) {
         if (element.classList.contains(className) !== enabled) {
           element.classList.toggle(className, enabled);
@@ -140,6 +158,10 @@
       function clearGlobalSettingsFieldError(field) {
         const controlId = controlIdByGlobalSettingsField[field];
         if (controlId) clearFieldError(document.getElementById(controlId));
+      }
+
+      function inspectorTabForField(field) {
+        return controlIdByGlobalSettingsField[field] ? "app" : "agent";
       }
 
       function showFieldError(field, message) {
@@ -1142,7 +1164,6 @@
         const family = familyControl.value;
         renderApiModes(family);
         markDraftDirty(familyControl);
-        updateAnthropicSubscriptionHint();
         updateHostedToolControls();
       }
 
@@ -1168,26 +1189,23 @@
       function updateHostedToolControls(settingsLocked = false, wasTurnedOff = false) {
         const control = document.getElementById("webSearchEnabled");
         const hint = document.getElementById("webSearchHint");
-        const boundary = document.getElementById("webSearchBoundaryHint");
         const mode = document.getElementById("apiMode").value;
         const subscription = isOAuthSubscription();
         const supported = !subscription && (mode === "responses" || mode === "messages");
-        if (boundary) boundary.hidden = !subscription;
         if (subscription) control.checked = false;
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
-        hint.textContent = subscription
-          ? "Provider-hosted Web Search is unavailable for OAuth subscription Profiles."
+        const showHint = subscription || !supported || control.checked;
+        const hintText = subscription
+          ? "Unavailable for subscriptions. Use Direct API with Responses or Messages."
           : supported
-          ? "Requires provider-hosted Web Search on this endpoint; model discovery cannot verify support."
-          : wasTurnedOff
-          ? "Web Search was turned off because Chat Completions does not support provider-hosted search in Live Smith."
-          : "Chat Completions does not support provider-hosted Web Search in Live Smith.";
-      }
-
-      function updateAnthropicSubscriptionHint() {
-        document.getElementById("anthropicSubscriptionHint").hidden =
-          document.getElementById("apiFamily").value !== "anthropic";
+            ? "Endpoint support isn’t verified."
+            : wasTurnedOff
+              ? "Turned off · unavailable with Chat Completions."
+              : "Unavailable with Chat Completions.";
+        setPropertyIfChanged(hint, "textContent", hintText);
+        setPropertyIfChanged(hint, "hidden", !showHint);
+        setDescribedByToken(control, "webSearchHint", showHint);
       }
 
       function safeVerificationUrl(value) {
@@ -1346,16 +1364,14 @@
         const headingText = `${providerLabel} account `;
         const headingNode = document.getElementById("oauthAuthHeading").firstChild;
         if (headingNode.textContent !== headingText) headingNode.textContent = headingText;
-        const noteText = providerLabel === "Claude"
-            ? "Uses Claude OAuth through Anthropic Messages. Extra Usage is account-billed when enabled."
-            : providerLabel === "Antigravity"
-              ? "Uses your Google account through Antigravity."
-              : "Uses your ChatGPT account through the Codex backend API.";
+        const authNote = document.getElementById("oauthAuthNote");
+        const showAuthNote = providerLabel === "Claude";
         setPropertyIfChanged(
-          document.getElementById("oauthAuthNote"),
+          authNote,
           "textContent",
-          noteText,
+          showAuthNote ? "Extra Usage, when enabled, is billed to this account." : "",
         );
+        setPropertyIfChanged(authNote, "hidden", !showAuthNote);
         setPropertyIfChanged(
           document.getElementById("oauthVerificationLinkLabel"),
           "textContent",
@@ -1957,7 +1973,6 @@
         );
         renderedCatalogMatchesConnection =
           catalogProjectionMatchesCurrentConnection();
-        updateAnthropicSubscriptionHint();
         applyConnectionKindPresentation();
         renderSelectedModelConfig();
         updateDraftActions();
@@ -2014,7 +2029,7 @@
         const modelCount = configured.size;
         const profileIsFull = modelCount >= maximumProfileModelCount;
 
-        const count = `${modelCount} ${modelCount === 1 ? "model" : "models"} in this Profile`;
+        const count = `${modelCount} ${modelCount === 1 ? "model" : "models"}`;
         const countStatus = document.getElementById("profileModelCount");
         if (countStatus.textContent !== count) countStatus.textContent = count;
         const manualEntry = document.getElementById("manualModelEntry");
@@ -2025,7 +2040,7 @@
         const hintText = profileIsFull
           ? `This Profile already contains ${maximumProfileModelCount} models.`
           : !modelId
-            ? "Use this only when the provider does not list the model."
+            ? "For models missing from the provider list."
             : duplicate
               ? `${modelId} is already in this Profile.`
               : "The provider will validate this ID when you use the model.";
@@ -2052,14 +2067,16 @@
         const budgetRow = document.getElementById("reasoningBudgetRow");
         const hint = document.getElementById("reasoningHint");
         if (hint) {
+          const showHint = !supported || !selection.authoritative.reasoning;
           setPropertyIfChanged(
             hint,
             "hidden",
-            supported && selection.authoritative.reasoning,
+            !showHint,
           );
           setPropertyIfChanged(hint, "textContent", selection.authoritative.reasoning
-            ? "Explicit reasoning controls are unavailable. Use provider default or override capabilities in Advanced."
-            : "Capability preview is unavailable for this unsaved connection; existing reasoning values are preserved until verified.");
+            ? "Unavailable. Use provider default or Compatibility Overrides."
+            : "Unverified connection · current reasoning values are preserved.");
+          setDescribedByToken(modeSelect, "reasoningHint", showHint);
         }
         let adjusted = false;
         const rawRequestedMode = modeSelect.dataset.requestedValue ??
@@ -2366,10 +2383,10 @@
           markDraftDirtyForCapabilityAdjustment();
         }
         const outputLimitHint = subscription
-          ? "The selected subscription backend owns the output limit."
+          ? "Set by the subscription backend."
           : trustedModelLimit === undefined
-            ? "Model output limit is unknown; the provider validates this request."
-            : `Model output limit: ${trustedModelLimit}.`;
+            ? "Unknown · validated by the provider."
+            : `Model limit: ${trustedModelLimit}.`;
         setPropertyIfChanged(
           document.getElementById("maxOutputTokensHint"),
           "textContent",
@@ -2400,20 +2417,20 @@
           document.getElementById("contextWindowTokensHint"),
           "textContent",
           Number.isInteger(configuredWindow) && configuredWindow > 0
-            ? `Configured context window: ${configuredWindow} tokens.`
+            ? "Used for metering and auto-compact."
             : detectedWindow
-              ? `Model context window: ${detectedWindow} tokens.`
-              : "Context window is unknown. Set it to enable an exact meter and automatic compaction.",
+              ? `Model limit: ${detectedWindow} tokens.`
+              : "Set a limit to enable metering and auto-compact.",
         );
         const configuredCompactAt = Number(autoCompactInput.value);
         setPropertyIfChanged(
           document.getElementById("autoCompactTokenLimitHint"),
           "textContent",
           Number.isInteger(configuredCompactAt) && configuredCompactAt > 0
-            ? `Compacts before the next model turn at ${configuredCompactAt} tokens.`
+            ? "Runs before the next turn."
             : effectiveWindow
-              ? `Automatic threshold: ${Math.floor(effectiveWindow * 0.9)} tokens (90%).`
-              : "Set a token threshold to enable automatic compaction.",
+              ? `Auto: ${Math.floor(effectiveWindow * 0.9)} tokens (90%).`
+              : "Set a threshold to enable auto-compact.",
         );
       }
 
@@ -2630,6 +2647,7 @@
         handleModelConfigSelection,
         handleProfileSelection,
         handleWebSearchChange,
+        inspectorTabForField,
         markDraftDirty,
         logoutOAuth,
         openOAuthVerification,

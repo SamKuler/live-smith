@@ -39,7 +39,7 @@ test("active Queue mode exposes only Stop and promotes an Up next item into a fr
     assert.equal(behavior?.value, "queue");
     assert.deepEqual(
       [...(behavior?.options ?? [])].map((option) => [option.value, option.textContent]),
-      [["queue", "Queue"], ["steer", "Steer"]],
+      [["queue", "Queue after response"], ["steer", "Steer current response"]],
     );
     assert.equal(harness.document.querySelector("#steerButton"), null);
     assert.equal(harness.document.querySelector("#queueButton"), null);

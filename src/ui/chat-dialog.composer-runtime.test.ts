@@ -404,7 +404,7 @@ test("Load Models merges the provider catalog into the Profile", async () => {
   try {
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "1 model in this Profile",
+      "1 model",
     );
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLOptionElement>(
@@ -457,7 +457,7 @@ test("Load Models merges the provider catalog into the Profile", async () => {
     );
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "3 models in this Profile",
+      "3 models",
     );
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#manualModelId")?.value,
@@ -665,7 +665,7 @@ test("Direct API keeps manual model IDs in a secondary disclosure", async () => 
   try {
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "1 model in this Profile",
+      "1 model",
     );
     const manualEntry = harness.document.querySelector<HTMLDetailsElement>(
       "#manualModelEntry",
@@ -696,11 +696,11 @@ test("Direct API keeps manual model IDs in a secondary disclosure", async () => 
     );
     assert.equal(
       harness.document.querySelector("#manualModelIdHint")?.textContent,
-      "Use this only when the provider does not list the model.",
+      "For models missing from the provider list.",
     );
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "2 models in this Profile",
+      "2 models",
     );
     harness.document.querySelector<HTMLButtonElement>("#removeModelConfigButton")
       ?.focus();
@@ -708,7 +708,7 @@ test("Direct API keeps manual model IDs in a secondary disclosure", async () => 
     assert.equal(harness.document.activeElement?.id, "modelConfigSelector");
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,
-      "1 model in this Profile",
+      "1 model",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -1621,37 +1621,83 @@ test("the circular transport button preserves Send and Stop semantics", async ()
   }
 });
 
-test("Settings follows the Profile to Conversation Behavior workflow", async () => {
+test("Agent groups Model Profile with Session Skills while App owns preferences", async () => {
   const harness = await createDialogHarness();
   try {
-    assert.equal(harness.document.querySelector("#settingsTab")?.textContent, "Settings");
-    const flow = [
-      ["profileSettingsSection", "Profile"],
-      ["connectionSettingsSection", "Connection"],
-      ["modelSettingsSection", "Model"],
-      ["capabilitySettingsSection", "Capabilities"],
-      ["generationSettings", "Generation"],
-      ["followUpSettingsSection", "Conversation Behavior"],
-    ] as const;
-    for (const [index, [id, heading]] of flow.entries()) {
-      const node = harness.document.getElementById(id);
-      assert.ok(node, `Expected #${id}`);
-      assert.match(
-        node.textContent ?? "",
-        new RegExp(heading, "i"),
-      );
-      const next = flow[index + 1];
-      if (next) {
-        const nextNode = harness.document.getElementById(next[0]);
-        assert.ok(nextNode);
-        assert.equal(
-          Boolean(node.compareDocumentPosition(nextNode) &
-            harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
-          true,
-          `Expected #${id} before #${next[0]}`,
-        );
-      }
+    assert.equal(harness.document.querySelector("#agentTab")?.textContent, "Agent");
+    assert.equal(harness.document.querySelector("#appTab")?.textContent, "App");
+    assert.equal(harness.document.querySelector("#settingsTab"), null);
+    assert.equal(harness.document.querySelector("#skillsTab"), null);
+    for (const name of ["agent", "app", "context"] as const) {
+      const tab = harness.document.querySelector(`#${name}Tab`);
+      const panel = harness.document.querySelector(`#${name}Panel`);
+      assert.equal(tab?.getAttribute("aria-controls"), `${name}Panel`);
+      assert.equal(panel?.getAttribute("aria-labelledby"), `${name}Tab`);
     }
+    const agentPanel = harness.document.querySelector("#agentPanel");
+    const appPanel = harness.document.querySelector("#appPanel");
+    const contextRoot = harness.document.querySelector("#context");
+    const contextGroup = contextRoot?.querySelector(":scope > .context-shell");
+    const profileGroup = harness.document.querySelector("#modelProfileSettings");
+    const appGroup = harness.document.querySelector("#appPreferencesSettings");
+    const skillManager = harness.document.querySelector("#skillManager");
+    const skillViewer = harness.document.querySelector("#skillViewer");
+    const profileControls = harness.document.querySelector("#modelProfileControls");
+    const lockNotice = harness.document.querySelector("#settingsLockNotice");
+    assert.ok(agentPanel);
+    assert.ok(appPanel);
+    assert.ok(contextRoot);
+    assert.ok(contextGroup);
+    assert.ok(profileGroup);
+    assert.ok(appGroup);
+    assert.ok(skillManager);
+    assert.ok(skillViewer);
+    assert.ok(profileControls);
+    assert.ok(lockNotice);
+    assert.equal(profileGroup.tagName, "SECTION");
+    assert.equal(appGroup.tagName, "SECTION");
+    assert.equal(contextRoot.classList.contains("settings"), true);
+    assert.equal(contextGroup.tagName, "SECTION");
+    assert.equal(contextGroup.classList.contains("settings-scope"), true);
+    assert.equal(contextGroup.getAttribute("aria-labelledby"), "contextHeading");
+    assert.equal(
+      contextGroup.querySelector(":scope > .inspector-scope-header h2")?.id,
+      "contextHeading",
+    );
+    assert.equal(agentPanel.contains(profileGroup), true);
+    assert.equal(agentPanel.contains(skillManager), true);
+    assert.equal(agentPanel.contains(skillViewer), true);
+    assert.equal(appPanel.contains(appGroup), true);
+    const profileHeader = profileGroup.querySelector(":scope > .inspector-scope-header");
+    const appHeader = appGroup.querySelector(":scope > .inspector-scope-header");
+    assert.equal(profileHeader?.textContent?.trim(), "Model Profile");
+    assert.equal(appHeader?.textContent?.trim(), "App Preferences");
+    assert.equal(profileHeader?.querySelector("p"), null);
+    assert.equal(appHeader?.querySelector("p"), null);
+
+    for (const id of [
+      "profileSettingsSection",
+      "connectionSettingsSection",
+      "modelSettingsSection",
+      "capabilitySettingsSection",
+      "generationSettings",
+      "advancedSettings",
+    ]) assert.equal(profileGroup.contains(harness.document.getElementById(id)), true);
+    for (const id of ["followUpSettingsSection", "networkSettingsSection"]) {
+      assert.equal(appGroup.contains(harness.document.getElementById(id)), true);
+    }
+    const profileActions = harness.document.querySelector(".settings-actions");
+    assert.ok(profileActions);
+    assert.equal(profileGroup.contains(profileActions), true);
+    assert.equal(appGroup.contains(profileActions), false);
+    assert.equal(profileGroup.contains(lockNotice), true);
+    assert.equal(profileControls.contains(lockNotice), false);
+    assert.equal(profileControls.getAttribute("aria-busy"), "false");
+    assert.equal(
+      Boolean(profileActions.compareDocumentPosition(skillManager) &
+        harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
+      true,
+    );
 
     assert.ok(
       harness.document.querySelector("#modelSettingsSection #discoverModelsButton"),
@@ -1662,8 +1708,20 @@ test("Settings follows the Profile to Conversation Behavior workflow", async () 
     assert.ok(
       harness.document.querySelector("#capabilitySettingsSection #webSearchEnabled"),
     );
-    assert.ok(
-      harness.document.querySelector("#capabilitySettingsSection #advancedSettings"),
+    const generation = harness.document.querySelector("#generationSettings");
+    const overrides = harness.document.querySelector("#advancedSettings");
+    assert.ok(generation);
+    assert.ok(overrides);
+    assert.equal(generation.parentElement?.id, "capabilitySettingsSection");
+    assert.equal(overrides.parentElement?.id, "capabilitySettingsSection");
+    assert.equal(
+      Boolean(generation.compareDocumentPosition(overrides) &
+        harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
+      true,
+    );
+    assert.match(
+      harness.document.querySelector("#capabilitySettingsHeading")?.textContent ?? "",
+      /Model Behavior/i,
     );
     assert.ok(harness.document.querySelector("#generationSettings #temperature"));
     assert.ok(harness.document.querySelector("#generationSettings #reasoningMode"));
@@ -1672,22 +1730,42 @@ test("Settings follows the Profile to Conversation Behavior workflow", async () 
         "#followUpSettingsSection #defaultFollowUpBehavior",
       ),
     );
-    const boundary = harness.document.querySelector("#webSearchBoundaryHint");
-    assert.equal((boundary as HTMLElement | null)?.hidden, true);
+    assert.equal(harness.document.querySelector("#webSearchBoundaryHint"), null);
     harness.select("#connectionKind", "oauth-subscription");
-    assert.equal((boundary as HTMLElement | null)?.hidden, false);
+    const webSearchHint = harness.document.querySelector<HTMLElement>("#webSearchHint");
+    assert.equal(webSearchHint?.hidden, false);
     assert.match(
-      boundary?.textContent ?? "",
-      /OAuth subscription.*Direct API.*OpenAI Responses.*Anthropic Messages/i,
+      webSearchHint?.textContent ?? "",
+      /subscriptions.*Direct API.*Responses.*Messages/i,
     );
-    assert.match(
-      harness.document.querySelector("#webSearchEnabled")?.getAttribute(
-        "aria-describedby",
-      ) ?? "",
-      /webSearchHint.*webSearchBoundaryHint/,
+    assert.equal(
+      harness.document.querySelector("#webSearchEnabled")?.getAttribute("aria-describedby"),
+      "webSearchHint",
     );
+    assert.deepEqual(
+      [...harness.document.querySelectorAll<HTMLOptionElement>(
+        "#defaultFollowUpBehavior option",
+      )].map((option) => [option.value, option.textContent]),
+      [
+        ["queue", "Queue after response"],
+        ["steer", "Steer current response"],
+      ],
+    );
+    assert.equal(harness.document.querySelector("#defaultFollowUpBehaviorHint"), null);
     assert.equal(harness.document.querySelector("#microphoneButton"), null);
     assert.equal(harness.document.querySelector("#voiceButton"), null);
+    assert.equal(
+      harness.document.querySelector(".settings-actions-owner")?.textContent,
+      "Profile",
+    );
+    assert.equal(
+      harness.document.querySelector(".settings-actions")?.getAttribute("role"),
+      "group",
+    );
+    assert.equal(
+      harness.document.querySelector(".settings-actions")?.getAttribute("aria-labelledby"),
+      "settingsProfileActionsLabel",
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

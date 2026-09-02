@@ -111,7 +111,7 @@ test("an external Profile refresh cannot unlock settings during an active send",
     );
 
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "true",
     );
     for (const selector of [
@@ -496,7 +496,7 @@ test("model discovery applies after a concurrent Profile refresh unlocks", async
     );
     assert.match(
       harness.document.querySelector("#maxOutputTokensHint")?.textContent ?? "",
-      /Model output limit: [0-9]+/,
+      /Model limit: [0-9]+/,
     );
     harness.input("#baseUrl", "https://connection-c.example/v1");
     assert.deepEqual(
@@ -697,7 +697,7 @@ test("a failed Profile command state barrier keeps the editor fail-closed", asyn
       true,
     );
     assert.equal(
-      harness.document.querySelector("#settingsPanel")?.getAttribute("aria-busy"),
+      harness.document.querySelector("#modelProfileControls")?.getAttribute("aria-busy"),
       "true",
     );
     assert.match(

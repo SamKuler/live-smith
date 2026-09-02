@@ -467,3 +467,65 @@ test("initial state rejects partial OAuth auth scope projections", async () => {
     }
   }
 });
+
+test("dynamic capability hints describe their controls and announce changes", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const output = harness.document.querySelector("#maxOutputTokens");
+    const outputHint = harness.document.querySelector("#maxOutputTokensHint");
+    const reasoning = harness.document.querySelector("#reasoningMode");
+    const reasoningHint = harness.document.querySelector("#reasoningHint");
+
+    assert.equal(output?.getAttribute("aria-describedby"), "maxOutputTokensHint");
+    assert.equal(reasoning?.getAttribute("aria-describedby"), "reasoningHint");
+    for (const hint of [outputHint, reasoningHint]) {
+      assert.equal(hint?.getAttribute("role"), "status");
+      assert.equal(hint?.getAttribute("aria-live"), "polite");
+      assert.equal(hint?.getAttribute("aria-atomic"), "true");
+    }
+    assert.match(reasoningHint?.textContent ?? "", /Compatibility Overrides/);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("supported reasoning omits hidden help without dropping field errors", async () => {
+  const state = stateFixture();
+  state.capabilities = {
+    ...capabilities(),
+    reasoning: {
+      supported: true,
+      canDisable: true,
+      efforts: ["high"],
+      budgetTokens: false,
+      strategy: "effort",
+    },
+  };
+  state.capabilityEvidence = {
+    ...state.capabilityEvidence,
+    reasoning: "supported",
+  };
+  const harness = await createDialogHarness(state);
+  try {
+    const reasoning = harness.document.querySelector<HTMLSelectElement>("#reasoningMode");
+    const hint = harness.document.querySelector<HTMLElement>("#reasoningHint");
+    assert.equal(hint?.hidden, true);
+    assert.equal(reasoning?.getAttribute("aria-describedby"), null);
+
+    harness.input("#profileName", "Needs reasoning repair");
+    harness.failNextCommand(
+      "Reasoning mode is invalid.",
+      "models.0.parameters.reasoning.mode",
+    );
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    assert.equal(reasoning?.getAttribute("aria-describedby"), "reasoningModeError");
+
+    harness.input("#profileName", "Updated profile");
+    assert.equal(reasoning?.getAttribute("aria-describedby"), "reasoningModeError");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});

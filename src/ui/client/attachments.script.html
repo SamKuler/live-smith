@@ -433,7 +433,7 @@
         const attached = input === "image" ? "images" : "audio";
         const description = input === "image" ? "Image" : "Audio";
         if (activeSavedRuntime()?.profile?.connectionKind === "oauth-subscription") {
-          return `${description} input support for the active model is unverified. Remove the attached ${attached}, load models in Settings, or select a model with verified ${input} input support.`;
+          return `${description} input support for the active model is unverified. Remove the attached ${attached}, load models in Inspector → Agent, or select a model with verified ${input} input support.`;
         }
         return `${description} input support for the active model is unverified. Remove the attached ${attached}, discover model capabilities, or set an explicit ${input}-input override.`;
       }
