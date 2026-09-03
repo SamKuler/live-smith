@@ -234,6 +234,14 @@ empty entries does not delete existing data.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 
+Hover over a message, or focus its controls with the keyboard, to copy its
+original text. **Use as draft** puts a user message back in the composer;
+it does not change history or undo Live edits. Choose Send after editing.
+Paused failed requests also offer **Edit and resend**. Editing
+their restored draft replaces that pending request instead of sending its old
+text again. Existing drafts require confirmation before replacement; historical
+attachments are not reattached automatically.
+
 **Skills** provide musical workflow guidance. Three built-ins cover section
 energy, musical variation, and instrument roles. They start disabled; **View**
 opens the full instructions without enabling them. You can import a local

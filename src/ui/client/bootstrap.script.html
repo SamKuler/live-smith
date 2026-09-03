@@ -211,6 +211,7 @@
           bridgeClient = factories.createBridgeClient({
             bridgeConfig,
             closeComposerAutocomplete: composerInput.closeAutocomplete,
+            confirmAction,
             getState,
             parseComposerInput: composerInput.parse,
             presentStatus,
@@ -266,6 +267,8 @@
           getWebSearchUpdates: bridgeClient.getWebSearchUpdates,
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
           getPendingUserMessage: bridgeClient.getPendingUserMessage,
+          editMessageDraft: bridgeClient.editMessageDraft,
+          isMessageEditLocked: bridgeClient.isOperationInProgress,
           hasSessionLocalWork: bridgeClient.hasSessionLocalWork,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
@@ -1385,6 +1388,7 @@
           }
           renderComposerRuntimeControls(false);
           renderSendPresentation();
+          sessionTimeline.syncMessageActions();
           if (!commandKind) restoreCommandControlFocus();
         }
 

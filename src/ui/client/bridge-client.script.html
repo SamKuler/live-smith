@@ -2,6 +2,7 @@
       window.LiveSmithFactories.createBridgeClient = function createBridgeClient({
         bridgeConfig,
         closeComposerAutocomplete,
+        confirmAction,
         getState,
         parseComposerInput,
         presentStatus,
@@ -3349,6 +3350,76 @@
         requireView().renderSendPresentation();
       }
 
+      async function editMessageDraft({ sessionId, eventId, queueId }) {
+        if (activeSessionId() !== sessionId || isOperationInProgress()) return false;
+        const sourceForEdit = () => {
+          if (typeof eventId === "string" && queueId === undefined) {
+            const event = (getState().events || []).find(
+              (entry) => entry.id === eventId && entry.kind === "user",
+            );
+            if (!event) return null;
+            const draft = parseComposerInput(event.content).kind === "text"
+              ? event.content
+              : `/queue ${event.content}`;
+            return { draft, event };
+          }
+          if (typeof queueId !== "string" || eventId !== undefined) return null;
+          const recovery = failedSendRecoveriesBySession.get(sessionId);
+          if (
+            !recovery ||
+            recovery.entry.queueId !== queueId ||
+            !(queuedFollowUpsBySession.get(sessionId) || []).some(
+              (entry) => entry.queueId === queueId,
+            )
+          ) return null;
+          return { draft: recovery.restoredDraft, recovery };
+        };
+        const source = sourceForEdit();
+        if (!source) return false;
+        const promptControl = document.getElementById("prompt");
+        const previousDraft = promptControl.value;
+        const previousRevision = composerDraftRevisionsBySession.get(sessionId);
+        if (
+          previousDraft !== "" &&
+          previousDraft !== source.draft &&
+          !(await confirmAction({
+            title: "Replace current draft?",
+            message: "Replace the unsent composer text with this message? Nothing will be sent until you choose Send.",
+            acceptLabel: "Replace draft",
+          }))
+        ) return false;
+        if (
+          activeSessionId() !== sessionId ||
+          isOperationInProgress() ||
+          promptControl.value !== previousDraft ||
+          composerDraftRevisionsBySession.get(sessionId) !== previousRevision
+        ) return false;
+        const currentSource = sourceForEdit();
+        if (
+          !currentSource ||
+          currentSource.draft !== source.draft ||
+          currentSource.recovery !== source.recovery ||
+          !sameJsonData(currentSource.event, source.event)
+        ) return false;
+        const recovery = failedSendRecoveriesBySession.get(sessionId);
+        if (recovery) recovery.editingInComposer = recovery === source.recovery;
+        promptControl.value = source.draft;
+        recordComposerDraft(sessionId, source.draft);
+        closeComposerAutocomplete();
+        requireView().renderSendPresentation();
+        requireView().renderSessions();
+        promptControl.focus({ preventScroll: true });
+        promptControl.setSelectionRange(source.draft.length, source.draft.length);
+        showStatus(
+          source.recovery
+            ? "Request restored for editing. Choose Send to submit the edited request."
+            : source.event.attachments?.length
+              ? "Text is ready as a new request. Original attachments remain in history; pending attachments are unchanged."
+              : "Message is ready as a new request. Edit it, then choose Send.",
+        );
+        return true;
+      }
+
       function hasSessionLocalWork(sessionId) {
         return Boolean(
           composerDraftsBySession.get(sessionId)?.trim() ||
@@ -4699,6 +4770,8 @@
           if (!promptControl || promptControl.value !== source) return;
           promptControl.value = "";
         }
+        const recovery = failedSendRecoveriesBySession.get(sessionId);
+        if (recovery) recovery.editingInComposer = false;
         recordComposerDraft(sessionId, "");
         closeComposerAutocomplete();
         requireView().renderSessions();
@@ -4731,7 +4804,7 @@
         if (
           paused &&
           failedQueuedFollowUp &&
-          failedQueuedFollowUp.entry.prompt === prompt
+          failedQueuedFollowUp.editingInComposer
         ) {
           const entries = queuedFollowUpsBySession.get(sessionId) || [];
           if (
@@ -5653,6 +5726,7 @@
         }
         const recovery = {
           entry,
+          editingInComposer: canRestoreToComposer,
           restoredDraft,
           restoredToComposer: canRestoreToComposer,
         };
@@ -7874,12 +7948,19 @@
         createCommandId: () => createCorrelationId("command"),
         deleteAttachment,
         deleteSkill,
+        editMessageDraft,
         getAssistantDraft: activeAssistantDraft,
         getContextUsage: () => {
           const usage = contextUsageBySession.get(activeSessionId());
           return usage ? { ...usage } : null;
         },
-        getQueuedFollowUps: () => [...activeQueuedFollowUps()],
+        getQueuedFollowUps: () => {
+          const recovery = failedSendRecoveriesBySession.get(activeSessionId());
+          return activeQueuedFollowUps().map((entry) => ({
+            ...entry,
+            ...(entry.queueId === recovery?.entry.queueId ? { failed: true } : {}),
+          }));
+        },
         getQueuedFollowUpCount: queuedFollowUpCount,
         getComposerProfileGateMessage: activeComposerProfileGateMessage,
         getWebSearchUpdates: activeWebSearchUpdates,

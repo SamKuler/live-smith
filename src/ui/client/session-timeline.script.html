@@ -6,6 +6,8 @@
         getWebSearchUpdates,
         getPendingConfirmation,
         getPendingUserMessage,
+        editMessageDraft,
+        isMessageEditLocked,
         hasSessionLocalWork,
         isCommandInProgress,
         isConfirmationLocked,
@@ -28,7 +30,9 @@
       let pendingSessionSwitchId = null;
       let nextSessionSelectionStatusId = 0;
       let renderedTimelineKey = null;
+      let renderedTimelineSessionId = null;
       let renderedAssistantDraft = "";
+      const messageRenderSnapshots = new WeakMap();
       let timelineScrollbarIdleTimer = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
       const timelineScrollbarIdleDelayMs = 650;
@@ -364,6 +368,7 @@
       document.addEventListener("keydown", handleSessionMenuEscape);
       document.addEventListener("keydown", handleSessionDeleteShortcut);
       document.addEventListener("scroll", () => closeSessionMenus(), true);
+
       window.addEventListener("DOMContentLoaded", () => {
         const timeline = document.getElementById("timeline");
         if (!timeline) return;
@@ -888,7 +893,11 @@
         return heading;
       }
 
-      function reconcileSessionList(list, desiredNodes) {
+      function reconcileChildNodes(list, desiredNodes) {
+        const retained = new Set(desiredNodes);
+        for (const node of [...list.childNodes]) {
+          if (!retained.has(node)) node.remove();
+        }
         let cursor = list.firstChild;
         for (const node of desiredNodes) {
           if (node === cursor) {
@@ -1189,7 +1198,7 @@
           desiredNodes.push(sessionSection("archived", "Archived", existingSections));
           for (const session of archivedSessions) appendSession(session, "archived");
         }
-        reconcileSessionList(list, desiredNodes);
+        reconcileChildNodes(list, desiredNodes);
         if (renameState && !renameState.input.isConnected && renameState.sessionId) {
           const entry = [...list.querySelectorAll(".session-entry")].find(
             (candidate) => candidate.dataset.sessionId === renameState.sessionId,
@@ -1219,42 +1228,207 @@
           target.textContent = content;
         }
       }
+
+      function setMessageActionIcon(button, name) {
+        const paths = {
+          copy: "M9 9h11v11H9z M15 5V3H3v12h2",
+          edit: "m16 3 5 5-12 12H4v-5z M13 6l5 5",
+          check: "m5 12 4 4L19 6",
+        };
+        let svg = button.querySelector("svg");
+        if (!svg) {
+          svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("width", "14");
+          svg.setAttribute("height", "14");
+          svg.setAttribute("fill", "none");
+          svg.setAttribute("stroke", "currentColor");
+          svg.setAttribute("stroke-width", "1.6");
+          svg.setAttribute("stroke-linecap", "round");
+          svg.setAttribute("stroke-linejoin", "round");
+          svg.setAttribute("aria-hidden", "true");
+          svg.append(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+          button.append(svg);
+        }
+        svg.querySelector("path").setAttribute("d", paths[name]);
+      }
+
+      function announceMessageAction(message) {
+        const announcement = document.getElementById("messageActionAnnouncements");
+        if (announcement) announcement.textContent = message;
+      }
+
+      function copyWithDocumentSelection(text) {
+        if (typeof document.execCommand !== "function") return false;
+        const focused = document.activeElement;
+        const inputSelection = focused instanceof HTMLTextAreaElement ||
+            focused instanceof HTMLInputElement
+          ? { start: focused.selectionStart, end: focused.selectionEnd, direction: focused.selectionDirection }
+          : null;
+        const selection = window.getSelection();
+        const ranges = selection
+          ? Array.from({ length: selection.rangeCount }, (_, index) =>
+              selection.getRangeAt(index).cloneRange())
+          : [];
+        const field = document.createElement("textarea");
+        field.value = text;
+        field.readOnly = true;
+        field.tabIndex = -1;
+        field.dataset.clipboardFallback = "";
+        field.setAttribute("aria-hidden", "true");
+        field.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;opacity:0;pointer-events:none;";
+        document.body.append(field);
+        try {
+          field.focus({ preventScroll: true });
+          field.select();
+          return document.execCommand("copy") === true;
+        } catch {
+          return false;
+        } finally {
+          field.remove();
+          if (focused?.isConnected) focused.focus({ preventScroll: true });
+          if (inputSelection?.start !== null && inputSelection?.start !== undefined) {
+            focused.setSelectionRange(inputSelection.start, inputSelection.end, inputSelection.direction);
+          } else if (selection) {
+            selection.removeAllRanges();
+            for (const range of ranges) selection.addRange(range);
+          }
+        }
+      }
+
+      async function copyMessageText(text) {
+        try {
+          if (typeof navigator.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(text);
+            return true;
+          }
+        } catch {
+          // Embedded webviews may deny the asynchronous clipboard API.
+        }
+        return copyWithDocumentSelection(text);
+      }
+
+      function buildMessageHeader(labelText, copyText, editSource) {
+        const header = document.createElement("div");
+        header.className = "timeline-message-header";
+        const label = document.createElement("div");
+        label.className = "timeline-label";
+        label.textContent = labelText;
+        header.append(label);
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        actions.setAttribute("role", "group");
+        actions.setAttribute("aria-label", "Message actions");
+        if (copyText) {
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "message-action";
+          copy.dataset.messageAction = "copy";
+          const reset = () => {
+            copy.removeAttribute("data-copy-state");
+            copy.setAttribute("aria-label", "Copy message");
+            copy.title = "Copy message";
+            setMessageActionIcon(copy, "copy");
+          };
+          reset();
+          let copying = false;
+          let feedbackTimer;
+          copy.onclick = async () => {
+            if (copying) return;
+            copying = true;
+            window.clearTimeout(feedbackTimer);
+            copy.dataset.copyState = "copying";
+            copy.setAttribute("aria-disabled", "true");
+            const copied = await copyMessageText(copyText);
+            copying = false;
+            copy.removeAttribute("aria-disabled");
+            if (!copy.isConnected) return;
+            copy.dataset.copyState = copied ? "copied" : "failed";
+            copy.title = copied ? "Copied" : "Copy failed — try again";
+            copy.setAttribute("aria-label", copy.title);
+            setMessageActionIcon(copy, copied ? "check" : "copy");
+            announceMessageAction(copied
+              ? "Message copied."
+              : "Could not copy. Select the message text and copy it manually.");
+            feedbackTimer = window.setTimeout(reset, 1600);
+          };
+          actions.append(copy);
+        }
+        if (editSource) {
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.className = "message-action";
+          edit.dataset.messageAction = "edit";
+          edit.setAttribute("aria-label", editSource.queueId ? "Edit and resend" : "Use as draft");
+          edit.title = edit.getAttribute("aria-label");
+          setMessageActionIcon(edit, "edit");
+          edit.disabled = isMessageEditLocked();
+          edit.onclick = () => editMessageDraft(editSource);
+          actions.append(edit);
+        }
+        if (actions.childNodes.length) header.append(actions);
+        return header;
+      }
+
+      function syncMessageActions() {
+        const locked = isMessageEditLocked();
+        for (const button of document.querySelectorAll('[data-message-action="edit"]')) {
+          if (button.disabled !== locked) button.disabled = locked;
+        }
+      }
+
+      function markMessageArrival(item) {
+        item.classList.add("message-enter");
+        item.addEventListener("animationend", () => {
+          item.classList.remove("message-enter");
+        }, { once: true });
+      }
+
+      function messageItemForRender(existing, key, snapshot, build, animate) {
+        const previous = existing.get(key);
+        if (previous && messageRenderSnapshots.get(previous) === snapshot) return previous;
+        const item = build();
+        item.dataset.messageKey = key;
+        messageRenderSnapshots.set(item, snapshot);
+        if (!previous && animate) markMessageArrival(item);
+        return item;
+      }
+
       function buildAssistantDraftItem(content) {
         const item = document.createElement("article");
         item.className = "timeline-item assistant streaming";
-        const label = document.createElement("div");
-        label.className = "timeline-label";
-        label.textContent = "Live Smith / streaming";
+        item.dataset.messageKey = "streaming";
+        messageRenderSnapshots.set(item, content);
         const body = document.createElement("div");
         body.className = "timeline-content";
         renderMarkdown(body, content);
-        item.append(label, body);
+        item.append(buildMessageHeader("Live Smith / streaming"), body);
         return item;
       }
 
       function buildQueuedFollowUpItem(followUp) {
         const item = document.createElement("article");
         item.className = "timeline-item user queued-follow-up";
-        const label = document.createElement("div");
-        label.className = "timeline-label";
-        label.textContent = "You / Up next";
+        item.dataset.queueId = followUp.queueId;
+        item.classList.toggle("message-recovery", Boolean(followUp.failed));
         const body = document.createElement("div");
         body.className = "timeline-content";
         body.textContent = followUp.prompt;
-        item.append(label, body);
+        item.append(buildMessageHeader(
+          followUp.failed ? "You / Paused" : "You / Up next",
+          followUp.prompt,
+          followUp.failed ? { sessionId: getState().activeSessionId, queueId: followUp.queueId } : null,
+        ), body);
         return item;
       }
 
       function buildPendingUserMessageItem(message) {
         const item = document.createElement("article");
         item.className = "timeline-item user local-user-message";
-        const label = document.createElement("div");
-        label.className = "timeline-label";
-        label.textContent = "You";
         const body = document.createElement("div");
         body.className = "timeline-content";
         renderMarkdown(body, message.prompt);
-        item.append(label, body);
+        item.append(buildMessageHeader("You", message.prompt), body);
         return item;
       }
 
@@ -1310,12 +1484,14 @@
         timeline.querySelector(".empty")?.remove();
         if (!item) {
           item = buildAssistantDraftItem(assistantDraft);
+          if (renderedTimelineSessionId === getState().activeSessionId) markMessageArrival(item);
           const nextLocalItem = timeline.querySelector(
             ".queued-follow-up, .confirm-card",
           );
           timeline.insertBefore(item, nextLocalItem);
         } else {
           renderMarkdown(item.querySelector(".timeline-content"), assistantDraft);
+          messageRenderSnapshots.set(item, assistantDraft);
         }
         const confirmation = timeline.querySelector(".confirm-card");
         if (confirmation) setConfirmationModalActive(true, confirmation);
@@ -1477,12 +1653,14 @@
 
       function renderTimeline() {
         const state = getState();
+        syncMessageActions();
         const assistantDraft = getAssistantDraft();
         const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
         const pendingUserMessage = getPendingUserMessage?.() || null;
         const renderKey = JSON.stringify({
+          sessionId: state.activeSessionId,
           events: state.events || [],
           queuedFollowUps,
           webSearchUpdates,
@@ -1494,6 +1672,13 @@
           return;
         }
         const timeline = document.getElementById("timeline");
+        const sameSession = renderedTimelineSessionId === state.activeSessionId;
+        const existingMessages = new Map(sameSession
+          ? [...timeline.children]
+            .filter((item) => item.dataset.messageKey)
+            .map((item) => [item.dataset.messageKey, item])
+          : []);
+        const desiredNodes = [];
         const focusBeforeRender = document.activeElement;
         const focusedLinkIdentity = focusedTimelineLinkIdentity(
           focusBeforeRender,
@@ -1539,8 +1724,6 @@
           focusedActivityStep?.dataset.activityStepId || null;
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
-        timeline.replaceChildren();
-
         const events = state.events || [];
 
         if (
@@ -1554,7 +1737,7 @@
           const empty = document.createElement("div");
           empty.className = "empty";
           empty.textContent = "No messages in this session yet.";
-          timeline.append(empty);
+          desiredNodes.push(empty);
         }
 
         for (const entry of timelineActivityEntries(events)) {
@@ -1592,21 +1775,39 @@
               );
               items.append(item);
             }
-            timeline.append(group);
+            desiredNodes.push(group);
             continue;
           }
-          const item = buildTimelineItem(entry);
+          const previousPending = existingMessages.get("pending");
+          const replacesPending = entry.kind === "user" && previousPending &&
+            messageRenderSnapshots.get(previousPending) === JSON.stringify({ prompt: entry.content });
+          const replacesStreaming = entry.kind === "assistant" && existingMessages.has("streaming");
+          const item = ["user", "assistant"].includes(entry.kind)
+            ? messageItemForRender(
+                existingMessages,
+                `event:${entry.id}`,
+                JSON.stringify(entry),
+                () => buildTimelineItem(entry),
+                sameSession && !replacesPending && !replacesStreaming,
+              )
+            : buildTimelineItem(entry);
           restoreTimelineItemDetails(
             item,
             entry,
             detailsState,
             webSearchDetailsState,
           );
-          timeline.append(item);
+          desiredNodes.push(item);
         }
 
         if (pendingUserMessage) {
-          timeline.append(buildPendingUserMessageItem(pendingUserMessage));
+          desiredNodes.push(messageItemForRender(
+            existingMessages,
+            "pending",
+            JSON.stringify(pendingUserMessage),
+            () => buildPendingUserMessageItem(pendingUserMessage),
+            sameSession,
+          ));
         }
 
         for (const search of webSearchUpdates) {
@@ -1621,20 +1822,34 @@
           ) {
             item.open = webSearchDetailsState.get(item.dataset.webSearchId);
           }
-          timeline.append(item);
+          desiredNodes.push(item);
         }
 
         if (assistantDraft) {
-          timeline.append(buildAssistantDraftItem(assistantDraft));
+          desiredNodes.push(messageItemForRender(
+            existingMessages,
+            "streaming",
+            assistantDraft,
+            () => buildAssistantDraftItem(assistantDraft),
+            sameSession,
+          ));
         }
 
         for (const followUp of queuedFollowUps) {
-          timeline.append(buildQueuedFollowUpItem(followUp));
+          desiredNodes.push(messageItemForRender(
+            existingMessages,
+            `queue:${followUp.queueId}`,
+            JSON.stringify(followUp),
+            () => buildQueuedFollowUpItem(followUp),
+            false,
+          ));
         }
 
+        const confirmation = pendingConfirmation ? buildConfirmCard(pendingConfirmation) : null;
+        if (confirmation) desiredNodes.push(confirmation);
+        reconcileChildNodes(timeline, desiredNodes);
+        syncMessageActions();
         if (pendingConfirmation) {
-          const confirmation = buildConfirmCard(pendingConfirmation);
-          timeline.append(confirmation);
           setConfirmationModalActive(true, confirmation);
           if (isConfirmationLocked?.()) setConfirmationState(true);
           if (focusedConfirmationId !== pendingConfirmation.id) {
@@ -1699,6 +1914,7 @@
           timeline.scrollTop = timeline.scrollHeight;
         }
         renderedTimelineKey = renderKey;
+        renderedTimelineSessionId = state.activeSessionId;
         renderedAssistantDraft = assistantDraft;
       }
 
@@ -2097,6 +2313,17 @@
         item.className = `timeline-item ${event.kind}`;
         item.dataset.eventId = event.id;
 
+        if (["user", "assistant"].includes(event.kind)) {
+          item.append(buildMessageHeader(
+            eventLabel(event),
+            eventContent,
+            event.kind === "user"
+              ? { sessionId: getState().activeSessionId, eventId: event.id }
+              : null,
+          ), content);
+          return item;
+        }
+
         const label = document.createElement("div");
         label.className = "timeline-label";
         label.textContent = eventLabel(event);
@@ -2440,6 +2667,7 @@
         syncSessionPresentation,
         renderSessions,
         renderTimeline,
+        syncMessageActions,
         setConfirmationState,
         switchInspectorTab,
       };

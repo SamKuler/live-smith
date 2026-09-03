@@ -1447,8 +1447,13 @@ the window and included in Close warnings.
 Composer value and revision are captured at send start and refreshed when a
 Queue submission consumes the current draft.
 The failed text therefore refills only an untouched empty composer, while any
-newer draft is preserved. An explicit recovery Send removes that head when
-retrying it. If the user instead sends the preserved newer draft, that deliberate
+newer draft is preserved. A restored recovery draft, or an explicit edit of its
+paused item, remains associated with that item's queue identity. Send consumes
+that exact head even when its text has been edited; it never submits both the
+edited version and the old original. Consuming the draft as a Slash command or
+explicitly editing a historical message ends that recovery-edit association
+without dropping the paused item. If the user instead sends the preserved newer
+draft, that deliberate
 turn runs first and then resumes the retained head; a failure of the newer turn
 reinserts it ahead of the retained work. No recovery path silently discards a
 queued prompt or lets a later command pump skip the failed original. A typed
@@ -1531,6 +1536,24 @@ the replay guard uses constant space. Queue entries have a separate logical
 `queueId`; every actual `/send` invocation allocates a fresh transport
 correlation ID, so a delayed terminal from a failed attempt cannot match its
 retry.
+
+### Message actions
+
+Copy writes the original message text through the browser clipboard API, with
+a temporary document-selection fallback for embedded webviews. It does not copy
+speaker labels, UI controls, or private attachment paths. Unchanged message DOM
+nodes remain mounted across timeline updates so selection, keyboard focus, and
+copy feedback survive. Entry motion is limited to new messages in the visible
+Session, not history navigation, persistence reconciliation, or each stream delta.
+
+Use as draft copies historical user text into the current Session's composer;
+it never rewrites events, reuses a Send ID, rolls back Live work, or reattaches
+consumed attachments. Replacing existing text requires confirmation, followed by
+revalidation of the Session, source, draft revision, and operation lock. The next
+Send uses ordinary admission and preserves all existing recovery history.
+Historical text that would parse as a composer command is restored with the
+existing idle `/queue` wrapper so its body remains a model request, not a local
+command.
 
 ### Transient model turns and context usage
 

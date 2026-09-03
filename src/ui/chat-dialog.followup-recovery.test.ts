@@ -191,7 +191,7 @@ test("a recovered prompt starts with a fresh Send correlation ID", async () => {
   }
 });
 
-test("editing a restored original keeps the failed head ahead of its tail", async () => {
+test("editing a restored original replaces the failed head without replaying its old text", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
@@ -209,7 +209,7 @@ test("editing a restored original keeps the failed head ahead of its tail", asyn
       "Original request",
     );
 
-    harness.input("#prompt", "Deliberate newer request");
+    harness.input("#prompt", "Edited original request");
     harness.holdNextSend();
     harness.click("#sendButton");
     await Promise.resolve();
@@ -220,13 +220,11 @@ test("editing a restored original keeps the failed head ahead of its tail", asyn
     await harness.settle();
 
     assert.deepEqual(queuedBeforeNewerCompletes, [
-      "Original request",
       "Queued tail",
     ]);
     assert.deepEqual(sentPrompts(harness), [
       "Original request",
-      "Deliberate newer request",
-      "Original request",
+      "Edited original request",
       "Queued tail",
     ]);
     assert.equal(harness.document.querySelector(".queued-follow-up"), null);
