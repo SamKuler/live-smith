@@ -34,6 +34,7 @@
       let renderedAssistantDraft = "";
       const messageRenderSnapshots = new WeakMap();
       let timelineScrollbarIdleTimer = null;
+      let pendingTimelinePosition = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
       const timelineScrollbarIdleDelayMs = 650;
 
@@ -369,9 +370,61 @@
       document.addEventListener("keydown", handleSessionDeleteShortcut);
       document.addEventListener("scroll", () => closeSessionMenus(), true);
 
+      function cancelPendingTimelinePosition() {
+        const pending = pendingTimelinePosition;
+        if (!pending) return;
+        pendingTimelinePosition = null;
+        if (pending.frameId !== null) window.cancelAnimationFrame(pending.frameId);
+        pending.observer?.disconnect();
+      }
+
+      function schedulePendingTimelinePosition() {
+        const pending = pendingTimelinePosition;
+        if (!pending || pending.frameId !== null) return;
+        const timeline = document.getElementById("timeline");
+        if (pending.sessionId !== getState().activeSessionId) {
+          cancelPendingTimelinePosition();
+          return;
+        }
+        if (timeline.clientHeight <= 0) return;
+        pending.frameId = window.requestAnimationFrame(() => {
+          if (pendingTimelinePosition !== pending) return;
+          pending.frameId = null;
+          if (pending.sessionId !== getState().activeSessionId) {
+            cancelPendingTimelinePosition();
+            return;
+          }
+          if (timeline.clientHeight <= 0) return;
+          cancelPendingTimelinePosition();
+          timeline.scrollTop = timeline.scrollHeight;
+        });
+      }
+
+      function beginTimelinePosition(sessionId) {
+        cancelPendingTimelinePosition();
+        const pending = { sessionId, frameId: null, observer: null };
+        pendingTimelinePosition = pending;
+        if (typeof window.ResizeObserver === "function") {
+          pending.observer = new window.ResizeObserver(() => {
+            if (pendingTimelinePosition === pending) schedulePendingTimelinePosition();
+          });
+          pending.observer.observe(document.getElementById("timeline"));
+        }
+        schedulePendingTimelinePosition();
+      }
+
       window.addEventListener("DOMContentLoaded", () => {
         const timeline = document.getElementById("timeline");
         if (!timeline) return;
+        timeline.addEventListener("wheel", cancelPendingTimelinePosition, { passive: true });
+        timeline.addEventListener("pointerdown", cancelPendingTimelinePosition, { passive: true });
+        timeline.addEventListener("keydown", (event) => {
+          if (
+            !event.defaultPrevented &&
+            ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key) &&
+            !event.target.closest("input, textarea, select, [contenteditable='true']")
+          ) cancelPendingTimelinePosition();
+        });
         const supportsScrollend = typeof timeline.onscrollend !== "undefined";
         const hideTimelineScrollbar = () => {
           if (timelineScrollbarIdleTimer !== null) {
@@ -400,6 +453,7 @@
       window.addEventListener("resize", () => {
         closeSessionMenus();
         updateSessionMetaOverflow(document.getElementById("sessions"));
+        schedulePendingTimelinePosition();
       });
 
       function updateSessionMetaOverflow(root) {
@@ -1495,7 +1549,8 @@
         }
         const confirmation = timeline.querySelector(".confirm-card");
         if (confirmation) setConfirmationModalActive(true, confirmation);
-        if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+        if (pendingTimelinePosition) schedulePendingTimelinePosition();
+        else if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
         renderedAssistantDraft = assistantDraft;
       }
 
@@ -1910,7 +1965,11 @@
           }
         }
 
-        if (nearBottom || pendingConfirmation) {
+        if (!sameSession) {
+          beginTimelinePosition(state.activeSessionId);
+        } else if (pendingTimelinePosition) {
+          schedulePendingTimelinePosition();
+        } else if (nearBottom || pendingConfirmation) {
           timeline.scrollTop = timeline.scrollHeight;
         }
         renderedTimelineKey = renderKey;

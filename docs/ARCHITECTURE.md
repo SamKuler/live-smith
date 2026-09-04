@@ -1545,6 +1545,11 @@ speaker labels, UI controls, or private attachment paths. Unchanged message DOM
 nodes remain mounted across timeline updates so selection, keyboard focus, and
 copy feedback survive. Entry motion is limited to new messages in the visible
 Session, not history navigation, persistence reconciliation, or each stream delta.
+Assistant replies and activity use the full conversation content width; only
+user bubbles retain a narrower maximum. Initial latest-message positioning waits
+for a non-zero timeline layout and the next animation frame. That one-time
+intent ends after positioning, a Session change, or user scroll interaction;
+there is no scroll-triggered history loading or continuous layout polling.
 
 Use as draft copies historical user text into the current Session's composer;
 it never rewrites events, reuses a Send ID, rolls back Live work, or reattaches

@@ -718,12 +718,13 @@
       .timeline-item {
         display: grid;
         gap: 6px;
-        max-width: 82%;
+        max-width: 100%;
         margin-bottom: 14px;
       }
 
       .timeline-item.user {
         width: fit-content;
+        max-width: 82%;
         margin-left: auto;
       }
 
@@ -1035,12 +1036,6 @@
         background: var(--line-soft);
       }
 
-      .timeline-item.web_search,
-      .timeline-item.compaction,
-      .timeline-item.error {
-        max-width: 96%;
-      }
-
       .timeline-item.compaction > summary {
         color: var(--quiet);
         font-size: 11px;
@@ -1090,7 +1085,7 @@
       }
 
       .timeline-activity-group {
-        max-width: 96%;
+        max-width: 100%;
         margin-bottom: 8px;
       }
 
@@ -1559,7 +1554,7 @@
       }
 
       .confirm-card {
-        max-width: 96%;
+        max-width: 100%;
         margin-bottom: 14px;
         padding: 12px;
         border: 1px solid rgba(255, 165, 0, 0.55);
