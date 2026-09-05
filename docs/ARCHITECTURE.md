@@ -1368,6 +1368,12 @@ deleted or archived target is no longer sendable.
 
 ### Session Edit Scope
 
+Older Session files may contain the retired `writeBoundary` field. The storage
+reader accepts and omits that field from current Session records without rewriting
+files on read. A subsequent explicit Session metadata write saves the canonical
+format without it. Saved category Edit Scope and Approval remain unchanged; the
+retired field does not create a hidden runtime restriction.
+
 The independent categories are `midi`, `audio`, `devices`, `mixer`, and
 `structure`; their user-facing meanings are described in
 [You control the changes](../README.md#you-control-the-changes). Scope metadata

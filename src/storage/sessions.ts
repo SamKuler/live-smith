@@ -381,6 +381,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     "activeSkillIds",
     "approvalMode",
     "editScopes",
+    "writeBoundary", // Obsolete saved metadata; cloneSession omits it without rewriting on read.
     "modelSelection",
     "createdAt",
     "updatedAt",
