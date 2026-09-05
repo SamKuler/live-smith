@@ -34,10 +34,10 @@
       let renderedTimelineSessionId = null;
       let renderedAssistantDraft = "";
       const messageRenderSnapshots = new WeakMap();
-      let timelineScrollbarIdleTimer = null;
+      const scrollbarIdleTimers = new WeakMap();
       let pendingTimelinePosition = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
-      const timelineScrollbarIdleDelayMs = 650;
+      const scrollbarIdleDelayMs = 650;
 
       function retainActiveSessionForWindow() {
         activeSessionIdsThisWindow.add(getState().activeSessionId);
@@ -426,30 +426,26 @@
             !event.target.closest("input, textarea, select, [contenteditable='true']")
           ) cancelPendingTimelinePosition();
         });
-        const supportsScrollend = typeof timeline.onscrollend !== "undefined";
-        const hideTimelineScrollbar = () => {
-          if (timelineScrollbarIdleTimer !== null) {
-            window.clearTimeout(timelineScrollbarIdleTimer);
-            timelineScrollbarIdleTimer = null;
-          }
-          timeline.classList.remove("is-scrolling");
+        const hideScrollbar = (element) => {
+          const timer = scrollbarIdleTimers.get(element);
+          if (timer !== undefined) window.clearTimeout(timer);
+          scrollbarIdleTimers.delete(element);
+          element.classList.remove("is-scrolling");
         };
-        timeline.addEventListener("scroll", () => {
-          timeline.classList.add("is-scrolling");
-          if (supportsScrollend) return;
-          if (timelineScrollbarIdleTimer !== null) {
-            window.clearTimeout(timelineScrollbarIdleTimer);
-          }
-          timelineScrollbarIdleTimer = window.setTimeout(() => {
-            timelineScrollbarIdleTimer = null;
-            timeline.classList.remove("is-scrolling");
-          }, timelineScrollbarIdleDelayMs);
-        }, { passive: true });
-        if (supportsScrollend) {
-          timeline.addEventListener("scrollend", hideTimelineScrollbar, {
-            passive: true,
-          });
-        }
+        document.addEventListener("scroll", (event) => {
+          const element = event.target;
+          if (!(element instanceof HTMLElement)) return;
+          element.classList.add("is-scrolling");
+          if (typeof element.onscrollend !== "undefined") return;
+          const timer = scrollbarIdleTimers.get(element);
+          if (timer !== undefined) window.clearTimeout(timer);
+          scrollbarIdleTimers.set(element, window.setTimeout(
+            () => hideScrollbar(element), scrollbarIdleDelayMs,
+          ));
+        }, { capture: true, passive: true });
+        document.addEventListener("scrollend", (event) => {
+          if (event.target instanceof HTMLElement) hideScrollbar(event.target);
+        }, { capture: true, passive: true });
       });
       window.addEventListener("resize", () => {
         closeSessionMenus();

@@ -42,9 +42,13 @@
         --warn: #ffd166;
         --danger: #ff6e57;
         --trace: #78b9e8;
+        --sessions-padding: 10px;
+        --inspector-padding: 12px;
+        --scrollbar-size: 7px;
+        --scrollbar-thumb: rgba(198, 198, 198, 0.46);
       }
 
-      @property --timeline-scrollbar-thumb-color {
+      @property --scrollbar-thumb-color {
         syntax: "<color>";
         inherits: true;
         initial-value: transparent;
@@ -52,6 +56,8 @@
 
       * {
         box-sizing: border-box;
+        --scrollbar-thumb-color: transparent;
+        transition: --scrollbar-thumb-color 220ms ease-out;
       }
 
       html,
@@ -199,14 +205,18 @@
         white-space: nowrap;
       }
 
+      /* Keep real scrollbar lanes on Sessions, Timeline and Inspector panels.
+         WebKit's stable gutter uses the wider native size when content fits. */
       .sessions {
         display: grid;
         align-content: start;
         gap: 4px;
         min-height: 0;
-        overflow: auto;
+        overflow-x: auto;
+        overflow-y: scroll;
         overscroll-behavior: contain;
-        padding: 10px;
+        padding: var(--sessions-padding);
+        padding-inline-end: calc(var(--sessions-padding) - var(--scrollbar-size));
       }
 
       .session-row {
@@ -673,46 +683,44 @@
       }
 
       .timeline {
-        --timeline-scrollbar-thumb-color: transparent;
         min-height: 0;
-        overflow: auto;
+        overflow-x: auto;
+        overflow-y: scroll;
         overscroll-behavior: contain;
         padding: 18px;
         background: var(--bg);
-        scrollbar-gutter: stable;
-        transition: --timeline-scrollbar-thumb-color 220ms ease-out;
       }
 
-      .timeline.is-scrolling {
-        --timeline-scrollbar-thumb-color: rgba(198, 198, 198, 0.46);
+      .is-scrolling {
+        --scrollbar-thumb-color: var(--scrollbar-thumb);
         transition-duration: 100ms;
       }
 
-      .timeline::-webkit-scrollbar {
-        width: 7px;
-        height: 7px;
+      ::-webkit-scrollbar {
+        width: var(--scrollbar-size);
+        height: var(--scrollbar-size);
       }
 
-      .timeline::-webkit-scrollbar-track,
-      .timeline::-webkit-scrollbar-corner {
+      ::-webkit-scrollbar-track,
+      ::-webkit-scrollbar-corner {
         background: transparent;
       }
 
-      .timeline::-webkit-scrollbar-thumb {
+      ::-webkit-scrollbar-thumb {
         border: 2px solid transparent;
         border-radius: 999px;
-        background-color: var(--timeline-scrollbar-thumb-color);
+        background-color: var(--scrollbar-thumb-color, transparent);
         background-clip: padding-box;
       }
 
       @supports not selector(::-webkit-scrollbar) {
-        .timeline {
+        * {
           scrollbar-color: transparent transparent;
           scrollbar-width: thin;
         }
 
-        .timeline.is-scrolling {
-          scrollbar-color: rgba(198, 198, 198, 0.46) transparent;
+        .is-scrolling {
+          scrollbar-color: var(--scrollbar-thumb) transparent;
         }
       }
 
@@ -2299,8 +2307,7 @@
 
       .tab-panel {
         min-height: 0;
-        overflow-y: auto;
-        scrollbar-gutter: stable;
+        overflow-y: scroll;
         overscroll-behavior: contain;
       }
 
@@ -2322,14 +2329,14 @@
         }
       }
 
-      #contextPanel {
-        scrollbar-gutter: auto;
-      }
-
       .settings {
         display: grid;
         gap: 0;
-        padding: 12px;
+        padding: var(--inspector-padding);
+      }
+
+      .tab-panel > .settings {
+        padding-inline-end: calc(var(--inspector-padding) - var(--scrollbar-size));
       }
 
       .settings-scope {
