@@ -262,7 +262,7 @@ test("the compact composer uses one attachment menu and no unsupported file pick
     assert.equal(harness.document.querySelector("#attachmentInput"), null);
     assert.equal(
       harness.document.querySelector("#prompt")?.getAttribute("placeholder"),
-      "Ask about this Live Set…",
+      "Describe your idea…",
     );
     assert.match(
       harness.document.querySelector("#sendButton")?.getAttribute("aria-keyshortcuts") ?? "",
