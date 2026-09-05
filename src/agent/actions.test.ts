@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { agentActionJsonSchemas } from "./action-schema.js";
 import {
   MAX_AGENT_PLAN_ACTIONS,
   observationRequestForAction,
@@ -8,6 +9,49 @@ import {
   requiresExplicitConfirmation,
   summarizeActionPlan,
 } from "./actions.js";
+
+test("Session MIDI creation exposes an optional boolean empty-slot precondition", () => {
+  const action = {
+    type: "create_session_midi_clip",
+    trackName: "Lead",
+    slotIndex: 1,
+    durationBeats: 4,
+    notes: [],
+  };
+  for (const precondition of [{}, { requireEmpty: false }, { requireEmpty: true }]) {
+    const input = { ...action, ...precondition };
+    const plan = validateAgentPlan({ message: "Write Session MIDI", actions: [input] });
+    assert.deepEqual(plan.actions[0], input);
+  }
+  const schemas = agentActionJsonSchemas() as {
+    properties: Record<string, { type: string; enum?: string[] }>;
+    required: string[];
+    additionalProperties: boolean;
+  }[];
+  const schema = schemas.find((item) =>
+    item.properties.type?.enum?.includes(action.type)
+  );
+  assert.ok(schema);
+  assert.equal(schema.properties.requireEmpty?.type, "boolean");
+  assert.equal(schema.required.includes("requireEmpty"), false);
+  assert.equal(schema.additionalProperties, false);
+});
+
+test("Session MIDI creation rejects non-boolean empty-slot preconditions", () => {
+  for (const requireEmpty of [null, 0, 1, "true", "false", {}, []]) {
+    assert.throws(() => validateAgentPlan({
+      message: "Write Session MIDI",
+      actions: [{
+        type: "create_session_midi_clip",
+        trackName: "Lead",
+        slotIndex: 1,
+        durationBeats: 4,
+        notes: [],
+        requireEmpty,
+      }],
+    }), /requireEmpty must be a boolean/i);
+  }
+});
 
 test("validateAgentPlan rejects legacy text responses", () => {
   assert.throws(

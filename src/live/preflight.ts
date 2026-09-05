@@ -155,12 +155,18 @@ export async function captureLiveActionPreflightSnapshot(
           `Could not find Session slot ${action.slotIndex} on track "${track.name}".`,
         );
       }
+      const clip = slot.clip;
+      if (action.requireEmpty && clip) {
+        throw new Error(
+          `Session slot ${action.slotIndex} on track "${track.name}" must be empty (requireEmpty: true). Inspect the current Session slots and choose an empty destination.`,
+        );
+      }
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
         slot: {
           id: requireHandleIdentity(slot, "clip slot"),
-          clip: slot.clip ? clipContentIdentity(slot.clip) : null,
+          clip: clip ? clipContentIdentity(clip) : null,
         },
       });
     }

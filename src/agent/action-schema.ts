@@ -186,6 +186,9 @@ const actionDescriptors = {
       trackName: optionalString(),
       trackRef: optionalRef(),
       slotIndex: requiredIntegerInRange(0, 4095),
+      requireEmpty: optionalBoolean(
+        "Require the exact destination Session slot to be empty before writing. Use true for candidates that must preserve existing content. Omitted or false allows create-or-replace.",
+      ),
       durationBeats: requiredPositiveNumber(),
       name: optionalString(),
       notes: requiredNotes(0),
@@ -194,6 +197,7 @@ const actionDescriptors = {
       type: "create_session_midi_clip",
       trackName: "Lead",
       slotIndex: 0,
+      requireEmpty: true,
       durationBeats: 8,
       name: "Lead Loop",
       notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 96 }],
@@ -1272,8 +1276,11 @@ function optionalIntegerInRange(
   );
 }
 
-function optionalBoolean(): ActionField<boolean, false> {
-  return optionalField({ type: "boolean" }, (value, key) => {
+function optionalBoolean(description?: string): ActionField<boolean, false> {
+  return optionalField({
+    type: "boolean",
+    ...(description ? { description } : {}),
+  }, (value, key) => {
     if (typeof value !== "boolean") {
       throw new Error(`${key} must be a boolean when provided.`);
     }

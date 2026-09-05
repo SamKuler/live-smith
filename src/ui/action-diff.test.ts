@@ -3,6 +3,30 @@ import test from "node:test";
 
 import { actionDiffGroups } from "./action-diff.js";
 
+test("Session MIDI confirmation distinguishes empty-slot creation from replacement", () => {
+  const action = {
+    type: "create_session_midi_clip" as const,
+    trackRef: "lead",
+    slotIndex: 2,
+    durationBeats: 4,
+    name: "Alternative",
+    notes: [],
+  };
+  const groups = actionDiffGroups([
+    action,
+    { ...action, requireEmpty: false },
+    { ...action, requireEmpty: true },
+  ], { lead: { trackName: "Lead" } });
+  assert.deepEqual(groups, [{
+    title: "Write MIDI",
+    rows: [
+      '1. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
+      '2. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
+      '3. + Create Session MIDI clip "Alternative" in empty slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
+    ],
+  }]);
+});
+
 test("actionDiffGroups preserves authored order and original action numbers", () => {
   const groups = actionDiffGroups([
     { type: "delete_track", trackName: "Scratch" },

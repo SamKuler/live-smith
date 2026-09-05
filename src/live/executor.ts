@@ -582,7 +582,16 @@ async function executeAction(
         tracks,
         actionTracks,
       );
-      const slot = bound?.slot ?? requireSessionSlot(track, action.slotIndex);
+      let slot = bound?.slot ?? requireSessionSlot(track, action.slotIndex);
+      if (action.requireEmpty) {
+        const currentSlot = requireSessionSlot(track, action.slotIndex);
+        if (!sameHostObject(currentSlot, slot)) {
+          throw new Error(
+            `Session slot ${action.slotIndex} on track "${track.name}" changed from the bound destination. Inspect the current Session slots and try again.`,
+          );
+        }
+        slot = currentSlot;
+      }
       return createSessionMidiClip(
         track,
         slot,
@@ -590,6 +599,7 @@ async function executeAction(
         action.durationBeats,
         action.notes,
         action.name,
+        action.requireEmpty,
       );
     }
     case "replace_midi_clip_segment": {
@@ -1147,11 +1157,17 @@ async function createSessionMidiClip(
   durationBeats: number,
   notes: Extract<AgentAction, { type: "create_session_midi_clip" }>["notes"],
   name?: string,
+  requireEmpty = false,
 ): Promise<string | NoMutationActionOutcome> {
   const completedResults: string[] = [];
   const completedKeys: string[][] = [];
   try {
     let clip = slot.clip;
+    if (requireEmpty && clip) {
+      throw new Error(
+        `Session slot ${slotIndex} on track "${track.name}" must be empty (requireEmpty: true). Inspect the current Session slots and choose an empty destination.`,
+      );
+    }
     if (sessionMidiClipCanBeReused(clip, durationBeats)) {
       let changed = false;
       if (name && clip.name !== name) {
@@ -1184,7 +1200,11 @@ async function createSessionMidiClip(
       `Created Session MIDI clip in slot ${slotIndex} on track "${track.name}".`,
     );
     completedKeys.push([clipStepKey(track, slotIndex, "create-midi")]);
-    if (name) created.name = name;
+    if (name) {
+      created.name = name;
+      completedResults.push(`Renamed Session MIDI clip in slot ${slotIndex} to "${name}".`);
+      completedKeys.push([clipStepKey(track, slotIndex, "rename")]);
+    }
     created.notes = notes;
     return `Created Session MIDI clip "${created.name}" in slot ${slotIndex} on track "${track.name}" with ${notes.length} notes.`;
   } catch (error) {

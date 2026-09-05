@@ -137,7 +137,7 @@ function actionDiffRow(
     case "create_session_midi_clip":
       return {
         title: "Write MIDI",
-        row: `± Create or replace Session MIDI clip "${action.name ?? "Untitled"}" in slot ${action.slotIndex} on ${trackLabel(action, refLabels)} (${action.notes.length} notes, ${action.durationBeats} beats)`,
+        row: `${action.requireEmpty ? "+ Create" : "± Create or replace"} Session MIDI clip "${action.name ?? "Untitled"}" in ${action.requireEmpty ? "empty slot" : "slot"} ${action.slotIndex} on ${trackLabel(action, refLabels)} (${action.notes.length} notes, ${action.durationBeats} beats)`,
       };
     case "replace_midi_clip_segment":
       return {
