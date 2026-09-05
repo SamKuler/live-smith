@@ -6,6 +6,7 @@ import {
   cloneState,
   commandCalls,
   createDialogHarness,
+  jsonCalls,
   stateFixture,
   waitForCondition,
 } from "./chat-dialog.test-harness.js";
@@ -74,8 +75,11 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.equal(savedSummary.getAttribute("aria-live"), "polite");
     for (const selector of [
       "#editScopeSaveButton", "#editScopeCancelButton",
-      "#editScopeReadOnlyButton", "#editScopeAllButton",
+      "#editScopeAllButton",
     ]) assert.equal(harness.document.querySelector(selector), null);
+    const readOnly = control<HTMLButtonElement>(harness, "#editScopeReadOnlyButton");
+    assert.equal(panel.contains(readOnly), true);
+    assert.equal(readOnly.getAttribute("aria-disabled"), "false");
     for (const selector of [
       "#editScopeHelp", "#editScopeDevicesHelp", "#editScopeStructureHelp",
     ]) {
@@ -99,6 +103,144 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.equal(commandCalls(harness).length, 0);
     assert.deepEqual(harness.errors, []);
   } finally {
+    harness.close();
+  }
+});
+
+test("the Read only shortcut saves an empty scope set, retains focus for Escape, and resumes writes only by explicit scope selection", async () => {
+  const state = initialState();
+  state.sessions[0]!.editScopes = ["midi", "devices"];
+  state.sessions[0]!.approvalMode = "everything";
+  state.approvalMode = "everything";
+  const harness = await createDialogHarness(state);
+  let held = false;
+  try {
+    harness.click("#editScopeButton");
+    const readOnly = control<HTMLButtonElement>(harness, "#editScopeReadOnlyButton");
+    assert.equal(harness.document.activeElement, control(harness, "#editScope-midi"));
+    harness.holdNextCommand();
+    held = true;
+    harness.click("#editScopeReadOnlyButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).map(({ body }) => body), [{
+      kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: [],
+    }]);
+    assert.equal(readOnly.getAttribute("aria-disabled"), "true");
+    assert.equal(readOnly.disabled, false);
+    assert.equal(harness.document.activeElement, readOnly);
+    assert.equal(control(harness, "#editScopePanel").getAttribute("aria-busy"), "true");
+    assert.equal(control(harness, "#permissionsSaveStatus").hidden, false);
+    assert.equal(control(harness, "#editScopeButton").textContent, "2 scopes");
+    assert.equal(control(harness, "#editScopeSavedSummary").textContent, "Saved: MIDI content, Devices");
+    assert.deepEqual(selectedScopes(harness), []);
+    harness.click("#editScopeReadOnlyButton");
+    assert.equal(commandCalls(harness).length, 1);
+    harness.releaseHeldCommand();
+    held = false;
+    await harness.settle();
+    assert.equal(control(harness, "#editScopeButton").textContent, "Read only");
+    assert.equal(control(harness, "#editScopeSavedSummary").textContent, "Saved: Read only");
+    assert.equal(control(harness, "#editScopePanel").hidden, false);
+    assert.equal(control(harness, "#permissionsSaveStatus").hidden, true);
+    assert.equal(control<HTMLInputElement>(harness, "#editScopeAll").checked, false);
+    assert.equal(control<HTMLInputElement>(harness, "#editScopeAll").indeterminate, false);
+    assert.equal(readOnly.getAttribute("aria-disabled"), "true");
+    assert.equal(readOnly.disabled, false);
+    assert.equal(harness.document.activeElement, readOnly);
+    harness.click("#editScopeReadOnlyButton");
+    assert.equal(commandCalls(harness).length, 1);
+    const hostMessagesBeforeEscape = harness.hostMessages.length;
+    const escape = new harness.window.KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true,
+    });
+    readOnly.dispatchEvent(escape);
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(control(harness, "#editScopePanel").hidden, true);
+    assert.equal(harness.document.activeElement, control(harness, "#editScopeButton"));
+    assert.equal(harness.hostMessages.length, hostMessagesBeforeEscape);
+    harness.click("#editScopeButton");
+    harness.click("#editScope-midi");
+    await harness.settle();
+    assert.deepEqual(selectedScopes(harness), ["midi"]);
+    assert.equal(readOnly.getAttribute("aria-disabled"), "false");
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: ["midi"],
+    });
+    assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "everything");
+    assert.deepEqual(jsonCalls(harness, "/send"), []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (held) harness.releaseHeldCommand();
+    harness.close();
+  }
+});
+
+test("a failed Read only save retains saved scopes and approval and allows an explicit retry", async () => {
+  const state = initialState();
+  state.sessions[0]!.editScopes = ["audio", "mixer"];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#editScopeButton");
+    harness.failNextCommand("Read-only scope could not be saved.");
+    harness.click("#editScopeReadOnlyButton");
+    await harness.settle();
+    assert.deepEqual(selectedScopes(harness), ["audio", "mixer"]);
+    assert.equal(control(harness, "#editScopeButton").textContent, "2 scopes");
+    assert.equal(control(harness, "#editScopeSavedSummary").textContent, "Saved: Audio content, Mixer");
+    assert.equal(control(harness, "#editScopePanel").hidden, false);
+    assert.equal(control(harness, "#editScopePanel").getAttribute("aria-busy"), "false");
+    assert.equal(control(harness, "#editScopeReadOnlyButton").getAttribute("aria-disabled"), "false");
+    assert.match(control(harness, "#status").textContent ?? "", /could not be saved/i);
+    harness.click("#editScopeReadOnlyButton");
+    await harness.settle();
+    assert.deepEqual(selectedScopes(harness), []);
+    assert.equal(control(harness, "#editScopeButton").textContent, "Read only");
+    assert.equal(control(harness, "#editScopeReadOnlyButton").getAttribute("aria-disabled"), "true");
+    assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "manual");
+    assert.deepEqual(commandCalls(harness).map(({ body }) => body), Array.from({ length: 2 }, () => ({
+      kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: [],
+    })));
+    assert.deepEqual(jsonCalls(harness, "/send"), []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("a delayed Read only result cannot overwrite permissions saved more recently in another window", async () => {
+  const state = initialState();
+  state.sessions[0]!.editScopes = ["midi"];
+  const harness = await createDialogHarness(state);
+  let held = false;
+  try {
+    harness.click("#editScopeButton");
+    harness.holdNextCommandResponse();
+    held = true;
+    harness.click("#editScopeReadOnlyButton");
+    await waitForCondition(() => harness.commandIds.length === 1, "Pending Read only save");
+    harness.emitServerEvent({
+      type: "session_edit_scopes_changed", sessionId: "session-1", editScopes: ["devices"],
+      updatedAt: "2026-09-05T09:00:00.000Z", bridgeStateRevision: "3",
+    });
+    harness.emitServerEvent({
+      type: "approval_mode_changed", sessionId: "session-1", approvalMode: "everything",
+      updatedAt: "2026-09-05T09:01:00.000Z", bridgeStateRevision: "4",
+    });
+    harness.releaseHeldCommandResponse();
+    held = false;
+    await harness.settle();
+    assert.deepEqual(selectedScopes(harness), ["devices"]);
+    assert.equal(control(harness, "#editScopeButton").textContent, "Devices");
+    assert.equal(control(harness, "#editScopeSavedSummary").textContent, "Saved: Devices");
+    assert.equal(control(harness, "#editScopeReadOnlyButton").getAttribute("aria-disabled"), "false");
+    assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "everything");
+    assert.deepEqual(commandCalls(harness).map(({ body }) => body), [{
+      kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: [],
+    }]);
+    assert.deepEqual(jsonCalls(harness, "/send"), []);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (held) harness.releaseHeldCommandResponse();
     harness.close();
   }
 });
@@ -336,7 +478,9 @@ test("Session switching locks permission inputs and renders each Session's separ
     for (const field of harness.document.querySelectorAll<HTMLInputElement>("#editScopePanel input, #editScopePanel select")) {
       assert.equal(field.disabled, true);
     }
+    assert.equal(control(harness, "#editScopeReadOnlyButton").getAttribute("aria-disabled"), "true");
     harness.click("#editScope-midi");
+    harness.click("#editScopeReadOnlyButton");
     assert.equal(commandCalls(harness).length, 2);
     harness.releaseHeldCommandResponse();
     await harness.settle();
@@ -350,6 +494,13 @@ test("Session switching locks permission inputs and renders each Session's separ
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_session_edit_scopes", sessionId: "session-2", editScopes: ["audio"],
     });
+    harness.click("#editScopeReadOnlyButton");
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_session_edit_scopes", sessionId: "session-2", editScopes: [],
+    });
+    assert.deepEqual(selectedScopes(harness), []);
+    assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "low-risk");
     harness.click('.session-entry[data-session-id="session-1"] .session-row');
     await harness.settle();
     assert.equal(control(harness, "#editScopeButton").textContent, "Mixer");
@@ -652,7 +803,7 @@ test("scope patches for a not-yet-observed Session overlay its older creation sn
   }
 });
 
-test("an unknown scope commit renders reconciled permissions instead of a pre-command rollback", async () => {
+test("an unknown Read only commit renders reconciled permissions instead of a pre-command rollback", async () => {
   const state = initialState();
   const harness = await createDialogHarness(state);
   try {
@@ -663,12 +814,18 @@ test("an unknown scope commit renders reconciled permissions instead of a pre-co
       { commandOutcome: "unknown", state: authoritative },
     );
     harness.click("#editScopeButton");
-    harness.click("#editScopeAll");
+    harness.click("#editScopeReadOnlyButton");
     await harness.settle();
     assert.equal(control(harness, "#editScopeButton").textContent, "Read only");
     assert.deepEqual(selectedScopes(harness), []);
     assert.equal(control(harness, "#editScopePanel").hidden, false);
     assert.equal(control<HTMLButtonElement>(harness, "#sendButton").disabled, false);
+    assert.equal(control(harness, "#editScopeReadOnlyButton").getAttribute("aria-disabled"), "true");
+    assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "manual");
+    assert.deepEqual(commandCalls(harness).map(({ body }) => body), [{
+      kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: [],
+    }]);
+    assert.deepEqual(jsonCalls(harness, "/send"), []);
     assert.match(control(harness, "#status").textContent ?? "", /could not be confirmed/i);
     assert.deepEqual(harness.errors, []);
   } finally {

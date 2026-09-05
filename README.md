@@ -177,7 +177,9 @@ boundaries.
 | Structure | Tracks, Scenes, Cue Points, Take Lanes, and tempo. |
 
 Scopes can be combined. The **All** checkbox selects or clears every category;
-clearing all makes the Session **Read only** while keeping inspection available.
+clearing all or choosing **Read only** inside Scope makes the Session read-only
+while keeping inspection available. To allow edits again, select the categories
+you want to permit.
 New and historical Sessions without a saved scope selection use All. The scope controls
 edits, not which Live information the assistant can read. Instruments and effects
 share Devices because the current SDK cannot reliably classify every device.

@@ -1643,6 +1643,9 @@
       .parameter-preview-values { font-variant-numeric: tabular-nums; }
       @media (max-width: 680px) { .midi-preview-sides { grid-template-columns: 1fr; } }
 
+      #editScopeReadOnlyButton { margin-top: 10px; }
+      #editScopeReadOnlyButton[aria-disabled="true"] { color: var(--quiet); cursor: default; }
+
       .status {
         max-height: 70px;
         min-height: 0;
@@ -3656,6 +3659,7 @@
                       <legend class="visually-hidden">Allowed changes</legend>
                       <div id="editScopeOptions" class="edit-scope-options"></div>
                     </fieldset>
+                    <button id="editScopeReadOnlyButton" class="secondary" type="button">Read only</button>
                   </div>
                 </div>
               </div>

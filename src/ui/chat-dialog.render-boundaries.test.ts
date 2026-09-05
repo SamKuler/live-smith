@@ -513,6 +513,7 @@ test("an Approval change does not rewrite unrelated Model Profile or composer co
       ["attachmentMenuButton", new Set(["disabled"])],
       ["pendingAttachments", new Set(["aria-busy"])],
       ["editScopeButton", new Set(["disabled"])],
+      ["editScopeReadOnlyButton", new Set(["aria-disabled"])],
     ]);
     for (const control of harness.document.querySelectorAll(
       "#editScopePanel input",

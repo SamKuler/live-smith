@@ -864,6 +864,7 @@
         }
 
         function closeEditScopes(restoreFocus = true) {
+          if (pendingEditScopes) pendingEditScopes.retainFocus = false;
           permissionsSessionId = null;
           document.getElementById("editScopePanel").hidden = true;
           const button = document.getElementById("editScopeButton");
@@ -915,6 +916,8 @@
           panel.querySelectorAll("input, select").forEach((control) => {
             setPropertyIfChanged(control, "disabled", disabled);
           });
+          setAttributeIfChanged(document.getElementById("editScopeReadOnlyButton"), "aria-disabled",
+            String(disabled || scopeSaving || scopes.length === 0));
           const status = document.getElementById("permissionsSaveStatus");
           setPropertyIfChanged(status, "textContent", scopeSaving ? "Saving…" : "");
           setPropertyIfChanged(status, "hidden", !scopeSaving);
@@ -935,18 +938,32 @@
           if (!firstControl.disabled) firstControl.focus({ preventScroll: true });
         }
 
-        async function saveEditScopes(scopes) {
+        async function saveEditScopes(scopes, control) {
           if (!permissionsSessionId || pendingEditScopes) return;
-          const change = { sessionId: permissionsSessionId, scopes: [...scopes] };
+          const change = {
+            sessionId: permissionsSessionId,
+            scopes: [...scopes],
+            control,
+            focusAnchor: control.matches("input, select")
+              ? document.getElementById("editScopeButton") : control,
+            retainFocus: true,
+          };
           pendingEditScopes = change;
+          // Keep focus inside Scope while saving disables its checkbox inputs.
+          // Mouse activation need not have focused the control that changed.
+          change.focusAnchor.focus({ preventScroll: true });
+          const releaseFocus = () => { change.retainFocus = false; };
+          change.focusAnchor.addEventListener("blur", releaseFocus);
           try {
             await bridgeClient.runCommand("set_session_edit_scopes", {
               sessionId: change.sessionId,
               editScopes: change.scopes,
             });
           } finally {
+            change.focusAnchor.removeEventListener("blur", releaseFocus);
             if (pendingEditScopes === change) pendingEditScopes = null;
             renderEditScopes();
+            restoreCommandControlFocus();
           }
         }
 
@@ -967,7 +984,7 @@
               if (control.disabled) return;
               void saveEditScopes(editScopeIds.filter((id) =>
                 document.getElementById(`editScope-${id}`).checked
-              ));
+              ), control);
             });
             label.append(control, document.createTextNode(editScopeShortLabels[scope]));
             row.append(label);
@@ -991,9 +1008,15 @@
             options.append(row);
           }
           document.getElementById("editScopeButton").addEventListener("click", toggleEditScopes);
+          document.getElementById("editScopeReadOnlyButton").addEventListener("click", () => {
+            const button = document.getElementById("editScopeReadOnlyButton");
+            if (button.getAttribute("aria-disabled") !== "true") {
+              void saveEditScopes([], button);
+            }
+          });
           document.getElementById("editScopeAll").addEventListener("change", (event) => {
             if (event.target.disabled) return;
-            void saveEditScopes(event.target.checked ? editScopeIds : []);
+            void saveEditScopes(event.target.checked ? editScopeIds : [], event.target);
           });
           document.getElementById("editScopeShell").addEventListener("keydown", (event) => {
             if (event.key !== "Escape" || !permissionsSessionId) return;
@@ -1001,12 +1024,14 @@
             event.stopPropagation();
             closeEditScopes();
           });
-          document.addEventListener("mousedown", (event) => {
+          function dismissEditScopesOutside(event) {
             if (
               permissionsSessionId &&
               !document.getElementById("editScopeShell").contains(event.target)
             ) closeEditScopes(false);
-          });
+          }
+          document.addEventListener("mousedown", dismissEditScopesOutside);
+          document.addEventListener("click", dismissEditScopesOutside);
         }
 
         function renderApplication() {
@@ -1221,8 +1246,16 @@
 
         function restoreCommandControlFocus() {
           const retained = retainedCommandControlFocus;
+          // The bridge unlocks before the Scope save's finally clears its own lock.
+          if (retained?.scopeChange && retained.scopeChange === pendingEditScopes) return;
           retainedCommandControlFocus = null;
           if (!retained) return;
+          const scopeChange = retained.scopeChange;
+          if (scopeChange && (
+            !scopeChange.retainFocus ||
+            permissionsSessionId !== scopeChange.sessionId ||
+            getState().activeSessionId !== scopeChange.sessionId
+          )) return;
           const target = retained.control?.isConnected
             ? retained.control
             : document.getElementById(retained.controlId);
@@ -1230,12 +1263,12 @@
             target?.isConnected &&
             !target.disabled &&
             !target.closest("[hidden]") &&
-            [
+            (scopeChange ? [scopeChange.focusAnchor] : [
               document.body,
               document.documentElement,
               retained.control,
               target,
-            ].includes(document.activeElement)
+            ]).includes(document.activeElement)
           ) {
             target.focus({ preventScroll: true });
           }
@@ -1247,11 +1280,12 @@
           activeCommandKind = kind;
           const feedback = kind ? commandFeedback[kind] : null;
           if (!feedback) return;
-          const focusedControl = document.activeElement?.matches(
+          const scopeChange = kind === "set_session_edit_scopes" ? pendingEditScopes : null;
+          const focusedControl = scopeChange?.control || (document.activeElement?.matches(
             "button, input, select, textarea",
           )
             ? document.activeElement
-            : null;
+            : null);
           activeCommandControl = feedback.controlId
             ? document.getElementById(feedback.controlId)
             : focusedControl;
@@ -1262,6 +1296,7 @@
             retainedCommandControlFocus = {
               control: focusedControl,
               controlId: focusedControl.id,
+              scopeChange,
             };
           }
           const busyLabel = activeCommandControl?.dataset.busyLabel ||
