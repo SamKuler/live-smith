@@ -37,6 +37,9 @@ import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
 
+// Shared by the CSS media query and the client's drawer focus boundary.
+export const INSPECTOR_DRAWER_MAX_WIDTH = 1038;
+
 export interface ChatClientScripts {
   actionPreview: string;
   attachments: string;
@@ -204,6 +207,7 @@ export function composeChatDocument(
     builtInSkillDefinitions(),
   );
   const document = template
+    .replaceAll("__INSPECTOR_DRAWER_MAX_WIDTH__", String(INSPECTOR_DRAWER_MAX_WIDTH))
     .replace(
       "__STATE__",
       () => JSON.stringify(serializeChatStateForHtml(state)),
@@ -221,7 +225,8 @@ export function composeChatDocument(
       () => injectSessionContract(scripts.sessionTimeline),
     )
     .replace("__ACTION_PREVIEW_SCRIPT__", () => scripts.actionPreview)
-    .replace("__BOOTSTRAP_SCRIPT__", () => injectEditScopeContract(scripts.bootstrap));
+    .replace("__BOOTSTRAP_SCRIPT__", () => injectEditScopeContract(scripts.bootstrap)
+      .replaceAll("__INSPECTOR_DRAWER_MAX_WIDTH__", String(INSPECTOR_DRAWER_MAX_WIDTH)));
 
   if (/__(?:STATE|BRIDGE|ACTION_PREVIEW_SCRIPT|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|COMPOSER_INPUT_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {
     throw new Error("Chat document composition left an unresolved placeholder.");

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { DirectApiProfile, SavedProfile } from "../model/profile.js";
+import { INSPECTOR_DRAWER_MAX_WIDTH } from "./chat-document.js";
 import type { ChatDialogState } from "./chat-state.js";
 import {
   capabilities,
@@ -138,7 +139,7 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
       });
       harness.window.dispatchEvent(new harness.window.Event("resize"));
     };
-    setViewportWidth(1038);
+    setViewportWidth(INSPECTOR_DRAWER_MAX_WIDTH);
 
     const chat = harness.document.querySelector<HTMLElement>(".chat-pane");
     const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
@@ -150,12 +151,12 @@ test("the narrow Inspector drawer isolates covered chat and restores focus on cl
     assert.equal(chat?.hasAttribute("inert"), true);
     assert.equal(harness.document.activeElement?.id, "agentTab");
 
-    setViewportWidth(1039);
+    setViewportWidth(INSPECTOR_DRAWER_MAX_WIDTH + 1);
     assert.equal(chat?.hasAttribute("inert"), false);
     prompt?.focus();
     assert.equal(harness.document.activeElement, prompt);
 
-    setViewportWidth(1038);
+    setViewportWidth(INSPECTOR_DRAWER_MAX_WIDTH);
     assert.equal(chat?.hasAttribute("inert"), true);
     assert.equal(harness.document.activeElement?.id, "agentTab");
 

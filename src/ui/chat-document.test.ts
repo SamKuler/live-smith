@@ -10,6 +10,7 @@ import {
 import type { SkillDefinition } from "../skills/format.js";
 import {
   composeChatDocument,
+  INSPECTOR_DRAWER_MAX_WIDTH,
   injectBuiltInSkillDefinitions,
   type ChatClientScripts,
 } from "./chat-document.js";
@@ -124,6 +125,29 @@ test("chat document injects the canonical recovery ledger bound", () => {
       Reflect.get(dom.window, "recoveryDigestLimit"),
       MAX_RECOVERY_ACTION_DIGESTS,
     );
+  } finally {
+    dom.window.close();
+  }
+});
+
+
+test("Inspector CSS and client receive the same breakpoint without rewriting Session content", () => {
+  const state = stateFixture();
+  state.contextSummary = "Literal __INSPECTOR_DRAWER_MAX_WIDTH__ in observed content";
+  const html = composeChatDocument(
+    `<style>@media (max-width: __INSPECTOR_DRAWER_MAX_WIDTH__px) { .inspector-pane { position: absolute; } }</style>
+     <script>window.state = JSON.parse(__STATE__); __BOOTSTRAP_SCRIPT__</script>`,
+    state,
+    { baseUrl: "http://127.0.0.1:12345", token: "test-token" },
+    { ...scripts, bootstrap: "window.drawerBreakpoint = __INSPECTOR_DRAWER_MAX_WIDTH__;" },
+  );
+  const dom = new JSDOM(html, { runScripts: "dangerously" });
+  try {
+    const rule = dom.window.document.styleSheets[0]!.cssRules[0] as CSSMediaRule;
+    const breakpoint = Reflect.get(dom.window, "drawerBreakpoint");
+    assert.equal(breakpoint, INSPECTOR_DRAWER_MAX_WIDTH);
+    assert.equal(rule.conditionText, `(max-width: ${breakpoint}px)`);
+    assert.equal(Reflect.get(dom.window, "state").contextSummary, state.contextSummary);
   } finally {
     dom.window.close();
   }

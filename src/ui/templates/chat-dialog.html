@@ -42,9 +42,12 @@
         --warn: #ffd166;
         --danger: #ff6e57;
         --trace: #78b9e8;
+        --sessions-pane-width: 180px;
+        --inspector-pane-width: 356px;
         --sessions-padding: 10px;
         --inspector-padding: 12px;
         --scrollbar-size: 7px;
+        --session-unread-dot-size: 7px;
         --scrollbar-thumb: rgba(198, 198, 198, 0.46);
       }
 
@@ -131,13 +134,13 @@
       main {
         position: relative;
         display: grid;
-        grid-template-columns: 180px minmax(0, 1fr);
+        grid-template-columns: var(--sessions-pane-width) minmax(0, 1fr);
         min-height: 0;
         overflow: hidden;
       }
 
       .app.inspector-open main {
-        grid-template-columns: 180px minmax(0, 1fr) 356px;
+        grid-template-columns: var(--sessions-pane-width) minmax(0, 1fr) var(--inspector-pane-width);
       }
 
       .app.sessions-collapsed main {
@@ -145,7 +148,7 @@
       }
 
       .app.sessions-collapsed.inspector-open main {
-        grid-template-columns: minmax(0, 1fr) 356px;
+        grid-template-columns: minmax(0, 1fr) var(--inspector-pane-width);
       }
 
       .sessions-pane,
@@ -317,8 +320,8 @@
 
       .session-unread-dot {
         flex: 0 0 auto;
-        width: 7px;
-        height: 7px;
+        width: var(--session-unread-dot-size);
+        height: var(--session-unread-dot-size);
         border-radius: 50%;
         background: var(--accent);
         box-shadow: 0 0 0 2px var(--accent-soft);
@@ -1276,7 +1279,7 @@
         width: 250px;
         max-width: calc(100vw - 32px);
         padding: 7px 9px;
-        border: 1px solid var(--border-strong);
+        border: 1px solid var(--line-soft);
         border-radius: 6px;
         background: #171717;
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
@@ -3557,9 +3560,9 @@
         white-space: pre-wrap;
       }
 
-      @media (max-width: 1038px) {
+      @media (max-width: __INSPECTOR_DRAWER_MAX_WIDTH__px) {
         .app.inspector-open main {
-          grid-template-columns: 180px minmax(0, 1fr);
+          grid-template-columns: var(--sessions-pane-width) minmax(0, 1fr);
         }
 
         .app.sessions-collapsed.inspector-open main {
@@ -3570,13 +3573,13 @@
           position: absolute;
           z-index: 30;
           inset: 0 0 0 auto;
-          width: min(356px, calc(100% - 180px));
+          width: min(var(--inspector-pane-width), calc(100% - var(--sessions-pane-width)));
           border-left: 1px solid var(--line);
           box-shadow: -12px 0 24px rgba(0, 0, 0, 0.32);
         }
 
         .app.sessions-collapsed.inspector-open .inspector-pane {
-          width: min(356px, 100%);
+          width: min(var(--inspector-pane-width), 100%);
         }
       }
 
