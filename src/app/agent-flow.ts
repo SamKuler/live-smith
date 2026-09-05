@@ -3877,7 +3877,7 @@ export async function runAgentFlow(
               },
               withActionExecutionLock: (operation) =>
                 liveMutationQueue.run(signal, operation),
-              confirmActions: (plan) => decidePlanApproval(
+              confirmActions: (plan, guard) => decidePlanApproval(
                 storageDirectory,
                 session.id,
                 plan,
@@ -3885,6 +3885,7 @@ export async function runAgentFlow(
                   kind: "apply",
                   message: plan.message,
                   groups: actionDiffGroups(plan.actions, plan.targets),
+                  ...(guard.previews === undefined ? {} : { previews: guard.previews }),
                 }),
               ),
               confirmRecoveryResolution: (message) =>

@@ -51,7 +51,10 @@ import {
   AttachmentProcessingError,
   type AttachmentQuotaItem,
 } from "../attachments/contracts.js";
-import { captureLiveActionPreflightSnapshot } from "../live/preflight.js";
+import {
+  captureLiveActionPreflightObservation,
+  type LiveActionPreflightObservation,
+} from "../live/preflight.js";
 import {
   requiredEditScopesForAction,
   requiredEditScopesForPlan,
@@ -924,7 +927,8 @@ export async function preflightAgentPlan(
     action: AgentPlan["actions"][number],
     target: LiveInteractionContext["target"],
     requestAudioSources?: RequestAudioSampleSources,
-  ) => string | Promise<string> = captureLiveActionPreflightSnapshot,
+    includePreview?: boolean,
+  ) => string | LiveActionPreflightObservation | Promise<string | LiveActionPreflightObservation> = captureLiveActionPreflightObservation,
   authorization?: {
     refresh(): Promise<unknown>;
     assert(plan: AgentPlan, bindings: AgentPlanBindings): void;
@@ -947,6 +951,7 @@ export async function preflightAgentPlan(
     snapshotter,
     initialBindings,
     requestAudioSources,
+    plan.actions.length === 1,
   );
   authorization?.assert(plan, initialBindings);
 
@@ -970,7 +975,7 @@ export async function preflightAgentPlan(
       requestAudioSources,
     );
     const changedIndex = currentSnapshots.findIndex(
-      (snapshot, index) => snapshot !== initialSnapshots[index],
+      (snapshot, index) => snapshot.fingerprint !== initialSnapshots[index]?.fingerprint,
     );
     if (
       changedIndex !== -1 ||
@@ -988,6 +993,10 @@ export async function preflightAgentPlan(
     enumerable: true,
     value: planActionIdentityKeys(plan, initialBindings),
   });
+  const preview = plan.actions.length === 1 ? initialSnapshots[0]?.preview : undefined;
+  if (preview) {
+    Object.defineProperty(guard, "previews", { enumerable: true, value: [preview] });
+  }
   return guard;
 }
 
@@ -1058,16 +1067,18 @@ async function captureAgentPlanPreflightSnapshots(
     action: AgentPlan["actions"][number],
     target: LiveInteractionContext["target"],
     requestAudioSources?: RequestAudioSampleSources,
-  ) => string | Promise<string>,
+    includePreview?: boolean,
+  ) => string | LiveActionPreflightObservation | Promise<string | LiveActionPreflightObservation>,
   bindings: AgentPlanBindings,
   requestAudioSources?: RequestAudioSampleSources,
-): Promise<string[]> {
-  const snapshots: string[] = [];
+  includePreview = false,
+): Promise<LiveActionPreflightObservation[]> {
+  const snapshots: LiveActionPreflightObservation[] = [];
   for (const [actionIndex, action] of plan.actions.entries()) {
     throwIfAborted(signal);
     const boundTrack = boundTrackForAction(action, actionIndex, bindings);
     if ("trackRef" in action && action.trackRef && !boundTrack) {
-      snapshots.push(`deferred:${action.type}:${action.trackRef}`);
+      snapshots.push({ fingerprint: `deferred:${action.type}:${action.trackRef}` });
       continue;
     }
     const actionTarget = boundTrack
@@ -1079,12 +1090,14 @@ async function captureAgentPlanPreflightSnapshots(
       actionTarget,
     );
     throwIfAborted(signal);
-    snapshots.push(await snapshotter(
+    const captured = await snapshotter(
       context,
       action,
       actionTarget,
       requestAudioSources,
-    ));
+      includePreview,
+    );
+    snapshots.push(typeof captured === "string" ? { fingerprint: captured } : captured);
     throwIfAborted(signal);
   }
   return snapshots;
@@ -1107,6 +1120,7 @@ interface AgentRequestCallbacks {
   onSessionStateInvalidated?(): Promise<void> | void;
   confirmActions(
     plan: AgentPlan,
+    guard: AgentActionPreflightGuard<AgentPlanBindings>,
   ): Promise<boolean | AgentConfirmationDecision>;
   confirmRecoveryResolution?(message: string): Promise<boolean>;
   withActionExecutionLock?(

@@ -7,6 +7,7 @@ import composerInputScript from "./client/composer-input.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
 import skillManagerScript from "./client/skill-manager.script.html";
+import actionPreviewScript from "./client/action-preview.script.html";
 import bootstrapScript from "./client/bootstrap.script.html";
 import type { ChatBridgeState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -27,6 +28,7 @@ export function chatHtml(
   bridge: { baseUrl: string; token: string },
 ): string {
   return composeChatDocument(chatDialog, state, bridge, {
+    actionPreview: actionPreviewScript,
     attachments: attachmentsScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,

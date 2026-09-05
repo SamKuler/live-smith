@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 
 import { resolveEditScopes, type EditScope } from "../agent/edit-scopes.js";
+import type { AgentActionPreview } from "../agent/action-preview.js";
 import type { SessionEvent } from "../storage/events.js";
 import type { SessionModelSelection } from "../storage/sessions.js";
 import { isSafeStorageId } from "../storage/id.js";
@@ -269,6 +270,7 @@ export interface ChatBridgeConfirmationRequest {
   kind: "apply" | "resolve_recovery";
   message: string;
   groups: ActionDiffGroup[];
+  previews?: AgentActionPreview[];
 }
 
 export interface ChatBridgeStream {
@@ -437,6 +439,7 @@ type StateChangeSsePayloadBase =
       kind: ChatBridgeConfirmationRequest["kind"];
       message: string;
       groups: ActionDiffGroup[];
+      previews?: AgentActionPreview[];
       activity: StateChangeActivity;
     }
   | {
@@ -1219,6 +1222,7 @@ export async function createChatBridge(
             kind: request.kind,
             message: request.message,
             groups: request.groups,
+            ...(request.previews === undefined ? {} : { previews: request.previews }),
             activity: stateChangeActivity(activity),
           });
         });
@@ -1438,6 +1442,7 @@ export async function createChatBridge(
             kind: pending.request.kind,
             message: pending.request.message,
             groups: pending.request.groups,
+            ...(pending.request.previews === undefined ? {} : { previews: pending.request.previews }),
             activity: stateChangeActivity(activity ?? {
               sessionId: pending.sessionId,
               status: "waiting_confirmation",

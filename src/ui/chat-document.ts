@@ -35,8 +35,10 @@ import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
+import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
 
 export interface ChatClientScripts {
+  actionPreview: string;
   attachments: string;
   bootstrap: string;
   bridgeClient: string;
@@ -172,6 +174,8 @@ function injectEditScopeContract(script: string): string {
 
 function injectSessionContract(script: string): string {
   return script
+    .replaceAll("__MAX_MIDI_PREVIEW_NOTES__", String(MAX_MIDI_PREVIEW_NOTES))
+    .replaceAll("__MAX_PARAMETER_PREVIEW_VALUE_ITEMS__", String(MAX_PARAMETER_PREVIEW_VALUE_ITEMS))
     .replaceAll(
       "__MAX_SESSION_TITLE_CODE_POINTS__",
       String(MAX_SESSION_TITLE_CODE_POINTS),
@@ -216,9 +220,10 @@ export function composeChatDocument(
       "__SESSION_TIMELINE_SCRIPT__",
       () => injectSessionContract(scripts.sessionTimeline),
     )
+    .replace("__ACTION_PREVIEW_SCRIPT__", () => scripts.actionPreview)
     .replace("__BOOTSTRAP_SCRIPT__", () => injectEditScopeContract(scripts.bootstrap));
 
-  if (/__(?:STATE|BRIDGE|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|COMPOSER_INPUT_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {
+  if (/__(?:STATE|BRIDGE|ACTION_PREVIEW_SCRIPT|HOST_ADAPTER_SCRIPT|PROFILE_EDITOR_SCRIPT|ATTACHMENTS_SCRIPT|COMPOSER_INPUT_SCRIPT|SKILL_MANAGER_SCRIPT|BRIDGE_CLIENT_SCRIPT|MARKDOWN_RENDERER_SCRIPT|SESSION_TIMELINE_SCRIPT|BOOTSTRAP_SCRIPT)__/.test(document)) {
     throw new Error("Chat document composition left an unresolved placeholder.");
   }
   return document;

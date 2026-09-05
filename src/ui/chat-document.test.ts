@@ -17,6 +17,7 @@ import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { stateFixture } from "./chat-dialog.test-harness.js";
 
 const scripts: ChatClientScripts = {
+  actionPreview: "",
   attachments: "",
   bootstrap: "",
   bridgeClient: "",

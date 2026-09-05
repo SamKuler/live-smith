@@ -10,7 +10,6 @@ import {
   WarpMode,
   type Clip,
   type ClipSlot,
-  type NoteDescription,
   type TakeLane,
   type Track,
   type ExtensionContext,
@@ -52,7 +51,7 @@ import {
 } from "./resolve.js";
 import { resolveSampleSource } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
-import { transformMidiNotes, type MidiTransform } from "./midi-transform.js";
+import { calculateMidiNoteEdit, midiNotesEqual } from "./midi-transform.js";
 import {
   bindAgentPlanTargets,
   liveActionIdentityKeys,
@@ -622,28 +621,16 @@ async function executeAction(
         );
       }
       const segmentEnd = action.segmentStartTime + action.segmentDurationBeats;
-      const tolerance = 1e-7;
-      if (segmentEnd > resolvedClip.duration + tolerance) {
-        throw new Error(
-          `Relative segment ${action.segmentStartTime}-${segmentEnd} exceeds MIDI clip "${resolvedClip.name}" bounds 0-${resolvedClip.duration}. Inspect the clip and use a segment inside its duration.`,
-        );
-      }
-      const preserved = resolvedClip.notes.filter((note) => {
-        const noteEnd = note.startTime + note.duration;
-        return !(
-          note.startTime < segmentEnd - tolerance &&
-          noteEnd > action.segmentStartTime + tolerance
-        );
-      });
-      const removedCount = resolvedClip.notes.length - preserved.length;
-      const merged = [...preserved, ...action.notes].sort(compareMidiNotes);
-      if (midiNotesEqual(resolvedClip.notes, merged)) {
+      const edited = calculateMidiNoteEdit({
+        name: resolvedClip.name, duration: resolvedClip.duration, notes: resolvedClip.notes,
+      }, action);
+      if (!edited.changed) {
         return noMutation(
           `Kept relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}" because the resulting notes already match.`,
         );
       }
-      resolvedClip.notes = merged;
-      return `Replaced relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${removedCount} notes, added ${action.notes.length}, final ${merged.length} notes.`;
+      resolvedClip.notes = edited.notes;
+      return `Replaced relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${edited.removedNoteCount} notes, added ${action.notes.length}, final ${edited.notes.length} notes.`;
     }
     case "transpose_midi_notes":
     case "quantize_midi_notes":
@@ -665,18 +652,16 @@ async function executeAction(
           `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
         );
       }
-      const transformed = transformMidiNotes(
-        clip.notes,
-        clip.duration,
-        midiTransformForAction(action),
-      );
-      if (transformedMidiNotesEqual(clip.notes, transformed)) {
+      const edited = calculateMidiNoteEdit({
+        name: clip.name, duration: clip.duration, notes: clip.notes,
+      }, action);
+      if (!edited.changed) {
         return noMutation(
           `Kept MIDI clip "${clip.name}" on track "${track.name}" because the transform produced no note changes.`,
         );
       }
-      clip.notes = transformed;
-      return `${midiTransformResult(action)} in MIDI clip "${clip.name}" on track "${track.name}" (${transformed.length} notes).`;
+      clip.notes = edited.notes;
+      return `${midiTransformResult(action)} in MIDI clip "${clip.name}" on track "${track.name}" (${edited.notes.length} notes).`;
     }
     case "insert_device": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
@@ -1101,31 +1086,6 @@ async function executeAction(
       await slot.deleteClip();
       return `Deleted Session clip "${name}" from slot ${action.slotIndex} on track "${track.name}".`;
     }
-  }
-}
-
-function midiTransformForAction(
-  action: Extract<AgentAction, {
-    type:
-      | "transpose_midi_notes"
-      | "quantize_midi_notes"
-      | "scale_midi_velocity"
-      | "shift_midi_notes";
-  }>,
-): MidiTransform {
-  switch (action.type) {
-    case "transpose_midi_notes":
-      return { type: "transpose", semitones: action.semitones };
-    case "quantize_midi_notes":
-      return {
-        type: "quantize",
-        gridBeats: action.gridBeats,
-        strength: action.strength,
-      };
-    case "scale_midi_velocity":
-      return { type: "scale_velocity", factor: action.factor };
-    case "shift_midi_notes":
-      return { type: "shift", offsetBeats: action.offsetBeats };
   }
 }
 
@@ -1680,74 +1640,6 @@ function arrangementClipLocation(
   return lane
     ? `in Take Lane ${laneIndex} "${safeObjectName(lane, "unnamed Take Lane")}" on track "${track.name}"`
     : `on track "${track.name}"`;
-}
-
-function compareMidiNotes(left: NoteDescription, right: NoteDescription): number {
-  return left.startTime - right.startTime ||
-    left.pitch - right.pitch ||
-    left.duration - right.duration ||
-    compareOptionalNumbers(left.velocity, right.velocity) ||
-    compareOptionalBooleans(left.muted, right.muted) ||
-    compareOptionalNumbers(left.probability, right.probability) ||
-    compareOptionalNumbers(left.velocityDeviation, right.velocityDeviation) ||
-    compareOptionalNumbers(left.releaseVelocity, right.releaseVelocity);
-}
-
-function midiNotesEqual(
-  left: readonly NoteDescription[],
-  right: readonly NoteDescription[],
-): boolean {
-  if (left.length !== right.length) return false;
-  const sortedLeft = [...left].sort(compareMidiNotes);
-  const sortedRight = [...right].sort(compareMidiNotes);
-  return sortedLeft.every((note, index) => midiNoteEqual(note, sortedRight[index]!));
-}
-
-function transformedMidiNotesEqual(
-  current: readonly NoteDescription[],
-  transformed: readonly NoteDescription[],
-): boolean {
-  return current.length === transformed.length && current.every((note, index) => {
-    const candidate = transformed[index]!;
-    return note.pitch === candidate.pitch &&
-      note.startTime === candidate.startTime &&
-      note.duration === candidate.duration &&
-      note.velocity === candidate.velocity &&
-      note.muted === candidate.muted &&
-      note.probability === candidate.probability &&
-      note.velocityDeviation === candidate.velocityDeviation &&
-      note.releaseVelocity === candidate.releaseVelocity;
-  });
-}
-
-function midiNoteEqual(left: NoteDescription, right: NoteDescription): boolean {
-  return left.pitch === right.pitch &&
-    sameNumericValue(left.startTime, right.startTime) &&
-    sameNumericValue(left.duration, right.duration) &&
-    optionalNumbersEqual(left.velocity, right.velocity) &&
-    left.muted === right.muted &&
-    optionalNumbersEqual(left.probability, right.probability) &&
-    optionalNumbersEqual(left.velocityDeviation, right.velocityDeviation) &&
-    optionalNumbersEqual(left.releaseVelocity, right.releaseVelocity);
-}
-
-function optionalNumbersEqual(left?: number, right?: number): boolean {
-  return left === undefined || right === undefined
-    ? left === right
-    : sameNumericValue(left, right);
-}
-
-function compareOptionalNumbers(left?: number, right?: number): number {
-  if (left === undefined) return right === undefined ? 0 : -1;
-  if (right === undefined) return 1;
-  return left - right;
-}
-
-function compareOptionalBooleans(left?: boolean, right?: boolean): number {
-  if (left === right) return 0;
-  if (left === undefined) return -1;
-  if (right === undefined) return 1;
-  return left ? 1 : -1;
 }
 
 function safeObjectName(value: { readonly name: string }, fallback: string): string {

@@ -27,6 +27,8 @@
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
       const editScopeIds = __EDIT_SCOPES__;
+      const maximumMidiPreviewNotes = __MAX_MIDI_PREVIEW_NOTES__;
+      const maximumParameterPreviewValueItems = __MAX_PARAMETER_PREVIEW_VALUE_ITEMS__;
       if (
         typeof parseComposerInput !== "function" ||
         typeof closeComposerAutocomplete !== "function"
@@ -2583,6 +2585,55 @@
           ].includes(value.status) &&
           (value.message === undefined || typeof value.message === "string") &&
           typeof value.unread === "boolean";
+      }
+
+      function isWirePreviewNote(note) {
+        return isWireRecord(note) && hasOnlyWireKeys(note, [
+          "pitch", "startTime", "duration", "velocity", "muted", "probability",
+          "velocityDeviation", "releaseVelocity", "selected",
+        ]) && Number.isInteger(note.pitch) && note.pitch >= 0 && note.pitch <= 127 &&
+          Number.isFinite(note.startTime) && Number.isFinite(note.duration) && note.duration > 0 &&
+          ["velocity", "probability", "velocityDeviation", "releaseVelocity"].every((key) =>
+            note[key] === undefined || Number.isFinite(note[key])) &&
+          ["muted", "selected"].every((key) => note[key] === undefined || typeof note[key] === "boolean");
+      }
+
+      function isWirePreviewSide(side, range) {
+        return isWireRecord(side) && hasOnlyWireKeys(side, ["notes", "totalNoteCount", "omittedNoteCount"]) &&
+          Array.isArray(side.notes) && side.notes.length <= maximumMidiPreviewNotes && side.notes.every(isWirePreviewNote) &&
+          side.notes.every((note) => note.startTime >= range.start && note.startTime < range.end &&
+            note.startTime + note.duration <= range.end + 1e-7) &&
+          Number.isSafeInteger(side.totalNoteCount) && side.totalNoteCount >= side.notes.length &&
+          side.omittedNoteCount === side.totalNoteCount - side.notes.length;
+      }
+
+      function isWireActionPreviews(previews, kind, groups) {
+        if (previews === undefined) return true;
+        if (kind !== "apply" || !Array.isArray(previews) || previews.length !== 1 ||
+          groups.reduce((count, group) => count + group.rows.length, 0) !== 1) return false;
+        const preview = previews[0];
+        if (!isWireRecord(preview) || preview.actionIndex !== 0 || preview.status !== "proposed" ||
+          typeof preview.targetLabel !== "string") return false;
+        if (preview.kind === "midi-notes") {
+          const range = preview.range;
+          return hasOnlyWireKeys(preview, ["kind", "actionIndex", "status", "targetLabel", "range", "before", "after"]) &&
+            isWireRecord(range) && hasOnlyWireKeys(range, ["coordinate", "start", "end"]) &&
+            range.coordinate === "clip-beats" && Number.isFinite(range.start) && Number.isFinite(range.end) &&
+            range.start >= 0 && range.end > range.start && isWirePreviewSide(preview.before, range) && isWirePreviewSide(preview.after, range);
+        }
+        return preview.kind === "parameter-value" && hasOnlyWireKeys(preview, [
+          "kind", "actionIndex", "status", "targetLabel", "parameterName", "before", "after",
+          "minimum", "maximum", "isQuantized", "valueItems",
+        ]) && typeof preview.parameterName === "string" &&
+          [preview.before, preview.after, preview.minimum, preview.maximum].every(Number.isFinite) &&
+          preview.minimum <= preview.maximum &&
+          preview.before >= preview.minimum && preview.before <= preview.maximum &&
+          preview.after >= preview.minimum && preview.after <= preview.maximum &&
+          (preview.isQuantized === undefined || typeof preview.isQuantized === "boolean") &&
+          (preview.valueItems === undefined || Array.isArray(preview.valueItems) &&
+            preview.valueItems.length <= maximumParameterPreviewValueItems && preview.valueItems.every((item) =>
+            isWireRecord(item) && hasOnlyWireKeys(item, ["name", "shortName"]) &&
+            typeof item.name === "string" && typeof item.shortName === "string"));
       }
 
       function isWireChatBridgeState(value) {
@@ -7653,6 +7704,7 @@
                 "kind",
                 "message",
                 "groups",
+                "previews",
                 "activity",
                 "bridgeStateRevision",
               ]) ||
@@ -7666,7 +7718,8 @@
               !payload.message ||
               (payload.kind === "apply"
                 ? !isWireActionDiffGroups(payload.groups)
-                : !Array.isArray(payload.groups) || payload.groups.length !== 0)
+                : !Array.isArray(payload.groups) || payload.groups.length !== 0) ||
+              !isWireActionPreviews(payload.previews, payload.kind, payload.groups)
             ) return;
             const activity = stateChangeActivity(payload, true);
             if (
@@ -7714,7 +7767,8 @@
               payload.id !== pending.id ||
               payload.kind !== pending.kind ||
               payload.message !== pending.message ||
-              !wireActionDiffGroupsEqual(payload.groups, pending.groups)
+              !wireActionDiffGroupsEqual(payload.groups, pending.groups) ||
+              !sameJsonData(payload.previews, pending.previews)
             )) return;
             if (
               !isPendingReplay &&
@@ -7757,6 +7811,7 @@
               modelTurnEpoch: payload.modelTurnEpoch,
               message: payload.message,
               groups: payload.groups || [],
+              ...(payload.previews === undefined ? {} : { previews: payload.previews }),
             });
             if (applySendActivity(
               attempt,

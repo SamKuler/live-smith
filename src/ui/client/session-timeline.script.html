@@ -6,6 +6,7 @@
         getWebSearchUpdates,
         getPendingConfirmation,
         getPendingUserMessage,
+        renderActionPreview,
         editMessageDraft,
         isMessageEditLocked,
         hasSessionLocalWork,
@@ -1431,6 +1432,15 @@
         }
       }
 
+      function buildEmptyState() {
+        const existing = document.getElementById("timeline").querySelector(".empty");
+        if (existing) return existing;
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "Describe what you would like to do in Live.";
+        return empty;
+      }
+
       function markMessageArrival(item) {
         item.classList.add("message-enter");
         item.addEventListener("animationend", () => {
@@ -1526,10 +1536,7 @@
         if (!assistantDraft) {
           item?.remove();
           if (!timeline.children.length) {
-            const empty = document.createElement("div");
-            empty.className = "empty";
-            empty.textContent = "No messages in this session yet.";
-            timeline.append(empty);
+            timeline.append(buildEmptyState());
           }
           renderedAssistantDraft = "";
           return;
@@ -1789,10 +1796,7 @@
           !pendingConfirmation &&
           !pendingUserMessage
         ) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "No messages in this session yet.";
-          desiredNodes.push(empty);
+          desiredNodes.push(buildEmptyState());
         }
 
         for (const entry of timelineActivityEntries(events)) {
@@ -2287,6 +2291,7 @@
         card.setAttribute("aria-describedby", message.id);
 
         card.append(title, message);
+        for (const preview of confirm.previews || []) card.append(renderActionPreview(preview));
 
         for (const group of groups) {
           const heading = document.createElement("div");

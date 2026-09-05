@@ -10,10 +10,19 @@ import {
   type Device,
   type DeviceParameter,
   type ExtensionContext,
+  type NoteDescription,
   type Track,
 } from "@ableton-extensions/sdk";
 
 import type { AgentAction } from "../agent/actions.js";
+import {
+  MAX_MIDI_PREVIEW_NOTES,
+  MAX_PARAMETER_PREVIEW_VALUE_ITEMS,
+  type AgentActionPreview,
+  type MidiActionPreview,
+  type ParameterActionPreview,
+} from "../agent/action-preview.js";
+import { calculateMidiNoteEdit, type MidiNoteEditAction } from "./midi-transform.js";
 import {
   assertParameterValueInObservedRange,
   findExactParameterMatch,
@@ -46,12 +55,40 @@ import type { LiveTarget } from "./target.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
+export interface LiveActionPreflightObservation {
+  fingerprint: string;
+  preview?: AgentActionPreview;
+}
+
 export async function captureLiveActionPreflightSnapshot(
   context: Api,
   action: AgentAction,
   target: LiveTarget,
   requestAudioSources?: RequestAudioSampleSources,
 ): Promise<string> {
+  return (await captureLiveActionPreflightObservation(
+    context, action, target, requestAudioSources, false,
+  )).fingerprint;
+}
+
+export async function captureLiveActionPreflightObservation(
+  context: Api,
+  action: AgentAction,
+  target: LiveTarget,
+  requestAudioSources?: RequestAudioSampleSources,
+  includePreview = true,
+): Promise<LiveActionPreflightObservation> {
+  const observed = await observeActionPreflight(context, action, target, requestAudioSources, includePreview);
+  return typeof observed === "string" ? { fingerprint: observed } : observed;
+}
+
+async function observeActionPreflight(
+  context: Api,
+  action: AgentAction,
+  target: LiveTarget,
+  requestAudioSources: RequestAudioSampleSources | undefined,
+  includePreview: boolean,
+): Promise<string | LiveActionPreflightObservation> {
   const song = context.application.song;
   const songIdentity = requireHandleIdentity(song, "Live Set");
 
@@ -178,11 +215,12 @@ export async function captureLiveActionPreflightSnapshot(
           `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
         );
       }
-      return fingerprint(action.type, {
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         clip: clipContentIdentity(clip),
-      });
+      };
+      return midiPreflightObservation(action, state, includePreview);
     }
     case "transpose_midi_notes":
     case "quantize_midi_notes":
@@ -195,11 +233,12 @@ export async function captureLiveActionPreflightSnapshot(
           `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
         );
       }
-      return fingerprint(action.type, {
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         clip: clipContentIdentity(clip),
-      });
+      };
+      return midiPreflightObservation(action, state, includePreview);
     }
     case "insert_device": {
       const track = resolveTrack(context, action.trackName, target);
@@ -286,7 +325,7 @@ export async function captureLiveActionPreflightSnapshot(
           `Could not verify the current value for parameter "${parameter.name}" on device "${device.name}".`,
         );
       }
-      return fingerprint(action.type, {
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         device: {
@@ -294,14 +333,9 @@ export async function captureLiveActionPreflightSnapshot(
           name: device.name,
           path,
         },
-        parameter: {
-          id: requireHandleIdentity(parameter, "device parameter"),
-          name: parameter.name,
-          min: parameter.min,
-          max: parameter.max,
-          currentValue,
-        },
-      });
+        parameter: parameterWriteObservation(parameter, currentValue),
+      };
+      return parameterPreflightObservation(action, state, `Device "${state.device.name}" on track "${state.track.name}"`, includePreview);
     }
     case "duplicate_device":
     case "delete_device": {
@@ -526,11 +560,12 @@ export async function captureLiveActionPreflightSnapshot(
         `on track "${track.name}"`,
       );
       const currentValue = await verifiedParameterValue(parameter, "track mixer");
-      return fingerprint(action.type, {
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
-        parameter: parameterIdentity(parameter, currentValue),
-      });
+        parameter: parameterWriteObservation(parameter, currentValue),
+      };
+      return parameterPreflightObservation(action, state, `Mixer on track "${state.track.name}"`, includePreview);
     }
     case "set_chain_mixer_parameter": {
       const track = resolveTrack(context, action.trackName, target);
@@ -552,14 +587,16 @@ export async function captureLiveActionPreflightSnapshot(
         `in Chain ${action.chainIndex} of Rack "${resolved.rackTarget.device.name}"`,
       );
       const currentValue = await verifiedParameterValue(parameter, "Rack Chain mixer");
-      return fingerprint(action.type, {
+      const rack = { id: requireHandleIdentity(resolved.rackTarget.device, "Rack device"), name: resolved.rackTarget.device.name };
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         rackPath: resolved.rackTarget.path,
-        rack: deviceTargetIdentity(resolved.rackTarget.device),
+        rack,
         chain: chainTargetIdentity(resolved.chain),
-        parameter: parameterIdentity(parameter, currentValue),
-      });
+        parameter: parameterWriteObservation(parameter, currentValue),
+      };
+      return parameterPreflightObservation(action, state, `Chain ${action.chainIndex} mixer in Rack "${rack.name}" on track "${state.track.name}"`, includePreview);
     }
     case "create_take_lane": {
       const track = resolveTrack(context, action.trackName, target);
@@ -717,10 +754,20 @@ async function verifiedParameterValue(
   return currentValue;
 }
 
+interface ParameterObservation {
+  id: string;
+  name: string;
+  min: number;
+  max: number;
+  currentValue: number;
+  isQuantized?: boolean;
+  valueItems?: { name: string; shortName: string }[];
+}
+
 function parameterIdentity(
   parameter: DeviceParameter<"1.0.0">,
   currentValue: number,
-): object {
+): ParameterObservation {
   return {
     id: requireHandleIdentity(parameter, "device parameter"),
     name: parameter.name,
@@ -728,6 +775,49 @@ function parameterIdentity(
     max: parameter.max,
     currentValue,
   };
+}
+
+function parameterWriteObservation(
+  parameter: DeviceParameter<"1.0.0">,
+  currentValue: number,
+): ParameterObservation {
+  const observed = parameterIdentity(parameter, currentValue);
+  try {
+    const isQuantized = parameter.isQuantized;
+    const valueItems = parameter.valueItems;
+    if (typeof isQuantized === "boolean" && Array.isArray(valueItems) &&
+        valueItems.length <= MAX_PARAMETER_PREVIEW_VALUE_ITEMS &&
+        valueItems.every((item) => item && typeof item.name === "string" && typeof item.shortName === "string")) {
+      observed.isQuantized = isQuantized;
+      observed.valueItems = valueItems.map(({ name, shortName }) => ({ name, shortName }));
+    }
+  } catch {
+    // Optional label metadata cannot prevent a validated numeric write.
+  }
+  return observed;
+}
+
+function parameterPreflightObservation(
+  action: Extract<AgentAction, { type: "set_device_parameter" | "set_track_mixer_parameter" | "set_chain_mixer_parameter" }>,
+  state: { parameter: ParameterObservation },
+  targetLabel: string,
+  includePreview: boolean,
+): LiveActionPreflightObservation {
+  const result: LiveActionPreflightObservation = { fingerprint: fingerprint(action.type, state) };
+  const parameter = state.parameter;
+  if (!includePreview || ![parameter.currentValue, action.value, parameter.min, parameter.max].every(Number.isFinite) ||
+      parameter.min > parameter.max || parameter.currentValue < parameter.min || parameter.currentValue > parameter.max ||
+      action.value < parameter.min || action.value > parameter.max ||
+      typeof parameter.name !== "string" || typeof targetLabel !== "string") return result;
+  const preview: ParameterActionPreview = {
+    kind: "parameter-value", actionIndex: 0, status: "proposed", targetLabel,
+    parameterName: parameter.name, before: parameter.currentValue, after: action.value,
+    minimum: parameter.min, maximum: parameter.max,
+    ...(parameter.isQuantized === undefined ? {} : { isQuantized: parameter.isQuantized }),
+    ...(parameter.valueItems === undefined ? {} : { valueItems: parameter.valueItems }),
+  };
+  result.preview = preview;
+  return result;
 }
 
 function deviceTargetIdentity(device: Device<"1.0.0">): object {
@@ -832,7 +922,7 @@ function sampleSourceIdentity(
     : { id: source.identity };
 }
 
-function trackIdentity(track: Track<"1.0.0">): object {
+function trackIdentity(track: Track<"1.0.0">) {
   return {
     id: requireHandleIdentity(track, "track"),
     name: track.name,
@@ -860,7 +950,15 @@ async function trackContentIdentity(track: Track<"1.0.0">): Promise<object> {
   };
 }
 
-function clipContentIdentity(clip: import("@ableton-extensions/sdk").Clip<"1.0.0">): object {
+interface MidiClipObservation {
+  name: string;
+  duration: number;
+  notes: NoteDescription[];
+}
+
+function clipContentIdentity(clip: MidiClip<"1.0.0">): MidiClipObservation;
+function clipContentIdentity(clip: Clip<"1.0.0">): object;
+function clipContentIdentity(clip: Clip<"1.0.0">): object {
   return {
     id: requireHandleIdentity(clip, "clip"),
     name: clip.name,
@@ -888,18 +986,58 @@ function clipContentIdentity(clip: import("@ableton-extensions/sdk").Clip<"1.0.0
 }
 
 function midiNoteIdentity(
-  note: import("@ableton-extensions/sdk").NoteDescription,
-): object {
+  note: NoteDescription,
+): NoteDescription {
   return {
     pitch: note.pitch,
     startTime: note.startTime,
     duration: note.duration,
-    velocity: note.velocity,
-    muted: note.muted,
-    probability: note.probability,
-    velocityDeviation: note.velocityDeviation,
-    releaseVelocity: note.releaseVelocity,
+    ...(note.velocity === undefined ? {} : { velocity: note.velocity }),
+    ...(note.muted === undefined ? {} : { muted: note.muted }),
+    ...(note.probability === undefined ? {} : { probability: note.probability }),
+    ...(note.velocityDeviation === undefined ? {} : { velocityDeviation: note.velocityDeviation }),
+    ...(note.releaseVelocity === undefined ? {} : { releaseVelocity: note.releaseVelocity }),
   };
+}
+
+function midiPreflightObservation(
+  action: MidiNoteEditAction,
+  state: { track: { name: string }; clip: MidiClipObservation },
+  includePreview: boolean,
+): LiveActionPreflightObservation {
+  const result: LiveActionPreflightObservation = { fingerprint: fingerprint(action.type, state) };
+  if (!includePreview) return result;
+  try {
+    const clip = state.clip;
+    if (!Number.isFinite(clip.duration) || clip.duration <= 0 ||
+        typeof clip.name !== "string" || typeof state.track.name !== "string") return result;
+    const after = calculateMidiNoteEdit(clip, action).notes;
+    if (![clip.notes, after].every((notes) => notes.every((note) => midiNoteFitsPreview(note, clip.duration)))) return result;
+    result.preview = {
+      kind: "midi-notes", actionIndex: 0, status: "proposed",
+      targetLabel: `MIDI clip "${clip.name}" on track "${state.track.name}"`,
+      range: { coordinate: "clip-beats", start: 0, end: clip.duration },
+      before: midiPreviewSide(clip.notes), after: midiPreviewSide(after),
+    };
+  } catch {
+    // Prediction is optional; the executor retains its own validation and errors.
+  }
+  return result;
+}
+
+function midiPreviewSide(notes: readonly NoteDescription[]): MidiActionPreview["before"] {
+  const displayed = notes.slice(0, MAX_MIDI_PREVIEW_NOTES).map(midiNoteIdentity);
+  return { notes: displayed, totalNoteCount: notes.length, omittedNoteCount: notes.length - displayed.length };
+}
+
+function midiNoteFitsPreview(note: NoteDescription, clipDuration: number): boolean {
+  return Number.isInteger(note.pitch) && note.pitch >= 0 && note.pitch <= 127 &&
+    Number.isFinite(note.startTime) && note.startTime >= 0 && note.startTime < clipDuration &&
+    Number.isFinite(note.duration) && note.duration > 0 &&
+    note.startTime + note.duration <= clipDuration + 1e-7 &&
+    [note.velocity, note.probability, note.velocityDeviation, note.releaseVelocity]
+      .every((value) => value === undefined || Number.isFinite(value)) &&
+    [note.muted, note.selected].every((value) => value === undefined || typeof value === "boolean");
 }
 
 function warpMarkerIdentity(

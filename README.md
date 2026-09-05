@@ -211,6 +211,16 @@ All modes still inspect the relevant Live state, validate actions, and check tha
 the Set has not changed before applying an edit. One approved plan may create
 more than one Live Undo step.
 
+For a single supported edit to an existing MIDI Clip or device/mixer parameter,
+the confirmation card also shows an observed **Before** and **Proposed after**.
+MIDI previews use Clip-relative beats and the same pitch/time scales on both
+sides. Large previews show at most 256 notes per side and state how many were
+omitted. Parameter previews show raw SDK values and observed ranges; they do not
+guess display units or map value labels to numbers. The full action list remains
+visible. Plans involving several actions, new objects, or unavailable before/after
+data use the action list without a preview. A preview describes the proposal,
+not a completed edit or an audio audition; the selected approval mode still applies.
+
 Scope changes are saved per Session and synchronized across open dialogs. You
 can change them during a request; queued plans and subsequent actions recheck
 the saved permissions. An action already in progress may finish, and completed

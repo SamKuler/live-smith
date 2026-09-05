@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { transformMidiNotes } from "./midi-transform.js";
+import { calculateMidiNoteEdit, transformMidiNotes } from "./midi-transform.js";
+
+test("segment prediction preserves non-overlapping SDK note fields and removes overlaps", () => {
+  const preserved = {
+    pitch: 48, startTime: 0, duration: 1, velocity: 80, probability: 0.4,
+    velocityDeviation: 3, releaseVelocity: 57, muted: true, selected: true,
+  };
+  const overlapping = { pitch: 60, startTime: 1.5, duration: 1, velocity: 90 };
+  const replacement = { pitch: 65, startTime: 2, duration: 1, velocity: 100 };
+  const clip = { name: "Phrase", duration: 4, notes: [preserved, overlapping] };
+  const result = calculateMidiNoteEdit(clip, {
+    type: "replace_midi_clip_segment", clipName: "Phrase", startBeat: 32,
+    segmentStartTime: 2, segmentDurationBeats: 1, notes: [replacement],
+  });
+  assert.equal(result.changed, true);
+  assert.equal(result.removedNoteCount, 1);
+  assert.deepEqual(result.notes, [preserved, replacement]);
+  assert.deepEqual(clip.notes, [preserved, overlapping]);
+});
+
+test("segment prediction keeps the actual prior notes when the executor would treat it as a no-op", () => {
+  const before = { pitch: 60, startTime: 0, duration: 1, velocity: 90 };
+  const result = calculateMidiNoteEdit({ name: "Phrase", duration: 4, notes: [before] }, {
+    type: "replace_midi_clip_segment", clipName: "Phrase", startBeat: 0,
+    segmentStartTime: 0, segmentDurationBeats: 4,
+    notes: [{ ...before, duration: 1 + 1e-9 }],
+  });
+  assert.equal(result.changed, false);
+  assert.deepEqual(result.notes, [before]);
+});
 
 const notes = [{
   pitch: 60,

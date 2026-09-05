@@ -150,6 +150,7 @@ const chatTemplate = fs.readFileSync(
 );
 const markdownRendererScript = await buildMarkdownRendererScript(false);
 const clientScripts = {
+  actionPreview: readClientScript("action-preview"),
   attachments: readClientScript("attachments"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),

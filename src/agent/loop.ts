@@ -97,6 +97,7 @@ export interface AgentActionExecutionOutcome {
 export interface AgentActionPreflightGuard<ExecutionBindings = undefined> {
   (): Promise<ExecutionBindings>;
   readonly actionKeys?: readonly (readonly string[])[];
+  readonly previews?: import("./action-preview.js").AgentActionPreview[];
 }
 
 export interface AgentLoopOptions<ExecutionBindings = undefined> {
@@ -135,6 +136,7 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   ): Promise<AgentActionPreflightGuard<ExecutionBindings>>;
   confirmActions(
     plan: AgentPlan,
+    guard: AgentActionPreflightGuard<ExecutionBindings>,
   ): Promise<boolean | AgentConfirmationDecision>;
   /** Always resolves through an explicit user decision; automatic approval is forbidden. */
   confirmRecoveryResolution?(message: string): Promise<boolean>;
@@ -1041,7 +1043,7 @@ async function executeToolCall(
         throw new AgentSteeringBeforeApplyError();
       }
       throwIfAborted(options.signal);
-      const rawDecision = await options.confirmActions(plan);
+      const rawDecision = await options.confirmActions(plan, revalidateActions);
       const decision: AgentConfirmationDecision = typeof rawDecision === "boolean"
         ? { confirmed: rawDecision, source: "user" }
         : rawDecision;

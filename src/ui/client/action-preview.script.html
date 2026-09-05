@@ -1,0 +1,103 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createActionPreview = function createActionPreview() {
+        const svgNamespace = "http://www.w3.org/2000/svg";
+        const number = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 8 });
+
+        function textElement(tag, text, className) {
+          const element = document.createElement(tag);
+          element.textContent = text;
+          if (className) element.className = className;
+          return element;
+        }
+
+        function svgElement(tag, attributes) {
+          const element = document.createElementNS(svgNamespace, tag);
+          for (const [key, value] of Object.entries(attributes)) {
+            element.setAttribute(key, String(value));
+          }
+          return element;
+        }
+
+        function renderMidiSide(side, name, range, pitchLow, pitchHigh) {
+          const section = document.createElement("section");
+          section.className = "midi-preview-side";
+          section.dataset.side = name;
+          const label = name === "before" ? "Before" : "Proposed after";
+          section.append(textElement("h4", label + " · " + number.format(side.totalNoteCount) + " notes"));
+          const svg = svgElement("svg", {
+            viewBox: "0 0 640 128",
+            role: "img",
+            "aria-label": label + ": " + side.totalNoteCount + " notes. Clip beats " +
+              range.start + " to " + range.end + ". " + side.omittedNoteCount + " notes omitted from this preview.",
+          });
+          const pitchCount = pitchHigh - pitchLow + 1;
+          const rowHeight = 112 / pitchCount;
+          const duration = range.end - range.start;
+          for (let step = 0; step <= 4; step += 1) {
+            const x = 8 + step * 156;
+            svg.append(svgElement("line", { x1: x, y1: 8, x2: x, y2: 120, class: "midi-preview-grid" }));
+          }
+          for (const note of side.notes) {
+            const start = Math.max(range.start, note.startTime);
+            const end = Math.min(range.end, note.startTime + note.duration);
+            if (end <= start) continue;
+            const rect = svgElement("rect", {
+              x: 8 + (start - range.start) / duration * 624,
+              y: 8 + (pitchHigh - note.pitch) * rowHeight,
+              width: Math.max(1, (end - start) / duration * 624),
+              height: Math.max(1, rowHeight - 1),
+              class: "midi-preview-note",
+              opacity: note.muted ? 0.25 : note.velocity === undefined ? 0.8 : 0.3 + Math.max(0, Math.min(127, note.velocity)) / 127 * 0.7,
+              "data-pitch": note.pitch,
+            });
+            const title = svgElement("title", {});
+            title.textContent = "Pitch " + note.pitch + " · beat " + number.format(note.startTime) +
+              " · length " + number.format(note.duration) +
+              (note.velocity === undefined ? " · velocity unreported" : " · velocity " + note.velocity) +
+              (note.muted ? " · muted" : "");
+            rect.append(title);
+            svg.append(rect);
+          }
+          section.append(svg);
+          if (!side.totalNoteCount) section.append(textElement("p", "No notes."));
+          if (side.omittedNoteCount) section.append(textElement("p",
+            number.format(side.omittedNoteCount) + " notes omitted; showing " + side.notes.length + " of " + number.format(side.totalNoteCount) + ".",
+            "preview-limits"));
+          return section;
+        }
+
+        function render(preview) {
+          const card = document.createElement("article");
+          card.className = "action-preview";
+          card.dataset.previewKind = preview.kind;
+          card.append(textElement("h3", "Proposed changes"), textElement("p", preview.targetLabel));
+          if (preview.kind === "midi-notes") {
+            const pitches = [...preview.before.notes, ...preview.after.notes].map((note) => note.pitch);
+            const pitchLow = pitches.length ? Math.min(...pitches) : 60;
+            const pitchHigh = pitches.length ? Math.max(...pitches) : 60;
+            card.append(textElement("p", "Clip beats " + number.format(preview.range.start) + "–" + number.format(preview.range.end) +
+              (pitches.length ? " · Shown MIDI pitches " + pitchLow + "–" + pitchHigh : ""), "preview-coordinate"));
+            const sides = document.createElement("div");
+            sides.className = "midi-preview-sides";
+            for (const name of ["before", "after"]) {
+              sides.append(renderMidiSide(preview[name], name, preview.range, pitchLow, pitchHigh));
+            }
+            card.append(sides);
+          } else {
+            card.append(textElement("h4", preview.parameterName));
+            card.append(textElement("p", String(preview.before) + " → " + String(preview.after), "parameter-preview-values"));
+            card.append(textElement("p", "Raw parameter values · range " + String(preview.minimum) + "–" + String(preview.maximum), "preview-coordinate"));
+            if (preview.valueItems?.length) {
+              const details = document.createElement("details");
+              details.append(textElement("summary", "Observed value labels"));
+              const labels = document.createElement("ul");
+              for (const item of preview.valueItems) labels.append(textElement("li", item.name || item.shortName));
+              details.append(labels);
+              card.append(details);
+            }
+          }
+          return card;
+        }
+
+        return { render };
+      };

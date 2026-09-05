@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
+import type { AgentActionPreview } from "../agent/action-preview.js";
 
 import { ModelConnectionError } from "../model/connection-error.js";
 import {
@@ -26,6 +27,10 @@ function sendHeaders(sendId: string): Record<string, string> {
 
 test("chat bridge reconnect snapshots transient model state before replaying its confirmation", async () => {
   const confirmationPending = deferred();
+  const previews: AgentActionPreview[] = [{
+    kind: "parameter-value", actionIndex: 0, status: "proposed", targetLabel: "Filter",
+    parameterName: "Amount", before: 10, after: 15, minimum: 10, maximum: 20,
+  }];
   const bridge = await createChatBridge({
     buildState: async () => state,
     renderHtml: () => "<html></html>",
@@ -40,7 +45,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       const confirmation = stream.requestConfirmation({
         kind: "apply",
         message: "Apply?",
-        groups: [{ title: "Song", rows: ["Set tempo"] }],
+        groups: [{ title: "Filter", rows: ["Set Amount"] }],
+        previews,
       });
       confirmationPending.resolve();
       await confirmation;
@@ -50,6 +56,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
   const sendId = "snapshot-send";
+  const liveEvents = await fetch(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders(sendId),
@@ -58,6 +65,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
 
   try {
     await confirmationPending.promise;
+    const initial = (await readSsePayloadsThrough(liveEvents, "confirm_request")).at(-1)!;
+    assert.deepEqual(initial.previews, previews);
     bridge.publishGlobalSettings({
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
@@ -108,12 +117,69 @@ test("chat bridge reconnect snapshots transient model state before replaying its
     assert.equal(confirmation.kind, "apply");
     assert.equal(confirmation.modelTurnEpoch, 1);
     assert.equal(confirmation.confirmationGeneration, 1);
+    assert.equal(confirmation.id, initial.id);
+    assert.equal(confirmation.sendId, initial.sendId);
+    assert.deepEqual(confirmation.previews, initial.previews);
     const response = await fetch(endpoint("/confirm"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: confirmation.id, apply: false }),
     });
     assert.equal(response.status, 200);
+    assert.equal((await send).status, 200);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("a resolved preview cannot leak into the next recovery confirmation or its replay", async () => {
+  const recoveryPending = deferred();
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream) => {
+      await stream.requestConfirmation({
+        kind: "apply", message: "Edit notes", groups: [{ title: "Phrase", rows: ["Transpose"] }],
+        previews: [{
+          kind: "midi-notes", actionIndex: 0, status: "proposed", targetLabel: "Phrase",
+          range: { coordinate: "clip-beats", start: 0, end: 4 },
+          before: { notes: [], totalNoteCount: 0, omittedNoteCount: 0 },
+          after: { notes: [], totalNoteCount: 0, omittedNoteCount: 0 },
+        }],
+      });
+      const recovery = stream.requestConfirmation({ kind: "resolve_recovery", message: "Keep changes?", groups: [] });
+      recoveryPending.resolve();
+      await recovery;
+    },
+  });
+  const url = new URL(bridge.url);
+  const endpoint = (route: string) => `${url.origin}${route}?token=${url.searchParams.get("token")}`;
+  const events = await fetch(endpoint("/events"));
+  const send = fetch(endpoint("/send"), {
+    method: "POST", headers: sendHeaders("preview-generation-send"),
+    body: JSON.stringify({ prompt: "Edit", sessionId: "s1" }),
+  });
+  try {
+    const first = (await readSsePayloadsThrough(events, "confirm_request")).at(-1)!;
+    assert.equal(first.confirmationGeneration, 1);
+    assert.ok(first.previews);
+    await fetch(endpoint("/confirm"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: first.id, apply: false }),
+    });
+    await recoveryPending.promise;
+    const replay = await fetch(endpoint("/events"));
+    const second = (await readSsePayloadsThrough(replay, "confirm_request")).at(-1)!;
+    assert.equal(second.kind, "resolve_recovery");
+    assert.equal(second.confirmationGeneration, 2);
+    assert.equal(second.sendId, first.sendId);
+    assert.notEqual(second.id, first.id);
+    assert.equal(Object.hasOwn(second, "previews"), false);
+    await fetch(endpoint("/confirm"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: second.id, apply: false }),
+    });
     assert.equal((await send).status, 200);
   } finally {
     await bridge.close();

@@ -260,7 +260,9 @@
           showStatus: bridgeClient.showStatus,
         });
 
+        const actionPreview = factories.createActionPreview();
         const sessionTimeline = factories.createSessionTimeline({
+          renderActionPreview: actionPreview.render,
           getState,
           getAssistantDraft: bridgeClient.getAssistantDraft,
           getQueuedFollowUps: bridgeClient.getQueuedFollowUps,

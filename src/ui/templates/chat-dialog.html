@@ -17,6 +17,7 @@
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
+      __ACTION_PREVIEW_SCRIPT__
       __BOOTSTRAP_SCRIPT__
     </script>
     <style>
@@ -1623,6 +1624,24 @@
         border-radius: 6px;
         background: var(--pane);
       }
+
+      .action-preview {
+        padding: 12px;
+        margin: 12px 0;
+        border: 1px solid var(--line-soft);
+        border-radius: 6px;
+        background: var(--pane);
+      }
+      .action-preview h3, .action-preview h4 { margin: 0 0 6px; font-size: 12px; }
+      .action-preview p { margin: 4px 0 8px; overflow-wrap: anywhere; }
+      .midi-preview-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .midi-preview-side svg { display: block; width: 100%; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px; }
+      .midi-preview-grid { stroke: var(--line-soft); stroke-width: 1; }
+      .midi-preview-note { fill: var(--accent); }
+      .midi-preview-side[data-side="before"] .midi-preview-note { fill: var(--muted); }
+      .preview-coordinate, .preview-limits { color: var(--muted); font-size: 11px; }
+      .parameter-preview-values { font-variant-numeric: tabular-nums; }
+      @media (max-width: 680px) { .midi-preview-sides { grid-template-columns: 1fr; } }
 
       .status {
         max-height: 70px;

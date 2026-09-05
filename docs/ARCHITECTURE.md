@@ -350,6 +350,22 @@ everywhere else.
 
 ### Approval and Undo semantics
 
+Single-action confirmation previews are optional provider-neutral facts carried
+by the same preflight guard as target/state revalidation. MIDI and parameter
+observations supply both the opaque fingerprint and the preview; the UI never
+parses fingerprints or makes an independent read for an older-value display.
+MIDI preview and execution share the deterministic transformation and segment
+replacement functions. Unsupported observations and multi-action plans omit the
+preview and retain the complete existing action summaries.
+
+The `confirm_request` projection carries bounded proposed facts under its
+existing send, Session, model-turn epoch, confirmation ID and generation. Replays
+must preserve both the action summaries and preview data. The client validates
+the optional union before admitting a confirmation, and the dedicated
+`action-preview` client fragment renders it without SDK objects, guessed units,
+or playback controls. A preview is not evidence of a completed mutation, an
+authorization source, or a substitute for the state-drift guard.
+
 An approval decision is an authorization boundary, not a promise of one Live Undo
 entry. The 1.0.0 beta SDK does not allow awaiting inside a transaction, so an
 ordered plan whose later mutations depend on earlier asynchronous results (for
