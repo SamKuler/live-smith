@@ -53,6 +53,24 @@
       let selectedSuggestion = -1;
       let completionRange = null;
       let completionKind = null;
+      let sizedPromptValue = null;
+      let sizedPromptWidth = null;
+
+      function resizePrompt() {
+        const prompt = document.getElementById("prompt");
+        if (!prompt || !prompt.clientWidth) return;
+        if (prompt.value === sizedPromptValue && prompt.clientWidth === sizedPromptWidth) return;
+        const valueChanged = prompt.value !== sizedPromptValue;
+        sizedPromptValue = prompt.value;
+        sizedPromptWidth = prompt.clientWidth;
+        const scrollTop = prompt.scrollTop;
+        prompt.style.height = "auto";
+        const borders = prompt.offsetHeight - prompt.clientHeight;
+        prompt.style.height = (prompt.scrollHeight + borders) + "px";
+        const typingAtEnd = valueChanged && document.activeElement === prompt &&
+          prompt.selectionStart === prompt.selectionEnd && prompt.selectionEnd === prompt.value.length;
+        prompt.scrollTop = typingAtEnd ? prompt.scrollHeight : scrollTop;
+      }
 
       function parse(value) {
         if (!value.startsWith("/")) return { kind: "text" };
@@ -305,6 +323,11 @@
 
       function initialize() {
         const prompt = document.getElementById("prompt");
+        resizePrompt();
+        if (prompt && typeof ResizeObserver === "function") {
+          new ResizeObserver(resizePrompt).observe(prompt);
+        }
+        window.addEventListener("resize", resizePrompt);
         prompt?.addEventListener("input", updateAutocomplete);
         prompt?.addEventListener("click", updateAutocomplete);
         prompt?.addEventListener("keydown", handlePromptKeydown);
@@ -313,5 +336,5 @@
         });
       }
 
-      return { closeAutocomplete, initialize, parse, updateAutocomplete };
+      return { closeAutocomplete, initialize, parse, resizePrompt, updateAutocomplete };
       };

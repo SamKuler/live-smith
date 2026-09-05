@@ -16,6 +16,7 @@ import {
   subscribeSessionEditScopesInvalidations,
   type SessionEditScopesChange,
 } from "./session-edit-scope-events.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 for (const outcome of ["committed", "unknown-readable", "unknown-unreadable"] as const) {
   test(`Session scope command handles ${outcome} writes without broadening permission`, async (t) => {
@@ -87,6 +88,7 @@ for (const outcome of ["committed", "unknown-readable", "unknown-unreadable"] as
     };
     try {
       await runAgentFlow(context as never, {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },

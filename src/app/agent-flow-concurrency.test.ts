@@ -60,6 +60,7 @@ import {
   runAgentFlow,
 } from "./agent-flow.js";
 import { getOrCreateDefaultSession } from "./session-context.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let bridgeRequestSequence = 0;
 
@@ -783,6 +784,7 @@ test("concurrent state and discovery responses each keep models, capabilities, a
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1180,6 +1182,7 @@ test("a second dialog opens while an existing Session send holds its fence", asy
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: { track: leadTrack },
     scope: { kind: "track", identity: "1", label: "Lead" },
@@ -1470,6 +1473,7 @@ test("state reports active Skills from the same Session snapshot", async () => {
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1767,6 +1771,7 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2334,6 +2339,7 @@ test("model discovery accepts a Draft with blank name and model without changing
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2387,6 +2393,7 @@ test("a definite Session metadata deletion failure preserves event history", asy
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2447,6 +2454,7 @@ test("an event-log cleanup failure leaves the logically deleted Session reconcil
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2495,6 +2503,7 @@ test("session deletion removes attachments only after events and metadata", asyn
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2566,6 +2575,7 @@ test("session deletion attachment cleanup failure is unknown and retried from st
 
   try {
     await runAgentFlow(context as never, {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2625,6 +2635,7 @@ test("an unknown Session metadata delete commit reconciles attachment cleanup", 
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2769,6 +2780,7 @@ test("attachment routes enforce Session ownership, pending state, and immutable 
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2838,6 +2850,7 @@ test("attachment upload accepts the exact pending image subtotal and count limit
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2891,6 +2904,7 @@ test("startup orphan reconciliation removes abandoned Session data and preserves
   };
 
   await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2931,6 +2945,7 @@ test("a post-commit state failure is reconciled as an unknown command outcome", 
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -3025,134 +3040,13 @@ test("selecting a Track Session refreshes context from that Session's Live objec
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Opening Bass context",
       target: { track: trackA },
       scope: { kind: "track", identity: "101", label: "Bass" },
     },
     { renderHtml: () => "<html></html>" },
   );
-});
-
-test("opening an Arrangement selection keeps its bounded selection context", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-arrangement-context-"),
-  );
-  await saveSavedProfile(directory, profile({
-    baseUrl: "https://selection-context.test/v1",
-    apiKey: "selection-context-key",
-    model: "selection-context-model",
-  }));
-  let modelLiveContext = "";
-  const track = fakeMidiTrack(101n, "Bass");
-  const context = {
-    application: {
-      song: { handle: { id: 1n }, tracks: [track], scenes: [] },
-    },
-    environment: { storageDirectory: directory },
-    getObjectFromHandle: () => track,
-    ui: {
-      showModalDialog: async (url: string) => {
-        const chatUrl = new URL(url);
-        const token = chatUrl.searchParams.get("token");
-        const state = await (
-          await fetch(`${chatUrl.origin}/state?token=${token}`)
-        ).json() as ChatDialogState;
-
-        assert.match(state.contextSummary, /Arrangement selection: beats 8 to 16/);
-        assert.match(state.contextSummary, /Lane 1: MIDI track "Bass"/);
-        const send = await fetch(`${chatUrl.origin}/send?token=${token}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Live-Smith-Send-Id": "send-selection-context",
-          },
-          body: JSON.stringify({
-            prompt: "Work with this selection",
-            sessionId: state.activeSessionId,
-          }),
-        });
-        assert.equal(send.status, 200);
-        assert.match(modelLiveContext, /Arrangement selection: beats 8 to 16/);
-
-        const newSelectionResponse = await fetch(
-          `${chatUrl.origin}/command?token=${token}`,
-          {
-            method: "POST",
-            headers: bridgeJsonHeaders(),
-            body: JSON.stringify({ kind: "new_session" }),
-          },
-        );
-        const newSelectionState = await newSelectionResponse.json() as ChatDialogState;
-        assert.notEqual(newSelectionState.activeSessionId, state.activeSessionId);
-        assert.match(
-          newSelectionState.contextSummary,
-          /Arrangement selection: beats 8 to 16/,
-        );
-
-        const ordinarySession = await createSession(directory, {
-          title: "Ordinary Bass Session",
-          projectKey: state.sessions[0]!.projectKey,
-          scope: { kind: "track", identity: "101", label: "Bass" },
-        });
-        const ordinaryResponse = await fetch(
-          `${chatUrl.origin}/command?token=${token}`,
-          {
-            method: "POST",
-            headers: bridgeJsonHeaders(),
-            body: JSON.stringify({
-              kind: "select_session",
-              sessionId: ordinarySession.id,
-            }),
-          },
-        );
-        const ordinaryState = await ordinaryResponse.json() as ChatDialogState;
-        assert.match(ordinaryState.contextSummary, /MIDI track "Bass"/);
-        assert.doesNotMatch(ordinaryState.contextSummary, /Arrangement selection/);
-
-        track.name = "Bass renamed";
-        const refreshedOrdinary = await (
-          await fetch(`${chatUrl.origin}/state?token=${token}`)
-        ).json() as ChatDialogState;
-        assert.match(refreshedOrdinary.contextSummary, /MIDI track "Bass renamed"/);
-
-        const selectionResponse = await fetch(
-          `${chatUrl.origin}/command?token=${token}`,
-          {
-            method: "POST",
-            headers: bridgeJsonHeaders(),
-            body: JSON.stringify({
-              kind: "select_session",
-              sessionId: state.activeSessionId,
-            }),
-          },
-        );
-        const selectionState = await selectionResponse.json() as ChatDialogState;
-        assert.match(selectionState.contextSummary, /Arrangement selection/);
-
-        context.application.song.tracks.splice(0, 1);
-        const unavailable = await (
-          await fetch(`${chatUrl.origin}/state?token=${token}`)
-        ).json() as ChatDialogState;
-        assert.match(unavailable.contextSummary, /Live object.*unavailable/i);
-      },
-    },
-  };
-  const interaction = arrangementSelectionInteractionContext(
-    context as never,
-    {
-      selected_lanes: [track.handle],
-      time_selection_start: 8,
-      time_selection_end: 16,
-    } as never,
-  );
-
-  await runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
-    requestModelTurn: async (request) => {
-      modelLiveContext = request.liveContext;
-      return { content: "Selection received.", toolCalls: [] };
-    },
-  });
 });
 
 test("a concurrent Session switch cannot capture an unresolved invocation selection", async () => {
@@ -3227,80 +3121,6 @@ test("a concurrent Session switch cannot capture an unresolved invocation select
       }
       return getOrCreateDefaultSession(...args);
     },
-  });
-});
-
-test("restoring a historical Session binds only that Session to the current selection", async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-selection-restore-"),
-  );
-  const historical = await createSession(directory, {
-    title: "Historical arrangement work",
-    projectKey: "previous-activation",
-    scope: { kind: "track", identity: "old-track", label: "Old track" },
-  });
-  const bass = fakeMidiTrack(101n, "Bass");
-  const context = {
-    application: {
-      song: { handle: { id: 1n }, tracks: [bass], scenes: [] },
-    },
-    environment: { storageDirectory: directory },
-    getObjectFromHandle: () => bass,
-    ui: {
-      showModalDialog: async (url: string) => {
-        const chatUrl = new URL(url);
-        const token = chatUrl.searchParams.get("token");
-        const endpoint = (pathname: string) =>
-          `${chatUrl.origin}${pathname}?token=${token}`;
-        const initial = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
-        assert.match(initial.contextSummary, /Arrangement selection: beats 4 to 12/);
-
-        const restoredResponse = await fetch(endpoint("/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({
-            kind: "restore_session",
-            sessionId: historical.id,
-          }),
-        });
-        const restored = await restoredResponse.json() as ChatDialogState;
-        assert.equal(restored.activeSessionId, historical.id);
-        assert.match(restored.contextSummary, /Arrangement selection: beats 4 to 12/);
-        assert.deepEqual(
-          restored.sessions.find((session) => session.id === historical.id)?.scope,
-          { kind: "track", identity: "101", label: "Bass" },
-        );
-
-        const ordinarySession = await createSession(directory, {
-          title: "Ordinary Bass Session",
-          projectKey: restored.sessions[0]!.projectKey,
-          scope: { kind: "track", identity: "101", label: "Bass" },
-        });
-        const ordinaryResponse = await fetch(endpoint("/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({
-            kind: "select_session",
-            sessionId: ordinarySession.id,
-          }),
-        });
-        const ordinary = await ordinaryResponse.json() as ChatDialogState;
-        assert.match(ordinary.contextSummary, /MIDI track "Bass"/);
-        assert.doesNotMatch(ordinary.contextSummary, /Arrangement selection/);
-      },
-    },
-  };
-  const interaction = arrangementSelectionInteractionContext(
-    context as never,
-    {
-      selected_lanes: [bass.handle],
-      time_selection_start: 4,
-      time_selection_end: 12,
-    } as never,
-  );
-
-  await runAgentFlow(context as never, interaction, {
-    renderHtml: () => "<html></html>",
   });
 });
 
@@ -3405,6 +3225,7 @@ test("a late state snapshot cannot roll active Session back after a switch", asy
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Track A"),
       summary: "Track A",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Track A" },
@@ -3464,6 +3285,7 @@ test("a state snapshot retries when Session changes while its events are loading
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Track A"),
       summary: "Track A",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Track A" },
@@ -3610,6 +3432,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
   await runAgentFlow(
     context as never,
     {
+      presentation: liveContextPresentationFixture("Drums"),
       summary: "MIDI track Drums",
       target: { track: currentTrack },
       scope: { kind: "track", identity: "20", label: "Drums" },
@@ -3818,6 +3641,7 @@ async function openCrossBridgeFixture(options: {
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: { track: leadTrack },
     scope: { kind: "track", identity: "1", label: "Lead" },

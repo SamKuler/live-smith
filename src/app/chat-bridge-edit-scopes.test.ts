@@ -140,9 +140,14 @@ test("Session edit-scope commands are strict, normalized, and available during a
         kind: "set_session_edit_scopes", sessionId: "session-1", editScopes,
       })).status, 400);
     }
-    for (const extra of [{ extra: true }, { approvalMode: "everything" }, { profile: {} }]) {
+    for (const extra of [{ extra: true }, { approvalMode: "everything" }, { profile: {} }, { writeBoundary: null }]) {
       assert.equal((await command({
         kind: "set_session_edit_scopes", sessionId: "session-1", editScopes: [], ...extra,
+      })).status, 400);
+    }
+    for (const boundary of [null, { kind: "midi-candidate" }, { kind: "midi-clip-range", startBeat: 2, endBeat: 6 }]) {
+      assert.equal((await command({
+        kind: "set_session_write_boundary", sessionId: "session-1", boundary,
       })).status, 400);
     }
     assert.equal(received.length, 3);

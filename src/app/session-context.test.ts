@@ -12,6 +12,7 @@ import {
   getOrCreateDefaultSession,
   isReusableEmptySessionMetadata,
 } from "./session-context.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 test("reusable empty Session metadata excludes persisted user intent", () => {
   const scope = { kind: "track" as const, identity: "track-1", label: "Lead" };
@@ -68,6 +69,7 @@ test("concurrent default Session resolution shares one transient scope Session",
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -105,6 +107,7 @@ test("default resolution keeps its preferred Session during transient promotion"
     await fs.rm(directory, { recursive: true, force: true });
   });
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

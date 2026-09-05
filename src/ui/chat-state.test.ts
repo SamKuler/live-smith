@@ -141,6 +141,17 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     bridgeStateRevision: "1",
     bridgeStateCoveredThroughRevision: "0",
     contextSummary: "<script>&\u2028\u2029",
+    liveContext: {
+      sessionId: "",
+      availability: "available",
+      value: {
+        origin: "object",
+        objectKind: "midi-clip",
+        title: "Bass <take>",
+        details: ["Arrangement & Session\u2028\u2029"],
+        range: { coordinate: "arrangement-beats", start: 64, end: 80 },
+      },
+    },
     sessionContinueTarget: { kind: "track", label: "Bass" },
     sessions: [],
     previousSessions: [],
@@ -202,6 +213,17 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
   assert.match(serialized, /\\u2028/);
   assert.match(serialized, /\\u2029/);
   assert.doesNotMatch(serialized, /[<>&\u2028\u2029]/);
+  assert.deepEqual(JSON.parse(serialized).liveContext, {
+    sessionId: "",
+    availability: "available",
+    value: {
+      origin: "object",
+      objectKind: "midi-clip",
+      title: "Bass <take>",
+      details: ["Arrangement & Session\u2028\u2029"],
+      range: { coordinate: "arrangement-beats", start: 64, end: 80 },
+    },
+  });
 });
 
 test("OAuth auth state and subscription connections expose no credential-shaped keys", () => {

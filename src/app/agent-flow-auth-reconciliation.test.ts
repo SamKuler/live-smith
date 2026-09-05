@@ -33,6 +33,7 @@ import {
   modelAuthSendFenceForStorage,
   type ModelAuthSendFence,
 } from "./model-auth-send-fence.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let bridgeRequestSequence = 0;
 
@@ -194,6 +195,7 @@ test("a signed-in OAuth Profile does not project or authorize another Profile", 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -359,6 +361,7 @@ test("Direct state does not project or read a prior Profile OAuth scope", async 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -485,6 +488,7 @@ test("a definitive login mutation owns its response state and can be retried", a
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -606,6 +610,7 @@ test("unknown Profile mutations reconcile OAuth cleanup from saved state", async
         async close() {},
       };
       const interaction: LiveInteractionContext = {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -717,6 +722,7 @@ test("a later modal retries unknown Profile OAuth cleanup after the owner closes
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -861,6 +867,7 @@ test("pending Profile cleanup and same-Profile Save use one lock order", {
   const closeFirst = deferred<void>();
   const closeSecond = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1030,6 +1037,7 @@ test("a delayed OAuth read cannot project Profile A auth onto Profile B", {
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1142,6 +1150,7 @@ test("known Profile commits report failed OAuth cleanup as unknown and retry saf
         async close() {},
       };
       const interaction: LiveInteractionContext = {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1276,6 +1285,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
         name: "Converted inactive Profile",
       };
       const interaction: LiveInteractionContext = {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1487,6 +1497,7 @@ test("provisional OAuth credentials reconcile to authoritative saved Profiles", 
           async close() {},
         };
         const interaction: LiveInteractionContext = {
+          presentation: liveContextPresentationFixture("Lead"),
           summary: "Track: Lead",
           target: {},
           scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1566,6 +1577,7 @@ test("Direct-only OAuth discard bypasses backend and credential storage", async 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1694,6 +1706,7 @@ test("a peer state or Check reconciles completed device login ownership", {
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1997,6 +2010,7 @@ test("closing a pending-login owner aborts its state read before peer auth resum
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2183,6 +2197,7 @@ test("modal close retires every Profile auth scope before reporting one cleanup 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2337,6 +2352,7 @@ test("logout cancels the pending provider browser launch", {
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

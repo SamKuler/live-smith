@@ -13,6 +13,7 @@ import { appendSessionEvent } from "../storage/events.js";
 import { createSession, listSessions, type AgentSession } from "../storage/sessions.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let commandSequence = 0;
 const referencePng = new Uint8Array([
@@ -45,6 +46,7 @@ test("New Session reuses a pristine Session but not one with history", async (t)
   );
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -123,6 +125,7 @@ test("opening, reopening, and deleting an untouched Session do not save empty hi
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-empty-history-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead", target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
   };
@@ -185,6 +188,7 @@ test("opening different tracks keeps their empty Session summaries separate from
   };
   for (trackNumber = 1; trackNumber <= 3; trackNumber += 1) {
     await runAgentFlow(context as never, {
+      presentation: liveContextPresentationFixture(`Track ${trackNumber}`),
       summary: `Track ${trackNumber}`, target: {},
       scope: { kind: "track", identity: `track-${trackNumber}`, label: `Track ${trackNumber}` },
     }, { renderHtml: () => "<html></html>" });
@@ -234,7 +238,10 @@ test("Session content summaries ignore timestamps and permission settings withou
         ]));
     } },
   };
-  await runAgentFlow(context as never, { summary: "Track: Lead", target: {}, scope: input.scope }, {
+  await runAgentFlow(context as never, {
+    presentation: liveContextPresentationFixture(input.scope.label),
+    summary: "Track: Lead", target: {}, scope: input.scope,
+  }, {
     renderHtml: () => "<html></html>",
   });
   assert.equal(await fs.readFile(sessionFile, "utf8"), before);
@@ -286,6 +293,7 @@ test("Continue and archive lifecycle never persist the unused fallback Session",
     } },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead", target: {},
     scope: { kind: "track", identity: "20", label: "Lead" },
   };
@@ -332,6 +340,7 @@ test(`claimed empty Sessions isolate concurrent ${permission.label} intent`, asy
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

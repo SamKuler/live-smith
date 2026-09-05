@@ -40,6 +40,7 @@ import {
   type ModelAuthSendFence,
 } from "./model-auth-send-fence.js";
 import { subscribeGlobalStateInvalidations } from "./session-state-events.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let bridgeRequestSequence = 0;
 
@@ -299,6 +300,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -402,6 +404,7 @@ test("browser failure stays retryable and Antigravity code submission notifies p
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -645,6 +648,7 @@ test("a Direct API send does not enter the OAuth account fence", async (t) => {
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -712,6 +716,7 @@ test("Profile Save and Delete retire only OAuth state owned by that Profile", as
   const fence = modelAuthSendFenceForStorage(storageKey, directProfile.id);
   const peerOwner = Symbol("unsaved OAuth Draft owner");
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -807,6 +812,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
   await saveModelCache(directory, directProfile, cachedModels);
 
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -892,6 +898,7 @@ test("unsaved Direct discovery cannot evict the saved connection across modal re
     capabilities: { tools: true, streaming: true },
   }];
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -966,6 +973,7 @@ test("Direct API state, discovery, and send survive OAuth poison or concurrent a
       }
 
       const interaction: LiveInteractionContext = {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1087,6 +1095,7 @@ test("a production Direct flow bypasses a failed shared OAuth backend shutdown",
   );
 
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1189,6 +1198,7 @@ test("production subscription flows lazily share and release one OAuth lease", {
   const closeFirst = deferred<void>();
   const closeSecond = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1268,6 +1278,7 @@ test("closing a modal aborts its first subscription state backend acquisition", 
     async close() { managerCloseCalls += 1; },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1326,6 +1337,7 @@ test("closing a modal cancels a state read waiting for a prior shared close", {
   await closeStarted.promise;
 
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1439,6 +1451,7 @@ test("two dialogs exclude ChatGPT auth while either dialog has an active subscri
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1664,6 +1677,7 @@ test("an auth change closes another dialog's cached OAuth backend before state r
   const closeFirstDialog = deferred<void>();
   const closeSecondDialog = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1812,6 +1826,7 @@ test("closing a modal during initial OAuth login retires before peers reuse auth
   const closeFirstDialog = deferred<void>();
   const closeSecondDialog = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -1943,6 +1958,7 @@ test("closing a modal blocks a late pending browser launch", {
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2079,6 +2095,7 @@ test("a failed auth retirement permanently poisons peer auth, state, discovery, 
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2259,6 +2276,7 @@ test("a peer subscription send waits for logout and fails before prompt persiste
   const closeOwner = deferred<void>();
   const closePeer = deferred<void>();
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2445,6 +2463,7 @@ test("every subscription send refreshes its catalog and rejects a missing model 
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2620,6 +2639,7 @@ test("OAuth poison from a modal close leaves a Direct API peer operational", {
     async close() {},
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

@@ -23,6 +23,7 @@ import {
 import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let commandSequence = 0;
 
@@ -75,6 +76,7 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
     const backend = backendFor(profile, requests);
     const modelBackendManager = backendManagerFor(backend);
     const interaction: LiveInteractionContext = {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -215,6 +217,7 @@ test("/compact publishes correlated reconnect progress without persisting it", a
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -304,6 +307,7 @@ test("/compact Stop aborts the correlated provider request before persistence", 
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -398,6 +402,7 @@ test("/compact does not persist a provider response after the dialog closes", {
     },
   };
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

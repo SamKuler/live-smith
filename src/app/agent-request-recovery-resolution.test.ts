@@ -19,6 +19,7 @@ import { createSession } from "../storage/sessions.js";
 import { handleAgentRequest } from "./agent-request.js";
 import { runtimeProfileForSavedProfile } from "./model-request.js";
 import { activeRecoveryLedgerFromEvents } from "./session-context.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 function recoveryProfile(): DirectApiProfile {
   return {
@@ -94,6 +95,7 @@ async function recoveryRequestHarness() {
     } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Live Set",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },

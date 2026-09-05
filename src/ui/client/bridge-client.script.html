@@ -386,6 +386,7 @@
           activeSessionId: state.activeSessionId,
           pendingAttachments: state.pendingAttachments,
           contextSummary: state.contextSummary,
+          liveContext: state.liveContext,
           sessionContinueTarget: state.sessionContinueTarget,
           sessionActivities: state.sessionActivities,
           profileSettings: {
@@ -1075,24 +1076,39 @@
           !sameJsonValue(
             {
               contextSummary: current.contextSummary,
+              liveContext: current.liveContext,
               sessionContinueTarget: current.sessionContinueTarget,
             },
             {
               contextSummary: baseline.contextSummary,
+              liveContext: baseline.liveContext,
               sessionContinueTarget: baseline.sessionContinueTarget,
             },
           );
+        const contextCutOrder = compareDecimalRevisions(
+          state.bridgeStateCoveredThroughRevision,
+          current.bridgeStateCoveredThroughRevision,
+        );
+        const incomingContextIsCurrent = !currentActiveContextChanged ||
+          contextCutOrder > 0 || contextCutOrder === 0 && compareDecimalRevisions(
+            state.bridgeStateRevision,
+            current.bridgeStateRevision,
+          ) >= 0;
         if (authoritativeOwnsSelection) {
           merged.activeSessionId = state.activeSessionId;
           merged.events = state.events;
           merged.pendingAttachments = state.pendingAttachments;
-          merged.contextSummary = state.contextSummary;
-          merged.sessionContinueTarget = state.sessionContinueTarget;
+          const contextState = state.activeSessionId !== current.activeSessionId || incomingContextIsCurrent
+            ? state : current;
+          merged.contextSummary = contextState.contextSummary;
+          merged.liveContext = contextState.liveContext;
+          merged.sessionContinueTarget = contextState.sessionContinueTarget;
         } else {
           merged.activeSessionId = current.activeSessionId;
           merged.events = current.events;
           merged.pendingAttachments = current.pendingAttachments;
           merged.contextSummary = current.contextSummary;
+          merged.liveContext = current.liveContext;
           merged.sessionContinueTarget = current.sessionContinueTarget;
         }
         const authoritativeRuntimeOwned = incomingProfileSettingsChanged ||
@@ -1140,10 +1156,11 @@
             );
           }
           if (
-            attempt.ownedActiveContextSessionId === merged.activeSessionId ||
+            attempt.ownedActiveContextSessionId === merged.activeSessionId && incomingContextIsCurrent ||
             !currentActiveContextChanged
           ) {
             merged.contextSummary = state.contextSummary;
+            merged.liveContext = state.liveContext;
             merged.sessionContinueTarget = state.sessionContinueTarget;
           }
         }
@@ -2636,11 +2653,35 @@
             typeof item.name === "string" && typeof item.shortName === "string"));
       }
 
+      function isWireLiveContext(context) {
+        if (!isWireRecord(context) || !isWireStorageId(context.sessionId)) return false;
+        if (context.availability === "unavailable") {
+          return hasOnlyWireKeys(context, ["sessionId", "availability", "label"]) &&
+            typeof context.label === "string";
+        }
+        if (context.availability !== "available" ||
+          !hasOnlyWireKeys(context, ["sessionId", "availability", "value"])) return false;
+        const value = context.value;
+        if (!isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["origin", "objectKind", "title", "details", "range"]) ||
+          !["object", "arrangement-selection", "clip-slot-selection"].includes(value.origin) ||
+          !["midi-clip", "audio-clip", "track", "device", "other"].includes(value.objectKind) ||
+          typeof value.title !== "string" || !Array.isArray(value.details) ||
+          !value.details.every((line) => typeof line === "string")) return false;
+        if (value.range === undefined) return true;
+        const range = value.range;
+        return isWireRecord(range) && hasOnlyWireKeys(range, ["coordinate", "start", "end"]) &&
+          range.coordinate === "arrangement-beats" &&
+          Number.isFinite(range.start) && Number.isFinite(range.end) &&
+          range.start >= 0 && range.end >= range.start;
+      }
+
       function isWireChatBridgeState(value) {
         if (
           !isWireRecord(value) ||
           !hasOnlyWireKeys(value, [
             "contextSummary",
+            "liveContext",
             "sessionContinueTarget",
             "sessions",
             "previousSessions",
@@ -2672,6 +2713,7 @@
             "bridgeStateCoveredThroughRevision",
           ]) ||
           typeof value.contextSummary !== "string" ||
+          !isWireLiveContext(value.liveContext) ||
           !isWireRecord(value.sessionContinueTarget) ||
           !hasOnlyWireKeys(value.sessionContinueTarget, ["kind", "label"]) ||
           !["track", "clip", "object", "selection"].includes(
@@ -4825,6 +4867,7 @@
         if (recovery) recovery.editingInComposer = false;
         recordComposerDraft(sessionId, "");
         closeComposerAutocomplete();
+        requireView().renderSendPresentation();
         requireView().renderSessions();
       }
 

@@ -307,6 +307,7 @@ function stateFixture(): ChatBridgeState {
     bridgeStateRevision: "1",
     bridgeStateCoveredThroughRevision: "0",
     contextSummary: "Selected track: Bass",
+    liveContext: { sessionId: "session-1", availability: "available", value: { origin: "object", objectKind: "track", title: "Bass", details: [] } },
     sessionContinueTarget: { kind: "track", label: "Drums" },
     sessions: [
       {
@@ -550,6 +551,9 @@ async function createDialogHarness(
     if (!active) throw new Error("The harness requires an active Session.");
     if (active && serverState.activeSessionId !== active.id) {
       serverState.activeSessionId = active.id;
+    }
+    if (serverState.liveContext.sessionId !== active.id) {
+      serverState.liveContext = { sessionId: active.id, availability: "available", value: { origin: "object", objectKind: "other", title: active.scope.label, details: [] } };
     }
     serverState.approvalMode = active?.approvalMode ?? "manual";
     serverState.activeSkillIds = [...(active?.activeSkillIds ?? [])];

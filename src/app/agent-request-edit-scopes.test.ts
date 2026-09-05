@@ -19,6 +19,7 @@ import {
 } from "./session-edit-scope-events.js";
 import { withStorageTransaction } from "../storage/persistence.js";
 import { updateSessionInTransaction } from "../storage/sessions.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 const profile: SavedProfile = {
   id: "scope-profile",
@@ -88,7 +89,10 @@ async function setup(t: TestContext, scopes: EditScope[], mode: ApprovalMode = "
     return handleAgentRequest(
       { application: { song }, environment: { storageDirectory: directory } } as never,
       directory,
-      { summary: "Live Set", target: {}, scope: session.scope },
+      {
+        presentation: liveContextPresentationFixture(session.scope.label, "other"),
+        summary: "Live Set", target: {}, scope: session.scope,
+      },
       "Apply the requested changes.",
       runtimeProfileForSavedProfile(profile),
       session.projectKey,

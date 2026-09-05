@@ -14,6 +14,7 @@ import {
 import { createSession } from "../storage/sessions.js";
 import { handleAgentRequest } from "./agent-request.js";
 import { runtimeProfileForSavedProfile } from "./model-request.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 function profiles(): SavedProfile[] {
   const direct: SavedProfile = {
@@ -92,6 +93,7 @@ for (const profile of profiles()) {
       { environment: { storageDirectory } } as never,
       storageDirectory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -175,6 +177,7 @@ test("a tool turn above the threshold compacts before the next sampling turn", a
     { environment: { storageDirectory } } as never,
     storageDirectory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -246,6 +249,7 @@ test("a post-checkpoint tool turn can compact again in the same send", async (t)
     { environment: { storageDirectory } } as never,
     storageDirectory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -317,6 +321,7 @@ test("exact provider usage includes only the estimated context added after that 
     { environment: { storageDirectory } } as never,
     storageDirectory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -378,6 +383,7 @@ test("a failed compaction writes no checkpoint boundary", async (t) => {
       { environment: { storageDirectory } } as never,
       storageDirectory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },

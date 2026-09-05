@@ -16,6 +16,7 @@ import { saveSavedProfile } from "../storage/settings.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 let commandSequence = 0;
 
@@ -77,6 +78,7 @@ test("each Session resolves its own configured model and reasoning at send admis
   const requestedRuntimes: RuntimeProfile[] = [];
   let invalidateNextSelection = false;
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -318,6 +320,7 @@ test("subscription model capabilities load explicitly and remain auth-generation
   const peerAuthOwner = Symbol("peer auth generation");
   let authMutationEnteredDuringSelection: boolean | undefined;
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -498,6 +501,7 @@ test("concurrent catalog loading cannot mark a fallback Session runtime ready", 
   let blockNextSessionStateRead = false;
   let blockedSessionStateRead = false;
   const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Lead" },

@@ -1292,6 +1292,22 @@ records; hiding them never deletes or rewrites their saved data.
 
 ### Session context, concurrency, and Approval
 
+The Live context observer produces both the detailed summary and a structured
+presentation for the same resolved interaction. `ChatDialogState.liveContext`
+is a Session-owned display projection: it records availability, object kind,
+opening-selection provenance, and only verified Arrangement beat positions.
+It is not persisted, does not contain SDK handles, and never authorizes a write.
+The bridge client validates this projection and reconciles it with the active
+Session and context summary under the same causal ownership rules. Missing or
+mismatched context cannot leave another Session's target visible in the composer.
+There is no global selection subscription; refreshing an opening selection
+re-observes its original handles and range.
+
+The context strip opens the existing Inspector without replacing the current draft
+or selecting a task mode. Direct requests use the same Session conversation and
+Send admission. The Scope read-only shortcut uses the existing explicit
+`set_session_edit_scopes` command with an empty list.
+
 Concurrency boundaries have distinct ownership:
 
 | Boundary | Scope | Responsibility |

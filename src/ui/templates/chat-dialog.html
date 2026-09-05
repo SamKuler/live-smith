@@ -1625,6 +1625,31 @@
         background: var(--pane);
       }
 
+      .live-context-summary {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+        margin: 0;
+        padding: 5px 10px 0;
+        text-align: left;
+        background: var(--field);
+        border: 1px solid var(--line-soft);
+        border-bottom: 0;
+        border-radius: 9px 9px 0 0;
+        font-size: 11px;
+        line-height: 16px;
+      }
+
+      .live-context-summary[hidden] { display: none; }
+      .live-context-summary .context-caption { flex-shrink: 0; color: var(--quiet); }
+      .live-context-summary .context-title { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .live-context-summary .context-location { margin-left: auto; color: var(--muted); }
+      .live-context-summary .context-location:empty { display: none; }
+      #editScopeReadOnlyButton { margin-top: 10px; }
+      #editScopeReadOnlyButton[aria-disabled="true"] { color: var(--quiet); cursor: default; }
+
       .action-preview {
         padding: 12px;
         margin: 12px 0;
@@ -1642,9 +1667,6 @@
       .preview-coordinate, .preview-limits { color: var(--muted); font-size: 11px; }
       .parameter-preview-values { font-variant-numeric: tabular-nums; }
       @media (max-width: 680px) { .midi-preview-sides { grid-template-columns: 1fr; } }
-
-      #editScopeReadOnlyButton { margin-top: 10px; }
-      #editScopeReadOnlyButton[aria-disabled="true"] { color: var(--quiet); cursor: default; }
 
       .status {
         max-height: 70px;
@@ -1733,11 +1755,24 @@
       }
 
       .composer > textarea {
-        min-height: 64px;
+        height: auto;
+        min-height: 38px;
+        max-height: min(160px, 24vh);
+        padding: 8px 10px;
+        overflow-y: auto;
         border-color: var(--line-soft);
         border-bottom-color: transparent;
         border-radius: 9px 9px 0 0;
         background: var(--field);
+      }
+
+      .composer:has(.live-context-summary:not([hidden])) > textarea {
+        border-top-color: transparent;
+        border-radius: 0;
+      }
+
+      .composer:has(> textarea:focus) .live-context-summary {
+        border-color: var(--focus);
       }
 
       .composer-toolbar {
@@ -3623,8 +3658,9 @@
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden></div>
             <div id="composerAutocomplete" class="composer-autocomplete" role="listbox" aria-label="Composer suggestions" hidden></div>
+            <button id="liveContextSummaryButton" class="live-context-summary" type="button" aria-controls="contextPanel" onclick="LiveSmithUI.openInspector('context')" hidden><span class="context-caption">Context</span><span id="liveContextTitle" class="context-title"></span><span id="liveContextLocation" class="context-location"></span></button>
             <label class="visually-hidden" for="prompt">Message Live Smith</label>
-            <textarea id="prompt" name="prompt" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
+            <textarea id="prompt" name="prompt" rows="1" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Ask about this Live Set…"></textarea>
             <div class="composer-toolbar">
               <div class="composer-live-controls">
                 <div id="attachmentMenuShell" class="attachment-menu-shell">

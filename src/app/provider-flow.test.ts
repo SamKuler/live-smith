@@ -67,6 +67,7 @@ import {
   recoveryContextFromEvents,
   continuableSessionsForScope,
 } from "./session-context.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 function session(title: string, projectKey = "p1"): AgentSession {
   return {
@@ -335,6 +336,7 @@ test("handleAgentRequest snapshots persistent and one-turn Skill guidance withou
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -418,6 +420,7 @@ test("handleAgentRequest adds hosted Web Search only for an opted-in Profile", a
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -522,6 +525,7 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -625,6 +629,7 @@ test("conflicting terminal Web Search payloads with one ID fail without a duplic
       { environment: { storageDirectory: directory } } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -697,6 +702,7 @@ test("one agent send hides a twenty-first hosted Web Search and preserves the fi
       { environment: { storageDirectory: directory } } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -794,6 +800,7 @@ test("later agent turns receive only the remaining defensive Web Search allowanc
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -871,6 +878,7 @@ test("completed hosted Web Search persists before a later provider failure", asy
       { environment: { storageDirectory: directory } } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -940,6 +948,7 @@ test("failed hosted Web Search is durable-first and not a transient update", asy
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -1013,6 +1022,7 @@ test("completed hosted Web Search remains durable when cancellation arrives", as
       { environment: { storageDirectory: directory } } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -1087,6 +1097,7 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -1174,6 +1185,7 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
     { environment: { storageDirectory: directory } } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -1261,6 +1273,7 @@ test("missing selected Skill blocks model and event persistence", async () => {
       { environment: { storageDirectory: directory } } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -1953,6 +1966,7 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
     { environment: { storageDirectory: dir } } as never,
     dir,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2027,6 +2041,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
     { environment: { storageDirectory: dir } } as never,
     dir,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2106,6 +2121,7 @@ test("handleAgentRequest rejects audio without supported evidence before model o
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2196,6 +2212,7 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
     { environment: { storageDirectory: dir } } as never,
     dir,
     {
+      presentation: liveContextPresentationFixture("Bass"),
       summary: "Track: Bass",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2274,6 +2291,7 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2334,6 +2352,7 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2421,6 +2440,7 @@ test("attachment capability and prompt persistence failures leave images pending
         { environment: { storageDirectory: dir } } as never,
         dir,
         {
+          presentation: liveContextPresentationFixture("Bass"),
           summary: "Track: Bass",
           target: {},
           scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2492,6 +2512,7 @@ test("provider failure keeps already persisted image refs consumed", async () =>
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Bass"),
         summary: "Track: Bass",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2540,6 +2561,7 @@ test("getOrCreateDefaultSession rejects a preferred session from another project
   const selected = await getOrCreateDefaultSession(
     dir,
     {
+      presentation: liveContextPresentationFixture("Selection", "other"),
       summary: "Selection",
       target: {},
       scope: { kind: "selection", identity: "local-selection", label: "Selection" },
@@ -2565,6 +2587,7 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
   const duplicateName = await getOrCreateDefaultSession(
     dir,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Lead",
       target: {},
       scope: { kind: "track", identity: "track-2", label: "Lead" },
@@ -2576,6 +2599,7 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
   const renamedSameTrack = await getOrCreateDefaultSession(
     dir,
     {
+      presentation: liveContextPresentationFixture("Renamed Lead"),
       summary: "Renamed Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Renamed Lead" },
@@ -2588,6 +2612,7 @@ test("session reuse follows object handle identity, not duplicate or renamed lab
 test("an archived current-object Session is not reused as the active Session", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-archived-session-"));
   const interaction = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Lead",
     target: {},
     scope: { kind: "track" as const, identity: "track-1", label: "Lead" },
@@ -2658,6 +2683,7 @@ test("the first real prompt names an untitled Session", async () => {
     advanced: {},
   });
   const interaction = {
+    presentation: liveContextPresentationFixture("Bass"),
     summary: "Track: Bass",
     target: {},
     scope: { kind: "track", identity: "track-1", label: "Bass" },
@@ -2750,6 +2776,7 @@ test("a failed model request persists and publishes a redacted session error", a
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2817,6 +2844,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
       { environment: { storageDirectory: dir } } as never,
       dir,
       {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: "Track: Lead",
         target: {},
         scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -2893,6 +2921,7 @@ test("a partial composite creation failure remains explicitly unfinished", async
       context,
       dir,
       {
+        presentation: liveContextPresentationFixture("Live Set", "other"),
         summary: "Live Set",
         target: {},
         scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
@@ -3038,6 +3067,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
     context,
     dir,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: 'MIDI track "Lead"\ndevices=none',
       target: { track },
       scope: { kind: "track", identity: "42", label: "Lead" },
@@ -3202,6 +3232,7 @@ test("completed action replay protection persists across sends and clears after 
     application: { song: { handle: { id: 1n }, tracks: [track] } },
   } as never;
   const interaction = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: 'MIDI track "Lead"\ndevices=none',
     target: { track },
     scope: { kind: "track", identity: "142", label: "Lead" },
@@ -3409,6 +3440,7 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
     application: { song: { handle: { id: 1n }, tracks: [track] } },
   } as never;
   const interaction = {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: 'MIDI track "Lead"\ndevices=none',
     target: { track },
     scope: { kind: "track", identity: "313", label: "Lead" },
@@ -3567,6 +3599,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
     context,
     dir,
     {
+      presentation: liveContextPresentationFixture("Live Set", "other"),
       summary: "Live Set has no tracks",
       target: {},
       scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
@@ -3715,6 +3748,7 @@ test("a stopped Live action publishes completed mutations before propagating can
       context,
       dir,
       {
+        presentation: liveContextPresentationFixture("Live Set", "other"),
         summary: "Live Set",
         target: {},
         scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
@@ -3821,6 +3855,7 @@ test("a concurrent Stop cannot turn a host action failure into a successful Appl
       context,
       dir,
       {
+        presentation: liveContextPresentationFixture("Lead"),
         summary: 'MIDI track "Lead"\ndevices=none',
         target: { track },
         scope: { kind: "track", identity: "77", label: "Lead" },

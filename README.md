@@ -17,6 +17,18 @@ Live Smith helps you understand, arrange, and edit a Live Set through conversati
 Select a track, Clip, device, or another supported Live object and choose
 **Ask Live Smith**. Your conversation starts with that musical context.
 
+The compact **Context** row inside the composer shows the bound object or
+opening selection. Select it to open the detailed Context view. Positions use
+Arrangement beats when available; the strip does not follow later Live selections
+or restrict edits to the displayed object. An unavailable object is labelled
+explicitly. Use the Session's **Scope** control to choose allowed edit categories.
+
+Describe what you want to do in the message box and continue the same conversation
+as the work develops. The context strip and detailed Context view remain available
+without changing the draft or choosing a task mode.
+The message box starts at one line, grows with its content, and scrolls within a
+bounded height for long drafts so conversation history remains visible.
+
 > [!NOTE]
 > Live Smith is beta software and requires an Ableton Live build with Extensions
 > support. See the [development guide](docs/DEVELOPMENT.md) for installation from source.

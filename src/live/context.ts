@@ -3,6 +3,7 @@ import {
   Clip,
   ClipSlot,
   DataModelObject,
+  Device,
   DrumRack,
   MidiClip,
   RackDevice,
@@ -35,8 +36,22 @@ import type { ConversationScope } from "../model/contracts.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
+/** Display-only SDK observation; it contains no target identity or write authority. */
+export interface LiveContextPresentation {
+  origin: "object" | "arrangement-selection" | "clip-slot-selection";
+  objectKind: "midi-clip" | "audio-clip" | "track" | "device" | "other";
+  title: string;
+  details: string[];
+  range?: {
+    coordinate: "arrangement-beats";
+    start: number;
+    end: number;
+  };
+}
+
 export interface LiveInteractionContext {
   summary: string;
+  presentation: LiveContextPresentation;
   target: LiveTarget;
   scope: ConversationScope;
   /** Selection handles are invocation-scoped and are never persisted with a Session. */
@@ -69,11 +84,57 @@ function interactionContextForObject(
 ): LiveInteractionContext {
   const clip = object instanceof Clip ? object : undefined;
   const track = findTrackAncestor(object);
+  const scope = scopeForObject(object, track, clip);
   return {
     summary: summarizeObject(object, song),
+    presentation: presentationForObject(object, track, scope.label, song),
     target: makeTarget(track, clip, object),
-    scope: scopeForObject(object, track, clip),
+    scope,
   };
+}
+
+function presentationForObject(
+  object: DataModelObject<"1.0.0">,
+  track: Track<"1.0.0"> | undefined,
+  title: string,
+  song?: Api["application"]["song"],
+): LiveContextPresentation {
+  const objectKind = object instanceof MidiClip ? "midi-clip"
+    : object instanceof AudioClip ? "audio-clip"
+    : object instanceof Track ? "track"
+    : object instanceof Device ? "device"
+    : "other";
+  const details: string[] = [];
+  let range: LiveContextPresentation["range"];
+  if (object instanceof Clip) {
+    details.push(object instanceof MidiClip ? "MIDI clip"
+      : object instanceof AudioClip ? "Audio clip" : "Clip");
+    const parent = object.parent;
+    if (parent instanceof ClipSlot) {
+      details.push("Session");
+    } else if (parent instanceof Track || parent instanceof TakeLane) {
+      details.push("Arrangement");
+      if (parent instanceof TakeLane) details.push(`Take lane "${parent.name}"`);
+      range = arrangementBeatRange(object.startTime, object.endTime);
+    }
+  } else if (object instanceof Track) {
+    details.push(song ? trackHeading(song, object) : `${trackTypeLabel(object)} track`);
+  } else if (object instanceof Device) {
+    details.push("Device");
+  } else if (object instanceof ClipSlot) {
+    details.push("Session", object.clip ? "Occupied clip slot" : "Empty clip slot");
+  }
+  if (track && track !== object) details.push(`Track "${track.name}"`);
+  return { origin: "object", objectKind, title, details, ...(range ? { range } : {}) };
+}
+
+function arrangementBeatRange(
+  start: number,
+  end: number,
+): LiveContextPresentation["range"] {
+  return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start
+    ? { coordinate: "arrangement-beats", start, end }
+    : undefined;
 }
 
 function findObjectForScope(
@@ -144,8 +205,21 @@ export function arrangementSelectionInteractionContext(
     time_selection_end: selection.time_selection_end,
   };
   const track = firstSelectedTrack(context, snapshot);
+  const lanes = snapshot.selected_lanes.map((handle) =>
+    context.getObjectFromHandle(handle, DataModelObject)
+  );
+  const range = arrangementBeatRange(snapshot.time_selection_start, snapshot.time_selection_end);
   return {
-    summary: summarizeArrangementSelection(context, snapshot),
+    summary: summarizeArrangementSelection(lanes, snapshot),
+    presentation: {
+      origin: "arrangement-selection",
+      objectKind: "other",
+      title: "Arrangement selection",
+      details: lanes.map((lane) => lane instanceof Track
+        ? `${trackTypeLabel(lane)} track "${lane.name}"`
+        : lane instanceof TakeLane ? `Take lane "${lane.name}"` : lane.constructor.name),
+      ...(range ? { range } : {}),
+    },
     target: makeTarget(track),
     selectionContext: {
       refresh: (currentContext) =>
@@ -185,16 +259,25 @@ export function clipSlotSelectionInteractionContext(
       );
     }
     const clip = slot.clip;
-    return `Selected slot ${index + 1}: ${trackTypeLabel(slotTrack)} track "${slotTrack.name}", slotIndex=${slotIndex}: ${clip ? summarizeClip(clip) : "empty"}`;
+    const location = `${trackTypeLabel(slotTrack)} track "${slotTrack.name}", slotIndex=${slotIndex}`;
+    return {
+      clip,
+      summary: `Selected slot ${index + 1}: ${location}: ${clip ? summarizeClip(clip) : "empty"}`,
+      detail: `${location}: ${clip ? `"${clip.name}"` : "empty"}`,
+    };
   });
-  const targetClip =
-    snapshot.selected_clip_slots.length === 1
-      ? context.getObjectFromHandle(snapshot.selected_clip_slots[0]!, ClipSlot).clip
-      : undefined;
+  const targetClip = slots.length === 1 ? slots[0]!.clip : undefined;
   const track = firstSelectedSlotTrack(context, snapshot);
 
   return {
-    summary: ["Session clip-slot selection:", ...slots].join("\n"),
+    summary: ["Session clip-slot selection:", ...slots.map((slot) => slot.summary)].join("\n"),
+    presentation: {
+      origin: "clip-slot-selection",
+      objectKind: targetClip instanceof MidiClip ? "midi-clip"
+        : targetClip instanceof AudioClip ? "audio-clip" : "other",
+      title: "Clip slot selection",
+      details: slots.map((slot) => slot.detail),
+    },
     target: makeTarget(track, targetClip ?? undefined),
     selectionContext: {
       refresh: (currentContext) =>
@@ -277,13 +360,12 @@ function scopeForClip(clip: Clip<"1.0.0">): ConversationScope {
 }
 
 function summarizeArrangementSelection(
-  context: Api,
+  objects: DataModelObject<"1.0.0">[],
   selection: ArrangementSelection,
 ): string {
   const start = selection.time_selection_start;
   const end = selection.time_selection_end;
-  const lanes = selection.selected_lanes.map((handle, index) => {
-    const object = context.getObjectFromHandle(handle, DataModelObject);
+  const lanes = objects.map((object, index) => {
     if (object instanceof Track) {
       const overlapping = object.arrangementClips.filter(
         (clip) => clip.endTime > start && clip.startTime < end,

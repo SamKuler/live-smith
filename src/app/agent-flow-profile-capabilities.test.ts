@@ -24,8 +24,10 @@ import type { ChatDialogState } from "../ui/chat-state.js";
 import { modelAuthSendFenceForStorage } from "./model-auth-send-fence.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { projectKeyForContext } from "./session-context.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 const interaction = {
+  presentation: liveContextPresentationFixture("Capability Probe"),
   summary: "Track: Capability Probe",
   target: {},
   scope: {

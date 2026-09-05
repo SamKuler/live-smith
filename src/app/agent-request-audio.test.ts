@@ -13,6 +13,7 @@ import { loadSessionEvents } from "../storage/events.js";
 import { createSession } from "../storage/sessions.js";
 import { handleAgentRequest } from "./agent-request.js";
 import { runtimeProfileForSavedProfile } from "./model-request.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 test("an audio-capable agent renders another track range into the next model turn", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-agent-audio-"));
@@ -69,6 +70,7 @@ test("an audio-capable agent renders another track range into the next model tur
       } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("1-MIDI"),
         summary: 'MIDI track "1-MIDI"',
         target: { track: midiTrack },
         scope: { kind: "track", identity: "1", label: "1-MIDI" },
@@ -155,6 +157,7 @@ test("a hidden audio tool call cannot read Live audio for an unsupported protoco
       } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Audio"),
         summary: "Audio track",
         target: {},
         scope: { kind: "track", identity: "1", label: "Audio" },
@@ -284,6 +287,7 @@ test("request audio is imported and revalidated before every Live action in the 
       } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Instrument"),
         summary: 'MIDI track "Instrument" with Simpler',
         target: { track },
         scope: { kind: "track", identity: "2", label: "Instrument" },
@@ -407,6 +411,7 @@ test("post-import target drift records the project copy and blocks every Live ac
       } as never,
       directory,
       {
+        presentation: liveContextPresentationFixture("Instrument"),
         summary: 'MIDI track "Instrument" with Simpler',
         target: { track },
         scope: { kind: "track", identity: "12", label: "Instrument" },

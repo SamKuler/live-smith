@@ -13,6 +13,7 @@ import { createSession } from "../storage/sessions.js";
 import { handleAgentRequest } from "./agent-request.js";
 import { runtimeProfileForSavedProfile } from "./model-request.js";
 import { SteeringChannel } from "./steering.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 const profile: SavedProfile = {
   id: "reconnect-profile",
@@ -59,6 +60,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
     { environment: { storageDirectory } } as never,
     storageDirectory,
     {
+      presentation: liveContextPresentationFixture("Lead"),
       summary: "Track: Lead",
       target: {},
       scope: { kind: "track", identity: "track-1", label: "Lead" },
@@ -312,6 +314,7 @@ function searchingWebSearch(id: string): ModelHostedWebSearch {
 
 function interaction() {
   return {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track" as const, identity: "track-1", label: "Lead" },

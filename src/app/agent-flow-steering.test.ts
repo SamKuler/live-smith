@@ -19,6 +19,7 @@ import {
   SteeringClosedError,
   SteeringPersistenceOutcomeUnknownError,
 } from "./steering.js";
+import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 
 const profile: SavedProfile = {
   id: "steering-profile",
@@ -285,6 +286,7 @@ test("steering at action index 0 does not create partial recovery without a muta
     } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture(session.scope.label, "other"),
       summary: "Live Set",
       target: {},
       scope: session.scope,
@@ -389,6 +391,7 @@ test("steering before action 2 preserves completed mutation recovery", async () 
     } as never,
     directory,
     {
+      presentation: liveContextPresentationFixture(session.scope.label, "other"),
       summary: "Live Set",
       target: {},
       scope: session.scope,
@@ -596,6 +599,7 @@ test("Stop lets an in-flight steering persistence report its real commit outcome
 
 function interaction() {
   return {
+    presentation: liveContextPresentationFixture("Lead"),
     summary: "Track: Lead",
     target: {},
     scope: { kind: "track" as const, identity: "track-1", label: "Lead" },

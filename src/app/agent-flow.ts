@@ -1370,6 +1370,17 @@ export async function runAgentFlow(
       return {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
+        liveContext: activeInteraction
+          ? {
+              sessionId: activeSession.id,
+              availability: "available" as const,
+              value: activeInteraction.presentation,
+            }
+          : {
+              sessionId: activeSession.id,
+              availability: "unavailable" as const,
+              label: activeSession.scope.label,
+            },
         sessionContinueTarget: {
           kind: continueInteraction?.scope.kind ?? interaction.scope.kind,
           label: continueInteraction?.scope.label ?? interaction.scope.label,

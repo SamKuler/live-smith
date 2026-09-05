@@ -1,4 +1,5 @@
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
+import type { LiveContextPresentation } from "../live/context.js";
 import type { ConversationScope } from "../model/contracts.js";
 import type {
   DiscoveredModelInfo,
@@ -35,8 +36,13 @@ export interface ChatSessionSummary extends AgentSession {
   hasContent?: boolean;
 }
 
+export type ChatLiveContext =
+  | { sessionId: string; availability: "available"; value: LiveContextPresentation }
+  | { sessionId: string; availability: "unavailable"; label: string };
+
 export interface ChatDialogState {
   contextSummary: string;
+  liveContext: ChatLiveContext;
   sessionContinueTarget: {
     kind: ConversationScope["kind"];
     label: string;

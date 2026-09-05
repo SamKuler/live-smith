@@ -288,6 +288,7 @@
         }
 
         function renderSendPresentation() {
+          composerInput.resizePrompt();
           const button = document.getElementById("sendButton");
           if (!button) return;
           const label = document.getElementById("sendButtonLabel");
@@ -411,6 +412,31 @@
           setAttributeIfChanged(indicator, "aria-label", description);
           setPropertyIfChanged(indicator, "title", description);
           setPropertyIfChanged(value, "textContent", `${roundedPercentage}%`);
+        }
+
+        function renderLiveContext() {
+          const state = getState();
+          const context = state.liveContext;
+          const button = document.getElementById("liveContextSummaryButton");
+          const matchesSession = context?.sessionId === state.activeSessionId;
+          setPropertyIfChanged(button, "hidden", !matchesSession);
+          if (!matchesSession) return;
+          const available = context.availability === "available";
+          const title = available ? context.value.title : context.label;
+          const range = available ? context.value.range : undefined;
+          const origin = available && context.value.origin !== "object"
+            ? "Opening selection"
+            : "Session object";
+          const location = range
+            ? "Beats " + range.start + "–" + range.end
+            : available ? "" : "Unavailable";
+          setPropertyIfChanged(document.getElementById("liveContextTitle"), "textContent", title);
+          setPropertyIfChanged(document.getElementById("liveContextLocation"), "textContent", location);
+          const description = available
+            ? [origin, title, location, ...context.value.details].filter(Boolean).join(" · ")
+            : title + " · Object unavailable. Open Context for details.";
+          setPropertyIfChanged(button, "title", description);
+          setAttributeIfChanged(button, "aria-label", "Session context: " + description);
         }
 
         function renderContextSummary(summary) {
@@ -1037,6 +1063,7 @@
         function renderApplication() {
           renderStateStatus();
           renderContextSummary(getState().contextSummary || "");
+          renderLiveContext();
           renderComposerRuntimeControls();
           renderSendPresentation();
           renderComposerContextUsage();
