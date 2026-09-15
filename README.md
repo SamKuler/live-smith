@@ -104,9 +104,11 @@ names, and raw provider/SDK output stay in their original language.
   is never model input. Saving a selected song for Live and model use is a separate
   confirmation and may consume one download allowance; Live Smith never buys extra
   quota. A verified audio-input model can then listen to that saved Session asset
-  when asked. If Suno requires human verification, complete generation and download
-  the chosen song on its normal website, then drag or paste the local WAV or MP3
-  into Live Smith.
+  when asked. On macOS 14 or later, a generation challenge opens Live Smith's
+  own verification window. Complete any challenge yourself; a successful result
+  continues the original request once. Cancel or close the window to stop before
+  submission. Initial sign-in still happens in your normal browser. Other hosts
+  can generate only when Suno does not require a challenge.
   This is not full Suno website parity; see the supported features and limits in the
   [website sign-in workflow](docs/MODEL_PROVIDERS.md#sunocom-website-sign-in). The
   connection uses an unofficial website protocol and remains subject to

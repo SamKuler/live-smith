@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parseRetrievalClipIds } from "../agent/music-tools.js";
 import {
   audioJobRemoteSettled,
+  AudioSubmissionNotStartedError,
   type AudioGenerationAdapter, type AudioGenerationRequest, type AudioJob,
   type GeneratedAudioOutput, type RemoteAudioStatus,
 } from "../audio-services/contracts.js";
@@ -14,7 +15,6 @@ import { createElevenLabsAudioAdapter } from "../audio-services/elevenlabs.js";
 import { createMurekaAudioAdapter } from "../audio-services/mureka.js";
 import { createSunoPlatformAudioAdapter } from "../audio-services/suno-platform.js";
 import { createSunoApiAudioAdapter } from "../audio-services/sunoapi.js";
-import { createSunoAudioAdapter } from "../audio-services/suno.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
 import { createAudioJob, listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { assertAudioOutputCapacity, saveAudioAsset } from "../storage/audio-assets.js";
@@ -22,7 +22,7 @@ import { acquireAudioJob, boundedAudioMessage, reconcileLocalAudioJob, safeAudio
 import { audioConnectionFingerprint, resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
 import type { AudioProcessingContext } from "./audio-processing.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
-import { persistRotatedSunoSession } from "./suno-session-manager.js";
+import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 
 function generationAdapter(
   context: AudioProcessingContext, settings: RuntimeAudioServiceConnection, authorizeDownloads = false,
@@ -55,14 +55,7 @@ function generationAdapter(
     });
   }
   if (settings.provider === "suno" && settings.sunoSession) {
-    return createSunoAudioAdapter(settings.sunoSession, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-      authorizeDownloads,
-      onSessionRefresh: (previous, next, signal) => persistRotatedSunoSession(
-        context.storageDirectory, settings.id, settings.sunoSession!.accountId, previous, next, signal,
-      ),
-      ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    });
+    return createAppSunoGenerationAdapter(context, settings, authorizeDownloads);
   }
   throw new Error("This service's generation protocol is not available.");
 }
@@ -361,7 +354,7 @@ async function runGeneration(
         ...(acceptedTaskId ? { remoteTaskId: acceptedTaskId } : {}),
         ...(acceptedOutputs ? { expectedOutputs: acceptedOutputs } : {}),
         status: job.outputAssets.length ? "partial" : job.remoteOutputs?.length ? "ready" : acceptedTaskId || hasCompleteAudio ? "interrupted"
-          : submissionStarted || initial.status === "submitting" || initial.status === "unknown" ? "unknown"
+          : !(error instanceof AudioSubmissionNotStartedError) && (submissionStarted || initial.status === "submitting" || initial.status === "unknown") ? "unknown"
           : context.signal.aborted ? "interrupted" : "failed",
         message: context.signal.aborted
           ? "Local audio generation stopped. This does not confirm service-side cancellation or a credit refund. No automatic resubmission will occur."

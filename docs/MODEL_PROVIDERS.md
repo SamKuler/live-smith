@@ -759,8 +759,9 @@ Website subscription sign-in is a separate connection, described below.
 **Suno.com subscription (experimental)** uses the ordinary `suno.com` account, not Suno
 Platform or SunoAPI.org. It requires no browser extension or particular browser.
 On macOS and Windows, the website action opens `https://suno.com/create` using
-the system default browser and its existing login state. Google login and any
-verification remain in that normal browser, under the user's control.
+the system default browser and its existing login state. Google login and
+sign-in verification remain there, under the user's control. Generation
+verification uses the separate in-app workflow below.
 
 This is a manual Cookie import, not an automatic OAuth callback:
 
@@ -864,9 +865,10 @@ observed legacy Clerk host as a non-paid compatibility fallback; they rotate the
 returned session JWT, preserve updated Clerk timestamps when supplied, and
 atomically save the verified rotation without replacing a concurrent reimport.
 Every generation is preceded by
-account/parameter validation and a CAPTCHA check; only an explicit no-challenge
-response permits submission. Verification challenges stop the operation and
-require manual action on Suno. There is no browser/device impersonation, CAPTCHA
+account/parameter validation and a CAPTCHA check. An explicit no-challenge
+response or a fresh result from the requested official component permits
+submission. A challenge waits for manual action in the owned verification
+window. There is no browser/device impersonation, CAPTCHA
 solver, challenge bypass, or automatic replay of a paid submission. Stop allows
 a bounded receipt-read grace period; it is not a remote cancellation or refund.
 
@@ -915,16 +917,32 @@ The tool result text is recorded before its untrusted audio part is admitted, an
 the bytes are not persisted in conversation events. An online preview cannot be
 used as either a Live import source or model input.
 
-#### Human-assisted generation and local handoff
+#### In-app human verification and selected-output download
 
-When a direct generation stops at human verification, its paid submission has
-not started. Use the normal Suno website to complete verification and generate
-the requested song. Download the selected result there, then drag or paste its
-local WAV or MP3 into Live Smith when it should become model input or a source
-for Live. The website generation is the generation attempt: do not also resubmit
-the same request through chat. Live Smith does not claim that merely opening Suno
-or clicking “verified” clears the server-side challenge, and it does not capture
-or replay CAPTCHA tokens.
+On macOS 14 or later, a challenged music generation or extension opens Live
+Smith's native verification window. It loads an actual `https://suno.com`
+document, not a local page with a substituted hostname, and uses only the
+component requested by the generation check: hCaptcha version 1 or Turnstile
+version 2. Click **Start verification** and complete any challenge yourself.
+The opaque result travels only through a private process pipe and transient
+adapter memory. It never enters chat, job records, settings, logs, process
+arguments or UI text. Saved Cookies, model credentials and lyrics are not sent
+to the window. Its WebKit store is nonpersistent and its own generation and
+download-authorization routes are blocked.
+
+A successful callback continues the exact prepared request once, adding
+`token` and numeric `token_provider` without recreating request IDs, lyrics,
+options or model selection. No-challenge requests use null proof fields.
+The selected account/configuration, proxy revision, request values, Stop signal
+and proof lifetime are rechecked before submission. The helper follows the
+selected API proxy mode; explicit No proxy uses an authenticated local CONNECT
+tunnel without intercepting HTTPS. Closing/cancelling the window, loading
+failure or an expired result does not submit generation. A silent component has
+a bounded wait and supports manual retry; there is no automatic paid retry.
+Callback success is not itself evidence of server acceptance: the validated
+generation receipt is authoritative. Unknown challenge versions, unsupported
+hosts and challenged Get Whole Song requests fail before submission; the
+whole-song proof contract is not verified and no fields are guessed.
 
 Retrieval and Resume check the original Suno songs without automatically
 downloading them. A generated song can be complete but still unavailable for

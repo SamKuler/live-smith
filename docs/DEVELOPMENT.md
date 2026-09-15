@@ -61,6 +61,15 @@ before writing the bundle to `dist/extension.js`. The compiled styles are
 embedded into each data-URL dialog; the WebView does not load Tailwind, a CDN,
 or a separate stylesheet at runtime.
 
+The Suno verification helper is our own macOS AppKit/WebKit application, not a
+browser extension. Its universal arm64/x86_64 capsule is embedded in the bundle;
+installation does not require a compiler or a source checkout. Both builds
+validate its source/content receipt. A changed native source or build recipe
+recompiles and ad-hoc signs the capsule with the separately installed macOS
+Command Line Tools. Builds on other platforms require a current capsule produced
+on macOS. Only this helper requires macOS 14 or later; no-challenge generation
+does not start it. The capsule contains no Ableton SDK or account data.
+
 ## Verification
 
 To add an interface language, register its canonical locale ID, native name, and
@@ -177,10 +186,15 @@ they do not establish live Platform access. Mureka tests likewise use synthetic
 keys and captured song/instrumental task requests; they do not establish live
 account access, model entitlement, credits, regional availability, or provider
 media delivery. Suno.com Cookie tests use synthetic credentials, captured HTTP
-requests, and injected default-browser handlers. They do not read browser
-profiles or log into real accounts. The runtime opens the website through the OS
-default handler, without browser discovery, extensions, automation flags or
-bundled browser dependencies.
+requests, injected default-browser handlers, native process replay and real
+verification-client DOM events. They do not read browser profiles or log into
+real accounts. Initial sign-in opens the OS default browser without discovery,
+extensions or automation flags. Generation verification uses the owned native
+helper and the requested official component on an actual HTTPS Suno document.
+No fixture establishes official challenge acceptance: verify native launch in
+the real Extension Host, let the user complete the challenge, then check one
+accepted generation receipt and a valid locally downloaded file. Callback
+success alone does not establish account-bound generation or file delivery.
 Explicitly imported Cookies are reduced to required Suno/Clerk fields and stored
 in private `suno-session-<serviceId>.json`
 files in the extension storage directory, separately per audio connection, and must

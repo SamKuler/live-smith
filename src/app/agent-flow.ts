@@ -4036,6 +4036,9 @@ export async function runAgentFlow(
               onAssistantReset: () => stream.assistantReset(),
               onModelTurnAccepted: (usage) => stream.modelTurnAccepted(usage),
               onProgress: (message) => stream.progress(message),
+              withGenerationAuthorization: (authorizationSignal, dispatch) => globalSettingsMutationFence.run(
+                sessionMutationFenceKey(storageDirectory, "global-settings"), authorizationSignal, dispatch,
+              ),
               onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
               onSessionEvent: (event) => {
                 notifySessionStateChanged(session.id);

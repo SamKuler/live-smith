@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AudioDownloadAuthorization, AudioGenerationAdapter, AudioGenerationRequest, AudioJob, RemoteAudioOutput } from "./contracts.js";
+import type { AudioDownloadAuthorization, AudioServiceAuthorization, AudioGenerationAdapter, AudioGenerationRequest, AudioGenerationSubmission, AudioJob, RemoteAudioOutput } from "./contracts.js";
+import { AudioSubmissionNotStartedError } from "./contracts.js";
+import { assertSunoVerificationFresh, readSunoVerificationProof, SunoVerificationError, type SunoHumanVerificationHandler, type SunoVerificationProof } from "./suno-verification.js";
 import { createSunoHttp, type SunoSessionRefreshHandler } from "./suno-http.js";
 import { exceedsAudioPromptLimit } from "./prompt.js";
 import { downloadSunoClip, sunoDownloadPath } from "./suno-download.js";
@@ -103,7 +105,7 @@ function generationBody(request: Exclude<MusicRequest, { operation: "get_whole_s
   // The web client sends descriptions in gpt_description_prompt; prompt is lyrics.
   // Unverified cover/remaster/Sounds controls are deliberately not exposed.
   return {
-    token: null, generation_type: "TEXT", mv: modelId,
+    token: null, token_provider: null, generation_type: "TEXT", mv: modelId,
     ...(request.operation === "extend_music" ? { task: "extend" } : {}),
     ...(custom ? { title: options?.title ?? "", tags: options?.styles ?? "", negative_tags: options?.negativeStyles ?? "" } : {}),
     prompt: custom ? request.prompt : "", ...(custom ? {} : { gpt_description_prompt: request.prompt }),
@@ -161,6 +163,8 @@ export function createSunoAudioAdapter(
     modelId?: string;
     authorizeDownloads?: boolean;
     onSessionRefresh?: SunoSessionRefreshHandler;
+    verifyHuman?: SunoHumanVerificationHandler;
+    authorizeSubmission?: AudioServiceAuthorization;
   } = {},
 ): AudioGenerationAdapter {
   session = { ...session };
@@ -177,7 +181,9 @@ export function createSunoAudioAdapter(
   if (modelId !== undefined && (typeof modelId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(modelId))) {
     throw http.fail("invalid configured music model identifier.");
   }
-  const prepared = new WeakMap<AudioGenerationRequest, { signature: string; signal: AbortSignal; path: string; body: object }>();
+  const prepared = new WeakMap<AudioGenerationRequest, {
+    signature: string; signal: AbortSignal; path: string; body: object; proof?: SunoVerificationProof;
+  }>();
   return {
     provider: "suno",
     async prepare(request, signal) {
@@ -217,25 +223,49 @@ export function createSunoAudioAdapter(
         }
       }
       const gate = sunoObject(await http.request("POST", "/api/c/check", { ctype: "generation" }, signal), http);
-      if (gate.required === true) throw http.fail("human verification is required. No generation was submitted. Complete verification and generation on Suno.com, then drag or paste the downloaded WAV or MP3 into Live Smith.");
-      if (gate.required !== false) throw http.fail("generation verification status is unavailable. No generation was submitted.");
+      let proof: SunoVerificationProof | undefined;
+      if (gate.required === true) {
+        if (snapshot.operation === "get_whole_song") throw http.fail("verification for Get Whole Song is not supported. No generation was submitted.");
+        if (gate.captcha_version !== 1 && gate.captcha_version !== 2) throw http.fail("unsupported verification version. No generation was submitted.");
+        if (!options.verifyHuman) throw http.fail("human verification is unavailable. No generation was submitted.");
+        try { proof = readSunoVerificationProof(await options.verifyHuman(gate.captcha_version, signal), gate.captcha_version); }
+        catch (error) {
+          sunoActive(signal, http);
+          if (error instanceof SunoVerificationError) throw http.fail(error.message);
+          throw http.fail("human verification could not be completed. No generation was submitted.");
+        }
+        http.protectPrivateValue(proof.token);
+        body = { ...body, token: proof.token, token_provider: proof.captchaVersion };
+      } else if (gate.required !== false) throw http.fail("generation verification status is unavailable. No generation was submitted.");
       sunoActive(signal, http);
       const signature = JSON.stringify(snapshot);
       if (JSON.stringify(validateRequest(request, http)) !== signature) throw http.fail("music parameters changed during preparation.");
-      prepared.set(request, { signature, signal, path, body });
+      prepared.set(request, { signature, signal, path, body, ...(proof ? { proof } : {}) });
     },
     async submit(request, signal) {
       const plan = prepared.get(request);
       prepared.delete(request);
-      sunoActive(signal, http);
-      const snapshot = validateRequest(request, http);
-      if (!plan || plan.signal !== signal || plan.signature !== JSON.stringify(snapshot)) {
-        throw http.fail("music submission requires fresh preparation of the same request.");
-      }
-      const receipt = await http.request("POST", plan.path, plan.body, signal);
-      // A validated receipt may race Stop; retain every acknowledged identity.
-      const expectedOutputs = manifestFromReceipt(receipt, snapshot.operation === "get_whole_song", http);
-      return { kind: "task", taskId: expectedOutputs[0]!.key, expectedOutputs };
+      const beforeSend = () => {
+        try {
+          sunoActive(signal, http);
+          if (!plan || plan.signal !== signal || plan.signature !== JSON.stringify(validateRequest(request, http))) throw new Error();
+          if (plan.proof) assertSunoVerificationFresh(plan.proof);
+        } catch {
+          const error = new AudioSubmissionNotStartedError("Suno.com audio service: preparation or verification is no longer valid. No generation was submitted.");
+          if (signal.aborted) error.name = "AbortError";
+          throw error;
+        }
+      };
+      beforeSend();
+      const dispatch = async (): Promise<AudioGenerationSubmission> => {
+        beforeSend();
+        const snapshot = validateRequest(request, http);
+        const receipt = await http.request("POST", plan!.path, plan!.body, signal, beforeSend);
+        // A validated receipt may race Stop; retain every acknowledged identity.
+        const expectedOutputs = manifestFromReceipt(receipt, snapshot.operation === "get_whole_song", http);
+        return { kind: "task", taskId: expectedOutputs[0]!.key, expectedOutputs };
+      };
+      return options.authorizeSubmission ? options.authorizeSubmission(signal, dispatch) : dispatch();
     },
     async inspect(taskId, signal, expectedOutputs) {
       sunoActive(signal, http);

@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import {
   MAX_AUDIO_ASSET_BYTES,
   MAX_AUDIO_ASSET_DURATION_SECONDS,
@@ -41,7 +43,7 @@ export function createLalalAudioAdapter(
     stems: Object.freeze([...SEPARATION_STEMS]),
     async upload(bytes, mediaType, signal) {
       assertLalalActive(signal);
-      if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > MAX_AUDIO_ASSET_BYTES ||
+      if (!types.isUint8Array(bytes) || !bytes.byteLength || bytes.byteLength > MAX_AUDIO_ASSET_BYTES ||
           !["audio/wav", "audio/mpeg"].includes(mediaType)) {
         throw lalalError("upload requires WAV or MP3 bytes within 128 MiB.");
       }

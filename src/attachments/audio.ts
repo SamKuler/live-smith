@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import {
   AttachmentProcessingError,
@@ -65,7 +67,7 @@ export function isAudioAttachmentInspection(
  * inspection. It never trusts a filename or claimed media type.
  */
 export function isAudioAttachmentCandidate(bytes: Uint8Array): boolean {
-  if (!(bytes instanceof Uint8Array)) return false;
+  if (!types.isUint8Array(bytes)) return false;
   return (
     bytes.byteLength >= 12 &&
     ascii(bytes, 0, 4) === "RIFF" &&
@@ -92,7 +94,7 @@ export async function inspectAudioAttachment(input: {
   throwIfAborted(input.signal);
   const limits = input.limits ?? defaultAudioInspectionLimits;
   if (!validInspectionLimits(limits)) throw new TypeError("Audio inspection limits are invalid.");
-  if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength === 0) {
+  if (!types.isUint8Array(input.bytes) || input.bytes.byteLength === 0) {
     throw invalidAudio();
   }
   if (input.bytes.byteLength > limits.maxBytes) {

@@ -8,6 +8,7 @@ import ts from "typescript";
 
 import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
 import { compileUiStyles } from "./scripts/build-ui-styles.js";
+import { readNativeVerifierCapsule } from "./scripts/build-native-verifier.js";
 import { assertPackagedBundleContainsThirdPartyNotices } from "./src/release/package-verification.js";
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
@@ -21,6 +22,8 @@ verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);
 const chatStyles = await compileUiStyles("src/ui/styles/chat.css", production);
 const resultStyles = await compileUiStyles("src/ui/styles/result.css", production);
+const verificationStyles = await compileUiStyles("src/ui/styles/suno-verification.css", production);
+const nativeVerifierCapsule = await readNativeVerifierCapsule();
 
 const buildResult = await esbuild.build({
   entryPoints: ["src/extension.ts"],
@@ -40,6 +43,8 @@ const buildResult = await esbuild.build({
     __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
     __LIVE_SMITH_CHAT_STYLES__: JSON.stringify(chatStyles),
     __LIVE_SMITH_RESULT_STYLES__: JSON.stringify(resultStyles),
+    __LIVE_SMITH_SUNO_VERIFICATION_STYLES__: JSON.stringify(verificationStyles),
+    __LIVE_SMITH_NATIVE_VERIFIER_CAPSULE__: JSON.stringify(JSON.stringify(nativeVerifierCapsule)),
   },
   banner: {
     js: `/*!\n${thirdPartyNotices.replaceAll("*/", "* /")}\n*/`,
@@ -146,6 +151,7 @@ function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
   const childProcessBoundaries = new Set([
     "src/runtime/system-browser.ts",
     "src/runtime/system-proxy.ts",
+    "src/runtime/suno-human-verification.ts",
   ].map(path.normalize));
   for (const file of sourceFiles(sourceDirectory)) {
     if (file.endsWith(".test.ts")) continue;

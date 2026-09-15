@@ -298,6 +298,7 @@ export async function handleAgentRequest(
     context, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
     attachmentRefs: prepared.attachmentRefs.filter((ref): ref is AudioSessionAttachmentRef => ref.kind === "audio"),
     target: interaction.target, signal: callbacks.signal, onProgress: callbacks.onProgress,
+    ...(callbacks.withGenerationAuthorization ? { withGenerationAuthorization: callbacks.withGenerationAuthorization } : {}),
     ...(callbacks.audioProcessing ? { processing: callbacks.audioProcessing } : {}),
     ...(supportsArrangementAudioInput ? { modelAudioInput: {
       canAccept: (byteLength: number) => attachmentRequestQuotaIsWithinLimits([
@@ -1150,6 +1151,7 @@ async function captureAgentPlanPreflightSnapshots(
 }
 
 interface AgentRequestCallbacks {
+  withGenerationAuthorization?: AudioProcessingContext["withGenerationAuthorization"];
   /** Test seam for the external service; no service config is accepted in /send. */
   audioProcessing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "wait">;
   signal: AbortSignal;

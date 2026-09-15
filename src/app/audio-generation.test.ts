@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
-import { MAX_AUDIO_ASSET_BYTES, type AudioGenerationAdapter } from "../audio-services/contracts.js";
+import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_BYTES, type AudioGenerationAdapter } from "../audio-services/contracts.js";
 import { createSession } from "../storage/sessions.js";
 import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
 import { listAudioJobs, updateAudioJob } from "../storage/audio-jobs.js";
@@ -65,6 +65,17 @@ test("unknown inline generation is never repeated by Resume or moved to another 
   await assert.rejects(resumeAudioJob(h.context, unknown.id), /unavailable/);
   assert.equal(calls, 1);
   assert.equal((await loadAgentSettings(h.directory)).audioServices?.connections[0]?.id, "music-b");
+});
+
+test("a known pre-dispatch rejection is failed rather than an unknown paid outcome", async (t) => {
+  const h = await harness(t);
+  h.adapter.submit = async () => { throw new AudioSubmissionNotStartedError("Verification expired before dispatch."); };
+  const job = await generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true });
+  assert.equal(job.status, "failed");
+  assert.equal(job.remoteTaskId, undefined);
+  assert.equal((await audioJobViews(h.directory, h.session.id))[0]?.resumable, false);
+  assert.equal((await resumeAudioJob(h.context, job.id)).status, "failed");
+  assert.equal(h.submissions(), 0);
 });
 
 test("complete inline audio received as Stop arrives is saved without continuing generation", async (t) => {

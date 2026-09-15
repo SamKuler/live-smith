@@ -4,87 +4,14 @@ import { getEventListeners } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import type { AudioGenerationRequest, AudioJob, RemoteAudioOutput } from "../audio-services/contracts.js";
-import { createSunoAudioAdapter, readSunoMusicService, type SunoMusicServiceRequest } from "../audio-services/suno.js";
+import { readSunoMusicService, type SunoMusicServiceRequest } from "../audio-services/suno.js";
 import { createHostAbortController } from "../runtime/host.js";
 
-const API = "https://studio-api-prod.suno.com";
-const AUTH = "https://auth.suno.com/v1/client";
-const A = "00000000-0000-4000-8000-000000000001";
-const B = "00000000-0000-4000-8000-000000000002";
-const C = "00000000-0000-4000-8000-000000000003";
-const MODEL = "catalog-model-fixture";
-const accountId = "user_synthetic";
-const sessionId = "sess_synthetic";
-function token(claims: object) {
-  return [JSON.stringify({ alg: "RS256" }), JSON.stringify(claims), "synthetic-signature"]
-    .map((part) => Buffer.from(part).toString("base64url")).join(".");
-}
-const clientToken = token({ sub: "client_synthetic" });
-const session = { clientToken, accountId };
-const MUSIC: AudioGenerationRequest = { operation: "generate_music", prompt: "A warm instrumental groove", instrumental: true };
-const MANIFEST = [{ key: A, role: "music" }, { key: B, role: "music_alternative" }] satisfies AudioJob["expectedOutputs"];
-const single = [MANIFEST[0]!];
-const signal = () => createHostAbortController().signal;
-function model(overrides: Record<string, unknown> = {}) {
-  return { external_key: MODEL, name: "Music model", can_use: true, is_default_model: true,
-    major_version: 6,
-    max_lengths: { prompt: 5000, gpt_description_prompt: 1000, title: 160, tags: 1000, negative_tags: 1000 }, ...overrides };
-}
-function catalog(models: unknown[] = [model()], extra: Record<string, unknown> = {}) {
-  return { total_credits_left: 123, plan: { name: "Fixture plan" }, models, ...extra };
-}
-function clip(id = A, status = "complete", extra: Record<string, unknown> = {}) {
-  return { id, status, title: "Fixture song", model_name: MODEL, audio_url: `https://cdn1.suno.ai/${id}.mp3`,
-    is_download_unlocked: true, metadata: { duration: 30, tags: "jazz", make_instrumental: true }, ...extra };
-}
-const downloadPath = (id = A) => `/api/download/clip/${id}?format=mp3`;
-function receipt(ids: string[] = [B, A]) { return { status: "submitted", clips: ids.map((id) => clip(id, "submitted")) }; }
-type Step = { path: string; value?: unknown; response?: Response; run?: () => Promise<Response> };
-function replay(steps: Step[] = [], modelId?: string) {
-  const requests: Array<{ path: string; url: string; init: RequestInit; body: unknown; headers: Headers }> = [];
-  const pending = [...steps];
-  const jwt = token({ sub: accountId, sid: sessionId, exp: Math.floor(Date.now() / 1000) + 600 });
-  const fetchImpl = (async (input: unknown, init: RequestInit = {}) => {
-    const url = String(input);
-    const path = url.startsWith(API) ? url.slice(API.length) : url;
-    requests.push({ url, path, init, headers: new Headers(init.headers),
-      body: typeof init.body === "string" && init.body ? JSON.parse(init.body) : init.body });
-    if (url.startsWith(AUTH + "?")) return Response.json({ response: {
-      object: "client", last_active_session_id: sessionId,
-      sessions: [{ object: "session", id: sessionId, status: "active", expire_at: Date.now() + 60_000,
-        user: { object: "user", id: accountId } }],
-    } });
-    if (url.startsWith(`${AUTH}/sessions/${sessionId}/tokens?`)) return Response.json({ jwt });
-    const step = pending.shift();
-    assert.ok(step, `unexpected request ${path}`);
-    assert.equal(path, step.path);
-    return step.run ? step.run() : step.response ?? Response.json(step.value);
-  }) as typeof fetch;
-  return {
-    adapter: createSunoAudioAdapter(session, { fetchImpl, ...(modelId === undefined ? {} : { modelId }) }),
-    fetchImpl, requests, jwt, api: () => requests.filter((entry) => entry.url.startsWith(API)),
-    done: () => assert.equal(pending.length, 0),
-  };
-}
-const accountStep = (value: unknown = catalog()): Step => ({ path: "/api/billing/info/", value });
-const gateStep = (value: unknown = { required: false }): Step => ({ path: "/api/c/check", value });
-const submitStep = (value: unknown = receipt()): Step => ({ path: "/api/generate/v2-web/", value });
-const pollStep = (value: unknown, ids = `${A},${B}`): Step => ({ path: `/api/feed/?ids=${ids}`, value });
-async function safeFailure(promise: Promise<unknown>, pattern = /Suno/u) {
-  await assert.rejects(promise, (error: unknown) => {
-    assert.ok(error instanceof Error);
-    assert.match(error.message, pattern);
-    assert.equal(error.cause, undefined);
-    assert.ok(!String(error.stack).includes(clientToken));
-    assert.doesNotMatch(String(error.stack), /remote-secret|untrusted\.test/u);
-    return true;
-  });
-}
-async function preparedSubmit(harness: ReturnType<typeof replay>, request: AudioGenerationRequest = { ...MUSIC }) {
-  const abort = signal();
-  await harness.adapter.prepare!(request, abort);
-  return harness.adapter.submit(request, abort);
-}
+import {
+  A, B, C, MODEL, accountId, clientToken, session, MUSIC, MANIFEST, single,
+  signal, token, model, catalog, clip, downloadPath, receipt, replay, accountStep, gateStep, submitStep,
+  pollStep, safeFailure, preparedSubmit,
+} from "./audio-service-suno-harness.js";
 
 test("library projection never releases an echoed minted bearer through an opaque cursor", async () => {
   let reflected: string;
@@ -114,7 +41,7 @@ test("prepare selects the catalog default, gates once, and submit sends the comp
   assert.match(String(metadata.create_session_token), /^[0-9a-f-]{36}$/u);
   assert.notEqual(body.transaction_uuid, metadata.create_session_token);
   assert.deepEqual(body, {
-    token: null, generation_type: "TEXT", mv: MODEL,
+    token: null, token_provider: null, generation_type: "TEXT", mv: MODEL,
     prompt: "", gpt_description_prompt: MUSIC.prompt, make_instrumental: true, user_uploaded_images_b64: null,
     metadata: { web_client_pathname: "/create", is_max_mode: false, is_mumble: false, create_mode: "simple",
       user_tier: "", create_session_token: metadata.create_session_token, disable_volume_normalization: false },
@@ -266,9 +193,9 @@ test("only explicit required false passes CAPTCHA and unknown/failed checks cann
   }
 });
 
-test("required human verification describes the website file handoff without submitting", async () => {
+test("required human verification without a handler cannot submit", async () => {
   const h = replay([accountStep(), gateStep({ required: true, captcha_version: 2 })]);
-  await safeFailure(h.adapter.prepare!({ ...MUSIC }, signal()), /No generation was submitted\. Complete verification and generation on Suno\.com, then drag or paste the downloaded WAV or MP3 into Live Smith\./);
+  await safeFailure(h.adapter.prepare!({ ...MUSIC }, signal()), /human verification is unavailable\. No generation was submitted\./);
   assert.deepEqual(h.api().map(entry => entry.path), ["/api/billing/info/", "/api/c/check"]);
 });
 

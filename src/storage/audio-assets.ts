@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types } from "node:util";
 
 import { inspectAudioAttachment } from "../attachments/audio.js";
 import {
@@ -32,7 +32,7 @@ export async function saveAudioAsset(
   requireSafeStorageId(input.jobId, "Audio job ID");
   throwIfAborted(input.signal);
   if (!audioRecordHasOnly(input, ["jobId", "label", "role", "bytes", "origin", "signal"]) ||
-    !(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_AUDIO_ASSET_BYTES) {
+    !types.isUint8Array(input.bytes) || input.bytes.byteLength > MAX_AUDIO_ASSET_BYTES) {
     throw new AudioStorageError("Audio assets must be valid audio of at most 128 MiB.");
   }
   const bytes = new Uint8Array(input.bytes);

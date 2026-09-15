@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { types } from "node:util";
 
 export const MAX_DOCUMENT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -56,7 +57,7 @@ export class AttachmentProcessingError extends Error {
 export function assertDocumentAttachmentBytesWithinLimit(
   bytes: unknown,
 ): asserts bytes is Uint8Array {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+  if (!types.isUint8Array(bytes) || bytes.byteLength === 0) {
     throw new AttachmentProcessingError(
       "invalid_document",
       "The attachment is not a valid supported document.",

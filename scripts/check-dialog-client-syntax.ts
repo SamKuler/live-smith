@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { buildSunoVerificationScript } from "../src/ui/native/suno-verification.js";
 
 const clientFragments = [
   "host-adapter",
@@ -21,3 +22,6 @@ const source = clientFragments
   .join("\n");
 
 new Function(source);
+for (const version of [1, 2] as const) for (const locale of ["en", "zh-CN", "system"]) {
+  new Function(buildSunoVerificationScript(version, locale, ""));
+}

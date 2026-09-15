@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import { UnzipInflate } from "fflate/browser";
 
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
@@ -104,7 +106,7 @@ async function parseCentralDirectory(
   bytes: Uint8Array,
   signal?: AbortSignal,
 ): Promise<ZipEntryIndex[]> {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 22) {
+  if (!types.isUint8Array(bytes) || bytes.byteLength < 22) {
     throw invalidDocument("OOXML ZIP data is truncated.");
   }
   const interpretations: ParsedCentralDirectory[] = [];

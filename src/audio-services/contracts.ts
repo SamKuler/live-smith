@@ -73,8 +73,12 @@ export type AudioGenerationSubmission =
   | { kind: "audio"; outputs: GeneratedAudioOutput[] }
   | { kind: "task"; taskId: string; expectedOutputs?: AudioJob["expectedOutputs"] };
 
-/** Holds the connection lifecycle boundary through one download-allowance request. */
-export type AudioDownloadAuthorization = <T>(signal: AbortSignal, operation: () => Promise<T>) => Promise<T>;
+/** The adapter knows no paid request was dispatched, unlike a transport failure. */
+export class AudioSubmissionNotStartedError extends Error {}
+
+/** Holds the connection lifecycle boundary through one authorized paid request. */
+export type AudioServiceAuthorization = <T>(signal: AbortSignal, operation: () => Promise<T>) => Promise<T>;
+export type AudioDownloadAuthorization = AudioServiceAuthorization;
 
 export interface AudioGenerationAdapter {
   readonly provider: "elevenlabs" | "mureka" | "suno-platform" | "suno" | "sunoapi";

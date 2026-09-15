@@ -5,7 +5,7 @@ import { TextDecoder } from "node:util";
 
 import { cancelStreamBestEffort } from "../model/transports/stream-cancel.js";
 import { createHostAbortController, resolveFetchImplementation, waitForPromiseWithSignal } from "../runtime/host.js";
-import { MAX_AUDIO_ASSET_BYTES } from "./contracts.js";
+import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_BYTES } from "./contracts.js";
 import { readAudioResponseBytes } from "./response-bytes.js";
 import { sunoErrorDiagnostic } from "./suno-errors.js";
 import { createSunoSessionResolver, normalizeSunoSessionIdentity, normalizeSunoSessionValue, sunoSessionSecrets,
@@ -141,7 +141,7 @@ export function createSunoHttp(
           ? "audio download was denied. Retry Download for this song to request a fresh authorized download URL."
           : url.startsWith(`${API_BASE}/api/download/clip/`)
           ? "song download is not authorized. Check its download access on Suno.com, then retry Download for this song."
-          : "access denied or verification required; complete verification on Suno.com."
+          : "access denied or verification required."
           : "request rejected.";
         const detail = `${summary} (HTTP ${response.status}); no automatic retry was attempted.`;
         // The rejection is already known. Optional diagnostics and cancellation
@@ -165,6 +165,7 @@ export function createSunoHttp(
       controller.abort();
       cancelStreamBestEffort(response?.body);
       if (rejection) throw rejection;
+      if (error instanceof AudioSubmissionNotStartedError) throw error;
       active(signal);
       if (timedOut) throw fail("request timed out; its remote outcome may be unknown.");
       if (error instanceof SunoHttpError) throw error;
@@ -225,6 +226,7 @@ export function createSunoHttp(
 
   return {
     fail,
+    protectPrivateValue(value: string): void { credentialSecrets.add(value); },
     outputUrl,
     /** Validate the final bounded public projection while both credentials are private here. */
     publicResult<T>(value: T): T {
@@ -234,7 +236,8 @@ export function createSunoHttp(
       }
       return value;
     },
-    async request(method: "GET" | "POST", path: string, body: unknown | undefined, signal: AbortSignal): Promise<unknown> {
+    async request(method: "GET" | "POST", path: string, body: unknown | undefined, signal: AbortSignal,
+      beforeSend?: () => void): Promise<unknown> {
       active(signal);
       if (!allowedRoute(method, path) || (method === "GET" && body !== undefined)) throw fail("request route or body is not allowed.");
       let encoded: string | undefined;
@@ -250,9 +253,21 @@ export function createSunoHttp(
               item.item_type !== "clip" || typeof item.item_id !== "string" || !DOWNLOAD_ITEM_ID.test(item.item_id)) throw new Error();
         }
       } catch { throw fail("request route or body is not allowed."); }
-      const jwt = await accessToken(signal);
-      active(signal);
       const preserveReceipt = method === "POST" && ["/api/generate/v2-web/", "/api/generate/concat/v2/"].includes(path);
+      let jwt: string;
+      try {
+        jwt = await accessToken(signal);
+        active(signal);
+        beforeSend?.();
+      } catch (error) {
+        if (preserveReceipt && !(error instanceof AudioSubmissionNotStartedError)) {
+          const notStarted = new AudioSubmissionNotStartedError(error instanceof SunoHttpError ? error.message
+            : "Suno.com audio service: preparation failed. No generation was submitted.");
+          if (error instanceof SunoHttpError && error.name === "AbortError") notStarted.name = "AbortError";
+          throw notStarted;
+        }
+        throw error;
+      }
       try {
         return parseJson(await read(`${API_BASE}${path}`, {
           method, headers: { Authorization: `Bearer ${jwt}`, Accept: "application/json",

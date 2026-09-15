@@ -4,7 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { platform } from "node:process";
-import { TextDecoder } from "node:util";
+import { TextDecoder, types } from "node:util";
 
 import {
   MAX_SKILL_DESCRIPTION_LENGTH,
@@ -353,7 +353,7 @@ class SkillCatalog implements SkillCatalogTransaction {
     options?: { replace?: boolean },
   ): Promise<InstalledSkill> {
     this.requireActiveTransaction();
-    if (!(inputBytes instanceof Uint8Array)) {
+    if (!types.isUint8Array(inputBytes)) {
       throw new TypeError("Skill upload must contain bytes.");
     }
     validateInstallOptions(options);
@@ -1274,7 +1274,7 @@ function validateInstallOptions(options: { replace?: boolean } | undefined): voi
 }
 
 function snapshotSkillBytes(bytes: Uint8Array): Uint8Array {
-  if (!(bytes instanceof Uint8Array)) {
+  if (!types.isUint8Array(bytes)) {
     throw new TypeError("Skill upload must contain bytes.");
   }
   if (bytes.byteLength > MAX_SKILL_FILE_BYTES) {

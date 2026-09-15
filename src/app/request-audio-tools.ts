@@ -40,6 +40,7 @@ export async function createRequestAudioTools(input: {
   modelAudioInput?: {
     canAccept(byteLength: number): boolean;
   };
+  withGenerationAuthorization?: AudioProcessingContext["withGenerationAuthorization"];
   /** Test seam; production uses the saved service and shared network route. */
   processing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "wait"> & {
     musicServiceReader?: typeof readSunoMusicService;
@@ -75,6 +76,7 @@ export async function createRequestAudioTools(input: {
     storageDirectory: input.storageDirectory, sessionId: input.sessionId,
     signal: input.signal, onProgress: input.onProgress, ...input.processing,
     admittedConnections,
+    ...(input.withGenerationAuthorization ? { withGenerationAuthorization: input.withGenerationAuthorization } : {}),
   };
 
   const snapshot = async (source: AudioProcessingSource): Promise<{

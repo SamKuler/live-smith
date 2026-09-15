@@ -378,6 +378,10 @@ test("audio inspection enforces the byte boundary before copying caller input", 
   assert.equal(exact.mediaType, "audio/wav");
 
   const backing = new Uint8Array(MAX_AUDIO_ATTACHMENT_BYTES + 1);
+  await assert.rejects(
+    inspectAudioAttachment({ bytes: backing }),
+    audioError("archive_limit", /20 MiB/),
+  );
   let copyPathTouched = false;
   const oversized = new Proxy(backing, {
     get(target, property) {
@@ -388,7 +392,7 @@ test("audio inspection enforces the byte boundary before copying caller input", 
   });
   await assert.rejects(
     inspectAudioAttachment({ bytes: oversized }),
-    audioError("archive_limit", /20 MiB/),
+    audioError("invalid_audio"),
   );
   assert.equal(copyPathTouched, false);
 });

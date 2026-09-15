@@ -285,11 +285,18 @@ provider/Profile JSON without depending on `structuredClone`. `build.ts`
 checks these boundaries and smoke-loads the extension entrypoint without ambient
 Web APIs, while the runtime suite sends real direct and CONNECT-proxy requests
 through an equivalent restricted VM. A successful Node import alone is not
-proof of Extension Host compatibility. Production child processes are limited
+proof of Extension Host compatibility. Byte-input boundaries use
+`node:util.types.isUint8Array`, not realm-local `instanceof`: Node Buffers and
+host-returned byte arrays may have a different intrinsic prototype in the
+isolated VM. Genuine byte views retain the same size, format, ownership and
+integrity checks; other views and prototype/tag lookalikes are not accepted.
+Production child processes are limited
 to the fixed macOS and Windows default-browser commands in
 `runtime/system-browser.ts` and the fixed read-only macOS/Windows system-proxy
-queries in `runtime/system-proxy.ts`; the build rejects `node:child_process`
-everywhere else.
+queries in `runtime/system-proxy.ts`, plus the owned, bundled macOS Suno
+verification capsule in `runtime/suno-human-verification.ts`; the build rejects
+`node:child_process` everywhere else. The verification capsule's private input,
+bounded result and lifecycle are described under external audio processing.
 
 ## Model request flow
 
@@ -894,6 +901,22 @@ across operations.
 handler. Website navigation is independent of saved connections
 and is never evidence of authentication. No browser process, profile directory,
 extension or debugging connection is owned by Live Smith.
+`app/suno-human-verification.ts` separately creates the production Suno adapter
+and binds an in-app challenge to the admitted account/configuration and proxy
+revision. `runtime/suno-human-verification.ts` stages only our embedded native
+capsule in a private temporary directory and executes its fixed entrypoint with
+no arguments or inherited environment. A bounded private stdin/stdout exchange
+returns the requested proof; raw process errors and causes never escape. The
+native helper monitors its parent and enforces its own lifetime; it exits and
+removes only the exact owned, credential-free temporary capsule if the host dies.
+The macOS helper uses nonpersistent WebKit data and an actual HTTPS Suno
+document, accepts only main-frame first-party callbacks, and blocks its own
+paid routes. The isolated client uses official components after manual action,
+settles stale/expired attempts, and bounds loader and callback waits. An
+authenticated loopback CONNECT tunnel supplies explicit direct routing where
+WebKit's default settings would otherwise inherit the OS proxy. It tunnels TLS
+without changing site origin, certificates or browser identity and closes with
+the verification lease. Manual/system proxy routing remains user-selected.
 Official Suno Platform connections are ordinary API-key audio connections. Their
 transport is isolated from the following website-session lifecycle and never
 receives a Suno.com Cookie.
@@ -925,7 +948,15 @@ current private credential. Recovery fingerprints likewise bind verified account
 IDs so rotation does not orphan accepted tasks. Custom options are typed,
 capability-gated and validated against
 the selected account's model catalog. Read-only preparation and challenge checks
-precede the paid submission boundary. A multi-clip receipt is persisted atomically
+precede the paid submission boundary. `audio-services/suno-verification.ts`
+owns transient proof validation and provider-specific lifetimes. A successful
+challenge adds only proof fields to the original prepared body, consumed once;
+the HTTP boundary rechecks freshness after authentication and the app rechecks
+account/network admission before dispatch. Generation holds the shared global
+settings lifecycle fence only after preparation, through authentication and the
+bounded paid receipt, not while the human solves a challenge. Known pre-dispatch rejections use
+`AudioSubmissionNotStartedError`, not the unknown-paid-outcome path. Challenge
+proof mapping for concat is unverified and remains fail-closed. A multi-clip receipt is persisted atomically
 before polling and has immutable ID/role associations, including failed siblings.
 Only library/job-observed clip IDs on the selected connection can be used by the
 chat tools for extension/whole-song requests or retrieval of existing songs.

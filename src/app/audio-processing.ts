@@ -5,7 +5,7 @@ import { setTimeout, clearTimeout } from "node:timers";
 import {
   audioJobRemoteSettled, audioJobView, type AudioAsset, type AudioJob, type AudioJobView,
   type AudioOrigin, type AudioServiceAdapter, type AudioServiceConnection, type AudioGenerationAdapter,
-  type SeparationStem, type AudioDownloadAuthorization,
+  type SeparationStem, type AudioDownloadAuthorization, type AudioServiceAuthorization,
 } from "../audio-services/contracts.js";
 import { createLalalAudioAdapter } from "../audio-services/lalal.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
@@ -34,6 +34,8 @@ export interface AudioProcessingContext {
   onProgress?(message: string): Promise<void> | void;
   /** The explicit download command supplies the shared global-settings fence. */
   withDownloadAuthorization?: AudioDownloadAuthorization;
+  /** Paid generation uses the same settings lifecycle owner, after preparation. */
+  withGenerationAuthorization?: AudioServiceAuthorization;
   /** Injected service and wait are used by protocol-independent lifecycle tests. */
   adapter?: AudioServiceAdapter;
   generationAdapter?: AudioGenerationAdapter;

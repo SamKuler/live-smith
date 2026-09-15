@@ -1,0 +1,29 @@
+@layer theme, base, components, utilities;
+@import "./tokens.css";
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+
+@layer base {
+  :host {
+    @apply block overflow-auto bg-canvas font-ui text-body text-text;
+    color-scheme: dark;
+  }
+  * { @apply box-border; }
+}
+
+@layer components {
+  main { @apply mx-auto flex min-h-full max-w-[520px] flex-col gap-6 p-6; }
+  header { @apply flex flex-col gap-2; }
+  h1 { @apply m-0 text-heading font-control; }
+  p { @apply m-0 text-muted; line-height: 1.5; }
+  #origin, #note { @apply text-label text-quiet; }
+  #widget { @apply min-h-[80px]; }
+  .actions { @apply flex flex-wrap gap-2; }
+  button {
+    font: inherit;
+    @apply min-h-control cursor-pointer rounded-control border border-border-hover bg-pane-raised px-4 py-2 font-control text-text;
+  }
+  button:hover { @apply bg-surface-hover; }
+  button.secondary { @apply border-border bg-pane text-muted; }
+  button:disabled { @apply cursor-default opacity-60; }
+  button:focus-visible { outline: 2px solid var(--color-border-hover); outline-offset: 2px; }
+}
