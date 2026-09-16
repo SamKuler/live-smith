@@ -54,7 +54,7 @@
           return t(value.source, Object.fromEntries(Object.entries(value.values).map(
             ([key, parameter]) => [key, format(parameter)])));
         }
-        function text(value) { return typeof value === "function" ? value() : String(value ?? ""); }
+        function text(value) { return format(typeof value === "function" ? value() : value ?? ""); }
         function apply() {
           if (staticTargets === null) {
             const picker = document.getElementById("uiLanguage");
