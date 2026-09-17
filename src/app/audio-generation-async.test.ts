@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -85,7 +86,7 @@ test("Suno Resume rejects changed output identities before downloading and can r
   h.mode.failFirst = false;
   const rejected = await resumeAudioJob(h.context, first.id);
   assert.equal(rejected.status, "partial");
-  assert.match(rejected.message!, /identity|identities/);
+  assert.match(formatUiMessage(rejected.message!), /identity|identities/);
   assert.deepEqual(rejected.outputAssets, first.outputAssets);
   assert.equal(h.calls.filter((call) => call.url.includes("file.aiquickdraw.com")).length, before);
   h.mode.replaceFirstId = false;
@@ -114,7 +115,7 @@ for (const saved of ["none", "partial", "complete"] as const) {
     const recovered = await resumeAudioJob(h.context, first.id);
     if (saved === "partial") {
       assert.equal(recovered.status, "partial");
-      assert.match(recovered.message!, /identity|identities/);
+      assert.match(formatUiMessage(recovered.message!), /identity|identities/);
       assert.deepEqual(recovered.outputAssets, first.outputAssets);
       assert.ok(h.calls.slice(before).every((call) => !call.url.includes("file.aiquickdraw.com")));
     } else {
@@ -166,7 +167,7 @@ test("Suno's accepted receipt survives Stop without claiming service-side cancel
   const job = (await listAudioJobs(h.directory, h.session.id))[0]!;
   assert.equal(job.remoteTaskId, "task-one");
   assert.equal(job.status, "interrupted");
-  assert.match(job.message!, /does not confirm service-side cancellation/);
+  assert.match(formatUiMessage(job.message!), /does not confirm service-side cancellation/);
   assert.equal(h.calls.length, 1);
   const completed = await resumeAudioJob({ ...h.context, signal: new AbortController().signal }, job.id);
   assert.equal(completed.status, "completed");

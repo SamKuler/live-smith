@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
 import { downloadAudioOutput } from "./audio-generation.js";
+import { audioMessage as m } from "./audio-messages.js";
+import type { UiMessage } from "../i18n/ui-message.js";
 import { SunoSessionManager } from "./suno-session-manager.js";
 import { SunoModelCatalog } from "./suno-model-catalog.js";
 import type { readSunoMusicService } from "../audio-services/suno-catalog.js";
@@ -380,7 +382,7 @@ export async function runAgentFlow(
   interaction: LiveInteractionContext,
   dependencies: AgentFlowDependencies = {},
 ): Promise<void> {
-  let status: string | undefined;
+  let status: UiMessage | undefined;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
   const modalSessionOwner = Symbol("Live Smith modal Session owner");
@@ -2921,7 +2923,7 @@ export async function runAgentFlow(
         if (!bridge) throw new Error("The audio download bridge is unavailable.");
         const target = await bridge.createAudioDownload(commandInput.sessionId, commandInput.assetId, signal);
         await (dependencies.openAudioDownload ?? openAudioDownload)(target, signal);
-        status = "The local audio file was sent to your default browser for download. Keep Live Smith open until it finishes.";
+        status = m("The local audio file was sent to your default browser for export. Keep Live Smith open until it finishes.");
         return buildStateAfterCommandMutation(undefined, {
           heldSessionId: commandInput.sessionId, sessionMutationHeld: true,
         });
@@ -2934,7 +2936,7 @@ export async function runAgentFlow(
           await attachmentSession(commandInput.sessionId);
           const processing = {
             storageDirectory, sessionId: commandInput.sessionId, signal,
-            onProgress: (message: string) => commandContext.progress(message),
+            onProgress: (message: UiMessage) => commandContext.progress(message),
           };
           let job;
           if (commandInput.kind === "download_audio_output") {

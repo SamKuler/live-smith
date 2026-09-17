@@ -138,7 +138,7 @@ test("audio outputs show duration and format before playback without replacing t
   try {
     const output = h.document.querySelector("[data-audio-output]")!;
     const card = h.document.querySelector<HTMLElement>("[data-audio-job-id]")!;
-    assert.equal(card.querySelector("h4")?.textContent, "Stem separation");
+    assert.equal(card.querySelector("h4")?.textContent, "Audio 1 · Stem separation");
     assert.equal(card.querySelector(".activity-state")?.textContent, "Partial audio results");
     assert.equal(card.querySelector(".activity-state")?.getAttribute("data-status"), "partial");
     assert.match(card.getAttribute("aria-describedby") ?? "", /audio-job-status-job-one audio-job-route-job-one/);

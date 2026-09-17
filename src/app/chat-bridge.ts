@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import type { UiMessage } from "../i18n/ui-message.js";
 import { sendAudioAssetResponse } from "./audio-asset-response.js";
 import type { AudioServicesView } from "../audio-services/contracts.js";
 import {
@@ -154,7 +155,7 @@ export interface ChatBridgeSendContext {
 
 export interface ChatBridgeCommandContext {
   commandId: string;
-  progress(message: string): Promise<void>;
+  progress(message: UiMessage): Promise<void>;
 }
 
 export interface ChatBridgeSteeringReceiptLookupInput {
@@ -295,7 +296,7 @@ export interface ChatBridgeStream {
   modelTurnAccepted(usage?: ModelContextUsage): Promise<void>;
   webSearchUpdate(update: ModelHostedWebSearch): Promise<void>;
   sessionEvent(event: SessionEvent): Promise<void>;
-  progress(message: string): Promise<void>;
+  progress(message: UiMessage): Promise<void>;
   requestConfirmation(request: ChatBridgeConfirmationRequest): Promise<boolean>;
 }
 
@@ -456,7 +457,7 @@ type StateChangeSsePayloadBase =
       type: "progress";
       sendId: string;
       sessionId: string;
-      message: string;
+      message: UiMessage;
       activity: StateChangeActivity;
     }
   | {
@@ -558,7 +559,7 @@ type ProfileSettingsChangedSsePayload = Extract<
 
 interface StateChangeActivity {
   status: ChatSessionActivityStatus;
-  message: string;
+  message: UiMessage;
 }
 
 type SsePayload =
@@ -605,13 +606,13 @@ type SsePayload =
       reasoningDraft: string | null;
       webSearchUpdates: ModelHostedWebSearch[];
       contextUsage?: ModelContextUsage | null;
-      progress: string;
+      progress: UiMessage;
       resolvedConfirmationGeneration: number;
     }
   | {
       type: "command_progress";
       commandId: string;
-      message: string;
+      message: UiMessage;
     }
   | StateChangeSsePayload
   | { type: "state"; commandId: string; state: ChatBridgeState }
@@ -1077,7 +1078,7 @@ export async function createChatBridge(
   const updateActivity = (
     sessionId: string,
     status: ChatSessionActivityStatus,
-    update: { sendId?: string; message?: string; unread?: boolean } = {},
+    update: { sendId?: string; message?: UiMessage; unread?: boolean } = {},
   ): ChatSessionActivity => {
     const current = sessionActivities.get(sessionId);
     const message = update.message ?? current?.message;

@@ -9,9 +9,11 @@ import { isDeepStrictEqual } from "node:util";
 import {
   LEGACY_AUDIO_SERVICE_ID, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SESSION_JOBS, SEPARATION_STEMS,
+  MAX_AUDIO_JOB_TITLE_CHARACTERS,
   type AudioAsset, type AudioJob, type AudioOrigin, type SeparationStem,
 } from "../audio-services/contracts.js";
 import { isAudioServiceModelId } from "../audio-services/model-id.js";
+import { isUiMessage } from "../i18n/ui-message.js";
 import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import { copyAudioFileSafely } from "../live/audio-attachment-source.js";
 import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
@@ -37,10 +39,10 @@ const jobStatuses: readonly AudioJob["status"][] = [
   "partial", "failed", "interrupted", "unknown", "cancelled",
 ];
 const jobConfigurationFields = [
-  "provider", "serviceId", "operation", "modelId", "connectionFingerprint", "stems",
+  "provider", "serviceId", "operation", "modelId", "title", "connectionFingerprint", "stems",
 ];
 type JobConfiguration = Pick<AudioJob,
-  "provider" | "serviceId" | "operation" | "modelId" | "connectionFingerprint" | "stems"
+  "provider" | "serviceId" | "operation" | "modelId" | "title" | "connectionFingerprint" | "stems"
 >;
 const jobFields = [
   "id", "sessionId", ...jobConfigurationFields,
@@ -215,7 +217,9 @@ function isAudioJob(value: unknown): value is AudioJob {
     (!Object.hasOwn(value, "failedOutputKeys") || validFailedOutputKeys(value)) &&
     (value.status !== "ready" || Array.isArray(value.remoteOutputs) && value.remoteOutputs.length > 0) &&
     (value.operation !== "retrieve_music" || Object.hasOwn(value, "expectedOutputs")) &&
-    (!Object.hasOwn(value, "message") || boundedAudioText(value.message, 1024, true)) &&
+    (!Object.hasOwn(value, "message") || (typeof value.message === "string"
+      ? boundedAudioText(value.message, 1024, true)
+      : isUiMessage(value.message) && Buffer.byteLength(JSON.stringify(value.message), "utf8") <= 4096)) &&
     Array.isArray(value.outputAssets) && value.outputAssets.length <= MAX_AUDIO_JOB_OUTPUTS &&
     value.outputAssets.every((asset: unknown) => isAudioAsset(asset) &&
       asset.sessionId === value.sessionId && asset.jobId === value.id &&
@@ -233,6 +237,9 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
     : value.provider === "suno" ? ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(value.operation as string)
     : value.provider === "sunoapi" && value.operation === "generate_music";
   return validOperation && isSafeStorageId(value.serviceId) && isAudioHash(value.connectionFingerprint) &&
+    (!Object.hasOwn(value, "title") || typeof value.title === "string" && Boolean(value.title.trim()) &&
+      Array.from(value.title).length <= MAX_AUDIO_JOB_TITLE_CHARACTERS &&
+      !/[\u0000-\u001f\u007f-\u009f]/u.test(value.title)) &&
     (!Object.hasOwn(value, "modelId") || isAudioServiceModelId(value.modelId)) &&
     (value.operation === "separate_stems" ? validStems(value.stems) : Array.isArray(value.stems) && value.stems.length === 0);
 }

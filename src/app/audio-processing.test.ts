@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -106,7 +107,7 @@ test("lost submission reply stays unknown and never replays the paid request", a
   const job = await separateAudioStems(h.context, "splitter", ["vocals"], h.source);
   assert.equal(job.status, "unknown");
   assert.equal(job.remoteTaskId, undefined);
-  assert.doesNotMatch(job.message ?? "", new RegExp(key));
+  assert.doesNotMatch(formatUiMessage(job.message ?? ""), new RegExp(key));
   await assert.rejects(resumeAudioJob(h.context, job.id), /no confirmed remote task ID/);
   assert.equal(h.calls.filter((call) => call === "submit").length, 1);
 });
@@ -192,7 +193,7 @@ test("audio progress uses the send channel without a same-Session blocking state
   const messages: string[] = [];
   const unsubscribe = subscribeSessionStateInvalidations(h.directory, () => { invalidations++; });
   try {
-    const job = await separateAudioStems({ ...h.context, onProgress: (message) => { messages.push(message); } }, "splitter", ["vocals"], h.source);
+    const job = await separateAudioStems({ ...h.context, onProgress: (message) => { messages.push(formatUiMessage(message)); } }, "splitter", ["vocals"], h.source);
     assert.equal(job.status, "completed");
     assert.ok(messages.length >= 3);
     assert.equal(invalidations, 0);

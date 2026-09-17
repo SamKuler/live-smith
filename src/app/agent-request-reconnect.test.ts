@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -289,7 +290,7 @@ test("steering during reconnect backoff cancels the retry and replans", {
         assistantResets += 1;
       },
       onProgress: (message) => {
-        progress.push(message);
+        progress.push(formatUiMessage(message));
       },
       onSessionEvent: () => {},
       confirmActions: async () => true,

@@ -23,6 +23,7 @@ import { audioConnectionFingerprint, resolveAudioService, type RuntimeAudioServi
 import type { AudioProcessingContext } from "./audio-processing.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
+import { audioMessage as m } from "./audio-messages.js";
 
 function generationAdapter(
   context: AudioProcessingContext, settings: RuntimeAudioServiceConnection, authorizeDownloads = false,
@@ -97,6 +98,8 @@ export async function generateAudio(
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: request.operation,
     ...(request.operation !== "generate_sound_effect" && settings.modelId ? { modelId: settings.modelId } : {}),
+    ...((request.operation === "generate_music" || request.operation === "extend_music") && request.options?.title?.trim()
+      ? { title: request.options.title } : {}),
     connectionFingerprint: audioConnectionFingerprint(settings), stems: [],
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
@@ -176,12 +179,12 @@ export async function downloadAudioOutput(
     };
     try {
       await assertAudioOutputCapacity(context.storageDirectory, context.sessionId, 1);
-      await context.onProgress?.("Downloading the selected Suno song");
+      await context.onProgress?.(m("Downloading the selected Suno song"));
       const currentSettings = await resolveAudioService(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
       const adapter = generationAdapter(context, currentSettings, true);
       if (!adapter.downloadSelected) throw new Error("This service cannot download the selected output.");
-      await update({ status: "collecting", message: "Downloading the selected Suno song." });
+      await update({ status: "collecting", message: m("Downloading the selected Suno song") });
       throwIfAborted(context.signal);
       const bytes = await adapter.downloadSelected(selected, context.signal, (signal, authorize) => {
         if (!context.withDownloadAuthorization) throw new Error("Download authorization requires the connection lifecycle fence.");
@@ -201,11 +204,13 @@ export async function downloadAudioOutput(
       const outputAssets = [...job.outputAssets, asset];
       const complete = job.expectedOutputs!.every((entry) => outputAssets.some((saved) => saved.role === entry.role));
       await retryLocalCommit(() => update({ outputAssets, status: complete ? "completed" : "partial",
-        message: `Selected audio is saved. Importing it into Live is a separate scoped Apply operation.${job.failedOutputKeys?.length ? " One or more confirmed sibling outputs failed to generate." : ""}` }));
+        message: m(job.failedOutputKeys?.length
+          ? "Audio is downloaded to Live Smith. Some confirmed outputs failed to generate. Importing into Live is a separate scoped operation."
+          : "Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
     } catch (error) {
       await update({ status: job.outputAssets.length ? "partial" : "ready",
         message: context.signal.aborted
-          ? "Local download stopped. Download authorization may have consumed an allowance. No automatic retry will occur."
+          ? m("Local download stopped. Download authorization may have consumed an allowance. No automatic retry will occur.")
           : safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey) });
       throwIfAborted(context.signal);
     }
@@ -260,10 +265,10 @@ async function runGeneration(
   };
   try {
     if (request) {
-      await context.onProgress?.(request.operation === "generate_sound_effect" ? "Generating a sound effect" : "Preparing music generation");
+      await context.onProgress?.(m(request.operation === "generate_sound_effect" ? "Generating a sound effect" : "Preparing music generation"));
       throwIfAborted(context.signal);
       await adapter.prepare?.(request, context.signal);
-      await update({ status: "submitting", message: "Waiting for the audio service. Do not submit duplicates." });
+      await update({ status: "submitting", message: m("Waiting for the audio service. Do not submit duplicates.") });
       await resolveAudioService(context.storageDirectory, settings.id, request.operation, [settings]);
       throwIfAborted(context.signal);
       submissionStarted = true;
@@ -272,7 +277,7 @@ async function runGeneration(
         hasCompleteAudio = true;
         for (const output of result.outputs) await save(output, true);
         if (!job.outputAssets.length) throw new Error("The audio service returned no usable output.");
-        await retryLocalCommit(() => update({ status: "completed", message: "Generated audio is saved. Importing it into Live is a separate scoped Apply operation." }));
+        await retryLocalCommit(() => update({ status: "completed", message: m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
         return job;
       }
       acceptedTaskId = result.taskId;
@@ -292,7 +297,7 @@ async function runGeneration(
         await update({ remoteTaskTerminal: remote.status,
           status: job.remoteOutputs?.length ? job.outputAssets.length ? "partial" : "ready"
           : remote.status === "cancelled" ? "cancelled" : job.outputAssets.length ? "partial" : "failed",
-          message: remote.status === "failed" ? remote.message : "The audio service confirmed cancellation." });
+          message: remote.status === "failed" ? remote.message : m("The audio service confirmed cancellation.") });
         return job;
       }
       if (remote.status === "completed") {
@@ -307,8 +312,10 @@ async function runGeneration(
             ...(failed.length ? { failedOutputKeys: failed } : {}),
             status: job.outputAssets.length ? "partial" : remoteOutputs.length ? "ready" : "failed",
             message: remoteOutputs.length
-              ? `Suno audio is ready. Open this job's Preview action for the Suno online player. Use the selected output's Download action and confirm to save its file before importing into Live.${failed.length ? " Some confirmed outputs failed to generate." : ""}`
-              : "The service failed to generate the confirmed outputs." }));
+              ? m(failed.length
+                ? "Audio is ready online, but some confirmed outputs failed to generate. Preview or download an available version."
+                : "Audio is ready online. Preview a version or download it to Live Smith before a separate scoped Live import.")
+              : m("The service failed to generate the confirmed outputs.") }));
           throwIfAborted(context.signal);
           return job;
         }
@@ -335,13 +342,13 @@ async function runGeneration(
         const missing = roles.filter((role) => !job.outputAssets.some((asset) => asset.role === role));
         await retryLocalCommit(() => update({ status: missing.length ? job.outputAssets.length ? "partial" : "interrupted" : "completed",
           message: missing.length
-            ? boundedAudioMessage(`Generated audio is not fully saved. Resume to retrieve missing files without another generation. ${failures.join("; ")}`)
-            : "Generated audio is saved. Importing it into Live is a separate scoped Apply operation." }));
+            ? m("Generated audio is not fully downloaded. Resume to retrieve missing files without another generation. {details}", { details: boundedAudioMessage(failures.join("; ")) })
+            : m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
         return job;
       }
-      await context.onProgress?.("Waiting for generated audio");
+      await context.onProgress?.(m("Waiting for generated audio"));
       if (Date.now() >= deadline) {
-        await update({ status: "interrupted", message: "Stopped waiting. Resume this job to check its existing remote task." });
+        await update({ status: "interrupted", message: m("Stopped waiting. Resume this job to check its existing remote task.") });
         return job;
       }
       if (context.wait) await context.wait(context.signal);
@@ -357,7 +364,7 @@ async function runGeneration(
           : !(error instanceof AudioSubmissionNotStartedError) && (submissionStarted || initial.status === "submitting" || initial.status === "unknown") ? "unknown"
           : context.signal.aborted ? "interrupted" : "failed",
         message: context.signal.aborted
-          ? "Local audio generation stopped. This does not confirm service-side cancellation or a credit refund. No automatic resubmission will occur."
+          ? m("Local audio generation stopped. This does not confirm service-side cancellation or a credit refund. No automatic resubmission will occur.")
           : safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey),
       });
     } catch (failure) { recordingFailure = failure; }

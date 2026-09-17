@@ -10,6 +10,7 @@ import type { AudioProcessingContext } from "./audio-processing.js";
 import { resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
+import { audioMessage as m } from "./audio-messages.js";
 
 interface Dependencies {
   verify?: typeof runSunoHumanVerification;
@@ -82,7 +83,7 @@ export function createAppSunoGenerationAdapter(
       lease = { revision: saved.networkProxyRevision, selection: { ...saved.networkProxy },
         ...(saved.networkProxy.mode === "system" ? { system: await readSystemProxy() } : {}),
       };
-      await context.onProgress?.("Complete Suno verification in the Live Smith window");
+      await context.onProgress?.(m("Complete Suno verification in the Live Smith window"));
       const result = await verify({ captchaVersion, signal, networkProxy: lease.selection,
         interfaceLanguage: saved.uiLanguage, connectionName: settings.name });
       await validateLease(signal);

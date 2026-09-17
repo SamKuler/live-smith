@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -54,7 +55,7 @@ test("unknown inline generation is never repeated by Resume or moved to another 
   h.adapter.submit = async () => { calls++; throw new Error("credential=fixture-music-a; response lost"); };
   const unknown = await generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true });
   assert.equal(unknown.status, "unknown");
-  assert.doesNotMatch(unknown.message ?? "", /fixture-music-a/);
+  assert.doesNotMatch(formatUiMessage(unknown.message ?? ""), /fixture-music-a/);
   const resumed = await resumeAudioJob(h.context, unknown.id);
   assert.equal(resumed.status, "unknown");
   assert.equal(calls, 1);

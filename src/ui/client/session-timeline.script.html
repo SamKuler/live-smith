@@ -2492,7 +2492,7 @@
         };
         if (labels[name]) return labels[name];
         const words = name.split("_").filter(Boolean).join(" ");
-        return words ? `${words[0].toUpperCase()}${words.slice(1)}` : t("Tool");
+        return words ? t(`${words[0].toUpperCase()}${words.slice(1)}`) : t("Tool");
       }
 
       function activityStatusLabel(status) {

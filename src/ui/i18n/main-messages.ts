@@ -1,4 +1,5 @@
 export const mainMessages: Record<string, string> = {
+  "{message} {cancellation}": "{message} {cancellation}",
   "Custom Instructions": "自定义指令",
   "Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced.": "为所有会话设置长期的创作、工作流与工具偏好。当前请求可以覆盖这些偏好；安全边界、编辑范围、审批、凭据和实际能力仍由系统执行。",
   "e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…": "例如：交付结果不明确时，询问我要可编辑的 Live 工程、渲染音频，还是两者都要…",

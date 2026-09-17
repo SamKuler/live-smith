@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import type { UiMessage } from "../i18n/ui-message.js";
 
 import {
   AgentPartialCompletionError,
@@ -1169,7 +1170,7 @@ interface AgentRequestCallbacks {
   onModelRequestRetry?(): Promise<void> | void;
   onAssistantReset?(): Promise<void> | void;
   onModelTurnAccepted?(usage: ModelContextUsage | undefined): Promise<void> | void;
-  onProgress(message: string): Promise<void> | void;
+  onProgress(message: UiMessage): Promise<void> | void;
   onWebSearchUpdate?(
     update: ModelHostedWebSearch,
   ): Promise<void> | void;

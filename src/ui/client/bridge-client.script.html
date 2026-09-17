@@ -1629,7 +1629,7 @@
             "failed",
             "stopped",
           ].includes(activity.status) ||
-          typeof activity.message !== "string"
+          !isWireUiMessage(activity.message)
         ) return null;
         return activity;
       }
@@ -2710,7 +2710,7 @@
             "failed",
             "stopped",
           ].includes(value.status) &&
-          (value.message === undefined || typeof value.message === "string") &&
+          (value.message === undefined || isWireUiMessage(value.message)) &&
           typeof value.unread === "boolean";
       }
 
@@ -2897,7 +2897,7 @@
       function isWireAudioJobs(jobs, sessionId) {
         return Array.isArray(jobs) && jobs.length <= __MAX_AUDIO_SESSION_JOBS__ &&
           new Set(jobs.map((job) => job?.id)).size === jobs.length && jobs.every((job) =>
-            isWireRecord(job) && hasOnlyWireKeys(job, ["id", "provider", "serviceId", "operation", "modelId", "status", "stems", "createdAt", "outputs", "remoteOutputs", "message", "resumable"]) &&
+            isWireRecord(job) && hasOnlyWireKeys(job, ["id", "provider", "serviceId", "operation", "modelId", "title", "status", "stems", "createdAt", "outputs", "remoteOutputs", "message", "remoteOutcome", "resumable"]) &&
             isWireStorageId(job.id) && isWireStorageId(job.serviceId) &&
             Object.hasOwn(audioServiceCapabilities, job.provider) &&
             audioServiceCapabilities[job.provider].operations.includes(job.operation) &&
@@ -2907,7 +2907,11 @@
             Array.isArray(job.stems) && (job.operation === "separate_stems" ? job.stems.length > 0 : job.stems.length === 0) && new Set(job.stems).size === job.stems.length &&
             job.stems.every((stem) => __SEPARATION_STEMS__.includes(stem)) &&
             typeof job.createdAt === "string" && Number.isFinite(Date.parse(job.createdAt)) &&
-            (job.message === undefined || typeof job.message === "string" && job.message.length <= 4096) &&
+            (job.title === undefined || typeof job.title === "string" && Boolean(job.title.trim()) &&
+              Array.from(job.title).length <= __MAX_AUDIO_JOB_TITLE_CHARACTERS__ && !/[\u0000-\u001f\u007f-\u009f]/u.test(job.title)) &&
+            (job.message === undefined || isWireUiMessage(job.message) && wireUtf8ByteLength(JSON.stringify(job.message)) <= 4096) &&
+            (job.remoteOutcome === undefined || Array.isArray(job.remoteOutputs) &&
+              ["completed", "partial", "failed", "cancelled"].includes(job.remoteOutcome)) &&
             typeof job.resumable === "boolean" &&
             (!job.resumable || !["completed", "cancelled"].includes(job.status)) &&
             Array.isArray(job.outputs) && job.outputs.length <= __MAX_AUDIO_JOB_OUTPUTS__ &&
@@ -3038,7 +3042,7 @@
           !Number.isSafeInteger(value.oauthAuthGeneration) ||
           value.oauthAuthGeneration < 0 ||
           typeof value.openSettingsOnLoad !== "boolean" ||
-          (value.status !== undefined && typeof value.status !== "string") ||
+          (value.status !== undefined && !isWireUiMessage(value.status)) ||
           !isDecimalRevision(value.bridgeStateRevision) ||
           !isDecimalRevision(value.bridgeStateCoveredThroughRevision) ||
           compareDecimalRevisions(
@@ -6316,33 +6320,91 @@
         renderAudioJobs();
       }
 
-      function remoteAudioLabel(role, job, key) {
-        if (job?.operation === "retrieve_music") {
-          const index = (job.remoteOutputs || []).findIndex((output) => output.key === key && output.role === role);
-          if (index >= 0) return t("Suno song {number}", {
-            number: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(index + 1),
-          });
+      function audioResultLabel(role, job) {
+        if (job.operation === "retrieve_music") return t("Suno song {number}", {
+          number: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(role === "music_alternative" ? 2 : 1),
+        });
+        if (role === "music" || role === "music_alternative") return t("Version {number}", {
+          number: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(role === "music_alternative" ? 2 : 1),
+        });
+        return t(__AUDIO_OUTPUT_LABELS__[role]);
+      }
+
+      function remoteAudioLabel(role, job) { return audioResultLabel(role, job); }
+
+      function audioResultJob(output) {
+        const container = document.getElementById("audioJobs");
+        if (!output?.isConnected || !container.contains(output) || container.dataset.sessionId !== activeSessionId() ||
+          output.dataset.audioSessionId !== activeSessionId()) return null;
+        const card = output.closest("[data-audio-job-id]");
+        const job = getState().audioJobs?.find((entry) => entry.id === card?.dataset.audioJobId);
+        if (!job) return null;
+        if (card.dataset.audioJobIdentity !== JSON.stringify([job.serviceId, job.provider, job.operation, job.modelId, job.createdAt])) return null;
+        const role = output.dataset.audioRole;
+        const remote = output.dataset.remoteAudioKey && job.remoteOutputs?.some((entry) => entry.key === output.dataset.remoteAudioKey && entry.role === role);
+        const local = output.dataset.audioOutput && job.outputs.some((entry) => entry.id === output.dataset.audioOutput && entry.role === role);
+        return remote || local ? job : null;
+      }
+
+      function setAudioPreviewOpen(output, open) {
+        const region = output.querySelector("[data-audio-preview-region]");
+        const preview = output.querySelector("[data-preview-audio]");
+        if (!open) {
+          region.querySelector("iframe")?.remove();
+          const audio = region.querySelector("audio");
+          if (audio && !audio.paused) audio.pause();
         }
-        return t(role === "music_alternative" ? "Alternative music" : "Music");
+        output.dataset.audioPreviewOpen = String(open);
+        region.hidden = !open;
+        const audio = region.querySelector("audio");
+        if (audio) audio.hidden = !open;
+        preview.setAttribute("aria-expanded", String(open));
+        renderAudioPreviewButton(output);
+      }
+
+      function renderAudioPreviewButton(output) {
+        const preview = output.querySelector("[data-preview-audio]");
+        const open = output.dataset.audioPreviewOpen === "true";
+        preview.textContent = t(open ? "Close preview" : "Preview");
+        preview.setAttribute("aria-label", t(open ? "Close preview of {output} · {job}" : "Preview {output} · {job}", {
+          output: output.querySelector("[data-audio-output-label]").textContent,
+          job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
+        }));
       }
 
       function closeAudioPreviews() {
-        const container = document.getElementById("audioJobs");
-        for (const output of container.querySelectorAll("[data-remote-audio-key]")) {
-          output.querySelector("iframe")?.remove();
-          output.querySelector("[data-preview-audio]")?.setAttribute("aria-expanded", "false");
-          const close = output.querySelector("[data-close-audio-preview]");
-          if (close) close.hidden = true;
+        for (const output of document.getElementById("audioJobs").querySelectorAll("[data-audio-result]")) {
+          setAudioPreviewOpen(output, false);
         }
-        for (const player of container.querySelectorAll("audio")) if (!player.paused) player.pause();
       }
 
       function remoteAudioJob(output) {
-        const container = document.getElementById("audioJobs");
-        if (!output.isConnected || !container.contains(output) || container.dataset.sessionId !== activeSessionId()) return null;
-        const job = getState().audioJobs?.find((entry) => entry.id === output.closest("[data-audio-job-id]")?.dataset.audioJobId);
+        const job = audioResultJob(output);
         return job?.provider === "suno" && job.remoteOutputs?.some((entry) =>
           entry.key === output.dataset.remoteAudioKey && entry.role === output.dataset.remoteAudioRole) ? job : null;
+      }
+
+      function toggleAudioPreview(output) {
+        const job = audioResultJob(output);
+        if (!job) return;
+        const preview = output.querySelector("[data-preview-audio]");
+        if (output.dataset.audioPreviewOpen === "true") {
+          setAudioPreviewOpen(output, false);
+          preview.focus({ preventScroll: true });
+          return;
+        }
+        const region = output.querySelector("[data-audio-preview-region]");
+        if (!region.querySelector("audio")) {
+          if (!remoteAudioJob(output)) return;
+          const frame = document.createElement("iframe");
+          frame.title = t("Suno online player · {output}", { output: audioResultLabel(output.dataset.audioRole, job) });
+          frame.setAttribute("referrerpolicy", "no-referrer");
+          frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+          frame.src = "https://suno.com/embed/" + output.dataset.remoteAudioKey;
+          region.append(frame);
+        }
+        document.getElementById("sessionAudioResults").open = true;
+        setAudioPreviewOpen(output, true);
       }
 
       function audioDownloadIdentity(output) {
@@ -6365,15 +6427,16 @@
         const job = remoteAudioJob(output);
         const sessionId = activeSessionId();
         const outputKey = output.dataset.remoteAudioKey;
+        const outputRole = output.dataset.remoteAudioRole;
         const pending = { output, identity, invalidated: false };
         pendingAudioDownload = pending;
         renderAudioJobs();
         try {
           const accepted = await confirmAction({
-            title: window.LiveSmithI18n.message("Save this output for Live and model use?"),
-            message: window.LiveSmithI18n.message("Save only {output} locally using {connection}. This may use up to one existing Suno download allowance. Once saved, Live can import it and an audio-capable model can listen when you ask. No allowance or quota will be purchased.",
-              { output: remoteAudioLabel(output.dataset.remoteAudioRole, job, outputKey), connection: savedAudioConnection(job.serviceId).name }),
-            acceptLabel: window.LiveSmithI18n.message("Save for Live & model"),
+            title: window.LiveSmithI18n.message("Download this output to Live Smith?"),
+            message: window.LiveSmithI18n.message("Download only {output} using {connection}. This may use up to one existing Suno download allowance. The file stays in this Session for playback, model listening and a separate scoped Live import. No allowance or quota will be purchased.",
+              { output: () => remoteAudioLabel(outputRole, job), connection: savedAudioConnection(job.serviceId).name }),
+            acceptLabel: window.LiveSmithI18n.message("Download to Live Smith"),
           });
           if (!accepted || pending.invalidated || pendingAudioDownload !== pending ||
             identity !== audioDownloadIdentity(output) || audioResumeBusy || audioSettingsBusy || audioSettingsSubmitting ||
@@ -6385,85 +6448,154 @@
         }
       }
 
-      function renderRemoteAudioOutputs(group, job) {
+      function exportLocalAudio(output) {
+        if (pendingAudioDownload || audioResumeBusy || audioSettingsBusy || audioSettingsSubmitting ||
+          closeDecisionPending || isOperationInProgress()) return;
+        const job = audioResultJob(output);
+        const asset = job?.outputs.find((entry) => entry.id === output.dataset.audioOutput && entry.sessionId === activeSessionId());
+        if (!asset) return;
+        void runCommand("open_audio_download", { sessionId: activeSessionId(), assetId: asset.id }, { cancellable: true });
+      }
+
+      function renderAudioResults(group, job) {
         const remotes = job.remoteOutputs || [];
-        group.hidden = remotes.length === 0;
-        group.firstElementChild.textContent = t("Online playback");
-        for (const output of group.querySelectorAll("[data-remote-audio-key]")) {
-          if (!remotes.some((entry) => entry.key === output.dataset.remoteAudioKey && entry.role === output.dataset.remoteAudioRole)) output.remove();
+        const results = [
+          ...remotes.map((remote) => ({ role: remote.role, remote, asset: job.outputs.find((asset) => asset.role === remote.role) })),
+          ...job.outputs.filter((asset) => !remotes.some((remote) => remote.role === asset.role)).map((asset) => ({ role: asset.role, asset })),
+        ];
+        group.hidden = results.length === 0;
+        for (const output of group.querySelectorAll("[data-audio-result]")) {
+          if (!results.some((entry) => entry.role === output.dataset.audioRole)) {
+            setAudioPreviewOpen(output, false);
+            output.remove();
+          }
         }
-        for (const remote of remotes) {
-          let output = Array.from(group.children).find((entry) => entry.dataset.remoteAudioKey === remote.key);
+        for (const [index, result] of results.entries()) {
+          let output = Array.from(group.children).find((entry) => entry.dataset.audioRole === result.role);
           if (!output) {
             output = document.createElement("div");
-            output.className = "audio-remote-output";
-            output.dataset.remoteAudioKey = remote.key;
-            output.dataset.remoteAudioRole = remote.role;
-            const label = document.createElement("p");
-            const actions = document.createElement("div"); actions.className = "audio-settings-actions";
+            output.className = "audio-output";
+            output.dataset.audioResult = "";
+            output.dataset.audioSessionId = activeSessionId();
+            output.dataset.audioRole = result.role;
+            output.dataset.audioPreviewOpen = "false";
+            const header = document.createElement("div"); header.className = "audio-output-header";
+            const heading = document.createElement("div"); heading.className = "audio-output-heading";
+            const label = document.createElement("p"); label.dataset.audioOutputLabel = "";
+            label.id = "audio-output-label-" + job.id + "-" + result.role;
+            const metadata = document.createElement("p"); metadata.className = "audio-output-meta";
+            heading.append(label, metadata);
+            const actions = document.createElement("div"); actions.className = "audio-output-actions";
             const preview = document.createElement("button"); preview.type = "button"; preview.className = "secondary";
             preview.dataset.previewAudio = "";
             preview.setAttribute("aria-expanded", "false");
-            preview.setAttribute("aria-controls", "suno-preview-" + job.id + "-" + remote.key);
-            const close = document.createElement("button"); close.type = "button"; close.className = "secondary";
-            close.dataset.closeAudioPreview = ""; close.hidden = true;
-            preview.addEventListener("click", () => {
-              if (!remoteAudioJob(output) || output.querySelector("iframe")) return;
-              document.getElementById("sessionAudioResults").open = true;
-              const frame = document.createElement("iframe");
-              frame.id = preview.getAttribute("aria-controls");
-              frame.title = t("Suno online player · {output}", { output: remoteAudioLabel(remote.role, job, remote.key) });
-              frame.setAttribute("referrerpolicy", "no-referrer");
-              frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
-              frame.src = "https://suno.com/embed/" + remote.key;
-              output.append(frame);
-              preview.setAttribute("aria-expanded", "true");
-              close.hidden = false;
-            });
-            close.addEventListener("click", () => {
-              output.querySelector("iframe")?.remove();
-              preview.setAttribute("aria-expanded", "false");
-              close.hidden = true;
-              if (preview.isConnected) preview.focus({ preventScroll: true });
-            });
-            actions.append(preview, close);
-            output.append(label, actions);
-            group.append(output);
+            const region = document.createElement("div"); region.dataset.audioPreviewRegion = "";
+            region.id = "audio-preview-" + job.id + "-" + result.role;
+            region.setAttribute("role", "region");
+            region.setAttribute("aria-labelledby", "audio-job-title-" + job.id + " " + label.id);
+            region.hidden = true;
+            preview.setAttribute("aria-controls", region.id);
+            preview.addEventListener("click", () => toggleAudioPreview(output));
+            actions.append(preview); header.append(heading, actions); output.append(header, region); group.append(output);
           }
-          output.firstElementChild.textContent = remoteAudioLabel(remote.role, job, remote.key);
-          output.querySelector("[data-preview-audio]").textContent = t("Preview");
-          output.querySelector("[data-close-audio-preview]").textContent = t("Close preview");
-          const frame = output.querySelector("iframe");
-          if (frame) frame.title = t("Suno online player · {output}", { output: remoteAudioLabel(remote.role, job, remote.key) });
-          let download = output.querySelector("[data-download-audio-output]");
-          if (job.outputs.some((asset) => asset.role === remote.role)) download?.remove();
+          if (group.children[index] !== output) group.insertBefore(output, group.children[index] || null);
+          if (output.dataset.remoteAudioKey !== result.remote?.key && output.querySelector("iframe")) setAudioPreviewOpen(output, false);
+          if (result.remote) {
+            output.dataset.remoteAudioKey = result.remote.key;
+            output.dataset.remoteAudioRole = result.remote.role;
+          } else {
+            delete output.dataset.remoteAudioKey; delete output.dataset.remoteAudioRole;
+          }
+          const label = audioResultLabel(result.role, job);
+          output.querySelector("[data-audio-output-label]").textContent = label;
+          const region = output.querySelector("[data-audio-preview-region]");
+          let audio = region.querySelector("audio");
+          if (audio && audio.dataset.audioAssetId !== result.asset?.id) {
+            setAudioPreviewOpen(output, false);
+            audio.remove(); audio = null;
+          }
+          if (result.asset) {
+            output.dataset.audioOutput = result.asset.id;
+            region.querySelector("iframe")?.remove();
+            if (!audio) {
+              audio = document.createElement("audio"); audio.controls = true; audio.preload = "none";
+              audio.dataset.audioAssetId = result.asset.id;
+              audio.src = bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(result.asset.id) +
+                "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(activeSessionId());
+              region.append(audio);
+            }
+            audio.setAttribute("aria-label", t("Local audio preview · {output} · {job}", {
+              output: label, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
+            }));
+            audio.hidden = output.dataset.audioPreviewOpen !== "true";
+          } else delete output.dataset.audioOutput;
+          const frame = region.querySelector("iframe");
+          if (frame) frame.title = t("Suno online player · {output}", { output: label });
+          const metadata = output.querySelector(".audio-output-meta");
+          if (result.asset) {
+            const seconds = Math.round(result.asset.durationSeconds);
+            metadata.textContent = t("Downloaded to Live Smith") + " · " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") +
+              " · " + (result.asset.mediaType === "audio/wav" ? "WAV" : "MP3") + " · " +
+              new Intl.NumberFormat(window.LiveSmithI18n.locale, { maximumFractionDigits: 1 }).format(result.asset.sampleRate / 1000) + " kHz";
+          } else metadata.textContent = t("Online");
+          const actions = output.querySelector(".audio-output-actions");
+          let download = actions.querySelector("[data-download-audio-output]");
+          if (result.asset || !result.remote) download?.remove();
           else {
             if (!download) {
               download = document.createElement("button"); download.type = "button"; download.className = "secondary";
-              download.dataset.downloadAudioOutput = remote.key;
               download.addEventListener("click", () => {
-                if (download.disabled || !download.isConnected) return;
-                void downloadRemoteAudio(output);
+                if (!download.disabled && download.isConnected) void downloadRemoteAudio(output);
               });
-              output.querySelector(".audio-settings-actions").append(download);
+              actions.append(download);
             }
-            download.textContent = t("Save for Live & model");
-            download.setAttribute("aria-label", t("Save {output} for Live and model use", { output: remoteAudioLabel(remote.role, job, remote.key) }));
+            download.dataset.downloadAudioOutput = result.remote.key;
+            download.textContent = t("Download to Live Smith");
+            download.setAttribute("aria-label", t("Download {output} to Live Smith · {job}", {
+              output: label, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
+            }));
           }
+          let exportButton = actions.querySelector("[data-download-local-audio]");
+          if (!result.asset) exportButton?.remove();
+          else {
+            if (!exportButton) {
+              exportButton = document.createElement("button"); exportButton.type = "button"; exportButton.className = "secondary";
+              exportButton.dataset.downloadLocalAudio = "";
+              exportButton.addEventListener("click", () => {
+                if (!exportButton.disabled && exportButton.isConnected) exportLocalAudio(output);
+              });
+              actions.append(exportButton);
+            }
+            const format = result.asset.mediaType === "audio/wav" ? "WAV" : "MP3";
+            exportButton.textContent = t("Export {format}", { format });
+            exportButton.setAttribute("aria-label", t("Export {output} as {format} · {job}", {
+              output: label, format, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
+            }));
+            exportButton.setAttribute("aria-describedby", "audio-local-download-help-" + job.id);
+          }
+          renderAudioPreviewButton(output);
         }
       }
 
-      function audioJobActivityStatus(status) {
-        if (["preparing", "submitting", "running", "collecting"].includes(status)) return "pending";
-        if (["ready", "completed"].includes(status)) return "complete";
-        if (["partial", "unknown"].includes(status)) return "partial";
-        if (["interrupted", "cancelled"].includes(status)) return "stopped";
-        return "failed";
+      function audioJobPresentation(job) {
+        const statuses = { preparing: "Preparing audio", submitting: "Submitting audio", running: "Processing audio", collecting: "Collecting audio",
+          ready: job.operation === "retrieve_music" ? "Ready to play" : "Generated · online", completed: "Audio ready",
+          partial: "Partial audio results", failed: "Audio processing failed", interrupted: "Audio processing interrupted",
+          unknown: "Audio submission outcome unknown", cancelled: "Audio processing cancelled" };
+        if (["preparing", "submitting", "running", "collecting"].includes(job.status)) return { label: t(statuses[job.status]), tone: "pending" };
+        if (job.remoteOutcome === "completed") return {
+          label: job.outputs.length ? t(job.operation === "retrieve_music" ? "Ready · {count} downloaded" : "Generated · {count} downloaded",
+            { count: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(job.outputs.length) }) : t(statuses.ready),
+          tone: "complete",
+        };
+        if (job.remoteOutcome === "partial") return { label: t("Some outputs failed to generate"), tone: "partial" };
+        return { label: t(statuses[job.status]), tone: ["ready", "completed"].includes(job.status) ? "complete"
+          : ["partial", "unknown"].includes(job.status) ? "partial" : ["cancelled", "interrupted"].includes(job.status) ? "stopped" : "failed" };
       }
 
       function renderAudioJobs() {
         const state = getState();
-        const jobs = state.audioJobs || [];
+        const jobs = [...state.audioJobs || []].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.id.localeCompare(b.id));
         const signature = JSON.stringify([state.activeSessionId, jobs, confirmedAudioServices, window.LiveSmithI18n.locale]);
         const container = document.getElementById("audioJobs");
         const shelf = document.getElementById("sessionAudioResults");
@@ -6472,135 +6604,85 @@
         document.getElementById("sessionAudioResultsCount").textContent = jobs.length
           ? new Intl.NumberFormat(window.LiveSmithI18n.locale).format(jobs.length) : "";
         const running = jobs.some(job => ["preparing", "submitting", "running", "collecting"].includes(job.status));
-        const needsAttention = jobs.some(job => ["partial", "failed", "interrupted", "unknown"].includes(job.status));
-        const stopped = jobs.length > 0 && jobs.every(job => job.status === "cancelled");
+        const latest = jobs.length ? audioJobPresentation(jobs[0]) : null;
+        const earlierIssues = jobs.slice(1).filter(job => ["partial", "failed", "interrupted", "unknown"].includes(job.status) && audioJobPresentation(job).tone !== "complete").length;
         const shelfStatus = document.getElementById("sessionAudioResultsStatus");
-        const nextShelfStatus = running ? t("In progress") : needsAttention ? t("Needs attention") : stopped ? t("Stopped") : jobs.length ? t("Ready") : "";
-        const nextShelfTone = running ? "pending" : needsAttention ? "partial" : stopped ? "stopped" : "complete";
+        const nextShelfStatus = running ? t("In progress") : latest ? t("Latest: {status}", { status: latest.label }) +
+          (earlierIssues ? " · " + t(earlierIssues === 1 ? "{count} earlier task needs attention" : "{count} earlier tasks need attention",
+            { count: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(earlierIssues) }) : "") : "";
+        const nextShelfTone = running ? "pending" : earlierIssues ? "partial" : latest?.tone || "complete";
         if (shelfStatus.textContent !== nextShelfStatus) shelfStatus.textContent = nextShelfStatus;
         if (shelfStatus.dataset.status !== nextShelfTone) shelfStatus.dataset.status = nextShelfTone;
         if (signature !== renderedAudioJobs) {
           renderedAudioJobs = signature;
           if (container.dataset.sessionId !== state.activeSessionId) {
-            closeAudioPreviews();
-            shelf.open = false;
-            container.replaceChildren();
-            container.dataset.sessionId = state.activeSessionId;
+            closeAudioPreviews(); shelf.open = false; container.replaceChildren(); container.dataset.sessionId = state.activeSessionId;
           }
           const ids = new Set(jobs.map((job) => job.id));
           for (const card of container.querySelectorAll("[data-audio-job-id]")) {
-            if (!ids.has(card.dataset.audioJobId)) card.remove();
+            if (!ids.has(card.dataset.audioJobId)) {
+              for (const output of card.querySelectorAll("[data-audio-result]")) setAudioPreviewOpen(output, false);
+              card.remove();
+            }
           }
-          container.querySelector("[data-audio-empty]")?.remove();
-          const statuses = { preparing: t("Preparing audio"), submitting: t("Submitting audio"),
-            running: t("Processing audio"), collecting: t("Collecting audio"), ready: t("Generated · online"), completed: t("Audio ready"),
-            partial: t("Partial audio results"), failed: t("Audio processing failed"),
-            interrupted: t("Audio processing interrupted"), unknown: t("Audio submission outcome unknown"),
-            cancelled: t("Audio processing cancelled") };
+          const timeFormatter = new Intl.DateTimeFormat(window.LiveSmithI18n.locale, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
           for (const [jobIndex, job] of jobs.entries()) {
             let card = Array.from(container.children).find((node) => node.dataset.audioJobId === job.id);
             const identity = JSON.stringify([job.serviceId, job.provider, job.operation, job.modelId, job.createdAt]);
-            if (card && card.dataset.audioJobIdentity !== identity) { card.remove(); card = null; }
+            if (card && card.dataset.audioJobIdentity !== identity) {
+              for (const output of card.querySelectorAll("[data-audio-result]")) setAudioPreviewOpen(output, false);
+              card.remove(); card = null;
+            }
             if (!card) {
-              card = document.createElement("article");
-              card.className = "audio-job";
-              card.dataset.audioJobId = job.id;
-              card.dataset.audioJobIdentity = identity;
+              card = document.createElement("article"); card.className = "audio-job";
+              card.dataset.audioJobId = job.id; card.dataset.audioJobIdentity = identity;
               const header = document.createElement("div"); header.className = "audio-job-header";
               const heading = document.createElement("div"); heading.className = "audio-job-heading";
               const title = document.createElement("h4"); title.id = "audio-job-title-" + job.id;
               const route = document.createElement("p"); route.className = "audio-job-route"; route.id = "audio-job-route-" + job.id;
+              const meta = document.createElement("div"); meta.className = "audio-job-meta";
+              const newest = document.createElement("span"); newest.dataset.audioLatest = ""; newest.className = "audio-job-latest";
+              meta.append(newest, document.createElement("time"));
               const status = document.createElement("span"); status.className = "activity-state"; status.id = "audio-job-status-" + job.id;
-              heading.append(title, route); header.append(heading, status);
-              card.setAttribute("aria-labelledby", title.id);
-              card.setAttribute("aria-describedby", status.id + " " + route.id);
-              const details = document.createElement("details");
-              details.className = "settings-disclosure audio-job-details";
-              const summary = document.createElement("summary");
+              heading.append(title, route, meta); header.append(heading, status);
+              card.setAttribute("aria-labelledby", title.id); card.setAttribute("aria-describedby", status.id + " " + route.id);
+              const results = document.createElement("div"); results.dataset.audioResults = "";
+              const help = document.createElement("p"); help.className = "field-hint audio-download-help";
+              help.dataset.audioLocalDownloadHelp = ""; help.id = "audio-local-download-help-" + job.id;
+              const details = document.createElement("details"); details.className = "settings-disclosure audio-job-details";
               const detailText = document.createElement("p"); detailText.className = "field-hint";
-              details.append(summary, detailText);
-              card.append(header, details);
-              const remoteGroup = document.createElement("div"); remoteGroup.dataset.audioRemotes = "";
-              const localGroup = document.createElement("div"); localGroup.dataset.audioLocalFiles = "";
-              remoteGroup.append(document.createElement("h5")); localGroup.append(document.createElement("h5"));
-              card.append(remoteGroup, localGroup);
-              container.append(card);
+              details.append(document.createElement("summary"), detailText);
+              card.append(header, results, help, details); container.append(card);
             }
             if (container.children[jobIndex] !== card) container.insertBefore(card, container.children[jobIndex] || null);
-            const activityStatus = audioJobActivityStatus(job.status);
-            card.querySelector("h4").textContent = audioOperationLabel(job.operation);
+            card.querySelector("h4").textContent = t("Audio {number} · {title}", {
+              number: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(jobs.length - jobIndex),
+              title: job.title || audioOperationLabel(job.operation),
+            });
             const status = card.querySelector(".audio-job-header .activity-state");
-            status.textContent = job.status === "ready" && job.operation === "retrieve_music"
-              ? t("Ready to play") : statuses[job.status];
-            status.dataset.status = activityStatus;
+            const presentation = audioJobPresentation(job);
+            status.textContent = presentation.label; status.dataset.status = presentation.tone;
             const service = savedAudioConnection(job.serviceId);
-            card.querySelector(".audio-job-route").textContent = (service?.provider === job.provider ? service.name : job.serviceId) +
-              " · " + t(audioServiceCapabilities[job.provider].label) +
+            card.querySelector(".audio-job-route").textContent = (job.title ? audioOperationLabel(job.operation) + " · " : "") +
+              (service?.provider === job.provider ? service.name : job.serviceId) + " · " + t(audioServiceCapabilities[job.provider].label) +
               (job.modelId ? " · " + job.modelId : "");
+            const newest = card.querySelector("[data-audio-latest]"); newest.textContent = t("Latest"); newest.hidden = jobIndex !== 0;
+            const time = card.querySelector("time"); time.dateTime = job.createdAt; time.textContent = timeFormatter.format(new Date(job.createdAt));
             const details = card.querySelector(".audio-job-details");
-            details.children[0].textContent = t("Task details");
-            details.children[1].textContent = job.message || "";
+            details.children[0].textContent = t(typeof job.message === "string" ? "Diagnostic details (original text)" : "Task details");
+            details.children[1].textContent = window.LiveSmithI18n.format(job.message || "");
             details.hidden = !job.message;
             if (details.dataset.status !== job.status) {
-              details.dataset.status = job.status;
-              details.open = ["failed", "interrupted", "unknown"].includes(job.status);
+              details.dataset.status = job.status; details.open = ["failed", "interrupted", "unknown"].includes(job.status);
             }
-            renderRemoteAudioOutputs(card.querySelector("[data-audio-remotes]"), job);
-            const localGroup = card.querySelector("[data-audio-local-files]");
-            localGroup.hidden = job.outputs.length === 0;
-            localGroup.firstElementChild.textContent = t("Saved audio");
-            const assetIds = new Set(job.outputs.map((asset) => asset.id));
-            for (const output of card.querySelectorAll("[data-audio-output]")) {
-              if (!assetIds.has(output.dataset.audioOutput)) output.remove();
-            }
-            for (const asset of job.outputs) {
-              let output = Array.from(localGroup.children).find((node) => node.dataset.audioOutput === asset.id);
-              if (!output) {
-                output = document.createElement("div");
-                output.dataset.audioOutput = asset.id;
-                const player = document.createElement("audio");
-                player.controls = true;
-                player.preload = "none";
-                player.dataset.audioAssetId = asset.id;
-                player.src = bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(asset.id) +
-                  "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(state.activeSessionId);
-                const metadata = document.createElement("p"); metadata.className = "audio-output-meta";
-                const download = document.createElement("button"); download.type = "button"; download.className = "secondary";
-                download.dataset.downloadLocalAudio = "";
-                const downloadHelp = document.createElement("p"); downloadHelp.className = "field-hint";
-                downloadHelp.dataset.audioLocalDownloadHelp = "";
-                downloadHelp.id = "audio-local-download-help-" + asset.id;
-                download.setAttribute("aria-describedby", downloadHelp.id);
-                const sessionId = state.activeSessionId;
-                download.addEventListener("click", () => {
-                  if (download.disabled || !download.isConnected || !localGroup.contains(download) ||
-                    !container.contains(download) || container.dataset.sessionId !== sessionId || activeSessionId() !== sessionId ||
-                    pendingAudioDownload || audioResumeBusy || audioSettingsBusy || audioSettingsSubmitting ||
-                    closeDecisionPending || isOperationInProgress()) return;
-                  const currentJob = getState().audioJobs?.find((entry) => entry.id === job.id);
-                  if (!currentJob?.outputs.some((entry) => entry.id === asset.id && entry.sessionId === sessionId)) return;
-                  void runCommand("open_audio_download", { sessionId, assetId: asset.id }, { cancellable: true });
-                });
-                output.append(document.createElement("p"), player, metadata, download, downloadHelp);
-                localGroup.append(output);
-              }
-              output.children[0].textContent = asset.label;
-              output.children[1].setAttribute("aria-label", asset.label + " · " + audioOperationLabel(job.operation));
-              const seconds = Math.round(asset.durationSeconds);
-              output.children[2].textContent = Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") +
-                " · " + (asset.mediaType === "audio/wav" ? "WAV" : "MP3") + " · " +
-                new Intl.NumberFormat(window.LiveSmithI18n.locale, { maximumFractionDigits: 1 }).format(asset.sampleRate / 1000) + " kHz";
-              output.children[3].textContent = t("Download local file");
-              output.children[3].setAttribute("aria-label", t("Download local file · {output}", { output: asset.label }));
-              output.children[4].textContent = t("An audio-capable model can listen to this saved Session audio when you ask. Your default browser can also download the local file without using Suno credits or download allowance; keep Live Smith open until that download finishes.");
-            }
+            renderAudioResults(card.querySelector("[data-audio-results]"), job);
+            const help = card.querySelector("[data-audio-local-download-help]");
+            help.hidden = job.outputs.length === 0;
+            help.textContent = t("Downloaded files stay in this Session. Export a copy through your default browser; keep Live Smith open until it finishes. Export does not contact an audio service or use provider allowance. Importing into Live is a separate edit subject to your scope and approval settings.");
             let resume = card.querySelector("[data-resume-audio-job]");
             if (!job.resumable) resume?.remove();
             else if (!resume) {
-              resume = document.createElement("button");
-              resume.type = "button";
-              resume.className = "secondary";
-              resume.dataset.resumeAudioJob = job.id;
+              resume = document.createElement("button"); resume.type = "button"; resume.className = "secondary"; resume.dataset.resumeAudioJob = job.id;
               const sessionId = state.activeSessionId;
               resume.addEventListener("click", () => {
                 if (audioResumeBusy || activeSessionId() !== sessionId || !resume.isConnected || resume.disabled) return;
@@ -6608,15 +6690,10 @@
               });
               card.append(resume);
             }
-            if (resume) {
-              resume.textContent = t("Resume audio job");
-              if (resume.isConnected && card.lastElementChild !== resume) card.append(resume);
-            }
+            if (resume) resume.textContent = t("Resume audio job");
           }
         }
-        if (pendingAudioDownload && pendingAudioDownload.identity !== audioDownloadIdentity(pendingAudioDownload.output)) {
-          pendingAudioDownload.invalidated = true;
-        }
+        if (pendingAudioDownload && pendingAudioDownload.identity !== audioDownloadIdentity(pendingAudioDownload.output)) pendingAudioDownload.invalidated = true;
         container.querySelectorAll("[data-download-audio-output]").forEach((button) => {
           button.disabled = Boolean(pendingAudioDownload) || audioResumeBusy || audioSettingsBusy || audioSettingsSubmitting ||
             closeDecisionPending || isOperationInProgress() || !audioDownloadIdentity(button.closest("[data-remote-audio-key]"));
@@ -6625,11 +6702,7 @@
           button.disabled = Boolean(pendingAudioDownload) || audioResumeBusy || audioSettingsBusy || audioSettingsSubmitting ||
             closeDecisionPending || isOperationInProgress();
         });
-        container.querySelectorAll("[data-resume-audio-job]").forEach((button) => {
-          // The host owns resumability, including recovery with only local files.
-          // Remote credentials are checked only if recovery needs provider access.
-          button.disabled = audioResumeBusy;
-        });
+        container.querySelectorAll("[data-resume-audio-job]").forEach((button) => { button.disabled = audioResumeBusy; });
       }
 
       function handleNetworkProxyUrlInput() {
@@ -7300,8 +7373,8 @@
         }
         const currentState = getState();
         currentState.status = currentState.status &&
-            !currentState.status.includes(cancellationMessage)
-          ? `${currentState.status} ${cancellationMessage}`
+            !window.LiveSmithI18n.text(currentState.status).includes(cancellationMessage)
+          ? { source: "{message} {cancellation}", values: { message: currentState.status, cancellation: cancellationMessage } }
           : cancellationMessage;
         if (wasVisible || !activeSendAttempt()) {
           showStatus(currentState.status, true, {
@@ -8906,7 +8979,7 @@
               ) ||
               new Set(payload.webSearchUpdates.map((update) => update.id)).size !==
                 payload.webSearchUpdates.length ||
-              typeof payload.progress !== "string" ||
+              !isWireUiMessage(payload.progress) ||
               !Number.isSafeInteger(payload.resolvedConfirmationGeneration) ||
               payload.resolvedConfirmationGeneration < 0
             ) return;
@@ -9197,7 +9270,7 @@
                 "bridgeStateRevision",
               ]) ||
               !isActiveSendPayload(payload) ||
-              typeof payload.message !== "string"
+              !isWireUiMessage(payload.message)
             ) {
               return;
             }
@@ -9205,7 +9278,7 @@
             if (
               !activity ||
               activity.status !== "running" ||
-              activity.message !== payload.message
+              !sameJsonData(activity.message, payload.message)
             ) return;
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
@@ -9385,7 +9458,7 @@
               !activeCommandAttempt ||
               activeCommandAttempt.stopRequested ||
               payload.commandId !== activeCommandAttempt.id ||
-              typeof payload.message !== "string" ||
+              !isWireUiMessage(payload.message) ||
               !payload.message
             ) return;
             showStatus(payload.message);

@@ -1646,23 +1646,29 @@ details.timeline-item > .timeline-content {
 .session-results .result-count { @apply text-quiet; font-variant-numeric: tabular-nums; }
 #sessionAudioResultsStatus { @apply ml-auto; }
 #audioResultsSection { max-height: min(36vh, 320px); @apply overflow-y-auto overscroll-contain px-3 pb-3 pt-0; }
-#audioJobs [data-audio-remotes]:not([hidden]), #audioJobs [data-audio-local-files]:not([hidden]) { @apply flex flex-wrap gap-2; }
-#audioJobs [data-audio-remotes] > h5, #audioJobs [data-audio-local-files] > h5 { @apply basis-full; }
+#audioJobs [data-audio-results] { @apply mt-2 grid gap-2; }
 .audio-job {
   @apply mt-2 px-0 py-2;
   overflow-wrap: anywhere;
 }
 .audio-job-header { @apply grid items-start gap-2; grid-template-columns: minmax(0, 1fr) auto; }
 .audio-job-heading { @apply min-w-0; }
+.audio-job + .audio-job { @apply mt-3 border-t border-divider pt-3; }
+.audio-job-meta { @apply mt-1 flex flex-wrap items-center gap-2 text-small text-quiet; font-variant-numeric: tabular-nums; }
+.audio-job-latest { @apply font-medium text-muted; }
 .audio-job h4, .audio-job p { @apply m-0; }
 .audio-job h4 { @apply text-body font-semibold; }
 .audio-job-route { margin-top: var(--spacing-1) !important; @apply text-small text-quiet; line-height: 1.4; }
-.audio-job audio { @apply mb-2 block w-full; }
-.audio-job h5 { @apply m-0 mt-3 text-small text-muted font-medium; }
+.audio-job audio { @apply mt-2 block w-full; }
 .audio-job [hidden] { @apply hidden; }
-.audio-remote-output, [data-audio-output] { flex: 1 1 240px; @apply min-w-0 rounded-control border-0 bg-field p-3; }
-.audio-remote-output iframe { @apply mt-2 block h-[180px] w-full rounded-control border-0; }
-[data-download-local-audio] { @apply text-small; }
+.audio-output { @apply min-w-0 rounded-control border border-border bg-field px-3 py-2; }
+.audio-output-header { @apply flex flex-wrap items-center gap-2; }
+.audio-output-heading { @apply min-w-0 grow basis-[180px]; }
+.audio-output-heading > [data-audio-output-label] { @apply text-body font-medium; }
+.audio-output-actions { @apply flex max-w-full shrink-0 flex-wrap items-center gap-1; }
+.audio-output-actions > button { @apply h-control px-2 py-0 text-label; }
+.audio-output iframe { @apply mt-2 block h-[180px] w-full rounded-control border-0; }
+.audio-download-help { margin-top: var(--spacing-2) !important; }
 #audioSettingsSection [hidden] { @apply hidden; }
 #audioSettingsSection { @apply gap-2; }
 #audioServiceFields:not([open]) + .audio-commit-actions { @apply hidden; }

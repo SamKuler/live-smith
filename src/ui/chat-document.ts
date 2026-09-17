@@ -38,7 +38,8 @@ import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
 import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
-  MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SERVICES } from "../audio-services/contracts.js";
+  MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SERVICES, MAX_AUDIO_JOB_TITLE_CHARACTERS,
+  AUDIO_OUTPUT_LABELS } from "../audio-services/contracts.js";
 
 import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 
@@ -183,6 +184,8 @@ function injectSessionContract(script: string): string {
     .replaceAll("__AUDIO_SERVICE_CAPABILITIES__", () => JSON.stringify(AUDIO_SERVICE_CAPABILITIES))
     .replaceAll("__MAX_AUDIO_SERVICES__", String(MAX_AUDIO_SERVICES))
     .replaceAll("__SEPARATION_STEMS__", () => JSON.stringify(SEPARATION_STEMS))
+    .replaceAll("__AUDIO_OUTPUT_LABELS__", () => JSON.stringify(AUDIO_OUTPUT_LABELS))
+    .replaceAll("__MAX_AUDIO_JOB_TITLE_CHARACTERS__", String(MAX_AUDIO_JOB_TITLE_CHARACTERS))
     .replaceAll("__MAX_AUDIO_ASSET_BYTES__", String(MAX_AUDIO_ASSET_BYTES))
     .replaceAll("__MAX_AUDIO_ASSET_DURATION_SECONDS__", String(MAX_AUDIO_ASSET_DURATION_SECONDS))
     .replaceAll("__MAX_AUDIO_SESSION_JOBS__", String(MAX_AUDIO_SESSION_JOBS))

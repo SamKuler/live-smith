@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -843,7 +844,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
         assert.equal(response.status, 200, await response.clone().text());
         const state = await response.json() as ChatDialogState;
         assert.match(
-          state.status ?? "",
+          formatUiMessage(state.status ?? ""),
           /model discovery failed: .*invalid model entry/,
         );
         assert.deepEqual(

@@ -36,9 +36,9 @@ test("Suno preview mounts only after a click with a canonical embed URL and cons
   try {
     assert.equal(frame(h), null);
     assert.equal(h.document.querySelector("#audioJobs audio"), null);
-    assert.equal(h.document.querySelector("#audioJobs h4")!.textContent, "Music generation");
+    assert.equal(h.document.querySelector("#audioJobs h4")!.textContent, "Audio 1 · Music generation");
     assert.equal(h.document.querySelector("#audioJobs .activity-state")!.textContent, "Generated · online");
-    assert.equal(h.document.querySelector<HTMLElement>("[data-audio-local-files]")!.hidden, true);
+    assert.equal(h.document.querySelector("[data-audio-output]"), null);
     assert.equal(h.document.querySelectorAll("[data-remote-audio-key]").length, 2);
     assert.equal(h.calls.some((call) => call.url.startsWith("https://suno.com")), false);
     const preview = button(h, "[data-preview-audio]");
@@ -49,12 +49,12 @@ test("Suno preview mounts only after a click with a canonical embed URL and cons
     assert.equal(player.getAttribute("referrerpolicy"), "no-referrer");
     assert.equal(player.getAttribute("sandbox"), "allow-scripts allow-same-origin");
     assert.equal(player.hasAttribute("allow"), false, "no autoplay, download, or popup delegation");
-    assert.equal(player.title, "Suno online player · Music");
-    assert.equal(preview.getAttribute("aria-controls"), player.id);
+    assert.equal(player.title, "Suno online player · Version 1");
+    assert.ok(h.document.getElementById(preview.getAttribute("aria-controls")!)!.contains(player));
     assert.equal(preview.getAttribute("aria-expanded"), "true");
     preview.click();
-    assert.equal(frame(h), player);
-    assert.equal(h.document.querySelectorAll("iframe").length, 1);
+    assert.equal(frame(h), null);
+    assert.equal(h.document.querySelectorAll("iframe").length, 0);
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.windowOpenAttempts, []);
     assert.deepEqual(h.errors, []);
@@ -66,7 +66,7 @@ test("unrelated state and language updates preserve the actual online frame and 
   state.audioJobs![0]!.outputs = [savedOutput(state)];
   const h = await createDialogHarness(state);
   try {
-    h.click("[data-preview-audio]");
+    button(h, '[data-remote-audio-key="' + remotes[1]!.key + '"] [data-preview-audio]').click();
     const player = frame(h)!;
     const browsingContext = player.contentWindow;
     const local = h.document.querySelector("audio");
@@ -81,8 +81,8 @@ test("unrelated state and language updates preserve the actual online frame and 
     assert.equal(h.document.querySelector("audio"), local);
     assert.equal(h.document.querySelector("[data-remote-audio-key]"), card);
     assert.match(player.title, /Suno 在线播放器/);
-    assert.equal(button(h, "[data-download-local-audio]").textContent, "下载本地文件");
-    assert.match(h.document.querySelector("[data-audio-local-download-help]")!.textContent!, /默认浏览器.*不消耗 Suno 积分或下载额度.*保持 Live Smith 打开/);
+    assert.equal(button(h, "[data-download-local-audio]").textContent, "导出 MP3");
+    assert.match(h.document.querySelector("[data-audio-local-download-help]")!.textContent!, /默认浏览器.*保持 Live Smith 打开.*不会请求音频服务/);
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -93,12 +93,12 @@ test("Close preview removes the frame, restores focus, and a later click creates
   try {
     const preview = button(h, "[data-preview-audio]");
     preview.click(); const first = frame(h)!;
-    h.click("[data-close-audio-preview]");
+    preview.click();
     assert.equal(frame(h), null);
     assert.equal(first.isConnected, false);
     assert.equal(h.document.activeElement, preview);
     assert.equal(preview.getAttribute("aria-expanded"), "false");
-    assert.equal(button(h, "[data-close-audio-preview]").hidden, true);
+    assert.equal(h.document.querySelector("[data-close-audio-preview]"), null);
     preview.click();
     assert.notEqual(frame(h), first);
     assert.equal(frame(h)!.src, first.src);
@@ -137,7 +137,7 @@ test("download cancellation sends nothing; confirmation accepts one selected out
   try {
     selectAudioService(h, musicService.id);
     download(h, 1).click();
-    assert.match(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Alternative music.*Personal Suno.*up to one existing Suno download allowance.*No allowance or quota will be purchased/);
+    assert.match(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Version 2.*Personal Suno.*up to one existing Suno download allowance.*No allowance or quota will be purchased/);
     assert.equal(downloadCommands(h).length, 0);
     assert.equal(frame(h), null);
     await h.cancelAppConfirmation(); await h.settle();
@@ -149,7 +149,7 @@ test("download cancellation sends nothing; confirmation accepts one selected out
     download(h, 1).click(); download(h).click();
     h.click("[data-preview-audio]");
     assert.ok(frame(h), "read-only preview stays available while a download is busy");
-    h.click("[data-close-audio-preview]");
+    h.click("[data-preview-audio]");
     assert.equal(frame(h), null, "preview can be closed while the download is busy");
     assert.deepEqual(downloadCommands(h).map((call) => call.body), [{
       kind: "download_audio_output", sessionId: state.activeSessionId, jobId: state.audioJobs![0]!.id, outputKey: remotes[1]!.key,
@@ -268,7 +268,7 @@ test("saved files request a default-browser download without WebView navigation 
     state.audioJobs![0]!.outputs = [asset];
     const h = await createDialogHarness(state);
     try {
-      const player = h.document.querySelector<HTMLAudioElement>("[data-audio-local-files] audio")!;
+      const player = h.document.querySelector<HTMLAudioElement>("[data-audio-output] audio")!;
       const localDownload = button(h, "[data-download-local-audio]");
       const location = h.window.location.href;
       assert.equal(download(h), null);
@@ -280,21 +280,21 @@ test("saved files request a default-browser download without WebView navigation 
       assert.equal(playback.searchParams.has("download"), false);
       assert.equal(localDownload.tagName, "BUTTON");
       assert.equal(localDownload.type, "button");
-      assert.equal(localDownload.getAttribute("aria-label"), "Download local file · Saved take");
-      assert.equal(localDownload.textContent, "Download local file");
+      assert.equal(localDownload.getAttribute("aria-label"), "Export Version 1 as " + (mediaType === "audio/mpeg" ? "MP3" : "WAV") + " · Audio 1 · Music generation");
+      assert.equal(localDownload.textContent, "Export " + (mediaType === "audio/mpeg" ? "MP3" : "WAV"));
       assert.equal(localDownload.hasAttribute("href"), false);
       assert.equal(localDownload.hasAttribute("download"), false);
       assert.doesNotMatch(localDownload.outerHTML, /test-token|file:|https?:|formaction/);
       const help = h.document.getElementById(localDownload.getAttribute("aria-describedby")!)!;
-      assert.match(help.textContent!, /audio-capable model can listen.*default browser.*without using Suno credits or download allowance/i);
-      assert.match(help.textContent!, /keep Live Smith open until that download finishes/i);
+      assert.match(help.textContent!, /default browser.*does not contact an audio service or use provider allowance/i);
+      assert.match(help.textContent!, /keep Live Smith open until it finishes/i);
       const services = { revision: "2", connections: [musicService] };
       h.emitServerEvent(broadcast(state, services)); await h.settle();
       assert.equal(h.document.querySelector("audio"), player);
       assert.equal(h.document.querySelector("[data-download-local-audio]"), localDownload);
       assert.equal(localDownload.disabled, false);
       assert.equal(download(h, 1).disabled, true);
-      assert.equal(h.document.querySelector<HTMLElement>("[data-audio-local-files]")!.hidden, false);
+      assert.equal(player.closest<HTMLElement>("[data-audio-result]")!.hidden, false);
       h.holdNextCommand(); localDownload.click(); await h.settle();
       assert.deepEqual(commandCalls(h).map((call) => call.body), [{
         kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id,
@@ -305,7 +305,7 @@ test("saved files request a default-browser download without WebView navigation 
       assert.equal(h.document.querySelector("#status")!.textContent, message);
       h.releaseHeldCommand(); await h.settle();
       assert.doesNotMatch(h.document.querySelector("#status")!.textContent!, /download (?:completed|finished)|downloaded successfully/i);
-      assert.equal(h.document.querySelector("[data-audio-local-files] a"), null);
+      assert.equal(h.document.querySelector("[data-audio-results] a"), null);
       assert.equal(h.document.querySelector("iframe"), null);
       assert.equal(h.window.location.href, location);
       assert.deepEqual(h.windowOpenAttempts, []);
@@ -338,7 +338,7 @@ for (const change of ["session", "detached", "output", "job"] as const) {
       } else {
         await refresh(h, { ...state, audioJobs: change === "job" ? [] : [{ ...state.audioJobs![0]!, outputs: [] }] });
         if (change === "job") h.document.querySelector("#audioJobs")!.append(card);
-        else h.document.querySelector("[data-audio-local-files]")!.append(output);
+        else h.document.querySelector("[data-audio-results]")!.append(output);
       }
       localDownload.disabled = false;
       localDownload.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));

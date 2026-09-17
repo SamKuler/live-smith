@@ -1,14 +1,22 @@
+import type { UiMessage } from "../i18n/ui-message.js";
+
 /** Host-owned audio processing contracts, independent of chat providers and Live. */
 export const SEPARATION_STEMS = [
   "vocals", "drums", "bass", "piano", "electric_guitar", "acoustic_guitar",
 ] as const;
 export type SeparationStem = (typeof SEPARATION_STEMS)[number];
+export const AUDIO_OUTPUT_LABELS = {
+  vocals: "Vocals", drums: "Drums", bass: "Bass", piano: "Piano",
+  electric_guitar: "Electric guitar", acoustic_guitar: "Acoustic guitar", residual: "Remaining audio",
+  music: "Music", music_alternative: "Alternative music", sound_effect: "Sound effect",
+} as const;
 
 export const MAX_AUDIO_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_AUDIO_ASSET_DURATION_SECONDS = 15 * 60;
 export const MAX_AUDIO_JOB_OUTPUTS = 7;
 export const MAX_AUDIO_SESSION_BYTES = 1024 * 1024 * 1024;
 export const MAX_AUDIO_SESSION_JOBS = 40;
+export const MAX_AUDIO_JOB_TITLE_CHARACTERS = 200;
 export const MAX_AUDIO_SERVICES = 20;
 export const LEGACY_AUDIO_SERVICE_ID = "audio-service-lalal";
 export const AUDIO_PROVIDERS = ["lalal", "elevenlabs", "mureka", "suno-platform", "suno", "sunoapi"] as const;
@@ -152,6 +160,8 @@ export interface AudioJob {
   provider: AudioProvider;
   serviceId: string;
   modelId?: string;
+  /** Optional user-authored display title; never lyrics or provider diagnostics. */
+  title?: string;
   /** Credential owner fingerprint; Suno binds the verified account, not its rotating Cookie. */
   connectionFingerprint: string;
   operation: AudioOperation;
@@ -173,7 +183,7 @@ export interface AudioJob {
   /** Historical result shape, used only when the original remote identities were not saved. */
   expectedOutputRoles?: GeneratedAudioOutput["role"][];
   outputAssets: AudioAsset[];
-  message?: string;
+  message?: UiMessage;
 }
 
 export interface AudioJobView {
@@ -182,12 +192,15 @@ export interface AudioJobView {
   serviceId: string;
   operation: AudioOperation;
   modelId?: string;
+  title?: string;
   status: AudioJobStatus;
   stems: SeparationStem[];
   createdAt: string;
   outputs: AudioAsset[];
   remoteOutputs?: Array<{ key: string; role: GeneratedAudioOutput["role"] }>;
-  message?: string;
+  message?: UiMessage;
+  /** Remote generation/retrieval outcome, independent of chosen local downloads. */
+  remoteOutcome?: "completed" | "partial" | "failed" | "cancelled";
   resumable: boolean;
 }
 
@@ -196,9 +209,15 @@ export function audioJobView(job: AudioJob): AudioJobView {
     id: job.id, status: job.status, stems: [...job.stems], createdAt: job.createdAt,
     provider: job.provider, serviceId: job.serviceId, operation: job.operation,
     ...(job.modelId ? { modelId: job.modelId } : {}),
+    ...(job.title ? { title: job.title } : {}),
     outputs: job.outputAssets.map((asset) => ({ ...asset, origin: { ...asset.origin } })),
     ...(job.remoteOutputs ? { remoteOutputs: job.remoteOutputs.map(({ key, role }) => ({ key, role })) } : {}),
     ...(job.message ? { message: job.message } : {}),
+    ...(job.remoteOutputs !== undefined && audioJobRemoteSettled(job) ? {
+      remoteOutcome: job.remoteTaskTerminal || job.failedOutputKeys?.length
+        ? job.remoteOutputs.length ? "partial" as const : job.remoteTaskTerminal === "cancelled" ? "cancelled" as const : "failed" as const
+        : "completed" as const,
+    } : {}),
     resumable: Boolean(job.remoteTaskId) && job.status !== "completed" && job.status !== "cancelled" &&
       !audioJobRemoteSettled(job),
   };

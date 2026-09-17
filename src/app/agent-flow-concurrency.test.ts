@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { spawn } from "node:child_process";
@@ -3452,7 +3453,7 @@ test("a prior-activation Session is restored only to the server-owned current Li
           label: "Drums",
         });
         assert.deepEqual(restoredSession?.originScope, previous.scope);
-        assert.match(restored.status ?? "", /ready on the current track.*Drums/i);
+        assert.match(formatUiMessage(restored.status ?? ""), /ready on the current track.*Drums/i);
       },
     },
   };

@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -539,7 +540,7 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
       signal: new AbortController().signal,
       onDelta: () => {},
       onReasoningUpdate: (update) => { reasoningUpdates.push(update); },
-      onProgress: (message) => { progress.push(message); },
+      onProgress: (message) => { progress.push(formatUiMessage(message)); },
       onSessionEvent: () => {},
       confirmActions: async () => true,
     },

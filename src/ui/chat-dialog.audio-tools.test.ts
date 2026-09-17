@@ -14,7 +14,7 @@ test("generated music, alternatives and sound effects show their bound service, 
       role: role as "music" | "music_alternative", origin: { kind: "generated" },
     })) });
   const effect = job(state.activeSessionId, { id: "effect-job", serviceId: musicService.id, provider: musicService.provider,
-    operation: "generate_sound_effect", stems: [], status: "completed", resumable: false,
+    operation: "generate_sound_effect", title: "Rain", stems: [], status: "completed", resumable: false,
     outputs: [{ ...source, id: "generated-effect", jobId: "effect-job", role: "sound_effect",
       label: "Rain", origin: { kind: "generated" } }] });
   state.audioJobs = [music, effect];
@@ -24,7 +24,7 @@ test("generated music, alternatives and sound effects show their bound service, 
     assert.equal(players.length, 3);
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Music generation.*Third-party studio · Suno via SunoAPI.org \(third-party\) · V4_5ALL/s);
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Sound effect generation/);
-    assert.match(players[2]!.getAttribute("aria-label")!, /Rain · Sound effect generation/);
+    assert.match(harness.document.querySelector('[data-audio-asset-id="generated-effect"]')!.getAttribute("aria-label")!, /Sound effect.*Rain/);
     assert.equal(harness.document.querySelector("[data-resume-audio-job]"), null);
     harness.emitServerEvent(broadcast(state, { connections: [service, musicService, { ...sunoService, name: "Renamed studio" }], revision: "2" }));
     await harness.settle();
@@ -134,7 +134,7 @@ test("audio results preview large Arrangement assets using only authenticated se
     assert.ok(url.searchParams.get("token"));
     assert.equal(url.hostname, new URL(harness.eventSourceUrls[0]!).hostname);
     assert.equal(harness.document.querySelector("#audioJobs img"), null);
-    assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Vocals <img src=x>/);
+    assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Vocals/);
     harness.emitServerEvent(broadcast(state, { connections: [{ ...service, name: "Updated studio" }], revision: "2" }));
     await harness.settle();
     assert.equal(harness.document.querySelector("#audioJobs audio"), player);

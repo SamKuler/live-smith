@@ -30,6 +30,7 @@ import type { SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 import type { AvailableSkillSummary } from "../skills/builtins.js";
+import type { UiMessage } from "../i18n/ui-message.js";
 
 export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
 
@@ -90,7 +91,7 @@ export interface ChatDialogState {
   /** Non-sensitive process-local epoch for subscription catalog ownership. */
   oauthAuthGeneration: number;
   openSettingsOnLoad: boolean;
-  status?: string | undefined;
+  status?: UiMessage | undefined;
   sessionActivities?: ChatSessionActivity[];
 }
 
@@ -217,7 +218,7 @@ export interface ChatSessionActivity {
   /** Correlates send-owned terminal activity with the exact request attempt. */
   sendId?: string;
   status: ChatSessionActivityStatus;
-  message?: string;
+  message?: UiMessage;
   unread: boolean;
 }
 

@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -62,7 +63,7 @@ test("the production Suno factory privately continues one request, persists rece
   assert.ok(!JSON.stringify(job).includes(secret));
   assert.ok(!JSON.stringify(h.progress).includes(secret));
   const saved = await downloadAudioOutput(context, job.id, A);
-  assert.equal(saved.outputAssets.length, 1, saved.message);
+  assert.equal(saved.outputAssets.length, 1, formatUiMessage(saved.message ?? ""));
   assert.deepEqual((await readAudioAsset(h.directory, h.chat.id, saved.outputAssets[0]!.id)).bytes, waveBytes());
   assert.equal(verifications, 1, "retrieval and downloads must not open verification");
   wire.done();

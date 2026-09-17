@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -22,7 +23,7 @@ for (const elapsed of [1, 30 * 60_000]) {
       return { status: "running", progress: 50 };
     };
     h.context.onProgress = async (message) => {
-      if (message === "Separating stems (50%)") {
+      if (formatUiMessage(message) === "Separating stems (50%)") {
         await Promise.resolve();
         controller.abort(stopped);
       }
@@ -40,7 +41,7 @@ for (const elapsed of [1, 30 * 60_000]) {
     assert.equal(saved!.status, "interrupted");
     assert.equal(saved!.remoteTaskId, "fixture-task");
     assert.equal((await audioJobViews(h.storage, h.session.id))[0]!.resumable, true);
-    assert.doesNotMatch(saved!.message!, /confirmed cancellation/i);
+    assert.doesNotMatch(formatUiMessage(saved!.message!), /confirmed cancellation/i);
 
     h.context.signal = createHostAbortController().signal;
     delete h.context.onProgress;
@@ -97,7 +98,7 @@ test("Stop during separation timeout bookkeeping still cancels even when the pro
   const [job] = await listAudioJobs(h.storage, h.session.id);
   assert.equal(job!.status, "interrupted");
   assert.equal(job!.remoteTaskId, "fixture-task");
-  assert.doesNotMatch(job!.message!, /confirmed cancellation|synthetic cancellation/i);
+  assert.doesNotMatch(formatUiMessage(job!.message!), /confirmed cancellation|synthetic cancellation/i);
 });
 
 test("Stop at separation wait expiry bounds a stalled cancellation to three seconds", { timeout: 5_000 }, async (t) => {
@@ -112,7 +113,7 @@ test("Stop at separation wait expiry bounds a stalled cancellation to three seco
     return { status: "running", progress: 50 };
   };
   h.context.onProgress = (message) => {
-    if (message === "Separating stems (50%)") controller.abort(stopped);
+    if (formatUiMessage(message) === "Separating stems (50%)") controller.abort(stopped);
   };
   const cancelling = Promise.withResolvers<AbortSignal>();
   h.adapter.cancel = async (taskId, signal) => {

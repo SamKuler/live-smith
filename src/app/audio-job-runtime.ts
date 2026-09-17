@@ -4,6 +4,7 @@ import { listAudioAssets, readExpectedAudioAsset } from "../storage/audio-assets
 import { updateAudioJob } from "../storage/audio-jobs.js";
 import { storageScopeKey } from "../storage/scope.js";
 import { sessionErrorMessage } from "./error-routing.js";
+import { audioMessage as m } from "./audio-messages.js";
 
 const activeJobs = new Map<string | symbol, Set<string>>();
 
@@ -42,8 +43,8 @@ export async function reconcileLocalAudioJob(
     assets.every((asset) => job.outputAssets.some((existing) => existing.id === asset.id))) return job;
   return updateAudioJob(storageDirectory, sessionId, job.id, {
     outputAssets: [...expected.values()],
-    ...(complete ? { status: "completed", message: "Audio is saved. Importing it into Live is a separate scoped Apply operation." }
-      : remoteStatus ? { status: remoteStatus, message: "Suno results are available in this job's online Preview player. Download each selected output explicitly before Live import." } : {}),
+    ...(complete ? { status: "completed", message: m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }
+      : remoteStatus ? { status: remoteStatus, message: m("Audio is ready online. Preview a version or download it to Live Smith before a separate scoped Live import.") } : {}),
   });
 }
 

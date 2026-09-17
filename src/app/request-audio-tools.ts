@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
+import type { UiMessage } from "../i18n/ui-message.js";
 import {
   audioProcessingTools, parseAudioToolRequest, validateAudioServiceRequest, type AudioProcessingSource,
   type AudioToolRequest,
@@ -35,7 +36,7 @@ export async function createRequestAudioTools(input: {
   attachmentRefs: readonly AudioSessionAttachmentRef[];
   target: LiveTarget;
   signal: AbortSignal;
-  onProgress(message: string): Promise<void> | void;
+  onProgress(message: UiMessage): Promise<void> | void;
   onAssets(assets: readonly AudioAsset[]): Promise<void> | void;
   modelAudioInput?: {
     canAccept(byteLength: number): boolean;

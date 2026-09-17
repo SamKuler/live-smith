@@ -23,9 +23,9 @@ test("results belong to a collapsible active-Session shelf outside application s
     h.click("#sessionAudioResultsSummary"); await h.settle();
     assert.equal(shelf.open, true);
     assert.equal(h.document.querySelector("#sessionAudioResultsCount")!.textContent, "1");
-    assert.equal(h.document.querySelector("#sessionAudioResultsStatus")!.textContent, "Ready");
+    assert.equal(h.document.querySelector("#sessionAudioResultsStatus")!.textContent, "Latest: Generated · online");
     assert.equal(h.document.querySelector("#sessionAudioResultsStatus")!.getAttribute("data-status"), "complete");
-    assert.equal(h.document.querySelector("#audioJobs h4")!.textContent, "Music generation");
+    assert.equal(h.document.querySelector("#audioJobs h4")!.textContent, "Audio 1 · Music generation");
     assert.equal(h.document.querySelector("#audioJobs .activity-state")!.textContent, "Generated · online");
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.errors, []);
@@ -35,9 +35,10 @@ test("results belong to a collapsible active-Session shelf outside application s
 test("collapsing results stops remote preview and local audio, and reopening never auto-plays", async () => {
   const state = stateWithResult();
   state.audioJobs![0]!.outputs = [{ ...job(state.activeSessionId).outputs[0]!, role: "music", label: "Music", origin: { kind: "generated" } }];
+  state.audioJobs![0]!.remoteOutputs!.push({ key: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "music_alternative" });
   const h = await createDialogHarness(state);
   try {
-    h.click("[data-preview-audio]"); await h.settle();
+    h.click('[data-remote-audio-key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"] [data-preview-audio]'); await h.settle();
     const frame = h.document.querySelector("#audioJobs iframe")!;
     const player = h.document.querySelector<HTMLAudioElement>("#audioJobs audio")!;
     let pauses = 0;

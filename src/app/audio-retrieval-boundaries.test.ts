@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -78,7 +79,7 @@ test("preview retrieval works at full local capacity and selected download check
   const before = h.calls.inspect;
   const blocked = await downloadAudioOutput(h.context, job.id, clipIds[0]!);
   assert.equal(blocked.status, "ready");
-  assert.match(blocked.message!, /capacity|storage limit/i);
+  assert.match(formatUiMessage(blocked.message!), /capacity|storage limit/i);
   assert.equal(h.calls.inspect, before);
   assert.deepEqual(h.calls.downloads, []);
 });

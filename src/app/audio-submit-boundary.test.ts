@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -11,7 +12,7 @@ test("a connection replacement during generation preparation does not submit or 
   const job = await h.run();
   assert.equal(job.status, "failed");
   assert.deepEqual(h.calls, []);
-  assert.doesNotMatch(job.message!, /synthetic-/);
+  assert.doesNotMatch(formatUiMessage(job.message!), /synthetic-/);
 });
 
 test("a connection replacement during stem source preparation cannot upload the source", async (t) => {

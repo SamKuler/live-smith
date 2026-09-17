@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -66,7 +67,7 @@ test("account changes during progress stop selected collection before calling it
   assert.deepEqual(result.outputAssets, []);
   assert.deepEqual(result.remoteOutputs, manifest);
   assert.deepEqual(h.calls.downloads, []);
-  assert.match(result.message!, /changed/);
+  assert.match(formatUiMessage(result.message!), /changed/);
 });
 
 test("duplicate download, retrieval and Resume share the job lock and Stop releases it", async (t) => {

@@ -1,3 +1,4 @@
+import { formatUiMessage } from "../i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import test from "node:test";
@@ -46,7 +47,7 @@ test("an oversized LALAL stem preserves valid siblings and resumes only the miss
     assert.equal(first.status, "partial");
     assert.equal(first.remoteTaskId, TASK_ID);
     assert.deepEqual(first.outputAssets.map((asset) => asset.role), ["vocals", "drums"]);
-    assert.match(first.message!, /residual.*byte limit/);
+    assert.match(formatUiMessage(first.message!), /residual.*byte limit/);
     for (const asset of first.outputAssets) {
       assert.deepEqual((await readAudioAsset(h.storage, h.session.id, asset.id)).bytes, new Uint8Array(bytes));
     }
