@@ -1645,8 +1645,8 @@ details.timeline-item > .timeline-content {
 .session-results > summary:hover { @apply bg-surface-hover text-text; }
 .session-results .result-count { @apply text-quiet; font-variant-numeric: tabular-nums; }
 #sessionAudioResultsStatus { @apply ml-auto; }
-#audioResultsSection { max-height: min(36vh, 320px); @apply overflow-y-auto overscroll-contain px-3 pb-3 pt-0; }
-#audioJobs [data-audio-results] { @apply mt-2 grid gap-2; }
+#audioResultsSection { max-height: min(48vh, 420px); @apply overflow-y-auto overscroll-contain px-3 pb-3 pt-0; }
+#audioJobs [data-audio-results] { @apply mt-2 grid grid-cols-2 items-start gap-2; }
 .audio-job {
   @apply mt-2 px-0 py-2;
   overflow-wrap: anywhere;
@@ -1663,7 +1663,7 @@ details.timeline-item > .timeline-content {
 .audio-job [hidden] { @apply hidden; }
 .audio-output { @apply min-w-0 rounded-control border border-border bg-field px-3 py-2; }
 .audio-output-header { @apply flex flex-wrap items-center gap-2; }
-.audio-output-heading { @apply min-w-0 grow basis-[180px]; }
+.audio-output-heading { @apply min-w-0 grow; }
 .audio-output-heading > [data-audio-output-label] { @apply text-body font-medium; }
 .audio-output-actions { @apply flex max-w-full shrink-0 flex-wrap items-center gap-1; }
 .audio-output-actions > button { @apply h-control px-2 py-0 text-label; }
@@ -1700,6 +1700,10 @@ details.timeline-item > .timeline-content {
 #audioServiceModel { @apply font-code; }
 .danger-action { @apply text-danger; }
 .audio-output-meta { @apply text-small text-quiet; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 680px) {
+  #audioJobs [data-audio-results] { @apply grid-cols-1; }
+}
 
 .inspector-scope-header h2 {
   @apply m-0 text-heading text-text font-semibold normal-case;
