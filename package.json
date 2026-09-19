@@ -18,7 +18,8 @@
     "test:core": "tsx --test \"src/agent/**/*.test.ts\" \"src/app/**/*.test.ts\" \"src/attachments/**/*.test.ts\" \"src/live/**/*.test.ts\" \"src/model/**/*.test.ts\" \"src/plugins/**/*.test.ts\" \"src/release/**/*.test.ts\" \"src/runtime/**/*.test.ts\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.ts\"",
     "test:ui": "tsx --test \"src/ui/**/*.test.ts\"",
     "verify:client": "tsx scripts/check-dialog-client-syntax.ts",
-    "verify": "npm test && npm run build && npm run verify:client && npm audit --json",
+    "verify:plugins": "tsx scripts/check-plugin-fixtures.ts",
+    "verify": "npm test && npm run build && npm run verify:client && npm run verify:plugins && npm audit --json",
     "package": "npm run build && extensions-cli package && npm run verify:package",
     "verify:package": "tsx scripts/verify-package.ts"
   },

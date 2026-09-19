@@ -131,6 +131,18 @@ test("manifest paths and identities cannot escape their package", () => {
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name,
     })]), /name/u);
   }
+  for (const version of ["1", "1.0", "01.0.0", "1.0.0-01", "v1.0.0", "1.0.0+"]) {
+    assert.throws(() => parsePluginPackageManifest([file("plugin.json", {
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "fixture",
+      version,
+    })]), /version/u);
+  }
+  assert.equal(parsePluginPackageManifest([file("plugin.json", {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "fixture",
+    version: "1.2.3-beta.1+build.7",
+  })]).version, "1.2.3-beta.1+build.7");
 });
 
 test("manifest discovery rejects duplicate normalized paths and ambiguous compatibility roots", () => {

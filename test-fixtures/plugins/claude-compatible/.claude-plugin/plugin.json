@@ -1,0 +1,13 @@
+{
+  "name": "fixture.claude",
+  "version": "1.0.0",
+  "description": "Claude-compatible Skill and MCP fixture",
+  "skills": "./skills",
+  "mcpServers": {
+    "fixture": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/server.mjs"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}

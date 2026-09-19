@@ -1,7 +1,8 @@
 # Model Profiles and Connection Backends
 
-This reference owns model connection configuration, OAuth credential lifecycle,
-capability evidence, and provider request behavior. See the
+This reference owns model connection configuration, Integration Connection
+contracts, OAuth credential lifecycle, capability evidence, and provider request
+behavior. See the
 [README](../README.md) for product workflow, [Architecture](ARCHITECTURE.md) for
 cross-module ownership, and [Development](DEVELOPMENT.md) for verification.
 
@@ -23,7 +24,7 @@ modes: no proxy, System proxy (static macOS routes or the current Windows
 user's static settings), or one credential-free Manual proxy URL. The selected
 route is resolved at request time and is shared by Direct API
 discovery/generation, OAuth login, refresh, catalog and product traffic, and
-external audio-service HTTP or WebSocket traffic. It never changes which
+built-in Plugin HTTP or WebSocket traffic. It never changes which
 provider or protocol a Profile owns.
 
 System mode reads static HTTP, HTTPS, and SOCKS routes from macOS. On Windows it
@@ -589,31 +590,36 @@ uses the Antigravity product backend.
 
 ## External audio tools
 
-Audio tools are configured independently of chat Profiles in **Inspector → App →
-Audio tools**. Add a named connection, select its provider, enter its API key, and
-save it before use. Up to 20 connections can coexist, including multiple accounts
-for the same provider. The connection list shows each provider and its saved or
-draft status. Select a row to expand its editor; model overrides are optional
-disclosure controls. Each connection has its own enable switch and write-only
-key field. An omitted replacement preserves the key only for the same connection
-and provider; changing provider cannot reuse the previous provider's key.
-Clearing a key or removing a saved connection requires confirmation. Clearing
-a key disables only that connection. Removing a connection leaves its
-Session results intact but makes remote recovery through it unavailable.
+External audio tools are provided by immutable built-in Plugins and configured
+independently of chat Profiles in **Inspector → App → Connections**. Add a named
+Connection, select its Plugin, enter the required credential, and save it before
+use. Up to 20 Connections can coexist, including multiple accounts for the same
+Plugin. The list shows each Plugin and its saved or draft status. Select a row to
+expand its editor; model overrides are optional disclosure controls. Each
+Connection has its own enable switch and write-only secret field. An omitted
+replacement preserves secrets only for the same Connection and Plugin; switching
+Plugins never inherits them. Clearing a key or removing a saved Connection
+requires confirmation. Clearing a key disables only that Connection. Removing a
+Connection leaves its Session results intact but makes remote recovery through it
+unavailable.
 
 Saves check the collection revision to prevent another window's changes from
 being overwritten. Configuration requires private persistent extension storage;
-there is no environment-variable fallback. Historical single-service LALAL.AI
-settings are read as one named connection without rewriting the file on read.
-New settings writes persist the connection collection.
+there is no environment-variable fallback. Settings schema 9 stores each entry as
+`id`, `name`, `pluginId`, `enabled`, public `configuration`, and private `secrets`.
+Historical schema-8 `audioServices` and the older single LALAL.AI service are
+migrated on read without rewriting their file. The next authorized settings write
+persists only `integrationConnections`.
 
 Tools expose only enabled, configured connections that support the requested
-operation. Every new processing request selects an exact `serviceId`; the chat
-model receives the connection's non-secret selected model ID when present, but
-never receives a key, endpoint, or generic HTTP execution tool. The chat
-model needs function-tool support, not native audio generation support.
-Saved-job listing and recovery remain available to the model when no service
-connection is enabled; only new remote operations depend on enabled connections.
+operation. Every new model tool request selects an exact `connectionId`; the chat
+model receives a user-defined label and non-secret selected model ID when present,
+but never receives a key, callback secret, provider endpoint, or generic HTTP
+execution tool. Namespaced built-in tool definitions and strict argument parsing
+come from the selected Plugin rather than a central Provider operation switch.
+The chat model needs function-tool support, not native audio generation support.
+Saved-job listing and recovery remain available to the model when no Integration
+Connection is enabled; only new remote operations depend on enabled Connections.
 When the active Profile has verified audio-input support on a protocol that can
 carry tool-produced audio, `listen_to_audio_asset` can attach one exact local
 Session result to the next model turn. Text-only Profiles never receive that tool
@@ -807,7 +813,7 @@ verification uses the separate in-app workflow below.
 
 This is a manual Cookie import, not an automatic OAuth callback:
 
-1. Add a Suno connection in **Inspector → App → Audio tools** and open Suno.
+1. Add a Suno connection in **Inspector → App → Connections** and open Suno.
    Opening the website does not require saving the connection first.
 2. Open the browser's developer tools → Network, reload Suno, and inspect a
    request to `auth.suno.com` or `studio-api-prod.suno.com`.
@@ -1095,9 +1101,10 @@ terminal state and are not presented as recoverable work.
 Stop and window closure interrupt local processing. A bounded cancellation
 request is attempted for an accepted remote task; this does not claim that the
 service has stopped until its status confirms cancellation. After restart, a
-recoverable job can be explicitly resumed using its original service connection.
-Each job retains its original service ID and credential-owner fingerprint.
-Changing a service key or selecting another account cannot transfer an old job.
+recoverable job can be explicitly resumed using its original Integration
+Connection. Each job retains its Plugin/tool identity, original Connection ID,
+and credential-owner fingerprint. Changing a Connection key or selecting another
+account cannot transfer an old job.
 Recovering a result never restarts a stopped Live edit plan.
 
 If Stop arrives after a separation submission has started, the client allows
@@ -1115,10 +1122,12 @@ target. Inspect timing and Warp behavior in Live when importing stems.
 ## Credential storage
 
 `live-smith-settings.json` contains Direct API keys because a Direct API Profile
-owns its complete connection. `oauth/credentials.json` contains OAuth tokens in
-Profile-ID/provider tuple slots because subscription Profiles deliberately do
-not contain them. Both are private local files and must not be
-committed, logged, copied into fixtures, or shown in screenshots.
+owns its complete connection. It also contains private built-in Plugin Connection
+secrets under exact Connection and Plugin identities. `oauth/credentials.json`
+contains OAuth tokens in Profile-ID/provider tuple slots because subscription
+Profiles deliberately do not contain them. Suno.com session material remains in
+its separate private per-Connection record. These files must not be committed,
+logged, copied into fixtures, or shown in screenshots.
 
 Provider failures are redacted with both the active Direct API secret set and
 the send-scoped OAuth credential. Errors retain useful provider/protocol/status

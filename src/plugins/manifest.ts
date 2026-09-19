@@ -146,7 +146,7 @@ function readIdentity(value: Record<string, unknown>): Pick<PluginManifest, "id"
   if (!isSafePluginId(name)) {
     throw new Error("Plugin manifest name is invalid.");
   }
-  if (version !== undefined && (typeof version !== "string" || !safeMetadataString(version, 128))) {
+  if (version !== undefined && (typeof version !== "string" || !isSemanticVersion(version))) {
     throw new Error("Plugin manifest version is invalid.");
   }
   if (description !== undefined && (typeof description !== "string" || !safeMetadataString(description, 1024))) {
@@ -157,6 +157,15 @@ function readIdentity(value: Record<string, unknown>): Pick<PluginManifest, "id"
     ...(version === undefined ? {} : { version }),
     ...(description === undefined ? {} : { description }),
   };
+}
+
+function isSemanticVersion(value: string): boolean {
+  if (!safeMetadataString(value, 128)) return false;
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(value);
+  if (!match) return false;
+  const prerelease = match[4];
+  return prerelease === undefined || prerelease.split(".").every((identifier) =>
+    !/^\d+$/u.test(identifier) || identifier === "0" || !identifier.startsWith("0"));
 }
 
 function validatePortableMetadata(key: string, value: unknown): void {

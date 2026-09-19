@@ -92,7 +92,9 @@ Host-equivalent restricted VM, the production build, the composed dialog-client
 syntax check, and `npm audit --json`. It uses fixtures and does not require
 provider credentials or call a model provider. Focused checks remain available
 as `npm run test:core`, `npm run test:ui`, `npm run test:structure`, and
-`npm run verify:client`.
+`npm run verify:client`. `npm run verify:plugins` checks every committed Plugin
+compatibility fixture for a valid contained manifest, tracked package data,
+non-executable files, and credential-shaped content.
 
 External pull-request automation must not expose the private Ableton SDK
 archives through repository secrets, shared caches, or a privileged workflow
@@ -143,6 +145,40 @@ Suno version picker can be tested with a read-only catalog load; selecting,
 saving or discarding a version must not generate audio or implicitly enable a
 connection.
 
+### Plugin compatibility and author testing
+
+Plugin packages are ZIP archives with either `plugin.json`,
+`.codex-plugin/plugin.json`, or `.claude-plugin/plugin.json` at their package
+root. One enclosing distribution directory is accepted. A portable package uses
+the Agent Plugins 1.0 schemas and discovers `skills/` plus `mcp.json` by their
+fixed names. Codex and Claude compatibility manifests may point to a Skills
+directory and MCP configuration; unsupported commands, agents, hooks, output
+styles, apps, LSP servers, and marketplace metadata remain inert and appear in
+the install review.
+
+MCP transport support is bounded to local stdio and Streamable HTTP. Portable
+stdio entries use an executable token, optional arguments, and an optional
+working directory contained in `${PLUGIN_ROOT}` or `${PLUGIN_DATA}`. Live Smith
+starts no process during inspection or installation. The user must enable the
+Plugin and approve each MCP server; local commands then execute without a shell
+as the current operating-system user, not in an OS sandbox. Do not put API keys,
+tokens, authorization headers, or other credentials in a package or fixture.
+
+An MCP tool can opt into the artifact bridge with
+`_meta["io.github.samkuler/live-smith-artifacts"]` version 1. Audio inputs are
+opaque Session references in the model schema and read-only temporary files at
+call time. The one declared MIDI output is written to a host-created temporary
+path, parsed and bounded before immutable Session storage, and never imported
+into Live automatically. Artifact input and output permissions are approved
+independently after the MCP server itself.
+
+The committed fixtures under `test-fixtures/plugins/` exercise portable, Codex,
+and Claude package discovery. `src/plugins/compatibility-fixtures.test.ts` packs
+those exact files and verifies install, disabled defaults, MCP approval, Skill
+loading, a real stdio tool call, disable, and uninstall. Add format changes to
+these fixtures and tests rather than creating credential-bearing or executable
+samples. Keep every fixture file tracked and mode `0644`.
+
 ## Packaging
 
 ```sh
@@ -151,9 +187,10 @@ npm run verify:package
 ```
 
 `package` builds, packages, and verifies the `.ablx` against the current bundle.
-`verify:package` can check an existing package and rejects a stale bundle. Keep
-generated bundles and packages out of source control. Package notices are
-maintained in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+`verify:package` can check an existing package and rejects a stale bundle or an
+unsafe Plugin compatibility fixture. Keep generated bundles and packages out of
+source control. Package notices are maintained in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Development data
 
@@ -171,11 +208,15 @@ hard-code a production path. Without a host-provided directory, data falls back
 to process memory and does not survive a host restart.
 
 The data directory is private, not disposable build output. It contains saved
-Profiles, Session metadata and events, attachments, imported Skills, and model
-metadata. `live-smith-settings.json` contains Direct API keys as plain text;
+Profiles, Integration Connections, Session metadata and events, attachments,
+imported Skills, installed Plugin archives, private Plugin data, and model
+metadata. `live-smith-settings.json` contains Direct API and built-in Plugin
+connection keys as plain text;
 `oauth/credentials.json` contains private provider OAuth credentials.
-Audio-service connection keys also live in private settings. Audio-processing
-jobs and input/output assets are stored under `live-smith-audio/<sessionId>/`.
+Audio-processing jobs and input/output assets are stored under
+`live-smith-audio/<sessionId>/`. Immutable installed archives, their catalog,
+materialized runtime files, and mutable per-Plugin data live under
+`live-smith-plugins/`; do not edit or partially copy that directory.
 Processing tests use injected services and local audio fixtures; they do not
 upload user audio or consume generation credits or processing minutes.
 Real-service validation requires an explicitly configured account. Verify
@@ -215,7 +256,9 @@ Legacy `suno-browser/<serviceId>/` directories may contain private browser data;
 the current runtime leaves them untouched. Close any old managed browser window
 before manually cleaning up a known legacy directory. Never delete or migrate
 these directories automatically.
-Built-in Skills are bundled and do not create imported Skill files.
+Built-in Skills are bundled and do not create imported Skill files. Enabled
+Plugin Skills are read from their Plugin's immutable package and use
+`<plugin-id>:<skill-id>` identities; they do not become standalone User Skills.
 
 Do not commit, share, cloud-sync, or delete private development data without the
 owner's approval. Preserve it when removing a worktree or changing run locations.

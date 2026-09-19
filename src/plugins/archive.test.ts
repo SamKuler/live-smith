@@ -40,6 +40,11 @@ test("Plugin archive rejects unsafe paths and ambiguous package roots", async ()
     "one/plugin.json": strToU8(manifest),
     "two/plugin.json": strToU8(manifest),
   })), /single package root/u);
+  await assert.rejects(openPluginArchive(zipSync({
+    "plugin.json": strToU8(manifest),
+    [`${Array.from({ length: 17 }, (_, index) => `segment-${index}`).join("/")}/file.txt`]: strToU8("deep"),
+  })), (error: unknown) =>
+    error instanceof PluginArchiveError && error.code === "archive_limit");
 });
 
 test("Plugin archive rejects non-ZIP and packages without a supported manifest", async () => {

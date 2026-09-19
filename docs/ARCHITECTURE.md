@@ -47,10 +47,16 @@ src/
     request-audio-sources.ts
       Owns send-scoped audio SampleSource locators, verified staging, Live Project
       import, and partial import progress.
+    request-plugin-tools.ts
+      Discovers enabled installed Plugin MCP tools for one request, binds the
+      admitted package digest and permission generation, and mediates artifacts.
+    integration-connections.ts, built-in-plugin-runtime.ts
+      Resolve private Plugin-owned Connection snapshots and supply explicit host
+      networking primitives to built-in protocol factories.
     skill-context.ts
-      Resolves persistent and one-turn Skill activation from bundled definitions
-      and one immutable, hash-validated User Skill snapshot without changing
-      prompt bytes.
+      Resolves persistent and one-turn Skill activation from bundled definitions,
+      immutable User Skills, and enabled immutable Plugin packages without
+      changing prompt bytes.
     session-context.ts
       Selects scoped sessions and derives bounded conversation and recovery
       context from events.
@@ -92,8 +98,8 @@ src/
 
   audio-services/
     contracts.ts
-      Typed audio operations, named service connections, private remote locators, audio
-      job records, and immutable audio asset contracts.
+      Typed audio protocol operations, private remote locators, historical job
+      compatibility, and immutable audio asset contracts.
     lalal.ts, lalal-http.ts
       LALAL.AI Public API v1 upload, multistem submission, task checks and
       cancellation, bounded protocol decoding and credential-free downloads.
@@ -121,8 +127,27 @@ src/
     response-bytes.ts
       Shared bounded decoded-body reads with periodic cancellation yields and
       exact Content-Length checks only for unencoded responses.
-    capabilities.ts
-      Implemented operation availability consumed by settings and tool routing.
+
+  plugins/
+    contracts.ts, manifest.ts, archive.ts
+      Provider-neutral Plugin/package/tool contracts plus strict portable, Codex,
+      and Claude manifest and bounded ZIP decoding.
+    registry.ts
+      Combines admitted built-in and installed Plugin toolsets and routes exact
+      namespaced calls without a central operation switch.
+    integration-connections.ts
+      Schema-9 Plugin-owned Connection configuration, write-only secrets, public
+      views, and frozen schema-8 AudioService migration.
+    builtins/
+      Immutable provider Plugin definitions. Each definition owns its Connection
+      descriptor, complete `tools()/parse()` contract, model constraints, and
+      protocol factories.
+    mcp/
+      Bounded stdio and Streamable HTTP MCP configuration, lifecycle, tool
+      discovery, invocation, cancellation, and result validation.
+    artifacts.ts
+      Read-only audio staging and declared MIDI output validation; never grants a
+      Plugin direct Live mutation authority.
 
   skills/
     builtins.ts
@@ -130,6 +155,8 @@ src/
       projection.
     format.ts
       Strict UTF-8 `SKILL.md` parser and safe Skill ID/summary contracts.
+    plugin-package.ts
+      Loads direct namespaced Skills from enabled immutable Plugin packages.
 
   live/
     action-bindings.ts
@@ -258,6 +285,12 @@ src/
     skills.ts
       Private bounded Skill catalog with recoverable replacement/deletion and
       selected-definition integrity checks.
+    plugins.ts
+      Private immutable Plugin archives, approvals, materialized runtime trees,
+      separate mutable data directories, and recoverable catalog mutations.
+    midi-artifacts.ts
+      Immutable Session-owned Standard MIDI artifacts produced through the
+      Plugin artifact bridge.
 
   ui/
     chat-state.ts
@@ -269,7 +302,8 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus Profile/model settings, bridge lifecycle,
-      attachment, local Skill, composer input, and session/timeline factories.
+      attachment, local and Plugin Skill, Plugin manager, Connection, composer
+      input, and session/timeline factories.
       The composer-input factory owns prompt commands, completion, and keyboard
       semantics; Bootstrap owns final composer/status presentation and explicit
       dependency and operation-policy wiring.
@@ -644,33 +678,114 @@ The provider authorization, token fields, product endpoints, catalog ownership,
 and wire invariants are canonicalized in
 [Model Profiles and Connection Backends](MODEL_PROVIDERS.md#oauth-subscriptions).
 
+## Plugin boundary
+
+### Packages, compatibility, and storage
+
+A Plugin is an installed package and namespace, not an audio provider class or a
+Skill. `plugins/manifest.ts` accepts one portable Agent Plugins 1.0 root manifest,
+one Codex compatibility manifest, or one Claude compatibility manifest. A
+portable root identity takes precedence only when any compatibility overlay has
+the same identity and version. All declared component paths are relative,
+normalized, and contained in the package. ZIP import applies the shared bounded
+archive reader before manifest parsing and rejects traversal, duplicate paths,
+links, special files, excessive entry counts, and expanded-size overflow.
+
+| Package component | Portable | Codex compatible | Claude compatible | Live Smith behavior |
+| --- | --- | --- | --- | --- |
+| Identity | `plugin.json` | `.codex-plugin/plugin.json` | `.claude-plugin/plugin.json` | Installed namespace and immutable version metadata |
+| Skills | `skills/` | declared or `skills/` | declared or `skills/` | Direct `SKILL.md` entries become `<plugin-id>:<skill-id>` |
+| MCP | `mcp.json` | declared file, `.mcp.json`, or compatible inline form | declared file, `.mcp.json`, or compatible inline form | Bounded stdio or Streamable HTTP tools |
+| Commands, agents, hooks, output styles, apps, LSP and marketplace data | extension or package metadata | compatibility metadata | compatibility metadata | Reported in install review and kept inert |
+
+Installation stores the exact ZIP by digest in a private per-Plugin directory,
+creates a catalog record, and leaves the Plugin disabled with no MCP or artifact
+approval. Replacement is explicit, preserves the separate mutable Plugin data
+directory, disables the new package, and clears prior approvals. Runtime files
+are materialized from the verified immutable archive into a digest-specific
+directory; any mismatch is repaired from the archive rather than trusted.
+The product command requires a Plugin to be disabled and unreferenced by every
+Session Plugin Skill before removal.
+
+### MCP tools and authority
+
+Enabled installed Plugins are discovered per request. The request snapshot binds
+the package ID, digest, exact MCP server, exposed tool, server approval, and
+artifact approvals. Execution rechecks that admission inside the Plugin
+authorization fence. A changed, disabled, replaced, or unapproved package cannot
+reuse an older model-visible tool call.
+
+Local MCP commands use no shell, receive a minimal environment, resolve package
+and data placeholders only inside their owned roots, and run as the current
+operating-system user. Live Smith does not claim an OS sandbox. Remote MCP uses
+the proxy-aware Fetch boundary, rejects redirects, permits HTTPS or loopback
+HTTP only, and stays bound to its declared origin. Installation and inspection
+never start either transport. MCP schemas, names, results, stderr, message sizes,
+timeouts, and cancellation are bounded; package paths, private data paths, and
+raw process or network errors cannot enter model-visible results.
+
+Plugin tools cannot call the Live executor. An approved artifact-input contract
+replaces an opaque Session audio reference with one read-only temporary file for
+the duration of the call. An independently approved artifact-output contract
+supplies one host-owned temporary destination, accepts only a regular contained
+file, parses bounded Standard MIDI, and stores an immutable Session artifact.
+The model receives only its opaque artifact reference. A later
+`create_midi_clip_from_artifact` action still passes the ordinary schema, Edit
+Scope, Approval, preflight, cancellation, mutation queue, and drift checks.
+
+### Built-in Plugins and Integration Connections
+
+Built-in provider integrations are immutable Plugin definitions and do not
+consume installed-package quota. They expose the same request-level
+`PluginToolset` interface and registry routing as installed MCP packages, while
+their trusted host adapters remain explicit local factories. Every built-in
+definition owns its complete `tools()/parse()` contract, Connection descriptor,
+model constraints, and generation or processing factory; the registry does not
+infer tools from a provider switch or central capability table.
+
+An Integration Connection is a separately persisted user instance keyed by a
+Plugin ID, with public configuration and private write-only secrets. Connection
+state is not a Plugin, a Skill, or a model Profile. Current host-managed
+Connection descriptors belong to built-in provider Plugins; installed MCP
+packages do not receive Connection secrets from model arguments or ordinary
+browser state. The settings decoder migrates schema-8 `audioServices` records to
+schema-9 `integrationConnections` without rewriting on read. Existing audio job
+records retain historical provider, operation, and `serviceId` facts; new records
+also persist `pluginId`, `toolId`, and `toolVersion`, and legacy records derive
+that identity on read so saved assets and Resume remain valid.
+
 ## Skill boundary
 
 ### Definitions and presentation
 
-A Skill is one declarative UTF-8 `SKILL.md` definition from either the bundled
-read-only registry or the local User Skill catalog; it is not a general Codex
-or Claude Code Skill package. The parser accepts exactly two plain frontmatter
-scalars (`name` and `description`) followed by a non-empty Markdown body. It
-rejects malformed UTF-8, BOMs, unsafe controls, ambiguous YAML constructs, and
-files larger than 64 KiB. The User Skill catalog permits 32 definitions and 1
-MiB total; built-ins consume neither quota. Directories, symlinks, scripts,
-binaries, assets, nested references, plugins, MCP servers, executables, and
-caller-supplied paths are outside this contract.
+A Skill is one declarative UTF-8 `SKILL.md` definition from the bundled registry,
+the standalone User Skill catalog, or an enabled immutable Plugin package. The
+standalone parser requires exactly plain `name` and `description` frontmatter;
+the compatibility parser requires `description`, permits a matching or omitted
+`name`, and validates but does not interpret other plain-scalar fields. Both
+require a non-empty Markdown body and reject malformed UTF-8, BOMs, unsafe
+controls, ambiguous YAML constructs, and files larger than 64 KiB. The standalone
+User Skill catalog permits 32 definitions and 1 MiB total; built-ins and Plugin Skills consume
+neither quota. A standalone import is one file: directories, scripts, binaries,
+assets, nested references, Plugins, MCP servers, executables, and caller-supplied
+paths are outside that route.
 
 `skills/builtins.ts` contains the three canonical arrangement definitions and
-parses them through the same strict parser used for User Skills. Built-ins are
-available in every Session, start disabled, never create storage, and cannot be
-installed, replaced, or deleted. Application state merges both sources and
-projects the required `source: "built-in" | "user"` discriminator without a
-body, hash, or path.
+merges every available source. Built-ins are available in every Session, start
+disabled, never create storage, and cannot be installed, replaced, or deleted.
+`skills/plugin-package.ts` reads only direct `<skills-directory>/<id>/SKILL.md`
+entries, requires a safe matching local ID, and exposes them as
+`<plugin-id>:<skill-id>`. Nested files remain inert package resources. Application
+state projects `source: "built-in" | "user" | "plugin"` plus a Plugin ID when
+applicable, without a body, hash, archive byte, or path.
 
 For Skills, `ChatDialogState` and `ChatBridgeState` expose only summaries and
 active IDs. The composed dialog document separately embeds a script-safe snapshot of
 canonical built-in definitions for its local read-only viewer; those bodies are
 not part of generic state or HTTP/SSE state payloads. Viewing follows the
-available-source discriminator, does not change activation, and never reads
-User Skill bodies. The viewer shares the conversation's sanitized Markdown
+available-source discriminator, does not change activation, and reads only the
+bundled built-in bodies. User and Plugin Skill bodies never enter generic state.
+The viewer shares the conversation's sanitized Markdown
 renderer; raw HTML and images remain inert text, and links are limited to HTTP,
 HTTPS, and mailto destinations.
 
@@ -684,6 +799,11 @@ validation. Stable catalog listing reads summaries and safe file metadata only;
 only selected definitions are opened, bounded, hash-checked, and parsed. Catalog
 capabilities are scoped to an active opaque storage transaction, and detached
 operations are drained before the transaction releases.
+Enabled Plugin Skill definitions are instead read and hash-verified from the
+immutable archive under the same storage transaction that snapshots availability.
+Disabling a Plugin removes those Skills from new request admission. Product-level
+Plugin deletion requires the Plugin to be disabled and scans every Session for
+its namespaced Skill IDs before deleting the archive and Plugin data.
 
 `AgentSession.activeSkillIds` is an optional, sorted, unique list of at most four
 safe IDs. Activation validates the Session and the combined available IDs, then
@@ -716,14 +836,17 @@ instructions, the hard Session Edit Scope block, the bounded JSON-encoded Custom
 Instructions block when present, the lower-priority Skill boundary and rendered
 Skill blocks, then the Live action system prompt. Empty optional context uses the
 canonical base system instructions without extra wrappers.
-Skill IDs/descriptions, their `built-in` or `user` source, and active IDs may
-enter chat state; bodies, hashes, frontmatter source, and paths never enter chat
-state, Session events, logs, or errors.
+Skill IDs/descriptions, their `built-in`, `user`, or `plugin` source, optional
+Plugin ID, and active IDs may enter chat state; bodies, hashes, frontmatter
+source, archive bytes, and paths never enter chat state, Session events, logs,
+or errors.
 
-Skills are declarative workflow guidance. They cannot install or execute
-scripts, binaries, MCP servers, plugins, nested resources, or arbitrary paths;
-change provider settings; add tools; or add Live actions. A Skill never expands
-the built-in action schema or tool set. Every action remains subject to
+Skills are declarative workflow guidance. Activating one cannot install or
+execute scripts, binaries, MCP servers, Plugins, nested resources, or arbitrary
+paths; change Connection settings; grant an MCP or artifact permission; add
+tools; or add Live actions. An enabled Plugin may expose separately approved MCP
+tools, but its Skill text grants no authority to them. A Skill never expands the
+built-in action schema or tool set. Every action remains subject to
 observation, schema validation, Approval policy, preflight, cancellation,
 process-wide mutation serialization, and state-drift revalidation. Skill
 Markdown has lower priority than system and safety instructions and cannot
@@ -893,15 +1016,17 @@ for imported files, so a failed later step may leave an unused project copy.
 
 ### External audio processing
 
-`agent/audio-tools.ts` describes and validates the processing tools exposed to
-the chat model. `app/request-audio-tools.ts` binds input references to the current
+`plugins/builtins/provider-tools.ts` supplies shared schema builders, while every
+built-in Plugin directly owns its resulting `tools()/parse()` contract and
+protocol factory. `agent/audio-tool-parser.ts` contains only shared strict syntax
+parsing. `app/request-audio-tools.ts` binds input references to the current
 request's attachments, same-Session saved results, or an isolated Arrangement
-Audio Clip range. `app/audio-processing.ts` owns the asynchronous lifecycle and
-calls the configured adapter through the proxy-aware Fetch or WebSocket
-boundary.
+Audio Clip range and exposes each Provider's namespaced Plugin toolset.
+`app/audio-processing.ts` owns the asynchronous lifecycle and calls the selected
+Plugin factory through the proxy-aware Fetch or WebSocket boundary.
 `app/audio-generation.ts` owns generation responses and saved-result recovery;
-`audio-service-connections.ts` resolves the exact named connection and credential
-owner. Tool admission captures immutable private connection snapshots; public
+`app/integration-connections.ts` resolves the exact named Plugin Connection and
+credential owner. Tool admission captures immutable private connection snapshots; public
 tool choices are derived from those same snapshots. Initial operations reject
 changes to the selected connection before uploading input or submitting paid
 work, and adapters retain the admitted connection rather than reloading a new
@@ -1108,9 +1233,10 @@ are bounded to 20 per dialog, and are cleared on close; they cannot authenticate
 chat, settings or mutation routes. The dialog's control token never leaves with
 the export. Native WebView download navigation is not used. The
 separate online preview embeds only the fixed Suno player origin on user action,
-without routing or persisting its media. The top-level `audioServices` view is the sole browser
-projection of audio settings; the private settings collection is omitted.
-Saved service keys are omitted from full-state and
+without routing or persisting its media. The top-level `integrationConnections`
+view is the sole browser projection of Connection settings; it includes only
+configuration and configured-secret names, while the private secret values and
+settings collection are omitted. Saved keys are omitted from full-state and
 incremental UI projections. Stop or window closure ends local processing and
 attempts bounded remote cancellation where available; retained remote tasks may
 be resumed explicitly, without replaying a stopped Live plan. Session deletion
@@ -1246,8 +1372,9 @@ retryable instead of leaving an unreachable conversation log.
 
 ### Settings schema compatibility
 
-Settings schema version 8 combines connection Profiles, per-model configuration
-collections, the strict `defaultFollowUpBehavior` value `queue | steer`, the
+Settings schema version 9 combines model connection Profiles, per-model
+configuration collections, Plugin-owned Integration Connections, the strict
+`defaultFollowUpBehavior` value `queue | steer`, the
 context-usage visibility flag, the validated `none | system | manual` network
 proxy selection, bounded global Custom Instructions, and an independent canonical nonnegative
 decimal-string revision for each global setting. It validates legacy
@@ -1266,12 +1393,15 @@ the default entry in a version-5 model configuration list. Version 5 migrates to
 version 6 by preserving the follow-up behavior revision and enabling context
 usage at its initial revision. Version 6 normalizes legacy Codex subscription
 connections into provider-scoped OpenAI OAuth connections in version 7. Version
-7 adds the explicit No proxy default and its initial revision in version 8. A v3 containing both
+7 adds the explicit No proxy default and its initial revision in version 8.
+Version 8 migrates the historical `audioServices` collection and its secret,
+model, callback, enablement, ID, name, and revision facts to Plugin-keyed
+`integrationConnections` in version 9. A v3 containing both
 follow-up fields must contain only flat Profiles and preserves its
 behavior/revision; a v3 containing neither must contain only nested Profiles
 and receives Queue at revision `"0"`. Partial fields, mixed Profile shapes, and
 unknown fields fail closed. Reads never rewrite the file; the next authorized
-settings mutation persists version 8. A future version or incomplete adjacent
+settings mutation persists version 9. A future version or incomplete adjacent
 migration chain is reported as settings corruption.
 
 ### Capability projections

@@ -8,6 +8,7 @@ import {
   assertPackagedBundleContainsThirdPartyNotices,
   assertPackagedBundleMatches,
 } from "../src/release/package-verification.js";
+import { verifyTrackedPluginFixtures } from "./plugin-fixture-verification.js";
 
 interface ExtensionManifest {
   name: string;
@@ -41,8 +42,9 @@ if (extraction.status !== 0 || !extraction.stdout?.length) {
 
 assertPackagedBundleMatches(currentBundle, extraction.stdout);
 assertPackagedBundleContainsThirdPartyNotices(extraction.stdout);
+await verifyTrackedPluginFixtures(projectDirectory);
 console.log(
-  `Verified ${path.basename(archivePath)} contains the current ${manifest.entry}.`,
+  `Verified ${path.basename(archivePath)} contains the current ${manifest.entry} and tracked Plugin fixtures.`,
 );
 
 function packageSlug(name: string): string {

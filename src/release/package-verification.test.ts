@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertPackagedBundleContainsThirdPartyNotices,
   assertPackagedBundleMatches,
+  assertPluginFixtureReleaseSafety,
 } from "./package-verification.js";
 
 test("package verification accepts the exact current bundle", () => {
@@ -99,4 +100,41 @@ test("bundled notices retain the complete Markdown dependency licenses", async (
       `Bundled notices must include the complete ${packageName} license.`,
     );
   }
+});
+
+test("Plugin fixture release safety rejects credentials, executable bits, untracked data, and manifest escapes", () => {
+  const manifest = Buffer.from(JSON.stringify({
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "fixture.safe",
+    version: "1.0.0",
+  }));
+  const valid = [{ path: "plugin.json", bytes: manifest, mode: 0o100644, tracked: true }];
+  assert.doesNotThrow(() => assertPluginFixtureReleaseSafety(valid));
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    ...valid,
+    { path: "secret.txt", bytes: Buffer.from("Authorization: Bearer private-value"), mode: 0o100644, tracked: true },
+  ]), /credential-shaped/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    ...valid,
+    { path: "config.json", bytes: Buffer.from('{"apiKey":"fixture-secret-value"}'), mode: 0o100644, tracked: true },
+  ]), /credential-shaped/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    { ...valid[0]!, mode: 0o100755 },
+  ]), /executable/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    { ...valid[0]!, tracked: false },
+  ]), /untracked/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    ...valid,
+    { path: "payload.bin", bytes: Uint8Array.from([0xff]), mode: 0o100644, tracked: true },
+  ]), /non-text/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([
+    { path: "../plugin.json", bytes: manifest, mode: 0o100644, tracked: true },
+  ]), /path/u);
+  assert.throws(() => assertPluginFixtureReleaseSafety([{
+    path: ".codex-plugin/plugin.json",
+    bytes: Buffer.from(JSON.stringify({ name: "fixture.escape", skills: "../skills" })),
+    mode: 0o100644,
+    tracked: true,
+  }]), /path/u);
 });

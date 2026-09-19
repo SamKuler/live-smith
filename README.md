@@ -61,6 +61,11 @@ names, and raw provider/SDK output stay in their original language.
   before enabling it. **Inspector → Context → Custom Instructions** stores
   standing creative, workflow, and tool preferences across Sessions; the current
   request can choose a different workflow at any time.
+- **Install extension packages.** **Inspector → App → Plugins** accepts portable
+  Agent Plugin ZIPs and compatible Codex or Claude Code packages. Installation
+  runs nothing: enable the Plugin, review each MCP server, and grant artifact
+  input or output separately. Platform-only commands, hooks, agents, and apps are
+  reported as unsupported rather than executed.
 - **Bring reference material.** Paste or drag images, documents, or audio into
   the composer. Input support depends on the model and connection.
 - **Keep work moving.** Queue a follow-up for the next turn, steer the response
@@ -73,7 +78,7 @@ names, and raw provider/SDK output stay in their original language.
 - **Search when needed.** Compatible Direct API connections can enable hosted
   Web Search, with search activity and citations visible in the conversation.
 - **Generate music and sound effects.** Add an ElevenLabs connection under
-  **Inspector → App → Audio tools**, then describe the music or sound you want.
+  **Inspector → App → Connections**, then describe the music or sound you want.
   Multiple named audio connections, including separate accounts at the same
   provider, can be enabled together.
 - **Generate songs or instrumentals with Mureka.** Add a **Mureka** connection
@@ -149,7 +154,7 @@ and uses that provider's allowance, separately from chat-model usage. Generation
 sends the requested description to the selected service; separation uploads the
 chosen audio and consumes LALAL.AI processing minutes for each requested stem,
 also returning the residual mix. Saved results can be previewed and imported
-through ordinary scoped Live edits. See [audio tools](docs/MODEL_PROVIDERS.md#external-audio-tools)
+through ordinary scoped Live edits. See [external audio tools](docs/MODEL_PROVIDERS.md#external-audio-tools)
 for supported inputs, limits, and recovery.
 
 Composer commands are recognized only at the start of a message:
@@ -358,6 +363,16 @@ opens the full instructions without enabling them. You can import a local
 per Session, or use `$skill-id` for one request.
 Skills do not grant additional permissions or tools.
 
+**Plugins** are installed packages that can contribute namespaced Skills and MCP
+tools. A Plugin starts disabled. Local MCP servers require explicit approval and
+run as your operating-system user; Live Smith does not provide an OS sandbox.
+Remote MCP servers also require approval. A Plugin tool cannot edit Live directly:
+declared audio input is staged as a temporary read-only file, declared MIDI output
+is validated and saved to the Session, and importing it remains a separate scoped
+and approved Live action. Removing a Plugin does not remove already saved Session
+artifacts. A Session must stop referencing a Plugin Skill before that Plugin can
+be removed.
+
 **Attachments** support PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 Office documents are read as text. Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
@@ -400,7 +415,8 @@ with pending work.
 
 ## Privacy
 
-Profiles, Sessions, attachments, and imported Skills are stored locally.
+Profiles, Integration Connections, Sessions, attachments, imported Skills, and
+installed Plugin packages and private Plugin data are stored locally.
 Prompts, relevant Live context, selected Skill guidance, supported attachment
 content, any Arrangement audio range read by the agent, and any saved Session
 audio the user asks an audio-capable model to hear are sent to the model provider
@@ -411,6 +427,13 @@ private local credential file stores OAuth credentials under exact Profile and
 provider identities. Saving a connection keeps only the provider selected by
 that Profile; Direct API and Profile deletion clear that Profile's OAuth
 credentials. Do not commit, share, or cloud-sync either storage location.
+
+An approved Plugin MCP server receives the arguments declared by its tool. A
+local server can access anything available to the current operating-system user,
+subject to that program's own behavior; a remote server receives network traffic
+at its declared endpoint. Review third-party Plugin code and permissions before
+enabling it. Plugin tool results are treated as untrusted data and cannot grant
+Live permissions or bypass confirmation.
 
 The selected proxy mode and credential-free Manual proxy URL are stored in the
 same private local settings file. Proxy usernames and passwords are not accepted

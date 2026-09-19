@@ -1,0 +1,8 @@
+{
+  "name": "fixture.codex",
+  "version": "1.0.0",
+  "description": "Codex-compatible Skill and MCP fixture",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "commands": "./commands"
+}

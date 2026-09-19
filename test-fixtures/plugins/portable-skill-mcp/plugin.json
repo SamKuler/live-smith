@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fixture.portable",
+  "version": "1.0.0",
+  "description": "Portable Skill and MCP compatibility fixture"
+}

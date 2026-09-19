@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { TextDecoder } from "node:util";
+
+import { parsePluginPackageManifest } from "../plugins/manifest.js";
 
 const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "Third-Party Notices for Live Smith",
@@ -46,6 +49,24 @@ const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   'THE SOFTWARE IS PROVIDED "AS IS"',
 ] as const;
 
+const FORBIDDEN_FIXTURE_CREDENTIAL_PATTERNS = [
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u,
+  /\bAKIA[0-9A-Z]{16}\b/u,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/u,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/u,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/u,
+  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s"']+/iu,
+  /["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/iu,
+  /\b__(?:client|session)=[^;\s]{16,}/iu,
+] as const;
+
+export interface PluginFixtureReleaseFile {
+  path: string;
+  bytes: Uint8Array;
+  mode: number;
+  tracked: boolean;
+}
+
 export function assertPackagedBundleMatches(
   currentBundle: Uint8Array,
   packagedBundle: Uint8Array,
@@ -75,6 +96,33 @@ export function assertPackagedBundleContainsThirdPartyNotices(
   throw new Error(
     "Packaged extension bundle is missing the required third-party notice. Rebuild before release.",
   );
+}
+
+export function assertPluginFixtureReleaseSafety(
+  files: readonly PluginFixtureReleaseFile[],
+): void {
+  if (!files.length) throw new Error("Plugin fixture package is empty.");
+  for (const file of files) {
+    if (!file.tracked) {
+      throw new Error(`Plugin fixture contains untracked package data: ${file.path}.`);
+    }
+    if ((file.mode & 0o111) !== 0) {
+      throw new Error(`Plugin fixture contains an executable file: ${file.path}.`);
+    }
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
+    } catch {
+      throw new Error(`Plugin fixture contains non-text package data: ${file.path}.`);
+    }
+    if (FORBIDDEN_FIXTURE_CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text))) {
+      throw new Error(`Plugin fixture contains credential-shaped data: ${file.path}.`);
+    }
+  }
+  parsePluginPackageManifest(files.map(({ path: filePath, bytes }) => ({
+    path: filePath,
+    bytes,
+  })));
 }
 
 function sha256(value: Uint8Array): string {

@@ -6,6 +6,7 @@ import { parsePluginPackageManifest, type PluginPackageFile } from "./manifest.j
 import type { PluginManifest } from "./contracts.js";
 
 export const MAX_PLUGIN_ARCHIVE_BYTES = MAX_DOCUMENT_ATTACHMENT_BYTES;
+export const MAX_PLUGIN_PATH_SEGMENTS = 16;
 
 export type PluginArchiveErrorCode = "invalid_archive" | "archive_limit";
 
@@ -31,6 +32,9 @@ export async function openPluginArchive(bytes: Uint8Array, signal?: AbortSignal)
     for (const [path, value] of retained) {
       const relative = root ? path.slice(root.length + 1) : path;
       if (!relative || files.has(relative)) throw invalid("Plugin archive contains duplicate package paths.");
+      if (relative.split("/").length > MAX_PLUGIN_PATH_SEGMENTS) {
+        throw new PluginArchiveError("archive_limit", "Plugin archive path exceeds the safe depth limit.");
+      }
       files.set(relative, new Uint8Array(value));
     }
     const ordered = new Map([...files].sort(([left], [right]) => left.localeCompare(right)));
