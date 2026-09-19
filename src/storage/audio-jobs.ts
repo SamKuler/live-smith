@@ -18,6 +18,7 @@ import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import { copyAudioFileSafely } from "../live/audio-attachment-source.js";
 import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
 import { cloneJsonValue } from "../model/json-clone.js";
+import { builtInAudioToolIdentity } from "../plugins/builtins/index.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
@@ -45,7 +46,7 @@ type JobConfiguration = Pick<AudioJob,
   "provider" | "serviceId" | "operation" | "modelId" | "title" | "connectionFingerprint" | "stems"
 >;
 const jobFields = [
-  "id", "sessionId", ...jobConfigurationFields,
+  "id", "sessionId", "pluginId", "toolId", "toolVersion", ...jobConfigurationFields,
   "status", "createdAt", "updatedAt", "sourceAssetId", "remoteSourceId",
   "remoteTaskId", "expectedOutputRoles", "expectedOutputs", "remoteOutputs", "remoteTaskTerminal", "failedOutputKeys",
   "outputAssets", "message",
@@ -94,7 +95,9 @@ export async function createAudioJob(
     const directory = await bindAudioDirectory(storageDirectory, sessionId, true);
     const now = new Date().toISOString();
     const job: AudioJob = {
-      ...config, id: createStorageId("audiojob"), sessionId,
+      ...config,
+      ...builtInAudioToolIdentity(config.provider, config.operation),
+      id: createStorageId("audiojob"), sessionId,
       status: config.operation === "retrieve_music" ? "running" : "preparing", createdAt: now, updatedAt: now,
       outputAssets: [],
     };
@@ -178,12 +181,34 @@ async function readJob(directory: AudioDirectoryBinding, sessionId: string, jobI
   const saved = await readAudioJson(directory, `${jobId}.job.json`, MAX_AUDIO_JOB_METADATA_BYTES);
   // Only historical LALAL separation records predate service identity. Reading
   // projects their legacy owner without changing the persisted record.
-  const job = audioRecordHasOnly(saved, jobFields) && saved.provider === "lalal" &&
+  const serviceNormalized = audioRecordHasOnly(saved, jobFields) && saved.provider === "lalal" &&
     saved.operation === "separate_stems" && !Object.hasOwn(saved, "serviceId")
     ? { ...saved, serviceId: LEGACY_AUDIO_SERVICE_ID } : saved;
+  const job = audioRecordHasOnly(serviceNormalized, jobFields) &&
+      !Object.hasOwn(serviceNormalized, "pluginId") &&
+      !Object.hasOwn(serviceNormalized, "toolId") &&
+      !Object.hasOwn(serviceNormalized, "toolVersion") &&
+      typeof serviceNormalized.provider === "string" &&
+      typeof serviceNormalized.operation === "string"
+    ? addLegacyPluginToolIdentity(serviceNormalized)
+    : serviceNormalized;
   if (!isAudioJob(job) || job.id !== jobId || job.sessionId !== sessionId) throw new AudioStorageError();
   await verifyJobAssets(directory, job);
   return job;
+}
+
+function addLegacyPluginToolIdentity(value: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return {
+      ...value,
+      ...builtInAudioToolIdentity(
+        value.provider as AudioJob["provider"],
+        value.operation as AudioJob["operation"],
+      ),
+    };
+  } catch {
+    return value;
+  }
 }
 
 async function verifyJobAssets(directory: AudioDirectoryBinding, job: AudioJob): Promise<void> {
@@ -200,6 +225,7 @@ async function verifyJobAssets(directory: AudioDirectoryBinding, job: AudioJob):
 function isAudioJob(value: unknown): value is AudioJob {
   if (!audioRecordHasOnly(value, jobFields) || !isJobConfiguration(value)) return false;
   return isSafeStorageId(value.id) && isSafeStorageId(value.sessionId) &&
+    validPluginToolIdentity(value) &&
     jobStatuses.includes(value.status as AudioJob["status"]) &&
     validDate(value.createdAt) && validDate(value.updatedAt) &&
     value.updatedAt >= value.createdAt &&
@@ -225,6 +251,18 @@ function isAudioJob(value: unknown): value is AudioJob {
       asset.sessionId === value.sessionId && asset.jobId === value.id &&
       asset.role !== "source" && audioJobOwnsAssetRole(value, asset.role)) &&
     new Set(value.outputAssets.map((asset: AudioAsset) => asset.role)).size === value.outputAssets.length;
+}
+
+function validPluginToolIdentity(value: Record<string, unknown> & JobConfiguration): boolean {
+  if (typeof value.pluginId !== "string" || typeof value.toolId !== "string" ||
+      typeof value.toolVersion !== "string") return false;
+  try {
+    const expected = builtInAudioToolIdentity(value.provider, value.operation);
+    return value.pluginId === expected.pluginId && value.toolId === expected.toolId &&
+      value.toolVersion === expected.toolVersion;
+  } catch {
+    return false;
+  }
 }
 
 function isJobConfiguration(value: Record<string, unknown>): value is Record<string, unknown> & JobConfiguration {

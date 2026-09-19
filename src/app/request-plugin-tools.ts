@@ -1,4 +1,4 @@
-import type { AgentToolset } from "../agent/external-tool-registry.js";
+import { PluginRegistry, type PluginToolset } from "../plugins/registry.js";
 import type { AgentExternalToolResult } from "../agent/loop.js";
 import type { ModelToolCall } from "../model/contracts.js";
 import type { PluginPackage, PluginToolDefinition, PluginToolIssue } from "../plugins/contracts.js";
@@ -6,7 +6,8 @@ import { createMcpPluginPackage } from "../plugins/mcp/package.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { listInstalledPlugins, preparePluginRuntime } from "../storage/plugins.js";
 
-export interface RequestPluginTools extends AgentToolset {
+export interface RequestPluginTools extends PluginToolset {
+  toolsets: readonly PluginToolset[];
   issues: readonly PluginToolIssue[];
   close(): Promise<void>;
 }
@@ -18,8 +19,8 @@ export async function createRequestPluginTools(input: {
   fetchImpl?: typeof fetch;
 }): Promise<RequestPluginTools> {
   const packages: PluginPackage[] = [];
+  const toolsets: PluginToolset[] = [];
   const issues: PluginToolIssue[] = [];
-  const routes = new Map<string, { definition: PluginToolDefinition; packageIndex: number }>();
   if (input.storageDirectory) {
     const installed = await listInstalledPlugins(input.storageDirectory);
     for (const metadata of installed.filter((plugin) => plugin.enabled &&
@@ -32,6 +33,7 @@ export async function createRequestPluginTools(input: {
         const packageIndex = packages.push(plugin) - 1;
         const discovery = await plugin.tools({ sessionId: input.sessionId, signal: input.signal });
         issues.push(...discovery.issues);
+        const routes = new Map<string, PluginToolDefinition>();
         for (const definition of discovery.tools) {
           const callName = definition.tool.function.name;
           if (routes.has(callName)) {
@@ -43,8 +45,19 @@ export async function createRequestPluginTools(input: {
             });
             continue;
           }
-          routes.set(callName, { definition, packageIndex });
+          routes.set(callName, definition);
         }
+        toolsets.push({
+          pluginId: metadata.id,
+          tools: () => [...routes.values()].map((definition) => definition.tool),
+          callTool: (call) => callInstalledPluginTool(
+            packages[packageIndex]!,
+            routes,
+            call,
+            input,
+          ),
+          close: () => packages[packageIndex]!.close(),
+        });
       } catch {
         issues.push({
           pluginId: metadata.id,
@@ -54,44 +67,54 @@ export async function createRequestPluginTools(input: {
       }
     }
   }
+  const registry = new PluginRegistry(toolsets);
   return {
+    pluginId: "installed.mcp",
+    toolsets,
     issues,
-    tools: () => [...routes.values()].map(({ definition }) => definition.tool),
-    async callTool(call: ModelToolCall): Promise<AgentExternalToolResult> {
-      const route = routes.get(call.name);
-      if (!route) return { content: "Plugin tool is unavailable.", failed: true, invalidArguments: true };
-      let argumentsValue: unknown;
-      try {
-        argumentsValue = JSON.parse(call.arguments || "{}");
-      } catch {
-        return { content: "Plugin tool arguments are not valid JSON.", failed: true, invalidArguments: true };
-      }
-      try {
-        const result = await packages[route.packageIndex]!.callTool(
-          route.definition.serverId,
-          route.definition.name,
-          argumentsValue,
-          { sessionId: input.sessionId, signal: input.signal },
-        );
-        return {
-          content: JSON.stringify({
-            notice: "Untrusted Plugin tool result.",
-            content: result.content,
-            ...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent }),
-          }),
-          ...(result.isError ? { failed: true } : {}),
-        };
-      } catch {
-        throwIfAborted(input.signal);
-        return {
-          content: "Plugin tool could not complete. Check the Plugin and MCP server status before retrying.",
-          failed: true,
-          stop: true,
-        };
-      }
-    },
+    tools: () => registry.tools(),
+    callTool: (call) => registry.callTool(call),
     async close() {
       await Promise.allSettled(packages.map((plugin) => plugin.close()));
     },
   };
+}
+
+async function callInstalledPluginTool(
+  plugin: PluginPackage,
+  routes: ReadonlyMap<string, PluginToolDefinition>,
+  call: ModelToolCall,
+  input: { sessionId: string; signal: AbortSignal },
+): Promise<AgentExternalToolResult> {
+  const route = routes.get(call.name);
+  if (!route) return { content: "Plugin tool is unavailable.", failed: true, invalidArguments: true };
+  let argumentsValue: unknown;
+  try {
+    argumentsValue = JSON.parse(call.arguments || "{}");
+  } catch {
+    return { content: "Plugin tool arguments are not valid JSON.", failed: true, invalidArguments: true };
+  }
+  try {
+    const result = await plugin.callTool(
+      route.serverId,
+      route.name,
+      argumentsValue,
+      { sessionId: input.sessionId, signal: input.signal },
+    );
+    return {
+      content: JSON.stringify({
+        notice: "Untrusted Plugin tool result.",
+        content: result.content,
+        ...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent }),
+      }),
+      ...(result.isError ? { failed: true } : {}),
+    };
+  } catch {
+    throwIfAborted(input.signal);
+    return {
+      content: "Plugin tool could not complete. Check the Plugin and MCP server status before retrying.",
+      failed: true,
+      stop: true,
+    };
+  }
 }

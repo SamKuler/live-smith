@@ -3,10 +3,13 @@ import test from "node:test";
 import { uiMessage } from "../i18n/ui-message.js";
 import { audioState, broadcast, job } from "./chat-dialog.audio-test-helpers.js";
 import { createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js";
-import { audioProcessingTools } from "../agent/audio-tools.js";
 import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 import type { AudioProvider } from "../audio-services/contracts.js";
 import { uiCatalogs } from "./i18n/messages.js";
+import {
+  builtInAudioLocalToolName,
+  createBuiltInAudioToolsets,
+} from "../plugins/builtins/audio-toolsets.js";
 
 test("serializable audio progress translates on locale changes and structural replay", async () => {
   const state = audioState(); state.settings.uiLanguage = "zh-CN";
@@ -58,10 +61,16 @@ test("nested stem labels translate without interpreting diagnostic parameters", 
 
 test("every registered audio tool has a translated title in the real activity DOM", async () => {
   const services = Object.keys(AUDIO_SERVICE_CAPABILITIES).map(provider => ({ id: "test-" + provider, name: provider, provider: provider as AudioProvider }));
-  for (const tool of audioProcessingTools(services, true)) {
+  const tools = createBuiltInAudioToolsets({
+    services,
+    includeModelAudioInput: true,
+    execute: async () => ({ content: "unused" }),
+  }).flatMap((toolset) => toolset.tools());
+  for (const tool of tools) {
     const state = stateFixture(); state.settings.uiLanguage = "zh-CN";
     const name = tool.function.name;
-    const source = name.split("_").join(" ").replace(/^./, first => first.toUpperCase());
+    const localName = builtInAudioLocalToolName(name) ?? name;
+    const source = localName.split("_").join(" ").replace(/^./, first => first.toUpperCase());
     const translated = uiCatalogs["zh-CN"][source];
     assert.ok(translated, name);
     state.events = [{ id: "event-audio-call", name, kind: "tool_call", content: "{}", createdAt: "2026-09-15T13:00:00.000Z" },

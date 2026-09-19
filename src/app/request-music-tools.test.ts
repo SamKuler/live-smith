@@ -8,6 +8,8 @@ import { saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import type { AudioGenerationRequest } from "../audio-services/contracts.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
 
 const clipId = "11111111-1111-4111-8111-111111111111";
 const token = ["{}", "fixture-client", "fixture-signature"].map((part) => Buffer.from(part).toString("base64url")).join(".");
@@ -42,7 +44,11 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
       },
     },
   });
-  const execute = (name: string, args: unknown) => tools.execute({ id: "call", name, arguments: JSON.stringify(args) });
+  const execute = (name: string, args: unknown) => tools.execute({
+    id: "call",
+    name: builtInAudioToolName(sunoWebsitePlugin, name),
+    arguments: JSON.stringify(args),
+  });
   return { directory, tools, calls, execute, mode };
 }
 

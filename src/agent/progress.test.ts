@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { progressLabelForActionPlan, progressLabelForToolCall } from "./progress.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { murekaPlugin } from "../plugins/builtins/mureka.js";
 
 test("progressLabelForToolCall names inspect targets", () => {
   assert.equal(
@@ -100,5 +102,16 @@ test("progress labels identify object-aware inspections", () => {
       arguments: "{}",
     }),
     "Reviewing unfinished Live work",
+  );
+});
+
+test("provider-qualified Plugin tools retain human progress labels", () => {
+  assert.equal(
+    progressLabelForToolCall({
+      id: "mureka",
+      name: builtInAudioToolName(murekaPlugin, "generate_music"),
+      arguments: "{}",
+    }),
+    "Generating music",
   );
 });

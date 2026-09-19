@@ -7,6 +7,8 @@ import { mp3Bytes } from "../storage/audio-storage-test-helpers.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioRecoveryHarness } from "./audio-recovery-test-helpers.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { builtInAudioPlugin } from "../plugins/builtins/index.js";
 
 for (const provider of ["sunoapi", "elevenlabs"] as const) {
   test(`${provider} uses the advertised Unicode character boundary through chat, app and adapter`, async (t) => {
@@ -35,17 +37,21 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
       onProgress() {}, onAssets() {}, processing: { generationAdapter: adapter },
     });
     const args = { serviceId: h.connection.id, prompt, instrumental: true };
-    const schema = tools.tools.find((tool) => tool.function.name === "generate_music")!.function.parameters!;
+    const toolName = builtInAudioToolName(
+      builtInAudioPlugin(h.connection.provider),
+      "generate_music",
+    );
+    const schema = tools.tools.find((tool) => tool.function.name === toolName)!.function.parameters!;
     const branches = schema.oneOf as Array<{ properties: { prompt: { maxLength: number } } }>;
     assert.equal(Array.from(prompt).length, branches[0]!.properties.prompt.maxLength);
-    const result = await tools.execute({ id: "generate", name: "generate_music", arguments: JSON.stringify(args) });
+    const result = await tools.execute({ id: "generate", name: toolName, arguments: JSON.stringify(args) });
     assert.equal(result.failed, undefined);
     assert.equal(JSON.parse(result.content).status, "completed");
     assert.equal(posts.length, 1);
     assert.equal(posts[0]!.prompt, prompt);
 
     const tooLong = { ...args, prompt: prompt + "𝄞" };
-    const rejected = await tools.execute({ id: "too-long", name: "generate_music", arguments: JSON.stringify(tooLong) });
+    const rejected = await tools.execute({ id: "too-long", name: toolName, arguments: JSON.stringify(tooLong) });
     assert.equal(rejected.invalidArguments, true);
     assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", ...tooLong }, [h.connection]));
     const request = { operation: "generate_music" as const, prompt: tooLong.prompt, instrumental: true };

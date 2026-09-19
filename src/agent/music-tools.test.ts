@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { audioProcessingTools, parseAudioToolRequest, validateAudioServiceRequest } from "./audio-tools.js";
+import { parseAudioToolRequest, validateAudioServiceRequest } from "./audio-tools.js";
+import type { AudioServiceChoice } from "../audio-services/capabilities.js";
+import {
+  builtInAudioLocalToolName,
+  createBuiltInAudioToolsets,
+} from "../plugins/builtins/audio-toolsets.js";
 
 const service = { id: "website", name: "Personal Suno", provider: "suno" as const };
 const clipId = "11111111-1111-4111-8111-111111111111";
 const parse = (name: string, value: unknown) => parseAudioToolRequest(name, JSON.stringify(value));
+const pluginTools = (services: readonly AudioServiceChoice[]) =>
+  createBuiltInAudioToolsets({
+    services,
+    includeModelAudioInput: false,
+    execute: async () => ({ content: "unused" }),
+  }).flatMap((toolset) => toolset.tools());
 
 test("custom music options are bounded and scoped to eligible connections", () => {
   const raw = { serviceId: service.id, prompt: "我的歌词", instrumental: false,
@@ -64,10 +75,14 @@ test("music browsing and editing have strict action-specific fields", () => {
 });
 
 test("advanced tools are absent from other providers and contain no generic HTTP escape", () => {
-  const tools = audioProcessingTools([service]);
-  assert.deepEqual(tools.map((tool) => tool.function.name), ["generate_music", "inspect_music_service", "extend_music", "get_whole_song", "retrieve_music", "resume_audio_job", "list_audio_jobs"]);
-  const other = audioProcessingTools([{ ...service, provider: "elevenlabs" }]);
-  assert.ok(!other.some((tool) => ["inspect_music_service", "extend_music", "get_whole_song"].includes(tool.function.name)));
+  const tools = pluginTools([service]);
+  assert.deepEqual(tools.map((tool) => builtInAudioLocalToolName(tool.function.name)), [
+    "resume_audio_job", "list_audio_jobs", "generate_music", "inspect_music_service",
+    "extend_music", "get_whole_song", "retrieve_music",
+  ]);
+  const other = pluginTools([{ ...service, provider: "elevenlabs" }]);
+  assert.ok(!other.some((tool) => ["inspect_music_service", "extend_music", "get_whole_song"]
+    .includes(builtInAudioLocalToolName(tool.function.name) ?? "")));
   const schemas = JSON.stringify(tools.map((tool) => tool.function.parameters));
   assert.doesNotMatch(schemas, /apiKey|clientToken|Authorization|endpoint|callbackUrl/);
 });

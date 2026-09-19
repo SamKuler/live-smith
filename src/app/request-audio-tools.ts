@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
 import type { UiMessage } from "../i18n/ui-message.js";
 import {
-  audioProcessingTools, parseAudioToolRequest, validateAudioServiceRequest, type AudioProcessingSource,
+  type AudioProcessingSource,
   type AudioToolRequest,
 } from "../agent/audio-tools.js";
 import type { AgentExternalToolResult } from "../agent/loop.js";
@@ -13,6 +13,8 @@ import {
 import { readArrangementAudio } from "../live/observer.js";
 import type { LiveTarget } from "../live/target.js";
 import type { ModelToolCall } from "../model/contracts.js";
+import { createBuiltInAudioToolsets } from "../plugins/builtins/audio-toolsets.js";
+import { PluginRegistry } from "../plugins/registry.js";
 import { readAudioAsset, readExpectedAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { readSessionAttachmentBytes, type AudioSessionAttachmentRef } from "../storage/attachments.js";
@@ -71,8 +73,6 @@ export async function createRequestAudioTools(input: {
     await input.onAssets(values);
   };
   await registerAssets(audioAssetsFromJobs(jobs));
-  const tools = services.length || jobs.length
-    ? audioProcessingTools(services, Boolean(input.modelAudioInput)) : [];
   const processing: AudioProcessingContext = {
     storageDirectory: input.storageDirectory, sessionId: input.sessionId,
     signal: input.signal, onProgress: input.onProgress, ...input.processing,
@@ -111,17 +111,8 @@ export async function createRequestAudioTools(input: {
     };
   };
 
-  return {
-    tools,
-    async execute(call: ModelToolCall): Promise<AgentExternalToolResult> {
-      let request;
-      try {
-        request = parseAudioToolRequest(call.name, call.arguments);
-        validateAudioServiceRequest(request, services);
-      } catch {
-        return { content: "Invalid audio tool arguments. Use only the declared fields, connection IDs, source references and generation limits.", failed: true, invalidArguments: true };
-      }
-      try {
+  const executeRequest = async (request: AudioToolRequest): Promise<AgentExternalToolResult> => {
+    try {
         if (request.kind === "list_audio_jobs") {
           const current = await listAudioJobs(input.storageDirectory, input.sessionId);
           rememberJobs(current);
@@ -205,11 +196,25 @@ export async function createRequestAudioTools(input: {
           ...(job.status === "unknown" || job.status === "failed" || job.status === "interrupted" || job.status === "partial" && !partialCollection
             ? { failed: true, stop: true } : {}),
         };
-      } catch (error) {
-        throwIfAborted(input.signal);
-        // Never feed a possibly credential-bearing raw cause back to the model.
-        return { content: "Audio processing could not complete. Check Audio tools settings and this Session's saved audio jobs before retrying. No Live changes were performed by this tool.", failed: true, stop: true };
-      }
+    } catch (error) {
+      throwIfAborted(input.signal);
+      // Never feed a possibly credential-bearing raw cause back to the model.
+      return { content: "Audio processing could not complete. Check Audio tools settings and this Session's saved audio jobs before retrying. No Live changes were performed by this tool.", failed: true, stop: true };
+    }
+  };
+  const toolsets = services.length || jobs.length
+    ? createBuiltInAudioToolsets({
+        services,
+        includeModelAudioInput: Boolean(input.modelAudioInput),
+        execute: executeRequest,
+      })
+    : [];
+  const registry = new PluginRegistry(toolsets);
+  return {
+    toolsets,
+    tools: registry.tools(),
+    execute(call: ModelToolCall) {
+      return registry.callTool(call);
     },
   };
 }

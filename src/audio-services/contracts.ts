@@ -157,6 +157,10 @@ export type AudioJobStatus =
 export interface AudioJob {
   id: string;
   sessionId: string;
+  /** Built-in Plugin identity for new records; legacy records derive it on read. */
+  pluginId?: string;
+  toolId?: string;
+  toolVersion?: string;
   provider: AudioProvider;
   serviceId: string;
   modelId?: string;

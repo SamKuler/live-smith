@@ -25,6 +25,7 @@ import {
 } from "../skills/format.js";
 import { builtInSkillDefinitions } from "../skills/builtins.js";
 import { MAX_PLUGIN_ARCHIVE_BYTES } from "../plugins/archive.js";
+import { builtInAudioToolNames } from "../plugins/builtins/audio-toolsets.js";
 import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -187,6 +188,7 @@ function injectEditScopeContract(script: string): string {
 
 function injectSessionContract(script: string): string {
   return script
+    .replaceAll("__BUILT_IN_AUDIO_TOOL_NAMES__", () => JSON.stringify(builtInAudioToolNames()))
     .replaceAll("__AUDIO_SERVICE_CAPABILITIES__", () => JSON.stringify(AUDIO_SERVICE_CAPABILITIES))
     .replaceAll("__MAX_AUDIO_SERVICES__", String(MAX_AUDIO_SERVICES))
     .replaceAll("__SEPARATION_STEMS__", () => JSON.stringify(SEPARATION_STEMS))

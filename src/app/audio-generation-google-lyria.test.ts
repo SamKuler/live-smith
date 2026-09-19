@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 
 import type { AudioGenerationAdapter } from "../audio-services/contracts.js";
-import { audioProcessingTools } from "../agent/audio-tools.js";
+import {
+  builtInAudioLocalToolName,
+  createBuiltInAudioToolsets,
+} from "../plugins/builtins/audio-toolsets.js";
 import { readAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs, updateAudioJob } from "../storage/audio-jobs.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
@@ -11,6 +14,16 @@ import { createSession } from "../storage/sessions.js";
 import { saveGlobalSettings } from "../storage/settings.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
+
+const pluginTools = (services: Parameters<typeof createBuiltInAudioToolsets>[0]["services"]) =>
+  createBuiltInAudioToolsets({
+    services,
+    includeModelAudioInput: false,
+    execute: async () => ({ content: "unused" }),
+  }).flatMap((toolset) => toolset.tools());
+const musicTool = (services: Parameters<typeof pluginTools>[0]) =>
+  pluginTools(services).find((entry) =>
+    builtInAudioLocalToolName(entry.function.name) === "generate_music");
 
 async function harness(
   t: { after(fn: () => Promise<void>): void },
@@ -45,7 +58,7 @@ test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle
   const h = await harness(t, "lyria-3.5");
   const services = [{ id: h.connection.id, name: h.connection.name, provider: h.connection.provider,
     modelId: h.connection.modelId }];
-  const tool = audioProcessingTools(services).find((entry) => entry.function.name === "generate_music");
+  const tool = musicTool(services);
   assert.ok(tool);
   assert.ok((tool.function.parameters?.oneOf as Array<{ properties: { serviceId: { const: string } } }>).some(
     (schema) => schema.properties.serviceId.const === h.connection.id,
@@ -77,8 +90,7 @@ test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle
 
 test("model-specific Lyria limits reject before a job or paid submission exists", async (t) => {
   const realtime = await harness(t, "lyria-realtime-exp");
-  const realtimeTool = audioProcessingTools([realtime.connection])
-    .find((entry) => entry.function.name === "generate_music")!;
+  const realtimeTool = musicTool([realtime.connection])!;
   const realtimeSchema = (realtimeTool.function.parameters?.oneOf as Array<{
     properties: { instrumental: { const?: boolean } };
   }>)[0]!;
@@ -90,8 +102,7 @@ test("model-specific Lyria limits reject before a job or paid submission exists"
   assert.deepEqual(await listAudioJobs(realtime.directory, realtime.session.id), []);
 
   const clip = await harness(t, "lyria-3-clip-preview");
-  const clipTool = audioProcessingTools([clip.connection])
-    .find((entry) => entry.function.name === "generate_music")!;
+  const clipTool = musicTool([clip.connection])!;
   const clipSchema = (clipTool.function.parameters?.oneOf as Array<{
     properties: { durationSeconds: { const?: number } };
   }>)[0]!;

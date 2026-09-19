@@ -14,6 +14,14 @@ import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { runtimeProfileForSavedProfile } from "./model-request.js";
 import { handleAgentRequest } from "./agent-request.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { elevenLabsPlugin } from "../plugins/builtins/elevenlabs.js";
+import { lalalPlugin } from "../plugins/builtins/lalal.js";
+import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
+
+const separateStemsTool = builtInAudioToolName(lalalPlugin, "separate_stems");
+const elevenMusicTool = builtInAudioToolName(elevenLabsPlugin, "generate_music");
+const sunoMusicTool = builtInAudioToolName(sunoWebsitePlugin, "generate_music");
 
 test("a text-only chat model separates an attached file and reuses saved stems in a later send", async (t) => {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-audio-integration-");
@@ -49,12 +57,12 @@ test("a text-only chat model separates an attached file and reuses saved stems i
   let turns = 0;
   let assetId = "";
   const first = await handleAgentRequest(context, directory, interaction, "Separate vocals", runtime, "project", session.id, callbacks, async (request) => {
-    assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === "separate_stems"));
+    assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === separateStemsTool));
     assert.ok(request.attachmentParts?.every((part) => part.type !== "audio"));
     if (++turns === 1) {
       const match = request.requestAudioSampleSourceInstructions?.match(/Audio input 1: (\{[^\n]+\})/);
       assert.ok(match?.[1]);
-      return { content: null, toolCalls: [{ id: "split", name: "separate_stems", arguments: JSON.stringify({ serviceId: "splitter", source: JSON.parse(match[1]), stems: ["vocals"] }) }] };
+      return { content: null, toolCalls: [{ id: "split", name: separateStemsTool, arguments: JSON.stringify({ serviceId: "splitter", source: JSON.parse(match[1]), stems: ["vocals"] }) }] };
     }
     const result = JSON.parse(request.agentMessages.at(-1)!.content!);
     assert.equal(result.status, "completed");
@@ -96,10 +104,10 @@ test("a text-only chat model generates music through a named connection and expo
   let turns = 0;
   let assetId = "";
   const first = await handleAgentRequest(context, directory, interaction, "Generate ambient piano", runtime, "project", session.id, callbacks, async (request) => {
-    assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === "generate_music"));
-    assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === "separate_stems"));
+    assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === elevenMusicTool));
+    assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === separateStemsTool));
     assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === "listen_to_audio_asset"));
-    if (++turns === 1) return { content: null, toolCalls: [{ id: "music-call", name: "generate_music", arguments: JSON.stringify({
+    if (++turns === 1) return { content: null, toolCalls: [{ id: "music-call", name: elevenMusicTool, arguments: JSON.stringify({
       serviceId: "music-account", prompt: "Ambient piano", durationSeconds: 10, instrumental: true,
     }) }] };
     const result = JSON.parse(request.agentMessages.at(-1)!.content!);
@@ -172,11 +180,11 @@ test("a chat model can select Suno rendered audio with bounded advanced controls
     }, async (request) => {
       turns++;
       const tool = request.tools.find((entry) =>
-        entry.type === "function" && entry.function.name === "generate_music");
+        entry.type === "function" && entry.function.name === sunoMusicTool);
       assert.ok(tool?.type === "function");
       assert.match(tool.function.description, /rendered audio/i);
       if (turns === 1) return { content: null, toolCalls: [{ id: "suno-generate",
-        name: "generate_music", arguments: JSON.stringify({ serviceId: "suno-account", ...expected,
+        name: sunoMusicTool, arguments: JSON.stringify({ serviceId: "suno-account", ...expected,
           operation: undefined }) }] };
       const toolResult = JSON.parse(request.agentMessages.at(-1)!.content!);
       assert.equal(toolResult.status, "ready");
@@ -220,7 +228,7 @@ test("an audio-capable chat model can listen to a generated Session asset in the
       audioProcessing: { generationAdapter } }, async (request) => {
       assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === "listen_to_audio_asset"));
       turns += 1;
-      if (turns === 1) return { content: null, toolCalls: [{ id: "generate", name: "generate_music",
+      if (turns === 1) return { content: null, toolCalls: [{ id: "generate", name: elevenMusicTool,
         arguments: JSON.stringify({ serviceId: "music-account", prompt: "Short ambient idea", durationSeconds: 10,
           instrumental: true }) }] };
       if (turns === 2) {

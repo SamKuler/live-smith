@@ -12,6 +12,8 @@ import { audioConnectionFingerprint, captureAudioServiceConnections, resolveAudi
 import { generateAudio } from "./audio-generation.js";
 import { downloadAudioOutput, resumeAudioJob } from "./audio-processing.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { elevenLabsPlugin } from "../plugins/builtins/elevenlabs.js";
 
 const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
 const manifest = [{ key: ids[0]!, role: "music" as const }, { key: ids[1]!, role: "music_alternative" as const }];
@@ -104,7 +106,8 @@ test("one corrupt Suno credential cannot block healthy connections or ordinary c
   const tools = await createRequestAudioTools({ context: {} as never, storageDirectory: h.directory,
     sessionId: h.session.id, requestId: "request", attachmentRefs: [], target: {}, signal: h.controller.signal,
     onProgress() {}, onAssets() {} });
-  const music = tools.tools.find((tool) => tool.function.name === "generate_music")!;
+  const music = tools.tools.find((tool) => tool.function.name ===
+    builtInAudioToolName(elevenLabsPlugin, "generate_music"))!;
   assert.match(JSON.stringify(music.function.parameters), /healthy/);
   assert.doesNotMatch(JSON.stringify(music.function.parameters), /website/);
 });

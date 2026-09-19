@@ -16,6 +16,8 @@ import {
   audioConnectionFingerprint, availableAudioServices, captureAudioServiceConnections, resolveAudioService,
 } from "./audio-service-connections.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { builtInAudioPlugin } from "../plugins/builtins/index.js";
 
 const owner: AudioServiceConnection = {
   id: "chosen", name: "Original account", provider: "elevenlabs", enabled: true,
@@ -25,10 +27,15 @@ const suno: AudioServiceConnection = {
   ...owner, provider: "sunoapi", modelId: "V4_5ALL", callbackUrl: "https://hooks.example.com/original",
 };
 const splitter: AudioServiceConnection = { ...owner, provider: "lalal" };
-const musicCall = {
-  id: "generate", name: "generate_music",
-  arguments: JSON.stringify({ serviceId: owner.id, prompt: "Piano", instrumental: true }),
-};
+const toolName = (
+  connection: AudioServiceConnection,
+  operation: string,
+) => builtInAudioToolName(builtInAudioPlugin(connection.provider), operation);
+const musicCall = (connection: AudioServiceConnection = owner) => ({
+  id: "generate",
+  name: toolName(connection, "generate_music"),
+  arguments: JSON.stringify({ serviceId: connection.id, prompt: "Piano", instrumental: true }),
+});
 
 async function harness(t: TestContext, connection = owner) {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-audio-admission-");
@@ -92,14 +99,16 @@ for (const scenario of driftCases) {
     // rather than succeeding because an injected adapter rejects that provider.
     if (scenario.name === "provider") h.input.processing.generationAdapter = { ...h.generationAdapter, provider: "sunoapi" };
     const tools = await createRequestAudioTools(h.input);
-    const declared = tools.tools.find((tool) => tool.function.name === "generate_music")!;
+    const admitted = scenario.initial ?? owner;
+    const declared = tools.tools.find((tool) =>
+      tool.function.name === toolName(admitted, "generate_music"))!;
     assert.ok(declared);
     const properties = declared.function.parameters?.properties as Record<string, unknown>;
     assert.deepEqual(properties.serviceId, { type: "string", enum: [owner.id] });
     assert.match(declared.function.description, new RegExp((scenario.initial ?? owner).provider));
     if (scenario.replacement) await h.save(scenario.replacement);
     else await h.remove();
-    const result = await tools.execute(musicCall);
+    const result = await tools.execute(musicCall(admitted));
     assert.equal(h.calls.length, 0, "a drifted admission must not submit or poll");
     assert.equal(result.failed, true);
     assert.equal(result.stop, true);
@@ -166,7 +175,7 @@ test("another connection changing does not invalidate advertised generation", as
   await h.save(other);
   const tools = await createRequestAudioTools(h.input);
   await h.save({ ...other, apiKey: "fixture-other-replacement", modelId: "V5", callbackUrl: "https://hooks.example.com/other" });
-  const result = await tools.execute(musicCall);
+  const result = await tools.execute(musicCall());
   assert.equal(result.failed, undefined);
   assert.deepEqual(h.calls, ["generate"]);
   const [job] = await listAudioJobs(h.storage, h.session.id);
@@ -179,10 +188,10 @@ test("a later send admits the replacement connection after rejecting an old send
   const oldSend = await createRequestAudioTools(h.input);
   const replacement = { ...owner, apiKey: "fixture-admission-owner-b" };
   await h.save(replacement);
-  assert.equal((await oldSend.execute(musicCall)).failed, true);
+  assert.equal((await oldSend.execute(musicCall())).failed, true);
   assert.deepEqual(h.calls, []);
   const newSend = await createRequestAudioTools(h.input);
-  assert.equal((await newSend.execute(musicCall)).failed, undefined);
+  assert.equal((await newSend.execute(musicCall())).failed, undefined);
   assert.deepEqual(h.calls, ["generate"]);
   assert.equal((await listAudioJobs(h.storage, h.session.id))[0]?.connectionFingerprint, audioConnectionFingerprint(replacement));
 });
@@ -196,7 +205,7 @@ for (const state of ["added", "enabled"] as const) {
     const tools = await createRequestAudioTools(h.input);
     await h.save(late);
     await assert.rejects(resolveAudioService(h.storage, late.id, "generate_music", admitted), /not admitted/);
-    const result = await tools.execute({ ...musicCall, arguments: JSON.stringify({
+    const result = await tools.execute({ ...musicCall(), arguments: JSON.stringify({
       serviceId: late.id, prompt: "Piano", instrumental: true,
     }) });
     assert.equal(result.invalidArguments, true);
@@ -208,7 +217,7 @@ test("sound effects also retain the admitted credential owner", async (t) => {
   const h = await harness(t);
   const tools = await createRequestAudioTools(h.input);
   await h.save({ ...owner, apiKey: "fixture-admission-owner-b" });
-  const result = await tools.execute({ id: "effect", name: "generate_sound_effect", arguments: JSON.stringify({
+  const result = await tools.execute({ id: "effect", name: toolName(owner, "generate_sound_effect"), arguments: JSON.stringify({
     serviceId: owner.id, prompt: "Wind", durationSeconds: 2, loop: false,
   }) });
   assert.deepEqual(h.calls, []);
@@ -222,7 +231,7 @@ test("stem separation rejects a replaced connection before reading or uploading 
   assert.equal(ref.kind, "audio");
   const tools = await createRequestAudioTools({ ...h.input, attachmentRefs: [ref] });
   await h.save({ ...splitter, apiKey: "fixture-admission-owner-b" });
-  const result = await tools.execute({ id: "split", name: "separate_stems", arguments: JSON.stringify({
+  const result = await tools.execute({ id: "split", name: toolName(splitter, "separate_stems"), arguments: JSON.stringify({
     serviceId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
   }) });
   assert.deepEqual(h.calls, []);
@@ -235,7 +244,7 @@ test("generation rechecks admission after local preparation and before submit", 
   const tools = await createRequestAudioTools({ ...h.input, onProgress: async () => {
     await h.save({ ...owner, apiKey: "fixture-admission-owner-b" });
   } });
-  const result = await tools.execute(musicCall);
+  const result = await tools.execute(musicCall());
   assert.deepEqual(h.calls, []);
   assert.equal(result.failed, true);
   assert.doesNotMatch(JSON.stringify(result), /fixture-admission-/);
@@ -254,7 +263,7 @@ for (const stage of ["before upload", "after upload"] as const) {
     const tools = await createRequestAudioTools({ ...h.input, attachmentRefs: [ref], onProgress: async () => {
       if (stage === "before upload") await replace();
     } });
-    const result = await tools.execute({ id: "split", name: "separate_stems", arguments: JSON.stringify({
+    const result = await tools.execute({ id: "split", name: toolName(splitter, "separate_stems"), arguments: JSON.stringify({
       serviceId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
     }) });
     assert.deepEqual(h.calls, stage === "before upload" ? [] : ["upload"]);

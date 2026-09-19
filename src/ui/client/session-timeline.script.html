@@ -19,6 +19,7 @@
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const { message } = window.LiveSmithI18n;
+      const builtInAudioToolNames = __BUILT_IN_AUDIO_TOOL_NAMES__;
       const sessionActionLabels = new WeakMap();
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const sessionDateFormatter = () => new Intl.DateTimeFormat(window.LiveSmithI18n.locale, {
@@ -2473,6 +2474,7 @@
       }
 
       function humanizeToolName(name) {
+        const localName = builtInAudioToolNames[name] || name;
         const labels = {
           "inspect_current_object": t("Inspect current object"),
           "inspect_live_set": t("Inspect live set"),
@@ -2490,8 +2492,8 @@
           "apply_live_actions": t("Apply live actions"),
           "resolve_live_recovery": t("Resolve live recovery"),
         };
-        if (labels[name]) return labels[name];
-        const words = name.split("_").filter(Boolean).join(" ");
+        if (labels[localName]) return labels[localName];
+        const words = localName.split("_").filter(Boolean).join(" ");
         return words ? t(`${words[0].toUpperCase()}${words.slice(1)}`) : t("Tool");
       }
 

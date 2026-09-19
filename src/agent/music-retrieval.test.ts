@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { audioProcessingTools, parseAudioToolRequest, validateAudioServiceRequest } from "./audio-tools.js";
+import { parseAudioToolRequest, validateAudioServiceRequest } from "./audio-tools.js";
+import {
+  builtInAudioLocalToolName,
+  createBuiltInAudioToolsets,
+} from "../plugins/builtins/audio-toolsets.js";
+import type { AudioServiceChoice } from "../audio-services/capabilities.js";
 
 const service = { id: "website", name: "Suno", provider: "suno" as const };
 const clipIds = ["aaaaaaaa-1111-4111-8111-111111111111", "bbbbbbbb-2222-4222-8222-222222222222"];
 const parse = (value: unknown) => parseAudioToolRequest("retrieve_music", JSON.stringify(value));
 
 test("retrieve_music exposes only a connection and one or two unique canonical UUIDs", () => {
-  const tool = audioProcessingTools([service]).find((entry) => entry.function.name === "retrieve_music")!;
+  const toolsFor = (connections: AudioServiceChoice[]) => createBuiltInAudioToolsets({
+    services: connections,
+    includeModelAudioInput: false,
+    execute: async () => ({ content: "unused" }),
+  }).flatMap((toolset) => toolset.tools());
+  const tool = toolsFor([service]).find((entry) =>
+    builtInAudioLocalToolName(entry.function.name) === "retrieve_music")!;
   assert.ok(tool);
   const schema = tool.function.parameters as { additionalProperties: boolean; required: string[]; properties: Record<string, unknown> };
   assert.equal(schema.additionalProperties, false);
@@ -24,7 +35,8 @@ test("retrieve_music exposes only a connection and one or two unique canonical U
   }
   for (const provider of ["elevenlabs", "sunoapi", "lalal"] as const) {
     const other = [{ ...service, provider }];
-    assert.ok(!audioProcessingTools(other).some((entry) => entry.function.name === "retrieve_music"));
+    assert.ok(!toolsFor(other).some((entry) =>
+      builtInAudioLocalToolName(entry.function.name) === "retrieve_music"));
     assert.throws(() => validateAudioServiceRequest(parse({ serviceId: service.id, clipIds }), other));
   }
 });

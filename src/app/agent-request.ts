@@ -15,7 +15,7 @@ import {
   type AgentConfirmationDecision,
   type AgentLoopTraceEvent,
 } from "../agent/loop.js";
-import { AgentToolRegistry } from "../agent/external-tool-registry.js";
+import { PluginRegistry } from "../plugins/registry.js";
 import {
   observationRequestForAction,
   type AgentPlan,
@@ -324,12 +324,12 @@ export async function handleAgentRequest(
     signal: callbacks.signal,
     fetchImpl: providerFetchForStorage(storageDirectory),
   });
-  let externalTools: AgentToolRegistry;
+  let externalTools: PluginRegistry;
   try {
-    externalTools = new AgentToolRegistry([{
-      tools: () => audioTools.tools,
-      callTool: audioTools.execute,
-    }, pluginTools]);
+    externalTools = new PluginRegistry([
+      ...audioTools.toolsets,
+      ...pluginTools.toolsets,
+    ]);
   } catch (error) {
     await pluginTools.close();
     throw error;

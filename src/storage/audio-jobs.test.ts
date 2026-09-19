@@ -24,6 +24,10 @@ test("jobs persist complete host metadata with independent returned snapshots an
   assert.equal(loaded.remoteSourceId, "source_1");
   assert.equal(loaded.remoteTaskId, "task_1");
   assert.equal(loaded.status, "running");
+  assert.deepEqual(
+    { pluginId: loaded.pluginId, toolId: loaded.toolId, toolVersion: loaded.toolVersion },
+    { pluginId: "live-smith.lalal", toolId: "separate_stems", toolVersion: "1" },
+  );
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(h.directory, `${h.job.id}.job.json`), "utf8")), loaded);
   loaded.stems.length = 0;
   assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).stems, ["vocals", "drums"]);
@@ -158,12 +162,24 @@ test("legacy LALAL jobs normalize the service ID without rewriting until an auth
   const current = await updateAudioJob(h.storage, h.session.id, h.job.id, {
     sourceAssetId: source.id, outputAssets: [output], status: "partial",
   });
-  const { serviceId: _, ...legacy } = current;
+  const {
+    serviceId: _,
+    pluginId: _pluginId,
+    toolId: _toolId,
+    toolVersion: _toolVersion,
+    ...legacy
+  } = current;
   const target = path.join(h.directory, `${h.job.id}.job.json`);
   await overwriteJson(target, legacy);
   const raw = await fs.readFile(target, "utf8");
   const before = await fs.stat(target);
-  const expected = { ...legacy, serviceId: LEGACY_AUDIO_SERVICE_ID };
+  const expected = {
+    ...legacy,
+    serviceId: LEGACY_AUDIO_SERVICE_ID,
+    pluginId: "live-smith.lalal",
+    toolId: "separate_stems",
+    toolVersion: "1",
+  };
   assert.deepEqual(await loadAudioJob(h.storage, h.session.id, h.job.id), expected);
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), [expected]);
   assert.equal(await fs.readFile(target, "utf8"), raw);
@@ -190,6 +206,7 @@ test("job creation and persisted reads reject incompatible providers, operations
     { serviceId: "" }, { serviceId: null }, { serviceId: "../outside" },
     { serviceId: "service\n" }, { serviceId: "s".repeat(129) },
     { connectionFingerprint: "bad" }, { apiKey: "not-a-real-key" },
+    { pluginId: "other.plugin" }, { toolId: "generate_music" }, { toolVersion: "2" },
     ...[null, "", " ", "music v2", " music_v2", "music_v2\n", "music\u202ev2",
       "m".repeat(129)].map((modelId) => ({ modelId })),
   ]) {

@@ -7,6 +7,8 @@ import { saveGlobalSettings } from "../storage/settings.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { listAudioAssets } from "../storage/audio-assets.js";
 import { clipIds, connection, fixtureToken, manifest, retrievalHarness } from "./audio-retrieval-test-helpers.js";
+import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
+import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
 
 async function toolsFor(h: Awaited<ReturnType<typeof retrievalHarness>>, observed = clipIds.slice(0, 1)) {
   const assets: string[] = [];
@@ -17,7 +19,13 @@ async function toolsFor(h: Awaited<ReturnType<typeof retrievalHarness>>, observe
       musicServiceReader: async () => ({ query: "library", hasMore: false,
         clips: observed.map((id) => ({ id, title: "Fixture song", status: "complete", modelId: "fixture-model", styles: "piano" })) }),
     } });
-  const execute = (name: string, args: unknown) => tools.execute({ id: "call", name, arguments: JSON.stringify(args) });
+  const execute = (name: string, args: unknown) => tools.execute({
+    id: "call",
+    name: ["list_audio_jobs", "resume_audio_job", "listen_to_audio_asset"].includes(name)
+      ? name
+      : builtInAudioToolName(sunoWebsitePlugin, name),
+    arguments: JSON.stringify(args),
+  });
   const retrieve = (serviceId = connection.id, ids = clipIds) => execute("retrieve_music", { serviceId, clipIds: ids });
   return { tools, assets, execute, retrieve };
 }
