@@ -82,7 +82,7 @@ test("multiple providers and same-provider accounts save, clear, and remove only
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceEnabled")!.checked, true);
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!.value, "music_v2");
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /separate API charges/);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /separate API charges/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
@@ -257,7 +257,7 @@ test("Suno keeps essential connection facts visible and moves adapter details in
     const operations = harness.document.querySelector<HTMLElement>("#audioServiceOperations")!;
     assert.equal(operations.hidden, false);
     assert.match(operations.textContent!, /Custom lyrics.*Extend.*Library.*Retrieve/);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /Suno credits.*save.*never retried/i);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Suno credits.*save.*never retried/i);
     const heading = harness.document.querySelector("#sunoConnectionHeading");
     const help = harness.document.querySelector<HTMLElement>("#sunoFeatureHelp")!;
     assert.equal(heading?.nextElementSibling, help);

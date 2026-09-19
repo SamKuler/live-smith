@@ -21,7 +21,7 @@ test("Mureka uses the named API-key workflow and provider-owned model suggestion
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceKeyField")!.hidden, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceModelField")!.hidden, false);
     assert.match(harness.document.querySelector("#audioServiceOperations")!.textContent!, /Music generation/);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /prompt.*external service.*API charges/i);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /prompt.*external service.*API charges/i);
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /auto.*prompt-based generation/i);
 
     const model = harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!;

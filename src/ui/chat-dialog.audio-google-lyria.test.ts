@@ -21,7 +21,7 @@ test("Google Lyria uses the shared API-key editor and explains each documented m
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceModelField")!.hidden, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#sunoLoginControls")!.hidden, true);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceCallbackField")!.hidden, true);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /Gemini API billing.*single-turn.*WebSocket/i);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Gemini API billing.*single-turn.*WebSocket/i);
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /lyria-3\.5.*prompt-guided duration/i);
 
     const model = harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!;
@@ -72,7 +72,7 @@ test("Google Lyria model guidance is localized with the rest of the connection e
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /提示词引导时长/);
     harness.input("#audioServiceModel", "lyria-realtime-exp");
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /流式生成.*仅生成器乐/);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /Gemini API 计费.*WebSocket/);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Gemini API 计费.*WebSocket/);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

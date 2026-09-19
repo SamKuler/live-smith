@@ -18,8 +18,18 @@ test("Add SunoAPI requires a user callback to enable, keeps other services, and 
     const callback = harness.document.querySelector<HTMLInputElement>("#audioServiceCallback")!;
     assert.equal(callback.value, "");
     assert.equal(callback.placeholder, "");
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /third-party API service/);
-    assert.match(harness.document.querySelector("#audioServiceCallbackHint")!.textContent!, /notifications here.*polls for results/);
+    const disclosure = harness.document.querySelector<HTMLElement>("#audioServiceDisclosure")!;
+    assert.equal(disclosure.textContent, "?");
+    assert.match(disclosure.getAttribute("aria-label")!, /third-party API service/);
+    assert.equal(disclosure.dataset.tooltip, disclosure.getAttribute("aria-label"));
+    assert.equal(
+      harness.document.querySelector("#audioServiceProvider")!.getAttribute("aria-describedby"),
+      "audioServiceOperations audioServiceDisclosure",
+    );
+    const callbackHelp = harness.document.querySelector<HTMLElement>("#audioServiceCallbackHint")!;
+    assert.equal(callbackHelp.textContent, "?");
+    assert.match(callbackHelp.getAttribute("aria-label")!, /notifications here.*polls for results/);
+    assert.equal(callbackHelp.dataset.tooltip, callbackHelp.getAttribute("aria-label"));
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /V6/);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!.getAttribute("list"), "audioServiceModelOptions");
     assert.deepEqual(Array.from(harness.document.querySelectorAll<HTMLOptionElement>("#audioServiceModelOptions option"))

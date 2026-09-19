@@ -6294,7 +6294,7 @@
             ? supported.map(audioOperationLabel).join(" · ")
             : t("Unavailable: no verified public API protocol is configured for this provider.");
           document.getElementById("audioServiceOperations").hidden = false;
-          document.getElementById("audioServiceDisclosure").textContent = sessionImport
+          const disclosureText = sessionImport
             ? t("Generation uses your Suno credits. Enable and save this connection to use it in chat; submissions are never retried automatically.") : service.provider === "sunoapi"
             ? t("SunoAPI.org is a third-party API service with its own key and billing. It is not Suno's official API or a Suno website subscription. Your prompt is sent to SunoAPI.org.")
             : service.provider === "suno-platform"
@@ -6304,6 +6304,9 @@
             : supported.includes("separate_stems")
             ? t("Selected audio is sent to this external service. Stem separation uses processing minutes for each requested stem.")
             : t("Generation sends your prompt to this external service and may incur separate API charges. A website subscription may not include API access.");
+          const disclosure = document.getElementById("audioServiceDisclosure");
+          disclosure.setAttribute("aria-label", disclosureText);
+          disclosure.dataset.tooltip = disclosureText;
           const keyConfigured = saved?.provider === service.provider && saved.apiKeyConfigured;
           keyPanel.dataset.authState = keyConfigured ? "signed-in" : "signed-out";
           document.getElementById("audioServiceKeyBadge").textContent = t(keyConfigured ? "Ready" : "Needs setup");

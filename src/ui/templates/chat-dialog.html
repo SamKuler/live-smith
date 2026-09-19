@@ -522,16 +522,20 @@
                     <input id="audioServiceName" name="audioConnectionName" type="text" maxlength="120" autocomplete="off" oninput="LiveSmithUI.handleAudioSettingsInput()" />
                   </div>
                   <div class="field">
-                    <label for="audioServiceProvider" data-i18n="Provider">Provider</label>
-                    <select id="audioServiceProvider" name="audioServiceProvider" autocomplete="off" onchange="LiveSmithUI.handleAudioSettingsInput()" aria-describedby="audioServiceOperations"></select>
+                    <div class="field-label-row">
+                      <label for="audioServiceProvider" data-i18n="Provider">Provider</label>
+                      <span id="audioServiceDisclosure" class="inline-help" tabindex="0" role="note" aria-label="" data-tooltip="">?</span>
+                    </div>
+                    <select id="audioServiceProvider" name="audioServiceProvider" autocomplete="off" onchange="LiveSmithUI.handleAudioSettingsInput()" aria-describedby="audioServiceOperations audioServiceDisclosure"></select>
                     <span id="audioServiceOperations" class="field-hint"></span>
                   </div>
                   <div class="field" id="audioServiceCallbackField" hidden>
-                    <label for="audioServiceCallback" data-i18n="Callback URL">Callback URL</label>
+                    <div class="field-label-row">
+                      <label for="audioServiceCallback" data-i18n="Callback URL">Callback URL</label>
+                      <span id="audioServiceCallbackHint" class="inline-help" tabindex="0" role="note" aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL.">?</span>
+                    </div>
                     <input id="audioServiceCallback" name="audioCallbackUrl" type="url" inputmode="url" maxlength="2048" autocomplete="off" autocapitalize="none" spellcheck="false" oninput="LiveSmithUI.handleAudioSettingsInput()" aria-describedby="audioServiceCallbackHint" />
-                    <span id="audioServiceCallbackHint" class="field-hint" data-i18n="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL.">Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL.</span>
                   </div>
-                  <p class="field-hint" id="audioServiceDisclosure"></p>
                   <section id="sunoLoginControls" class="connection-auth-panel suno-auth-panel" data-auth-state="unchecked" aria-labelledby="sunoConnectionHeading" hidden>
                     <div class="connection-auth-header">
                       <div class="connection-auth-heading field-label-row">

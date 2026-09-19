@@ -176,7 +176,7 @@ test("Chinese audio settings and result controls render through the real dialog"
     assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "音频工具");
     assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存音频设置");
     assert.equal(harness.document.querySelector("[data-resume-audio-job]")?.textContent, "恢复音频任务");
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /分钟数/);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /分钟数/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

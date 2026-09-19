@@ -15,7 +15,7 @@ test("official Suno Platform has a distinct key workflow and no website Cookie o
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceModelField")!.hidden, true);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceKeyField")!.hidden, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#sunoPlatformActions")!.hidden, false);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.textContent!, /Official Suno API/);
+    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Official Suno API/);
     assert.match(harness.document.querySelector("#audioServiceOperations")!.textContent!, /Music generation/);
 
     harness.click("#openSunoPlatformButton");
