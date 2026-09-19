@@ -50,6 +50,7 @@ interface Zip64ExtraField {
 
 export interface BoundedOoxmlZip {
   entryNames: readonly string[];
+  directoryNames: ReadonlySet<string>;
   retainedEntries: ReadonlyMap<string, Uint8Array>;
 }
 
@@ -98,6 +99,7 @@ export async function openBoundedOoxmlZip(
 
   return {
     entryNames: index.map((entry) => entry.name),
+    directoryNames: new Set(index.filter((entry) => entry.isDirectory).map((entry) => entry.name)),
     retainedEntries,
   };
 }
