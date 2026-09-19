@@ -1,0 +1,310 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createPluginManager = function createPluginManager({
+        confirmAction,
+        getState,
+        inspectPlugin,
+        installPlugin,
+        runCommand,
+        showStatus,
+      }) {
+      const t = (message, params) => window.LiveSmithI18n.t(message, params);
+      const maxPluginArchiveBytes = __MAX_PLUGIN_ARCHIVE_BYTES__;
+      let busy = false;
+      let renderedKey = null;
+
+      function sourceLabel(source) {
+        if (source === "agent-plugins-1.0") return t("Agent Plugin");
+        if (source === "claude") return t("Claude Code compatible");
+        return t("Codex compatible");
+      }
+
+      function issueLabel(issue) {
+        return {
+          invalid_skill: t("One or more packaged Skills are invalid and were skipped."),
+          invalid_mcp_configuration: t("The packaged MCP configuration is invalid."),
+          invalid_mcp_server: t("One or more MCP servers are invalid and were skipped."),
+          unsupported_mcp_transport: t("One or more MCP transports are not supported and were skipped."),
+        }[issue] || issue;
+      }
+
+      function installReview(preview, replacing) {
+        const identity = [preview.id, preview.version].filter(Boolean).join(" ");
+        const servers = preview.mcpServers.length
+          ? preview.mcpServers.map((server) =>
+              `• ${server.id} — ${server.type === "stdio" ? t("Local process") : t("Remote MCP")} · ${server.target}`
+            ).join("\n")
+          : t("No MCP servers declared.");
+        const warnings = preview.issues.length
+          ? `\n${t("Compatibility warnings: {warnings}", {
+              warnings: preview.issues.map(issueLabel).join(" "),
+            })}`
+          : "";
+        const unsupported = preview.unsupportedComponents.length
+          ? `\n${t("Not used by Live Smith: {components}", {
+              components: preview.unsupportedComponents.join(", "),
+            })}`
+          : "";
+        return [
+          t(replacing ? "Replace {identity}" : "Install {identity}", { identity }),
+          t("Format: {format}", { format: sourceLabel(preview.sourceFormat) }),
+          t("Contents: {skillCount} Skills · {serverCount} MCP servers", {
+            skillCount: preview.skillCount,
+            serverCount: preview.mcpServers.length,
+          }),
+          t("SHA-256: {sha256}", { sha256: preview.sha256 }),
+          "",
+          t("MCP servers"),
+          servers,
+          warnings,
+          unsupported,
+          "",
+          t("Installing does not enable the Plugin or approve any MCP server."),
+        ].filter((line, index, values) => line !== "" || values[index - 1] !== "").join("\n");
+      }
+
+      function makeButton(label, className, action) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = className;
+        button.textContent = label;
+        button.addEventListener("click", () => { void action(); });
+        return button;
+      }
+
+      function renderServer(plugin, server) {
+        const row = document.createElement("div");
+        row.className = "plugin-server-row";
+        const copy = document.createElement("span");
+        copy.className = "plugin-server-copy";
+        const title = document.createElement("strong");
+        title.textContent = server.id;
+        title.setAttribute("translate", "no");
+        const detail = document.createElement("span");
+        detail.textContent = `${server.type === "stdio" ? t("Local process") : t("Remote MCP")} · ${server.target}`;
+        copy.append(title, detail);
+        const approval = makeButton(
+          server.approved ? t("Revoke") : t("Approve"),
+          "secondary plugin-server-approval",
+          () => toggleServerApproval(plugin, server),
+        );
+        approval.disabled = busy;
+        approval.setAttribute("aria-label", server.approved
+          ? t("Revoke MCP server {serverId}", { serverId: server.id })
+          : t("Approve MCP server {serverId}", { serverId: server.id }));
+        row.append(copy, approval);
+        return row;
+      }
+
+      function renderPlugin(plugin) {
+        const card = document.createElement("article");
+        card.className = "plugin-card";
+        card.dataset.pluginId = plugin.id;
+        card.setAttribute("role", "listitem");
+        const header = document.createElement("div");
+        header.className = "plugin-card-header";
+        const identity = document.createElement("div");
+        identity.className = "plugin-card-identity";
+        const title = document.createElement("strong");
+        title.textContent = plugin.id;
+        title.setAttribute("translate", "no");
+        const meta = document.createElement("span");
+        meta.textContent = [plugin.version, sourceLabel(plugin.sourceFormat)].filter(Boolean).join(" · ");
+        identity.append(title, meta);
+        const toggleLabel = document.createElement("label");
+        toggleLabel.className = "settings-switch plugin-enabled-toggle";
+        const toggleText = document.createElement("span");
+        toggleText.textContent = plugin.enabled ? t("Enabled") : t("Disabled");
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.role = "switch";
+        toggle.checked = plugin.enabled;
+        toggle.disabled = busy;
+        toggle.setAttribute("aria-label", t("Enable Plugin {pluginId}", { pluginId: plugin.id }));
+        toggle.addEventListener("change", () => { void togglePlugin(plugin, toggle.checked); });
+        const track = document.createElement("span");
+        track.className = "settings-switch-track";
+        track.setAttribute("aria-hidden", "true");
+        toggleLabel.append(toggleText, toggle, track);
+        header.append(identity, toggleLabel);
+        card.append(header);
+
+        if (plugin.description) {
+          const description = document.createElement("p");
+          description.className = "plugin-description";
+          description.textContent = plugin.description;
+          card.append(description);
+        }
+        const summary = document.createElement("p");
+        summary.className = "plugin-summary";
+        summary.textContent = t("{skillCount} Skills · {serverCount} MCP servers", {
+          skillCount: plugin.skillCount,
+          serverCount: plugin.mcpServers.length,
+        });
+        card.append(summary);
+        if (plugin.issues.length) {
+          const issues = document.createElement("ul");
+          issues.className = "plugin-issues";
+          for (const issue of plugin.issues) {
+            const item = document.createElement("li");
+            item.textContent = issueLabel(issue);
+            issues.append(item);
+          }
+          card.append(issues);
+        }
+        if (plugin.unsupportedComponents.length) {
+          const unsupported = document.createElement("p");
+          unsupported.className = "plugin-unsupported";
+          unsupported.textContent = t("Not used by Live Smith: {components}", {
+            components: plugin.unsupportedComponents.join(", "),
+          });
+          card.append(unsupported);
+        }
+        if (plugin.mcpServers.length) {
+          const servers = document.createElement("div");
+          servers.className = "plugin-server-list";
+          for (const server of plugin.mcpServers) servers.append(renderServer(plugin, server));
+          card.append(servers);
+        }
+        const actions = document.createElement("div");
+        actions.className = "plugin-card-actions";
+        const remove = makeButton(t("Delete"), "secondary danger-action", () => deleteInstalledPlugin(plugin));
+        remove.disabled = busy || plugin.enabled;
+        remove.title = plugin.enabled ? t("Disable this Plugin before deleting it.") : t("Delete Plugin {pluginId}", { pluginId: plugin.id });
+        actions.append(remove);
+        card.append(actions);
+        return card;
+      }
+
+      function render(force = false) {
+        const list = document.getElementById("pluginList");
+        const empty = document.getElementById("pluginEmptyState");
+        if (!list || !empty) return;
+        const plugins = [...(getState().plugins || [])].sort((left, right) => left.id.localeCompare(right.id));
+        const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins, busy });
+        if (!force && key === renderedKey) return;
+        const focusedId = document.activeElement?.closest?.(".plugin-card")?.dataset.pluginId;
+        list.replaceChildren(...plugins.map(renderPlugin));
+        empty.hidden = plugins.length !== 0;
+        renderedKey = key;
+        if (focusedId) [...list.querySelectorAll(".plugin-card")]
+          .find((card) => card.dataset.pluginId === focusedId)
+          ?.querySelector("input, button")?.focus();
+      }
+
+      async function togglePlugin(plugin, enabled) {
+        if (!enabled && plugin.skillCount > 0 && !(await confirmAction({
+          title: window.LiveSmithI18n.message("Disable Plugin?"),
+          message: window.LiveSmithI18n.message("Disabling Plugin {pluginId} also removes its Skills from every Session.", { pluginId: plugin.id }),
+          acceptLabel: window.LiveSmithI18n.message("Disable"),
+        }))) {
+          render(true);
+          return;
+        }
+        const changed = await runCommand("set_plugin_enabled", { pluginId: plugin.id, enabled });
+        if (!changed) render(true);
+      }
+
+      async function toggleServerApproval(plugin, server) {
+        const approved = !server.approved;
+        if (approved) {
+          const local = server.type === "stdio";
+          if (!(await confirmAction({
+            title: window.LiveSmithI18n.message(local ? "Allow local Plugin process?" : "Allow remote Plugin connection?"),
+            message: local
+              ? window.LiveSmithI18n.message("Plugin {pluginId} will start local MCP server {serverId} as your operating-system user. This process is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })
+              : window.LiveSmithI18n.message("Plugin {pluginId} will connect to MCP server {serverId} at {target}. Header values and URL details remain hidden.", { pluginId: plugin.id, serverId: server.id, target: server.target }),
+            acceptLabel: window.LiveSmithI18n.message("Approve"),
+          }))) return;
+        }
+        const changed = await runCommand("set_plugin_mcp_server_approved", {
+          pluginId: plugin.id,
+          serverId: server.id,
+          approved,
+        });
+        if (!changed) render(true);
+      }
+
+      async function deleteInstalledPlugin(plugin) {
+        if (plugin.enabled) return;
+        if (!(await confirmAction({
+          title: window.LiveSmithI18n.message("Delete Plugin?"),
+          message: window.LiveSmithI18n.message("Delete Plugin {pluginId} and its private Plugin data? This cannot be undone.", { pluginId: plugin.id }),
+          acceptLabel: window.LiveSmithI18n.message("Delete"),
+          danger: true,
+        }))) return;
+        await runCommand("delete_plugin", { pluginId: plugin.id });
+      }
+
+      async function importPluginFile(file) {
+        if (!file) return;
+        if (file.size === 0 || file.size > maxPluginArchiveBytes) {
+          showStatus(t("Plugin ZIP must contain 1-{maxPluginArchiveBytes} bytes.", { maxPluginArchiveBytes }), true);
+          return;
+        }
+        try {
+          const preview = await inspectPlugin(file);
+          const existing = (getState().plugins || []).find((plugin) => plugin.id === preview.id);
+          if (existing?.enabled) {
+            showStatus(t("Disable Plugin {pluginId} before replacing it.", { pluginId: preview.id }), true);
+            return;
+          }
+          const replacing = Boolean(existing);
+          if (!(await confirmAction({
+            title: window.LiveSmithI18n.message(replacing ? "Replace installed Plugin?" : "Install Plugin?"),
+            message: () => installReview(preview, replacing),
+            acceptLabel: window.LiveSmithI18n.message(replacing ? "Replace" : "Install"),
+          }))) return;
+          const receipt = await installPlugin(file, replacing);
+          showStatus(t(replacing
+            ? "Plugin {pluginId} replaced. Review permissions before enabling it."
+            : "Plugin {pluginId} installed. Review permissions before enabling it.", { pluginId: receipt.id }));
+        } catch (error) {
+          showStatus(error.message || String(error), true);
+        }
+      }
+
+      function setBusy(nextBusy) {
+        busy = Boolean(nextBusy);
+        const manager = document.getElementById("pluginManager");
+        manager?.setAttribute("aria-busy", String(busy));
+        const input = document.getElementById("pluginFileInput");
+        const button = document.getElementById("choosePluginButton");
+        if (input) input.disabled = busy;
+        if (button) button.disabled = busy;
+        render(true);
+      }
+
+      function initialize() {
+        const input = document.getElementById("pluginFileInput");
+        const drop = document.getElementById("pluginDropZone");
+        document.getElementById("choosePluginButton")?.addEventListener("click", () => input?.click());
+        input?.addEventListener("change", () => {
+          const file = input.files?.[0];
+          input.value = "";
+          void importPluginFile(file);
+        });
+        drop?.addEventListener("dragover", (event) => {
+          if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
+          event.preventDefault();
+          if (!busy) drop.classList.add("drop-target");
+        });
+        drop?.addEventListener("dragleave", (event) => {
+          if (!drop.contains(event.relatedTarget)) drop.classList.remove("drop-target");
+        });
+        drop?.addEventListener("drop", (event) => {
+          const files = [...(event.dataTransfer?.files || [])];
+          if (!files.length) return;
+          event.preventDefault();
+          drop.classList.remove("drop-target");
+          if (busy) return;
+          if (files.length !== 1) {
+            showStatus(t("Drop one Plugin ZIP at a time."), true);
+            return;
+          }
+          void importPluginFile(files[0]);
+        });
+        render();
+      }
+
+      return { initialize, render, setBusy };
+      };

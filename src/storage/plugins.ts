@@ -7,7 +7,7 @@ import { getuid, platform } from "node:process";
 import { TextDecoder } from "node:util";
 
 import { openPluginArchive, type OpenPluginArchive } from "../plugins/archive.js";
-import type { PluginComponents, PluginSourceFormat } from "../plugins/contracts.js";
+import { isSafePluginId, type PluginComponents, type PluginSourceFormat } from "../plugins/contracts.js";
 import { pluginMcpConfigFromArchive } from "../plugins/mcp/config.js";
 import { isMissingFileError } from "./errors.js";
 import {
@@ -27,6 +27,7 @@ export interface InstalledPlugin {
   description?: string;
   sourceFormat: PluginSourceFormat;
   components: PluginComponents;
+  unsupportedComponents?: string[];
   sha256: string;
   byteLength: number;
   enabled: boolean;
@@ -65,7 +66,7 @@ const supportsPosixPermissions = platform !== "win32";
 const catalogKeys = new Set(["schemaVersion", "revision", "plugins"]);
 const pluginKeys = new Set([
   "id", "version", "description", "sourceFormat", "components", "sha256", "byteLength",
-  "enabled", "approvedMcpServerIds", "installedAt", "updatedAt",
+  "unsupportedComponents", "enabled", "approvedMcpServerIds", "installedAt", "updatedAt",
 ]);
 const componentKeys = new Set(["skillsDirectory", "mcpConfigPath", "mcpManifestPath"]);
 
@@ -155,13 +156,28 @@ export function readEnabledPluginPackagesInTransaction(
   transaction: StorageTransactionContext,
   storageDirectory: string | undefined,
 ): Promise<InstalledPluginPackage[]> {
+  return readPluginPackagesInTransaction(transaction, storageDirectory, true);
+}
+
+export function readInstalledPluginPackagesInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+): Promise<InstalledPluginPackage[]> {
+  return readPluginPackagesInTransaction(transaction, storageDirectory, false);
+}
+
+function readPluginPackagesInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  enabledOnly: boolean,
+): Promise<InstalledPluginPackage[]> {
   requireActiveStorageTransaction(transaction, storageDirectory);
   const operation = (async () => {
     if (!storageDirectory) return [];
     const directory = requireStorageDirectory(storageDirectory);
     const state = await loadCatalog(directory);
     const result: InstalledPluginPackage[] = [];
-    for (const plugin of state.plugins.filter((entry) => entry.enabled)) {
+    for (const plugin of state.plugins.filter((entry) => !enabledOnly || entry.enabled)) {
       result.push({ plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin) });
     }
     return result;
@@ -195,7 +211,19 @@ export async function setPluginEnabled(
   enabled: boolean,
 ): Promise<InstalledPlugin> {
   if (typeof enabled !== "boolean") throw new TypeError("Plugin enabled state must be boolean.");
-  return withStorageTransaction(storageDirectory, async () => {
+  return withStorageTransaction(storageDirectory, (transaction) =>
+    setPluginEnabledInTransaction(transaction, storageDirectory, pluginId, enabled));
+}
+
+export function setPluginEnabledInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  pluginId: string,
+  enabled: boolean,
+): Promise<InstalledPlugin> {
+  if (typeof enabled !== "boolean") throw new TypeError("Plugin enabled state must be boolean.");
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
     const directory = requireStorageDirectory(storageDirectory);
     const state = await loadCatalog(directory);
     const index = state.plugins.findIndex((entry) => entry.id === pluginId);
@@ -205,7 +233,8 @@ export async function setPluginEnabled(
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
     await saveCatalog(directory, { schemaVersion: 1, revision: incrementRevision(state.revision), plugins });
     return clonePlugin(next);
-  });
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
 export async function setPluginMcpServerApproved(
@@ -217,7 +246,22 @@ export async function setPluginMcpServerApproved(
   if (typeof approved !== "boolean" || !/^[A-Za-z0-9_-]{1,64}$/u.test(serverId)) {
     throw new TypeError("Plugin MCP server approval is invalid.");
   }
-  return withStorageTransaction(storageDirectory, async () => {
+  return withStorageTransaction(storageDirectory, (transaction) =>
+    setPluginMcpServerApprovedInTransaction(transaction, storageDirectory, pluginId, serverId, approved));
+}
+
+export function setPluginMcpServerApprovedInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  pluginId: string,
+  serverId: string,
+  approved: boolean,
+): Promise<InstalledPlugin> {
+  if (typeof approved !== "boolean" || !/^[A-Za-z0-9_-]{1,64}$/u.test(serverId)) {
+    throw new TypeError("Plugin MCP server approval is invalid.");
+  }
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
     const directory = requireStorageDirectory(storageDirectory);
     const state = await loadCatalog(directory);
     const index = state.plugins.findIndex((entry) => entry.id === pluginId);
@@ -240,7 +284,8 @@ export async function setPluginMcpServerApproved(
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
     await saveCatalog(directory, { schemaVersion: 1, revision: incrementRevision(state.revision), plugins });
     return clonePlugin(next);
-  });
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
 export async function preparePluginRuntime(
@@ -267,7 +312,17 @@ export async function preparePluginRuntime(
 }
 
 export async function deletePlugin(storageDirectory: string | undefined, pluginId: string): Promise<void> {
-  await withStorageTransaction(storageDirectory, async () => {
+  await withStorageTransaction(storageDirectory, (transaction) =>
+    deletePluginInTransaction(transaction, storageDirectory, pluginId));
+}
+
+export function deletePluginInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  pluginId: string,
+): Promise<void> {
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
     const directory = requireStorageDirectory(storageDirectory);
     const state = await loadCatalog(directory);
     const plugin = state.plugins.find((entry) => entry.id === pluginId);
@@ -280,7 +335,8 @@ export async function deletePlugin(storageDirectory: string | undefined, pluginI
     await removeDirectoryDurably(pluginDirectory(directory, pluginId));
     await removeDirectoryDurably(materializedPluginDirectory(directory, pluginId));
     await removeDirectoryDurably(pluginDataDirectory(directory, pluginId));
-  });
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
 async function loadCatalog(storageDirectory: string): Promise<StoredPluginCatalog> {
@@ -321,8 +377,7 @@ function decodeCatalog(value: unknown): StoredPluginCatalog {
 }
 
 function decodePlugin(value: unknown): InstalledPlugin {
-  if (!recordWithKeys(value, pluginKeys) || typeof value.id !== "string" ||
-      !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u.test(value.id) ||
+  if (!recordWithKeys(value, pluginKeys) || !isSafePluginId(value.id) ||
       (value.version !== undefined && (typeof value.version !== "string" || !safeMetadataString(value.version, 128))) ||
       (value.description !== undefined && (typeof value.description !== "string" || !safeMetadataString(value.description, 1024))) ||
       !["agent-plugins-1.0", "codex", "claude"].includes(String(value.sourceFormat)) ||
@@ -344,7 +399,20 @@ function decodePlugin(value: unknown): InstalledPlugin {
       approvedMcpServerIds.some((entry, index) => index > 0 && approvedMcpServerIds[index - 1] >= entry)) {
     throw new PluginStorageCorruptionError();
   }
-  return clonePlugin({ ...(value as unknown as InstalledPlugin), approvedMcpServerIds });
+  const unsupportedComponents = value.unsupportedComponents === undefined
+    ? []
+    : value.unsupportedComponents;
+  if (!Array.isArray(unsupportedComponents) || unsupportedComponents.length > 32 ||
+      unsupportedComponents.some((entry) => typeof entry !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9_. -]{0,127}$/u.test(entry)) ||
+      unsupportedComponents.some((entry, index) => index > 0 && unsupportedComponents[index - 1] >= entry)) {
+    throw new PluginStorageCorruptionError();
+  }
+  return clonePlugin({
+    ...(value as unknown as InstalledPlugin),
+    approvedMcpServerIds,
+    ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
+  });
 }
 
 async function ensureCatalogDirectories(storageDirectory: string, pluginId: string): Promise<void> {
@@ -482,7 +550,14 @@ function requireStorageDirectory(value: string | undefined): string {
 }
 
 function clonePlugin(value: InstalledPlugin): InstalledPlugin {
-  return { ...value, components: { ...value.components }, approvedMcpServerIds: [...value.approvedMcpServerIds] };
+  return {
+    ...value,
+    components: { ...value.components },
+    approvedMcpServerIds: [...value.approvedMcpServerIds],
+    ...(value.unsupportedComponents === undefined
+      ? {}
+      : { unsupportedComponents: [...value.unsupportedComponents] }),
+  };
 }
 
 function recordWithKeys(value: unknown, allowed: ReadonlySet<string>): value is Record<string, unknown> {

@@ -1,5 +1,7 @@
 import { TextDecoder } from "node:util";
 
+import { isSafePluginId } from "../plugins/contracts.js";
+
 export const MAX_SKILL_FILE_BYTES = 64 * 1024;
 export const MAX_SKILL_ID_LENGTH = 64;
 export const MAX_SKILL_REFERENCE_ID_LENGTH = MAX_SKILL_ID_LENGTH * 2 + 1;
@@ -181,7 +183,7 @@ export function isSafeSkillReferenceId(value: unknown): value is string {
   if (typeof value !== "string" || value.length > MAX_SKILL_REFERENCE_ID_LENGTH) return false;
   const separator = value.indexOf(":");
   return separator > 0 && separator === value.lastIndexOf(":") &&
-    /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u.test(value.slice(0, separator)) &&
+    isSafePluginId(value.slice(0, separator)) &&
     isSafeSkillId(value.slice(separator + 1));
 }
 

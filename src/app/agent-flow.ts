@@ -66,6 +66,8 @@ import {
   isBuiltInSkillId,
 } from "../skills/builtins.js";
 import { pluginSkillsFromPackages } from "../skills/plugin-package.js";
+import { installedPluginViews, previewPluginArchive } from "../plugins/view.js";
+import { openPluginArchive, PluginArchiveError } from "../plugins/archive.js";
 import {
   createDirectApiBackend,
   type ModelBackendManager,
@@ -126,7 +128,18 @@ import {
   SkillStorageCorruptionError,
   type InstalledSkill,
 } from "../storage/skills.js";
-import { readEnabledPluginPackagesInTransaction } from "../storage/plugins.js";
+import {
+  deletePluginInTransaction,
+  installPlugin,
+  listInstalledPlugins,
+  listInstalledPluginsInTransaction,
+  readEnabledPluginPackagesInTransaction,
+  readInstalledPluginPackagesInTransaction,
+  setPluginEnabledInTransaction,
+  setPluginMcpServerApprovedInTransaction,
+  PluginStorageCorruptionError,
+  type InstalledPlugin,
+} from "../storage/plugins.js";
 import {
   deleteOAuthCredentialProfile,
   retainOAuthCredentialForProfileProvider,
@@ -162,6 +175,7 @@ import {
   ChatBridgeResourceNotFoundError,
   ChatBridgeSendFailureError,
   ChatBridgeSkillValidationError,
+  ChatBridgePluginValidationError,
   createChatBridge,
   type ChatBridgeCommandContext,
   type ChatBridgeCommandInput,
@@ -173,12 +187,16 @@ import {
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
   type ChatBridgeSkillInstallResult,
+  type ChatBridgePluginInspectResult,
+  type ChatBridgePluginInstallInput,
+  type ChatBridgePluginInstallResult,
   type ChatBridgeSteeringReceiptLookupInput,
   type ChatBridgeSteeringReceiptLookupResult,
   type ChatBridgeStream,
 } from "./chat-bridge.js";
 import type {
   RawAttachmentBodyReadOptions,
+  RawPluginBodyReadOptions,
   RawSkillBodyReadOptions,
 } from "./chat-bridge-http.js";
 import {
@@ -350,6 +368,8 @@ export interface AgentFlowDependencies {
   attachmentBodyReadOptions?: RawAttachmentBodyReadOptions;
   /** Test-only Skill body-reader instrumentation. */
   skillBodyReadOptions?: RawSkillBodyReadOptions;
+  /** Test-only Plugin body-reader instrumentation. */
+  pluginBodyReadOptions?: RawPluginBodyReadOptions;
   /** Test-only synchronization point for a concurrent Profile save. */
   beforeSessionModelSelectionCommit?(): Promise<void> | void;
   /** Test-only synchronization point for a concurrent Session approval write. */
@@ -1302,11 +1322,16 @@ export async function runAgentFlow(
               transaction,
               storageDirectory,
             );
+            const pluginPackages = await readInstalledPluginPackagesInTransaction(
+              transaction,
+              storageDirectory,
+            );
             const pluginSkills = await pluginSkillsFromPackages(
-              await readEnabledPluginPackagesInTransaction(transaction, storageDirectory),
+              pluginPackages.filter((entry) => entry.plugin.enabled),
             );
             const availableSkills = availableSkillSummaries(installedSkills, pluginSkills);
-            return { allSessions, availableSkills };
+            const plugins = await installedPluginViews(pluginPackages);
+            return { allSessions, availableSkills, plugins };
           },
         );
         throwIfAborted(signal);
@@ -1340,6 +1365,7 @@ export async function runAgentFlow(
           signature: JSON.stringify([
             storageSnapshot.allSessions,
             storageSnapshot.availableSkills,
+            storageSnapshot.plugins,
             events,
             pendingAttachments,
           ]),
@@ -1438,6 +1464,7 @@ export async function runAgentFlow(
         sunoAccounts,
         ...(catalog === undefined ? {} : { sunoModelCatalog: catalog }),
         availableSkills: storageSnapshot.availableSkills,
+        plugins: storageSnapshot.plugins,
         activeSkillIds: [...(activeSession.activeSkillIds ?? [])],
         capabilities: capabilityPreview.capabilities,
         capabilityEvidence: capabilityPreview.capabilityEvidence,
@@ -3078,6 +3105,83 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (
+      commandInput.kind === "set_plugin_enabled" ||
+      commandInput.kind === "set_plugin_mcp_server_approved" ||
+      commandInput.kind === "delete_plugin"
+    ) {
+      let changed = false;
+      try {
+        await requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          signal,
+          () => withStorageTransaction(storageDirectory, async (transaction) => {
+            throwIfAborted(signal);
+            const plugins = await listInstalledPluginsInTransaction(transaction, storageDirectory);
+            const plugin = plugins.find((candidate) => candidate.id === commandInput.pluginId);
+            if (!plugin) throw new ChatBridgeResourceNotFoundError("That Plugin is not installed.");
+            if (commandInput.kind === "set_plugin_enabled") {
+              if (plugin.enabled === commandInput.enabled) return;
+              if (!commandInput.enabled) {
+                const prefix = `${plugin.id}:`;
+                for (const session of await listSessionsInTransaction(transaction, storageDirectory)) {
+                  const current = session.activeSkillIds ?? [];
+                  const retained = current.filter((skillId) => !skillId.startsWith(prefix));
+                  if (retained.length !== current.length) {
+                    await updateSessionInTransaction(transaction, storageDirectory, session.id, {
+                      activeSkillIds: retained,
+                    });
+                  }
+                }
+              }
+              await setPluginEnabledInTransaction(
+                transaction,
+                storageDirectory,
+                plugin.id,
+                commandInput.enabled,
+              );
+              changed = true;
+              return;
+            }
+            if (commandInput.kind === "set_plugin_mcp_server_approved") {
+              if (plugin.approvedMcpServerIds.includes(commandInput.serverId) === commandInput.approved) return;
+              await setPluginMcpServerApprovedInTransaction(
+                transaction,
+                storageDirectory,
+                plugin.id,
+                commandInput.serverId,
+                commandInput.approved,
+              );
+              changed = true;
+              return;
+            }
+            if (plugin.enabled) {
+              throw new ChatBridgeConflictError("Disable this Plugin before deleting it.");
+            }
+            if ((await listSessionsInTransaction(transaction, storageDirectory)).some((session) =>
+              session.activeSkillIds?.some((skillId) => skillId.startsWith(`${plugin.id}:`)))) {
+              throw new ChatBridgeConflictError("Remove this Plugin's Skills from every Session before deleting it.");
+            }
+            await deletePluginInTransaction(transaction, storageDirectory, plugin.id);
+            changed = true;
+          }),
+        );
+      } catch (error) {
+        if (error instanceof PluginStorageCorruptionError) {
+          throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
+        }
+        throw error;
+      }
+      if (changed) notifyGlobalStateChanged();
+      status = commandInput.kind === "delete_plugin"
+        ? `Plugin ${commandInput.pluginId} deleted.`
+        : commandInput.kind === "set_plugin_enabled"
+          ? `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
+          : `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} ${commandInput.approved ? "approved" : "revoked"}.`;
+      openSettingsOnLoad = false;
+      return buildStateAfterCommandMutation();
+    }
+
     if (commandInput.kind === "set_session_skills") {
       const mutationKey = sessionMutationFenceKey(
         storageDirectory,
@@ -3757,6 +3861,110 @@ export async function runAgentFlow(
     }
   };
 
+  const buildStateAfterPluginMutation = async () => {
+    try {
+      return await buildState();
+    } catch (cause) {
+      throw new ChatBridgeCommandOutcomeUnknownError(
+        "The Plugin catalog changed, but the resulting Live Smith state could not be confirmed.",
+        { cause, authoritativeState: undefined },
+      );
+    }
+  };
+
+  const handlePluginInspect = async (
+    input: { bytes: Uint8Array },
+    signal: AbortSignal,
+  ): Promise<ChatBridgePluginInspectResult> => {
+    throwIfAborted(signal);
+    try {
+      return { preview: await previewPluginArchive(input.bytes, signal) };
+    } catch (error) {
+      if (error instanceof PluginArchiveError) {
+        throw new ChatBridgePluginValidationError(error.message);
+      }
+      throwIfAborted(signal);
+      throw new ChatBridgePluginValidationError("The uploaded Plugin package is invalid.");
+    }
+  };
+
+  const handlePluginInstall = async (
+    input: ChatBridgePluginInstallInput,
+    signal: AbortSignal,
+  ): Promise<ChatBridgePluginInstallResult> => {
+    throwIfAborted(signal);
+    const bytes = Uint8Array.from(input.bytes);
+    let opened;
+    try {
+      opened = await openPluginArchive(bytes, signal);
+    } catch (error) {
+      if (error instanceof PluginArchiveError) throw new ChatBridgePluginValidationError(error.message);
+      throw new ChatBridgePluginValidationError("The uploaded Plugin package is invalid.");
+    }
+    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
+    let installed: InstalledPlugin | undefined;
+    let catalogChanged = false;
+    await requestConfigurationFence.run(requestConfigurationFenceKey, signal, async () => {
+      let invalidationPublished = false;
+      const publishInvalidation = () => {
+        if (invalidationPublished) return;
+        invalidationPublished = true;
+        notifyGlobalStateChanged();
+      };
+      try {
+        const existing = (await listInstalledPlugins(storageDirectory)).find(
+          (plugin) => plugin.id === opened.manifest.id,
+        );
+        if (existing?.sha256 === expectedSha256) {
+          installed = existing;
+          return;
+        }
+        if (existing?.enabled) {
+          throw new ChatBridgeConflictError("Disable this Plugin before replacing it.");
+        }
+        if (existing && !input.replace) {
+          throw new ChatBridgeConflictError(
+            `Plugin ${opened.manifest.id} is already installed. Confirm replacement to change it.`,
+          );
+        }
+        throwIfAborted(signal);
+        installed = await installPlugin(storageDirectory, bytes, { replace: Boolean(existing) });
+        catalogChanged = true;
+      } catch (error) {
+        if (isStorageCommitOutcomeUnknownError(error)) {
+          publishInvalidation();
+          try {
+            installed = (await listInstalledPlugins(storageDirectory)).find((plugin) =>
+              plugin.id === opened.manifest.id && plugin.sha256 === expectedSha256);
+          } catch {
+            installed = undefined;
+          }
+          if (!installed) {
+            throw new ChatBridgeCommandOutcomeUnknownError(
+              "The Plugin may have been installed, but its final state could not be confirmed.",
+              { cause: error },
+            );
+          }
+        } else if (error instanceof ChatBridgeConflictError || error instanceof ChatBridgePluginValidationError) {
+          throw error;
+        } else if (error instanceof PluginStorageCorruptionError) {
+          throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
+        } else {
+          throwIfAborted(signal);
+          throw new ChatBridgePluginValidationError("The Plugin could not be installed or replaced.");
+        }
+      }
+      if (catalogChanged) publishInvalidation();
+    });
+    if (!installed) throw new ChatBridgePluginValidationError("The Plugin installation could not be confirmed.");
+    status = `Plugin ${installed.id} installed.`;
+    openSettingsOnLoad = false;
+    return {
+      state: await buildStateAfterPluginMutation(),
+      receipt: { id: installed.id, sha256: installed.sha256 },
+    };
+  };
+
   const handleSkillInstall = async (
     input: ChatBridgeSkillInstallInput,
     signal: AbortSignal,
@@ -4229,12 +4437,17 @@ export async function runAgentFlow(
       handleAttachmentDelete,
       handleSkillInstall,
       handleSkillDelete,
+      handlePluginInspect,
+      handlePluginInstall,
       ...(dependencies.attachmentBodyReadOptions === undefined
         ? {}
         : { attachmentBodyReadOptions: dependencies.attachmentBodyReadOptions }),
       ...(dependencies.skillBodyReadOptions === undefined
         ? {}
         : { skillBodyReadOptions: dependencies.skillBodyReadOptions }),
+      ...(dependencies.pluginBodyReadOptions === undefined
+        ? {}
+        : { pluginBodyReadOptions: dependencies.pluginBodyReadOptions }),
     });
     if (pendingGlobalStateInvalidation) {
       bridge.publishGlobalStateInvalidation();

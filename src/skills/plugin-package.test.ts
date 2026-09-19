@@ -38,13 +38,15 @@ test("Claude-compatible Skills may derive the local name from their directory", 
   assert.equal(skills[0]!.description, "Convert selected audio to MIDI");
 });
 
-test("Plugin Skill identity cannot disagree with its directory", async () => {
-  await assert.rejects(pluginSkillsFromArchive("music-tools", zipSync({
+test("invalid Plugin Skills are skipped without disabling independent components", async () => {
+  const skills = await pluginSkillsFromArchive("music-tools", zipSync({
     "plugin.json": manifest("music-tools"),
     "skills/transcribe/SKILL.md": strToU8([
       "---", "name: another-name", "description: Mismatch", "---", "Body", "",
     ].join("\n")),
-  })), /directory/u);
+    "skills/valid/SKILL.md": strToU8("---\ndescription: Valid\n---\nBody\n"),
+  }));
+  assert.deepEqual(skills.map(({ id }) => id), ["music-tools:valid"]);
 });
 
 test("only direct Skill package entries are discovered", async () => {

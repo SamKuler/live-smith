@@ -21,6 +21,7 @@ import {
   availableSkillSummaries,
   isBuiltInSkillId,
 } from "../skills/builtins.js";
+import { previewPluginArchive } from "../plugins/view.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -94,6 +95,8 @@ interface DialogHarness {
   truncateNextAttachmentResponseAfterCommit(): void;
   rejectNextSkillResponseAfterCommit(error: string): void;
   truncateNextSkillResponseAfterCommit(): void;
+  rejectNextPluginResponseAfterCommit(error: string): void;
+  truncateNextPluginResponseAfterCommit(): void;
   flushAnimationFrames(): number;
   rejectNextSend(error: string): void;
   omitNextSendState(): void;
@@ -141,6 +144,7 @@ interface DialogHarness {
   dispatchDragOver(files: File[]): boolean;
   dropAttachmentFiles(files: File[]): void;
   dropSkillFile(file: File): boolean;
+  dropPluginFile(file: File): boolean;
   settle(): Promise<void>;
   settleAttachmentOperation(): Promise<void>;
   window: JSDOM["window"];
@@ -161,6 +165,7 @@ const clientScripts = {
   hostAdapter: readClientScript("host-adapter"),
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
+  pluginManager: readClientScript("plugin-manager"),
   sessionTimeline: readClientScript("session-timeline"),
   skillManager: readClientScript("skill-manager"),
 };
@@ -338,6 +343,7 @@ function stateFixture(): ChatBridgeState {
     events: [],
     pendingAttachments: [],
     availableSkills: availableSkillSummaries([]),
+    plugins: [],
     activeSkillIds: [],
     capabilities: capabilities(),
     capabilityEvidence: capabilityEvidence(),
@@ -485,6 +491,9 @@ async function createDialogHarness(
   let truncatedAttachmentResponses = 0;
   const skillResponseRejections: Error[] = [];
   let truncatedSkillResponses = 0;
+  const pluginResponseRejections: Error[] = [];
+  let truncatedPluginResponses = 0;
+  const installedPluginDigests = new Map<string, string>();
   let nextAttachmentUnknown: {
     error: string;
     committedMetadata?: {
@@ -1303,6 +1312,55 @@ async function createDialogHarness(
               ));
             }
 
+            if (url.pathname === "/plugins/inspect" && init?.method === "POST") {
+              const file = init.body as File;
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              return response({ preview: await previewPluginArchive(bytes) });
+            }
+
+            if (url.pathname === "/plugins" && init?.method === "POST") {
+              const file = init.body as File;
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              const preview = await previewPluginArchive(bytes);
+              const existing = serverState.plugins.find((plugin) => plugin.id === preview.id);
+              const existingDigest = installedPluginDigests.get(preview.id);
+              if (existing && existingDigest !== preview.sha256) {
+                if (existing.enabled) {
+                  return failedResponse(
+                    { error: "Disable this Plugin before replacing it." },
+                    409,
+                    "Conflict",
+                  );
+                }
+                if (url.searchParams.get("replace") !== "true") {
+                  return failedResponse(
+                    { error: `Plugin ${preview.id} is already installed. Confirm replacement to change it.` },
+                    409,
+                    "Conflict",
+                  );
+                }
+              }
+              if (!existing || existingDigest !== preview.sha256) {
+                const { sha256, byteLength, ...installed } = preview;
+                serverState.plugins = [
+                  ...serverState.plugins.filter((plugin) => plugin.id !== installed.id),
+                  installed,
+                ].sort((left, right) => left.id.localeCompare(right.id));
+                installedPluginDigests.set(installed.id, sha256);
+                void byteLength;
+              }
+              const responseRejection = pluginResponseRejections.shift();
+              if (responseRejection) throw responseRejection;
+              if (truncatedPluginResponses > 0) {
+                truncatedPluginResponses -= 1;
+                return truncatedJsonResponse();
+              }
+              return response({
+                state: publishBridgeState(serverState, stateSnapshotCutRevision),
+                receipt: { id: preview.id, sha256: preview.sha256 },
+              });
+            }
+
             if (url.pathname === "/skills" && init?.method === "POST") {
               const file = init.body as File;
               const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1433,9 +1491,61 @@ async function createDialogHarness(
                   "xhigh" | "max" | "ultra" | null;
                 sessionId?: string;
                 skillIds?: string[];
+                pluginId?: string;
+                serverId?: string;
+                enabled?: boolean;
+                approved?: boolean;
                 title?: string;
               };
               if (
+                command.kind === "set_plugin_enabled" &&
+                typeof command.pluginId === "string" &&
+                typeof command.enabled === "boolean"
+              ) {
+                const plugin = serverState.plugins.find((entry) => entry.id === command.pluginId);
+                if (plugin) plugin.enabled = command.enabled;
+                if (!command.enabled) {
+                  serverState.availableSkills = serverState.availableSkills.filter(
+                    (skill) => skill.source !== "plugin" || skill.pluginId !== command.pluginId,
+                  );
+                  for (const session of [
+                    ...serverState.sessions,
+                    ...serverState.previousSessions,
+                    ...serverState.archivedSessions,
+                  ]) {
+                    if (session.activeSkillIds) {
+                      session.activeSkillIds = session.activeSkillIds.filter(
+                        (skillId) => !skillId.startsWith(`${command.pluginId}:`),
+                      );
+                    }
+                  }
+                  serverState.activeSkillIds = serverState.activeSkillIds.filter(
+                    (skillId) => !skillId.startsWith(`${command.pluginId}:`),
+                  );
+                }
+              } else if (
+                command.kind === "set_plugin_mcp_server_approved" &&
+                typeof command.pluginId === "string" &&
+                typeof command.serverId === "string" &&
+                typeof command.approved === "boolean"
+              ) {
+                const server = serverState.plugins.find((entry) => entry.id === command.pluginId)
+                  ?.mcpServers.find((entry) => entry.id === command.serverId);
+                if (server) server.approved = command.approved;
+              } else if (
+                command.kind === "delete_plugin" &&
+                typeof command.pluginId === "string"
+              ) {
+                const plugin = serverState.plugins.find((entry) => entry.id === command.pluginId);
+                if (plugin?.enabled) {
+                  return failedResponse({ commandId, error: "Disable this Plugin before deleting it." }, 409, "Conflict");
+                }
+                serverState.plugins = serverState.plugins.filter((entry) => entry.id !== command.pluginId);
+                serverState.availableSkills = serverState.availableSkills.filter(
+                  (skill) => skill.source !== "plugin" || skill.pluginId !== command.pluginId,
+                );
+                installedPluginDigests.delete(command.pluginId);
+              } else if (
                 command.kind === "save_global_settings"
               ) {
                 if (command.audioServices) {
@@ -2184,6 +2294,12 @@ async function createDialogHarness(
     truncateNextSkillResponseAfterCommit() {
       truncatedSkillResponses += 1;
     },
+    rejectNextPluginResponseAfterCommit(error) {
+      pluginResponseRejections.push(new Error(error));
+    },
+    truncateNextPluginResponseAfterCommit() {
+      truncatedPluginResponses += 1;
+    },
     flushAnimationFrames() {
       const pending = [...animationFrames.values()];
       animationFrames.clear();
@@ -2371,6 +2487,14 @@ async function createDialogHarness(
         value: { files: [file], types: ["Files"] },
       });
       required<HTMLElement>("#skillDropZone").dispatchEvent(event);
+      return event.defaultPrevented;
+    },
+    dropPluginFile(file) {
+      const event = new window.Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", {
+        value: { files: [file], types: ["Files"] },
+      });
+      required<HTMLElement>("#pluginDropZone").dispatchEvent(event);
       return event.defaultPrevented;
     },
     async settle() {

@@ -62,6 +62,38 @@ test("Claude-compatible manifests may embed MCP server declarations", () => {
   })]).components, { mcpManifestPath: ".claude-plugin/plugin.json" });
 });
 
+test("unsupported platform components are preserved as inert compatibility facts", () => {
+  const claude = parsePluginPackageManifest([
+    file(".claude-plugin/plugin.json", {
+      name: "fixture-plugin",
+      description: "Fixture tools",
+      commands: "./commands",
+      lspServers: { typescript: {} },
+      userConfig: { token: "prompt" },
+    }),
+    { path: "commands/convert.md", bytes: Buffer.from("Convert") },
+    file("hooks/hooks.json", { hooks: {} }),
+    file(".app.json", { apps: {} }),
+  ]);
+  assert.deepEqual(claude.unsupportedComponents, [
+    "apps",
+    "commands",
+    "hooks",
+    "lspServers",
+    "userConfig",
+  ]);
+
+  const portable = parsePluginPackageManifest([file("plugin.json", {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "portable-plugin",
+    extensions: { "com.openai": { hooks: "./hooks/hooks.json", apps: ["./.app.json"] } },
+  })]);
+  assert.deepEqual(portable.unsupportedComponents, [
+    "com.openai.apps",
+    "com.openai.hooks",
+  ]);
+});
+
 test("compatibility manifests cannot reference a missing MCP configuration", () => {
   assert.throws(() => parsePluginPackageManifest([file(".claude-plugin/plugin.json", {
     name: "fixture-plugin", mcpServers: "./.mcp.json",

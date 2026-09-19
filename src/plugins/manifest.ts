@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 
-import type { PluginComponents, PluginManifest, PluginSourceFormat } from "./contracts.js";
+import { isSafePluginId, type PluginComponents, type PluginManifest, type PluginSourceFormat } from "./contracts.js";
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const portableManifestSchema = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
@@ -8,7 +8,21 @@ const portableKeys = new Set([
   "$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions",
 ]);
 const authorKeys = new Set(["name", "email", "url"]);
-const idPattern = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u;
+const compatibilityMetadataKeys = new Set([
+  "$schema", "name", "version", "description", "author", "homepage",
+  "repository", "license", "keywords", "skills", "mcpServers",
+]);
+const unsupportedPackageComponents = [
+  { path: "commands/", label: "commands" },
+  { path: "agents/", label: "agents" },
+  { path: "hooks/", label: "hooks" },
+  { path: "output-styles/", label: "outputStyles" },
+] as const;
+const unsupportedPackageFiles = new Map([
+  [".lsp.json", "lspServers"],
+  [".app.json", "apps"],
+  [".claude-plugin/marketplace.json", "marketplace"],
+]);
 
 export interface PluginPackageFile {
   path: string;
@@ -40,7 +54,56 @@ export function parsePluginPackageManifest(input: readonly PluginPackageFile[]):
         ...(files.has("mcp.json") ? { mcpConfigPath: "mcp.json" } : {}),
       }
     : compatibilityComponents(selected, files, selectedPath);
-  return { ...identity, sourceFormat, components };
+  const unsupportedComponents = discoverUnsupportedComponents(
+    selected,
+    sourceFormat,
+    files,
+    [codex, claude].filter((value): value is Record<string, unknown> => value !== undefined),
+  );
+  return {
+    ...identity,
+    sourceFormat,
+    components,
+    ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
+  };
+}
+
+function discoverUnsupportedComponents(
+  selected: Record<string, unknown>,
+  sourceFormat: PluginSourceFormat,
+  files: ReadonlyMap<string, Uint8Array>,
+  compatibilityManifests: readonly Record<string, unknown>[],
+): string[] {
+  const found = new Set<string>();
+  if (sourceFormat === "agent-plugins-1.0") {
+    const extensions = selected.extensions;
+    if (plainRecord(extensions)) {
+      for (const [namespace, extension] of Object.entries(extensions)) {
+        if (!plainRecord(extension)) continue;
+        for (const key of Object.keys(extension)) addComponentLabel(found, `${namespace}.${key}`);
+      }
+    }
+  }
+  for (const manifest of sourceFormat === "agent-plugins-1.0"
+    ? compatibilityManifests
+    : [selected]) {
+    for (const key of Object.keys(manifest)) {
+      if (!compatibilityMetadataKeys.has(key)) addComponentLabel(found, key);
+    }
+  }
+  for (const component of unsupportedPackageComponents) {
+    if ([...files.keys()].some((file) => file.startsWith(component.path))) {
+      found.add(component.label);
+    }
+  }
+  for (const [file, label] of unsupportedPackageFiles) if (files.has(file)) found.add(label);
+  return [...found].sort().slice(0, 32);
+}
+
+function addComponentLabel(output: Set<string>, value: string): void {
+  output.add(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(value)
+    ? value
+    : "other manifest fields");
 }
 
 function normalizedFiles(input: readonly PluginPackageFile[]): Map<string, Uint8Array> {
@@ -80,7 +143,7 @@ function readIdentity(value: Record<string, unknown>): Pick<PluginManifest, "id"
   const name = value.name;
   const version = value.version;
   const description = value.description;
-  if (typeof name !== "string" || name.length > 64 || !idPattern.test(name)) {
+  if (!isSafePluginId(name)) {
     throw new Error("Plugin manifest name is invalid.");
   }
   if (version !== undefined && (typeof version !== "string" || !safeMetadataString(version, 128))) {

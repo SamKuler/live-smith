@@ -16,6 +16,7 @@ const capabilityReadBody = JSON.stringify(capabilityReadInput);
 const skillBody = Buffer.from(
   "---\nname: mix-review\ndescription: Review a mix\n---\nKeep it clear.\n",
 );
+const pluginBody = Buffer.from("fixture-plugin-zip");
 
 async function createContractBridge() {
   const state = {} as ChatDialogState;
@@ -23,6 +24,8 @@ async function createContractBridge() {
   let sendCalls = 0;
   let skillInstallCalls = 0;
   let skillDeleteCalls = 0;
+  let pluginInspectCalls = 0;
+  let pluginInstallCalls = 0;
   const bridge = await createChatBridge({
     buildState: async () => state,
     renderHtml: () => "<html></html>",
@@ -48,11 +51,36 @@ async function createContractBridge() {
       skillDeleteCalls += 1;
       return state;
     },
+    handlePluginInspect: async () => {
+      pluginInspectCalls += 1;
+      return {
+        preview: {
+          id: "fixture-plugin",
+          sourceFormat: "agent-plugins-1.0",
+          enabled: false,
+          skillCount: 0,
+          mcpServers: [],
+          unsupportedComponents: [],
+          issues: [],
+          sha256: "a".repeat(64),
+          byteLength: pluginBody.byteLength,
+        },
+      };
+    },
+    handlePluginInstall: async () => {
+      pluginInstallCalls += 1;
+      return {
+        state,
+        receipt: { id: "fixture-plugin", sha256: "a".repeat(64) },
+      };
+    },
   });
   return {
     bridge,
     calls: () => ({
       commandCalls,
+      pluginInspectCalls,
+      pluginInstallCalls,
       sendCalls,
       skillDeleteCalls,
       skillInstallCalls,
@@ -171,6 +199,25 @@ test("known bridge routes reject duplicate tokens and route-specific extra query
         headers: { "X-Live-Smith-Command-Id": "query-skill-delete" },
       },
     },
+    {
+      path: `/plugins/inspect?token=${token}&extra=1`,
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: pluginBody,
+      },
+    },
+    {
+      path: `/plugins?token=${token}&replace=false&extra=1`,
+      init: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/zip",
+          "X-Live-Smith-Command-Id": "query-plugin-install",
+        },
+        body: pluginBody,
+      },
+    },
   ];
 
   try {
@@ -286,6 +333,51 @@ test("every JSON route requires one unambiguous application/json media type", as
   }
 });
 
+test("Plugin raw routes accept only ZIP or octet-stream bodies", async () => {
+  const { bridge, calls } = await createContractBridge();
+  const { origin, token } = bridgeAddress(bridge.url);
+  try {
+    for (const pathname of ["/plugins/inspect", "/plugins?replace=false"]) {
+      for (const contentType of ["text/plain", "application/json", "application/zip; charset=utf-8", undefined]) {
+        const separator = pathname.includes("?") ? "&" : "?";
+        const response = await request(origin, `${pathname}${separator}token=${token}`, {
+          method: "POST",
+          headers: {
+            ...(contentType === undefined ? {} : { "Content-Type": contentType }),
+            ...(pathname === "/plugins?replace=false"
+              ? { "X-Live-Smith-Command-Id": `plugin-media-${contentType ?? "missing"}` }
+              : {}),
+          },
+          body: pluginBody,
+        });
+        assert.equal(response.status, 400, `${pathname} with ${contentType ?? "no Content-Type"}`);
+      }
+    }
+    for (const [index, contentType] of ["application/zip", "Application/Octet-Stream"]
+      .entries()) {
+      const inspection = await request(origin, `/plugins/inspect?token=${token}`, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: pluginBody,
+      });
+      assert.equal(inspection.status, 200);
+      const install = await request(origin, `/plugins?token=${token}&replace=false`, {
+        method: "POST",
+        headers: {
+          "Content-Type": contentType,
+          "X-Live-Smith-Command-Id": `plugin-media-accepted-${index}`,
+        },
+        body: pluginBody,
+      });
+      assert.equal(install.status, 201);
+    }
+    assert.equal(calls().pluginInspectCalls, 2);
+    assert.equal(calls().pluginInstallCalls, 2);
+  } finally {
+    await bridge.close();
+  }
+});
+
 test("send, command, capability reads, and Skill mutations require caller-owned correlation IDs", async () => {
   const { bridge, calls } = await createContractBridge();
   const { origin, token } = bridgeAddress(bridge.url);
@@ -315,13 +407,20 @@ test("send, command, capability reads, and Skill mutations require caller-owned 
       request(origin, `/skills/mix-review?token=${token}`, {
         method: "DELETE",
       }),
+      request(origin, `/plugins?token=${token}&replace=false`, {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: pluginBody,
+      }),
     ]);
     assert.deepEqual(
       responses.map((response) => response.status),
-      [400, 400, 400, 400, 400],
+      [400, 400, 400, 400, 400, 400],
     );
     assert.deepEqual(calls(), {
       commandCalls: 0,
+      pluginInspectCalls: 0,
+      pluginInstallCalls: 0,
       sendCalls: 0,
       skillDeleteCalls: 0,
       skillInstallCalls: 0,

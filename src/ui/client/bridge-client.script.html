@@ -467,6 +467,7 @@
             state.bridgeStateCoveredThroughRevision,
           activeSessionId: state.activeSessionId,
           pendingAttachments: state.pendingAttachments,
+          plugins: state.plugins,
           audioJobs: state.audioJobs,
           contextSummary: state.contextSummary,
           liveContext: state.liveContext,
@@ -1102,6 +1103,9 @@
         );
         if (attempt.ownsAvailableSkills) {
           merged.availableSkills = state.availableSkills;
+        }
+        if (attempt.ownsPlugins) {
+          merged.plugins = state.plugins;
         }
         if (!attempt.ownsGlobalState && sameJsonValue(current.status, baseline.status)) {
           merged.status = state.status;
@@ -2936,6 +2940,58 @@
                   : asset.role === "sound_effect"))));
       }
 
+      function isWireInstalledPlugin(value) {
+        const issues = new Set([
+          "invalid_skill",
+          "invalid_mcp_configuration",
+          "invalid_mcp_server",
+          "unsupported_mcp_transport",
+        ]);
+        if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
+          "id", "version", "description", "sourceFormat", "enabled",
+          "skillCount", "mcpServers", "unsupportedComponents", "issues",
+        ]) ||
+          typeof value.id !== "string" ||
+          !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(value.id) ||
+          (value.version !== undefined && (typeof value.version !== "string" || value.version.length > 128)) ||
+          (value.description !== undefined && (typeof value.description !== "string" || value.description.length > 1024)) ||
+          !["agent-plugins-1.0", "codex", "claude"].includes(value.sourceFormat) ||
+          typeof value.enabled !== "boolean" ||
+          !Number.isInteger(value.skillCount) || value.skillCount < 0 || value.skillCount > 2048 ||
+          !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
+          !value.mcpServers.every((server) => isWireRecord(server) &&
+            hasOnlyWireKeys(server, ["id", "type", "approved", "target"]) &&
+            typeof server.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(server.id) &&
+            ["stdio", "streamable-http"].includes(server.type) &&
+            typeof server.approved === "boolean" &&
+            typeof server.target === "string" && server.target.length > 0 && server.target.length <= 2048 &&
+            !/[\u0000-\u001f\u007f]/.test(server.target)) ||
+          new Set(value.mcpServers.map((server) => server.id)).size !== value.mcpServers.length ||
+          !Array.isArray(value.unsupportedComponents) || value.unsupportedComponents.length > 32 ||
+          new Set(value.unsupportedComponents).size !== value.unsupportedComponents.length ||
+          !value.unsupportedComponents.every((entry) => typeof entry === "string" &&
+            /^[A-Za-z0-9][A-Za-z0-9_. -]{0,127}$/.test(entry)) ||
+          !Array.isArray(value.issues) || value.issues.length > issues.size ||
+          new Set(value.issues).size !== value.issues.length ||
+          !value.issues.every((entry) => issues.has(entry))) return false;
+        return true;
+      }
+
+      function isWirePluginInstallPreview(value) {
+        if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
+          "id", "version", "description", "sourceFormat", "enabled",
+          "skillCount", "mcpServers", "unsupportedComponents", "issues", "sha256", "byteLength",
+        ]) ||
+          !/^[a-f0-9]{64}$/.test(value.sha256 || "") ||
+          !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 ||
+          value.byteLength > __MAX_PLUGIN_ARCHIVE_BYTES__) return false;
+        const installed = { ...value };
+        delete installed.sha256;
+        delete installed.byteLength;
+        return isWireInstalledPlugin(installed) && installed.enabled === false &&
+          installed.mcpServers.every((server) => server.approved === false);
+      }
+
       function isWireChatBridgeState(value) {
         if (
           !isWireRecord(value) ||
@@ -2955,6 +3011,7 @@
             "events",
             "pendingAttachments",
             "availableSkills",
+            "plugins",
             "activeSkillIds",
             "capabilities",
             "capabilityEvidence",
@@ -3009,6 +3066,8 @@
           ) ||
           !Array.isArray(value.availableSkills) ||
           !value.availableSkills.every(isWireSkillSummary) ||
+          !Array.isArray(value.plugins) ||
+          !value.plugins.every(isWireInstalledPlugin) ||
           !isWireSkillIds(value.activeSkillIds) ||
           !isWireModelCapabilities(value.capabilities) ||
           !isWireModelCapabilityEvidence(
@@ -3101,6 +3160,7 @@
           availableSkillIds.size !== value.availableSkills.length ||
           !value.activeSkillIds.every((skillId) => availableSkillIds.has(skillId))
         ) return false;
+        if (new Set(value.plugins.map((plugin) => plugin.id)).size !== value.plugins.length) return false;
         if (
           new Set(value.availableModels.map((model) => model.id)).size !==
             value.availableModels.length
@@ -7614,7 +7674,8 @@
           kind,
           causalStateSnapshot: captureCausalState(),
           ownedPendingAttachmentIds: new Set(),
-          ownsAvailableSkills: kind === "skill",
+          ownsAvailableSkills: kind === "skill" || kind === "plugin",
+          ownsPlugins: kind === "plugin",
         };
         if (kind === "attachment") attachmentOperationInProgress = true;
         else skillOperationInProgress = true;
@@ -7998,6 +8059,158 @@
           },
           causalAttempt,
         ));
+      }
+
+      function pluginRequestWithNewCommandId(init) {
+        return {
+          ...init,
+          headers: {
+            ...(init.headers || {}),
+            "X-Live-Smith-Command-Id": createCorrelationId("command"),
+          },
+        };
+      }
+
+      function unconfirmedPluginResultError(error) {
+        commandReconciliationBlocked = true;
+        return new Error(
+          t("{error} The Plugin result is unconfirmed. Close and reopen Live Smith before changing Plugins again.", { error: error.message || String(error) }),
+        );
+      }
+
+      async function requestPlugin(path, init, causalAttempt) {
+        try {
+          return await requestPluginAttempt(path, pluginRequestWithNewCommandId(init), causalAttempt);
+        } catch (error) {
+          if (error.pluginNetworkFailure !== true) throw error;
+          showStatus(
+            window.LiveSmithI18n.message("Lost the Plugin response. Waiting for authoritative bridge state…"),
+            true,
+          );
+          try {
+            if (await refreshState(causalAttempt, "plugin_reconcile") !== true) {
+              throw new Error(t("The bridge did not return current Plugin state."));
+            }
+          } catch {
+            throw unconfirmedPluginResultError(error);
+          }
+          try {
+            return await requestPluginAttempt(path, pluginRequestWithNewCommandId(init), causalAttempt);
+          } catch (retryError) {
+            throw unconfirmedPluginResultError(retryError);
+          }
+        }
+      }
+
+      async function requestPluginAttempt(path, init, causalAttempt) {
+        let response;
+        try {
+          response = await fetch(bridgeUrl(path), init);
+        } catch (error) {
+          const networkError = new Error(error.message || String(error));
+          networkError.pluginNetworkFailure = true;
+          throw networkError;
+        }
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          throw pluginResponseLossError();
+        }
+        if (!result || typeof result !== "object" || Array.isArray(result)) {
+          throw pluginResponseLossError();
+        }
+        if (!response.ok) {
+          const error = new Error(result.error || `${response.status} ${response.statusText}`);
+          error.httpStatus = response.status;
+          if (result.commandOutcome === "unknown") {
+            if (isWireChatBridgeState(result.state)) {
+              applyCommandState("plugin_reconcile", result.state, causalAttempt);
+            } else {
+              commandReconciliationBlocked = true;
+            }
+          }
+          if (result.reconciliationRequired === true) commandReconciliationBlocked = true;
+          throw error;
+        }
+        const state = result.state && typeof result.state === "object" ? result.state : result;
+        if (!isWireChatBridgeState(state)) throw pluginResponseLossError();
+        applyCommandState("plugin", state, causalAttempt);
+        return result;
+      }
+
+      function pluginResponseLossError() {
+        const error = new Error(
+          t("The Plugin response ended before its authoritative state was available."),
+        );
+        error.pluginNetworkFailure = true;
+        return error;
+      }
+
+      async function inspectPlugin(file) {
+        return runFileOperation("plugin", async () => {
+          const contentSha256 = await fileContentSha256(file);
+          if (!contentSha256) {
+            throw new Error(t("The selected Plugin could not be fingerprinted."));
+          }
+          let response;
+          try {
+            response = await fetch(bridgeUrl("/plugins/inspect"), {
+              method: "POST",
+              headers: { "Content-Type": "application/zip" },
+              body: file,
+            });
+          } catch (error) {
+            throw new Error(error.message || String(error));
+          }
+          let result;
+          try {
+            result = await response.json();
+          } catch {
+            throw new Error(t("The Plugin inspection response ended before JSON was complete."));
+          }
+          if (!response.ok) {
+            throw new Error(result?.error || `${response.status} ${response.statusText}`);
+          }
+          if (!isWireRecord(result) || !hasOnlyWireKeys(result, ["preview"]) ||
+              !isWirePluginInstallPreview(result.preview) ||
+              result.preview.sha256 !== contentSha256 ||
+              result.preview.byteLength !== file.size) {
+            throw new Error(t("The Plugin inspection could not be matched to the selected package."));
+          }
+          return result.preview;
+        });
+      }
+
+      async function installPlugin(file, replace) {
+        return runFileOperation("plugin", async (causalAttempt) => {
+          const contentSha256 = await fileContentSha256(file);
+          if (!contentSha256) {
+            commandReconciliationBlocked = true;
+            throw new Error(
+              t("The selected Plugin could not be fingerprinted. Close and reopen Live Smith before retrying."),
+            );
+          }
+          const result = await requestPlugin(
+            `/plugins?replace=${replace ? "true" : "false"}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/zip" },
+              body: file,
+            },
+            causalAttempt,
+          );
+          const receipt = result.receipt;
+          if (!receipt || typeof receipt.id !== "string" ||
+              !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(receipt.id) ||
+              !/^[a-f0-9]{64}$/.test(receipt.sha256 || "") || receipt.sha256 !== contentSha256) {
+            commandReconciliationBlocked = true;
+            throw new Error(
+              t("The Plugin response could not be matched to the submitted package. Close and reopen Live Smith before retrying."),
+            );
+          }
+          return receipt;
+        });
       }
 
       async function refreshState(causalAttempt, commandKind, options) {
@@ -9700,7 +9913,9 @@
         },
         showStatus,
         startEventStream,
+        inspectPlugin,
         installSkill,
+        installPlugin,
         uploadAttachments,
       };
       };

@@ -14,6 +14,7 @@ import {
   isSafeSkillReferenceId,
   MAX_SKILL_FILE_BYTES,
 } from "../skills/format.js";
+import { isSafePluginId } from "../plugins/contracts.js";
 import { requireSafeStorageId, isSafeStorageId } from "../storage/id.js";
 import { normalizeAudioServicesSettingsPatch, type AudioServicesSettingsPatch } from "../storage/settings.js";
 import {
@@ -90,6 +91,15 @@ export interface ChatBridgeSkillDeleteInput {
   skillId: string;
 }
 
+export interface ChatBridgePluginInstallInput {
+  bytes: Uint8Array;
+  replace: boolean;
+}
+
+export interface ChatBridgePluginInspectInput {
+  bytes: Uint8Array;
+}
+
 export interface RawAttachmentBodyReadOptions {
   /** Test seam; production callers use the fixed default. */
   timeoutMs?: number;
@@ -103,6 +113,8 @@ export interface RawSkillBodyReadOptions {
   /** Test seam for asserting allocation shape without changing ownership. */
   allocateBuffer?(byteLength: number): Buffer;
 }
+
+export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {}
 
 export type ChatBridgeCommandInput =
   | {
@@ -233,6 +245,9 @@ export type ChatBridgeCommandInput =
   | { kind: "archive_session"; sessionId: string }
   | { kind: "unarchive_session"; sessionId: string }
   | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
+  | { kind: "set_plugin_enabled"; pluginId: string; enabled: boolean }
+  | { kind: "set_plugin_mcp_server_approved"; pluginId: string; serverId: string; approved: boolean }
+  | { kind: "delete_plugin"; pluginId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
 export class ChatBridgeConflictError extends Error {
@@ -499,6 +514,35 @@ export function readRawSkillBody(
   });
 }
 
+export function readRawPluginBody(
+  request: IncomingMessage,
+  options: RawPluginBodyReadOptions = {},
+): Promise<Uint8Array> {
+  let declaredLength: number | undefined;
+  try {
+    assertPluginContentType(request);
+    declaredLength = boundedContentLength(request, "Plugin", MAX_DOCUMENT_ATTACHMENT_BYTES);
+    if (declaredLength === 0) throw new ChatBridgeRequestValidationError("Plugin body must not be empty.");
+  } catch (error) {
+    request.resume();
+    throw error;
+  }
+  return readBoundedRawBody(request, declaredLength, {
+    maximumBytes: MAX_DOCUMENT_ATTACHMENT_BYTES,
+    initialCapacity: initialUnknownAttachmentBodyCapacity,
+    timeoutMs: options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs,
+    allocateBuffer: options.allocateBuffer ?? Buffer.allocUnsafe,
+    acquirePermit: acquireAttachmentBodyReadPermit,
+    emptyMessage: "Plugin body must not be empty.",
+    tooLargeMessage: `Plugin uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+    mismatchMessage: "Plugin Content-Length does not match the received body.",
+    timeoutMessage: "Plugin upload timed out before the complete body was received.",
+    incompleteMessage: "Plugin upload ended before the complete body was received.",
+    readErrorMessage: "Plugin upload could not be read.",
+    bufferErrorMessage: "Plugin upload could not be buffered.",
+  });
+}
+
 interface BoundedRawBodyPolicy {
   maximumBytes: number;
   initialCapacity: number;
@@ -735,6 +779,19 @@ export function parseSkillInstallQuery(
   return { replace: values[0] === "true" };
 }
 
+export function parsePluginInstallQuery(
+  request: IncomingMessage,
+  url: URL,
+): { replace: boolean } {
+  assertSkillQuery(request, url, ["token", "replace"]);
+  const values = url.searchParams.getAll("replace");
+  if (values.length === 0) return { replace: false };
+  if (values.length !== 1 || (values[0] !== "true" && values[0] !== "false")) {
+    throw new ChatBridgeRequestValidationError("replace must be true or false when provided.");
+  }
+  return { replace: values[0] === "true" };
+}
+
 export function parseSkillDeleteQuery(
   request: IncomingMessage,
   url: URL,
@@ -828,6 +885,16 @@ function assertSkillContentType(request: IncomingMessage): void {
   ) {
     throw new ChatBridgeRequestValidationError(
       "Skill uploads require Content-Type text/markdown; charset=utf-8.",
+    );
+  }
+}
+
+function assertPluginContentType(request: IncomingMessage): void {
+  const contentType = singleHeaderValue(request, "content-type", true);
+  if (contentType === undefined ||
+      !/^(?:application\/zip|application\/octet-stream)$/iu.test(contentType.trim())) {
+    throw new ChatBridgeRequestValidationError(
+      "Plugin uploads require Content-Type application/zip or application/octet-stream.",
     );
   }
 }
@@ -1269,6 +1336,26 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       sessionId: inputString(input, "sessionId"),
       skillIds: [...skillIds],
     };
+  }
+  if (kind === "set_plugin_enabled") {
+    assertOnlyInputKeys(input, ["kind", "pluginId", "enabled"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.enabled !== "boolean") {
+      throw new ChatBridgeRequestValidationError("Plugin enabled state is invalid.");
+    }
+    return { kind, pluginId: input.pluginId, enabled: input.enabled };
+  }
+  if (kind === "set_plugin_mcp_server_approved") {
+    assertOnlyInputKeys(input, ["kind", "pluginId", "serverId", "approved"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.serverId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,64}$/u.test(input.serverId) || typeof input.approved !== "boolean") {
+      throw new ChatBridgeRequestValidationError("Plugin MCP server approval is invalid.");
+    }
+    return { kind, pluginId: input.pluginId, serverId: input.serverId, approved: input.approved };
+  }
+  if (kind === "delete_plugin") {
+    assertOnlyInputKeys(input, ["kind", "pluginId"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId)) throw new ChatBridgeRequestValidationError("Plugin ID is invalid.");
+    return { kind, pluginId: input.pluginId };
   }
   throw new ChatBridgeRequestValidationError(`Unsupported command ${kind}.`);
 }

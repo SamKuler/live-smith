@@ -161,6 +161,7 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     events: [],
     pendingAttachments: [],
     availableSkills: [],
+    plugins: [],
     activeSkillIds: [],
     capabilities: {
       tools: true,

@@ -2,6 +2,12 @@ import type { ModelFunctionTool } from "../model/provider.js";
 
 export type PluginId = string;
 export type PluginSourceFormat = "agent-plugins-1.0" | "codex" | "claude";
+export const MAX_PLUGIN_ID_LENGTH = 64;
+const pluginIdPattern = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u;
+
+export function isSafePluginId(value: unknown): value is PluginId {
+  return typeof value === "string" && value.length <= MAX_PLUGIN_ID_LENGTH && pluginIdPattern.test(value);
+}
 
 export interface PluginComponents {
   skillsDirectory?: string;
@@ -15,6 +21,7 @@ export interface PluginManifest {
   description?: string;
   sourceFormat: PluginSourceFormat;
   components: PluginComponents;
+  unsupportedComponents?: string[];
 }
 
 export interface PluginToolDefinition {

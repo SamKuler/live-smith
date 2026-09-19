@@ -24,6 +24,7 @@ import {
   type SkillDefinition,
 } from "../skills/format.js";
 import { builtInSkillDefinitions } from "../skills/builtins.js";
+import { MAX_PLUGIN_ARCHIVE_BYTES } from "../plugins/archive.js";
 import {
   MAX_DISCOVERED_MODEL_COUNT,
   MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -53,8 +54,13 @@ export interface ChatClientScripts {
   hostAdapter: string;
   markdownRenderer: string;
   profileEditor: string;
+  pluginManager: string;
   sessionTimeline: string;
   skillManager: string;
+}
+
+function injectPluginContract(script: string): string {
+  return script.replaceAll("__MAX_PLUGIN_ARCHIVE_BYTES__", String(MAX_PLUGIN_ARCHIVE_BYTES));
 }
 
 function injectAttachmentContract(script: string): string {
@@ -210,11 +216,11 @@ export function composeChatDocument(
   styles = "",
 ): string {
   const attachmentsScript = injectSessionContract(injectAttachmentContract(scripts.attachments));
-  const bridgeClientScript = injectSessionContract(injectEditScopeContract(
+  const bridgeClientScript = injectPluginContract(injectSessionContract(injectEditScopeContract(
     injectModelContract(injectSkillContract(
       injectAttachmentContract(scripts.bridgeClient),
     )),
-  ));
+  )));
   const profileEditorScript = injectModelContract(scripts.profileEditor);
   const skillManagerScript = injectBuiltInSkillDefinitions(
     injectSkillContract(scripts.skillManager),
@@ -229,6 +235,7 @@ export function composeChatDocument(
     __ATTACHMENTS_SCRIPT__: attachmentsScript,
     __COMPOSER_INPUT_SCRIPT__: scripts.composerInput,
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
+    __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(scripts.sessionTimeline),

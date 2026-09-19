@@ -1701,6 +1701,107 @@ details.timeline-item > .timeline-content {
 .danger-action { @apply text-danger; }
 .audio-output-meta { @apply text-small text-quiet; font-variant-numeric: tabular-nums; }
 
+.plugin-manager {
+  @apply mt-3 gap-2 border-t border-t-divider pt-3;
+}
+
+.plugin-section-heading {
+  @apply flex min-w-0 items-center justify-between gap-2;
+}
+
+.plugin-section-heading .field-label-row {
+  @apply min-w-0 flex-1;
+}
+
+.plugin-section-heading h3 {
+  @apply m-0;
+}
+
+.plugin-section-heading > button {
+  @apply h-control-compact shrink-0 px-2 py-0 text-small;
+}
+
+.plugin-drop-zone {
+  @apply grid min-h-[62px] place-content-center gap-[3px] rounded-panel border border-dashed border-[#626262] px-3 py-2 text-center text-small text-quiet;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.plugin-drop-zone.drop-target {
+  @apply border-accent bg-accent-soft text-muted;
+}
+
+.plugin-drop-zone strong {
+  @apply text-label text-text;
+}
+
+.plugin-list {
+  @apply grid gap-2;
+}
+
+.plugin-list:empty {
+  @apply hidden;
+}
+
+.plugin-card {
+  @apply grid min-w-0 gap-2 rounded-panel border border-border bg-field p-2;
+}
+
+.plugin-card-header {
+  @apply flex min-w-0 items-start justify-between gap-3;
+}
+
+.plugin-card-identity,
+.plugin-server-copy {
+  @apply grid min-w-0 gap-[2px];
+}
+
+.plugin-card-identity strong,
+.plugin-server-copy strong {
+  @apply overflow-hidden text-ellipsis whitespace-nowrap text-label text-text;
+}
+
+.plugin-card-identity span,
+.plugin-server-copy span,
+.plugin-description,
+.plugin-summary {
+  @apply m-0 text-small text-quiet;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.plugin-description {
+  @apply text-muted;
+}
+
+.plugin-enabled-toggle {
+  @apply shrink-0 gap-[6px] text-small text-muted;
+}
+
+.plugin-issues {
+  @apply m-0 grid gap-[3px] rounded-control border px-2 py-[6px] pl-6 text-small text-warning;
+  background: rgba(255, 209, 102, 0.055);
+  border-color: rgba(255, 209, 102, 0.28);
+  line-height: 1.4;
+}
+
+.plugin-server-list {
+  @apply grid gap-[5px];
+}
+
+.plugin-server-row {
+  @apply grid min-w-0 items-center gap-2 rounded-control border border-border bg-pane px-2 py-[6px];
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.plugin-server-approval,
+.plugin-card-actions button {
+  @apply h-control-compact min-w-0 px-2 py-0 text-small;
+}
+
+.plugin-card-actions {
+  @apply flex justify-end;
+}
+
 @media (max-width: 680px) {
   #audioJobs [data-audio-results] { @apply grid-cols-1; }
 }
@@ -2076,6 +2177,12 @@ label {
   overflow-wrap: anywhere;
 }
 
+.plugin-unsupported {
+  @apply m-0 rounded-control border border-border bg-pane px-2 py-[6px] text-small text-muted;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .model-config-actions button {
   @apply min-w-0 px-[5px] py-0;
 }
@@ -2283,6 +2390,7 @@ label {
 .app-confirmation-card p {
   @apply m-0 text-muted;
   line-height: 1.45;
+  white-space: pre-line;
 }
 
 .app-confirmation-actions {
@@ -2440,6 +2548,14 @@ label {
 }
 
 @media (max-width: 520px) {
+  .plugin-server-row {
+    @apply grid-cols-1 items-stretch;
+  }
+
+  .plugin-server-approval {
+    justify-self: end;
+  }
+
   .skill-row[data-skill-source="user"] {
     @apply grid-cols-1 items-stretch;
   }

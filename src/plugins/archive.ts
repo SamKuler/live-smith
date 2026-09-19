@@ -1,9 +1,11 @@
 import { types } from "node:util";
 
-import { AttachmentProcessingError } from "../attachments/contracts.js";
+import { AttachmentProcessingError, MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
 import { openBoundedOoxmlZip } from "../attachments/ooxml-zip.js";
 import { parsePluginPackageManifest, type PluginPackageFile } from "./manifest.js";
 import type { PluginManifest } from "./contracts.js";
+
+export const MAX_PLUGIN_ARCHIVE_BYTES = MAX_DOCUMENT_ATTACHMENT_BYTES;
 
 export type PluginArchiveErrorCode = "invalid_archive" | "archive_limit";
 

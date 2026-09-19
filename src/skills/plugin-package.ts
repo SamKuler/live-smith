@@ -30,15 +30,16 @@ export async function pluginSkillsFromArchive(pluginId: string, bytes: Uint8Arra
     const segments = relative.split("/");
     if (segments.length !== 2 || segments[1] !== "SKILL.md") continue;
     const localId = segments[0]!;
-    if (!isSafeSkillId(localId)) throw new SkillFormatError(1, "the Skill directory name is invalid");
-    const definition = parsePluginSkillMarkdown(source, localId);
-    if (definition.id !== localId) throw new SkillFormatError(2, "the name does not match the Skill directory");
-    definitions.push({ ...definition, id: `${pluginId}:${localId}`, pluginId, localId });
+    try {
+      if (!isSafeSkillId(localId)) throw new SkillFormatError(1, "the Skill directory name is invalid");
+      const definition = parsePluginSkillMarkdown(source, localId);
+      if (definition.id !== localId) throw new SkillFormatError(2, "the name does not match the Skill directory");
+      definitions.push({ ...definition, id: `${pluginId}:${localId}`, pluginId, localId });
+    } catch (error) {
+      if (!(error instanceof SkillFormatError)) throw error;
+    }
   }
   definitions.sort((left, right) => left.id.localeCompare(right.id));
-  if (definitions.some((definition, index) => index > 0 && definitions[index - 1]!.id === definition.id)) {
-    throw new Error("Plugin contains duplicate Skill identities.");
-  }
   return definitions;
 }
 

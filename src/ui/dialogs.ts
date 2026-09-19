@@ -7,6 +7,7 @@ import composerInputScript from "./client/composer-input.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
 import skillManagerScript from "./client/skill-manager.script.html";
+import pluginManagerScript from "./client/plugin-manager.script.html";
 import actionPreviewScript from "./client/action-preview.script.html";
 import i18nScript from "./client/i18n.script.html";
 import { serializeUiI18nData } from "./i18n/messages.js";
@@ -43,6 +44,7 @@ export function chatHtml(
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     profileEditor: profileEditorScript,
+    pluginManager: pluginManagerScript,
     sessionTimeline: sessionTimelineScript,
     skillManager: skillManagerScript,
   }, __LIVE_SMITH_CHAT_STYLES__);

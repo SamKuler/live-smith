@@ -23,6 +23,7 @@ import type {
   ModelReasoningStreamUpdate,
 } from "../model/contracts.js";
 import type { OAuthAuthState } from "../model/provider.js";
+import type { PluginInstallPreview } from "../plugins/view.js";
 import {
   compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
@@ -84,12 +85,14 @@ import {
   parseCommandInput,
   parseConfirmationInput,
   parseSendInput,
+  parsePluginInstallQuery,
   parseSkillDeleteQuery,
   parseSkillInstallQuery,
   parseSteeringInput,
   readJsonBody,
   readRawAttachmentBody,
   readRawSkillBody,
+  readRawPluginBody,
   sendIdForRequest,
   steeringIdForRequest,
   steeringSendIdForRequest,
@@ -101,8 +104,11 @@ import {
   type ChatBridgeSendInput,
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
+  type ChatBridgePluginInspectInput,
+  type ChatBridgePluginInstallInput,
   type RawAttachmentBodyReadOptions,
   type RawSkillBodyReadOptions,
+  type RawPluginBodyReadOptions,
 } from "./chat-bridge-http.js";
 
 export {
@@ -116,6 +122,8 @@ export type {
   ChatBridgeSendInput,
   ChatBridgeSkillDeleteInput,
   ChatBridgeSkillInstallInput,
+  ChatBridgePluginInspectInput,
+  ChatBridgePluginInstallInput,
 } from "./chat-bridge-http.js";
 
 const sensitiveResponseHeaders = {
@@ -173,6 +181,15 @@ export type ChatBridgeSteeringReceiptLookupResult =
 export interface ChatBridgeSkillInstallResult {
   state: ChatDialogState;
   receipt: { id: string; sha256: string };
+}
+
+export interface ChatBridgePluginInstallResult {
+  state: ChatDialogState;
+  receipt: { id: string; sha256: string };
+}
+
+export interface ChatBridgePluginInspectResult {
+  preview: PluginInstallPreview;
 }
 
 
@@ -275,6 +292,15 @@ export class ChatBridgeSkillValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ChatBridgeSkillValidationError";
+  }
+}
+
+export class ChatBridgePluginValidationError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatBridgePluginValidationError";
   }
 }
 
@@ -381,10 +407,20 @@ interface ChatBridgeOptions {
     input: ChatBridgeSkillDeleteInput,
     signal: AbortSignal,
   ): Promise<ChatDialogState>;
+  handlePluginInstall?(
+    input: ChatBridgePluginInstallInput,
+    signal: AbortSignal,
+  ): Promise<ChatBridgePluginInstallResult>;
+  handlePluginInspect?(
+    input: ChatBridgePluginInspectInput,
+    signal: AbortSignal,
+  ): Promise<ChatBridgePluginInspectResult>;
   /** Test seam; omitted by production callers. */
   attachmentBodyReadOptions?: RawAttachmentBodyReadOptions;
   /** Test seam; omitted by production callers. */
   skillBodyReadOptions?: RawSkillBodyReadOptions;
+  /** Test seam; omitted by production callers. */
+  pluginBodyReadOptions?: RawPluginBodyReadOptions;
 }
 
 async function lookupSteeringReceiptSafely(
@@ -869,6 +905,17 @@ export async function createChatBridge(
     pendingRequestBodies.add(request);
     try {
       return await readRawSkillBody(request, options.skillBodyReadOptions);
+    } finally {
+      pendingRequestBodies.delete(request);
+    }
+  };
+
+  const readPluginRequestBody = async (
+    request: IncomingMessage,
+  ): Promise<Uint8Array> => {
+    pendingRequestBodies.add(request);
+    try {
+      return await readRawPluginBody(request, options.pluginBodyReadOptions);
     } finally {
       pendingRequestBodies.delete(request);
     }
@@ -1493,6 +1540,7 @@ export async function createChatBridge(
     let attachmentSessionId: string | undefined;
     let sendPromptPersistence: PromptPersistence | undefined;
     let attachmentBodyMayBeUnread = false;
+    let pluginBodyMayBeUnread = false;
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       requestPath = url.pathname;
@@ -1500,6 +1548,8 @@ export async function createChatBridge(
         (requestPath === "/attachments" || requestPath.startsWith("/attachments/"));
       const skillBodyMayBeUnread = request.method === "POST" &&
         requestPath === "/skills";
+      pluginBodyMayBeUnread = request.method === "POST" &&
+        (requestPath === "/plugins" || requestPath === "/plugins/inspect");
       const jsonBodyMayBeUnread = request.method === "POST" && [
         "/command",
         "/session-model-capabilities",
@@ -1514,6 +1564,7 @@ export async function createChatBridge(
       if (closing) {
         if (attachmentBodyMayBeUnread) request.resume();
         if (skillBodyMayBeUnread) request.resume();
+        if (pluginBodyMayBeUnread) request.resume();
         if (jsonBodyMayBeUnread) request.resume();
         sendJson(response, {
           error: "Live Smith bridge is closing.",
@@ -1543,6 +1594,7 @@ export async function createChatBridge(
       if (tokenForRequest(url) !== token) {
         if (attachmentBodyMayBeUnread) request.resume();
         if (skillBodyMayBeUnread) request.resume();
+        if (pluginBodyMayBeUnread) request.resume();
         if (jsonBodyMayBeUnread) request.resume();
         if (sendPromptPersistence) {
           sendJson(response, {
@@ -1874,6 +1926,60 @@ export async function createChatBridge(
           );
           broadcast({ type: "state", commandId, state });
           sendJson(response, state);
+        } finally {
+          if (activeCommandAbort === controller) activeCommandAbort = null;
+        }
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/plugins/inspect") {
+        if (!options.handlePluginInspect) {
+          request.resume();
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        assertExactQueryParameters(url, ["token"], "Plugin inspection request");
+        const controller = createHostAbortController();
+        const bytes = await readPluginRequestBody(request);
+        pluginBodyMayBeUnread = false;
+        throwIfBridgeAborted(controller.signal);
+        const result = await options.handlePluginInspect({ bytes }, controller.signal);
+        sendJson(response, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/plugins") {
+        if (!options.handlePluginInstall) {
+          request.resume();
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        let query: Pick<ChatBridgePluginInstallInput, "replace">;
+        try {
+          commandId = commandIdForRequest(request);
+          query = parsePluginInstallQuery(request, url);
+        } catch (error) {
+          request.resume();
+          throw error;
+        }
+        response.setHeader("X-Live-Smith-Command-Id", commandId);
+        if (activeCommandTerminal || activeAttachmentTerminals.size > 0) {
+          request.resume();
+          sendJson(response, { error: "Another Live Smith operation is already in progress." }, 409);
+          return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeCommandTerminal = handlerTerminal;
+        const controller = createHostAbortController();
+        activeCommandAbort = controller;
+        try {
+          const bytes = await readPluginRequestBody(request);
+          pluginBodyMayBeUnread = false;
+          throwIfBridgeAborted(controller.signal);
+          const result = await options.handlePluginInstall({ ...query, bytes }, controller.signal);
+          const state = finalizeBridgeState(result.state, stateSnapshotCutRevision);
+          broadcast({ type: "state", commandId, state });
+          sendJson(response, { state, receipt: result.receipt }, 201);
         } finally {
           if (activeCommandAbort === controller) activeCommandAbort = null;
         }
@@ -2402,9 +2508,11 @@ export async function createChatBridge(
       }
 
       if (attachmentBodyMayBeUnread) request.resume();
+      if (pluginBodyMayBeUnread) request.resume();
       response.writeHead(404).end("Not found");
     } catch (error) {
       if (attachmentBodyMayBeUnread) request.resume();
+      if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
         ["/command", "/session-model-capabilities", "/confirm", "/send", "/steer", "/stop"].includes(
@@ -2418,8 +2526,11 @@ export async function createChatBridge(
         requestPath.startsWith("/attachments/");
       const skillMutation = requestPath === "/skills" ||
         requestPath.startsWith("/skills/");
+      const pluginRequest = requestPath === "/plugins" ||
+        requestPath === "/plugins/inspect";
+      const pluginMutation = requestPath === "/plugins";
       const commandOutcome: ChatBridgeCommandOutcome | undefined =
-        (requestPath === "/command" || attachmentMutation || skillMutation) &&
+        (requestPath === "/command" || attachmentMutation || skillMutation || pluginMutation) &&
             (
               isStorageCommitOutcomeUnknownError(reportedError) ||
               reportedError instanceof ChatBridgeCommandOutcomeUnknownError
@@ -2433,6 +2544,8 @@ export async function createChatBridge(
         ? safeAttachmentErrorMessage(reportedError, commandOutcome)
         : skillMutation
           ? safeSkillErrorMessage(reportedError, commandOutcome)
+        : pluginRequest
+          ? safePluginErrorMessage(reportedError, commandOutcome)
         : reportedError instanceof Error
           ? reportedError.message
           : String(reportedError);
@@ -2546,6 +2659,7 @@ export async function createChatBridge(
             ? reportedError.status
             : reportedError instanceof ChatBridgeAttachmentValidationError ||
                 reportedError instanceof ChatBridgeSkillValidationError ||
+                reportedError instanceof ChatBridgePluginValidationError ||
                 reportedError instanceof ChatBridgeResourceNotFoundError ||
                 reportedError instanceof ChatBridgeConflictError ||
                 reportedError instanceof ChatBridgePayloadTooLargeError
@@ -2969,6 +3083,26 @@ function safeSkillErrorMessage(
     return error.message;
   }
   return "The Skill operation could not be completed.";
+}
+
+function safePluginErrorMessage(
+  error: unknown,
+  commandOutcome: ChatBridgeCommandOutcome | undefined,
+): string {
+  if (commandOutcome === "unknown") {
+    return error instanceof ChatBridgeCommandOutcomeUnknownError
+      ? error.message
+      : "The Plugin catalog changed, but its final state could not be confirmed.";
+  }
+  if (
+    error instanceof ChatBridgeRequestValidationError ||
+    error instanceof ChatBridgeRequestTimeoutError ||
+    error instanceof ChatBridgePluginValidationError ||
+    error instanceof ChatBridgeResourceNotFoundError ||
+    error instanceof ChatBridgeConflictError ||
+    error instanceof ChatBridgePayloadTooLargeError
+  ) return error.message;
+  return "The Plugin operation could not be completed.";
 }
 
 function throwIfBridgeAborted(signal: AbortSignal): void {

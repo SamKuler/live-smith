@@ -264,6 +264,15 @@
           updateComposerAutocomplete: composerInput.updateAutocomplete,
         });
 
+        const pluginManager = factories.createPluginManager({
+          confirmAction,
+          getState,
+          inspectPlugin: bridgeClient.inspectPlugin,
+          installPlugin: bridgeClient.installPlugin,
+          runCommand: bridgeClient.runCommand,
+          showStatus: bridgeClient.showStatus,
+        });
+
         const profileEditor = factories.createProfileEditor({
           confirmAction,
           createCommandId: bridgeClient.createCommandId,
@@ -1118,6 +1127,7 @@
           sessionTimeline.renderTimeline();
           attachments.renderPending();
           skillManager.render();
+          pluginManager.render();
           renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
         }
@@ -1516,6 +1526,7 @@
           }
           attachments.setBusy(operationBusy);
           skillManager.setBusy(skillsBusy);
+          pluginManager.setBusy(skillsBusy);
 
           if (
             !settingsBusy &&
@@ -1639,6 +1650,7 @@
           initializeEditScopes();
           composerInput.initialize();
           skillManager.initialize();
+          pluginManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();

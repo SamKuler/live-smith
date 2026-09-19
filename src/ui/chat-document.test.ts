@@ -26,6 +26,7 @@ const scripts: ChatClientScripts = {
   hostAdapter: "",
   markdownRenderer: "",
   profileEditor: "",
+  pluginManager: "",
   sessionTimeline: "",
   skillManager: "",
 };

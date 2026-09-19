@@ -15,6 +15,7 @@
       __ATTACHMENTS_SCRIPT__
       __COMPOSER_INPUT_SCRIPT__
       __SKILL_MANAGER_SCRIPT__
+      __PLUGIN_MANAGER_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
@@ -631,6 +632,22 @@
                   <button id="reloadAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.reloadAudioService()" data-i18n="Reload connection" hidden>Reload connection</button>
                   <button id="saveAudioServiceButton" class="primary" type="button" onclick="LiveSmithUI.saveAudioServiceSettings()" data-i18n="Save audio settings" disabled>Save audio settings</button>
                 </div>
+              </section>
+              <section id="pluginManager" class="settings-section plugin-manager" aria-labelledby="pluginsHeading" aria-busy="false">
+                <div class="plugin-section-heading">
+                  <div class="field-label-row">
+                    <h3 id="pluginsHeading" data-i18n="Plugins">Plugins</h3>
+                    <span class="inline-help" tabindex="0" role="note" aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin and approve each MCP server separately." data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin and approve each MCP server separately." data-i18n-aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin and approve each MCP server separately." data-i18n-data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin and approve each MCP server separately.">?</span>
+                  </div>
+                  <button id="choosePluginButton" class="secondary" type="button" data-i18n="Install Plugin">Install Plugin</button>
+                  <input id="pluginFileInput" name="pluginArchive" type="file" accept=".zip,application/zip" hidden />
+                </div>
+                <div id="pluginDropZone" class="plugin-drop-zone">
+                  <strong data-i18n="Drop Plugin ZIP">Drop Plugin ZIP</strong>
+                  <span data-i18n="Plugins start disabled. Local processes and remote MCP servers require separate approval.">Plugins start disabled. Local processes and remote MCP servers require separate approval.</span>
+                </div>
+                <div id="pluginList" class="plugin-list" role="list" aria-labelledby="pluginsHeading"></div>
+                <p id="pluginEmptyState" class="field-hint" data-i18n="No Plugins installed.">No Plugins installed.</p>
               </section>
               </section>
             </div>
