@@ -101,8 +101,10 @@ names, and raw provider/SDK output stay in their original language.
   appears above the chat composer, separately from connection settings. Completed
   songs generated through Live Smith can be auditioned through Suno's embedded
   player without downloading them. The embedded player is for human listening and
-  is never model input. Saving a selected song for Live and model use is a separate
-  confirmation and may consume one download allowance; Live Smith never buys extra
+  is never model input. **Download to Live Smith** saves the selected song in its
+  Session, after a separate confirmation that may consume one download allowance;
+  **Export MP3/WAV** saves another copy through the default browser without requesting
+  the audio service. Live Smith never buys extra
   quota. A verified audio-input model can then listen to that saved Session asset
   when asked. On macOS 14 or later, a generation challenge opens Live Smith's
   own verification window. Complete any challenge yourself; a successful result

@@ -994,7 +994,8 @@ the base64 WAV or MP3 to the next model turn. The accepted-input callback update
 quota only after trace reporting, so a failed trace cannot admit the audio part.
 Remote-only outputs and preview frames are never eligible.
 
-An audio job stores its operation, exact service ID, optional model ID, input asset
+An audio job stores its operation, exact service ID, optional model ID and
+user-authored display title, input asset
 when applicable, requested stems, credential-owner
 fingerprint, accepted remote IDs, status, and collected output records. The key
 itself is stored only in private settings. A job exists before submission;
@@ -1024,7 +1025,15 @@ referrer and does not expose its playback data as a SampleSource or model input.
 The active Session's result nodes live in a collapsible shelf above the composer,
 not in global App settings. Collapse and Session switches stop embedded/local
 playback, while ordinary result refreshes retain unchanged player nodes. A
-failed/unknown job opens its diagnostic details without replacing its durable
+single preview control opens/closes each result, preferring verified local audio
+when downloaded rather than duplicating its online result. Jobs are ordered by
+creation time, with derived chronological numbers and a newest marker; download
+updates do not make an older generation newest. Historical jobs without display
+titles use their operation label. Public `remoteOutcome` derives only from the
+confirmed manifest/terminal facts and does not classify a deliberately unchosen
+local download as a failed generation. The shelf identifies the latest result
+separately from earlier issues.
+A failed/unknown job opens its diagnostic details without replacing its durable
 record; completed results keep operational detail secondary to Preview/Download.
 Audio jobs count as Session content even without a title or chat events. Such
 Sessions remain visible in history and cannot be recycled by New Session as
@@ -1135,6 +1144,13 @@ user/model content, SDK names, Skill bodies and raw provider/SDK output remain
 data. Locale refresh updates presentation without replacing drafts. Confirmation
 copy binds interpolation values when the decision opens and can translate those
 same values again while preserving its pending decision.
+
+`src/i18n/ui-message.ts` owns serializable application-message descriptors and
+their English fallback, shared by UI and audio orchestration. Authored audio job
+notices, progress and terminal status carry descriptors; historical strings and
+provider diagnostics remain original data. Model-facing audio tool results format
+descriptor messages into English without translating raw parameters. Storage and
+wire readers bound and validate descriptors before rendering them.
 
 Action-confirmation headings and rows carry serializable `{ source, values }`
 messages rather than preformatted English. Nested messages describe application

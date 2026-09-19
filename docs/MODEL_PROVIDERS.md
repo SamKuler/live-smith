@@ -887,6 +887,12 @@ it is separate from application connection settings and collapses when switching
 Sessions. A generated song can be ready for online listening without a local audio
 asset. The result card offers an explicitly opened Suno embedded player at
 `https://suno.com/embed/{clip_id}`.
+Each job shows a creation time, chronological number and newest marker; the optional
+custom title is retained without lyrics or other prompt content. One result row per
+version switches its single Preview control between open and closed. Downloaded
+versions use local playback in that same row. Generation completion and local
+download count are displayed separately, with earlier failures identified as
+earlier tasks rather than the latest result.
 The player loads only when requested and remains owned by Suno, inside a
 sandboxed cross-origin frame with no referrer. Live Smith passes no Cookie or API
 token to it and does not capture its playback data. The player uses the host
@@ -896,7 +902,7 @@ generation. Closing the preview, collapsing the result shelf or switching
 Session removes the embedded player. Collapsing the shelf also pauses local
 audio; reopening it does not automatically play or download anything.
 
-Saving a song for Live and model use is a separate, explicit per-song download action. Its
+**Download to Live Smith** is a separate, explicit per-song download action. Its
 confirmation explains that an existing download allowance may be consumed.
 Only the selected output is authorized, using the original job's exact account
 and immutable clip identity. If the song is already unlocked, it is not
@@ -905,7 +911,7 @@ permission as permission to export a file. Suno describes its streaming and
 download distinction in its [download FAQ](https://help.suno.com/en/articles/13614785).
 
 Downloaded audio becomes a verified local Session asset, with local playback
-and a separate local-file download button. That button opens the system default
+and a separate **Export MP3/WAV** button. Export opens the system default
 browser with a two-minute link for this file only, not the dialog's control
 credential. Keep Live Smith open until the browser finishes the download; no
 Suno request or additional download allowance is needed. Repeating a saved output's download reuses that
