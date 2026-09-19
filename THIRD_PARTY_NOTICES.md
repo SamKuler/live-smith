@@ -54,6 +54,25 @@ Copyright (c) Matteo Collina and Undici contributors
 Undici is distributed under the MIT License reproduced in the Document parser
 section above.
 
+### WebSocket and proxy routing
+
+- `ws` 8.21.3 — Copyright (c) 2011 Einar Otto Stangvik; Copyright (c)
+  2013 Arnout Kazemier and contributors; Copyright (c) 2016 Luigi Pinca and
+  contributors
+- `https-proxy-agent` 9.1.0 — Copyright (c) 2013 Nathan Rajlich
+- `socks-proxy-agent` 10.1.0 — Copyright (c) 2013 Nathan Rajlich
+- `agent-base` 9.0.0 — Copyright (c) 2013 Nathan Rajlich
+- `proxy-agent-negotiate` 1.1.0 — authored by Nathan Rajlich
+- `debug` 4.4.3 — Copyright (c) 2014-2017 TJ Holowaychuk; Copyright (c)
+  2018-2021 Josh Junon
+- `ms` 2.1.3 — Copyright (c) 2020 Vercel, Inc.
+- `socks` 2.8.10 — Copyright (c) 2013 Josh Glazebrook
+- `ip-address` 10.7.2 — Copyright (c) 2011 Beau Gunderson
+- `smart-buffer` 4.2.0 — Copyright (c) 2013-2017 Josh Glazebrook
+
+Each WebSocket and proxy-routing package above is distributed under the MIT
+License reproduced in the Document parser section above.
+
 ## Markdown renderer
 
 ### `marked` 18.0.9

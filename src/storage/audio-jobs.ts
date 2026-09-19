@@ -232,6 +232,7 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
   // availability; a disabled provider's historical jobs remain readable.
   const validOperation = value.provider === "lalal" ? value.operation === "separate_stems"
     : value.provider === "elevenlabs" ? ["generate_music", "generate_sound_effect"].includes(value.operation as string)
+    : value.provider === "google-lyria" ? value.operation === "generate_music"
     : value.provider === "mureka" ? value.operation === "generate_music"
     : value.provider === "suno-platform" ? value.operation === "generate_music"
     : value.provider === "suno" ? ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(value.operation as string)
@@ -298,7 +299,7 @@ export function audioJobOwnsAssetRole(
   switch (job.operation) {
     case "separate_stems": return job.provider === "lalal" &&
       (role === "source" || role === "residual" || job.stems.some((stem) => stem === role));
-    case "generate_music": return (["elevenlabs", "mureka", "suno-platform"].includes(job.provider) && role === "music") ||
+    case "generate_music": return (["elevenlabs", "google-lyria", "mureka", "suno-platform"].includes(job.provider) && role === "music") ||
       (["sunoapi", "suno"].includes(job.provider) && (role === "music" || role === "music_alternative"));
     case "extend_music":
     case "retrieve_music": return job.provider === "suno" && (role === "music" || role === "music_alternative");

@@ -97,7 +97,7 @@ export function audioProcessingTools(
 }
 
 function describeServices(services: readonly AudioServiceChoice[]): string {
-  return "Available connections (IDs and user-defined labels): " + JSON.stringify(services);
+  return "Available connections (IDs, user-defined labels, and configured model IDs): " + JSON.stringify(services);
 }
 
 function serviceSchema(services: readonly AudioServiceChoice[]) {
@@ -134,8 +134,8 @@ function generationTools(services: readonly AudioServiceChoice[]): ModelFunction
               maxLength: music ? AUDIO_SERVICE_CAPABILITIES[service.provider].customMusic && !custom ? 3000 : AUDIO_SERVICE_CAPABILITIES[service.provider].musicPromptCharacters : 4100 },
             ...(custom ? { options: musicOptionsSchemaFor(service.provider) } : {}),
             ...(!music || AUDIO_SERVICE_CAPABILITIES[service.provider].musicDuration
-              ? { durationSeconds: music ? musicDurationSchema(service.provider) : soundEffectDurationSchema } : {}),
-            ...(music ? { instrumental: { type: "boolean" } } : { loop: { type: "boolean" } }),
+              ? { durationSeconds: music ? musicDurationSchema(service) : soundEffectDurationSchema } : {}),
+            ...(music ? { instrumental: musicInstrumentalSchema(service) } : { loop: { type: "boolean" } }),
           },
           required: music ? ["serviceId", "prompt", "instrumental", ...(custom ? ["options"] : [])] : ["serviceId", "prompt", "durationSeconds", "loop"],
         }))),
@@ -171,13 +171,32 @@ export function validateAudioServiceRequest(request: AudioToolRequest, services:
       request.durationSeconds > capability.musicDuration.maximumSeconds)) {
     throw new Error("Music generation duration is outside this connection's supported range.");
   }
+  if (request.kind === "generate_music" && request.durationSeconds !== undefined && service.modelId) {
+    const fixed = capability.fixedMusicDurationSecondsByModel?.[service.modelId];
+    if (fixed !== undefined && request.durationSeconds !== fixed) {
+      throw new Error(`The selected music model always generates ${fixed} seconds.`);
+    }
+  }
+  if (request.kind === "generate_music" && !request.instrumental && service.modelId &&
+    capability.instrumentalOnlyModelIds?.includes(service.modelId)) {
+    throw new Error("The selected music model supports instrumental generation only.");
+  }
 }
 
 const soundEffectDurationSchema = { type: "number", minimum: 0.5, maximum: 30 };
 
-function musicDurationSchema(provider: AudioServiceChoice["provider"]) {
-  const range = AUDIO_SERVICE_CAPABILITIES[provider].musicDuration!;
+function musicDurationSchema(service: AudioServiceChoice) {
+  const capability = AUDIO_SERVICE_CAPABILITIES[service.provider];
+  const fixed = service.modelId && capability.fixedMusicDurationSecondsByModel?.[service.modelId];
+  if (fixed !== undefined) return { type: "number", const: fixed };
+  const range = capability.musicDuration!;
   return { type: "number", minimum: range.minimumSeconds, maximum: range.maximumSeconds };
+}
+
+function musicInstrumentalSchema(service: AudioServiceChoice) {
+  return service.modelId && AUDIO_SERVICE_CAPABILITIES[service.provider].instrumentalOnlyModelIds?.includes(service.modelId)
+    ? { type: "boolean", const: true }
+    : { type: "boolean" };
 }
 
 function combinedMusicDurationSchema(services: readonly AudioServiceChoice[]) {

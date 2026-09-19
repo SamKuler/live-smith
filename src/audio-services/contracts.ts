@@ -19,7 +19,7 @@ export const MAX_AUDIO_SESSION_JOBS = 40;
 export const MAX_AUDIO_JOB_TITLE_CHARACTERS = 200;
 export const MAX_AUDIO_SERVICES = 20;
 export const LEGACY_AUDIO_SERVICE_ID = "audio-service-lalal";
-export const AUDIO_PROVIDERS = ["lalal", "elevenlabs", "mureka", "suno-platform", "suno", "sunoapi"] as const;
+export const AUDIO_PROVIDERS = ["lalal", "elevenlabs", "google-lyria", "mureka", "suno-platform", "suno", "sunoapi"] as const;
 export type AudioProvider = (typeof AUDIO_PROVIDERS)[number];
 export type AudioOperation = "separate_stems" | "generate_music" | "generate_sound_effect" | "extend_music" | "get_whole_song" | "retrieve_music";
 
@@ -89,7 +89,7 @@ export type AudioServiceAuthorization = <T>(signal: AbortSignal, operation: () =
 export type AudioDownloadAuthorization = AudioServiceAuthorization;
 
 export interface AudioGenerationAdapter {
-  readonly provider: "elevenlabs" | "mureka" | "suno-platform" | "suno" | "sunoapi";
+  readonly provider: "elevenlabs" | "google-lyria" | "mureka" | "suno-platform" | "suno" | "sunoapi";
   /** Read-only validation and challenge preflight, before the paid submission boundary. */
   prepare?(request: AudioGenerationRequest, signal: AbortSignal): Promise<void>;
   submit(request: AudioGenerationRequest, signal: AbortSignal): Promise<AudioGenerationSubmission>;

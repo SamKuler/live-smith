@@ -36,8 +36,11 @@ src/
       Rebuilds an unaccepted model response on typed connection loss with
       bounded, cancellable backoff; never re-enters send admission.
     provider-fetch.ts
-      Applies the current global proxy selection to every Direct API and OAuth
-      request through one process-scoped Fetch boundary per storage directory.
+      Applies the current global proxy selection to provider HTTP requests
+      through one process-scoped Fetch boundary per storage directory.
+    provider-websocket.ts
+      Applies the same storage-scoped network selection to provider WebSocket
+      connections without changing process-global routing.
     attachment-context.ts
       Resolves current and bounded historical attachment parts without exposing
       attachment storage details to providers or the agent loop.
@@ -97,6 +100,9 @@ src/
     elevenlabs.ts, elevenlabs-http.ts
       Official music and sound-effect requests, bounded MP3 responses, and
       cancellation without automatic regeneration.
+    google-lyria.ts
+      Stateless Lyria Interactions generation plus bounded Lyria RealTime WSS
+      collection, strict inline/base64 decoding, and PCM-to-WAV packaging.
     mureka.ts, mureka-http.ts
       Official prompt-to-song and instrumental task submission, typed polling,
       stable output collection, and validated credential-free provider media
@@ -198,8 +204,11 @@ src/
       Resolves host-provided Fetch and Abort APIs with explicit capability
       errors and shared cancellation checks.
     proxy-fetch.ts
-      Resolves the saved No proxy, System proxy, or Manual proxy route for each
-      provider request.
+      Resolves the saved No proxy, System proxy, or Manual proxy route shared by
+      provider Fetch and WebSocket requests.
+    proxy-websocket.ts
+      Opens bounded direct, HTTP(S)-proxy, or SOCKS-proxy WebSockets with
+      header-only provider authentication and cancellable text-message reads.
     network-proxy-error.ts
       Defines the fixed credential-free proxy diagnosis preserved through
       Direct API and OAuth error boundaries.
@@ -208,9 +217,10 @@ src/
       reselects the route for redirect targets without changing process-global
       network configuration; only a selected proxy hop failing before response
       headers is identified as a proxy error.
-    undici-node-globals.ts
-      Supplies explicit Node URL, Blob, immediate, and microtask bindings to the
-      bundled dispatcher graph for the restricted Extension Host VM.
+    network-node-globals.ts
+      Supplies explicit Node URL, Blob, Buffer, process, immediate, and
+      microtask bindings to bundled network libraries in the restricted
+      Extension Host VM.
     system-proxy.ts
       Reads static macOS routes through fixed `scutil --proxy`, or current-user
       Windows Internet Settings through a fixed, read-only `reg.exe query`, and
@@ -273,14 +283,15 @@ src/
 Extension code imports Node runtime values such as `URL`, `Buffer`, and process
 data from their `node:` modules. Host-provided Fetch defaults and Abort APIs are
 resolved only through `runtime/host.ts`, which reports missing capabilities
-explicitly and owns the shared cancellation helpers. Provider traffic uses that
-host Fetch with the pinned, lazily loaded Undici dispatcher graph in
-`runtime/undici-network-fetch.ts`. Bundle-time Node bindings cover only the
-dispatcher globals omitted by the restricted Extension Host VM; the Undici Web
+explicitly and owns the shared cancellation helpers. Provider HTTP traffic uses
+that host Fetch with the pinned, lazily loaded Undici dispatcher graph in
+`runtime/undici-network-fetch.ts`. Provider WSS traffic uses the bundled `ws`
+client with explicit HTTP(S) or SOCKS proxy agents. Bundle-time Node bindings
+cover only globals omitted by the restricted Extension Host VM; the Undici Web
 Fetch entrypoint is not used. Route selection remains in
-`runtime/proxy-fetch.ts`, so No proxy, System proxy, and Manual proxy do not
-mutate the Extension Host's process-global dispatcher or affect another
-extension. `model/json-clone.ts` clones
+`runtime/proxy-fetch.ts` and is consumed by both network paths, so No proxy,
+System proxy, and Manual proxy do not mutate the Extension Host's process-global
+dispatcher or affect another extension. `model/json-clone.ts` clones
 provider/Profile JSON without depending on `structuredClone`. `build.ts`
 checks these boundaries and smoke-loads the extension entrypoint without ambient
 Web APIs, while the runtime suite sends real direct and CONNECT-proxy requests
@@ -886,7 +897,8 @@ for imported files, so a failed later step may leave an unused project copy.
 the chat model. `app/request-audio-tools.ts` binds input references to the current
 request's attachments, same-Session saved results, or an isolated Arrangement
 Audio Clip range. `app/audio-processing.ts` owns the asynchronous lifecycle and
-calls the configured adapter through the existing proxy-aware Fetch boundary.
+calls the configured adapter through the proxy-aware Fetch or WebSocket
+boundary.
 `app/audio-generation.ts` owns generation responses and saved-result recovery;
 `audio-service-connections.ts` resolves the exact named connection and credential
 owner. Tool admission captures immutable private connection snapshots; public
@@ -896,6 +908,13 @@ work, and adapters retain the admitted connection rather than reloading a new
 account. Changes to unrelated connections do not invalidate the request.
 `audio-job-runtime.ts` shares active-job exclusion and verified local recovery
 across operations.
+`audio-services/google-lyria.ts` keeps both Gemini music protocols inside one
+provider adapter. Batch models issue one stateless Interactions request and
+validate the final inline audio block. The realtime model authenticates in the
+WSS header, waits for setup, collects only the requested amount of raw PCM, and
+packages it as a local WAV. Model-specific fixed duration and instrumental-only
+constraints are projected into the admitted tool schema and rechecked before a
+job exists. Interactive steering is outside the current tool contract.
 `runtime/suno-website.ts` opens fixed `https://suno.com/create` and
 `https://platform.suno.com/` destinations through the system default-browser
 handler. Website navigation is independent of saved connections

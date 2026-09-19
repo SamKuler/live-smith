@@ -81,6 +81,13 @@ names, and raw provider/SDK output stay in their original language.
   use prompt-based music generation. Live Smith polls the accepted task, saves
   the returned track locally, and can resume a missing download without
   submitting the generation again.
+- **Generate music with Google Lyria.** Add a **Google Lyria (Gemini API)**
+  connection with a [Gemini API key](https://aistudio.google.com/apikey).
+  Choose `lyria-3.5` for full songs,
+  `lyria-3-clip-preview` for fixed 30-second previews, or the experimental
+  `lyria-realtime-exp` transport for bounded instrumental generation. Realtime
+  PCM is saved as an ordinary WAV result, so preview, model listening, and Live
+  import use the same Session audio workflow as other generators.
 - **Generate through the official Suno Platform API.** Add a separate
   **Suno Platform (official API)** connection and use an API key managed at
   [platform.suno.com](https://platform.suno.com/). Platform access and usage
@@ -134,6 +141,8 @@ Try requests such as:
 > “Use my ElevenLabs connection to generate ten seconds of instrumental ambient piano.”
 >
 > “Use my Mureka connection to generate an instrumental synthwave idea.”
+>
+> “Use my Google Lyria connection to generate a 30-second instrumental preview.”
 
 Audio processing is disabled by default. Each connection has its own saved key
 and uses that provider's allowance, separately from chat-model usage. Generation
@@ -227,9 +236,9 @@ provider-specific limitations.
 
 **Inspector → App → Network Proxy** provides three global modes: **No proxy**,
 **System proxy**, and **Manual proxy**. The selected route applies consistently to
-Direct API requests and to subscription sign-in, token refresh, model catalog,
-and model traffic. Loopback endpoints remain direct so local model servers keep
-working.
+Direct API requests, subscription sign-in, token refresh, model catalog and
+model traffic, and external audio-service HTTP or WebSocket traffic. Loopback
+endpoints remain direct so local model servers keep working.
 
 System proxy discovery follows static macOS HTTP, HTTPS, or SOCKS settings and
 the current Windows user's static Internet Settings. It uses a fixed, read-only

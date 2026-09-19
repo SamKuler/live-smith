@@ -185,10 +185,14 @@ Suno Platform tests use synthetic API keys and captured `/v0/audio` requests;
 they do not establish live Platform access. Mureka tests likewise use synthetic
 keys and captured song/instrumental task requests; they do not establish live
 account access, model entitlement, credits, regional availability, or provider
-media delivery. Suno.com Cookie tests use synthetic credentials, captured HTTP
-requests, injected default-browser handlers, native process replay and real
-verification-client DOM events. They do not read browser profiles or log into
-real accounts. Initial sign-in opens the OS default browser without discovery,
+media delivery. Google Lyria tests use captured Interactions responses and
+scripted Live Music WebSocket messages, including PCM-to-WAV validation; they do
+not establish live Gemini key access, billing, quota, model entitlement,
+regional availability, safety acceptance, or provider media delivery. Suno.com
+Cookie tests use synthetic credentials, captured HTTP requests, injected
+default-browser handlers, native process replay and real verification-client
+DOM events. They do not read browser profiles or log into real accounts. Initial
+sign-in opens the OS default browser without discovery,
 extensions or automation flags. Generation verification uses the owned native
 helper and the requested official component on an actual HTTPS Suno document.
 No fixture establishes official challenge acceptance: verify native launch in

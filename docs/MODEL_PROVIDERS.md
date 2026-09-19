@@ -21,9 +21,10 @@ Claude Code, Gemini CLI, Antigravity, or another provider runtime.
 The global network setting is independent of Profiles and has three explicit
 modes: no proxy, System proxy (static macOS routes or the current Windows
 user's static settings), or one credential-free Manual proxy URL. The selected
-route is resolved at request time and is shared by
-Direct API discovery/generation and OAuth login, refresh, catalog, and product
-traffic. It never changes which provider or protocol a Profile owns.
+route is resolved at request time and is shared by Direct API
+discovery/generation, OAuth login, refresh, catalog and product traffic, and
+external audio-service HTTP or WebSocket traffic. It never changes which
+provider or protocol a Profile owns.
 
 System mode reads static HTTP, HTTPS, and SOCKS routes from macOS. On Windows it
 uses one fixed, read-only `reg.exe query` and recognizes the current user's
@@ -608,7 +609,8 @@ New settings writes persist the connection collection.
 
 Tools expose only enabled, configured connections that support the requested
 operation. Every new processing request selects an exact `serviceId`; the chat
-model never receives a key, endpoint, or generic HTTP execution tool. The chat
+model receives the connection's non-secret selected model ID when present, but
+never receives a key, endpoint, or generic HTTP execution tool. The chat
 model needs function-tool support, not native audio generation support.
 Saved-job listing and recovery remain available to the model when no service
 connection is enabled; only new remote operations depend on enabled connections.
@@ -641,6 +643,46 @@ An ElevenLabs request returns audio directly, rather than a resumable task ID.
 Stopping an incomplete response does not confirm service-side cancellation or a
 refund. A lost response is never regenerated automatically; a complete local
 file that outlives a job-record failure can be recovered without another request.
+
+### Google Lyria through the Gemini API
+
+**Google Lyria (Gemini API)** is a separate API-key audio connection. It uses
+Gemini Developer API billing and credentials; a Google OAuth subscription
+Profile does not supply this key or grant Lyria access. Create the key in
+[Google AI Studio](https://aistudio.google.com/apikey). The connection accepts
+text prompts through the existing `generate_music` tool and does not currently
+send image prompts or expose returned lyric/structure text.
+
+The default `lyria-3.5` model calls the official
+[Interactions API](https://ai.google.dev/gemini-api/docs/music-generation) once
+with `store: false` and requests WAV output. An optional 3–600 second value is
+added as prompt guidance; the provider describes full-song duration as
+prompt-controlled, so it is not an exact cut. `lyria-3-clip-preview` returns MP3
+and always generates 30 seconds. A different explicit duration for that model is
+rejected before an audio job or paid request is created. Instrumental requests
+add an explicit no-vocals instruction inside the provider adapter. Batch output
+is bounded, decoded from the final documented model-output audio block, then
+inspected and saved as an ordinary Session asset.
+
+The experimental `lyria-realtime-exp` model uses the official
+[Live Music WebSocket](https://ai.google.dev/api/live_music). Live Smith sends
+the key only in the `x-goog-api-key` handshake header, waits for setup to
+complete, sends one weighted prompt, and collects a bounded duration before
+issuing `STOP`. Omitted duration defaults to 30 seconds; explicit values may be
+3–600 seconds. The provider's raw 48 kHz, stereo, 16-bit PCM is copied only up
+to the requested frame count and wrapped in a standard WAV container. This is a
+generation transport, not an interactive steering or live-performance UI.
+Lyria RealTime is instrumental-only, so vocal requests are excluded from the
+tool schema and rejected again before submission.
+
+All Lyria output is subject to provider safety filtering and SynthID
+watermarking. Batch generation is single-turn, and the realtime model remains
+experimental. Requests can consume Gemini API quota or paid usage. Stop,
+timeouts, connection loss, and a lost response do not establish provider-side
+cancellation or a refund, and Live Smith never retries an unknown generation
+automatically. Synthetic request and WebSocket replay tests do not establish
+live key access, billing, regional availability, quota, or current model
+entitlement.
 
 ### Mureka official API
 

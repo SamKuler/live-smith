@@ -25,6 +25,16 @@ interface ProxyAwareFetchOptions {
   ) => Promise<Response>;
 }
 
+export interface ResolvedNetworkRoute {
+  routeKey: string;
+  selectProxy: (target: URL) => string | null;
+  proxyFailureMessage?: string;
+}
+
+interface ResolveNetworkRouteOptions {
+  readSystemProxy?: () => Promise<SystemProxyConfiguration>;
+}
+
 export function createProxyAwareFetch(
   loadSelection: () => Promise<NetworkProxySettings>,
   options: ProxyAwareFetchOptions = {},
@@ -40,37 +50,51 @@ export function createProxyAwareFetch(
       (typeof input === "object" && !(input instanceof URL)
         ? input.signal
         : undefined);
-    const selection = await waitForPromiseWithSignal(loadSelection(), signal);
-    if (selection.mode === "none") {
-      return fetchWithNetworkRoute(input, init, "none", () => null);
-    }
-    if (selection.mode === "manual") {
-      return fetchWithNetworkRoute(
-        input,
-        init,
-        JSON.stringify(selection),
-        (target) => isLoopbackHost(target.hostname) ? null : selection.url,
-        manualProxyFailureMessage,
-      );
-    }
-    let system: SystemProxyConfiguration;
-    try {
-      system = await waitForPromiseWithSignal(readSystemProxy(), signal);
-    } catch (error) {
-      throwIfAborted(signal);
-      if (error instanceof NetworkProxyError) throw error;
-      throw new NetworkProxyError("The system proxy configuration could not be read.");
-    }
+    const route = await resolveNetworkRoute(loadSelection, signal, { readSystemProxy });
     return fetchWithNetworkRoute(
       input,
       init,
-      JSON.stringify({ mode: "system", ...system }),
-      (target) => proxyForTarget(system, target),
-      systemProxyFailureMessage,
+      route.routeKey,
+      route.selectProxy,
+      route.proxyFailureMessage,
     );
   };
 
   return proxyFetch;
+}
+
+export async function resolveNetworkRoute(
+  loadSelection: () => Promise<NetworkProxySettings>,
+  signal?: AbortSignal,
+  options: ResolveNetworkRouteOptions = {},
+): Promise<ResolvedNetworkRoute> {
+  const selection = await waitForPromiseWithSignal(loadSelection(), signal);
+  if (selection.mode === "none") {
+    return { routeKey: "none", selectProxy: () => null };
+  }
+  if (selection.mode === "manual") {
+    return {
+      routeKey: JSON.stringify(selection),
+      selectProxy: (target) => isLoopbackHost(target.hostname) ? null : selection.url,
+      proxyFailureMessage: manualProxyFailureMessage,
+    };
+  }
+  let system: SystemProxyConfiguration;
+  try {
+    system = await waitForPromiseWithSignal(
+      (options.readSystemProxy ?? readSystemProxyConfiguration)(),
+      signal,
+    );
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof NetworkProxyError) throw error;
+    throw new NetworkProxyError("The system proxy configuration could not be read.");
+  }
+  return {
+    routeKey: JSON.stringify({ mode: "system", ...system }),
+    selectProxy: (target) => proxyForTarget(system, target),
+    proxyFailureMessage: systemProxyFailureMessage,
+  };
 }
 
 function proxyForTarget(
@@ -87,10 +111,10 @@ function proxyForTarget(
   )) {
     return null;
   }
-  if (target.protocol === "https:") {
+  if (target.protocol === "https:" || target.protocol === "wss:") {
     return configuration.httpsProxy ?? configuration.socksProxy ?? null;
   }
-  if (target.protocol === "http:") {
+  if (target.protocol === "http:" || target.protocol === "ws:") {
     return configuration.httpProxy ?? configuration.socksProxy ?? null;
   }
   return null;

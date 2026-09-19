@@ -22,6 +22,8 @@ export const generationJobCases: { input: AudioJobInput; roles: AudioAsset["role
     connectionFingerprint: fingerprint, stems: [], modelId: "music_v2" }, roles: ["music"] },
   { input: { provider: "elevenlabs", serviceId: "eleven-effects", operation: "generate_sound_effect",
     connectionFingerprint: fingerprint, stems: [] }, roles: ["sound_effect"] },
+  { input: { provider: "google-lyria", serviceId: "google-music", operation: "generate_music",
+    connectionFingerprint: fingerprint, stems: [], modelId: "lyria-3.5" }, roles: ["music"] },
   { input: { provider: "sunoapi", serviceId: "suno-music", operation: "generate_music",
     connectionFingerprint: fingerprint, stems: [] }, roles: ["music", "music_alternative"] },
   { input: { provider: "suno-platform", serviceId: "suno-platform", operation: "generate_music",

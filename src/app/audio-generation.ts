@@ -12,6 +12,7 @@ import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 import { exceedsAudioPromptLimit } from "../audio-services/prompt.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
 import { createElevenLabsAudioAdapter } from "../audio-services/elevenlabs.js";
+import { createGoogleLyriaAudioAdapter } from "../audio-services/google-lyria.js";
 import { createMurekaAudioAdapter } from "../audio-services/mureka.js";
 import { createSunoPlatformAudioAdapter } from "../audio-services/suno-platform.js";
 import { createSunoApiAudioAdapter } from "../audio-services/sunoapi.js";
@@ -22,6 +23,7 @@ import { acquireAudioJob, boundedAudioMessage, reconcileLocalAudioJob, safeAudio
 import { audioConnectionFingerprint, resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
 import type { AudioProcessingContext } from "./audio-processing.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
+import { providerWebSocketForStorage } from "./provider-websocket.js";
 import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 import { audioMessage as m } from "./audio-messages.js";
 
@@ -35,6 +37,13 @@ function generationAdapter(
   if (settings.provider === "elevenlabs") {
     return createElevenLabsAudioAdapter(settings.apiKey, {
       fetchImpl: providerFetchForStorage(context.storageDirectory),
+      ...(settings.modelId ? { modelId: settings.modelId } : {}),
+    });
+  }
+  if (settings.provider === "google-lyria") {
+    return createGoogleLyriaAudioAdapter(settings.apiKey, {
+      fetchImpl: providerFetchForStorage(context.storageDirectory),
+      openWebSocket: providerWebSocketForStorage(context.storageDirectory),
       ...(settings.modelId ? { modelId: settings.modelId } : {}),
     });
   }
@@ -84,12 +93,21 @@ export async function generateAudio(
     AUDIO_SERVICE_CAPABILITIES[settings.provider].instrumentalUnsupportedModelIds?.includes(settings.modelId)) {
     throw new Error("The selected model does not support instrumental generation.");
   }
+  if (request.operation === "generate_music" && !request.instrumental && settings.modelId &&
+    AUDIO_SERVICE_CAPABILITIES[settings.provider].instrumentalOnlyModelIds?.includes(settings.modelId)) {
+    throw new Error("The selected model supports instrumental generation only.");
+  }
   if (request.operation === "generate_music" && request.durationSeconds !== undefined) {
     const range = AUDIO_SERVICE_CAPABILITIES[settings.provider].musicDuration;
     if (!range) throw new Error("This service does not support an explicit music duration.");
     if (request.durationSeconds < range.minimumSeconds ||
       request.durationSeconds > range.maximumSeconds) {
       throw new Error("The music duration is outside this service's supported range.");
+    }
+    const fixed = settings.modelId &&
+      AUDIO_SERVICE_CAPABILITIES[settings.provider].fixedMusicDurationSecondsByModel?.[settings.modelId];
+    if (fixed !== undefined && request.durationSeconds !== fixed) {
+      throw new Error(`The selected model has a fixed ${fixed}-second music duration.`);
     }
   }
   const adapter = generationAdapter(context, settings);

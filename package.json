@@ -27,14 +27,18 @@
     "dompurify": "^3.4.13",
     "fast-xml-parser": "5.10.1",
     "fflate": "0.8.3",
+    "https-proxy-agent": "9.1.0",
     "marked": "^18.0.9",
-    "undici": "7.29.0"
+    "socks-proxy-agent": "10.1.0",
+    "undici": "7.29.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@ableton-extensions/cli": "file:extensions-sdk-1/ableton-extensions-cli-1.0.0-beta.1.tgz",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^24.1.0",
+    "@types/ws": "8.18.1",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "postcss": "^8.5.28",

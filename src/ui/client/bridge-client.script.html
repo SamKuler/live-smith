@@ -5738,6 +5738,28 @@
           retrieve_music: "Existing Suno songs" }[operation] || operation);
       }
 
+      function audioServiceModelHint(service) {
+        const capability = audioServiceCapabilities[service.provider];
+        const model = service.modelId || capability.defaultModelId;
+        const fixedDuration = model && capability.fixedMusicDurationSecondsByModel?.[model];
+        if (fixedDuration !== undefined) {
+          return t("{model} always generates {seconds} seconds.", { model, seconds: fixedDuration });
+        }
+        if (model && capability.instrumentalOnlyModelIds?.includes(model)) {
+          return t("{model} uses streaming generation, supports explicit duration, and generates instrumental audio only.", { model });
+        }
+        if (model && capability.promptGuidedDurationModelIds?.includes(model)) {
+          return t("{model} uses prompt-guided duration; requested seconds are guidance rather than an exact cut.", { model });
+        }
+        if (capability.defaultModelId) {
+          return t("Leave blank to use {model}. This integration uses prompt-based generation without custom mode or a duration setting.",
+            { model: capability.defaultModelId });
+        }
+        return capability.sessionImport
+          ? t("Normally choose Music version above. Only enter an exact model ID for an explicit override; leave blank for the account default.")
+          : t("Leave blank to use the integration default. Sound effects use a dedicated model.");
+      }
+
       function handleAudioServiceSelection(id) {
         if (audioSettingsSubmitting || audioSettingsBusy && !sunoLoginCommands.has(commandInProgress)) return;
         if (!savedAudioConnection(id) && !audioSettingsDrafts.has(id)) return;
@@ -6263,11 +6285,7 @@
             button.disabled = busy || Boolean(draft) || saved?.provider !== "suno" || !sessionImport || !canMaintain;
             button.onclick = () => runSunoLoginCommand(kind);
           }
-          document.getElementById("audioServiceModelHint").textContent = audioServiceCapabilities[service.provider].defaultModelId
-            ? t("Leave blank to use {model}. This integration uses prompt-based generation without custom mode or a duration setting.",
-              { model: audioServiceCapabilities[service.provider].defaultModelId })
-            : sessionImport ? t("Normally choose Music version above. Only enter an exact model ID for an explicit override; leave blank for the account default.")
-            : t("Leave blank to use the integration default. Sound effects use a dedicated model.");
+          document.getElementById("audioServiceModelHint").textContent = audioServiceModelHint(service);
           document.getElementById("audioServiceModelSummary").textContent = t(sessionImport ? "Advanced model ID" : "Model override (optional)");
           renderSunoModels(service, draft);
           enabled.disabled = busy || Boolean(draft?.conflict) || !supported.length;
@@ -6281,6 +6299,8 @@
             ? t("SunoAPI.org is a third-party API service with its own key and billing. It is not Suno's official API or a Suno website subscription. Your prompt is sent to SunoAPI.org.")
             : service.provider === "suno-platform"
             ? t("Official Suno API connection. Create its key at platform.suno.com. Platform access and usage are separate from the Suno.com subscription Cookie connection.")
+            : service.provider === "google-lyria"
+            ? t("Google Lyria generation uses Gemini API billing. Batch songs are single-turn and watermarked; the experimental realtime model produces instrumental WAV audio through a bounded WebSocket stream.")
             : supported.includes("separate_stems")
             ? t("Selected audio is sent to this external service. Stem separation uses processing minutes for each requested stem.")
             : t("Generation sends your prompt to this external service and may incur separate API charges. A website subscription may not include API access.");

@@ -8,6 +8,10 @@ export const MUREKA_MUSIC_MODELS = [
   "auto", "mureka-7.6", "mureka-o2", "mureka-8", "mureka-9", "mureka-9.5",
 ] as const;
 export const DEFAULT_MUREKA_MUSIC_MODEL = "auto";
+export const GOOGLE_LYRIA_MUSIC_MODELS = [
+  "lyria-3.5", "lyria-3-clip-preview", "lyria-realtime-exp",
+] as const;
+export const DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL = "lyria-3.5";
 
 /** Protocol capabilities, not chat-model name heuristics or user claims. */
 export const AUDIO_SERVICE_CAPABILITIES: Record<AudioProvider, {
@@ -15,6 +19,7 @@ export const AUDIO_SERVICE_CAPABILITIES: Record<AudioProvider, {
   operations: readonly AudioOperation[];
   musicDuration?: { minimumSeconds: number; maximumSeconds: number };
   generationOutputCount: number;
+  inlineGeneration?: boolean;
   musicPromptCharacters: number;
   /** Website authentication can be available before generation is supported. */
   sessionImport?: boolean;
@@ -26,11 +31,22 @@ export const AUDIO_SERVICE_CAPABILITIES: Record<AudioProvider, {
   modelIds?: readonly string[];
   defaultModelId?: string;
   instrumentalUnsupportedModelIds?: readonly string[];
+  instrumentalOnlyModelIds?: readonly string[];
+  fixedMusicDurationSecondsByModel?: Readonly<Record<string, number>>;
+  promptGuidedDurationModelIds?: readonly string[];
 }> = {
   lalal: { label: "LALAL.AI", operations: ["separate_stems"], generationOutputCount: 0, musicPromptCharacters: 0 },
   elevenlabs: { label: "ElevenLabs", operations: ["generate_music", "generate_sound_effect"],
     musicDuration: { minimumSeconds: 3, maximumSeconds: 600 },
-    generationOutputCount: 1, musicPromptCharacters: 4100, modelConfigurable: true },
+    generationOutputCount: 1, musicPromptCharacters: 4100, modelConfigurable: true,
+    inlineGeneration: true },
+  "google-lyria": { label: "Google Lyria (Gemini API)", operations: ["generate_music"],
+    musicDuration: { minimumSeconds: 3, maximumSeconds: 600 },
+    generationOutputCount: 1, musicPromptCharacters: 4100, inlineGeneration: true,
+    modelIds: GOOGLE_LYRIA_MUSIC_MODELS, defaultModelId: DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL,
+    modelConfigurable: true, instrumentalOnlyModelIds: ["lyria-realtime-exp"],
+    fixedMusicDurationSecondsByModel: { "lyria-3-clip-preview": 30 },
+    promptGuidedDurationModelIds: ["lyria-3.5"] },
   mureka: { label: "Mureka", operations: ["generate_music"], generationOutputCount: 1,
     musicPromptCharacters: 1024, modelIds: MUREKA_MUSIC_MODELS,
     defaultModelId: DEFAULT_MUREKA_MUSIC_MODEL, modelConfigurable: true,
@@ -56,4 +72,5 @@ export interface AudioServiceChoice {
   id: string;
   name: string;
   provider: AudioProvider;
+  modelId?: string;
 }

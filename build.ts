@@ -16,7 +16,7 @@ const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
 };
 const production = argv.includes("--production");
 const thirdPartyNotices = fs.readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
-const networkRuntimeInject = "src/runtime/undici-node-globals.ts";
+const networkRuntimeInject = "src/runtime/network-node-globals.ts";
 
 verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);

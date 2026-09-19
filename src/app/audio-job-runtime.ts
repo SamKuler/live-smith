@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 import type { AudioJob } from "../audio-services/contracts.js";
 import { listAudioAssets, readExpectedAudioAsset } from "../storage/audio-assets.js";
 import { updateAudioJob } from "../storage/audio-jobs.js";
@@ -35,8 +36,10 @@ export async function reconcileLocalAudioJob(
   for (const asset of job.outputAssets) expected.set(asset.id, asset);
   for (const asset of expected.values()) await readExpectedAudioAsset(storageDirectory, sessionId, asset, signal);
   const roles = job.operation === "separate_stems" ? [...job.stems, "residual"]
-    : job.expectedOutputs?.map((output) => output.role) ?? job.expectedOutputRoles ?? (job.provider === "elevenlabs"
-      ? [job.operation === "generate_sound_effect" ? "sound_effect" : "music"] : undefined);
+    : job.expectedOutputs?.map((output) => output.role) ?? job.expectedOutputRoles ??
+      (AUDIO_SERVICE_CAPABILITIES[job.provider].inlineGeneration
+        ? [job.operation === "generate_sound_effect" ? "sound_effect" : "music"]
+        : undefined);
   const complete = roles?.every((role) => assets.some((asset) => asset.role === role));
   const remoteStatus = job.remoteOutputs?.length && job.status !== "cancelled" ? expected.size ? "partial" : "ready" : undefined;
   if (!complete && (!remoteStatus || remoteStatus === job.status) &&

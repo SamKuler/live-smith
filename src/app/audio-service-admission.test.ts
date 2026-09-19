@@ -120,7 +120,9 @@ test("capture retains only configured enabled connections and isolates every sav
   await h.save({ ...owner, id: "empty", name: "Unconfigured", enabled: false, apiKey: "" });
   const admitted = await captureAudioServiceConnections(h.storage);
   assert.deepEqual(admitted, [suno]);
-  assert.deepEqual(await availableAudioServices(h.storage), [{ id: suno.id, name: suno.name, provider: suno.provider }]);
+  assert.deepEqual(await availableAudioServices(h.storage), [{
+    id: suno.id, name: suno.name, provider: suno.provider, modelId: suno.modelId,
+  }]);
   await h.save({ ...suno, apiKey: "fixture-admission-owner-b", modelId: "V5", callbackUrl: "https://hooks.example.com/replacement" });
   assert.deepEqual(admitted, [suno]);
   assert.throws(() => { admitted[0]!.apiKey = "fixture-unintended-mutation"; }, TypeError);

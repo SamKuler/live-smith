@@ -48,7 +48,9 @@ async function runtimeConnection(storageDirectory: string, connection: AudioServ
 
 export async function availableAudioServices(storageDirectory: string | undefined): Promise<AudioServiceChoice[]> {
   return (await captureAudioServiceConnections(storageDirectory))
-    .map(({ id, name, provider }) => ({ id, name, provider }));
+    .map(({ id, name, provider, modelId }) => ({
+      id, name, provider, ...(modelId === undefined ? {} : { modelId }),
+    }));
 }
 
 export async function resolveAudioService(

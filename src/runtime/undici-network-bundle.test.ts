@@ -69,7 +69,7 @@ test("the bundled network route works in Ableton's restricted VM", async (t) => 
     entryPoints: ["src/runtime/undici-network-fetch.ts"],
     bundle: true,
     format: "cjs",
-    inject: ["src/runtime/undici-node-globals.ts"],
+    inject: ["src/runtime/network-node-globals.ts"],
     logLevel: "silent",
     platform: "node",
     write: false,

@@ -1,10 +1,11 @@
-import { Blob } from "node:buffer";
+import { Blob, Buffer } from "node:buffer";
+import process from "node:process";
 import { clearImmediate, setImmediate } from "node:timers";
 import { URL } from "node:url";
 
-// Undici's dispatcher modules expect these Node globals, but Ableton's
+// Bundled network libraries expect these Node globals, but Ableton's
 // extension VM intentionally exposes only a small runtime surface.
-export { Blob, clearImmediate, setImmediate, URL };
+export { Blob, Buffer, clearImmediate, process, setImmediate, URL };
 
 export function queueMicrotask(callback: () => void): void {
   void Promise.resolve().then(() => {
