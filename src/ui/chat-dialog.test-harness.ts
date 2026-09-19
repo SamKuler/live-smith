@@ -1495,6 +1495,7 @@ async function createDialogHarness(
                 serverId?: string;
                 enabled?: boolean;
                 approved?: boolean;
+                permission?: "input" | "output";
                 title?: string;
               };
               if (
@@ -1531,7 +1532,26 @@ async function createDialogHarness(
               ) {
                 const server = serverState.plugins.find((entry) => entry.id === command.pluginId)
                   ?.mcpServers.find((entry) => entry.id === command.serverId);
-                if (server) server.approved = command.approved;
+                if (server) {
+                  server.approved = command.approved;
+                  if (!command.approved) {
+                    server.artifactInputApproved = false;
+                    server.artifactOutputApproved = false;
+                  }
+                }
+              } else if (
+                command.kind === "set_plugin_artifact_permission" &&
+                typeof command.pluginId === "string" &&
+                typeof command.serverId === "string" &&
+                (command.permission === "input" || command.permission === "output") &&
+                typeof command.approved === "boolean"
+              ) {
+                const server = serverState.plugins.find((entry) => entry.id === command.pluginId)
+                  ?.mcpServers.find((entry) => entry.id === command.serverId);
+                if (server?.type === "stdio" && server.approved) {
+                  if (command.permission === "input") server.artifactInputApproved = command.approved;
+                  else server.artifactOutputApproved = command.approved;
+                }
               } else if (
                 command.kind === "delete_plugin" &&
                 typeof command.pluginId === "string"

@@ -72,6 +72,7 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
   if (toolName === "listen_to_audio_asset") {
     return "Listening to saved Session audio";
   }
+  if (toolName === "list_session_artifacts") return "Listing Session artifacts";
 
   if (toolName === "inspect_live_set") {
     return "Inspecting Live Set";

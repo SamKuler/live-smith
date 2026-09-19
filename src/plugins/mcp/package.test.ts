@@ -9,6 +9,7 @@ import { openPluginArchive } from "../archive.js";
 import type { ConnectedPluginMcpServer } from "./client.js";
 import { PORTABLE_MCP_SCHEMA, type PluginMcpServer } from "./config.js";
 import { createMcpPluginPackage, pluginToolCallName, type PluginMcpConnector } from "./package.js";
+import { LIVE_SMITH_ARTIFACT_META_KEY } from "../artifacts.js";
 
 async function prepared(approvedMcpServerIds: string[]): Promise<PreparedPluginRuntime> {
   const archive = await openPluginArchive(zipSync({
@@ -36,6 +37,8 @@ async function prepared(approvedMcpServerIds: string[]): Promise<PreparedPluginR
       byteLength: 1,
       enabled: true,
       approvedMcpServerIds,
+      approvedArtifactInputServerIds: [],
+      approvedArtifactOutputServerIds: [],
       installedAt: "2026-09-19T00:00:00.000Z",
       updatedAt: "2026-09-19T00:00:00.000Z",
     },
@@ -104,10 +107,57 @@ test("one failed MCP server does not hide independent Plugin tools", async () =>
   await plugin.close();
 });
 
+test("Plugin MCP results cannot expose materialized package or private data paths", async () => {
+  const connector: PluginMcpConnector = async (server) => ({
+    ...connection(server, []),
+    callTool: async () => ({ content: [{ type: "text", text: "/plugin/root/private-file" }] }),
+  });
+  const plugin = createMcpPluginPackage(await prepared(["primary"]), { connector });
+  await plugin.tools({ sessionId: "session", signal: createHostAbortController().signal });
+  await assert.rejects(plugin.callTool(
+    "primary",
+    "primary.echo",
+    { text: "hello" },
+    { sessionId: "session", signal: createHostAbortController().signal },
+  ), /private filesystem path/u);
+  await plugin.close();
+});
+
 test("provider-facing Plugin tool names are bounded, safe, and identity-stable", () => {
   const first = pluginToolCallName("plugin.with.dots", "server-name", "tool with spaces/and symbols");
   const second = pluginToolCallName("plugin.with.dots", "server-name", "tool with spaces/and symbols");
   assert.equal(first, second);
   assert.match(first, /^[A-Za-z0-9_-]{1,64}$/u);
   assert.notEqual(first, pluginToolCallName("plugin.with.dots", "another", "tool with spaces/and symbols"));
+});
+
+test("only local MCP tools may declare the Live Smith artifact bridge", async () => {
+  const artifactTool = {
+    name: "transcribe",
+    description: "Transcribe audio",
+    inputSchema: { type: "object" as const, properties: {
+      source: { type: "string" }, destination: { type: "string" },
+    }, required: ["source", "destination"] },
+    _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: {
+      version: 1,
+      inputs: [{ argument: "source", kind: "audio" }],
+      outputs: [{ argument: "destination", kind: "midi", label: "MIDI" }],
+    } },
+  };
+  const connector: PluginMcpConnector = async () => ({
+    listTools: async () => [artifactTool],
+    callTool: async () => ({ content: [] }),
+    close: async () => undefined,
+  });
+  const plugin = createMcpPluginPackage(await prepared(["primary", "secondary"]), { connector });
+  const discovered = await plugin.tools({ sessionId: "session", signal: createHostAbortController().signal });
+  assert.equal(discovered.tools.length, 1);
+  assert.equal(discovered.tools[0]!.serverId, "primary");
+  assert.deepEqual(discovered.tools[0]!.artifactContract, {
+    inputs: [{ argument: "source", kind: "audio" }],
+    outputs: [{ argument: "destination", kind: "midi", label: "MIDI" }],
+  });
+  assert.doesNotMatch(JSON.stringify(discovered.tools[0]!.tool.function.parameters), /destination/u);
+  assert.ok(discovered.issues.some((issue) => issue.serverId === "secondary" && issue.code === "invalid_tool"));
+  await plugin.close();
 });

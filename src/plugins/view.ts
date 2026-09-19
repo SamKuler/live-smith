@@ -18,6 +18,8 @@ export interface PluginMcpServerView {
   id: string;
   type: "stdio" | "streamable-http";
   approved: boolean;
+  artifactInputApproved: boolean;
+  artifactOutputApproved: boolean;
   target: string;
 }
 
@@ -53,6 +55,8 @@ async function installedPluginView(entry: InstalledPluginPackage): Promise<Insta
     entry.plugin,
     entry.plugin.enabled,
     entry.plugin.approvedMcpServerIds,
+    entry.plugin.approvedArtifactInputServerIds,
+    entry.plugin.approvedArtifactOutputServerIds,
   );
 }
 
@@ -62,7 +66,7 @@ export async function previewPluginArchive(
 ): Promise<PluginInstallPreview> {
   const owned = Uint8Array.from(bytes);
   const archive = await openPluginArchive(owned, signal);
-  const view = await pluginView(archive, owned, archive.manifest, false, []);
+  const view = await pluginView(archive, owned, archive.manifest, false, [], [], []);
   return {
     ...view,
     sha256: createHash("sha256").update(owned).digest("hex"),
@@ -76,6 +80,8 @@ async function pluginView(
   manifest: PluginManifest,
   enabled: boolean,
   approvedMcpServerIds: readonly string[],
+  approvedArtifactInputServerIds: readonly string[],
+  approvedArtifactOutputServerIds: readonly string[],
 ): Promise<InstalledPluginView> {
   const skills = await pluginSkillsFromArchive(manifest.id, bytes);
   const skillDirectory = archive.manifest.components.skillsDirectory;
@@ -93,6 +99,8 @@ async function pluginView(
         id: server.id,
         type: server.type,
         approved: approvedMcpServerIds.includes(server.id),
+        artifactInputApproved: approvedArtifactInputServerIds.includes(server.id),
+        artifactOutputApproved: approvedArtifactOutputServerIds.includes(server.id),
         target: server.type === "stdio" ? commandLabel(server.command) : new URL(server.url).origin,
       }));
       if (config.issues.some((issue) => issue.code === "invalid_server")) issues.push("invalid_mcp_server");

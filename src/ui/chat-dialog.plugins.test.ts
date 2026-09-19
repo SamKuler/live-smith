@@ -72,12 +72,16 @@ function installedPlugin(enabled = false) {
         id: "converter",
         type: "stdio" as const,
         approved: false,
+        artifactInputApproved: false,
+        artifactOutputApproved: false,
         target: "./bin/converter",
       },
       {
         id: "catalog",
         type: "streamable-http" as const,
         approved: false,
+        artifactInputApproved: false,
+        artifactOutputApproved: false,
         target: "https://plugins.example.test",
       },
     ],
@@ -149,6 +153,37 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
       approved: true,
     });
 
+    const artifactPermissions = () => [...harness.document.querySelectorAll<HTMLButtonElement>(
+      '[data-plugin-id="music-tools"] .plugin-server-row:first-child .plugin-artifact-permission',
+    )];
+    assert.equal(artifactPermissions().length, 2);
+    artifactPermissions()[0]!.click();
+    await waitForCondition(
+      () => harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden === false,
+      "Expected artifact input confirmation.",
+    );
+    assert.match(harness.document.querySelector("#appConfirmationMessage")?.textContent ?? "", /read-only temporary copies.*not sandboxed/is);
+    await harness.acceptAppConfirmation();
+    await waitForPluginIdle(harness);
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_plugin_artifact_permission",
+      pluginId: "music-tools",
+      serverId: "converter",
+      permission: "input",
+      approved: true,
+    });
+    artifactPermissions()[1]!.click();
+    await harness.acceptAppConfirmation();
+    await waitForPluginIdle(harness);
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "set_plugin_artifact_permission",
+      pluginId: "music-tools",
+      serverId: "converter",
+      permission: "output",
+      approved: true,
+    });
+    assert.ok(artifactPermissions().every((button) => button.getAttribute("aria-pressed") === "true"));
+
     harness.click('[data-plugin-id="music-tools"] .plugin-enabled-toggle input');
     await harness.acceptAppConfirmation();
     await waitForPluginIdle(harness);
@@ -197,7 +232,7 @@ test("Plugin ZIP is inspected and reviewed before installation writes anything",
     assert.match(review, new RegExp(digest));
     assert.match(review, /converter.*\.\/bin\/converter/s);
     assert.match(review, /catalog.*https:\/\/plugins\.example\.test/s);
-    assert.match(review, /not enable the Plugin or approve any MCP server/i);
+    assert.match(review, /not enable the Plugin, approve any MCP server, or grant artifact access/i);
     assert.match(review, /Not used by Live Smith: hooks/);
     assert.doesNotMatch(review, /private\/catalog|token=hidden/u);
 

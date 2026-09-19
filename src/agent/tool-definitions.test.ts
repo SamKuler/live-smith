@@ -4,6 +4,7 @@ import test from "node:test";
 import { agentActionJsonSchemas } from "./action-schema.js";
 import { MAX_AGENT_PLAN_ACTIONS } from "./actions.js";
 import { liveSmithTools } from "./tool-definitions.js";
+import { midiArtifactImportActionSchema } from "../plugins/artifacts.js";
 
 test("apply_live_actions exposes every validated action schema", () => {
   const actionTypes = agentActionJsonSchemas().map((schema) => {
@@ -110,6 +111,19 @@ test("apply_live_actions exposes every validated action schema", () => {
     "kind",
     "requestId",
   ]);
+});
+
+test("host artifact actions are exposed only when explicitly supplied", () => {
+  const actionTypes = (options: Parameters<typeof liveSmithTools>[0] = {}) => {
+    const apply = liveSmithTools(options).find((tool) => tool.function.name === "apply_live_actions")!;
+    const schemas = ((apply.function.parameters?.properties as Record<string, { items?: { anyOf?: Array<{
+      properties?: { type?: { enum?: string[] } };
+    }> } }>).actions?.items?.anyOf ?? []);
+    return schemas.map((schema) => schema.properties?.type?.enum?.[0]);
+  };
+  assert.equal(actionTypes().includes("create_midi_clip_from_artifact"), false);
+  assert.equal(actionTypes({ additionalActionSchemas: [midiArtifactImportActionSchema] })
+    .includes("create_midi_clip_from_artifact"), true);
 });
 
 test("Live tools expose object-aware inspection without raw filesystem inputs", () => {

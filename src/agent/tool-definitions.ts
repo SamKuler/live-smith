@@ -4,6 +4,7 @@ import { MAX_AGENT_PLAN_ACTIONS } from "./actions.js";
 
 export function liveSmithTools(options: {
   readArrangementAudio?: boolean;
+  additionalActionSchemas?: readonly Record<string, unknown>[];
 } = {}): ModelFunctionTool[] {
   return [
     observationTool(
@@ -319,7 +320,10 @@ export function liveSmithTools(options: {
               minItems: 1,
               maxItems: MAX_AGENT_PLAN_ACTIONS,
               description: "Live actions to apply after user confirmation.",
-              items: { anyOf: agentActionJsonSchemas() },
+              items: { anyOf: [
+                ...agentActionJsonSchemas(),
+                ...(options.additionalActionSchemas ?? []),
+              ] },
             },
           },
           required: ["message", "actions"],

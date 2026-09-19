@@ -247,6 +247,7 @@ export type ChatBridgeCommandInput =
   | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
   | { kind: "set_plugin_enabled"; pluginId: string; enabled: boolean }
   | { kind: "set_plugin_mcp_server_approved"; pluginId: string; serverId: string; approved: boolean }
+  | { kind: "set_plugin_artifact_permission"; pluginId: string; serverId: string; permission: "input" | "output"; approved: boolean }
   | { kind: "delete_plugin"; pluginId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
@@ -1351,6 +1352,16 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       throw new ChatBridgeRequestValidationError("Plugin MCP server approval is invalid.");
     }
     return { kind, pluginId: input.pluginId, serverId: input.serverId, approved: input.approved };
+  }
+  if (kind === "set_plugin_artifact_permission") {
+    assertOnlyInputKeys(input, ["kind", "pluginId", "serverId", "permission", "approved"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.serverId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,64}$/u.test(input.serverId) ||
+        (input.permission !== "input" && input.permission !== "output") || typeof input.approved !== "boolean") {
+      throw new ChatBridgeRequestValidationError("Plugin artifact permission is invalid.");
+    }
+    return { kind, pluginId: input.pluginId, serverId: input.serverId,
+      permission: input.permission, approved: input.approved };
   }
   if (kind === "delete_plugin") {
     assertOnlyInputKeys(input, ["kind", "pluginId"], `${kind} command`);

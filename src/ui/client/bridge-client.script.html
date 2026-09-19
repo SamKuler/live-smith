@@ -2960,10 +2960,14 @@
           !Number.isInteger(value.skillCount) || value.skillCount < 0 || value.skillCount > 2048 ||
           !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
           !value.mcpServers.every((server) => isWireRecord(server) &&
-            hasOnlyWireKeys(server, ["id", "type", "approved", "target"]) &&
+            hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target"]) &&
             typeof server.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(server.id) &&
             ["stdio", "streamable-http"].includes(server.type) &&
             typeof server.approved === "boolean" &&
+            typeof server.artifactInputApproved === "boolean" &&
+            typeof server.artifactOutputApproved === "boolean" &&
+            (!server.artifactInputApproved && !server.artifactOutputApproved ||
+              server.type === "stdio" && server.approved) &&
             typeof server.target === "string" && server.target.length > 0 && server.target.length <= 2048 &&
             !/[\u0000-\u001f\u007f]/.test(server.target)) ||
           new Set(value.mcpServers.map((server) => server.id)).size !== value.mcpServers.length ||
@@ -2989,7 +2993,8 @@
         delete installed.sha256;
         delete installed.byteLength;
         return isWireInstalledPlugin(installed) && installed.enabled === false &&
-          installed.mcpServers.every((server) => server.approved === false);
+          installed.mcpServers.every((server) => server.approved === false &&
+            server.artifactInputApproved === false && server.artifactOutputApproved === false);
       }
 
       function isWireChatBridgeState(value) {

@@ -14,6 +14,11 @@ import type {
   PluginToolsResult,
 } from "../contracts.js";
 import {
+  assertPluginResultHasNoPrivatePaths,
+  modelSchemaForArtifactTool,
+  pluginArtifactContract,
+} from "../artifacts.js";
+import {
   connectPluginMcpServer,
   type ConnectedPluginMcpServer,
   type ConnectPluginMcpServerOptions,
@@ -107,7 +112,7 @@ class McpPluginPackage implements PluginPackage {
         try {
           if (names.has(tool.name)) throw new Error("MCP server exposes a duplicate tool name.");
           names.add(tool.name);
-          definitions.push(toolDefinition(this.manifest.id, server.id, tool));
+          definitions.push(toolDefinition(this.manifest.id, server, tool));
         } catch {
           issues.push(issue(this.manifest.id, server.id, "invalid_tool", "MCP server exposes an invalid tool definition."));
         }
@@ -138,7 +143,7 @@ class McpPluginPackage implements PluginPackage {
     }
     if (!tools.some((tool) => tool.name === name)) throw new PluginToolRuntimeError("Plugin MCP tool is unavailable.");
     const result = await connection.callTool(name, argumentsValue, context.signal);
-    return boundedToolResult(result);
+    return boundedToolResult(result, [this.prepared.pluginRoot, this.prepared.pluginData]);
   }
 
   async close(): Promise<void> {
@@ -183,21 +188,32 @@ class McpPluginPackage implements PluginPackage {
   }
 }
 
-function toolDefinition(pluginId: string, serverId: string, tool: Tool): PluginToolDefinition {
+function toolDefinition(pluginId: string, server: PluginMcpServer, tool: Tool): PluginToolDefinition {
   if (typeof tool.name !== "string" || !tool.name || tool.name.length > MAX_TOOL_NAME_LENGTH ||
       /[\u0000-\u001f\u007f]/u.test(tool.name)) throw new Error("Invalid tool name.");
   const description = tool.description ?? tool.title ?? `Tool ${tool.name}`;
   if (typeof description !== "string" || !description || description.length > MAX_TOOL_DESCRIPTION_LENGTH ||
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(description)) throw new Error("Invalid tool description.");
-  const parameters = cloneJsonValue(tool.inputSchema);
+  const artifactContract = pluginArtifactContract(tool);
+  if (artifactContract && server.type !== "stdio") {
+    throw new Error("Plugin artifact tools require a local MCP server.");
+  }
+  const parameters = modelSchemaForArtifactTool(tool.inputSchema, artifactContract);
   if (!plainRecord(parameters) || jsonBytes(parameters) > MAX_TOOL_SCHEMA_BYTES) throw new Error("Invalid tool schema.");
   return {
     pluginId,
-    serverId,
+    serverId: server.id,
     name: tool.name,
+    ...(artifactContract ? { artifactContract } : {}),
     tool: {
       type: "function",
-      function: { name: pluginToolCallName(pluginId, serverId, tool.name), description, parameters },
+      function: {
+        name: pluginToolCallName(pluginId, server.id, tool.name),
+        description: artifactContract
+          ? `${description} Live Smith stages declared Session audio inputs and saves one validated MIDI output; arguments never contain user filesystem paths. Do not retry an unknown outcome automatically; use list_session_artifacts to check saved results first.`
+          : description,
+        parameters,
+      },
     },
   };
 }
@@ -213,11 +229,12 @@ function slug(value: string, maximum: number): string {
   return normalized || "tool";
 }
 
-function boundedToolResult(value: unknown): PluginToolResult {
+function boundedToolResult(value: unknown, forbiddenPaths: readonly string[]): PluginToolResult {
   const cloned = cloneJsonValue(value) as PluginToolResult;
   if (!plainRecord(cloned) || !Array.isArray(cloned.content) || jsonBytes(cloned) > MAX_TOOL_RESULT_BYTES) {
     throw new PluginToolRuntimeError("Plugin MCP tool returned an invalid or oversized result.");
   }
+  assertPluginResultHasNoPrivatePaths(cloned, forbiddenPaths);
   return cloned;
 }
 

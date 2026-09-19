@@ -17,12 +17,19 @@ import {
 } from "../agent/loop.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import {
+  materializeMidiArtifactActionPlan,
+  midiArtifactImportActionSchema,
+} from "../plugins/artifacts.js";
+import {
   observationRequestForAction,
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
-import { createRequestPluginTools } from "./request-plugin-tools.js";
+import {
+  createRequestPluginTools,
+  type PluginExecutionAuthorization,
+} from "./request-plugin-tools.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { audioProcessingAvailable, type AudioProcessingContext } from "./audio-processing.js";
 import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "./audio-asset-sources.js";
@@ -320,9 +327,15 @@ export async function handleAgentRequest(
   });
   const pluginTools = await createRequestPluginTools({
     storageDirectory,
+    ...(context.environment?.tempDirectory === undefined
+      ? {}
+      : { temporaryDirectory: context.environment.tempDirectory }),
     sessionId: session.id,
     signal: callbacks.signal,
     fetchImpl: providerFetchForStorage(storageDirectory),
+    ...(callbacks.withPluginAuthorization
+      ? { withAuthorization: callbacks.withPluginAuthorization }
+      : {}),
   });
   let externalTools: PluginRegistry;
   try {
@@ -598,6 +611,9 @@ export async function handleAgentRequest(
           runtimeProfile,
           [...liveSmithTools({
             readArrangementAudio: canReadArrangementAudio(),
+            ...(pluginTools.midiArtifacts().length
+              ? { additionalActionSchemas: [midiArtifactImportActionSchema] }
+              : {}),
           }), ...externalTools.tools()],
           Math.min(
             HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
@@ -787,6 +803,12 @@ export async function handleAgentRequest(
           },
           requestAudioSources,
         ),
+      prepareActionPlan: (toolCall) => materializeMidiArtifactActionPlan({
+        argumentsJson: toolCall.arguments,
+        storageDirectory,
+        sessionId: session.id,
+        signal: callbacks.signal,
+      }),
       confirmActions: callbacks.confirmActions,
       ...(callbacks.confirmRecoveryResolution
         ? { confirmRecoveryResolution: callbacks.confirmRecoveryResolution }
@@ -1173,6 +1195,7 @@ async function captureAgentPlanPreflightSnapshots(
 
 interface AgentRequestCallbacks {
   withGenerationAuthorization?: AudioProcessingContext["withGenerationAuthorization"];
+  withPluginAuthorization?: PluginExecutionAuthorization;
   /** Test seam for the external service; no service config is accepted in /send. */
   audioProcessing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "wait">;
   signal: AbortSignal;

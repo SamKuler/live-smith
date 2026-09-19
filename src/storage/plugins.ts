@@ -32,6 +32,8 @@ export interface InstalledPlugin {
   byteLength: number;
   enabled: boolean;
   approvedMcpServerIds: string[];
+  approvedArtifactInputServerIds: string[];
+  approvedArtifactOutputServerIds: string[];
   installedAt: string;
   updatedAt: string;
 }
@@ -66,7 +68,8 @@ const supportsPosixPermissions = platform !== "win32";
 const catalogKeys = new Set(["schemaVersion", "revision", "plugins"]);
 const pluginKeys = new Set([
   "id", "version", "description", "sourceFormat", "components", "sha256", "byteLength",
-  "unsupportedComponents", "enabled", "approvedMcpServerIds", "installedAt", "updatedAt",
+  "unsupportedComponents", "enabled", "approvedMcpServerIds", "approvedArtifactInputServerIds",
+  "approvedArtifactOutputServerIds", "installedAt", "updatedAt",
 ]);
 const componentKeys = new Set(["skillsDirectory", "mcpConfigPath", "mcpManifestPath"]);
 
@@ -104,6 +107,8 @@ export async function installPlugin(
       byteLength: owned.byteLength,
       enabled: false,
       approvedMcpServerIds: [],
+      approvedArtifactInputServerIds: [],
+      approvedArtifactOutputServerIds: [],
       installedAt: previous?.installedAt ?? now,
       updatedAt: now,
     };
@@ -279,6 +284,79 @@ export function setPluginMcpServerApprovedInTransaction(
       ...current,
       components: { ...current.components },
       approvedMcpServerIds: [...approvedIds].sort(),
+      approvedArtifactInputServerIds: approved
+        ? [...current.approvedArtifactInputServerIds]
+        : current.approvedArtifactInputServerIds.filter((id) => id !== serverId),
+      approvedArtifactOutputServerIds: approved
+        ? [...current.approvedArtifactOutputServerIds]
+        : current.approvedArtifactOutputServerIds.filter((id) => id !== serverId),
+      updatedAt: new Date().toISOString(),
+    };
+    const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
+    await saveCatalog(directory, { schemaVersion: 1, revision: incrementRevision(state.revision), plugins });
+    return clonePlugin(next);
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
+}
+
+export async function setPluginArtifactPermissionApproved(
+  storageDirectory: string | undefined,
+  pluginId: string,
+  serverId: string,
+  permission: "input" | "output",
+  approved: boolean,
+): Promise<InstalledPlugin> {
+  return withStorageTransaction(storageDirectory, (transaction) =>
+    setPluginArtifactPermissionApprovedInTransaction(
+      transaction,
+      storageDirectory,
+      pluginId,
+      serverId,
+      permission,
+      approved,
+    ));
+}
+
+export function setPluginArtifactPermissionApprovedInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+  pluginId: string,
+  serverId: string,
+  permission: "input" | "output",
+  approved: boolean,
+): Promise<InstalledPlugin> {
+  if (!isSafePluginId(pluginId) || !/^[A-Za-z0-9_-]{1,64}$/u.test(serverId) ||
+      !["input", "output"].includes(permission) || typeof approved !== "boolean") {
+    throw new TypeError("Plugin artifact permission is invalid.");
+  }
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
+    const directory = requireStorageDirectory(storageDirectory);
+    const state = await loadCatalog(directory);
+    const index = state.plugins.findIndex((entry) => entry.id === pluginId);
+    if (index < 0) throw new Error("This Plugin is not installed.");
+    const current = state.plugins[index]!;
+    const archive = await openPluginArchive(await readVerifiedArchive(directory, current));
+    const config = pluginMcpConfigFromArchive(archive);
+    const server = config?.servers.find((entry) => entry.id === serverId);
+    if (!server) throw new Error("This Plugin does not expose a supported MCP server with that name.");
+    if (server.type !== "stdio") throw new Error("Artifact permissions are available only for local MCP servers.");
+    if (approved && !current.approvedMcpServerIds.includes(serverId)) {
+      throw new Error("Approve this MCP server before granting artifact access.");
+    }
+    const field = permission === "input"
+      ? "approvedArtifactInputServerIds"
+      : "approvedArtifactOutputServerIds";
+    const ids = new Set(current[field]);
+    if (approved) ids.add(serverId);
+    else ids.delete(serverId);
+    const next: InstalledPlugin = {
+      ...current,
+      components: { ...current.components },
+      approvedMcpServerIds: [...current.approvedMcpServerIds],
+      approvedArtifactInputServerIds: [...current.approvedArtifactInputServerIds],
+      approvedArtifactOutputServerIds: [...current.approvedArtifactOutputServerIds],
+      [field]: [...ids].sort(),
       updatedAt: new Date().toISOString(),
     };
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
@@ -394,9 +472,17 @@ function decodePlugin(value: unknown): InstalledPlugin {
     throw new PluginStorageCorruptionError();
   }
   const approvedMcpServerIds = value.approvedMcpServerIds === undefined ? [] : value.approvedMcpServerIds;
-  if (!Array.isArray(approvedMcpServerIds) || approvedMcpServerIds.length > 32 ||
-      approvedMcpServerIds.some((entry) => typeof entry !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(entry)) ||
-      approvedMcpServerIds.some((entry, index) => index > 0 && approvedMcpServerIds[index - 1] >= entry)) {
+  const approvedArtifactInputServerIds = value.approvedArtifactInputServerIds === undefined
+    ? []
+    : value.approvedArtifactInputServerIds;
+  const approvedArtifactOutputServerIds = value.approvedArtifactOutputServerIds === undefined
+    ? []
+    : value.approvedArtifactOutputServerIds;
+  if (!validApprovedServerIds(approvedMcpServerIds) ||
+      !validApprovedServerIds(approvedArtifactInputServerIds) ||
+      !validApprovedServerIds(approvedArtifactOutputServerIds) ||
+      [...approvedArtifactInputServerIds, ...approvedArtifactOutputServerIds]
+        .some((id) => !approvedMcpServerIds.includes(id))) {
     throw new PluginStorageCorruptionError();
   }
   const unsupportedComponents = value.unsupportedComponents === undefined
@@ -411,6 +497,8 @@ function decodePlugin(value: unknown): InstalledPlugin {
   return clonePlugin({
     ...(value as unknown as InstalledPlugin),
     approvedMcpServerIds,
+    approvedArtifactInputServerIds,
+    approvedArtifactOutputServerIds,
     ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
   });
 }
@@ -554,10 +642,18 @@ function clonePlugin(value: InstalledPlugin): InstalledPlugin {
     ...value,
     components: { ...value.components },
     approvedMcpServerIds: [...value.approvedMcpServerIds],
+    approvedArtifactInputServerIds: [...value.approvedArtifactInputServerIds],
+    approvedArtifactOutputServerIds: [...value.approvedArtifactOutputServerIds],
     ...(value.unsupportedComponents === undefined
       ? {}
       : { unsupportedComponents: [...value.unsupportedComponents] }),
   };
+}
+
+function validApprovedServerIds(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 32 &&
+    value.every((entry) => typeof entry === "string" && /^[A-Za-z0-9_-]{1,64}$/u.test(entry)) &&
+    value.every((entry, index) => index === 0 || value[index - 1] < entry);
 }
 
 function recordWithKeys(value: unknown, allowed: ReadonlySet<string>): value is Record<string, unknown> {

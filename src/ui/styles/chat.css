@@ -1794,8 +1794,17 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-server-approval,
+.plugin-artifact-permission,
 .plugin-card-actions button {
   @apply h-control-compact min-w-0 px-2 py-0 text-small;
+}
+
+.plugin-server-controls {
+  @apply flex flex-wrap items-center justify-end gap-1;
+}
+
+.plugin-artifact-permission[aria-pressed="true"] {
+  @apply border-accent-soft bg-accent-soft text-text;
 }
 
 .plugin-card-actions {
@@ -2552,7 +2561,7 @@ label {
     @apply grid-cols-1 items-stretch;
   }
 
-  .plugin-server-approval {
+  .plugin-server-controls {
     justify-self: end;
   }
 

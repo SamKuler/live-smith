@@ -14,6 +14,10 @@ import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openAudioDownload } from "../runtime/audio-download-browser.js";
 import { audioServicesView } from "../storage/settings.js";
 import { readAudioAsset, deleteSessionAudio, listSessionAudioDirectoryIds } from "../storage/audio-assets.js";
+import {
+  deleteSessionMidiArtifacts,
+  listSessionMidiArtifactDirectoryIds,
+} from "../storage/midi-artifacts.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import {
   type AgentConfirmationDecision,
@@ -136,6 +140,7 @@ import {
   readEnabledPluginPackagesInTransaction,
   readInstalledPluginPackagesInTransaction,
   setPluginEnabledInTransaction,
+  setPluginArtifactPermissionApprovedInTransaction,
   setPluginMcpServerApprovedInTransaction,
   PluginStorageCorruptionError,
   type InstalledPlugin,
@@ -3032,6 +3037,7 @@ export async function runAgentFlow(
             commandInput.sessionId,
           );
           await deleteSessionAudio(storageDirectory, commandInput.sessionId);
+          await deleteSessionMidiArtifacts(storageDirectory, commandInput.sessionId);
           pendingSessionCleanup.delete(commandInput.sessionId);
         } catch (cause) {
           pendingSessionCleanup.add(commandInput.sessionId);
@@ -3108,6 +3114,7 @@ export async function runAgentFlow(
     if (
       commandInput.kind === "set_plugin_enabled" ||
       commandInput.kind === "set_plugin_mcp_server_approved" ||
+      commandInput.kind === "set_plugin_artifact_permission" ||
       commandInput.kind === "delete_plugin"
     ) {
       let changed = false;
@@ -3155,6 +3162,22 @@ export async function runAgentFlow(
               changed = true;
               return;
             }
+            if (commandInput.kind === "set_plugin_artifact_permission") {
+              const current = commandInput.permission === "input"
+                ? plugin.approvedArtifactInputServerIds
+                : plugin.approvedArtifactOutputServerIds;
+              if (current.includes(commandInput.serverId) === commandInput.approved) return;
+              await setPluginArtifactPermissionApprovedInTransaction(
+                transaction,
+                storageDirectory,
+                plugin.id,
+                commandInput.serverId,
+                commandInput.permission,
+                commandInput.approved,
+              );
+              changed = true;
+              return;
+            }
             if (plugin.enabled) {
               throw new ChatBridgeConflictError("Disable this Plugin before deleting it.");
             }
@@ -3177,6 +3200,8 @@ export async function runAgentFlow(
         ? `Plugin ${commandInput.pluginId} deleted.`
         : commandInput.kind === "set_plugin_enabled"
           ? `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
+          : commandInput.kind === "set_plugin_artifact_permission"
+            ? `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} artifact ${commandInput.permission} ${commandInput.approved ? "approved" : "revoked"}.`
           : `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} ${commandInput.approved ? "approved" : "revoked"}.`;
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
@@ -3675,6 +3700,7 @@ export async function runAgentFlow(
           sessionId,
         );
         await deleteSessionAudio(storageDirectory, sessionId);
+        await deleteSessionMidiArtifacts(storageDirectory, sessionId);
         pendingSessionCleanup.delete(sessionId);
       });
     }
@@ -3688,6 +3714,7 @@ export async function runAgentFlow(
     );
     const orphanCandidates = new Set([
       ...await listSessionAudioDirectoryIds(storageDirectory),
+      ...await listSessionMidiArtifactDirectoryIds(storageDirectory),
       ...await listSessionAttachmentDirectoryIds(
         storageDirectory,
       ),
@@ -3708,6 +3735,7 @@ export async function runAgentFlow(
           sessionId,
         );
         await deleteSessionAudio(storageDirectory, sessionId);
+        await deleteSessionMidiArtifacts(storageDirectory, sessionId);
       });
     }
   }
@@ -4256,6 +4284,11 @@ export async function runAgentFlow(
               onProgress: (message) => stream.progress(message),
               withGenerationAuthorization: (authorizationSignal, dispatch) => globalSettingsMutationFence.run(
                 sessionMutationFenceKey(storageDirectory, "global-settings"), authorizationSignal, dispatch,
+              ),
+              withPluginAuthorization: (authorizationSignal, dispatch) => requestConfigurationFence.run(
+                requestConfigurationFenceKey,
+                authorizationSignal,
+                dispatch,
               ),
               onWebSearchUpdate: (update) => stream.webSearchUpdate(update),
               onSessionEvent: (event) => {

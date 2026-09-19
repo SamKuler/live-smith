@@ -12,6 +12,7 @@ import {
   readInstalledPluginArchive,
   readEnabledPluginPackagesInTransaction,
   setPluginEnabled,
+  setPluginArtifactPermissionApproved,
   setPluginMcpServerApproved,
 } from "./plugins.js";
 import { withStorageTransaction } from "./persistence.js";
@@ -37,6 +38,8 @@ test("Plugin catalog installs immutable bytes disabled and returns defensive cop
   assert.equal(installed.enabled, false);
   assert.equal(installed.version, "1.0.0");
   assert.deepEqual(installed.approvedMcpServerIds, []);
+  assert.deepEqual(installed.approvedArtifactInputServerIds, []);
+  assert.deepEqual(installed.approvedArtifactOutputServerIds, []);
   source.fill(0);
   const stored = await readInstalledPluginArchive(directory, installed.id);
   assert.notEqual(stored[0], 0);
@@ -80,7 +83,17 @@ test("MCP server execution requires an approval bound to the installed package",
   });
   await installPlugin(directory, archive);
   assert.deepEqual((await setPluginMcpServerApproved(directory, "fixture-plugin", "local", true)).approvedMcpServerIds, ["local"]);
-  assert.deepEqual((await setPluginMcpServerApproved(directory, "fixture-plugin", "local", false)).approvedMcpServerIds, []);
+  await setPluginArtifactPermissionApproved(directory, "fixture-plugin", "local", "input", true);
+  const granted = await setPluginArtifactPermissionApproved(directory, "fixture-plugin", "local", "output", true);
+  assert.deepEqual(granted.approvedArtifactInputServerIds, ["local"]);
+  assert.deepEqual(granted.approvedArtifactOutputServerIds, ["local"]);
+  const revoked = await setPluginMcpServerApproved(directory, "fixture-plugin", "local", false);
+  assert.deepEqual(revoked.approvedMcpServerIds, []);
+  assert.deepEqual(revoked.approvedArtifactInputServerIds, []);
+  assert.deepEqual(revoked.approvedArtifactOutputServerIds, []);
+  await assert.rejects(setPluginArtifactPermissionApproved(
+    directory, "fixture-plugin", "local", "input", true,
+  ), /Approve this MCP server/u);
   await assert.rejects(setPluginMcpServerApproved(directory, "fixture-plugin", "missing", true), /does not expose/u);
 });
 
@@ -94,7 +107,25 @@ test("Plugin replacement is explicit and enablement remains an independent user 
   assert.equal(replaced.version, "2.0.0");
   assert.equal(replaced.enabled, false);
   assert.deepEqual(replaced.approvedMcpServerIds, []);
+  assert.deepEqual(replaced.approvedArtifactInputServerIds, []);
+  assert.deepEqual(replaced.approvedArtifactOutputServerIds, []);
   assert.equal((await listInstalledPlugins(directory))[0]!.version, "2.0.0");
+});
+
+test("historical Plugin catalogs default missing artifact grants without rewriting", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const target = `${directory}/live-smith-plugins/catalog.json`;
+  const catalog = JSON.parse(await fs.readFile(target, "utf8"));
+  delete catalog.plugins[0].approvedArtifactInputServerIds;
+  delete catalog.plugins[0].approvedArtifactOutputServerIds;
+  await fs.writeFile(target, JSON.stringify(catalog, null, 2));
+  const before = await fs.readFile(target, "utf8");
+  const [loaded] = await listInstalledPlugins(directory);
+  assert.deepEqual(loaded?.approvedArtifactInputServerIds, []);
+  assert.deepEqual(loaded?.approvedArtifactOutputServerIds, []);
+  assert.equal(await fs.readFile(target, "utf8"), before);
 });
 
 test("Plugin catalog serializes concurrent installs and deletes only the selected package", async (t) => {

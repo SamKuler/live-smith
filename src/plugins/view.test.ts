@@ -32,6 +32,7 @@ function pluginPackage(): InstalledPluginPackage {
       components: { skillsDirectory: "skills", mcpConfigPath: "mcp.json" },
       sha256: "a".repeat(64), byteLength: bytes.byteLength, enabled: true,
       approvedMcpServerIds: ["remote"],
+      approvedArtifactInputServerIds: [], approvedArtifactOutputServerIds: [],
       installedAt: "2026-09-19T00:00:00.000Z", updatedAt: "2026-09-19T00:00:00.000Z",
     },
   };
@@ -43,8 +44,10 @@ test("Plugin wire view exposes capabilities and approval without private runtime
     id: "audio-to-midi", version: "1.0.0", description: "Convert audio",
     sourceFormat: "agent-plugins-1.0", enabled: true, skillCount: 1,
     mcpServers: [
-      { id: "local", type: "stdio", approved: false, target: "./bin/converter" },
-      { id: "remote", type: "streamable-http", approved: true, target: "https://api.example.com" },
+      { id: "local", type: "stdio", approved: false, artifactInputApproved: false,
+        artifactOutputApproved: false, target: "./bin/converter" },
+      { id: "remote", type: "streamable-http", approved: true, artifactInputApproved: false,
+        artifactOutputApproved: false, target: "https://api.example.com" },
     ],
     unsupportedComponents: [],
     issues: ["invalid_skill", "unsupported_mcp_transport"],

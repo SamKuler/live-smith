@@ -29,6 +29,12 @@ export interface PluginToolDefinition {
   serverId: string;
   name: string;
   tool: ModelFunctionTool;
+  artifactContract?: PluginArtifactToolContract;
+}
+
+export interface PluginArtifactToolContract {
+  inputs: readonly { argument: string; kind: "audio" }[];
+  outputs: readonly { argument: string; kind: "midi"; label: string }[];
 }
 
 export interface PluginToolResult {
@@ -40,7 +46,8 @@ export interface PluginToolResult {
 export interface PluginToolIssue {
   pluginId: PluginId;
   serverId?: string;
-  code: "invalid_configuration" | "unsupported_transport" | "approval_required" | "connection_failed" | "invalid_tool";
+  code: "invalid_configuration" | "unsupported_transport" | "approval_required" |
+    "artifact_permission_required" | "connection_failed" | "invalid_tool";
   message: string;
 }
 

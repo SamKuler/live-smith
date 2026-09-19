@@ -145,6 +145,8 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   preflightActions?(
     plan: AgentPlan,
   ): Promise<AgentActionPreflightGuard<ExecutionBindings>>;
+  /** Resolves host-owned action inputs, then returns the ordinary validated Live plan. */
+  prepareActionPlan?(toolCall: ModelToolCall): Promise<AgentPlan>;
   confirmActions(
     plan: AgentPlan,
     guard: AgentActionPreflightGuard<ExecutionBindings>,
@@ -1056,7 +1058,9 @@ async function executeToolCall(
     if (toolCall.name === "apply_live_actions") {
       let plan: AgentPlan;
       try {
-        plan = actionPlanFromToolCall(toolCall);
+        plan = options.prepareActionPlan
+          ? await options.prepareActionPlan(toolCall)
+          : actionPlanFromToolCall(toolCall);
       } catch (error) {
         throw new AgentToolArgumentsError(error);
       }

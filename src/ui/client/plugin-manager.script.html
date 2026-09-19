@@ -58,7 +58,7 @@
           warnings,
           unsupported,
           "",
-          t("Installing does not enable the Plugin or approve any MCP server."),
+          t("Installing does not enable the Plugin, approve any MCP server, or grant artifact access."),
         ].filter((line, index, values) => line !== "" || values[index - 1] !== "").join("\n");
       }
 
@@ -82,6 +82,8 @@
         const detail = document.createElement("span");
         detail.textContent = `${server.type === "stdio" ? t("Local process") : t("Remote MCP")} · ${server.target}`;
         copy.append(title, detail);
+        const controls = document.createElement("div");
+        controls.className = "plugin-server-controls";
         const approval = makeButton(
           server.approved ? t("Revoke") : t("Approve"),
           "secondary plugin-server-approval",
@@ -91,7 +93,24 @@
         approval.setAttribute("aria-label", server.approved
           ? t("Revoke MCP server {serverId}", { serverId: server.id })
           : t("Approve MCP server {serverId}", { serverId: server.id }));
-        row.append(copy, approval);
+        controls.append(approval);
+        if (server.type === "stdio") {
+          for (const [permission, property, label] of [
+            ["input", "artifactInputApproved", "Audio input"],
+            ["output", "artifactOutputApproved", "MIDI output"],
+          ]) {
+            const granted = server[property] === true;
+            const button = makeButton(t(label), "secondary plugin-artifact-permission", () =>
+              toggleArtifactPermission(plugin, server, permission));
+            button.disabled = busy || !server.approved;
+            button.setAttribute("aria-pressed", String(granted));
+            button.setAttribute("aria-label", granted
+              ? t("Revoke {permission} access from MCP server {serverId}", { permission: t(label), serverId: server.id })
+              : t("Allow {permission} access for MCP server {serverId}", { permission: t(label), serverId: server.id }));
+            controls.append(button);
+          }
+        }
+        row.append(copy, controls);
         return row;
       }
 
@@ -219,6 +238,29 @@
         const changed = await runCommand("set_plugin_mcp_server_approved", {
           pluginId: plugin.id,
           serverId: server.id,
+          approved,
+        });
+        if (!changed) render(true);
+      }
+
+      async function toggleArtifactPermission(plugin, server, permission) {
+        if (server.type !== "stdio" || !server.approved) return;
+        const property = permission === "input" ? "artifactInputApproved" : "artifactOutputApproved";
+        const approved = server[property] !== true;
+        if (approved) {
+          const input = permission === "input";
+          if (!(await confirmAction({
+            title: window.LiveSmithI18n.message(input ? "Allow staged audio input?" : "Allow validated MIDI output?"),
+            message: input
+              ? window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may receive read-only temporary copies of exact Session audio artifacts selected for its declared tools. The local process still runs as your operating-system user and is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })
+              : window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may write only its declared temporary output file. Live Smith validates it as MIDI and saves it to the current Session; this permission does not import or change anything in Live.", { pluginId: plugin.id, serverId: server.id }),
+            acceptLabel: window.LiveSmithI18n.message("Allow"),
+          }))) return;
+        }
+        const changed = await runCommand("set_plugin_artifact_permission", {
+          pluginId: plugin.id,
+          serverId: server.id,
+          permission,
           approved,
         });
         if (!changed) render(true);

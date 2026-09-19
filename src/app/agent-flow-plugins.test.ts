@@ -116,15 +116,18 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
             id: string;
             sha256: string;
             byteLength: number;
-            mcpServers: Array<{ id: string; target: string; approved: boolean }>;
+            mcpServers: Array<{ id: string; target: string; approved: boolean;
+              artifactInputApproved: boolean; artifactOutputApproved: boolean }>;
           };
         };
         assert.equal(preview.preview.id, "music-tools");
         assert.match(preview.preview.sha256, /^[a-f0-9]{64}$/u);
         assert.equal(preview.preview.byteLength, versionOne.byteLength);
         assert.deepEqual(preview.preview.mcpServers, [
-          { id: "converter", target: "./bin/converter", approved: false, type: "stdio" },
-          { id: "catalog", target: "https://plugins.example.test", approved: false, type: "streamable-http" },
+          { id: "converter", target: "./bin/converter", approved: false, artifactInputApproved: false,
+            artifactOutputApproved: false, type: "stdio" },
+          { id: "catalog", target: "https://plugins.example.test", approved: false, artifactInputApproved: false,
+            artifactOutputApproved: false, type: "streamable-http" },
         ]);
         assert.doesNotMatch(JSON.stringify(preview), /private\/path|token=hidden/u);
         const stateBeforeInstall = await request("/state").then((response) => response.json() as Promise<ChatDialogState>);
@@ -160,6 +163,17 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           approved.plugins[0]?.mcpServers.find((server) => server.id === "converter")?.approved,
           true,
         );
+        for (const permission of ["input", "output"] as const) {
+          const granted = await command({
+            kind: "set_plugin_artifact_permission",
+            pluginId: "music-tools",
+            serverId: "converter",
+            permission,
+            approved: true,
+          });
+          const server = granted.plugins[0]?.mcpServers.find((entry) => entry.id === "converter");
+          assert.equal(permission === "input" ? server?.artifactInputApproved : server?.artifactOutputApproved, true);
+        }
 
         const disabled = await command({
           kind: "set_plugin_enabled",
@@ -173,7 +187,8 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
         const replaced = await upload(pluginBytes("2.0.0"), true);
         assert.equal(replaced.state.plugins[0]?.version, "2.0.0");
         assert.equal(replaced.state.plugins[0]?.enabled, false);
-        assert.ok(replaced.state.plugins[0]?.mcpServers.every((server) => !server.approved));
+        assert.ok(replaced.state.plugins[0]?.mcpServers.every((server) => !server.approved &&
+          !server.artifactInputApproved && !server.artifactOutputApproved));
 
         const deleted = await command({ kind: "delete_plugin", pluginId: "music-tools" });
         assert.deepEqual(deleted.plugins, []);
