@@ -2017,12 +2017,22 @@
 
       function isWireSkillId(value) {
         return typeof value === "string" &&
-          /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) &&
+          /^[a-z0-9]+(?:-[a-z0-9]+)*(?::[a-z0-9]+(?:-[a-z0-9]+)*)?$/.test(value) &&
           value.length <= __MAX_SKILL_ID_LENGTH__;
       }
 
       function isWireSkillSource(value) {
-        return value === "built-in" || value === "user";
+        return value === "built-in" || value === "user" || value === "plugin";
+      }
+
+      function isWireSkillSummary(value) {
+        if (!isWireRecord(value) ||
+          !hasOnlyWireKeys(value, ["id", "description", "source", "pluginId"]) ||
+          !isWireSkillId(value.id) || typeof value.description !== "string" || !isWireSkillSource(value.source)) return false;
+        if (value.source !== "plugin") return value.pluginId === undefined && !value.id.includes(":");
+        return typeof value.pluginId === "string" &&
+          /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.pluginId) &&
+          value.id.startsWith(value.pluginId + ":");
       }
 
       function isWireSkillIds(value) {
@@ -2998,13 +3008,7 @@
             isWireSessionAttachments(value.pendingAttachments)
           ) ||
           !Array.isArray(value.availableSkills) ||
-          !value.availableSkills.every((skill) =>
-            isWireRecord(skill) &&
-            hasOnlyWireKeys(skill, ["id", "description", "source"]) &&
-            isWireSkillId(skill.id) &&
-            typeof skill.description === "string" &&
-            isWireSkillSource(skill.source)
-          ) ||
+          !value.availableSkills.every(isWireSkillSummary) ||
           !isWireSkillIds(value.activeSkillIds) ||
           !isWireModelCapabilities(value.capabilities) ||
           !isWireModelCapabilityEvidence(

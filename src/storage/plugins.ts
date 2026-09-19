@@ -11,9 +11,12 @@ import { isMissingFileError } from "./errors.js";
 import {
   removeDirectoryDurably,
   removeFileDurably,
+  requireActiveStorageTransaction,
+  trackStorageTransactionOperation,
   withStorageTransaction,
   writeBytesAtomicallyCreateOnly,
   writeJsonAtomically,
+  type StorageTransactionContext,
 } from "./persistence.js";
 
 export interface InstalledPlugin {
@@ -27,6 +30,11 @@ export interface InstalledPlugin {
   enabled: boolean;
   installedAt: string;
   updatedAt: string;
+}
+
+export interface InstalledPluginPackage {
+  plugin: InstalledPlugin;
+  bytes: Uint8Array;
 }
 
 interface StoredPluginCatalog {
@@ -106,10 +114,46 @@ export async function installPlugin(
 }
 
 export async function listInstalledPlugins(storageDirectory: string | undefined): Promise<InstalledPlugin[]> {
-  return withStorageTransaction(storageDirectory, async () => {
+  return withStorageTransaction(storageDirectory, (transaction) =>
+    listInstalledPluginsInTransaction(transaction, storageDirectory));
+}
+
+export function listInstalledPluginsInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+): Promise<InstalledPlugin[]> {
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
+    if (!storageDirectory) return [];
     const directory = requireStorageDirectory(storageDirectory);
     return (await loadCatalog(directory)).plugins.map(clonePlugin);
-  });
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
+}
+
+export async function readEnabledPluginPackages(
+  storageDirectory: string | undefined,
+): Promise<InstalledPluginPackage[]> {
+  return withStorageTransaction(storageDirectory, (transaction) =>
+    readEnabledPluginPackagesInTransaction(transaction, storageDirectory));
+}
+
+export function readEnabledPluginPackagesInTransaction(
+  transaction: StorageTransactionContext,
+  storageDirectory: string | undefined,
+): Promise<InstalledPluginPackage[]> {
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
+    if (!storageDirectory) return [];
+    const directory = requireStorageDirectory(storageDirectory);
+    const state = await loadCatalog(directory);
+    const result: InstalledPluginPackage[] = [];
+    for (const plugin of state.plugins.filter((entry) => entry.enabled)) {
+      result.push({ plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin) });
+    }
+    return result;
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
 export async function readInstalledPluginArchive(
@@ -120,12 +164,16 @@ export async function readInstalledPluginArchive(
     const directory = requireStorageDirectory(storageDirectory);
     const plugin = (await loadCatalog(directory)).plugins.find((entry) => entry.id === pluginId);
     if (!plugin) throw new Error("This Plugin is not installed.");
-    const bytes = await readPrivateFile(archiveTarget(directory, plugin.id, plugin.sha256), plugin.byteLength);
-    if (createHash("sha256").update(bytes).digest("hex") !== plugin.sha256) throw new PluginStorageCorruptionError();
-    const opened = await openPluginArchive(bytes);
-    if (opened.manifest.id !== plugin.id || opened.manifest.version !== plugin.version) throw new PluginStorageCorruptionError();
-    return new Uint8Array(bytes);
+    return readVerifiedArchive(directory, plugin);
   });
+}
+
+async function readVerifiedArchive(storageDirectory: string, plugin: InstalledPlugin): Promise<Uint8Array> {
+  const bytes = await readPrivateFile(archiveTarget(storageDirectory, plugin.id, plugin.sha256), plugin.byteLength);
+  if (createHash("sha256").update(bytes).digest("hex") !== plugin.sha256) throw new PluginStorageCorruptionError();
+  const opened = await openPluginArchive(bytes);
+  if (opened.manifest.id !== plugin.id || opened.manifest.version !== plugin.version) throw new PluginStorageCorruptionError();
+  return new Uint8Array(bytes);
 }
 
 export async function setPluginEnabled(

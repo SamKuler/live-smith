@@ -5,9 +5,11 @@ import {
   type SkillDefinition,
   type SkillSummary,
 } from "./format.js";
+import type { PluginSkillDefinition } from "./plugin-package.js";
 
 export interface AvailableSkillSummary extends SkillSummary {
-  source: "built-in" | "user";
+  source: "built-in" | "user" | "plugin";
+  pluginId?: string;
 }
 
 const builtInSkillsMarkdown = [
@@ -192,6 +194,7 @@ export function isBuiltInSkillId(skillId: string): boolean {
 
 export function availableSkillSummaries(
   installed: readonly SkillSummary[],
+  pluginSkills: readonly PluginSkillDefinition[] = [],
 ): AvailableSkillSummary[] {
   const installedIds = new Set(installed.map((skill) => skill.id));
   return [
@@ -206,6 +209,12 @@ export function availableSkillSummaries(
       id,
       description,
       source: "user" as const,
+    })),
+    ...pluginSkills.map(({ id, description, pluginId }) => ({
+      id,
+      description,
+      source: "plugin" as const,
+      pluginId,
     })),
   ].sort(compareSkillIds);
 }

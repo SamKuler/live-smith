@@ -9,8 +9,10 @@ import {
   installPlugin,
   listInstalledPlugins,
   readInstalledPluginArchive,
+  readEnabledPluginPackagesInTransaction,
   setPluginEnabled,
 } from "./plugins.js";
+import { withStorageTransaction } from "./persistence.js";
 
 function packageBytes(version: string, description = "Fixture plugin"): Uint8Array {
   return zipSync({
@@ -95,4 +97,16 @@ test("Plugin installation never follows a catalog or package-directory symlink",
   await fs.symlink(outside, `${directory}/live-smith-plugins`);
   await assert.rejects(installPlugin(directory, packageBytes("1.0.0")), /storage is invalid/u);
   assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test("enabled Plugin packages are read under the caller's storage transaction", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  const packages = await withStorageTransaction(directory, (transaction) =>
+    readEnabledPluginPackagesInTransaction(transaction, directory));
+  assert.equal(packages.length, 1);
+  assert.equal(packages[0]!.plugin.id, "fixture-plugin");
+  assert.deepEqual(packages[0]!.bytes, await readInstalledPluginArchive(directory, "fixture-plugin"));
 });

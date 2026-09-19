@@ -34,7 +34,7 @@ import {
   type ReasoningEffort,
 } from "../model/profile.js";
 import {
-  isSafeSkillId,
+  isSafeSkillReferenceId,
   MAX_ACTIVE_SKILL_COUNT,
 } from "../skills/format.js";
 
@@ -524,7 +524,7 @@ function normalizeActiveSkillIds(value: unknown): string[] {
   if (
     !Array.isArray(value) ||
     value.length > MAX_ACTIVE_SKILL_COUNT ||
-    !value.every(isSafeSkillId) ||
+    !value.every(isSafeSkillReferenceId) ||
     new Set(value).size !== value.length
   ) {
     throw new Error("Skill activation is invalid.");
@@ -536,7 +536,7 @@ function isPersistedActiveSkillIds(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
     value.length <= MAX_ACTIVE_SKILL_COUNT &&
-    value.every(isSafeSkillId) &&
+    value.every(isSafeSkillReferenceId) &&
     value.every((skillId, index) => index === 0 || value[index - 1]! < skillId)
   );
 }

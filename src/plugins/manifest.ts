@@ -33,7 +33,7 @@ export function parsePluginPackageManifest(input: readonly PluginPackageFile[]):
         ...(hasDirectory(files, "skills") ? { skillsDirectory: "skills" } : {}),
         ...(files.has("mcp.json") ? { mcpConfigPath: "mcp.json" } : {}),
       }
-    : compatibilityComponents(selected);
+    : compatibilityComponents(selected, files);
   return { ...identity, sourceFormat, components };
 }
 
@@ -78,10 +78,17 @@ function readIdentity(value: Record<string, unknown>): Pick<PluginManifest, "id"
   return { id: name, version, description };
 }
 
-function compatibilityComponents(value: Record<string, unknown>): PluginComponents {
+function compatibilityComponents(
+  value: Record<string, unknown>,
+  files: ReadonlyMap<string, Uint8Array>,
+): PluginComponents {
   return {
-    ...(value.skills === undefined ? {} : { skillsDirectory: componentPath(value.skills, "skills") }),
-    ...(value.mcpServers === undefined ? {} : { mcpConfigPath: componentPath(value.mcpServers, "MCP") }),
+    ...(value.skills === undefined
+      ? hasDirectory(files, "skills") ? { skillsDirectory: "skills" } : {}
+      : { skillsDirectory: componentPath(value.skills, "skills") }),
+    ...(value.mcpServers === undefined
+      ? files.has(".mcp.json") ? { mcpConfigPath: ".mcp.json" } : {}
+      : { mcpConfigPath: componentPath(value.mcpServers, "MCP") }),
   };
 }
 

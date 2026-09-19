@@ -187,6 +187,32 @@ test("the initial-state decoder requires a recognized Skill source", async () =>
   }
 });
 
+test("enabled Plugin Skills render in their own group and toggle by namespaced ID", async () => {
+  const state = stateFixture();
+  state.availableSkills = [{
+    id: "music-tools:audio-to-midi",
+    description: "Convert audio into MIDI",
+    source: "plugin",
+    pluginId: "music-tools",
+  }];
+  const harness = await createDialogHarness(state);
+  try {
+    const row = harness.document.querySelector<HTMLElement>("#pluginSkillList .skill-row");
+    assert.equal(row?.dataset.skillId, "music-tools:audio-to-midi");
+    assert.equal(row?.querySelector(".skill-delete"), null);
+    const toggle = row?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    assert.ok(toggle);
+    toggle.click();
+    await harness.settle();
+    assert.deepEqual(jsonCalls(harness, "/command").at(-1)?.body, {
+      kind: "set_session_skills",
+      sessionId: state.activeSessionId,
+      skillIds: ["music-tools:audio-to-midi"],
+    });
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("Skill toggle focus survives command failure and the four-Skill limit", async () => {
   const activeSkillIds = [
     "arranging-section-energy",

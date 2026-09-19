@@ -11,6 +11,7 @@ import {
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../attachments/contracts.js";
 import {
   isSafeSkillId,
+  isSafeSkillReferenceId,
   MAX_SKILL_FILE_BYTES,
 } from "../skills/format.js";
 import { requireSafeStorageId, isSafeStorageId } from "../storage/id.js";
@@ -1256,7 +1257,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     if (
       !Array.isArray(skillIds) ||
       skillIds.length > 4 ||
-      !skillIds.every(isSafeSkillId) ||
+      !skillIds.every(isSafeSkillReferenceId) ||
       new Set(skillIds).size !== skillIds.length
     ) {
       throw new ChatBridgeRequestValidationError(

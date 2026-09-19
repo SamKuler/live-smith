@@ -143,6 +143,8 @@ export const templateMessages: Record<string, string> = {
   "Session Skills": "会话技能",
   "Enable for this Session, or use $skill-id for one turn.": "为此会话启用，或使用 $skill-id 仅在当前轮次调用。",
   "Built-in": "内置",
+  "Plugin Skills": "插件技能",
+  "No enabled Plugin Skills.": "没有已启用的插件技能。",
   "Same-ID User Skills are shown below.": "相同 ID 的用户技能显示在下方。",
   "User Skills": "用户技能",
   "No user Skills.": "暂无用户技能。",

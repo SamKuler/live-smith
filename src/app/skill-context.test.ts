@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { strToU8, zipSync } from "fflate/browser";
 
 import {
   MAX_ACTIVE_SKILL_INSTRUCTION_BYTES,
@@ -12,6 +13,7 @@ import {
   skillMentionCandidates,
 } from "./skill-context.js";
 import { deleteInstalledSkill, installSkill } from "../storage/skills.js";
+import { installPlugin, setPluginEnabled } from "../storage/plugins.js";
 
 function skillBytes(
   id: string,
@@ -57,6 +59,32 @@ test("skill context resolves persistent and mentioned Skills in deterministic or
       resolved.instructionBlock.indexOf('id="vocal-review"'),
   );
   assert.equal(prompt, "  Keep this prompt byte-for-byte, then use $mixing-review!  ");
+});
+
+test("enabled Plugin Skills resolve by namespaced persistent or one-turn IDs", async () => {
+  const directory = await temporaryDirectory();
+  await installPlugin(directory, zipSync({
+    "plugin.json": strToU8(JSON.stringify({
+      name: "music-tools", version: "1.0.0", description: "Music tools",
+    })),
+    "skills/audio-to-midi/SKILL.md": strToU8([
+      "---", "description: Convert audio into MIDI", "---", "Use the exact admitted audio artifact.", "",
+    ].join("\n")),
+  }));
+  await setPluginEnabled(directory, "music-tools", true);
+  const persistent = await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["music-tools:audio-to-midi"],
+    prompt: "Convert this audio.",
+  });
+  assert.deepEqual(persistent.activeSkillIds, ["music-tools:audio-to-midi"]);
+  assert.match(persistent.instructionBlock, /exact admitted audio artifact/u);
+  const mentioned = await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: [],
+    prompt: "Use $music-tools:audio-to-midi for this clip.",
+  });
+  assert.deepEqual(mentioned.activeSkillIds, ["music-tools:audio-to-midi"]);
 });
 
 test("skill mention lexer leaves unknown, currency, email, path, and code text ordinary", async () => {

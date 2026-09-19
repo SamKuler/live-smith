@@ -20,7 +20,7 @@ import {
 import {
   MAX_ACTIVE_SKILL_COUNT,
   MAX_SKILL_FILE_BYTES,
-  MAX_SKILL_ID_LENGTH,
+  MAX_SKILL_REFERENCE_ID_LENGTH,
   type SkillDefinition,
 } from "../skills/format.js";
 import { builtInSkillDefinitions } from "../skills/builtins.js";
@@ -117,7 +117,7 @@ function injectSkillContract(script: string): string {
     )
     .replaceAll(
       "__MAX_SKILL_ID_LENGTH__",
-      String(MAX_SKILL_ID_LENGTH),
+      String(MAX_SKILL_REFERENCE_ID_LENGTH),
     );
 }
 

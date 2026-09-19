@@ -65,6 +65,7 @@ import {
   availableSkillSummaries,
   isBuiltInSkillId,
 } from "../skills/builtins.js";
+import { pluginSkillsFromPackages } from "../skills/plugin-package.js";
 import {
   createDirectApiBackend,
   type ModelBackendManager,
@@ -125,6 +126,7 @@ import {
   SkillStorageCorruptionError,
   type InstalledSkill,
 } from "../storage/skills.js";
+import { readEnabledPluginPackagesInTransaction } from "../storage/plugins.js";
 import {
   deleteOAuthCredentialProfile,
   retainOAuthCredentialForProfileProvider,
@@ -1300,7 +1302,10 @@ export async function runAgentFlow(
               transaction,
               storageDirectory,
             );
-            const availableSkills = availableSkillSummaries(installedSkills);
+            const pluginSkills = await pluginSkillsFromPackages(
+              await readEnabledPluginPackagesInTransaction(transaction, storageDirectory),
+            );
+            const availableSkills = availableSkillSummaries(installedSkills, pluginSkills);
             return { allSessions, availableSkills };
           },
         );
@@ -3115,8 +3120,11 @@ export async function runAgentFlow(
                       transaction,
                       storageDirectory,
                     );
+                    const pluginSkills = await pluginSkillsFromPackages(
+                      await readEnabledPluginPackagesInTransaction(transaction, storageDirectory),
+                    );
                     const availableIds = new Set(
-                      availableSkillSummaries(installed).map(
+                      availableSkillSummaries(installed, pluginSkills).map(
                         (skill) => skill.id,
                       ),
                     );

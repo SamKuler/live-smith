@@ -2,6 +2,7 @@ import { TextDecoder } from "node:util";
 
 export const MAX_SKILL_FILE_BYTES = 64 * 1024;
 export const MAX_SKILL_ID_LENGTH = 64;
+export const MAX_SKILL_REFERENCE_ID_LENGTH = MAX_SKILL_ID_LENGTH * 2 + 1;
 export const MAX_SKILL_DESCRIPTION_LENGTH = 240;
 export const MAX_ACTIVE_SKILL_COUNT = 4;
 
@@ -173,6 +174,14 @@ export function isSafeSkillId(value: unknown): value is string {
   return typeof value === "string" &&
     value.length <= MAX_SKILL_ID_LENGTH &&
     skillIdPattern.test(value);
+}
+
+export function isSafeSkillReferenceId(value: unknown): value is string {
+  if (isSafeSkillId(value)) return true;
+  if (typeof value !== "string" || value.length > MAX_SKILL_REFERENCE_ID_LENGTH) return false;
+  const separator = value.indexOf(":");
+  return separator > 0 && separator === value.lastIndexOf(":") &&
+    isSafeSkillId(value.slice(0, separator)) && isSafeSkillId(value.slice(separator + 1));
 }
 
 function firstForbiddenControlIndex(value: string): number {

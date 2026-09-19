@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import {
-  isSafeSkillId,
+  isSafeSkillReferenceId,
   MAX_ACTIVE_SKILL_COUNT,
   type SkillDefinition,
 } from "../skills/format.js";
@@ -9,13 +9,14 @@ import {
   availableSkillSummaries,
   builtInSkillDefinition,
 } from "../skills/builtins.js";
+import { pluginSkillsFromPackages, type PluginSkillDefinition } from "../skills/plugin-package.js";
 import {
   listInstalledSkillsInTransaction,
   readInstalledSkillInTransaction,
-  withSkillCatalogTransaction,
   type SkillCatalogTransaction,
 } from "../storage/skills.js";
-import type { StorageTransactionContext } from "../storage/persistence.js";
+import { readEnabledPluginPackagesInTransaction } from "../storage/plugins.js";
+import { withStorageTransaction, type StorageTransactionContext } from "../storage/persistence.js";
 
 export const MAX_ACTIVE_SKILL_INSTRUCTION_BYTES = 128 * 1024;
 
@@ -36,13 +37,11 @@ export async function resolveSkillContext(input: {
   sessionSkillIds: readonly string[];
   prompt: string;
 }): Promise<ResolvedSkillContext> {
-  return withSkillCatalogTransaction(
-    input.storageDirectory,
-    (catalog) => resolveSkillContextFromCatalog(input, catalog),
-  );
+  return withStorageTransaction(input.storageDirectory, (transaction) =>
+    resolveSkillContextInTransaction(transaction, input));
 }
 
-export function resolveSkillContextInTransaction(
+export async function resolveSkillContextInTransaction(
   transaction: StorageTransactionContext,
   input: {
     storageDirectory: string | undefined;
@@ -50,6 +49,9 @@ export function resolveSkillContextInTransaction(
     prompt: string;
   },
 ): Promise<ResolvedSkillContext> {
+  const pluginSkills = await pluginSkillsFromPackages(
+    await readEnabledPluginPackagesInTransaction(transaction, input.storageDirectory),
+  );
   return resolveSkillContextFromCatalog(input, {
     listInstalledSkills: () => listInstalledSkillsInTransaction(
       transaction,
@@ -60,7 +62,7 @@ export function resolveSkillContextInTransaction(
       input.storageDirectory,
       skillId,
     ),
-  });
+  }, pluginSkills);
 }
 
 async function resolveSkillContextFromCatalog(
@@ -69,6 +71,7 @@ async function resolveSkillContextFromCatalog(
     prompt: string;
   },
   catalog: Pick<SkillCatalogTransaction, "listInstalledSkills" | "readInstalledSkill">,
+  pluginSkills: readonly PluginSkillDefinition[] = [],
 ): Promise<ResolvedSkillContext> {
   assertSessionSkillIds(input.sessionSkillIds);
   const mentionedCandidates = skillMentionCandidates(input.prompt);
@@ -86,8 +89,9 @@ async function resolveSkillContextFromCatalog(
   }
 
   const installedIds = new Set(installed.map((skill) => skill.id));
+  const pluginDefinitions = new Map(pluginSkills.map((skill) => [skill.id, skill] as const));
   const availableIds = new Set(
-    availableSkillSummaries(installed).map((skill) => skill.id),
+    availableSkillSummaries(installed, pluginSkills).map((skill) => skill.id),
   );
   for (const skillId of input.sessionSkillIds) {
     if (!availableIds.has(skillId)) {
@@ -107,7 +111,10 @@ async function resolveSkillContextFromCatalog(
 
   const definitions: SkillDefinition[] = [];
   for (const skillId of activeSkillIds) {
-    if (installedIds.has(skillId)) {
+    const pluginDefinition = pluginDefinitions.get(skillId);
+    if (pluginDefinition) {
+      definitions.push({ id: pluginDefinition.id, description: pluginDefinition.description, body: pluginDefinition.body });
+    } else if (installedIds.has(skillId)) {
       try {
         definitions.push(await catalog.readInstalledSkill(skillId));
       } catch {
@@ -174,7 +181,7 @@ export function skillMentionCandidates(prompt: string): string[] {
     if (
       candidate.length > 0 &&
       !isAsciiDigit(candidate[0]!) &&
-      isSafeSkillId(candidate) &&
+      isSafeSkillReferenceId(candidate) &&
       isMentionRightBoundary(prompt[candidateEnd])
     ) {
       candidates.add(candidate);
@@ -188,7 +195,7 @@ function assertSessionSkillIds(skillIds: readonly string[]): void {
   if (
     !Array.isArray(skillIds) ||
     skillIds.length > MAX_ACTIVE_SKILL_COUNT ||
-    !skillIds.every(isSafeSkillId) ||
+    !skillIds.every(isSafeSkillReferenceId) ||
     new Set(skillIds).size !== skillIds.length
   ) {
     throw new SkillContextError("Saved Session Skill activation is invalid.");
@@ -282,6 +289,7 @@ function isFenceDelimiterLine(
 function skillIdCandidateEnd(prompt: string, start: number): number {
   let index = start;
   let previousHyphen = false;
+  let colonSeen = false;
   while (index < prompt.length) {
     const character = prompt[index]!;
     if (isAsciiLowercaseOrDigit(character)) {
@@ -291,6 +299,12 @@ function skillIdCandidateEnd(prompt: string, start: number): number {
     }
     if (character === "-" && index > start && !previousHyphen) {
       previousHyphen = true;
+      index += 1;
+      continue;
+    }
+    if (character === ":" && index > start && !previousHyphen && !colonSeen) {
+      colonSeen = true;
+      previousHyphen = false;
       index += 1;
       continue;
     }

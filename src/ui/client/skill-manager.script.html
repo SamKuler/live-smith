@@ -166,9 +166,11 @@
       function render(force = false) {
         const builtInList = document.getElementById("builtInSkillList");
         const builtInEmpty = document.getElementById("builtInSkillEmptyState");
+        const pluginList = document.getElementById("pluginSkillList");
+        const pluginEmpty = document.getElementById("pluginSkillEmptyState");
         const userList = document.getElementById("userSkillList");
         const userEmpty = document.getElementById("userSkillEmptyState");
-        if (!builtInList || !builtInEmpty || !userList || !userEmpty) return;
+        if (!builtInList || !builtInEmpty || !pluginList || !pluginEmpty || !userList || !userEmpty) return;
         const state = getState();
         const available = [...(state.availableSkills || [])].sort(
           (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
@@ -193,15 +195,21 @@
             : null
         );
         builtInList.replaceChildren();
+        pluginList.replaceChildren();
         userList.replaceChildren();
         const active = new Set(state.activeSkillIds || []);
         const builtInSkills = available.filter((skill) => skill.source === "built-in");
+        const pluginSkills = available.filter((skill) => skill.source === "plugin");
         const userSkills = available.filter((skill) => skill.source === "user");
         builtInEmpty.hidden = builtInSkills.length !== 0;
+        pluginEmpty.hidden = pluginSkills.length !== 0;
         userEmpty.hidden = userSkills.length !== 0;
 
         for (const skill of builtInSkills) {
           builtInList.append(renderSkillRow(skill, active, usedSkillIds));
+        }
+        for (const skill of pluginSkills) {
+          pluginList.append(renderSkillRow(skill, active, usedSkillIds));
         }
         for (const skill of userSkills) {
           userList.append(renderSkillRow(skill, active, usedSkillIds));
