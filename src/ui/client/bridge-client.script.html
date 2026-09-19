@@ -27,7 +27,13 @@
         __MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES__;
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
-      const audioServiceCapabilities = __AUDIO_SERVICE_CAPABILITIES__;
+      const audioConnectionDescriptorsByPluginId = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+      const audioServiceCapabilities = Object.fromEntries(
+        Object.values(audioConnectionDescriptorsByPluginId)
+          .map((descriptor) => [descriptor.provider, descriptor]),
+      );
+      const usesImportedSession = (descriptor) =>
+        descriptor?.authentication === "suno-session";
       const editScopeIds = __EDIT_SCOPES__;
       const maximumMidiPreviewNotes = __MAX_MIDI_PREVIEW_NOTES__;
       const maximumParameterPreviewValueItems = __MAX_PARAMETER_PREVIEW_VALUE_ITEMS__;
@@ -154,7 +160,9 @@
         "download_audio_output",
         "open_audio_download",
       ]);
-      let confirmedAudioServices = getState().audioServices || null;
+      let confirmedIntegrationConnections = integrationConnectionsForEditor(
+        getState().integrationConnections,
+      );
       let confirmedSunoAccounts = getState().sunoAccounts || [];
       let confirmedSunoModelCatalog = getState().sunoModelCatalog;
       let sunoModelLoadingId = null;
@@ -164,7 +172,7 @@
       const sunoLoginCommands = new Set(["open_suno_website", "open_suno_platform", "import_suno_session", "refresh_suno_login", "logout_suno", "load_suno_models"]);
       let sunoInputRevision = 0;
       const audioSettingsDrafts = new Map();
-      let selectedAudioServiceId = confirmedAudioServices?.connections[0]?.id || null;
+      let selectedAudioServiceId = confirmedIntegrationConnections?.connections[0]?.id || null;
       let audioSettingsSubmitting = false;
       let audioSettingsBusy = false;
       let audioResumeBusy = false;
@@ -2458,7 +2466,7 @@
             "customInstructions",
             "customInstructionsRevision",
           ]) ||
-          value.schemaVersion !== 8 ||
+          value.schemaVersion !== 9 ||
           !Array.isArray(value.profiles) ||
           !value.profiles.every(isWireSavedProfile) ||
           new Set(value.profiles.map((profile) => profile.id)).size !==
@@ -2804,6 +2812,53 @@
         return value === undefined || typeof value === "string" && /^[\x21-\x7e]{1,128}$/.test(value);
       }
 
+      function integrationConnectionForEditor(connection) {
+        if (!connection) return null;
+        const descriptor = audioConnectionDescriptorsByPluginId[connection.pluginId];
+        return {
+          id: connection.id,
+          name: connection.name,
+          provider: descriptor?.provider,
+          enabled: connection.enabled,
+          apiKeyConfigured: connection.configuredSecrets?.includes("apiKey") === true,
+          ...(connection.configuration?.modelId === undefined
+            ? {}
+            : { modelId: connection.configuration.modelId }),
+          ...(connection.configuration?.callbackUrl === undefined
+            ? {}
+            : { callbackUrl: connection.configuration.callbackUrl }),
+        };
+      }
+
+      function integrationConnectionsForEditor(value) {
+        return value ? {
+          revision: value.revision,
+          connections: value.connections.map(integrationConnectionForEditor),
+        } : null;
+      }
+
+      function integrationConnectionForWire(connection) {
+        const descriptor = audioServiceCapabilities[connection.provider];
+        return {
+          id: connection.id,
+          name: connection.name,
+          pluginId: descriptor.pluginId,
+          enabled: connection.enabled,
+          configuration: {
+            ...(connection.modelId === undefined ? {} : { modelId: connection.modelId }),
+            ...(connection.callbackUrl === undefined ? {} : { callbackUrl: connection.callbackUrl }),
+          },
+          configuredSecrets: connection.apiKeyConfigured ? ["apiKey"] : [],
+        };
+      }
+
+      function integrationConnectionsForWire(value) {
+        return value ? {
+          revision: value.revision,
+          connections: value.connections.map(integrationConnectionForWire),
+        } : undefined;
+      }
+
       // Keep the syntax/credential boundary aligned with model/profile.ts; no network probing.
       function isAudioServiceCallbackUrl(value) {
         if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) ||
@@ -2823,21 +2878,31 @@
           : service.provider !== "sunoapi" || !service.enabled;
       }
 
-      function isWireAudioServices(value) {
+      function isWireIntegrationConnections(value) {
         return isWireRecord(value) && hasOnlyWireKeys(value, ["connections", "revision"]) &&
           isDecimalRevision(value.revision) && Array.isArray(value.connections) &&
-          value.connections.length <= __MAX_AUDIO_SERVICES__ &&
-          value.connections.every((service) =>
-            isWireRecord(service) && hasOnlyWireKeys(service, ["id", "name", "provider", "enabled", "modelId", "callbackUrl",
-              "apiKeyConfigured"]) &&
-            isWireStorageId(service.id) && typeof service.name === "string" &&
-            service.name === service.name.trim() && service.name.length > 0 && service.name.length <= 120 &&
-            !/[\x00-\x1f\x7f]/.test(service.name) && Object.hasOwn(audioServiceCapabilities, service.provider) &&
-            typeof service.enabled === "boolean" && isWireAudioModelId(service.modelId) &&
-            (!Object.hasOwn(service, "modelId") || audioServiceCapabilities[service.provider].modelConfigurable === true) &&
-            isWireAudioCallback(service) &&
-            (!service.enabled || audioServiceCapabilities[service.provider].tools.length > 0) &&
-            typeof service.apiKeyConfigured === "boolean" && (!service.enabled || service.apiKeyConfigured || audioServiceCapabilities[service.provider].sessionImport)) &&
+          value.connections.length <= __MAX_INTEGRATION_CONNECTIONS__ &&
+          value.connections.every((connection) => {
+            if (!isWireRecord(connection) || !hasOnlyWireKeys(connection, [
+              "id", "name", "pluginId", "enabled", "configuration", "configuredSecrets",
+            ]) || !isWireStorageId(connection.id) || typeof connection.name !== "string" ||
+              connection.name !== connection.name.trim() || connection.name.length === 0 ||
+              connection.name.length > 120 || /[\x00-\x1f\x7f]/.test(connection.name) ||
+              typeof connection.pluginId !== "string" ||
+              !Object.hasOwn(audioConnectionDescriptorsByPluginId, connection.pluginId) ||
+              typeof connection.enabled !== "boolean" || !isWireRecord(connection.configuration) ||
+              !hasOnlyWireKeys(connection.configuration, ["modelId", "callbackUrl"]) ||
+              !Array.isArray(connection.configuredSecrets) || connection.configuredSecrets.length > 1 ||
+              new Set(connection.configuredSecrets).size !== connection.configuredSecrets.length ||
+              !connection.configuredSecrets.every((name) => name === "apiKey")) return false;
+            const service = integrationConnectionForEditor(connection);
+            return isWireAudioModelId(service.modelId) &&
+              (!Object.hasOwn(service, "modelId") || audioServiceCapabilities[service.provider].modelConfigurable === true) &&
+              isWireAudioCallback(service) &&
+              (!service.enabled || audioServiceCapabilities[service.provider].tools.length > 0) &&
+              (!service.enabled || service.apiKeyConfigured ||
+                usesImportedSession(audioServiceCapabilities[service.provider]));
+          }) &&
           new Set(value.connections.map((service) => service.id)).size === value.connections.length &&
           new Set(value.connections.map((service) => service.name.toLowerCase())).size === value.connections.length;
       }
@@ -2863,11 +2928,12 @@
       }
 
       function isWireSunoAccounts(value, services) {
-        return Array.isArray(value) && value.length <= __MAX_AUDIO_SERVICES__ &&
+        return Array.isArray(value) && value.length <= __MAX_INTEGRATION_CONNECTIONS__ &&
           value.every((account) => isWireRecord(account) &&
             hasOnlyWireKeys(account, ["serviceId", "status", "accountId", "accountName"]) &&
             isWireStorageId(account.serviceId) &&
-            services?.connections.some((service) => service.id === account.serviceId && service.provider === "suno") &&
+            services?.connections.some((connection) => connection.id === account.serviceId &&
+              audioConnectionDescriptorsByPluginId[connection.pluginId]?.provider === "suno") &&
             ["signed_out", "saved", "signed_in", "expired", "unavailable"].includes(account.status) &&
             (!Object.hasOwn(account, "accountId") || ["signed_in", "saved"].includes(account.status) &&
               typeof account.accountId === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(account.accountId)) &&
@@ -2893,10 +2959,11 @@
 
       function isWireSunoModelCatalog(value, services, accounts) {
         if (value === undefined || value === null) return true;
-        return isWireRecord(value) && hasOnlyWireKeys(value, ["serviceId", "accountId", "audioServicesRevision", "models"]) &&
+        return isWireRecord(value) && hasOnlyWireKeys(value, ["serviceId", "accountId", "integrationConnectionsRevision", "models"]) &&
           isWireStorageId(value.serviceId) && typeof value.accountId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value.accountId) &&
-          isDecimalRevision(value.audioServicesRevision) && value.audioServicesRevision === services?.revision &&
-          services?.connections.some(service => service.id === value.serviceId && service.provider === "suno") &&
+          isDecimalRevision(value.integrationConnectionsRevision) && value.integrationConnectionsRevision === services?.revision &&
+          services?.connections.some(connection => connection.id === value.serviceId &&
+            audioConnectionDescriptorsByPluginId[connection.pluginId]?.provider === "suno") &&
           accounts?.some(account => account.serviceId === value.serviceId && account.accountId === value.accountId &&
             ["signed_in", "saved"].includes(account.status)) &&
           Array.isArray(value.models) && value.models.length <= 100 &&
@@ -3002,7 +3069,7 @@
           !isWireRecord(value) ||
           !hasOnlyWireKeys(value, [
             "contextSummary",
-            "audioServices",
+            "integrationConnections",
             "sunoAccounts",
             "sunoModelCatalog",
             "audioJobs",
@@ -3039,9 +3106,9 @@
             "bridgeStateCoveredThroughRevision",
           ]) ||
           typeof value.contextSummary !== "string" ||
-          (value.audioServices !== undefined && !isWireAudioServices(value.audioServices)) ||
-          (value.sunoAccounts !== undefined && !isWireSunoAccounts(value.sunoAccounts, value.audioServices)) ||
-          !isWireSunoModelCatalog(value.sunoModelCatalog, value.audioServices, value.sunoAccounts) ||
+          (value.integrationConnections !== undefined && !isWireIntegrationConnections(value.integrationConnections)) ||
+          (value.sunoAccounts !== undefined && !isWireSunoAccounts(value.sunoAccounts, value.integrationConnections)) ||
+          !isWireSunoModelCatalog(value.sunoModelCatalog, value.integrationConnections, value.sunoAccounts) ||
           (value.audioJobs !== undefined && !isWireAudioJobs(value.audioJobs, value.activeSessionId)) ||
           !isWireLiveContext(value.liveContext) ||
           !isWireRecord(value.sessionContinueTarget) ||
@@ -3586,18 +3653,23 @@
         state.settings.customInstructionsRevision = confirmedCustomInstructionsRevision;
         state.settings.uiLanguage = optimisticUiLanguage?.language ?? confirmedUiLanguage;
         state.settings.uiLanguageRevision = confirmedUiLanguageRevision;
-        if (confirmedAudioServices) state.audioServices = { ...confirmedAudioServices };
+        if (confirmedIntegrationConnections) {
+          state.integrationConnections = integrationConnectionsForWire(
+            confirmedIntegrationConnections,
+          );
+        }
         state.sunoAccounts = confirmedSunoAccounts.map((account) => ({ ...account }));
         state.sunoModelCatalog = confirmedSunoModelCatalog;
         return state;
       }
 
-      function adoptAudioServices(value) {
-        if (!isWireAudioServices(value) || confirmedAudioServices &&
-          compareDecimalRevisions(value.revision, confirmedAudioServices.revision) <= 0) return false;
+      function adoptIntegrationConnections(value) {
+        if (!isWireIntegrationConnections(value) || confirmedIntegrationConnections &&
+          compareDecimalRevisions(value.revision, confirmedIntegrationConnections.revision) <= 0) return false;
+        const nextConnections = integrationConnectionsForEditor(value);
         confirmedSunoModelCatalog = undefined;
         for (const [id, draft] of audioSettingsDrafts) {
-          const next = value.connections.find((service) => service.id === id) || null;
+          const next = nextConnections.connections.find((service) => service.id === id) || null;
           // A key-only change is invisible in the view. Existing drafts keep their
           // original collection revision; presence flags cannot prove credential identity.
           if (draft.baseConnection || next) {
@@ -3610,12 +3682,13 @@
             draft.expectedRevision = value.revision;
           }
         }
-        confirmedAudioServices = { revision: value.revision, connections: value.connections.map((service) => ({ ...service })) };
+        confirmedIntegrationConnections = nextConnections;
         confirmedSunoAccounts = confirmedSunoAccounts.filter((account) =>
-          value.connections.some((service) => service.id === account.serviceId && service.provider === "suno"));
+          nextConnections.connections.some((service) =>
+            service.id === account.serviceId && service.provider === "suno"));
         if (!audioSettingsDrafts.has(selectedAudioServiceId) &&
-          !value.connections.some((service) => service.id === selectedAudioServiceId)) {
-          selectedAudioServiceId = value.connections[0]?.id || null;
+          !nextConnections.connections.some((service) => service.id === selectedAudioServiceId)) {
+          selectedAudioServiceId = nextConnections.connections[0]?.id || null;
           document.getElementById("audioServiceApiKey").value = "";
         }
         return true;
@@ -3628,7 +3701,7 @@
           state.bridgeStateCoveredThroughRevision, sunoAccountsCoveredThroughRevision);
         if (coverageOrder < 0 || coverageOrder === 0 &&
           compareDecimalRevisions(state.bridgeStateRevision, sunoAccountsRevision) <= 0 ||
-          confirmedAudioServices && state.audioServices?.revision !== confirmedAudioServices.revision) return;
+          confirmedIntegrationConnections && state.integrationConnections?.revision !== confirmedIntegrationConnections.revision) return;
         confirmedSunoAccounts = (state.sunoAccounts || []).map((account) => ({ ...account }));
         confirmedSunoModelCatalog = state.sunoModelCatalog || undefined;
         sunoAccountsRevision = state.bridgeStateRevision;
@@ -3650,7 +3723,7 @@
       }
 
       function adoptGlobalSettingsFromState(state) {
-        adoptAudioServices(state.audioServices);
+        adoptIntegrationConnections(state.integrationConnections);
         adoptUiLanguage(state?.settings?.uiLanguage, state?.settings?.uiLanguageRevision);
         const behavior = state?.settings?.defaultFollowUpBehavior;
         const behaviorRevision =
@@ -3774,7 +3847,7 @@
           !isDecimalRevision(payload.uiLanguageRevision) ||
           !isDecimalRevision(networkProxyRevision)
         ) return false;
-        const audioAdopted = adoptAudioServices(payload.audioServices);
+        const audioAdopted = adoptIntegrationConnections(payload.integrationConnections);
         let adopted = adoptUiLanguage(payload.uiLanguage, payload.uiLanguageRevision, payload.commandId) || audioAdopted;
         if (
           compareDecimalRevisions(
@@ -4502,7 +4575,7 @@
             commandError = outcome.error;
             if (
               kind === "save_profile" && outcome.error.httpStatus === 409 ||
-              kind === "save_global_settings" && payload.audioServices && outcome.error.field === "audioServices" ||
+              kind === "save_global_settings" && payload.integrationConnections && outcome.error.field === "integrationConnections" ||
               kind === "refresh_suno_login"
             ) {
               try {
@@ -4859,7 +4932,7 @@
         if (!isWireChatBridgeState(state)) return false;
         const previousSettings = getState().settings;
         captureOwnedPendingAttachmentAdditions(causalAttempt, state);
-        adoptAudioServices(state.audioServices);
+        adoptIntegrationConnections(state.integrationConnections);
         adoptSunoAccountsFromState(state);
         adoptGlobalSettingsFromState(state);
         const reconciledState = causalAttempt
@@ -4972,7 +5045,7 @@
         const previousSettings = previousState.settings;
         // Global settings have their own monotonic revisions; Session ownership
         // below remains scoped to this send so an older terminal cannot prune peers.
-        adoptAudioServices(state.audioServices);
+        adoptIntegrationConnections(state.integrationConnections);
         adoptSunoAccountsFromState(state);
         adoptGlobalSettingsFromState(state);
         const visible =
@@ -5793,7 +5866,7 @@
       }
 
       function savedAudioConnection(id = selectedAudioServiceId) {
-        return confirmedAudioServices?.connections.find((service) => service.id === id) || null;
+        return confirmedIntegrationConnections?.connections.find((service) => service.id === id) || null;
       }
 
       function audioConnectionFields(service) {
@@ -5826,7 +5899,7 @@
           return t("Leave blank to use {model}. This integration uses prompt-based generation without custom mode or a duration setting.",
             { model: capability.defaultModelId });
         }
-        return capability.sessionImport
+        return usesImportedSession(capability)
           ? t("Normally choose Music version above. Only enter an exact model ID for an explicit override; leave blank for the account default.")
           : t("Leave blank to use the integration default. Sound effects use a dedicated model.");
       }
@@ -5845,17 +5918,18 @@
 
       function addAudioService() {
         if (audioSettingsBusy || audioSettingsSubmitting) return;
-        const count = new Set([...(confirmedAudioServices?.connections || []).map((service) => service.id),
+        const count = new Set([...(confirmedIntegrationConnections?.connections || []).map((service) => service.id),
           ...audioSettingsDrafts.keys()]).size;
-        if (count >= __MAX_AUDIO_SERVICES__) return;
+        if (count >= __MAX_INTEGRATION_CONNECTIONS__) return;
         const id = createCorrelationId("audio-service");
         const provider = Object.keys(audioServiceCapabilities).find((provider) =>
-          audioServiceCapabilities[provider].tools.length > 0 || audioServiceCapabilities[provider].sessionImport);
+          audioServiceCapabilities[provider].tools.length > 0 ||
+            usesImportedSession(audioServiceCapabilities[provider]));
         if (!provider) return;
         clearSunoCookieInput();
         document.getElementById("audioServiceApiKey").value = "";
         audioSettingsDrafts.set(id, { connection: { id, name: "", provider, enabled: false },
-          baseConnection: null, expectedRevision: confirmedAudioServices?.revision || "0", conflict: false });
+          baseConnection: null, expectedRevision: confirmedIntegrationConnections?.revision || "0", conflict: false });
         selectedAudioServiceId = id;
         document.getElementById("audioServiceFields").open = true;
         renderAudioTools();
@@ -5867,7 +5941,7 @@
         audioSettingsDrafts.delete(selectedAudioServiceId);
         clearSunoCookieInput();
         document.getElementById("audioServiceApiKey").value = "";
-        if (!savedAudioConnection()) selectedAudioServiceId = confirmedAudioServices?.connections[0]?.id || null;
+        if (!savedAudioConnection()) selectedAudioServiceId = confirmedIntegrationConnections?.connections[0]?.id || null;
         renderAudioTools();
       }
 
@@ -5893,7 +5967,7 @@
             ...(audioServiceCapabilities[provider].modelConfigurable && modelId ? { modelId } : {}),
             ...(provider === "sunoapi" && callbackUrl ? { callbackUrl } : {}) },
           baseConnection: previous ? previous.baseConnection : saved,
-          expectedRevision: previous?.expectedRevision || confirmedAudioServices?.revision || "0",
+          expectedRevision: previous?.expectedRevision || confirmedIntegrationConnections?.revision || "0",
           conflict: previous?.conflict || false,
         });
         renderAudioTools();
@@ -5905,15 +5979,15 @@
         const saved = savedAudioConnection(id);
         const draft = audioSettingsDrafts.get(id);
         if (draft?.conflict || (!clear && !draft) || (clear && !saved)) return false;
-        if (clear && audioServiceCapabilities[saved.provider].sessionImport) return false;
+        if (clear && usesImportedSession(audioServiceCapabilities[saved.provider])) return false;
         if (clear && !(await confirmAudioConnectionChange("clear", saved))) return false;
         // Clear acts on the saved connection, so a provider draft cannot redirect it.
         const connection = clear ? { ...audioConnectionFields(saved), enabled: false }
           : { ...draft.connection, name: draft.connection.name.trim() };
         const key = document.getElementById("audioServiceApiKey");
-        const sessionImport = audioServiceCapabilities[connection.provider].sessionImport === true;
+        const sessionImport = usesImportedSession(audioServiceCapabilities[connection.provider]);
         if (sessionImport) key.value = "";
-        if (!connection.name || (confirmedAudioServices?.connections || []).some((service) =>
+        if (!connection.name || (confirmedIntegrationConnections?.connections || []).some((service) =>
           service.id !== id && service.name.toLowerCase() === connection.name.toLowerCase())) {
           showStatus(t("Enter a unique connection name."), true);
           document.getElementById("audioServiceName").focus();
@@ -5936,24 +6010,40 @@
           document.getElementById("audioServiceCallback").focus();
           return false;
         }
-        const patch = { action: "upsert", expectedRevision: draft?.expectedRevision || confirmedAudioServices?.revision || "0",
-          connection: { ...connection, ...(clear ? { apiKey: "" } : key.value ? { apiKey: key.value } : {}) } };
+        const submittedKey = key.value;
+        const descriptor = audioServiceCapabilities[connection.provider];
+        const patch = {
+          action: "upsert",
+          expectedRevision: draft?.expectedRevision || confirmedIntegrationConnections?.revision || "0",
+          connection: {
+            id: connection.id,
+            name: connection.name,
+            pluginId: descriptor.pluginId,
+            enabled: connection.enabled,
+            configuration: {
+              ...(connection.modelId === undefined ? {} : { modelId: connection.modelId }),
+              ...(connection.callbackUrl === undefined ? {} : { callbackUrl: connection.callbackUrl }),
+            },
+            ...(clear ? { secrets: { apiKey: "" } }
+              : submittedKey ? { secrets: { apiKey: submittedKey } } : {}),
+          },
+        };
         // Only this command owns the secret; client state and connection drafts never receive it.
         key.value = "";
         audioSettingsSubmitting = true;
         renderAudioTools();
         let savedRevision = null;
         try {
-          await runCommand("save_global_settings", { audioServices: patch }, {
+          await runCommand("save_global_settings", { integrationConnections: patch }, {
             onOutcome: (outcome) => {
               const current = savedAudioConnection(id);
               if (outcome.known && outcome.succeeded && current &&
-                compareDecimalRevisions(confirmedAudioServices.revision, patch.expectedRevision) > 0 &&
+                compareDecimalRevisions(confirmedIntegrationConnections.revision, patch.expectedRevision) > 0 &&
                 sameJsonValue(audioConnectionFields(current), connection) &&
-                current.apiKeyConfigured === (clear ? false : Boolean(patch.connection.apiKey ||
+                current.apiKeyConfigured === (clear ? false : Boolean(patch.connection.secrets?.apiKey ||
                   saved?.provider === connection.provider && saved.apiKeyConfigured))) {
                 audioSettingsDrafts.delete(id);
-                savedRevision = confirmedAudioServices.revision;
+                savedRevision = confirmedIntegrationConnections.revision;
               }
             },
           });
@@ -5979,12 +6069,13 @@
         audioSettingsSubmitting = true;
         renderAudioTools();
         try {
-          const result = await runCommand("save_global_settings", { audioServices: {
-            action: "remove", serviceId: id, expectedRevision: draft?.expectedRevision || confirmedAudioServices?.revision || "0",
+          const result = await runCommand("save_global_settings", { integrationConnections: {
+            action: "remove", connectionId: id,
+            expectedRevision: draft?.expectedRevision || confirmedIntegrationConnections?.revision || "0",
           } }, { onOutcome: (outcome) => {
             if (outcome.known && outcome.succeeded && !savedAudioConnection(id)) {
               audioSettingsDrafts.delete(id);
-              selectedAudioServiceId = confirmedAudioServices?.connections[0]?.id || null;
+              selectedAudioServiceId = confirmedIntegrationConnections?.connections[0]?.id || null;
             }
           } });
           return result;
@@ -5995,16 +6086,16 @@
       }
 
       async function confirmAudioConnectionChange(action, service) {
-        const revision = confirmedAudioServices?.revision;
+        const revision = confirmedIntegrationConnections?.revision;
         const accepted = await confirmAction({
-          title: window.LiveSmithI18n.message(action === "clear" ? "Clear this connection's key?" : "Remove this audio connection?"),
+          title: window.LiveSmithI18n.message(action === "clear" ? "Clear this connection's key?" : "Remove this connection?"),
           message: window.LiveSmithI18n.message(action === "clear"
             ? "Clear the saved key for “{name}” and disable this connection? Downloaded audio stays available."
             : "Remove “{name}”? Downloaded audio stays available, but remote jobs will lose this saved connection.", { name: service.name }),
-          acceptLabel: window.LiveSmithI18n.message(action === "clear" ? "Clear key" : "Remove service"), danger: true,
+          acceptLabel: window.LiveSmithI18n.message(action === "clear" ? "Clear key" : "Remove connection"), danger: true,
         });
         return accepted && !audioSettingsBusy && !audioSettingsSubmitting &&
-          selectedAudioServiceId === service.id && confirmedAudioServices?.revision === revision;
+          selectedAudioServiceId === service.id && confirmedIntegrationConnections?.revision === revision;
       }
 
       function sunoAccountPresentation(serviceId) {
@@ -6031,7 +6122,7 @@
         if (draft) return { label: t("Unsaved changes"), status: "partial" };
         if (!configured) return { label: t("Needs setup"), status: "partial" };
         if (!configured.enabled) return { label: t("Disabled"), status: "stopped" };
-        if (audioServiceCapabilities[value.provider].sessionImport) {
+        if (usesImportedSession(audioServiceCapabilities[value.provider])) {
           const account = confirmedSunoAccounts.find((entry) => entry.serviceId === value.id);
           return account?.status === "signed_in"
             ? { label: t("Ready"), status: "complete" }
@@ -6077,7 +6168,7 @@
           if (draft) {
             const savedRevision = await saveAudioServiceSettings();
             if (!savedRevision || savedRevision !== (BigInt(expectedRevision) + 1n).toString() ||
-              confirmedAudioServices.revision !== savedRevision) return false;
+              confirmedIntegrationConnections.revision !== savedRevision) return false;
           }
           if (inputRevision !== sunoInputRevision || selectedAudioServiceId !== id || audioSettingsDrafts.has(id) ||
             audioSettingsBusy || audioSettingsSubmitting || closeDecisionPending ||
@@ -6106,13 +6197,13 @@
           savedAudioConnection(id)?.provider === "suno" && canMaintainSunoSession(id);
         if (!["refresh_suno_login", "logout_suno"].includes(kind) || !canRun()) return false;
         if (kind === "logout_suno") {
-          const revision = confirmedAudioServices.revision;
+          const revision = confirmedIntegrationConnections.revision;
           const accepted = await confirmAction({
             title: window.LiveSmithI18n.message("Clear local Suno Cookie?"),
             message: window.LiveSmithI18n.message("Remove only the Cookie saved locally for “{name}”? Your Suno browser login and browser windows stay open. Reconnect by importing a Suno Cookie again.", { name: service.name }),
             acceptLabel: window.LiveSmithI18n.message("Clear local Cookie"), danger: true,
           });
-          if (!accepted || !canRun() || confirmedAudioServices.revision !== revision) return false;
+          if (!accepted || !canRun() || confirmedIntegrationConnections.revision !== revision) return false;
           clearSunoCookieInput();
         }
         // Capture the saved identity before awaiting; selection remains navigable.
@@ -6128,7 +6219,7 @@
       function selectedSunoCatalog(service) {
         const value = confirmedSunoModelCatalog;
         return service?.provider === "suno" && value?.serviceId === service.id &&
-          value.audioServicesRevision === confirmedAudioServices?.revision &&
+          value.integrationConnectionsRevision === confirmedIntegrationConnections?.revision &&
           confirmedSunoAccounts.some(account => account.serviceId === service.id && account.accountId === value.accountId &&
             ["signed_in", "saved"].includes(account.status)) ? value : null;
       }
@@ -6216,7 +6307,7 @@
         document.getElementById("sunoAccountName").textContent = "";
         document.getElementById("sunoAccountName").hidden = true;
         const picker = document.getElementById("audioServiceSelector");
-        const choices = new Map((confirmedAudioServices?.connections || []).map((connection) => [connection.id, connection]));
+        const choices = new Map((confirmedIntegrationConnections?.connections || []).map((connection) => [connection.id, connection]));
         for (const [id, value] of audioSettingsDrafts) choices.set(id, value.connection);
         const existingRows = new Map([...picker.children].map((row) => [row.dataset.audioServiceId, row]));
         for (const [id, row] of existingRows) if (!choices.has(id)) row.remove();
@@ -6235,17 +6326,18 @@
           const rowDraft = audioSettingsDrafts.get(id);
           const configured = savedAudioConnection(id);
           const presentation = audioConnectionPresentation(value, configured, rowDraft);
-          row.children[0].children[0].textContent = value.name || t("New audio connection");
+          row.children[0].children[0].textContent = value.name || t("New connection");
           row.children[0].children[1].textContent = t(audioServiceCapabilities[value.provider].label);
           row.children[1].textContent = presentation.label;
           row.children[1].dataset.status = presentation.status;
-          row.title = (value.name || t("New audio connection")) + " · " + t(audioServiceCapabilities[value.provider].label) +
-            " · " + (audioServiceCapabilities[value.provider].sessionImport ? sunoAccountStatus(id) : presentation.label);
+          row.title = (value.name || t("New connection")) + " · " + t(audioServiceCapabilities[value.provider].label) +
+            " · " + (usesImportedSession(audioServiceCapabilities[value.provider])
+              ? sunoAccountStatus(id) : presentation.label);
           row.disabled = audioSettingsSubmitting || audioSettingsBusy && !sunoLoginCommands.has(commandInProgress);
           row.setAttribute("aria-pressed", String(id === selectedAudioServiceId));
         }
         picker.hidden = !choices.size;
-        document.getElementById("addAudioServiceButton").disabled = busy || choices.size >= __MAX_AUDIO_SERVICES__;
+        document.getElementById("addAudioServiceButton").disabled = busy || choices.size >= __MAX_INTEGRATION_CONNECTIONS__;
         const editor = document.getElementById("audioServiceFields");
         editor.hidden = !service;
         if (!service) editor.open = false;
@@ -6253,13 +6345,13 @@
         const provider = document.getElementById("audioServiceProvider");
         provider.replaceChildren();
         for (const [id, capability] of Object.entries(audioServiceCapabilities)) {
-          const selectable = capability.tools.length > 0 || capability.sessionImport === true;
+          const selectable = capability.tools.length > 0 || usesImportedSession(capability);
           const option = new Option(t(capability.label) + (selectable ? "" : " · " + t("Unavailable")), id);
           option.disabled = !selectable;
           provider.add(option);
         }
         if (service) {
-          document.getElementById("audioServiceEditorSummary").textContent = t("Connection settings") + " · " + (service.name || t("New audio connection"));
+          document.getElementById("audioServiceEditorSummary").textContent = t("Connection settings") + " · " + (service.name || t("New connection"));
           const modelOptions = document.getElementById("audioServiceModelField");
           const editorIdentity = service.id + ":" + service.provider;
           if (modelOptions.dataset.connection !== editorIdentity) {
@@ -6267,7 +6359,7 @@
             modelOptions.open = service.provider !== "suno" && Boolean(service.modelId);
           }
           const supported = audioServiceCapabilities[service.provider].tools;
-          const sessionImport = audioServiceCapabilities[service.provider].sessionImport === true;
+          const sessionImport = usesImportedSession(audioServiceCapabilities[service.provider]);
           const cookieEditor = document.getElementById("sunoCookieEditor");
           const cookieEditorOwner = editorIdentity + ":" + canMaintainSunoSession(service.id);
           if (cookieEditor.dataset.owner !== cookieEditorOwner) {
@@ -6399,7 +6491,9 @@
         reload.textContent = t(reload.dataset.i18n);
         document.getElementById("saveAudioServiceButton").disabled = busy || conflict || !draft;
         document.getElementById("clearAudioServiceButton").disabled = busy || conflict || !saved?.apiKeyConfigured;
-        document.getElementById("clearAudioServiceButton").hidden = Boolean(service && audioServiceCapabilities[service.provider].sessionImport);
+        document.getElementById("clearAudioServiceButton").hidden = Boolean(
+          service && usesImportedSession(audioServiceCapabilities[service.provider]),
+        );
         document.getElementById("removeAudioServiceButton").disabled = busy || conflict || !service;
         const maintenance = document.getElementById("audioServiceMaintenance");
         const maintenanceOwner = service ? service.id + ":" + service.provider : "";
@@ -6408,7 +6502,8 @@
           maintenance.open = false;
         }
         maintenance.hidden = !saved;
-        document.getElementById("audioServiceMaintenanceHint").textContent = service && audioServiceCapabilities[service.provider].sessionImport
+        document.getElementById("audioServiceMaintenanceHint").textContent = service &&
+          usesImportedSession(audioServiceCapabilities[service.provider])
           ? t("Remove this connection. Downloaded audio stays available.")
           : t("Clear the saved API key or remove this connection. Downloaded audio stays available.");
         renderAudioJobs();
@@ -6509,7 +6604,7 @@
         if (service?.provider !== "suno" || !service.enabled || !account?.accountId ||
           !["signed_in", "saved"].includes(account.status)) return null;
         return JSON.stringify([activeSessionId(), job.id, job.serviceId, job.operation, job.modelId, job.createdAt,
-          output.dataset.remoteAudioKey, output.dataset.remoteAudioRole, confirmedAudioServices.revision, service,
+          output.dataset.remoteAudioKey, output.dataset.remoteAudioRole, confirmedIntegrationConnections.revision, service,
           account.accountId, account.status]);
       }
 
@@ -6690,7 +6785,7 @@
       function renderAudioJobs() {
         const state = getState();
         const jobs = [...state.audioJobs || []].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.id.localeCompare(b.id));
-        const signature = JSON.stringify([state.activeSessionId, jobs, confirmedAudioServices, window.LiveSmithI18n.locale]);
+        const signature = JSON.stringify([state.activeSessionId, jobs, confirmedIntegrationConnections, window.LiveSmithI18n.locale]);
         const container = document.getElementById("audioJobs");
         const shelf = document.getElementById("sessionAudioResults");
         shelf.hidden = jobs.length === 0;
@@ -9010,7 +9105,7 @@
                 "networkProxyRevision",
                 "uiLanguage",
                 "uiLanguageRevision",
-                "audioServices",
+                "integrationConnections",
                 "commandId",
                 "bridgeStateRevision",
               ]) ||
@@ -9026,7 +9121,7 @@
               !isDecimalRevision(payload.networkProxyRevision) ||
               !isUiLanguage(payload.uiLanguage) ||
               !isDecimalRevision(payload.uiLanguageRevision) ||
-              (payload.audioServices !== undefined && !isWireAudioServices(payload.audioServices)) ||
+              (payload.integrationConnections !== undefined && !isWireIntegrationConnections(payload.integrationConnections)) ||
               !isWireCorrelationId(payload.commandId)
             ) return;
             const received = receiveStateChangeRevision(payload);

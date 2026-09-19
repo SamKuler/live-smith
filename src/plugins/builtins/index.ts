@@ -18,7 +18,21 @@ export const BUILT_IN_AUDIO_PLUGINS: readonly BuiltInAudioPluginDefinition[] = [
   sunoApiPlugin,
 ];
 
+/** Credential-free descriptors injected into the Connection editor. */
+export const BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS = Object.freeze(
+  Object.fromEntries(BUILT_IN_AUDIO_PLUGINS.map((plugin) => [plugin.id, Object.freeze({
+    pluginId: plugin.id,
+    provider: plugin.provider,
+    ...plugin.connection,
+    ...plugin.audio,
+    tools: [...new Set([
+      ...plugin.tools.localToolNames,
+    ])],
+  })])),
+);
+
 const byProvider = new Map(BUILT_IN_AUDIO_PLUGINS.map((plugin) => [plugin.provider, plugin]));
+const byPluginId = new Map(BUILT_IN_AUDIO_PLUGINS.map((plugin) => [plugin.id, plugin]));
 
 export function builtInAudioPlugin(provider: AudioProvider): BuiltInAudioPluginDefinition {
   const plugin = byProvider.get(provider);
@@ -26,12 +40,20 @@ export function builtInAudioPlugin(provider: AudioProvider): BuiltInAudioPluginD
   return plugin;
 }
 
+export function builtInAudioPluginById(pluginId: string): BuiltInAudioPluginDefinition | undefined {
+  return byPluginId.get(pluginId);
+}
+
+export function builtInAudioPluginId(provider: AudioProvider): string {
+  return builtInAudioPlugin(provider).id;
+}
+
 export function builtInAudioToolIdentity(
   provider: AudioProvider,
   operation: AudioOperation,
 ): { pluginId: string; toolId: AudioOperation; toolVersion: string } {
   const plugin = builtInAudioPlugin(provider);
-  if (!plugin.capabilities.operations.includes(operation)) {
+  if (!plugin.audio.operations.includes(operation)) {
     throw new Error("Built-in Plugin does not own this tool.");
   }
   return { pluginId: plugin.id, toolId: operation, toolVersion: plugin.version };

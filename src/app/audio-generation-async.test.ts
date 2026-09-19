@@ -5,11 +5,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createSunoApiAudioAdapter } from "../audio-services/sunoapi.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { waveBytes, overwriteJson } from "../storage/audio-storage-test-helpers.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 async function harness(t: { after(fn: () => Promise<void>): void }) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-suno-jobs-");
@@ -17,8 +17,10 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   const session = await createSession(directory, { title: "Suno", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
   const apiKey = "fixture-third-party-key";
   const callbackUrl = "https://hooks.example.com/suno";
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "suno-connection", name: "Suno third party", provider: "sunoapi", enabled: true, apiKey, callbackUrl } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "suno-connection", name: "Suno third party", provider: "sunoapi",
+    enabled: true, apiKey, callbackUrl,
+  });
   const controller = new AbortController();
   const calls: Array<{ url: string; method: string }> = [];
   let inspectCount = 0;

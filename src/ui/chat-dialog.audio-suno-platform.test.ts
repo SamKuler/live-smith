@@ -27,10 +27,16 @@ test("official Suno Platform has a distinct key workflow and no website Cookie o
     toggle(harness, true);
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const patch = audioCommands(harness)[0]!.audioServices;
+    const patch = audioCommands(harness)[0]!.integrationConnections;
     if (patch.action !== "upsert") assert.fail("expected an upsert");
-    assert.deepEqual(patch.connection, { id: patch.connection.id, name: "Official Suno",
-      provider: "suno-platform", enabled: true, apiKey: "fixture-official-suno-key" });
+    assert.deepEqual(patch.connection, {
+      id: patch.connection.id,
+      name: "Official Suno",
+      pluginId: "live-smith.suno-platform",
+      enabled: true,
+      configuration: {},
+      secrets: { apiKey: "fixture-official-suno-key" },
+    });
     assert.doesNotMatch(JSON.stringify(harness.readBootstrappedClientStateReference()), /fixture-official-suno-key/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }

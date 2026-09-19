@@ -70,7 +70,7 @@ test("saved versions have one result row, canonical translated labels and local 
     assert.equal(h.document.querySelector("#audioJobs iframe"), null);
     assert.equal(output.querySelector<HTMLAudioElement>("audio")!.hidden, false);
     const player = output.querySelector("audio");
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
     assert.equal(output.querySelector("audio"), player);
     assert.match(output.textContent!, /Version 1/);
     assert.equal(output.querySelector("[data-preview-audio]")!.textContent, "Close preview");
@@ -135,7 +135,7 @@ test("a pending download translates its bound version while retaining the origin
   try {
     h.click('[data-download-audio-output="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]');
     assert.match(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Version 2.*Personal Suno/);
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "zh-CN", uiLanguageRevision: "1" }); await h.settle();
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "zh-CN", uiLanguageRevision: "1" }); await h.settle();
     assert.match(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Personal Suno.*版本 2/);
     assert.doesNotMatch(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Version 2/);
     assert.equal(h.document.querySelector("#appConfirmationAccept")!.textContent, "下载到 Live Smith");

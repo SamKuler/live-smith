@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { AudioServiceChoice } from "../../audio-services/capabilities.js";
+import type { BuiltInIntegrationConnectionChoice } from "./contracts.js";
 import { PluginRegistry } from "../registry.js";
 import {
   builtInAudioToolName,
   createBuiltInAudioToolsets,
 } from "./audio-toolsets.js";
 import { elevenLabsPlugin } from "./elevenlabs.js";
+import { BUILT_IN_AUDIO_PLUGINS } from "./index.js";
 import { murekaPlugin } from "./mureka.js";
 
-const services: AudioServiceChoice[] = [
-  { id: "mureka-main", name: "Mureka main", provider: "mureka" },
-  { id: "eleven-main", name: "ElevenLabs main", provider: "elevenlabs" },
+const services: BuiltInIntegrationConnectionChoice[] = [
+  { id: "mureka-main", name: "Mureka main", pluginId: murekaPlugin.id, provider: "mureka" },
+  { id: "eleven-main", name: "ElevenLabs main", pluginId: elevenLabsPlugin.id, provider: "elevenlabs" },
 ];
 
 test("built-in provider Plugins own distinct tools without a central generation route", async () => {
@@ -42,14 +43,14 @@ test("built-in provider Plugins own distinct tools without a central generation 
     id: "mureka-call",
     name: mureka,
     arguments: JSON.stringify({
-      serviceId: "mureka-main",
+      connectionId: "mureka-main",
       prompt: "Slow piano",
       instrumental: true,
     }),
   })).failed, undefined);
   assert.deepEqual(requests, [{
     kind: "generate_music",
-    serviceId: "mureka-main",
+    connectionId: "mureka-main",
     prompt: "Slow piano",
     instrumental: true,
   }]);
@@ -58,7 +59,7 @@ test("built-in provider Plugins own distinct tools without a central generation 
     id: "mureka-lyrics",
     name: murekaLyrics,
     arguments: JSON.stringify({
-      serviceId: "mureka-main",
+      connectionId: "mureka-main",
       prompt: "A hopeful night-drive song",
     }),
   })).failed, undefined);
@@ -66,19 +67,19 @@ test("built-in provider Plugins own distinct tools without a central generation 
     id: "mureka-song-from-lyrics",
     name: murekaSongFromLyrics,
     arguments: JSON.stringify({
-      serviceId: "mureka-main",
+      connectionId: "mureka-main",
       lyrics: "[Verse]\nCity lights",
     }),
   })).failed, undefined);
   assert.deepEqual(requests.slice(1), [
     {
       kind: "generate_lyrics",
-      serviceId: "mureka-main",
+      connectionId: "mureka-main",
       prompt: "A hopeful night-drive song",
     },
     {
       kind: "generate_song_from_lyrics",
-      serviceId: "mureka-main",
+      connectionId: "mureka-main",
       lyrics: "[Verse]\nCity lights",
     },
   ]);
@@ -87,7 +88,7 @@ test("built-in provider Plugins own distinct tools without a central generation 
     id: "wrong-owner",
     name: mureka,
     arguments: JSON.stringify({
-      serviceId: "eleven-main",
+      connectionId: "eleven-main",
       prompt: "Slow piano",
       instrumental: true,
     }),
@@ -108,4 +109,31 @@ test("Session media tools remain one built-in Plugin independent of connections"
     "resume_audio_job",
     "list_audio_jobs",
   ]);
+});
+
+test("every built-in integration publishes its complete tool contract directly", () => {
+  for (const plugin of BUILT_IN_AUDIO_PLUGINS) {
+    const connection: BuiltInIntegrationConnectionChoice = {
+      id: `connection-${plugin.provider.replaceAll(/[^a-z0-9]/gu, "-")}`,
+      name: plugin.connection.label,
+      pluginId: plugin.id,
+      provider: plugin.provider,
+    };
+    const names = plugin.tools.tools([connection])
+      .map((tool) => tool.function.name);
+    assert.equal(new Set(names).size, names.length, plugin.id);
+    assert.deepEqual(
+      [...names].sort(),
+      [...plugin.tools.localToolNames].sort(),
+      plugin.id,
+    );
+    for (const operation of plugin.audio.operations) {
+      assert.ok(names.includes(operation), `${plugin.id}:${operation}`);
+    }
+    assert.equal(
+      names.includes("inspect_music_service"),
+      plugin.audio.musicLibrary === true,
+      plugin.id,
+    );
+  }
 });

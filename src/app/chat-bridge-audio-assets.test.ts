@@ -4,6 +4,7 @@ import { URL } from "node:url";
 import { createChatBridge, ChatBridgeResourceNotFoundError, ChatBridgeCommandStoppedError } from "./chat-bridge.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { freshEmptyAgentSettings } from "../model/profile.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 
 test("audio playback authenticates and serves only validated session references, with seek ranges", async (t) => {
   const reads: string[] = [];
@@ -44,7 +45,7 @@ test("audio service revisions survive stale state reads and unrelated global set
   const settings = freshEmptyAgentSettings();
   const state: Partial<ChatDialogState> = {
     settings,
-    audioServices: { connections: [], revision: "0" },
+    integrationConnections: { connections: [], revision: "0" },
   };
   const bridge = await createChatBridge({
     buildState: async () => state as ChatDialogState, renderHtml: () => "", handleCommand: async () => state as ChatDialogState,
@@ -64,14 +65,21 @@ test("audio service revisions survive stale state reads and unrelated global set
     uiLanguage: settings.uiLanguage, uiLanguageRevision: settings.uiLanguageRevision,
     commandId: "save-audio",
   };
-  const connection = { id: "splitter", name: "Stems", provider: "lalal" as const, enabled: true, apiKeyConfigured: true };
-  bridge.publishGlobalSettings({ ...patch, audioServices: { connections: [connection], revision: "2" } });
-  assert.equal((await (await fetch(url)).json()).audioServices.revision, "2");
-  bridge.publishGlobalSettings({ ...patch, audioServices: { connections: [{ ...connection, enabled: false }], revision: "3" } });
-  bridge.publishGlobalSettings({ ...patch, audioServices: { connections: [connection], revision: "1" } });
+  const connection = {
+    id: "splitter",
+    name: "Stems",
+    pluginId: builtInAudioPluginId("lalal"),
+    enabled: true,
+    configuration: {},
+    configuredSecrets: ["apiKey"],
+  };
+  bridge.publishGlobalSettings({ ...patch, integrationConnections: { connections: [connection], revision: "2" } });
+  assert.equal((await (await fetch(url)).json()).integrationConnections.revision, "2");
+  bridge.publishGlobalSettings({ ...patch, integrationConnections: { connections: [{ ...connection, enabled: false }], revision: "3" } });
+  bridge.publishGlobalSettings({ ...patch, integrationConnections: { connections: [connection], revision: "1" } });
   const latest = await (await fetch(url)).json();
-  assert.equal(latest.audioServices.revision, "3");
-  assert.equal(latest.audioServices.connections[0].enabled, false);
+  assert.equal(latest.integrationConnections.revision, "3");
+  assert.equal(latest.integrationConnections.connections[0].enabled, false);
 });
 
 test("stopped audio commands return their authoritative partial results with the stopped outcome", async (t) => {

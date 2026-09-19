@@ -3,13 +3,17 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 import { URL } from "node:url";
 import type { LiveInteractionContext } from "../live/context.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { chatDialogStateForWire, type ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { SunoSessionManager } from "./suno-session-manager.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import { subscribeGlobalStateInvalidations } from "./session-state-events.js";
+import {
+  integrationConnectionFixture,
+  integrationConnectionUpsert,
+  saveIntegrationConnection,
+} from "./integration-connection-test-helpers.js";
 
 const sessionValue = "eyJhbGciOiJSUzI1NiJ9.eyJjbGllbnQiOiJmaXh0dXJlIn0.c2lnbmF0dXJl";
 const connection = { id: "suno-one", name: "My Suno", provider: "suno" as const, enabled: false, apiKey: "" };
@@ -30,7 +34,7 @@ for (const retire of ["logout", "remove", "replace", "close"] as const) {
   test(`Suno Cookie connection handles ${retire} without owning a browser or exposing credentials`, async (t) => {
     const storage = await fs.mkdtemp("/private/tmp/live-smith-suno-cookie-flow-");
     t.after(() => fs.rm(storage, { recursive: true, force: true }));
-    await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+    await saveIntegrationConnection(storage, "0", connection);
     let opens = 0;
     let verifications = 0;
     const interaction: LiveInteractionContext = { presentation: liveContextPresentationFixture("Audio"),
@@ -56,15 +60,15 @@ for (const retire of ["logout", "remove", "replace", "close"] as const) {
         assert.equal(verifications, 0, "navigation does not read or verify browser credentials");
         const connected = await command({ kind: "import_suno_session", serviceId: connection.id, sessionValue });
         assert.deepEqual(connected.sunoAccounts, [{ serviceId: connection.id, status: "signed_in", accountId: "user_fixture", accountName: "Fixture musician" }]);
-        assert.equal(connected.audioServices!.connections[0]!.enabled, false);
-        assert.equal(connected.audioServices!.connections[0]!.apiKeyConfigured, false);
+        assert.equal(connected.integrationConnections!.connections[0]!.enabled, false);
+        assert.deepEqual(connected.integrationConnections!.connections[0]!.configuredSecrets, []);
         const refreshed = await command({ kind: "refresh_suno_login", serviceId: connection.id });
         assert.equal(refreshed.sunoAccounts![0]!.status, "signed_in");
         if (retire === "close") return;
         const retired = retire === "logout" ? await command({ kind: "logout_suno", serviceId: connection.id })
-          : await command({ kind: "save_global_settings", audioServices: retire === "remove"
-            ? { action: "remove", expectedRevision: "1", serviceId: connection.id }
-            : { action: "upsert", expectedRevision: "1", connection: { ...connection, provider: "elevenlabs" } } });
+          : await command({ kind: "save_global_settings", integrationConnections: retire === "remove"
+            ? { action: "remove", expectedRevision: "1", connectionId: connection.id }
+            : integrationConnectionUpsert("1", { ...connection, provider: "elevenlabs" }) });
         assert.deepEqual(retired.sunoAccounts, retire === "logout" ? [{ serviceId: connection.id, status: "signed_out" }] : []);
       } },
     } as never, interaction, { renderHtml: () => "<html></html>", openSunoWebsite: async () => { opens++; },
@@ -75,7 +79,7 @@ for (const retire of ["logout", "remove", "replace", "close"] as const) {
     assert.equal(opens, 1);
     assert.equal(verifications, 2);
     const reopened = new SunoSessionManager(storage, async () => { throw new Error("Views must not make requests"); });
-    const accounts = await reopened.views([connection]);
+    const accounts = await reopened.views([integrationConnectionFixture(connection)]);
     assert.equal(accounts[0]!.status, retire === "close" ? "signed_in" : "signed_out",
       "dialog closure retains process-wide verification evidence without owning a browser");
   });
@@ -84,7 +88,7 @@ for (const retire of ["logout", "remove", "replace", "close"] as const) {
 test("partial Cookie cleanup returns authoritative disconnected state and invalidates peer dialogs", async (t) => {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-suno-cookie-partial-");
   t.after(() => fs.rm(storage, { recursive: true, force: true }));
-  await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(storage, "0", connection);
   await new SunoSessions(storage).save(connection.id, { clientToken: sessionValue, accountId: "user_fixture" });
   let invalidations = 0;
   t.after(subscribeGlobalStateInvalidations(storage, () => { invalidations++; }));
@@ -102,8 +106,8 @@ test("partial Cookie cleanup returns authoritative disconnected state and invali
       try {
         const response = await fetch(endpoint, { method: "POST", headers: {
           "Content-Type": "application/json", "X-Live-Smith-Command-Id": "suno-partial-remove",
-        }, body: JSON.stringify({ kind: "save_global_settings", audioServices: {
-          action: "remove", expectedRevision: "1", serviceId: connection.id,
+        }, body: JSON.stringify({ kind: "save_global_settings", integrationConnections: {
+          action: "remove", expectedRevision: "1", connectionId: connection.id,
         } }) });
         const body = await response.text();
         assert.equal(response.status, 500);
@@ -111,7 +115,7 @@ test("partial Cookie cleanup returns authoritative disconnected state and invali
         const failure = JSON.parse(body);
         assert.equal(failure.commandOutcome, "unknown");
         assert.deepEqual(failure.state.sunoAccounts, [{ serviceId: connection.id, status: "signed_out" }]);
-        assert.equal(failure.state.audioServices.connections[0].id, connection.id);
+        assert.equal(failure.state.integrationConnections.connections[0].id, connection.id);
         assert.equal(invalidations, 1);
       } finally { fault.mock.restore(); }
     } },

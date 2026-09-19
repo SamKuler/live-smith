@@ -7,6 +7,10 @@ import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { generateAudio } from "./audio-generation.js";
 import { separateAudioStems, type AudioProcessingContext } from "./audio-processing.js";
+import {
+  integrationConnectionUpsert,
+  saveIntegrationConnection,
+} from "./integration-connection-test-helpers.js";
 
 export async function audioRecoveryHarness(t: TestContext, provider: "lalal" | "elevenlabs" | "sunoapi") {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-audio-recovery-");
@@ -14,7 +18,7 @@ export async function audioRecoveryHarness(t: TestContext, provider: "lalal" | "
   const session = await createSession(storage, { title: "Recovery", projectKey: "fixture", scope: { kind: "selection", identity: "selection", label: "Audio" } });
   const connection: AudioServiceConnection = { id: "fixture-connection", name: "Fixture", provider, enabled: true,
     apiKey: "synthetic-audio-owner", ...(provider === "sunoapi" ? { callbackUrl: "https://hooks.example.com/audio" } : {}) };
-  await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(storage, "0", connection);
   const calls: string[] = [];
   const mode = { invalidFirst: false, offline: false };
   const outputs: RemoteAudioOutput[] = (provider === "lalal" ? ["vocals", "residual"] : ["music", "music_alternative"])
@@ -43,10 +47,10 @@ export async function audioRecoveryHarness(t: TestContext, provider: "lalal" | "
   const run = () => provider === "lalal" ? separateAudioStems(context, connection.id, ["vocals"], source) :
     generateAudio(context, connection.id, { operation: "generate_music", prompt: "Synthetic test", instrumental: true });
   const change = async (patch: Partial<AudioServiceConnection> | "remove") => {
-    const settings = (await loadAgentSettings(storage)).audioServices!;
-    await saveGlobalSettings(storage, { audioServices: patch === "remove"
-      ? { action: "remove", expectedRevision: settings.revision, serviceId: connection.id }
-      : { action: "upsert", expectedRevision: settings.revision, connection: { ...connection, ...patch } } });
+    const settings = (await loadAgentSettings(storage)).integrationConnections!;
+    await saveGlobalSettings(storage, { integrationConnections: patch === "remove"
+      ? { action: "remove", expectedRevision: settings.revision, connectionId: connection.id }
+      : integrationConnectionUpsert(settings.revision, { ...connection, ...patch }) });
   };
   return { storage, session, connection, context, mode, calls, run, change, adapter, generationAdapter, source };
 }

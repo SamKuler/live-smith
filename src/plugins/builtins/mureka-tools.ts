@@ -1,5 +1,5 @@
 import type { AudioToolRequest } from "../../agent/audio-tools.js";
-import type { AudioServiceChoice } from "../../audio-services/capabilities.js";
+import type { BuiltInIntegrationConnectionChoice } from "./contracts.js";
 import { exceedsAudioPromptLimit } from "../../audio-services/prompt.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import { isSafeStorageId } from "../../storage/id.js";
@@ -10,7 +10,7 @@ export const MUREKA_EXTENSION_TOOL_NAMES = [
 ] as const;
 
 export function murekaExtensionTools(
-  services: readonly AudioServiceChoice[],
+  services: readonly BuiltInIntegrationConnectionChoice[],
 ): ModelFunctionTool[] {
   const connection = { type: "string", enum: services.map((service) => service.id) };
   const availability = "Available Mureka connections: " + JSON.stringify(services);
@@ -24,10 +24,10 @@ export function murekaExtensionTools(
           type: "object",
           additionalProperties: false,
           properties: {
-            serviceId: connection,
+            connectionId: connection,
             prompt: { type: "string", minLength: 1, maxLength: 8000 },
           },
-          required: ["serviceId", "prompt"],
+          required: ["connectionId", "prompt"],
         },
       },
     },
@@ -40,12 +40,12 @@ export function murekaExtensionTools(
           type: "object",
           additionalProperties: false,
           properties: {
-            serviceId: connection,
+            connectionId: connection,
             lyrics: { type: "string", minLength: 1, maxLength: 5000 },
             prompt: { type: "string", minLength: 1, maxLength: 1024 },
             gender: { type: "string", enum: ["female", "male"] },
           },
-          required: ["serviceId", "lyrics"],
+          required: ["connectionId", "lyrics"],
         },
       },
     },
@@ -59,23 +59,23 @@ export function parseMurekaExtensionTool(
   kind: "generate_lyrics" | "generate_song_from_lyrics";
 }> {
   const value = record(JSON.parse(argumentsJson || "{}"));
-  if (!isSafeStorageId(value.serviceId)) throw new Error("Invalid Mureka connection.");
+  if (!isSafeStorageId(value.connectionId)) throw new Error("Invalid Mureka connection.");
   if (name === "generate_lyrics") {
-    only(value, ["serviceId", "prompt"]);
+    only(value, ["connectionId", "prompt"]);
     return {
       kind: "generate_lyrics",
-      serviceId: value.serviceId,
+      connectionId: value.connectionId,
       prompt: text(value.prompt, 8000),
     };
   }
   if (name !== "generate_song_from_lyrics") throw new Error("Unknown Mureka tool.");
-  only(value, ["serviceId", "lyrics", "prompt", "gender"]);
+  only(value, ["connectionId", "lyrics", "prompt", "gender"]);
   if (value.gender !== undefined && value.gender !== "female" && value.gender !== "male") {
     throw new Error("Invalid Mureka vocal gender.");
   }
   return {
     kind: "generate_song_from_lyrics",
-    serviceId: value.serviceId,
+    connectionId: value.connectionId,
     lyrics: text(value.lyrics, 5000),
     ...(value.prompt === undefined ? {} : { prompt: text(value.prompt, 1024) }),
     ...(value.gender === undefined ? {} : { gender: value.gender }),

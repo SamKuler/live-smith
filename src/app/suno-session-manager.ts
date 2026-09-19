@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
-import type { AudioServiceConnection } from "../audio-services/contracts.js";
 import type { SunoAccountView, SunoSessionVerifier } from "../audio-services/suno-session-contracts.js";
+import {
+  isIntegrationConnectionForProvider,
+  type IntegrationConnection,
+} from "../plugins/integration-connections.js";
 import { normalizeSunoSessionIdentity, normalizeSunoSessionValue, SunoSessionExpiredError, SunoSessionUnavailableError } from "../audio-services/suno-session.js";
 import { waitForPromiseWithSignal } from "../runtime/host.js";
 import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction, type StorageTransactionContext } from "../storage/persistence.js";
@@ -30,8 +33,8 @@ export async function persistRotatedSunoSession(
   const scopeKey = storageScopeKey(storageDirectory);
   await withStorageTransaction(storageDirectory, async (transaction) => {
     active(signal);
-    const connection = (await loadAgentSettings(storageDirectory)).audioServices?.connections
-      .find((entry) => entry.id === serviceId && entry.provider === "suno");
+    const connection = (await loadAgentSettings(storageDirectory)).integrationConnections?.connections
+      .find((entry) => entry.id === serviceId && isIntegrationConnectionForProvider(entry, "suno"));
     if (!connection) throw new SunoSessionUnavailableError();
     const current = await store.load(serviceId, transaction);
     if (!current || current.accountId !== owner) throw new SunoSessionUnavailableError();
@@ -59,8 +62,9 @@ export class SunoSessionManager {
     this.scopeKey = storageScopeKey(storageDirectory);
   }
 
-  async views(connections: readonly AudioServiceConnection[]): Promise<SunoAccountView[]> {
-    const sunoConnections = connections.filter((connection) => connection.provider === "suno");
+  async views(connections: readonly IntegrationConnection[]): Promise<SunoAccountView[]> {
+    const sunoConnections = connections.filter((connection) =>
+      isIntegrationConnectionForProvider(connection, "suno"));
     const owners = new Set(sunoConnections.map(({ id }) => id));
     for (const id of evidenceByStorage.get(this.scopeKey)?.keys() ?? []) {
       if (!owners.has(id)) this.updateEvidence(id);
@@ -161,8 +165,9 @@ export class SunoSessionManager {
   private async requireSavedConnection(serviceId: string): Promise<void> {
     let exists = false;
     try {
-      exists = Boolean(this.storageDirectory && (await loadAgentSettings(this.storageDirectory)).audioServices?.connections
-        .some((connection) => connection.id === serviceId && connection.provider === "suno"));
+      exists = Boolean(this.storageDirectory && (await loadAgentSettings(this.storageDirectory)).integrationConnections?.connections
+        .some((connection) => connection.id === serviceId &&
+          isIntegrationConnectionForProvider(connection, "suno")));
     } catch { throw new SunoSessionUnavailableError(); }
     if (!exists) throw new Error("Save this Suno connection before importing or refreshing its session.");
   }

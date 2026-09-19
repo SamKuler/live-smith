@@ -1,10 +1,22 @@
 import type { AudioGenerationAdapter, RemoteAudioOutput } from "./contracts.js";
-import { DEFAULT_SUNOAPI_MUSIC_MODEL, SUNOAPI_MUSIC_MODELS } from "./capabilities.js";
 import { createSunoApiHttp } from "./sunoapi-http.js";
 import { exceedsAudioPromptLimit } from "./prompt.js";
 
 const RUNNING = ["PENDING", "TEXT_SUCCESS", "FIRST_SUCCESS"];
 const FAILED = ["CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED", "CALLBACK_EXCEPTION", "SENSITIVE_WORD_ERROR"];
+
+export const SUNOAPI_MUSIC_MODELS = [
+  "V6",
+  "V6_WILD",
+  "V6_MINI",
+  "V5_5",
+  "V5",
+  "V4_5PLUS",
+  "V4_5ALL",
+  "V4_5",
+  "V4",
+] as const;
+export const DEFAULT_SUNOAPI_MUSIC_MODEL = "V6";
 
 /** Third-party contract, not Suno's official or subscription API:
  * https://docs.sunoapi.org/suno-api/suno-api.json

@@ -40,10 +40,11 @@ import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
 import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
-  MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SERVICES, MAX_AUDIO_JOB_TITLE_CHARACTERS,
+  MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_JOB_TITLE_CHARACTERS,
   AUDIO_OUTPUT_LABELS } from "../audio-services/contracts.js";
 
-import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
+import { BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS } from "../plugins/builtins/index.js";
+import { MAX_INTEGRATION_CONNECTIONS } from "../plugins/integration-connections.js";
 
 export interface ChatClientScripts {
   actionPreview: string;
@@ -189,8 +190,9 @@ function injectEditScopeContract(script: string): string {
 function injectSessionContract(script: string): string {
   return script
     .replaceAll("__BUILT_IN_AUDIO_TOOL_NAMES__", () => JSON.stringify(builtInAudioToolNames()))
-    .replaceAll("__AUDIO_SERVICE_CAPABILITIES__", () => JSON.stringify(AUDIO_SERVICE_CAPABILITIES))
-    .replaceAll("__MAX_AUDIO_SERVICES__", String(MAX_AUDIO_SERVICES))
+    .replaceAll("__BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__", () =>
+      JSON.stringify(BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS))
+    .replaceAll("__MAX_INTEGRATION_CONNECTIONS__", String(MAX_INTEGRATION_CONNECTIONS))
     .replaceAll("__SEPARATION_STEMS__", () => JSON.stringify(SEPARATION_STEMS))
     .replaceAll("__AUDIO_OUTPUT_LABELS__", () => JSON.stringify(AUDIO_OUTPUT_LABELS))
     .replaceAll("__MAX_AUDIO_JOB_TITLE_CHARACTERS__", String(MAX_AUDIO_JOB_TITLE_CHARACTERS))

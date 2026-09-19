@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type { UiMessage } from "../i18n/ui-message.js";
 import { sendAudioAssetResponse } from "./audio-asset-response.js";
-import type { AudioServicesView } from "../audio-services/contracts.js";
+import type { IntegrationConnectionsView } from "../plugins/integration-connections.js";
 import {
   createServer,
   type IncomingMessage,
@@ -537,7 +537,7 @@ type StateChangeSsePayloadBase =
     }
   | {
       type: "global_settings_changed";
-      audioServices?: AudioServicesView;
+      integrationConnections?: IntegrationConnectionsView;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
       showContextUsage: boolean;
@@ -954,7 +954,7 @@ export async function createChatBridge(
     ) return state;
     if (latestGlobalSettingsChange === undefined) {
       latestGlobalSettingsChange = {
-        ...(state.audioServices ? { audioServices: state.audioServices } : {}),
+        ...(state.integrationConnections ? { integrationConnections: state.integrationConnections } : {}),
         defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
         defaultFollowUpBehaviorRevision:
           settings.defaultFollowUpBehaviorRevision,
@@ -993,8 +993,8 @@ export async function createChatBridge(
       settings.networkProxyRevision,
       latestGlobalSettingsChange.networkProxyRevision,
     ) > 0;
-    const audioFromState = state.audioServices !== undefined && compareNetworkProxyRevisions(
-      state.audioServices.revision, latestGlobalSettingsChange.audioServices?.revision ?? "0",
+    const audioFromState = state.integrationConnections !== undefined && compareNetworkProxyRevisions(
+      state.integrationConnections.revision, latestGlobalSettingsChange.integrationConnections?.revision ?? "0",
     ) > 0;
     if (
       behaviorFromState ||
@@ -1005,7 +1005,7 @@ export async function createChatBridge(
     ) {
       latestGlobalSettingsChange = {
         ...latestGlobalSettingsChange,
-        ...(audioFromState ? { audioServices: state.audioServices! } : {}),
+        ...(audioFromState ? { integrationConnections: state.integrationConnections! } : {}),
         ...(behaviorFromState
           ? {
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
@@ -1043,7 +1043,7 @@ export async function createChatBridge(
 
     return {
       ...state,
-      ...(latestGlobalSettingsChange.audioServices ? { audioServices: latestGlobalSettingsChange.audioServices } : {}),
+      ...(latestGlobalSettingsChange.integrationConnections ? { integrationConnections: latestGlobalSettingsChange.integrationConnections } : {}),
       settings: {
         ...settings,
         defaultFollowUpBehavior:
@@ -2824,7 +2824,7 @@ export async function createChatBridge(
           latestGlobalSettingsChange.networkProxyRevision,
         );
         const audioOrder = compareNetworkProxyRevisions(
-          change.audioServices?.revision ?? "0", latestGlobalSettingsChange.audioServices?.revision ?? "0",
+          change.integrationConnections?.revision ?? "0", latestGlobalSettingsChange.integrationConnections?.revision ?? "0",
         );
         if (
           (
@@ -2874,8 +2874,8 @@ export async function createChatBridge(
           )
         ) return;
         latestGlobalSettingsChange = {
-          ...((audioOrder > 0 ? change.audioServices : latestGlobalSettingsChange.audioServices)
-            ? { audioServices: (audioOrder > 0 ? change.audioServices : latestGlobalSettingsChange.audioServices)! } : {}),
+          ...((audioOrder > 0 ? change.integrationConnections : latestGlobalSettingsChange.integrationConnections)
+            ? { integrationConnections: (audioOrder > 0 ? change.integrationConnections : latestGlobalSettingsChange.integrationConnections)! } : {}),
           defaultFollowUpBehavior: behaviorOrder > 0
             ? change.defaultFollowUpBehavior
             : latestGlobalSettingsChange.defaultFollowUpBehavior,

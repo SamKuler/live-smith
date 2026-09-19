@@ -1,4 +1,9 @@
-import type { AudioJobView, AudioServiceConnectionView, AudioServicesSettingsPatch } from "../audio-services/contracts.js";
+import type { AudioJobView, AudioServiceConnectionView } from "../audio-services/contracts.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
+import type {
+  IntegrationConnectionView,
+  IntegrationConnectionsSettingsPatch,
+} from "../plugins/integration-connections.js";
 import { commandCalls, createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js";
 
 export const service: AudioServiceConnectionView = {
@@ -11,9 +16,27 @@ export const sunoService: AudioServiceConnectionView = {
   id: "audio-sunoapi", name: "Third-party studio", provider: "sunoapi", enabled: true,
   apiKeyConfigured: true, callbackUrl: "https://hooks.example.com/music", modelId: "V4_5ALL",
 };
+export function integrationConnectionView(
+  connection: AudioServiceConnectionView,
+): IntegrationConnectionView {
+  return {
+    id: connection.id,
+    name: connection.name,
+    pluginId: builtInAudioPluginId(connection.provider),
+    enabled: connection.enabled,
+    configuration: {
+      ...(connection.modelId === undefined ? {} : { modelId: connection.modelId }),
+      ...(connection.callbackUrl === undefined ? {} : { callbackUrl: connection.callbackUrl }),
+    },
+    configuredSecrets: connection.apiKeyConfigured ? ["apiKey"] : [],
+  };
+}
 export function audioState(connections = [service]) {
   const state = stateFixture();
-  state.audioServices = { connections: connections.map((service) => ({ ...service })), revision: "1" };
+  state.integrationConnections = {
+    connections: connections.map(integrationConnectionView),
+    revision: "1",
+  };
   return state;
 }
 export function job(sessionId: string, overrides: Partial<AudioJobView> = {}): AudioJobView {
@@ -40,15 +63,15 @@ export function toggle(harness: Harness, enabled: boolean) {
   input.dispatchEvent(new harness.window.Event("change", { bubbles: true }));
 }
 export function audioCommands(harness: Harness) {
-  return commandCalls(harness).map((call) => call.body as { kind: string; audioServices?: AudioServicesSettingsPatch })
-    .filter((body): body is { kind: string; audioServices: AudioServicesSettingsPatch } => Boolean(body.audioServices));
+  return commandCalls(harness).map((call) => call.body as { kind: string; integrationConnections?: IntegrationConnectionsSettingsPatch })
+    .filter((body): body is { kind: string; integrationConnections: IntegrationConnectionsSettingsPatch } => Boolean(body.integrationConnections));
 }
-export function broadcast(state: ReturnType<typeof stateFixture>, audioServices: unknown) {
+export function broadcast(state: ReturnType<typeof stateFixture>, integrationConnections: unknown) {
   return { type: "global_settings_changed", commandId: "peer-audio-save",
     defaultFollowUpBehavior: state.settings.defaultFollowUpBehavior,
     defaultFollowUpBehaviorRevision: state.settings.defaultFollowUpBehaviorRevision,
     showContextUsage: state.settings.showContextUsage,
     contextUsageVisibilityRevision: state.settings.contextUsageVisibilityRevision,
     networkProxy: state.settings.networkProxy, networkProxyRevision: state.settings.networkProxyRevision,
-    uiLanguage: state.settings.uiLanguage, uiLanguageRevision: state.settings.uiLanguageRevision, audioServices };
+    uiLanguage: state.settings.uiLanguage, uiLanguageRevision: state.settings.uiLanguageRevision, integrationConnections };
 }

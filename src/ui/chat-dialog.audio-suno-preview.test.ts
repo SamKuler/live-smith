@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { URL } from "node:url";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 import type { ChatBridgeState } from "./chat-state.js";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioState, broadcast, job, musicService, selectAudioService, toggle, type Harness } from "./chat-dialog.audio-test-helpers.js";
+import { audioState, broadcast, integrationConnectionView, job, musicService,
+  selectAudioService, toggle, type Harness } from "./chat-dialog.audio-test-helpers.js";
 
 const website = { id: "suno-personal", name: "Personal Suno", provider: "suno" as const, enabled: true, apiKeyConfigured: false };
 const account = { serviceId: website.id, status: "signed_in" as const, accountId: "user_personal", accountName: "Musician" };
@@ -73,7 +75,7 @@ test("unrelated state and language updates preserve the actual online frame and 
     const card = h.document.querySelector("[data-remote-audio-key]");
     selectAudioService(h, musicService.id);
     h.input("#audioServiceName", "Unsaved other connection");
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
     await h.settle();
     await refresh(h, { ...state, audioJobs: [{ ...state.audioJobs![0]!, message: "Sibling output unchanged" }] });
     assert.equal(frame(h), player);
@@ -175,12 +177,16 @@ for (const changed of ["account", "account-away-and-back", "signed-out", "disabl
       if (changed === "account" || changed === "account-away-and-back") next.sunoAccounts![0]!.accountId = "user_replacement";
       else if (changed === "signed-out") next.sunoAccounts = [{ serviceId: website.id, status: "signed_out" }];
       else if (["disabled", "removed", "provider", "model"].includes(changed)) {
-        next.audioServices!.revision = "2";
-        const service = next.audioServices!.connections[0]!;
+        next.integrationConnections!.revision = "2";
+        const service = next.integrationConnections!.connections[0]!;
         if (changed === "disabled") service.enabled = false;
-        if (changed === "removed") { next.audioServices!.connections.shift(); next.sunoAccounts = []; }
-        if (changed === "provider") { service.provider = "elevenlabs"; service.apiKeyConfigured = true; next.sunoAccounts = []; }
-        if (changed === "model") service.modelId = "changed-model";
+        if (changed === "removed") { next.integrationConnections!.connections.shift(); next.sunoAccounts = []; }
+        if (changed === "provider") {
+          service.pluginId = builtInAudioPluginId("elevenlabs");
+          service.configuredSecrets = ["apiKey"];
+          next.sunoAccounts = [];
+        }
+        if (changed === "model") service.configuration.modelId = "changed-model";
       } else {
         const result = next.audioJobs![0]!;
         if (changed === "job") result.serviceId = musicService.id;
@@ -229,7 +235,7 @@ test("remote download uses saved connection enablement and usable account eviden
       assert.deepEqual(h.errors, []);
     } finally { h.close(); }
   }
-  const state = previewState(); state.audioServices!.connections[0]!.enabled = false;
+  const state = previewState(); state.integrationConnections!.connections[0]!.enabled = false;
   const h = await createDialogHarness(state);
   try {
     toggle(h, true);
@@ -288,7 +294,10 @@ test("saved files request a default-browser download without WebView navigation 
       const help = h.document.getElementById(localDownload.getAttribute("aria-describedby")!)!;
       assert.match(help.textContent!, /default browser.*does not contact an audio service or use provider allowance/i);
       assert.match(help.textContent!, /keep Live Smith open until it finishes/i);
-      const services = { revision: "2", connections: [musicService] };
+      const services = {
+        revision: "2",
+        connections: [integrationConnectionView(musicService)],
+      };
       h.emitServerEvent(broadcast(state, services)); await h.settle();
       assert.equal(h.document.querySelector("audio"), player);
       assert.equal(h.document.querySelector("[data-download-local-audio]"), localDownload);

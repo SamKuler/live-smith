@@ -10,6 +10,10 @@ import { invalidateGlobalState } from "./session-state-events.js";
 import { createHostAbortController } from "../runtime/host.js";
 import { SunoModelCatalog } from "./suno-model-catalog.js";
 import { catalog, clientCookie, connection, files, flow, models, post, session, state, storageFixture, token } from "./suno-model-catalog-test-helpers.js";
+import {
+  integrationConnectionUpsert,
+  saveIntegrationConnection,
+} from "./integration-connection-test-helpers.js";
 
 const load = { kind: "load_suno_models", serviceId: connection.id };
 
@@ -24,18 +28,18 @@ for (const peer of [false, true]) {
           const next = change === "unrelated connection" ? { ...connection, id: "suno-two", name: "Other Suno" }
             : { ...connection, ...({ modelId: { modelId: models[0]!.id }, name: { name: "Renamed Suno" },
               enabled: { enabled: true } }[change]) };
-          const response = await post(ownerUrl, { kind: "save_global_settings", audioServices: {
-            action: "upsert", expectedRevision: "1", connection: next,
+          const response = await post(ownerUrl, { kind: "save_global_settings", integrationConnections: {
+            ...integrationConnectionUpsert("1", next),
           } }, "save-model-settings");
           assert.equal(response.status, 200);
           const saved = await response.json();
           if (!peer) assert.deepEqual(saved.sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-            audioServicesRevision: "2", models });
+            integrationConnectionsRevision: "2", models });
         };
         if (peer) await flow(storage, save);
         else await save(url);
         assert.deepEqual((await state(url)).sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-          audioServicesRevision: "2", models });
+          integrationConnectionsRevision: "2", models });
         assert.equal(reads, 1, "ordinary settings saves do not reload the account catalog");
       }, async () => { reads++; return catalog(); });
     });
@@ -48,13 +52,13 @@ test("ordinary metadata changes during a catalog read publish the current revisi
     const response = await post(url, load); assert.equal(response.status, 200);
     const saved = await response.json();
     assert.deepEqual(saved.sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-      audioServicesRevision: "2", models });
-    assert.equal(saved.audioServices.revision, "2");
-    assert.equal(saved.audioServices.connections[0].modelId, models[0]!.id);
+      integrationConnectionsRevision: "2", models });
+    assert.equal(saved.integrationConnections.revision, "2");
+    assert.equal(saved.integrationConnections.connections[0].configuration.modelId, models[0]!.id);
   }, async () => {
-    await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "1", connection: {
+    await saveIntegrationConnection(storage, "1", {
       ...connection, name: "Renamed Suno", enabled: true, modelId: models[0]!.id,
-    } } });
+    });
     invalidateGlobalState(storage, { source: Symbol("peer settings save") });
     return catalog();
   });
@@ -64,20 +68,18 @@ test("a stale settings snapshot omits the catalog without evicting its still-val
   const storage = await storageFixture(t);
   const cache = new SunoModelCatalog(storage, providerFetchForStorage(storage), async () => catalog());
   await cache.load(connection.id, createHostAbortController().signal);
-  await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "1", connection: {
-    ...connection, modelId: models[0]!.id,
-  } } });
+  await saveIntegrationConnection(storage, "1", { ...connection, modelId: models[0]!.id });
   assert.equal(await cache.view("1"), undefined);
   assert.deepEqual(await cache.view("2"), { serviceId: connection.id, accountId: session.accountId,
-    audioServicesRevision: "2", models });
+    integrationConnectionsRevision: "2", models });
 });
 
 for (const peer of [false, true]) {
   test(`authentication for an unrelated connection in ${peer ? "a peer" : "this"} dialog preserves the selected account catalog`, async (t) => {
     const storage = await storageFixture(t);
-    await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "1", connection: {
+    await saveIntegrationConnection(storage, "1", {
       ...connection, id: "suno-two", name: "Other Suno",
-    } } });
+    });
     await flow(storage, async (url) => {
       const loaded = await post(url, load); assert.equal(loaded.status, 200); await loaded.text();
       const disconnect = async (ownerUrl: string) => {
@@ -87,7 +89,7 @@ for (const peer of [false, true]) {
       if (peer) await flow(storage, disconnect);
       else await disconnect(url);
       assert.deepEqual((await state(url)).sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-        audioServicesRevision: "2", models });
+        integrationConnectionsRevision: "2", models });
     });
   });
 }
@@ -114,7 +116,7 @@ test("Suno catalog command accepts only a saved service identifier", () => {
   for (const patch of [{ serviceId: "" }, { serviceId: "../other" }, { serviceId: undefined }, { serviceId: 3 },
     { serviceId: "x".repeat(129) }, { serviceId: "https://suno.com" }, { url: "https://suno.com" },
     { apiKey: "synthetic-secret" }, { clientToken: session.clientToken }, { sessionValue: session.clientToken },
-    { settings: {} }, { connection }, { audioServices: {} }, { accountId: session.accountId }, { enabled: true },
+    { settings: {} }, { connection }, { integrationConnections: {} }, { accountId: session.accountId }, { enabled: true },
     { modelId: models[0]!.id }, { query: "catalog" }, { sessionId: "session-one" }]) {
     assert.throws(() => parseCommandInput({ ...load, ...patch }));
   }
@@ -122,13 +124,13 @@ test("Suno catalog command accepts only a saved service identifier", () => {
 
 test("Suno catalog wire projection is bounded and whitelists every nested field", () => {
   const projected = chatDialogStateForWire({ sunoModelCatalog: {
-    serviceId: connection.id, accountId: session.accountId, audioServicesRevision: "4",
+    serviceId: connection.id, accountId: session.accountId, integrationConnectionsRevision: "4",
     clientToken: session.clientToken, accountName: "Private name", plan: "Private plan", url: "https://private.test",
     models: Array.from({ length: 101 }, () => ({ ...models[0], clientToken: session.clientToken,
       raw: { account: session }, maxLengths: { title: 80 }, url: "https://private.test" })),
   } } as unknown as ChatDialogState);
   assert.deepEqual(projected.sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-    audioServicesRevision: "4", models: Array.from({ length: 100 }, () => models[0]) });
+    integrationConnectionsRevision: "4", models: Array.from({ length: 100 }, () => models[0]) });
   assert.doesNotMatch(JSON.stringify(projected), /eyJ|clientToken|Private|private\.test|maxLengths|raw/);
 });
 
@@ -136,7 +138,7 @@ for (const enabled of [true, false]) {
   test(`catalog loads the exact saved private owner with enabled=${enabled}, without writes or shared cache`, async (t) => {
     const storage = await storageFixture(t, enabled);
     const other = { ...connection, id: "suno-two", name: "Other Suno" };
-    await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "1", connection: other } });
+    await saveIntegrationConnection(storage, "1", other);
     await new SunoSessions(storage).save(other.id, { clientToken: clientCookie({ client: "other" }), accountId: "user_other" });
     let calls = 0;
     await flow(storage, async (url) => {
@@ -146,8 +148,8 @@ for (const enabled of [true, false]) {
       const body = await response.text(); assert.equal(response.status, 200, body);
       assert.doesNotMatch(body, /eyJ|clientToken|maxLengths|creditsLeft|Private plan|fingerprint/);
       assert.deepEqual(JSON.parse(body).sunoModelCatalog, { serviceId: connection.id, accountId: session.accountId,
-        audioServicesRevision: "2", models });
-      assert.equal(JSON.parse(body).audioServices.connections[0].enabled, enabled);
+        integrationConnectionsRevision: "2", models });
+      assert.equal(JSON.parse(body).integrationConnections.connections[0].enabled, enabled);
       assert.deepEqual((await state(url)).sunoModelCatalog, JSON.parse(body).sunoModelCatalog);
       assert.equal(calls, 1, "readback never queries the provider");
       assert.deepEqual(await files(storage), before, "catalog loads never persist settings, credentials, jobs or catalogs");
@@ -170,9 +172,9 @@ for (const owner of ["missing service", "missing credential", "wrong provider"] 
   test(`catalog rejects ${owner} before any provider read`, async (t) => {
     const storage = await storageFixture(t);
     if (owner === "missing credential") await new SunoSessions(storage).clear(connection.id);
-    if (owner === "wrong provider") await saveGlobalSettings(storage, { audioServices: {
-      action: "upsert", expectedRevision: "1", connection: { ...connection, provider: "elevenlabs" },
-    } });
+    if (owner === "wrong provider") {
+      await saveIntegrationConnection(storage, "1", { ...connection, provider: "elevenlabs" });
+    }
     await flow(storage, async (url) => {
       const response = await post(url, { ...load, ...(owner === "missing service" ? { serviceId: "absent" } : {}) });
       assert.equal(response.status, 409); assert.doesNotMatch(await response.text(), /eyJ|clientToken/);
@@ -191,9 +193,9 @@ for (const when of ["during load", "after load"] as const) {
         else if (change === "reimport notification") invalidateGlobalState(storage, {
           source: Symbol("peer import"), sunoAuthServiceId: connection.id,
         });
-        else await saveGlobalSettings(storage, { audioServices: change === "remove"
-          ? { action: "remove", expectedRevision: "1", serviceId: connection.id }
-          : { action: "upsert", expectedRevision: "1", connection: { ...connection, provider: "elevenlabs" } } });
+        else await saveGlobalSettings(storage, { integrationConnections: change === "remove"
+          ? { action: "remove", expectedRevision: "1", connectionId: connection.id }
+          : integrationConnectionUpsert("1", { ...connection, provider: "elevenlabs" }) });
       };
       await flow(storage, async (url) => {
         const response = await post(url, load);

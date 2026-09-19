@@ -17,9 +17,13 @@ test("connected Suno can explicitly enable and save music tools without API key 
     harness.click("#saveAudioServiceButton");
     await harness.settle();
     const command = audioCommands(harness)[0]!;
-    assert.deepEqual(command, { kind: "save_global_settings", audioServices: {
+    assert.deepEqual(command, { kind: "save_global_settings", integrationConnections: {
       action: "upsert", expectedRevision: "1", connection: {
-        id: website.id, name: website.name, provider: "suno", enabled: true, modelId: "chirp-account-model",
+        id: website.id,
+        name: website.name,
+        pluginId: "live-smith.suno-website",
+        enabled: true,
+        configuration: { modelId: "chirp-account-model" },
       },
     } });
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceEnabled")!.checked, true);

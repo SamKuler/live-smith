@@ -16,7 +16,7 @@ import {
 } from "../skills/format.js";
 import { isSafePluginId } from "../plugins/contracts.js";
 import { requireSafeStorageId, isSafeStorageId } from "../storage/id.js";
-import { normalizeAudioServicesSettingsPatch, type AudioServicesSettingsPatch } from "../storage/settings.js";
+import { normalizeIntegrationConnectionsSettingsPatch, type IntegrationConnectionsSettingsPatch } from "../storage/settings.js";
 import {
   MAX_SESSION_TITLE_CODE_POINTS,
   isSessionTitle,
@@ -155,7 +155,7 @@ export type ChatBridgeCommandInput =
       kind: "save_global_settings";
       uiLanguage?: never;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
-      audioServices?: never;
+      integrationConnections?: never;
       showContextUsage?: never;
       networkProxy?: never;
       customInstructions?: never;
@@ -165,7 +165,7 @@ export type ChatBridgeCommandInput =
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
-      audioServices?: never;
+      integrationConnections?: never;
       networkProxy?: never;
       customInstructions?: never;
     }
@@ -175,13 +175,13 @@ export type ChatBridgeCommandInput =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy: NetworkProxySettings;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions?: never;
     }
   | {
       kind: "save_global_settings";
       uiLanguage: UiLanguage;
-      audioServices?: never;
+      integrationConnections?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
@@ -189,7 +189,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
-      audioServices: AudioServicesSettingsPatch;
+      integrationConnections: IntegrationConnectionsSettingsPatch;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -203,7 +203,7 @@ export type ChatBridgeCommandInput =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
-      audioServices?: never;
+      integrationConnections?: never;
     }
   | { kind: "resume_audio_job"; sessionId: string; jobId: string }
   | { kind: "download_audio_output"; sessionId: string; jobId: string; outputKey: string }
@@ -980,7 +980,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "save_global_settings") {
     assertOnlyInputKeys(
       input,
-      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "uiLanguage", "audioServices", "customInstructions"],
+      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "uiLanguage", "integrationConnections", "customInstructions"],
       `${kind} command`,
     );
     const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
@@ -992,7 +992,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       "showContextUsage",
     );
     const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
-    const hasAudioService = Object.prototype.hasOwnProperty.call(input, "audioServices");
+    const hasAudioService = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
     const hasCustomInstructions = Object.prototype.hasOwnProperty.call(input, "customInstructions");
     const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
       input,
@@ -1040,7 +1040,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
         kind,
         customInstructions: normalizeCustomInstructions(input.customInstructions),
       };
-      if (hasAudioService) return { kind, audioServices: normalizeAudioServicesSettingsPatch(input.audioServices) };
+      if (hasAudioService) return { kind, integrationConnections: normalizeIntegrationConnectionsSettingsPatch(input.integrationConnections) };
       return {
         kind,
         networkProxy: normalizeNetworkProxySettings(input.networkProxy),

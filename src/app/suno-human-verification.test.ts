@@ -10,10 +10,11 @@ import { readAudioAsset } from "../storage/audio-assets.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { MUSIC, session as sunoSession, replay, accountStep, gateStep, submitStep, pollStep, clip, A, B,
   downloadPath } from "../model/audio-service-suno-harness.js";
-import { resolveAudioService } from "./audio-service-connections.js";
+import { resolveIntegrationConnection } from "./integration-connections.js";
 import { generateAudio, downloadAudioOutput } from "./audio-generation.js";
 import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 import { SessionMutationFence } from "./session-mutation-fence.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const secret = "private-native-proof-fixture";
 const connection = { id: "website", name: "Personal Suno", provider: "suno" as const, enabled: true, apiKey: "" };
@@ -21,10 +22,10 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-verification-flow-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const chat = await createSession(directory, { title: "Verification", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(directory, "0", connection);
   const sessions = new SunoSessions(directory);
   await sessions.save(connection.id, sunoSession);
-  const settings = await resolveAudioService(directory, connection.id, "generate_music");
+  const settings = await resolveIntegrationConnection(directory, connection.id, "generate_music");
   const controller = createHostAbortController();
   const progress: string[] = [];
   const fence = new SessionMutationFence();
@@ -73,7 +74,10 @@ test("account or model changes during a native challenge cannot dispatch generat
   const h = await harness(t);
   const wire = replay([accountStep(), gateStep({ required: true, captcha_version: 2 })]);
   const adapter = createAppSunoGenerationAdapter(h.context, h.settings, false, { fetchImpl: wire.fetchImpl, verify: async () => {
-    await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1", connection: { ...connection, modelId: "changed-model" } } });
+    await saveIntegrationConnection(h.directory, "1", {
+      ...connection,
+      modelId: "changed-model",
+    });
     return { captchaVersion: 2, token: secret, issuedAtMs: Date.now() };
   } });
   const job = await generateAudio({ ...h.context, generationAdapter: adapter }, connection.id, { ...MUSIC });
@@ -118,7 +122,10 @@ test("the final route read cannot cross a changed admitted connection", async (t
   let reads = 0;
   const adapter = createAppSunoGenerationAdapter(h.context, h.settings, false, { fetchImpl: wire.fetchImpl,
     readSystemProxy: async () => {
-      if (++reads === 3) await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1", connection: { ...connection, enabled: false } } });
+      if (++reads === 3) await saveIntegrationConnection(h.directory, "1", {
+        ...connection,
+        enabled: false,
+      });
       return { noProxy: [] };
     }, verify: async () => ({ captchaVersion: 2, token: secret, issuedAtMs: Date.now() }),
   });
@@ -138,7 +145,7 @@ test("generation authorization covers authentication and the paid receipt, witho
     if (submitting && String(input).includes("/tokens?") && !queued) {
       queued = h.change(async () => {
         changed = true;
-        await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1", connection: { ...connection, enabled: false } } });
+        await saveIntegrationConnection(h.directory, "1", { ...connection, enabled: false });
       });
       await Promise.resolve();
     }

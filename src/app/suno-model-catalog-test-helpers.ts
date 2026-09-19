@@ -5,11 +5,11 @@ import type { TestContext } from "node:test";
 import { URL } from "node:url";
 import type { LiveInteractionContext } from "../live/context.js";
 import { resolveFetchImplementation } from "../runtime/host.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow, type AgentFlowDependencies } from "./agent-flow.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 export const connection = { id: "suno-one", name: "My Suno", provider: "suno" as const, enabled: false, apiKey: "" };
 export const token = (claims: object) => [JSON.stringify({ alg: "RS256" }), JSON.stringify(claims), "synthetic-signature"]
@@ -28,7 +28,7 @@ export type Reader = NonNullable<AgentFlowDependencies["readSunoMusicService"]>;
 export async function storageFixture(t: TestContext, enabled = false) {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-suno-models-");
   t.after(() => fs.rm(storage, { recursive: true, force: true }));
-  await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "0", connection: { ...connection, enabled } } });
+  await saveIntegrationConnection(storage, "0", { ...connection, enabled });
   await new SunoSessions(storage).save(connection.id, session);
   return storage;
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { audioServicesView } from "../storage/settings.js";
+import { integrationConnectionsView } from "../storage/settings.js";
 import test from "node:test";
 
 import type {
@@ -647,14 +647,14 @@ test("language revisions merge independently across stale publications and state
     await state();
     bridge.publishGlobalSettings({
       ...source.settings,
-      audioServices: audioServicesView(source.settings.audioServices),
+      integrationConnections: integrationConnectionsView(source.settings.integrationConnections),
       uiLanguage: "zh-CN",
       uiLanguageRevision: "9007199254740992",
       commandId: "language-new",
     });
     bridge.publishGlobalSettings({
       ...source.settings,
-      audioServices: audioServicesView(source.settings.audioServices),
+      integrationConnections: integrationConnectionsView(source.settings.integrationConnections),
       showContextUsage: false,
       contextUsageVisibilityRevision: "1",
       commandId: "context-with-stale-language",

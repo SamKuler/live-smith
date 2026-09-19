@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioCommands, audioState, broadcast, musicService, selectAudioService, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
+import { audioCommands, audioState, broadcast, integrationConnectionView,
+  musicService, selectAudioService, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
 
 const cookie = "eyJmaXh0dXJlIjp0cnVlfQ.eyJzdWIiOiJ1aS10ZXN0In0.c3ludGhldGlj";
 const fullCookie = `Cookie: ignored=private; __session=${cookie}; __client_uat=123`;
@@ -85,8 +87,9 @@ for (const failure of ["rejected", "unknown", "lost response", "invalid name"] a
       harness.input("#sunoSessionValue", cookie);
       if (failure === "rejected") harness.failNextCommand("Save failed.");
       if (failure === "unknown") harness.failNextCommand("Save outcome unknown.", undefined, {
-        commandOutcome: "unknown", state: { ...state, audioServices: { revision: "2",
-          connections: [{ ...website, name: "Edited Suno" }, musicService] } },
+        commandOutcome: "unknown", state: { ...state, integrationConnections: { revision: "2",
+          connections: [integrationConnectionView({ ...website, name: "Edited Suno" }),
+            integrationConnectionView(musicService)] } },
       });
       if (failure === "lost response") harness.rejectNextCommandResponse("Save response lost.");
       harness.click("#connectSunoButton");
@@ -116,8 +119,8 @@ for (const change of ["provider", "removed", "newer identical save", "close"] as
       } else {
         const connections = change === "removed" ? [musicService] : [{ ...website, name: "Edited Suno",
           ...(change === "provider" ? { provider: "lalal" as const } : {}) }, musicService];
-        const next = { revision: "3", connections };
-        harness.setServerState({ ...state, audioServices: next });
+        const next = { revision: "3", connections: connections.map(integrationConnectionView) };
+        harness.setServerState({ ...state, integrationConnections: next });
         harness.emitServerEvent(broadcast(state, next));
         await harness.settle();
       }
@@ -205,8 +208,11 @@ test("draft connect clears the Cookie immediately, saves only configuration, the
     harness.click("#connectSunoButton");
     assert.equal(input.value, "");
     assert.doesNotMatch(JSON.stringify(harness.readBootstrappedClientStateReference()), /eyJmaXh0dXJl/);
-    assert.deepEqual(commandCalls(harness).map((call) => call.body), [{ kind: "save_global_settings", audioServices: {
-      action: "upsert", expectedRevision: "1", connection: { id, name: "My Suno", provider: "suno", enabled: false },
+    assert.deepEqual(commandCalls(harness).map((call) => call.body), [{ kind: "save_global_settings", integrationConnections: {
+      action: "upsert", expectedRevision: "1", connection: {
+        id, name: "My Suno", pluginId: builtInAudioPluginId("suno"), enabled: false,
+        configuration: {},
+      },
     } }]);
     harness.click("#connectSunoButton");
     harness.releaseHeldCommand();

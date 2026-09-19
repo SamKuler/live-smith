@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isAudioServiceCallbackUrl } from "../model/profile.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
+import { migrateAudioServiceConnection } from "../plugins/integration-connections.js";
 import { chatDialogStateForWire, serializeChatStateForHtml } from "./chat-state.js";
 import { createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioCommands, audioState, broadcast, job, musicService, service, sunoService, toggle, selectAudioService } from "./chat-dialog.audio-test-helpers.js";
+import { audioCommands, audioState, broadcast, integrationConnectionView, job,
+  musicService, service, sunoService, toggle, selectAudioService } from "./chat-dialog.audio-test-helpers.js";
 
 test("Add SunoAPI requires a user callback to enable, keeps other services, and round-trips redacted configuration", async () => {
   const state = audioState([service, musicService]);
@@ -48,10 +51,16 @@ test("Add SunoAPI requires a user callback to enable, keeps other services, and 
     assert.doesNotMatch(JSON.stringify(harness.readBootstrappedClientStateReference()), /fixture-suno-ui/);
     harness.releaseHeldCommand();
     await harness.settle();
-    const patch = audioCommands(harness)[0]!.audioServices;
+    const patch = audioCommands(harness)[0]!.integrationConnections;
     if (patch.action !== "upsert") throw new Error("Expected upsert");
-    assert.deepEqual(patch.connection, { id: patch.connection.id, name: "My SunoAPI", provider: "sunoapi",
-      enabled: true, apiKey: "fixture-suno-ui", callbackUrl: sunoService.callbackUrl });
+    assert.deepEqual(patch.connection, {
+      id: patch.connection.id,
+      name: "My SunoAPI",
+      pluginId: builtInAudioPluginId("sunoapi"),
+      enabled: true,
+      configuration: { callbackUrl: sunoService.callbackUrl },
+      secrets: { apiKey: "fixture-suno-ui" },
+    });
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
     selectAudioService(harness, musicService.id);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceCallbackField")!.hidden, true);
@@ -62,18 +71,29 @@ test("Add SunoAPI requires a user callback to enable, keeps other services, and 
     harness.input("#audioServiceModel", "V4_5ALL");
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const updated = audioCommands(harness).at(-1)!.audioServices;
+    const updated = audioCommands(harness).at(-1)!.integrationConnections;
     if (updated.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(updated.connection.callbackUrl, sunoService.callbackUrl);
-    assert.equal(updated.connection.modelId, "V4_5ALL");
-    assert.equal(Object.hasOwn(updated.connection, "apiKey"), false);
+    assert.equal(updated.connection.configuration.callbackUrl, sunoService.callbackUrl);
+    assert.equal(updated.connection.configuration.modelId, "V4_5ALL");
+    assert.equal(Object.hasOwn(updated.connection, "secrets"), false);
 
     const projection = audioState([service, musicService, sunoService]);
-    projection.settings.audioServices = { revision: "1", connections: [service, musicService, sunoService].map(
-      ({ apiKeyConfigured: _, ...fields }) => ({ ...fields, apiKey: "fixture-private-suno" })) };
+    projection.settings.integrationConnections = {
+      revision: "1",
+      connections: [service, musicService, sunoService].map((entry) =>
+        migrateAudioServiceConnection({
+          id: entry.id,
+          name: entry.name,
+          provider: entry.provider,
+          enabled: entry.enabled,
+          apiKey: "fixture-private-suno",
+          ...(entry.modelId === undefined ? {} : { modelId: entry.modelId }),
+          ...(entry.callbackUrl === undefined ? {} : { callbackUrl: entry.callbackUrl }),
+        })),
+    };
     const wire = chatDialogStateForWire(projection);
-    assert.equal(wire.audioServices!.connections[2]!.callbackUrl, sunoService.callbackUrl);
-    assert.equal(Object.hasOwn(wire.settings, "audioServices"), false);
+    assert.equal(wire.integrationConnections!.connections[2]!.configuration.callbackUrl, sunoService.callbackUrl);
+    assert.equal(Object.hasOwn(wire.settings, "integrationConnections"), false);
     assert.doesNotMatch(serializeChatStateForHtml(projection), /fixture-private-suno|fixture-suno-ui/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
@@ -90,15 +110,21 @@ test("disabled SunoAPI may omit callback; provider changes clear callback, model
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceCallbackField")!.hidden, true);
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const switched = audioCommands(harness)[0]!.audioServices;
+    const switched = audioCommands(harness)[0]!.integrationConnections;
     if (switched.action !== "upsert") throw new Error("Expected upsert");
-    assert.deepEqual(switched.connection, { id: sunoService.id, name: sunoService.name, provider: "lalal", enabled: false });
+    assert.deepEqual(switched.connection, {
+      id: sunoService.id,
+      name: sunoService.name,
+      pluginId: builtInAudioPluginId("lalal"),
+      enabled: false,
+      configuration: {},
+    });
     harness.select("#audioServiceProvider", "sunoapi");
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const disabled = audioCommands(harness).at(-1)!.audioServices;
+    const disabled = audioCommands(harness).at(-1)!.integrationConnections;
     if (disabled.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(Object.hasOwn(disabled.connection, "callbackUrl"), false);
+    assert.equal(Object.hasOwn(disabled.connection.configuration, "callbackUrl"), false);
     assert.equal(disabled.connection.enabled, false);
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "No API key configured");
     harness.input("#audioServiceCallback", sunoService.callbackUrl!);
@@ -131,7 +157,9 @@ test("callback input and wire validation reject only malformed or credential-bea
       assert.equal(audioCommands(harness).length, 0, callbackUrl);
       assert.equal(harness.document.activeElement?.id, "audioServiceCallback");
       assert.doesNotMatch(harness.document.querySelector("#status")!.textContent!, /fixture-secret/);
-      harness.emitServerEvent(broadcast(state, { revision: "2", connections: [{ ...sunoService, callbackUrl, name: "Rejected" }] }));
+      harness.emitServerEvent(broadcast(state, { revision: "2", connections: [
+        integrationConnectionView({ ...sunoService, callbackUrl, name: "Rejected" }),
+      ] }));
       await harness.settle();
       assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, sunoService.name);
       assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceConflict")!.hidden, true);
@@ -157,8 +185,9 @@ test("unknown SunoAPI save cannot consume its draft based on matching visible fi
     harness.input("#audioServiceCallback", callbackUrl);
     harness.input("#audioServiceApiKey", "fixture-unknown-suno");
     harness.failNextCommand("Settings save outcome unknown.", undefined, { commandOutcome: "unknown", state: {
-      ...state, audioServices: { revision: "2", connections: [
-        { ...sunoService, name: "Keep uncertain SunoAPI", callbackUrl }, musicService,
+      ...state, integrationConnections: { revision: "2", connections: [
+        integrationConnectionView({ ...sunoService, name: "Keep uncertain SunoAPI", callbackUrl }),
+        integrationConnectionView(musicService),
       ] },
     } });
     harness.click("#saveAudioServiceButton");
@@ -177,6 +206,7 @@ test("unknown SunoAPI save cannot consume its draft based on matching visible fi
 test("audio wire projections reject callback and model fields without their provider consumer", async () => {
   const state = audioState([service, musicService]);
   const harness = await createDialogHarness(state);
+  const { callbackUrl: _callbackUrl, ...sunoWithoutCallback } = sunoService;
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Read the set");
@@ -184,10 +214,11 @@ test("audio wire projections reject callback and model fields without their prov
     await harness.settle();
     for (const invalid of [{ ...service, modelId: "unused" }, { ...musicService, modelId: "m".repeat(129) },
       ...[service, musicService].map((value) => ({ ...value, callbackUrl: sunoService.callbackUrl })),
-      { ...sunoService, callbackUrl: undefined }, { ...sunoService, callbackUrl: "https://127.1/callback#fragment" }]) {
-      harness.emitServerEvent(broadcast(state, { revision: "2", connections: [invalid] }));
+      sunoWithoutCallback, { ...sunoService, callbackUrl: "https://127.1/callback#fragment" }]) {
+      const invalidView = integrationConnectionView(invalid);
+      harness.emitServerEvent(broadcast(state, { revision: "2", connections: [invalidView] }));
       harness.emitServerEvent({ type: "done", sendId: harness.sendIds[0], sessionId: state.activeSessionId,
-        state: { ...state, audioServices: { revision: "2", connections: [invalid] } } });
+        state: { ...state, integrationConnections: { revision: "2", connections: [invalidView] } } });
       await harness.settle();
       assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, service.name);
       assert.match(harness.document.querySelector("#sendButton")!.textContent!, /Stop/);
@@ -207,9 +238,9 @@ test("user-selected callback URLs with local hosts, ports and queries share stor
       harness.input("#audioServiceCallback", callbackUrl);
       harness.click("#saveAudioServiceButton");
       await harness.settle();
-      const patch = audioCommands(harness).at(-1)!.audioServices;
+      const patch = audioCommands(harness).at(-1)!.integrationConnections;
       if (patch.action !== "upsert") throw new Error("Expected upsert");
-      assert.equal(patch.connection.callbackUrl, callbackUrl);
+      assert.equal(patch.connection.configuration.callbackUrl, callbackUrl);
       assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
     }
     assert.deepEqual(harness.errors, []);

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { URL } from "node:url";
 import { commandCalls, createDialogHarness, pendingAudio, pendingImage } from "./chat-dialog.test-harness.js";
-import { audioState, service, musicService, sunoService, job, broadcast, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
+import { audioState, service, musicService, sunoService, job, broadcast,
+  integrationConnectionView, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
 
 test("generated music, alternatives and sound effects show their bound service, operation and local players", async () => {
   const state = audioState([service, musicService, sunoService]);
@@ -26,11 +27,17 @@ test("generated music, alternatives and sound effects show their bound service, 
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Sound effect generation/);
     assert.match(harness.document.querySelector('[data-audio-asset-id="generated-effect"]')!.getAttribute("aria-label")!, /Sound effect.*Rain/);
     assert.equal(harness.document.querySelector("[data-resume-audio-job]"), null);
-    harness.emitServerEvent(broadcast(state, { connections: [service, musicService, { ...sunoService, name: "Renamed studio" }], revision: "2" }));
+    harness.emitServerEvent(broadcast(state, { connections: [
+      service,
+      musicService,
+      { ...sunoService, name: "Renamed studio" },
+    ].map(integrationConnectionView), revision: "2" }));
     await harness.settle();
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Renamed studio/);
     assert.deepEqual(Array.from(harness.document.querySelectorAll("#audioJobs audio")), players);
-    harness.emitServerEvent(broadcast(state, { connections: [service], revision: "3" }));
+    harness.emitServerEvent(broadcast(state, {
+      connections: [integrationConnectionView(service)], revision: "3",
+    }));
     await harness.settle();
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /audio-sunoapi · Suno via SunoAPI.org/);
     assert.deepEqual(Array.from(harness.document.querySelectorAll("#audioJobs audio")), players);
@@ -173,8 +180,8 @@ test("Chinese audio settings and result controls render through the real dialog"
   state.audioJobs = [job(state.activeSessionId)];
   const harness = await createDialogHarness(state);
   try {
-    assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "音频工具");
-    assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存音频设置");
+    assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "连接");
+    assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存连接");
     assert.equal(harness.document.querySelector("[data-resume-audio-job]")?.textContent, "恢复音频任务");
     assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /分钟数/);
     assert.deepEqual(harness.errors, []);
@@ -186,7 +193,11 @@ test("audio-processing admission works with text-only models but still requires 
     [true, true, true, true], [false, true, true, false], [false, false, true, false], [true, true, false, false],
   ]) {
     const state = audioState();
-    state.audioServices = { connections: [{ ...service, enabled: enabled!, apiKeyConfigured: configured! }], revision: "1" };
+    state.integrationConnections = { connections: [integrationConnectionView({
+      ...service,
+      enabled: enabled!,
+      apiKeyConfigured: configured!,
+    })], revision: "1" };
     state.runtimeProfile!.capabilities.tools = tools!;
     state.runtimeProfile!.capabilities.inputs.audio = false;
     state.runtimeProfile!.inputCapabilityEvidence.audio = "unsupported";
@@ -230,7 +241,7 @@ test("malformed audio jobs and credential-bearing views cannot replace active st
     await harness.settle();
     const validJob = job(state.activeSessionId);
     for (const patch of [
-      { audioServices: { connections: [{ ...service, apiKey: "fixture-leak" }], revision: "2" } },
+      { integrationConnections: { connections: [{ ...service, apiKey: "fixture-leak" }], revision: "2" } },
       { audioJobs: [{ ...validJob, remoteTaskId: "remote-private" }] },
       ...["provider", "serviceId", "operation"].map((key) => ({ audioJobs: [{ ...validJob, [key]: undefined }] })),
       { audioJobs: [{ ...validJob, provider: "elevenlabs" }] },

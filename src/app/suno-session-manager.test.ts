@@ -8,14 +8,17 @@ import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, w
 import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions, SunoSessionStorageError } from "../storage/suno-sessions.js";
 import { persistRotatedSunoSession, SunoSessionManager } from "./suno-session-manager.js";
+import { integrationConnectionFixture } from "./integration-connection-test-helpers.js";
 
 const token = "__client=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGlj";
 const replacement = "__client=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZXBsYWNlbWVudCJ9.c3ludGhldGlj";
-const connection = { id: "suno-one", name: "Suno", provider: "suno" as const, enabled: false, apiKey: "" };
+const connection = integrationConnectionFixture({
+  id: "suno-one", name: "Suno", provider: "suno", enabled: false, apiKey: "",
+});
 async function harness(t: TestContext) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-suno-session-manager-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveGlobalSettings(directory, { integrationConnections: { action: "upsert", expectedRevision: "0", connection } });
   let identity: SunoSessionIdentity = { accountId: "user_fixture", accountName: "Fixture" };
   let failure: Error | undefined;
   const calls: string[] = [];
@@ -62,8 +65,13 @@ test("verified Cookie rotation persists atomically without overwriting a concurr
 
 test("import and refresh require the exact saved Suno owner before contacting the verifier", async (t) => {
   const h = await harness(t);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1",
-    connection: { ...connection, id: "other", name: "Other", provider: "elevenlabs" } } });
+  await saveGlobalSettings(h.directory, { integrationConnections: {
+    action: "upsert",
+    expectedRevision: "1",
+    connection: integrationConnectionFixture({
+      id: "other", name: "Other", provider: "elevenlabs", enabled: false, apiKey: "",
+    }),
+  } });
   for (const id of ["missing", "other"]) {
     await assert.rejects(h.manager.importSession(id, token, h.signal), /Save this Suno/);
     await assert.rejects(h.manager.refresh(id, h.signal), /Save this Suno/);
@@ -136,7 +144,9 @@ test("late verification cannot recreate a cleared credential or claim a removed 
   await assert.rejects(manager.importSession(connection.id, replacement, h.signal));
   assert.equal(await new SunoSessions(h.directory).load(connection.id), undefined);
   const removed = new SunoSessionManager(h.directory, async () => {
-    await saveGlobalSettings(h.directory, { audioServices: { action: "remove", serviceId: connection.id, expectedRevision: "1" } });
+    await saveGlobalSettings(h.directory, { integrationConnections: {
+      action: "remove", connectionId: connection.id, expectedRevision: "1",
+    } });
     return { accountId: "user_other" };
   });
   await assert.rejects(removed.importSession(connection.id, token, h.signal), /Save this Suno/);

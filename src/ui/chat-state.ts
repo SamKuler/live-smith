@@ -1,5 +1,6 @@
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
-import type { AudioServicesView, AudioJobView } from "../audio-services/contracts.js";
+import type { AudioJobView } from "../audio-services/contracts.js";
+import type { IntegrationConnectionsView } from "../plugins/integration-connections.js";
 import type { SunoAccountView } from "../audio-services/suno-session-contracts.js";
 import type { LiveContextPresentation } from "../live/context.js";
 import type { ConversationScope } from "../model/contracts.js";
@@ -47,7 +48,7 @@ export type ChatLiveContext =
 export interface SunoModelCatalogView {
   serviceId: string;
   accountId: string;
-  audioServicesRevision: string;
+  integrationConnectionsRevision: string;
   models: Array<{ id: string; name: string; canUse?: boolean; isDefault?: boolean }>;
 }
 
@@ -80,7 +81,7 @@ export interface ChatDialogState {
   /** SHA-256 of the normalized active Saved Profile, or null with no active Profile. */
   activeProfileRevision: string | null;
   settings: AgentSettings;
-  audioServices?: AudioServicesView;
+  integrationConnections?: IntegrationConnectionsView;
   audioJobs?: AudioJobView[];
   /** Imported website-session evidence, not a generation capability or credential. */
   sunoAccounts?: SunoAccountView[];
@@ -132,14 +133,14 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
   state: State,
 ): State {
   const settings = state.settings && { ...state.settings };
-  if (settings) delete settings.audioServices;
+  if (settings) delete settings.integrationConnections;
   return {
     ...state,
     ...(settings ? { settings } : {}),
     ...(state.sunoModelCatalog === undefined ? {} : { sunoModelCatalog: {
       serviceId: state.sunoModelCatalog.serviceId,
       accountId: state.sunoModelCatalog.accountId,
-      audioServicesRevision: state.sunoModelCatalog.audioServicesRevision,
+      integrationConnectionsRevision: state.sunoModelCatalog.integrationConnectionsRevision,
       models: state.sunoModelCatalog.models.slice(0, 100).map(({ id, name, canUse, isDefault }) => ({
         id, name,
         ...(typeof canUse === "boolean" ? { canUse } : {}),
@@ -151,11 +152,15 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
       ...((status === "signed_in" || status === "saved") && accountId ? { accountId } : {}),
       ...((status === "signed_in" || status === "saved") && accountName ? { accountName } : {}),
     })) }),
-    ...(state.audioServices === undefined ? {} : { audioServices: {
-      revision: state.audioServices.revision,
-      connections: state.audioServices.connections.map(({ id, name, provider, enabled, apiKeyConfigured, modelId, callbackUrl }) => ({
-        id, name, provider, enabled, apiKeyConfigured, ...(modelId === undefined ? {} : { modelId }),
-        ...(callbackUrl === undefined ? {} : { callbackUrl }),
+    ...(state.integrationConnections === undefined ? {} : { integrationConnections: {
+      revision: state.integrationConnections.revision,
+      connections: state.integrationConnections.connections.map((connection) => ({
+        id: connection.id,
+        name: connection.name,
+        pluginId: connection.pluginId,
+        enabled: connection.enabled,
+        configuration: { ...connection.configuration },
+        configuredSecrets: [...connection.configuredSecrets],
       })),
     } }),
     ...(Array.isArray(state.events)

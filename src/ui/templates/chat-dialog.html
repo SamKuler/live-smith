@@ -510,11 +510,11 @@
               </section>
               <section id="audioSettingsSection" class="settings-section" aria-labelledby="audioSettingsHeading">
                 <div class="audio-section-heading">
-                  <h3 id="audioSettingsHeading" data-i18n="Audio tools">Audio tools</h3>
-                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add service">Add service</button>
+                  <h3 id="audioSettingsHeading" data-i18n="Connections">Connections</h3>
+                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add connection">Add connection</button>
                 </div>
-                <div id="audioServiceSelector" class="audio-service-list" role="group" aria-label="Audio connections" data-i18n-aria-label="Audio connections"></div>
-                <p id="audioServiceEmpty" class="field-hint" data-i18n="Add a named connection for audio tools or a Suno Cookie. Each connection keeps its own local setup.">Add a named connection for audio tools or a Suno Cookie. Each connection keeps its own local setup.</p>
+                <div id="audioServiceSelector" class="audio-service-list" role="group" aria-label="Connections" data-i18n-aria-label="Connections"></div>
+                <p id="audioServiceEmpty" class="field-hint" data-i18n="Add a named connection for a Plugin. Each connection keeps its own local setup and credentials.">Add a named connection for a Plugin. Each connection keeps its own local setup and credentials.</p>
                 <details id="audioServiceFields" class="audio-connection-editor settings-disclosure" hidden>
                   <summary id="audioServiceEditorSummary" data-i18n="Connection settings">Connection settings</summary>
                   <div class="audio-editor-body">
@@ -608,13 +608,13 @@
                       <button id="openSunoPlatformButton" class="secondary" type="button" data-i18n="Open Suno Platform">Open Suno Platform</button>
                     </div>
                   </section>
-                  <p id="audioServiceConflict" class="field-hint" role="status" hidden data-i18n="Audio connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.">Audio connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.</p>
+                  <p id="audioServiceConflict" class="field-hint" role="status" hidden data-i18n="Connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.">Connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.</p>
                   <details id="audioServiceMaintenance" class="settings-disclosure audio-settings-details" hidden>
                     <summary data-i18n="Connection maintenance">Connection maintenance</summary>
                     <p id="audioServiceMaintenanceHint" class="field-hint"></p>
                     <div class="audio-settings-actions settings-peer-actions">
                       <button id="clearAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.saveAudioServiceSettings(true)" data-i18n="Clear key" hidden disabled>Clear key</button>
-                      <button id="removeAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.removeAudioService()" data-i18n="Remove service" disabled>Remove service</button>
+                      <button id="removeAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.removeAudioService()" data-i18n="Remove connection" disabled>Remove connection</button>
                     </div>
                   </details>
                   <label id="audioServiceEnabledField" class="context-usage-setting settings-switch" for="audioServiceEnabled">
@@ -626,11 +626,11 @@
                 </details>
                 <div class="settings-actions audio-commit-actions" role="group" aria-labelledby="audioConnectionActionsLabel">
                   <span class="settings-actions-status">
-                    <span id="audioConnectionActionsLabel" class="settings-actions-owner" data-i18n="Audio connection">Audio connection</span>
+                    <span id="audioConnectionActionsLabel" class="settings-actions-owner" data-i18n="Connection">Connection</span>
                     <span id="audioDraftStatus" class="draft-status" role="status" aria-live="polite"></span>
                   </span>
                   <button id="reloadAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.reloadAudioService()" data-i18n="Reload connection" hidden>Reload connection</button>
-                  <button id="saveAudioServiceButton" class="primary" type="button" onclick="LiveSmithUI.saveAudioServiceSettings()" data-i18n="Save audio settings" disabled>Save audio settings</button>
+                  <button id="saveAudioServiceButton" class="primary" type="button" onclick="LiveSmithUI.saveAudioServiceSettings()" data-i18n="Save connection">Save connection</button>
                 </div>
               </section>
               <section id="pluginManager" class="settings-section plugin-manager" aria-labelledby="pluginsHeading" aria-busy="false">

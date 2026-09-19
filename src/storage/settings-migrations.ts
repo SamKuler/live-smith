@@ -1,4 +1,12 @@
-import { LEGACY_AUDIO_SERVICE_ID } from "../audio-services/contracts.js";
+import {
+  LEGACY_AUDIO_SERVICE_ID,
+  type AudioServicesSettings,
+} from "../audio-services/contracts.js";
+import {
+  migrateAudioServicesSettings,
+  normalizeIntegrationConnectionsSettings,
+  normalizeLegacyAudioServicesSettings,
+} from "../plugins/integration-connections.js";
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   isApprovalMode,
@@ -10,7 +18,6 @@ import {
   isDefaultFollowUpBehaviorRevision,
   isNetworkProxyRevision,
   normalizeNetworkProxySettings,
-  normalizeAudioServicesSettings,
   normalizeCustomInstructions,
   ProfileValidationError,
   validateDraftProfileForSave,
@@ -18,14 +25,17 @@ import {
   type AnthropicDirectApiConnection,
   type ApprovalMode,
   type ContextUsageVisibilityRevision,
+  type CustomInstructionsRevision,
   type DefaultFollowUpBehavior,
   type DefaultFollowUpBehaviorRevision,
   type GenerationParameters,
   type ModelAdvancedSettings,
   type ModelConnection,
   type NetworkProxyRevision,
+  type NetworkProxySettings,
   type OpenAIDirectApiConnection,
   type SavedProfile,
+  type UiLanguage,
 } from "../model/profile.js";
 
 export { CURRENT_AGENT_SETTINGS_SCHEMA_VERSION } from "../model/profile.js";
@@ -107,6 +117,23 @@ interface AgentSettingsV7 extends SharedAgentSettings<SavedProfile> {
   contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
 }
 
+/** Frozen schema-v8 shape. Audio providers had not yet migrated to Plugin-owned Connections. */
+interface AgentSettingsV8 extends SharedAgentSettings<SavedProfile> {
+  schemaVersion: 8;
+  approvalMode: ApprovalMode;
+  defaultFollowUpBehavior: DefaultFollowUpBehavior;
+  defaultFollowUpBehaviorRevision: DefaultFollowUpBehaviorRevision;
+  showContextUsage: boolean;
+  contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
+  networkProxy: NetworkProxySettings;
+  networkProxyRevision: NetworkProxyRevision;
+  uiLanguage: UiLanguage;
+  uiLanguageRevision: string;
+  customInstructions: string;
+  customInstructionsRevision: CustomInstructionsRevision;
+  audioServices?: AudioServicesSettings;
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
@@ -117,6 +144,7 @@ const migrations = new Map<number, SettingsMigration>([
   [5, migrateSettingsV5ToV6],
   [6, migrateSettingsV6ToV7],
   [7, migrateSettingsV7ToV8],
+  [8, migrateSettingsV8ToV9],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -135,7 +163,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV8(migrated);
+  return validateSettingsV9(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -236,7 +264,7 @@ function migrateSettingsV6ToV7(value: unknown): AgentSettingsV7 {
   };
 }
 
-function migrateSettingsV7ToV8(value: unknown): AgentSettings {
+function migrateSettingsV7ToV8(value: unknown): AgentSettingsV8 {
   const settings = validateSettingsV7(value);
   return {
     ...settings,
@@ -247,6 +275,18 @@ function migrateSettingsV7ToV8(value: unknown): AgentSettings {
     uiLanguageRevision: "0",
     customInstructions: "",
     customInstructionsRevision: "0",
+  };
+}
+
+function migrateSettingsV8ToV9(value: unknown): AgentSettings {
+  const settings = validateSettingsV8(value);
+  const { audioServices, ...shared } = settings;
+  return {
+    ...shared,
+    schemaVersion: 9,
+    ...(audioServices === undefined ? {} : {
+      integrationConnections: migrateAudioServicesSettings(audioServices),
+    }),
   };
 }
 
@@ -462,7 +502,7 @@ function validateSettingsV7(value: unknown): AgentSettingsV7 {
   return { ...validated, schemaVersion: 7 };
 }
 
-function validateSettingsV8(value: unknown): AgentSettings {
+function validateSettingsV8(value: unknown): AgentSettingsV8 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 8) throw unsupportedSchemaVersion();
   assertOnlyKeys(
@@ -526,7 +566,46 @@ function validateSettingsV8(value: unknown): AgentSettings {
     ...(audioServices === undefined && audioService === undefined ? {} : {
       audioServices: audioServices === undefined
         ? migrateLegacyAudioService(audioService)
-        : normalizeAudioServicesSettings(audioServices),
+        : normalizeLegacyAudioServicesSettings(audioServices),
+    }),
+  };
+}
+
+function validateSettingsV9(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 9) throw unsupportedSchemaVersion();
+  assertOnlyKeys(
+    record,
+    [
+      "schemaVersion",
+      "activeProfileId",
+      "profiles",
+      "approvalMode",
+      "defaultFollowUpBehavior",
+      "defaultFollowUpBehaviorRevision",
+      "showContextUsage",
+      "contextUsageVisibilityRevision",
+      "networkProxy",
+      "networkProxyRevision",
+      "uiLanguage",
+      "uiLanguageRevision",
+      "integrationConnections",
+      "customInstructions",
+      "customInstructionsRevision",
+    ],
+    "settings",
+  );
+  const {
+    integrationConnections,
+    ...settingsV8
+  } = record;
+  const validated = validateSettingsV8({ ...settingsV8, schemaVersion: 8 });
+  const { audioServices: _legacyAudioServices, ...shared } = validated;
+  return {
+    ...shared,
+    schemaVersion: 9,
+    ...(integrationConnections === undefined ? {} : {
+      integrationConnections: normalizeIntegrationConnectionsSettings(integrationConnections),
     }),
   };
 }
@@ -538,7 +617,7 @@ function migrateLegacyAudioService(value: unknown) {
   if (record.provider !== "lalal") {
     throw new ProfileValidationError("audioServices", "The legacy audio provider must be LALAL.AI.");
   }
-  return normalizeAudioServicesSettings({ revision: record.revision, connections: [{
+  return normalizeLegacyAudioServicesSettings({ revision: record.revision, connections: [{
     id: LEGACY_AUDIO_SERVICE_ID, name: "LALAL.AI", provider: record.provider,
     enabled: record.enabled, apiKey: record.apiKey,
   }] });

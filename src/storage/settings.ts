@@ -1,7 +1,12 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import type { AudioServicesSettings, AudioServicesView, AudioServicesSettingsPatch } from "../audio-services/contracts.js";
+import {
+  normalizeIntegrationConnection,
+  normalizeIntegrationConnectionsSettings,
+  type IntegrationConnectionsSettingsPatch,
+} from "../plugins/integration-connections.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 
 import {
   activeSavedProfile,
@@ -16,8 +21,6 @@ import {
   type UiLanguage,
   isDefaultFollowUpBehavior,
   normalizeNetworkProxySettings,
-  normalizeAudioServicesSettings,
-  normalizeAudioServiceConnection,
   normalizeCustomInstructions,
   isProfileId,
   isNetworkProxyRevision,
@@ -76,7 +79,7 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       showContextUsage?: never;
       networkProxy?: never;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions?: never;
     }
   | {
@@ -84,7 +87,7 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
       networkProxy?: never;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions?: never;
     }
   | {
@@ -92,7 +95,7 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy: NetworkProxySettings;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions?: never;
     }
   | {
@@ -100,7 +103,7 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions?: never;
     }
   | {
@@ -108,7 +111,7 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
-      audioServices: AudioServicesSettingsPatch;
+      integrationConnections: IntegrationConnectionsSettingsPatch;
       customInstructions?: never;
     }
   | {
@@ -116,46 +119,47 @@ export type GlobalSettingsPatch =
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
-      audioServices?: never;
+      integrationConnections?: never;
       customInstructions: string;
     };
 
-export type { AudioServicesSettingsPatch } from "../audio-services/contracts.js";
+export type { IntegrationConnectionsSettingsPatch } from "../plugins/integration-connections.js";
 
-export function normalizeAudioServicesSettingsPatch(value: unknown): AudioServicesSettingsPatch {
+export function normalizeIntegrationConnectionsSettingsPatch(
+  value: unknown,
+): IntegrationConnectionsSettingsPatch {
   const fail = (): never => {
-    throw new ProfileValidationError("audioServices", "Audio settings require an upsert or remove action, a valid revision, and only the action's fields.");
+    throw new ProfileValidationError("integrationConnections", "Integration Connection settings require an upsert or remove action, a valid revision, and only the action's fields.");
   };
   if (typeof value !== "object" || value === null || Array.isArray(value)) return fail();
   const record = value as Record<string, unknown>;
   if (!isNetworkProxyRevision(record.expectedRevision)) return fail();
   if (record.action === "remove") {
-    if (Object.keys(record).some((key) => !["action", "expectedRevision", "serviceId"].includes(key)) ||
-      !isProfileId(record.serviceId)) return fail();
-    return { action: "remove", expectedRevision: record.expectedRevision, serviceId: record.serviceId };
+    if (Object.keys(record).some((key) => !["action", "expectedRevision", "connectionId"].includes(key)) ||
+      !isProfileId(record.connectionId)) return fail();
+    return { action: "remove", expectedRevision: record.expectedRevision, connectionId: record.connectionId };
   }
   if (record.action !== "upsert" ||
     Object.keys(record).some((key) => !["action", "expectedRevision", "connection"].includes(key)) ||
     typeof record.connection !== "object" || record.connection === null || Array.isArray(record.connection)) return fail();
   const input = record.connection as Record<string, unknown>;
   // A write-only omitted key is resolved under the transaction, never from another connection.
-  const connection = normalizeAudioServiceConnection({
-    ...input, apiKey: Object.hasOwn(input, "apiKey") ? input.apiKey : "",
+  const connection = normalizeIntegrationConnection({
+    ...input,
+    secrets: Object.hasOwn(input, "secrets") ? input.secrets : {},
     enabled: false,
   });
   if (typeof input.enabled !== "boolean") return fail();
-  const { apiKey, ...fields } = connection;
+  const { secrets, ...fields } = connection;
   return { action: "upsert", expectedRevision: record.expectedRevision,
-    connection: { ...fields, enabled: input.enabled, ...(Object.hasOwn(input, "apiKey") ? { apiKey } : {}) } };
+    connection: {
+      ...fields,
+      enabled: input.enabled,
+      ...(Object.hasOwn(input, "secrets") ? { secrets } : {}),
+    } };
 }
 
-export function audioServicesView(settings: AudioServicesSettings | undefined): AudioServicesView {
-  return { connections: (settings?.connections ?? []).map(({ id, name, provider, enabled, apiKey, modelId, callbackUrl }) => ({
-    id, name, provider, enabled, apiKeyConfigured: Boolean(apiKey),
-    ...(modelId === undefined ? {} : { modelId }),
-    ...(callbackUrl === undefined ? {} : { callbackUrl }),
-  })), revision: settings?.revision ?? "0" };
-}
+export { integrationConnectionsView } from "../plugins/integration-connections.js";
 
 export function savedProfileRevision(profile: SavedProfile): string {
   return createHash("sha256").update(JSON.stringify(profile), "utf8").digest("hex");
@@ -294,7 +298,7 @@ export async function saveGlobalSettings(
     "showContextUsage",
   );
   const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
-  const hasAudioService = Object.prototype.hasOwnProperty.call(input, "audioServices");
+  const hasIntegrationConnections = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
   const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
     input,
     "networkProxy",
@@ -306,7 +310,7 @@ export async function saveGlobalSettings(
   if (
     Number(hasFollowUpBehavior) +
       Number(hasContextUsage) +
-      Number(hasNetworkProxy) + Number(hasUiLanguage) + Number(hasAudioService) +
+      Number(hasNetworkProxy) + Number(hasUiLanguage) + Number(hasIntegrationConnections) +
       Number(hasCustomInstructions) !== 1 ||
     Object.keys(input).length !== 1
   ) {
@@ -330,46 +334,52 @@ export async function saveGlobalSettings(
   const customInstructions = hasCustomInstructions
     ? normalizeCustomInstructions(input.customInstructions)
     : undefined;
-  const audioPatch = hasAudioService ? normalizeAudioServicesSettingsPatch(input.audioServices) : undefined;
-  if (audioPatch && !storageDirectory) {
-    throw new ProfileValidationError("audioServices", "Audio tools require persistent private storage.");
+  const connectionPatch = hasIntegrationConnections
+    ? normalizeIntegrationConnectionsSettingsPatch(input.integrationConnections)
+    : undefined;
+  if (connectionPatch && !storageDirectory) {
+    throw new ProfileValidationError("integrationConnections", "Integration Connections require persistent private storage.");
   }
   return withStorageTransaction(storageDirectory, async (transaction) => {
     const settings = await loadAgentSettingsUnlocked(storageDirectory);
-    if (audioPatch) {
-      const revision = settings.audioServices?.revision ?? "0";
-      if (audioPatch.expectedRevision !== revision) {
-        throw new ProfileValidationError("audioServices", "Audio tools settings changed in another window. Reload before saving.");
+    if (connectionPatch) {
+      const revision = settings.integrationConnections?.revision ?? "0";
+      if (connectionPatch.expectedRevision !== revision) {
+        throw new ProfileValidationError("integrationConnections", "Integration Connection settings changed in another window. Reload before saving.");
       }
-      const connections = [...(settings.audioServices?.connections ?? [])];
-      const serviceId = audioPatch.action === "remove" ? audioPatch.serviceId : audioPatch.connection.id;
-      const index = connections.findIndex((connection) => connection.id === serviceId);
-      if (audioPatch.action === "remove") {
-        if (index < 0) throw new ProfileValidationError("audioServices", "This audio connection no longer exists.");
+      const connections = [...(settings.integrationConnections?.connections ?? [])];
+      const connectionId = connectionPatch.action === "remove"
+        ? connectionPatch.connectionId
+        : connectionPatch.connection.id;
+      const index = connections.findIndex((connection) => connection.id === connectionId);
+      if (connectionPatch.action === "remove") {
+        if (index < 0) throw new ProfileValidationError("integrationConnections", "This Integration Connection no longer exists.");
         connections.splice(index, 1);
       } else {
         const previous = connections[index];
-        const replacement = audioPatch.connection;
-        const connection = normalizeAudioServiceConnection({
+        const replacement = connectionPatch.connection;
+        const connection = normalizeIntegrationConnection({
           ...replacement,
-          apiKey: replacement.apiKey ?? (previous?.provider === replacement.provider ? previous.apiKey : ""),
+          secrets: replacement.secrets ??
+            (previous?.pluginId === replacement.pluginId ? previous.secrets : {}),
         });
         if (index < 0) connections.push(connection);
         else connections[index] = connection;
       }
-      const audioServices = normalizeAudioServicesSettings({ connections,
+      const integrationConnections = normalizeIntegrationConnectionsSettings({ connections,
         revision: incrementNetworkProxyRevision(revision) });
-      const previous = settings.audioServices?.connections.find((connection) => connection.id === serviceId);
-      const next = audioServices.connections.find((connection) => connection.id === serviceId);
-      const clearedSession = previous?.provider === "suno" && next?.provider !== "suno"
+      const previous = settings.integrationConnections?.connections.find((connection) => connection.id === connectionId);
+      const next = integrationConnections.connections.find((connection) => connection.id === connectionId);
+      const sunoPluginId = builtInAudioPluginId("suno");
+      const clearedSession = previous?.pluginId === sunoPluginId && next?.pluginId !== sunoPluginId
         ? await new SunoSessions(storageDirectory).clear(previous.id, transaction) : false;
       try {
-        return await persistSettings(storageDirectory, { ...settings, audioServices });
+        return await persistSettings(storageDirectory, { ...settings, integrationConnections });
       } catch (error) {
         // The credential may already be gone even when the settings rename failed.
         // Preserve the compound command's partial outcome for authoritative readback.
         if (clearedSession) throw new StorageCommitOutcomeUnknownError(
-          new Error("Suno Cookie was removed before audio connection settings could be saved."));
+          new Error("Suno Cookie was removed before Integration Connection settings could be saved."));
         throw error;
       }
     }

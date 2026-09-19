@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioState, service, musicService, sunoService, selectAudioService, selectedAudioService, audioCommands, job, broadcast } from "./chat-dialog.audio-test-helpers.js";
+import { audioState, service, musicService, sunoService, selectAudioService,
+  selectedAudioService, audioCommands, integrationConnectionView, job,
+  broadcast } from "./chat-dialog.audio-test-helpers.js";
 
 test("audio connections are visible with status, and editing expands only on explicit selection", async () => {
   const h = await createDialogHarness(audioState([service, musicService, { ...sunoService, enabled: false }]));
@@ -101,10 +103,10 @@ test("reopening the selected connection preserves its unsaved key until Save", a
     assert.equal(h.document.querySelector<HTMLDetailsElement>("#audioServiceFields")!.open, true);
     assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "synthetic-replacement-key");
     h.click("#saveAudioServiceButton"); await h.settle();
-    const command = audioCommands(h).at(-1)!.audioServices;
+    const command = audioCommands(h).at(-1)!.integrationConnections;
     assert.equal(command.action, "upsert");
     if (command.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(command.connection.apiKey, "synthetic-replacement-key");
+    assert.equal(command.connection.secrets?.apiKey, "synthetic-replacement-key");
   } finally { h.close(); }
 });
 
@@ -122,7 +124,7 @@ test("clearing or removing a saved connection requires confirmation and cancelli
     }
     h.click("#removeAudioServiceButton");
     await h.acceptAppConfirmation(); await h.settle();
-    assert.equal(audioCommands(h).at(-1)?.audioServices.action, "remove");
+    assert.equal(audioCommands(h).at(-1)?.integrationConnections.action, "remove");
     const editor = h.document.querySelector<HTMLDetailsElement>(
       "#audioServiceFields",
     )!;
@@ -176,10 +178,12 @@ test("confirmation translates live and cannot delete a connection changed by ano
   try {
     selectAudioService(h, service.id);
     h.click("#removeAudioServiceButton");
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
     await h.settle();
     assert.match(h.document.querySelector("#appConfirmationTitle")!.textContent!, /移除/);
-    const changed = { revision: "2", connections: [{ ...service, name: "Changed in another window" }] };
+    const changed = { revision: "2", connections: [
+      integrationConnectionView({ ...service, name: "Changed in another window" }),
+    ] };
     h.emitServerEvent({ ...broadcast(state, changed), commandId: "peer-audio-change", uiLanguage: "zh-CN", uiLanguageRevision: "1" });
     await h.acceptAppConfirmation(); await h.settle();
     assert.equal(audioCommands(h).length, 0);

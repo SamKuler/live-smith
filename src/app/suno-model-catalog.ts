@@ -4,6 +4,7 @@ import { throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
 import { withStorageTransaction } from "../storage/persistence.js";
 import { loadAgentSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
+import { isIntegrationConnectionForProvider } from "../plugins/integration-connections.js";
 import type { SunoModelCatalogView } from "../ui/chat-state.js";
 import { ChatBridgeConflictError } from "./chat-bridge.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
@@ -57,7 +58,7 @@ export class SunoModelCatalog {
     }
   }
 
-  async view(audioServicesRevision: string | undefined): Promise<SunoModelCatalogView | undefined> {
+  async view(integrationConnectionsRevision: string | undefined): Promise<SunoModelCatalogView | undefined> {
     const entry = this.entry;
     if (!entry?.models) return undefined;
     try {
@@ -65,9 +66,9 @@ export class SunoModelCatalog {
       if (this.entry === entry && current.fingerprint === entry.fingerprint) {
         // A settings read begun before a concurrent save cannot publish the new
         // revision. Keep the valid account catalog for the next fresh snapshot.
-        if (current.revision !== audioServicesRevision) return undefined;
+        if (current.revision !== integrationConnectionsRevision) return undefined;
         return { serviceId: entry.serviceId, accountId: current.session.accountId,
-          audioServicesRevision: current.revision, models: entry.models };
+          integrationConnectionsRevision: current.revision, models: entry.models };
       }
     } catch {
       // Missing or unreadable private ownership must not break ordinary chat state.
@@ -80,18 +81,18 @@ export class SunoModelCatalog {
     if (!this.storageDirectory) throw new ChatBridgeConflictError("Save a Suno connection and import its session before loading models.");
     return withStorageTransaction(this.storageDirectory, async (transaction) => {
       const settings = await loadAgentSettings(this.storageDirectory);
-      const connection = settings.audioServices?.connections.find((entry) => entry.id === serviceId);
-      if (connection?.provider !== "suno") {
+      const connection = settings.integrationConnections?.connections.find((entry) => entry.id === serviceId);
+      if (!connection || !isIntegrationConnectionForProvider(connection, "suno")) {
         throw new ChatBridgeConflictError("Save this Suno connection before loading its models.");
       }
       // Listing supports disabled connections; it never changes saved enablement.
       const session = await new SunoSessions(this.storageDirectory).load(serviceId, transaction);
       if (!session) throw new ChatBridgeConflictError("Import a Suno session for this connection before loading models.");
-      const revision = settings.audioServices!.revision;
+      const revision = settings.integrationConnections!.revision;
       // Automatic Clerk rotation is not a new catalog owner. Explicit auth
       // commands still clear the dialog catalog before changing this record.
       const fingerprint = createHash("sha256").update(JSON.stringify([
-        connection.id, connection.provider, session.accountId,
+        connection.id, connection.pluginId, session.accountId,
       ])).digest("hex");
       return { session, revision, fingerprint };
     });

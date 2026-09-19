@@ -3,7 +3,7 @@ import test from "node:test";
 import { audioJobViews, resumeAudioJob } from "../app/audio-processing.js";
 import { audioRecoveryHarness } from "../app/audio-recovery-test-helpers.js";
 import { updateAudioJob } from "../storage/audio-jobs.js";
-import { audioServicesView, loadAgentSettings } from "../storage/settings.js";
+import { integrationConnectionsView, loadAgentSettings } from "../storage/settings.js";
 import { audioState } from "./chat-dialog.audio-test-helpers.js";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
 
@@ -17,7 +17,7 @@ for (const condition of ["disabled", "cleared", "removed", "replaced"] as const)
     const state = audioState();
     state.activeSessionId = backend.session.id;
     state.sessions[0] = { ...state.sessions[0]!, id: backend.session.id };
-    state.audioServices = audioServicesView((await loadAgentSettings(backend.storage)).audioServices!);
+    state.integrationConnections = integrationConnectionsView((await loadAgentSettings(backend.storage)).integrationConnections!);
     state.audioJobs = await audioJobViews(backend.storage, backend.session.id);
     assert.equal(state.audioJobs[0]!.resumable, true);
     const h = await createDialogHarness(state);

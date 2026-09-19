@@ -1,10 +1,19 @@
 import type { AudioGenerationAdapter, AudioGenerationRequest } from "./contracts.js";
-import { DEFAULT_MUREKA_MUSIC_MODEL, MUREKA_MUSIC_MODELS } from "./capabilities.js";
 import { createMurekaHttp, type MurekaTaskKind } from "./mureka-http.js";
 import { exceedsAudioPromptLimit } from "./prompt.js";
 
 const RUNNING = new Set(["preparing", "queued", "running", "streaming"]);
 const TERMINAL = new Set(["succeeded", "failed", "timeouted", "cancelled"]);
+
+export const MUREKA_MUSIC_MODELS = [
+  "auto",
+  "mureka-7.6",
+  "mureka-o2",
+  "mureka-8",
+  "mureka-9",
+  "mureka-9.5",
+] as const;
+export const DEFAULT_MUREKA_MUSIC_MODEL = "auto";
 
 /** Official protocol: https://platform.mureka.ai/docs/ */
 export function createMurekaAudioAdapter(

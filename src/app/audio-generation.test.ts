@@ -10,14 +10,16 @@ import { readAudioAsset } from "../storage/audio-assets.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews, audioProcessingAvailable, resumeAudioJob } from "./audio-processing.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 async function harness(t: { after(fn: () => Promise<void>): void }) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-generation-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Generation", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
   for (const [index, id] of ["music-a", "music-b"].entries()) {
-    await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: String(index),
-      connection: { id, name: id, provider: "elevenlabs", enabled: true, apiKey: `fixture-${id}` } } });
+    await saveIntegrationConnection(directory, String(index), {
+      id, name: id, provider: "elevenlabs", enabled: true, apiKey: `fixture-${id}`,
+    });
   }
   const controller = new AbortController();
   let submissions = 0;
@@ -59,13 +61,17 @@ test("unknown inline generation is never repeated by Resume or moved to another 
   const resumed = await resumeAudioJob(h.context, unknown.id);
   assert.equal(resumed.status, "unknown");
   assert.equal(calls, 1);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "2",
-    connection: { id: "music-a", name: "music-a", provider: "elevenlabs", enabled: true, apiKey: "replacement-key" } } });
+  await saveIntegrationConnection(h.directory, "2", {
+    id: "music-a", name: "music-a", provider: "elevenlabs", enabled: true,
+    apiKey: "replacement-key",
+  });
   await assert.rejects(resumeAudioJob(h.context, unknown.id), /different service connection/);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "remove", expectedRevision: "3", serviceId: "music-a" } });
+  await saveGlobalSettings(h.directory, { integrationConnections: {
+    action: "remove", expectedRevision: "3", connectionId: "music-a",
+  } });
   await assert.rejects(resumeAudioJob(h.context, unknown.id), /unavailable/);
   assert.equal(calls, 1);
-  assert.equal((await loadAgentSettings(h.directory)).audioServices?.connections[0]?.id, "music-b");
+  assert.equal((await loadAgentSettings(h.directory)).integrationConnections?.connections[0]?.id, "music-b");
 });
 
 test("a known pre-dispatch rejection is failed rather than an unknown paid outcome", async (t) => {
@@ -105,8 +111,9 @@ test("a locally committed inline generation can be recovered without another pai
 test("audio services reject incompatible operations and disabled or unadvertised connections before submission", async (t) => {
   const h = await harness(t);
   await assert.rejects(generateAudio(h.context, "missing", { operation: "generate_music", prompt: "Piano", instrumental: true }), /unavailable/);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "2",
-    connection: { id: "music-a", name: "music-a", provider: "elevenlabs", enabled: false } } });
+  await saveIntegrationConnection(h.directory, "2", {
+    id: "music-a", name: "music-a", provider: "elevenlabs", enabled: false, apiKey: "",
+  });
   await assert.rejects(generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true }), /unavailable/);
   assert.equal(h.submissions(), 0);
   assert.equal((await listAudioJobs(h.directory, h.session.id)).length, 0);

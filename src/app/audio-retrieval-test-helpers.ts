@@ -4,11 +4,11 @@ import * as fs from "node:fs/promises";
 import type { TestContext } from "node:test";
 import type { AudioGenerationAdapter } from "../audio-services/contracts.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { createHostAbortController } from "../runtime/host.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 export const clipIds = ["aaaaaaaa-1111-4111-8111-111111111111", "bbbbbbbb-2222-4222-8222-222222222222"];
 export const manifest = clipIds.map((key, index) => ({ key, role: index === 0 ? "music" as const : "music_alternative" as const }));
@@ -20,7 +20,7 @@ export async function retrievalHarness(t: TestContext) {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Retrieval", projectKey: "fixture",
     scope: { kind: "selection", identity: "selection", label: "Audio" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(directory, "0", connection);
   const sessions = new SunoSessions(directory);
   await sessions.save(connection.id, { accountId: "user_fixture", clientToken: fixtureToken("first") });
   const controller = createHostAbortController();

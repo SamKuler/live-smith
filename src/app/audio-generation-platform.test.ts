@@ -4,10 +4,10 @@ import test from "node:test";
 
 import { createSunoPlatformAudioAdapter } from "../audio-services/suno-platform.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews } from "./audio-processing.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const AUDIO = "https://audiopipe.suno.ai/official-fixture.wav";
@@ -19,8 +19,9 @@ test("official Platform completes through the provider-neutral job lifecycle", a
     scope: { kind: "selection", identity: "selection", label: "Audio" } });
   const apiKey = "fixture-official-platform-key";
   const serviceId = "official-suno";
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: serviceId, name: "Official Suno", provider: "suno-platform", enabled: true, apiKey } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: serviceId, name: "Official Suno", provider: "suno-platform", enabled: true, apiKey,
+  });
   const calls: string[] = [];
   let polls = 0;
   const adapter = createSunoPlatformAudioAdapter(apiKey, { fetchImpl: async (input, init) => {

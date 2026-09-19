@@ -3,7 +3,14 @@ import test from "node:test";
 import type { AudioServiceConnectionView } from "../audio-services/contracts.js";
 import type { SunoAccountView } from "../audio-services/suno-session-contracts.js";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioState, broadcast, musicService, selectAudioService, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
+import {
+  audioState,
+  broadcast,
+  integrationConnectionView,
+  musicService,
+  selectAudioService,
+  selectedAudioService,
+} from "./chat-dialog.audio-test-helpers.js";
 
 const website: AudioServiceConnectionView = {
   id: "suno-personal", name: "Personal Suno", provider: "suno", enabled: false, apiKeyConfigured: false,
@@ -100,8 +107,8 @@ test("conflicting Suno drafts block import and maintenance while website opening
     harness.input("#audioServiceName", "Unsaved Suno name");
     assert.equal(text(harness, "#sunoAccountName"), "Suno account: Personal musician",
       "a non-secret settings draft does not change the saved account identity");
-    const next = { connections: state.audioServices!.connections, revision: "2" };
-    harness.setServerState({ ...state, audioServices: next });
+    const next = { connections: state.integrationConnections!.connections, revision: "2" };
+    harness.setServerState({ ...state, integrationConnections: next });
     harness.emitServerEvent(broadcast(state, next));
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceConflict")!.hidden, false);
@@ -150,7 +157,10 @@ test("a connection changed while clear confirmation is open cannot be cleared", 
   try {
     harness.click("#logoutSunoButton");
     await harness.settle();
-    const next = { connections: [secondWebsite, musicService], revision: "2" };
+    const next = {
+      connections: [secondWebsite, musicService].map(integrationConnectionView),
+      revision: "2",
+    };
     harness.emitServerEvent(broadcast(state, next));
     await harness.settle();
     await harness.acceptAppConfirmation();

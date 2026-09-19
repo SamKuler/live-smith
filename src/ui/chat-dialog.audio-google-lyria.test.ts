@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GOOGLE_LYRIA_MUSIC_MODELS } from "../audio-services/capabilities.js";
+import { googleLyriaPlugin, GOOGLE_LYRIA_MUSIC_MODELS } from "../plugins/builtins/google-lyria.js";
 import { createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js";
 import { audioCommands, toggle } from "./chat-dialog.audio-test-helpers.js";
 
@@ -41,15 +41,15 @@ test("Google Lyria uses the shared API-key editor and explains each documented m
     toggle(harness, true);
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const patch = audioCommands(harness)[0]!.audioServices;
+    const patch = audioCommands(harness)[0]!.integrationConnections;
     if (patch.action !== "upsert") assert.fail("expected an upsert");
     assert.deepEqual(patch.connection, {
       id: patch.connection.id,
       name: "Gemini music",
-      provider: "google-lyria",
+      pluginId: googleLyriaPlugin.id,
       enabled: true,
-      apiKey: "fixture-google-lyria-key",
-      modelId: "lyria-realtime-exp",
+      configuration: { modelId: "lyria-realtime-exp" },
+      secrets: { apiKey: "fixture-google-lyria-key" },
     });
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.deepEqual(harness.errors, []);

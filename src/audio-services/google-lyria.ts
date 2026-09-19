@@ -12,10 +12,6 @@ import {
 import type { OpenProviderWebSocket, ProviderWebSocketConnection } from "../runtime/proxy-websocket.js";
 import { NetworkProxyError } from "../runtime/network-proxy-error.js";
 import {
-  DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL,
-  GOOGLE_LYRIA_MUSIC_MODELS,
-} from "./capabilities.js";
-import {
   AudioSubmissionNotStartedError,
   MAX_AUDIO_ASSET_BYTES,
   type AudioGenerationAdapter,
@@ -37,6 +33,13 @@ const LIVE_CHANNELS = 2;
 const LIVE_BITS_PER_SAMPLE = 16;
 const LIVE_FRAME_BYTES = LIVE_CHANNELS * LIVE_BITS_PER_SAMPLE / 8;
 const DEFAULT_LIVE_DURATION_SECONDS = 30;
+
+export const GOOGLE_LYRIA_MUSIC_MODELS = [
+  "lyria-3.5",
+  "lyria-3-clip-preview",
+  "lyria-realtime-exp",
+] as const;
+export const DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL = "lyria-3.5";
 
 class GoogleLyriaError extends Error {}
 

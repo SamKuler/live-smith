@@ -7,7 +7,7 @@ import { createProxyAwareFetch } from "../runtime/proxy-fetch.js";
 import { readSystemProxyConfiguration } from "../runtime/system-proxy.js";
 import { runSunoHumanVerification } from "../runtime/suno-human-verification.js";
 import type { AudioProcessingContext } from "./audio-processing.js";
-import { resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
+import { resolveIntegrationConnection, type RuntimeIntegrationConnection } from "./integration-connections.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
 import { audioMessage as m } from "./audio-messages.js";
@@ -20,7 +20,7 @@ interface Dependencies {
 
 /** This factory keeps native proof, account admission and network routing private. */
 export function createAppSunoGenerationAdapter(
-  context: AudioProcessingContext, settings: RuntimeAudioServiceConnection,
+  context: AudioProcessingContext, settings: RuntimeIntegrationConnection,
   authorizeDownloads = false, dependencies: Dependencies = {},
 ): AudioGenerationAdapter {
   if (settings.provider !== "suno" || !settings.sunoSession) throw new Error("A saved Suno session is required.");
@@ -39,7 +39,7 @@ export function createAppSunoGenerationAdapter(
         lease.system && !isDeepStrictEqual(await readSystemProxy(), lease.system)) {
       throw new AudioSubmissionNotStartedError("Suno.com audio service: the network route changed during verification. No generation was submitted.");
     }
-    await resolveAudioService(context.storageDirectory, settings.id, "generate_music", [settings]);
+    await resolveIntegrationConnection(context.storageDirectory, settings.id, "generate_music", [settings]);
     active(signal);
   };
   const fetchImpl = ((input, init) => (submissionFetch ?? ordinaryFetch)(input, init)) as typeof fetch;
@@ -61,7 +61,7 @@ export function createAppSunoGenerationAdapter(
             submissionFetch = dependencies.fetchImpl ?? createProxyAwareFetch(async () => route.selection, {
               readSystemProxy: async () => route.system ?? await readSystemProxy(),
             });
-          } else await resolveAudioService(context.storageDirectory, settings.id, "generate_music", [settings]);
+          } else await resolveIntegrationConnection(context.storageDirectory, settings.id, "generate_music", [settings]);
           active(signal);
           dispatchEntered = true;
           // The adapter now authenticates and rechecks the *complete* original
@@ -78,7 +78,7 @@ export function createAppSunoGenerationAdapter(
     verifyHuman: async (captchaVersion, signal) => {
       active(signal);
       proof = undefined;
-      await resolveAudioService(context.storageDirectory, settings.id, "generate_music", [settings]);
+      await resolveIntegrationConnection(context.storageDirectory, settings.id, "generate_music", [settings]);
       const saved = await loadAgentSettings(context.storageDirectory);
       lease = { revision: saved.networkProxyRevision, selection: { ...saved.networkProxy },
         ...(saved.networkProxy.mode === "system" ? { system: await readSystemProxy() } : {}),

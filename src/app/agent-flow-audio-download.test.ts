@@ -5,7 +5,6 @@ import { URL } from "node:url";
 import type { AudioJob } from "../audio-services/contracts.js";
 import type { LiveInteractionContext } from "../live/context.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import { createAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { saveAudioAsset } from "../storage/audio-assets.js";
@@ -13,6 +12,7 @@ import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import type { ChatDialogState } from "../ui/chat-state.js";
 import { runAgentFlow, type AgentFlowDependencies } from "./agent-flow.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const clipIds = ["11111111-1111-4111-8111-111111111111"];
 const connection = { id: "suno-one", name: "My Suno", provider: "suno" as const, enabled: true, apiKey: "" };
@@ -44,7 +44,7 @@ async function harness(
 ) {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-retrieval-flow-");
   t.after(() => fs.rm(storage, { recursive: true, force: true }));
-  await saveGlobalSettings(storage, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(storage, "0", connection);
   await new SunoSessions(storage).save(connection.id, { accountId, clientToken });
   const interaction: LiveInteractionContext = { presentation: liveContextPresentationFixture("Audio"), summary: "Track: Audio",
     target: {}, scope: { kind: "track", identity: "track-retrieval", label: "Audio" } };

@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
-import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 import type { AudioJob } from "../audio-services/contracts.js";
+import { builtInAudioPlugin } from "../plugins/builtins/index.js";
 import { listAudioAssets, readExpectedAudioAsset } from "../storage/audio-assets.js";
 import { updateAudioJob } from "../storage/audio-jobs.js";
 import { storageScopeKey } from "../storage/scope.js";
@@ -37,7 +37,7 @@ export async function reconcileLocalAudioJob(
   for (const asset of expected.values()) await readExpectedAudioAsset(storageDirectory, sessionId, asset, signal);
   const roles = job.operation === "separate_stems" ? [...job.stems, "residual"]
     : job.expectedOutputs?.map((output) => output.role) ?? job.expectedOutputRoles ??
-      (AUDIO_SERVICE_CAPABILITIES[job.provider].inlineGeneration
+      (builtInAudioPlugin(job.provider).audio.inlineGeneration
         ? [job.operation === "generate_sound_effect" ? "sound_effect" : "music"]
         : undefined);
   const complete = roles?.every((role) => assets.some((asset) => asset.role === role));

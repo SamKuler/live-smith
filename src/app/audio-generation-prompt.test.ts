@@ -36,7 +36,7 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
       requestId: "request", attachmentRefs: [], target: {}, signal: h.context.signal,
       onProgress() {}, onAssets() {}, processing: { generationAdapter: adapter },
     });
-    const args = { serviceId: h.connection.id, prompt, instrumental: true };
+    const args = { connectionId: h.connection.id, prompt, instrumental: true };
     const toolName = builtInAudioToolName(
       builtInAudioPlugin(h.connection.provider),
       "generate_music",
@@ -53,7 +53,13 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
     const tooLong = { ...args, prompt: prompt + "𝄞" };
     const rejected = await tools.execute({ id: "too-long", name: toolName, arguments: JSON.stringify(tooLong) });
     assert.equal(rejected.invalidArguments, true);
-    assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", ...tooLong }, [h.connection]));
+    assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", ...tooLong }, [{
+      id: h.connection.id,
+      name: h.connection.name,
+      pluginId: builtInAudioPlugin(h.connection.provider).id,
+      provider: h.connection.provider,
+      ...(h.connection.modelId === undefined ? {} : { modelId: h.connection.modelId }),
+    }]));
     const request = { operation: "generate_music" as const, prompt: tooLong.prompt, instrumental: true };
     await assert.rejects(generateAudio({ ...h.context, generationAdapter: adapter }, h.connection.id, request), /limit/);
     await assert.rejects(adapter.submit(request, h.context.signal), /characters/);
@@ -62,7 +68,7 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
 }
 
 test("sound-effect tool parsing counts supplementary characters without changing its own limit", () => {
-  const args = { serviceId: "fixture", prompt: "🌧️".repeat(2050), durationSeconds: 1, loop: false };
+  const args = { connectionId: "fixture", prompt: "🌧️".repeat(2050), durationSeconds: 1, loop: false };
   assert.equal(Array.from(args.prompt).length, 4100);
   assert.equal(parseAudioToolRequest("generate_sound_effect", JSON.stringify(args)).kind, "generate_sound_effect");
   assert.throws(() => parseAudioToolRequest("generate_sound_effect", JSON.stringify({ ...args, prompt: args.prompt + "a" })));

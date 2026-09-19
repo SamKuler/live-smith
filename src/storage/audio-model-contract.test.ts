@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeAudioServiceConnection, ProfileValidationError } from "../model/profile.js";
+import { ProfileValidationError } from "../model/profile.js";
+import {
+  migrateAudioServiceConnection,
+  normalizeIntegrationConnection,
+} from "../plugins/integration-connections.js";
 import { AudioStorageError, createAudioJob, loadAudioJob, updateAudioJob } from "./audio-jobs.js";
 import { audioStorageHarness, fingerprint } from "./audio-storage-test-helpers.js";
 
@@ -17,8 +21,14 @@ test("settings model IDs round-trip through jobs without task-ID restrictions or
   const h = await audioStorageHarness(t);
   const printable = Array.from({ length: 94 }, (_, index) => String.fromCharCode(0x21 + index)).join("");
   for (const modelId of ["!", "vendor/music-v2", "music.v2:beta", printable, "m".repeat(128)]) {
-    const saved = normalizeAudioServiceConnection({ ...connection, modelId });
-    const job = await createAudioJob(h.storage, h.session.id, { ...music, modelId: saved.modelId! });
+    const saved = normalizeIntegrationConnection({
+      ...migrateAudioServiceConnection(connection),
+      configuration: { modelId },
+    });
+    const job = await createAudioJob(h.storage, h.session.id, {
+      ...music,
+      modelId: saved.configuration.modelId!,
+    });
     assert.equal((await loadAudioJob(h.storage, h.session.id, job.id)).modelId, modelId);
     await updateAudioJob(h.storage, h.session.id, job.id, { status: "running", remoteTaskId: "task_1" });
     assert.equal((await loadAudioJob(h.storage, h.session.id, job.id)).modelId, modelId);
@@ -30,11 +40,14 @@ test("settings and job model IDs reject the same empty, oversized, whitespace, c
   const h = await audioStorageHarness(t);
   for (const modelId of [undefined, null, 42, {}, "", "m".repeat(129), "m".repeat(256),
     " model", "model ", "two words", "model\n", "model\r", "model\t", "model\0", "model\x1f", "model\x7f", "模型", "m\u0080"]) {
-    assert.throws(() => normalizeAudioServiceConnection({ ...connection, modelId }), ProfileValidationError);
+    assert.throws(() => normalizeIntegrationConnection({
+      ...migrateAudioServiceConnection(connection),
+      configuration: { modelId },
+    }), ProfileValidationError);
     await assert.rejects(createAudioJob(h.storage, h.session.id, { ...music, modelId } as never), AudioStorageError);
   }
-  const saved = normalizeAudioServiceConnection(connection);
-  assert.equal(Object.hasOwn(saved, "modelId"), false);
+  const saved = normalizeIntegrationConnection(migrateAudioServiceConnection(connection));
+  assert.equal(Object.hasOwn(saved.configuration, "modelId"), false);
   const job = await createAudioJob(h.storage, h.session.id, music);
   assert.equal(Object.hasOwn(await loadAudioJob(h.storage, h.session.id, job.id), "modelId"), false);
 });

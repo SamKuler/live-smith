@@ -5,7 +5,6 @@ import { Buffer } from "node:buffer";
 
 import { SEPARATION_STEMS, type AudioServiceAdapter, type AudioGenerationAdapter } from "../audio-services/contracts.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { saveSessionAttachment } from "../storage/attachments.js";
 import { loadSessionEvents } from "../storage/events.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
@@ -18,6 +17,7 @@ import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { elevenLabsPlugin } from "../plugins/builtins/elevenlabs.js";
 import { lalalPlugin } from "../plugins/builtins/lalal.js";
 import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const separateStemsTool = builtInAudioToolName(lalalPlugin, "separate_stems");
 const elevenMusicTool = builtInAudioToolName(elevenLabsPlugin, "generate_music");
@@ -27,8 +27,10 @@ test("a text-only chat model separates an attached file and reuses saved stems i
   const directory = await fs.mkdtemp("/private/tmp/live-smith-audio-integration-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Stems", projectKey: "project", scope: { kind: "track", identity: "1", label: "Track" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "splitter", name: "Stem account", provider: "lalal", enabled: true, apiKey: "fixture-private-audio-key" } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "splitter", name: "Stem account", provider: "lalal", enabled: true,
+    apiKey: "fixture-private-audio-key",
+  });
   await saveSessionAttachment(directory, session.id, { fileName: "reference.wav", bytes: waveBytes() }, { preSavePendingAttachmentRefs: [] });
   const runtime = runtimeProfileForSavedProfile({
     id: "text-profile", name: "Text model", defaultModel: "model",
@@ -62,7 +64,7 @@ test("a text-only chat model separates an attached file and reuses saved stems i
     if (++turns === 1) {
       const match = request.requestAudioSampleSourceInstructions?.match(/Audio input 1: (\{[^\n]+\})/);
       assert.ok(match?.[1]);
-      return { content: null, toolCalls: [{ id: "split", name: separateStemsTool, arguments: JSON.stringify({ serviceId: "splitter", source: JSON.parse(match[1]), stems: ["vocals"] }) }] };
+      return { content: null, toolCalls: [{ id: "split", name: separateStemsTool, arguments: JSON.stringify({ connectionId: "splitter", source: JSON.parse(match[1]), stems: ["vocals"] }) }] };
     }
     const result = JSON.parse(request.agentMessages.at(-1)!.content!);
     assert.equal(result.status, "completed");
@@ -84,8 +86,10 @@ test("a text-only chat model generates music through a named connection and expo
   const directory = await fs.mkdtemp("/private/tmp/live-smith-music-integration-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Music", projectKey: "project", scope: { kind: "track", identity: "1", label: "Track" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "music-account", name: "Music production", provider: "elevenlabs", enabled: true, apiKey: "fixture-music-secret" } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "music-account", name: "Music production", provider: "elevenlabs",
+    enabled: true, apiKey: "fixture-music-secret",
+  });
   const runtime = runtimeProfileForSavedProfile({
     id: "text-profile", name: "Text model", defaultModel: "model",
     connection: { kind: "direct-api", apiFamily: "openai", apiMode: "responses", baseUrl: "https://example.test", apiKey: "model-test-key" },
@@ -108,7 +112,7 @@ test("a text-only chat model generates music through a named connection and expo
     assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === separateStemsTool));
     assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === "listen_to_audio_asset"));
     if (++turns === 1) return { content: null, toolCalls: [{ id: "music-call", name: elevenMusicTool, arguments: JSON.stringify({
-      serviceId: "music-account", prompt: "Ambient piano", durationSeconds: 10, instrumental: true,
+      connectionId: "music-account", prompt: "Ambient piano", durationSeconds: 10, instrumental: true,
     }) }] };
     const result = JSON.parse(request.agentMessages.at(-1)!.content!);
     assert.equal(result.status, "completed"); assert.equal(result.serviceId, "music-account");
@@ -131,8 +135,9 @@ test("a chat model can select Suno rendered audio with bounded advanced controls
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Suno", projectKey: "project",
     scope: { kind: "track", identity: "1", label: "Track" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "suno-account", name: "Suno account", provider: "suno", enabled: true, apiKey: "" } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "suno-account", name: "Suno account", provider: "suno", enabled: true, apiKey: "",
+  });
   const clientToken = ["{}", "fixture-client", "fixture-signature"]
     .map((part) => Buffer.from(part).toString("base64url")).join(".");
   await new SunoSessions(directory).save("suno-account", {
@@ -184,7 +189,7 @@ test("a chat model can select Suno rendered audio with bounded advanced controls
       assert.ok(tool?.type === "function");
       assert.match(tool.function.description, /rendered audio/i);
       if (turns === 1) return { content: null, toolCalls: [{ id: "suno-generate",
-        name: sunoMusicTool, arguments: JSON.stringify({ serviceId: "suno-account", ...expected,
+        name: sunoMusicTool, arguments: JSON.stringify({ connectionId: "suno-account", ...expected,
           operation: undefined }) }] };
       const toolResult = JSON.parse(request.agentMessages.at(-1)!.content!);
       assert.equal(toolResult.status, "ready");
@@ -205,9 +210,10 @@ test("an audio-capable chat model can listen to a generated Session asset in the
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Listen", projectKey: "project",
     scope: { kind: "track", identity: "1", label: "Track" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "music-account", name: "Music production", provider: "elevenlabs", enabled: true,
-      apiKey: "fixture-music-secret" } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "music-account", name: "Music production", provider: "elevenlabs",
+    enabled: true, apiKey: "fixture-music-secret",
+  });
   const runtime = runtimeProfileForSavedProfile({
     id: "audio-profile", name: "Audio model", defaultModel: "audio-model",
     connection: { kind: "direct-api", apiFamily: "openai", apiMode: "chat-completions",
@@ -229,7 +235,7 @@ test("an audio-capable chat model can listen to a generated Session asset in the
       assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === "listen_to_audio_asset"));
       turns += 1;
       if (turns === 1) return { content: null, toolCalls: [{ id: "generate", name: elevenMusicTool,
-        arguments: JSON.stringify({ serviceId: "music-account", prompt: "Short ambient idea", durationSeconds: 10,
+        arguments: JSON.stringify({ connectionId: "music-account", prompt: "Short ambient idea", durationSeconds: 10,
           instrumental: true }) }] };
       if (turns === 2) {
         const generated = JSON.parse(request.agentMessages.at(-1)!.content!);

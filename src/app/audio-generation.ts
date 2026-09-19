@@ -8,110 +8,85 @@ import {
   type AudioGenerationAdapter, type AudioGenerationRequest, type AudioJob,
   type GeneratedAudioOutput, type RemoteAudioStatus,
 } from "../audio-services/contracts.js";
-import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
 import { exceedsAudioPromptLimit } from "../audio-services/prompt.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
-import { createElevenLabsAudioAdapter } from "../audio-services/elevenlabs.js";
-import { createGoogleLyriaAudioAdapter } from "../audio-services/google-lyria.js";
-import { createMurekaAudioAdapter } from "../audio-services/mureka.js";
-import { createSunoPlatformAudioAdapter } from "../audio-services/suno-platform.js";
-import { createSunoApiAudioAdapter } from "../audio-services/sunoapi.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
 import { createAudioJob, listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { assertAudioOutputCapacity, saveAudioAsset } from "../storage/audio-assets.js";
 import { acquireAudioJob, boundedAudioMessage, reconcileLocalAudioJob, safeAudioFailure } from "./audio-job-runtime.js";
-import { audioConnectionFingerprint, resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
+import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "./integration-connections.js";
 import type { AudioProcessingContext } from "./audio-processing.js";
-import { providerFetchForStorage } from "./provider-fetch.js";
-import { providerWebSocketForStorage } from "./provider-websocket.js";
 import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 import { audioMessage as m } from "./audio-messages.js";
+import { builtInAudioPluginById } from "../plugins/builtins/index.js";
+import { builtInAudioHostRuntime } from "./built-in-plugin-runtime.js";
 
-function generationAdapter(
-  context: AudioProcessingContext, settings: RuntimeAudioServiceConnection, authorizeDownloads = false,
+function pluginGenerationAdapter(
+  context: AudioProcessingContext, settings: RuntimeIntegrationConnection, authorizeDownloads = false,
 ): AudioGenerationAdapter {
   if (context.generationAdapter) {
     if (context.generationAdapter.provider !== settings.provider) throw new Error("Audio adapter does not match the selected connection.");
     return context.generationAdapter;
   }
-  if (settings.provider === "elevenlabs") {
-    return createElevenLabsAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-      ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    });
+  const plugin = builtInAudioPluginById(settings.pluginId);
+  if (!plugin || plugin.provider !== settings.provider || !plugin.createGenerationAdapter) {
+    throw new Error("This Plugin does not expose an audio-generation adapter.");
   }
-  if (settings.provider === "google-lyria") {
-    return createGoogleLyriaAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-      openWebSocket: providerWebSocketForStorage(context.storageDirectory),
-      ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    });
-  }
-  if (settings.provider === "mureka") {
-    return createMurekaAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-      ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    });
-  }
-  if (settings.provider === "suno-platform") {
-    return createSunoPlatformAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-    });
-  }
-  if (settings.provider === "sunoapi" && settings.callbackUrl) {
-    return createSunoApiAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory), callbackUrl: settings.callbackUrl,
-      ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    });
-  }
-  if (settings.provider === "suno" && settings.sunoSession) {
-    return createAppSunoGenerationAdapter(context, settings, authorizeDownloads);
-  }
-  throw new Error("This service's generation protocol is not available.");
+  return plugin.createGenerationAdapter(settings, builtInAudioHostRuntime(
+    context.storageDirectory,
+    {
+      createWebsiteSubscriptionAdapter: (_connection, authorize) =>
+        createAppSunoGenerationAdapter(context, settings, authorize),
+    },
+  ), authorizeDownloads);
 }
 
 export async function generateAudio(
   context: AudioProcessingContext, serviceId: string, request: AudioGenerationRequest,
 ): Promise<AudioJob> {
   throwIfAborted(context.signal);
-  const settings = await resolveAudioService(context.storageDirectory, serviceId, request.operation, context.admittedConnections);
+  const settings = await resolveIntegrationConnection(context.storageDirectory, serviceId, request.operation, context.admittedConnections);
+  const plugin = builtInAudioPluginById(settings.pluginId);
+  if (!plugin || plugin.provider !== settings.provider) {
+    throw new Error("The selected Integration Connection Plugin is unavailable.");
+  }
+  const capability = plugin.audio;
   if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
-    !AUDIO_SERVICE_CAPABILITIES[settings.provider].customMusic) throw new Error("This service does not support custom music parameters.");
+    !capability.customMusic) throw new Error("This service does not support custom music parameters.");
   if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
     Object.keys(request.options).some((field) => field !== "mode" &&
-      !AUDIO_SERVICE_CAPABILITIES[settings.provider].customMusicOptions?.includes(field as never))) {
+      !capability.customMusicOptions?.includes(field as never))) {
     throw new Error("This service does not support one or more custom music parameters.");
   }
   if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
-    AUDIO_SERVICE_CAPABILITIES[settings.provider].requiredCustomMusicOptions?.some((field) => request.options?.[field] === undefined)) {
+    capability.requiredCustomMusicOptions?.some((field) => request.options?.[field] === undefined)) {
     throw new Error("This service requires another custom music parameter.");
   }
-  if (request.operation === "generate_music" && exceedsAudioPromptLimit(request.prompt, AUDIO_SERVICE_CAPABILITIES[settings.provider].musicPromptCharacters)) {
+  if (request.operation === "generate_music" && exceedsAudioPromptLimit(request.prompt, capability.musicPromptCharacters)) {
     throw new Error("The music prompt exceeds this service's supported limit.");
   }
   if (request.operation === "generate_music" && request.instrumental && settings.modelId &&
-    AUDIO_SERVICE_CAPABILITIES[settings.provider].instrumentalUnsupportedModelIds?.includes(settings.modelId)) {
+    capability.instrumentalUnsupportedModelIds?.includes(settings.modelId)) {
     throw new Error("The selected model does not support instrumental generation.");
   }
   if (request.operation === "generate_music" && !request.instrumental && settings.modelId &&
-    AUDIO_SERVICE_CAPABILITIES[settings.provider].instrumentalOnlyModelIds?.includes(settings.modelId)) {
+    capability.instrumentalOnlyModelIds?.includes(settings.modelId)) {
     throw new Error("The selected model supports instrumental generation only.");
   }
   if (request.operation === "generate_music" && request.durationSeconds !== undefined) {
-    const range = AUDIO_SERVICE_CAPABILITIES[settings.provider].musicDuration;
+    const range = capability.musicDuration;
     if (!range) throw new Error("This service does not support an explicit music duration.");
     if (request.durationSeconds < range.minimumSeconds ||
       request.durationSeconds > range.maximumSeconds) {
       throw new Error("The music duration is outside this service's supported range.");
     }
     const fixed = settings.modelId &&
-      AUDIO_SERVICE_CAPABILITIES[settings.provider].fixedMusicDurationSecondsByModel?.[settings.modelId];
+      capability.fixedMusicDurationSecondsByModel?.[settings.modelId];
     if (fixed !== undefined && request.durationSeconds !== fixed) {
       throw new Error(`The selected model has a fixed ${fixed}-second music duration.`);
     }
   }
   if (request.operation === "generate_song_from_lyrics") {
-    if (settings.provider !== "mureka") throw new Error("This service does not support lyrics-to-song generation.");
     if (!validGenerationText(request.lyrics, 5000)) throw new Error("Lyrics must contain 1–5000 characters.");
     if (request.prompt !== undefined && !validGenerationText(request.prompt, 1024)) {
       throw new Error("The optional song prompt must contain 1–1024 characters.");
@@ -120,15 +95,15 @@ export async function generateAudio(
       throw new Error("The vocal gender is invalid.");
     }
   }
-  const adapter = generationAdapter(context, settings);
+  const adapter = pluginGenerationAdapter(context, settings);
   if (settings.provider !== "suno") await assertAudioOutputCapacity(context.storageDirectory, context.sessionId,
-    request.operation === "get_whole_song" ? 1 : AUDIO_SERVICE_CAPABILITIES[settings.provider].generationOutputCount);
+    request.operation === "get_whole_song" ? 1 : capability.generationOutputCount);
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: request.operation,
     ...(request.operation !== "generate_sound_effect" && settings.modelId ? { modelId: settings.modelId } : {}),
     ...((request.operation === "generate_music" || request.operation === "extend_music") && request.options?.title?.trim()
       ? { title: request.options.title } : {}),
-    connectionFingerprint: audioConnectionFingerprint(settings), stems: [],
+    connectionFingerprint: integrationConnectionFingerprint(settings), stems: [],
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try { return await runGeneration(context, job, settings, adapter, request); }
@@ -145,8 +120,8 @@ export async function retrieveMusic(
 ): Promise<AudioJob> {
   const ids = parseRetrievalClipIds(clipIds).sort();
   throwIfAborted(context.signal);
-  const settings = await resolveAudioService(context.storageDirectory, serviceId, "retrieve_music", context.admittedConnections);
-  const fingerprint = audioConnectionFingerprint(settings);
+  const settings = await resolveIntegrationConnection(context.storageDirectory, serviceId, "retrieve_music", context.admittedConnections);
+  const fingerprint = integrationConnectionFingerprint(settings);
   const expectedOutputs: NonNullable<AudioJob["expectedOutputs"]> = ids.map((key, index) =>
     Object.freeze({ key, role: index === 0 ? "music" : "music_alternative" }));
   Object.freeze(expectedOutputs);
@@ -171,20 +146,20 @@ export async function retrieveMusic(
       if (job.status === "completed" || job.status === "cancelled") return job;
       job = await reconcileLocalAudioJob(context.storageDirectory, context.sessionId, job, context.signal);
       if (job.status === "completed" || audioJobRemoteSettled(job)) return job;
-      await resolveAudioService(context.storageDirectory, serviceId, "retrieve_music", [settings]);
-      return await runGeneration(context, job, settings, generationAdapter(context, settings));
+      await resolveIntegrationConnection(context.storageDirectory, serviceId, "retrieve_music", [settings]);
+      return await runGeneration(context, job, settings, pluginGenerationAdapter(context, settings));
     } finally { release(); }
   } finally { releaseSelection(); }
 }
 
 export async function resumeAudioGeneration(context: AudioProcessingContext, job: AudioJob): Promise<AudioJob> {
   if (audioJobRemoteSettled(job)) return job;
-  const settings = await resolveAudioService(context.storageDirectory, job.serviceId, job.operation);
-  if (settings.provider !== job.provider || audioConnectionFingerprint(settings) !== job.connectionFingerprint) {
+  const settings = await resolveIntegrationConnection(context.storageDirectory, job.serviceId, job.operation);
+  if (settings.provider !== job.provider || integrationConnectionFingerprint(settings) !== job.connectionFingerprint) {
     throw new Error("This audio job belongs to a different service connection. Restore that connection to retrieve it.");
   }
   const { modelId: _currentModel, ...connection } = settings;
-  const adapter = generationAdapter(context, { ...connection, ...(job.modelId ? { modelId: job.modelId } : {}) });
+  const adapter = pluginGenerationAdapter(context, { ...connection, ...(job.modelId ? { modelId: job.modelId } : {}) });
   return runGeneration(context, job, settings, adapter);
 }
 
@@ -203,8 +178,8 @@ export async function downloadAudioOutput(
     if (job.status === "cancelled" || !job.remoteOutputs?.some((output) => output.key === selected.key && output.role === selected.role)) {
       throw new Error("This Suno output has not been observed complete. Resume its existing job before downloading.");
     }
-    const settings = await resolveAudioService(context.storageDirectory, job.serviceId, job.operation, context.admittedConnections);
-    if (settings.provider !== job.provider || audioConnectionFingerprint(settings) !== job.connectionFingerprint) {
+    const settings = await resolveIntegrationConnection(context.storageDirectory, job.serviceId, job.operation, context.admittedConnections);
+    if (settings.provider !== job.provider || integrationConnectionFingerprint(settings) !== job.connectionFingerprint) {
       throw new Error("This audio job belongs to a different service connection. Restore that connection to retrieve it.");
     }
     const update = async (patch: Parameters<typeof updateAudioJob>[3]) => {
@@ -213,16 +188,16 @@ export async function downloadAudioOutput(
     try {
       await assertAudioOutputCapacity(context.storageDirectory, context.sessionId, 1);
       await context.onProgress?.(m("Downloading the selected Suno song"));
-      const currentSettings = await resolveAudioService(context.storageDirectory, settings.id, job.operation, [settings]);
+      const currentSettings = await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
-      const adapter = generationAdapter(context, currentSettings, true);
+      const adapter = pluginGenerationAdapter(context, currentSettings, true);
       if (!adapter.downloadSelected) throw new Error("This service cannot download the selected output.");
       await update({ status: "collecting", message: m("Downloading the selected Suno song") });
       throwIfAborted(context.signal);
       const bytes = await adapter.downloadSelected(selected, context.signal, (signal, authorize) => {
         if (!context.withDownloadAuthorization) throw new Error("Download authorization requires the connection lifecycle fence.");
         return context.withDownloadAuthorization(signal, async () => {
-          await resolveAudioService(context.storageDirectory, currentSettings.id, job.operation, [currentSettings]);
+          await resolveIntegrationConnection(context.storageDirectory, currentSettings.id, job.operation, [currentSettings]);
           throwIfAborted(signal);
           // The provider calls this only at the actual allowance boundary. Keep
           // token minting and the complete POST inside the same settings lease.
@@ -272,7 +247,7 @@ function confirmedGenerationOutputs(
 }
 
 async function runGeneration(
-  context: AudioProcessingContext, initial: AudioJob, settings: RuntimeAudioServiceConnection,
+  context: AudioProcessingContext, initial: AudioJob, settings: RuntimeIntegrationConnection,
   adapter: AudioGenerationAdapter, request?: AudioGenerationRequest,
 ): Promise<AudioJob> {
   let job = initial;
@@ -302,7 +277,7 @@ async function runGeneration(
       throwIfAborted(context.signal);
       await adapter.prepare?.(request, context.signal);
       await update({ status: "submitting", message: m("Waiting for the audio service. Do not submit duplicates.") });
-      await resolveAudioService(context.storageDirectory, settings.id, request.operation, [settings]);
+      await resolveIntegrationConnection(context.storageDirectory, settings.id, request.operation, [settings]);
       throwIfAborted(context.signal);
       submissionStarted = true;
       const result = await adapter.submit(request, context.signal);

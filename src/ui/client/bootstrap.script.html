@@ -1578,7 +1578,7 @@
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
           showFieldError: (field, message) => {
-            if (field === "audioServices") {
+            if (field === "integrationConnections") {
               openInspector("app");
               document.getElementById("audioServiceApiKey").focus({ preventScroll: true });
               return false;

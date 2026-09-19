@@ -3,12 +3,12 @@ import test from "node:test";
 import { runAgentLoop } from "../agent/loop.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
 import { downloadAudioOutput, retrieveMusic } from "./audio-generation.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { listAudioAssets } from "../storage/audio-assets.js";
 import { clipIds, connection, fixtureToken, manifest, retrievalHarness } from "./audio-retrieval-test-helpers.js";
 import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 async function toolsFor(h: Awaited<ReturnType<typeof retrievalHarness>>, observed = clipIds.slice(0, 1)) {
   const assets: string[] = [];
@@ -26,23 +26,27 @@ async function toolsFor(h: Awaited<ReturnType<typeof retrievalHarness>>, observe
       : builtInAudioToolName(sunoWebsitePlugin, name),
     arguments: JSON.stringify(args),
   });
-  const retrieve = (serviceId = connection.id, ids = clipIds) => execute("retrieve_music", { serviceId, clipIds: ids });
+  const retrieve = (connectionId = connection.id, ids = clipIds) => execute("retrieve_music", { connectionId, clipIds: ids });
   return { tools, assets, execute, retrieve };
 }
 
 test("tool retrieval requires every ID observed on the selected connection and dispatches without generation", async (t) => {
   const h = await retrievalHarness(t);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1", connection: { ...connection, id: "work", name: "Work" } } });
+  await saveIntegrationConnection(h.directory, "1", {
+    ...connection,
+    id: "work",
+    name: "Work",
+  });
   await h.sessions.save("work", { accountId: "user_work", clientToken: fixtureToken("work") });
   const observed = clipIds.slice(0, 1);
   const tools = await toolsFor(h, observed);
   assert.equal((await tools.retrieve()).invalidArguments, true);
-  await tools.execute("inspect_music_service", { serviceId: connection.id, query: "library" });
+  await tools.execute("inspect_music_service", { connectionId: connection.id, query: "library" });
   assert.equal((await tools.retrieve()).invalidArguments, true, "one observed ID cannot authorize a second ID");
   assert.equal((await tools.retrieve("work", observed)).invalidArguments, true);
   assert.equal((await listAudioJobs(h.directory, h.session.id)).length, 0);
   observed.push(clipIds[1]!);
-  await tools.execute("inspect_music_service", { serviceId: connection.id, query: "library" });
+  await tools.execute("inspect_music_service", { connectionId: connection.id, query: "library" });
   const result = await tools.retrieve();
   assert.equal(result.failed, undefined);
   assert.equal(result.stop, undefined);

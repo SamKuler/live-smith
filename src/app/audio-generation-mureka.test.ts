@@ -9,11 +9,11 @@ import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { murekaPlugin } from "../plugins/builtins/mureka.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { createSession } from "../storage/sessions.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 function lyricMetadata() {
   return [{
@@ -36,10 +36,11 @@ test("Mureka generation and Resume share the provider-neutral single-output job 
   const session = await createSession(directory, { title: "Mureka", projectKey: "project",
     scope: { kind: "selection", identity: "selection", label: "Audio" } });
   const apiKey = "fixture-mureka-app-key";
-  const serviceId = "mureka-studio";
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: serviceId, name: "Mureka studio", provider: "mureka", enabled: true,
-      apiKey, modelId: "mureka-9" } } });
+  const connectionId = "mureka-studio";
+  await saveIntegrationConnection(directory, "0", {
+    id: connectionId, name: "Mureka studio", provider: "mureka", enabled: true,
+    apiKey, modelId: "mureka-9",
+  });
 
   const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
   let failDownload = true;
@@ -71,7 +72,7 @@ test("Mureka generation and Resume share the provider-neutral single-output job 
   const context = { storageDirectory: directory, sessionId: session.id,
     signal: new AbortController().signal, generationAdapter: adapter, wait: async () => {} };
 
-  const interrupted = await generateAudio(context, serviceId, {
+  const interrupted = await generateAudio(context, connectionId, {
     operation: "generate_music", prompt: "Nocturnal analog synthwave", instrumental: false,
   });
   assert.equal(interrupted.provider, "mureka");
@@ -100,9 +101,10 @@ test("Mureka rejects an o2 instrumental before creating a paid-work job", async 
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Mureka o2", projectKey: "project",
     scope: { kind: "selection", identity: "selection", label: "Audio" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "mureka-o2", name: "Mureka o2", provider: "mureka", enabled: true,
-      apiKey: "fixture-mureka-o2-key", modelId: "mureka-o2" } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "mureka-o2", name: "Mureka o2", provider: "mureka", enabled: true,
+    apiKey: "fixture-mureka-o2-key", modelId: "mureka-o2",
+  });
   let submitted = false;
   await assert.rejects(generateAudio({ storageDirectory: directory, sessionId: session.id,
     signal: new AbortController().signal, generationAdapter: {
@@ -120,10 +122,11 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
   const session = await createSession(directory, { title: "Mureka tools", projectKey: "project",
     scope: { kind: "selection", identity: "selection", label: "Audio" } });
   const apiKey = "fixture-mureka-tools-key";
-  const serviceId = "mureka-tools";
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: serviceId, name: "Mureka tools", provider: "mureka", enabled: true,
-      apiKey, modelId: "mureka-9.5" } } });
+  const connectionId = "mureka-tools";
+  await saveIntegrationConnection(directory, "0", {
+    id: connectionId, name: "Mureka tools", provider: "mureka", enabled: true,
+    apiKey, modelId: "mureka-9.5",
+  });
   const submissions: unknown[] = [];
   const generationAdapter: AudioGenerationAdapter = {
     provider: "mureka",
@@ -165,7 +168,7 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
   });
 
   const lyrics = await execute("generate_lyrics", {
-    serviceId,
+    connectionId,
     prompt: "A hopeful night-drive song",
   });
   assert.deepEqual(JSON.parse(lyrics.content), {
@@ -176,7 +179,7 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
   assert.deepEqual(await listAudioJobs(directory, session.id), []);
 
   const song = await execute("generate_song_from_lyrics", {
-    serviceId,
+    connectionId,
     lyrics: "[Verse]\nCity lights",
     prompt: "future garage",
     gender: "female",

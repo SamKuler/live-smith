@@ -3,7 +3,12 @@ import test from "node:test";
 import type { AudioServiceConnectionView } from "../audio-services/contracts.js";
 import type { ChatBridgeState } from "./chat-state.js";
 import { createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioState, broadcast, musicService } from "./chat-dialog.audio-test-helpers.js";
+import {
+  audioState,
+  broadcast,
+  integrationConnectionView,
+  musicService,
+} from "./chat-dialog.audio-test-helpers.js";
 
 const website: AudioServiceConnectionView = {
   id: "suno-personal", name: "Personal Suno", provider: "suno", enabled: false, apiKeyConfigured: false,
@@ -79,7 +84,13 @@ test("a delayed login reply cannot restore an account for a saved connection who
   try {
     harness.holdNextCommand();
     harness.click("#refreshSunoLoginButton");
-    const next = { revision: "2", connections: [{ ...website, provider: "lalal" as const }, musicService] };
+    const next = {
+      revision: "2",
+      connections: [
+        integrationConnectionView({ ...website, provider: "lalal" as const }),
+        integrationConnectionView(musicService),
+      ],
+    };
     harness.emitServerEvent(broadcast(state, next));
     await harness.settle();
     harness.releaseHeldCommand();

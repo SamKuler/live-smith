@@ -4,16 +4,17 @@ import * as fs from "node:fs/promises";
 import { Buffer } from "node:buffer";
 import { audioJobView, type AudioGenerationAdapter } from "../audio-services/contracts.js";
 import { createSession } from "../storage/sessions.js";
-import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
+import { loadAgentSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import { listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
-import { audioConnectionFingerprint, captureAudioServiceConnections, resolveAudioService } from "./audio-service-connections.js";
+import { integrationConnectionFingerprint, captureIntegrationConnections, resolveIntegrationConnection } from "./integration-connections.js";
 import { generateAudio } from "./audio-generation.js";
 import { downloadAudioOutput, resumeAudioJob } from "./audio-processing.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
 import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { elevenLabsPlugin } from "../plugins/builtins/elevenlabs.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
 const manifest = [{ key: ids[0]!, role: "music" as const }, { key: ids[1]!, role: "music_alternative" as const }];
@@ -25,7 +26,7 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-native-suno-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Native Suno", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0", connection } });
+  await saveIntegrationConnection(directory, "0", connection);
   const sessions = new SunoSessions(directory);
   await sessions.save(connection.id, { accountId: "user_personal", clientToken: token("first") });
   const controller = new AbortController();
@@ -65,20 +66,20 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
 
 test("Cookie-based service admission follows verified same-account rotation and rejects missing credentials", async (t) => {
   const h = await harness(t);
-  const admitted = await captureAudioServiceConnections(h.directory);
+  const admitted = await captureIntegrationConnections(h.directory);
   assert.equal(admitted.length, 1);
   assert.equal(admitted[0]!.apiKey, "");
   assert.equal(admitted[0]!.sunoSession?.accountId, "user_personal");
   assert.ok(Object.isFrozen(admitted[0]!.sunoSession));
-  const fingerprint = audioConnectionFingerprint(admitted[0]!);
+  const fingerprint = integrationConnectionFingerprint(admitted[0]!);
   const renewed = token("renewed");
   await h.sessions.save(connection.id, { accountId: "user_personal", clientToken: renewed });
-  const resolved = await resolveAudioService(h.directory, connection.id, "generate_music", admitted);
+  const resolved = await resolveIntegrationConnection(h.directory, connection.id, "generate_music", admitted);
   assert.equal(resolved.sunoSession?.clientToken, `__client=${renewed}`);
-  assert.equal(audioConnectionFingerprint((await captureAudioServiceConnections(h.directory))[0]!), fingerprint);
+  assert.equal(integrationConnectionFingerprint((await captureIntegrationConnections(h.directory))[0]!), fingerprint);
   await h.sessions.clear(connection.id);
-  assert.deepEqual(await captureAudioServiceConnections(h.directory), []);
-  await assert.rejects(resolveAudioService(h.directory, connection.id, "generate_music"), /unavailable/);
+  assert.deepEqual(await captureIntegrationConnections(h.directory), []);
+  await assert.rejects(resolveIntegrationConnection(h.directory, connection.id, "generate_music"), /unavailable/);
 });
 
 test("provider-confirmed task failure is terminal and does not offer a pointless Resume", async (t) => {
@@ -96,13 +97,14 @@ test("provider-confirmed task failure is terminal and does not offer a pointless
 
 test("one corrupt Suno credential cannot block healthy connections or ordinary chat admission", async (t) => {
   const h = await harness(t);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1", connection: {
-    id: "healthy", name: "Healthy music", provider: "elevenlabs", enabled: true, apiKey: "fixture-healthy-key",
-  } } });
+  await saveIntegrationConnection(h.directory, "1", {
+    id: "healthy", name: "Healthy music", provider: "elevenlabs", enabled: true,
+    apiKey: "fixture-healthy-key",
+  });
   await fs.writeFile(`${h.directory}/suno-session-${connection.id}.json`, "{}", { mode: 0o600 });
-  const admitted = await captureAudioServiceConnections(h.directory);
+  const admitted = await captureIntegrationConnections(h.directory);
   assert.deepEqual(admitted.map((entry) => entry.id), ["healthy"]);
-  await assert.rejects(resolveAudioService(h.directory, connection.id, "generate_music"), /Private Suno session storage/);
+  await assert.rejects(resolveIntegrationConnection(h.directory, connection.id, "generate_music"), /Private Suno session storage/);
   const tools = await createRequestAudioTools({ context: {} as never, storageDirectory: h.directory,
     sessionId: h.session.id, requestId: "request", attachmentRefs: [], target: {}, signal: h.controller.signal,
     onProgress() {}, onAssets() {} });
@@ -188,11 +190,14 @@ test("output manifests cannot change during collection or through storage update
 
 test("reconfiguration during preflight prevents submission using a stale admission", async (t) => {
   const h = await harness(t);
-  const admittedConnections = await captureAudioServiceConnections(h.directory);
+  const admittedConnections = await captureIntegrationConnections(h.directory);
   h.context.generationAdapter.prepare = async () => {
     const settings = await loadAgentSettings(h.directory);
-    await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: settings.audioServices!.revision,
-      connection: { ...connection, enabled: false } } });
+    await saveIntegrationConnection(
+      h.directory,
+      settings.integrationConnections!.revision,
+      { ...connection, enabled: false },
+    );
   };
   const job = await generateAudio({ ...h.context, admittedConnections }, connection.id, request);
   assert.equal(job.status, "failed");

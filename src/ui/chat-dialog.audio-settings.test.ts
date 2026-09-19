@@ -2,17 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chatDialogStateForWire, serializeChatStateForHtml } from "./chat-state.js";
 import { createDialogHarness, waitForCondition } from "./chat-dialog.test-harness.js";
-import { audioState, service, musicService, toggle, audioCommands, broadcast, selectAudioService, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
+import { migrateAudioServiceConnection } from "../plugins/integration-connections.js";
+import { audioState, service, musicService, toggle, audioCommands, broadcast,
+  integrationConnectionView, selectAudioService, selectedAudioService } from "./chat-dialog.audio-test-helpers.js";
 
 test("HTML and full-state projections redact every audio key without mutating saved connections", () => {
   const state = audioState([service, musicService]);
-  state.settings.audioServices = { revision: "1", connections: [service, musicService].map(({ apiKeyConfigured: _, ...value }, i) =>
-    ({ ...value, apiKey: "fixture-private-" + i })) };
+  state.settings.integrationConnections = {
+    revision: "1",
+    connections: [service, musicService].map((value, index) =>
+      migrateAudioServiceConnection({
+        id: value.id,
+        name: value.name,
+        provider: value.provider,
+        enabled: value.enabled,
+        apiKey: `fixture-private-${index}`,
+        ...(value.modelId === undefined ? {} : { modelId: value.modelId }),
+      })),
+  };
   const wire = chatDialogStateForWire(state);
-  assert.equal(Object.hasOwn(wire.settings, "audioServices"), false, "the top-level view is the only browser audio-settings owner");
+  assert.equal(Object.hasOwn(wire.settings, "integrationConnections"), false, "the top-level view is the only browser audio-settings owner");
   assert.doesNotMatch(JSON.stringify(wire), /fixture-private-/);
   assert.doesNotMatch(serializeChatStateForHtml(state), /fixture-private-/);
-  assert.equal(state.settings.audioServices.connections[1]!.apiKey, "fixture-private-1");
+  assert.equal(state.settings.integrationConnections!.connections[1]!.secrets.apiKey, "fixture-private-1");
 });
 
 test("Add starts disabled, requires a unique name and key to enable, and submits a write-only key", async () => {
@@ -36,11 +49,16 @@ test("Add starts disabled, requires a unique name and key to enable, and submits
     assert.doesNotMatch(JSON.stringify(harness.readBootstrappedClientStateReference()), /fixture-ui-key/);
     harness.releaseHeldCommand();
     await harness.settle();
-    const patch = audioCommands(harness)[0]!.audioServices;
+    const patch = audioCommands(harness)[0]!.integrationConnections;
     assert.equal(patch.action, "upsert");
     if (patch.action !== "upsert") throw new Error("Expected upsert");
     assert.deepEqual(patch, { action: "upsert", expectedRevision: "0", connection: {
-      id: patch.connection.id, name: "My separation", provider: "lalal", enabled: true, apiKey: "fixture-ui-key",
+      id: patch.connection.id,
+      name: "My separation",
+      pluginId: builtInAudioPluginId("lalal"),
+      enabled: true,
+      configuration: {},
+      secrets: { apiKey: "fixture-ui-key" },
     } });
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.deepEqual(harness.errors, []);
@@ -56,7 +74,7 @@ test("multiple providers and same-provider accounts save, clear, and remove only
     toggle(harness, true);
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const added = audioCommands(harness).at(-1)!.audioServices;
+    const added = audioCommands(harness).at(-1)!.integrationConnections;
     if (added.action !== "upsert") throw new Error("Expected upsert");
     const personalId = added.connection.id;
     assert.equal(harness.document.querySelectorAll("[data-audio-service-id]").length, 3);
@@ -64,10 +82,10 @@ test("multiple providers and same-provider accounts save, clear, and remove only
     harness.input("#audioServiceName", "Work updated");
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const edited = audioCommands(harness).at(-1)!.audioServices;
+    const edited = audioCommands(harness).at(-1)!.integrationConnections;
     if (edited.action !== "upsert") throw new Error("Expected upsert");
     assert.equal(edited.connection.id, service.id);
-    assert.equal(Object.hasOwn(edited.connection, "apiKey"), false);
+    assert.equal(Object.hasOwn(edited.connection, "secrets"), false);
     harness.click("#clearAudioServiceButton");
     await harness.acceptAppConfirmation();
     await harness.settle();
@@ -77,7 +95,9 @@ test("multiple providers and same-provider accounts save, clear, and remove only
     harness.click("#removeAudioServiceButton");
     await harness.acceptAppConfirmation();
     await harness.settle();
-    assert.deepEqual(audioCommands(harness).at(-1)!.audioServices, { action: "remove", serviceId: personalId, expectedRevision: "4" });
+    assert.deepEqual(audioCommands(harness).at(-1)!.integrationConnections, {
+      action: "remove", connectionId: personalId, expectedRevision: "4",
+    });
     selectAudioService(harness, musicService.id);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceEnabled")!.checked, true);
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
@@ -103,10 +123,10 @@ test("provider switches clear unsaved key and model fields and cannot reuse anot
     harness.input("#audioServiceModel", "music_v2");
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    const patch = audioCommands(harness).at(-1)!.audioServices;
+    const patch = audioCommands(harness).at(-1)!.integrationConnections;
     if (patch.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(patch.connection.provider, "elevenlabs");
-    assert.equal(patch.connection.apiKey, "fixture-replacement");
+    assert.equal(patch.connection.pluginId, builtInAudioPluginId("elevenlabs"));
+    assert.equal(patch.connection.secrets?.apiKey, "fixture-replacement");
     selectAudioService(harness, musicService.id);
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.deepEqual(harness.errors, []);
@@ -123,8 +143,12 @@ test("selection preserves non-secret drafts but clears keys; collection changes 
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "");
     selectAudioService(harness, service.id);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Unfinished name");
-    const next = { connections: [service, { ...musicService, name: "New music studio" }], revision: "2" };
-    harness.setServerState({ ...state, audioServices: next });
+    const next = {
+      connections: [service, { ...musicService, name: "New music studio" }]
+        .map(integrationConnectionView),
+      revision: "2",
+    };
+    harness.setServerState({ ...state, integrationConnections: next });
     harness.emitServerEvent(broadcast(state, next));
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceConflict")!.hidden, false);
@@ -134,7 +158,7 @@ test("selection preserves non-secret drafts but clears keys; collection changes 
     harness.input("#audioServiceName", "Reloaded name");
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    assert.equal(audioCommands(harness).at(-1)!.audioServices.expectedRevision, "2");
+    assert.equal(audioCommands(harness).at(-1)!.integrationConnections.expectedRevision, "2");
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
@@ -145,22 +169,25 @@ test("conflicting peer revisions retain fields, clear keys, require reload, and 
   try {
     harness.input("#audioServiceName", "Draft name");
     harness.input("#audioServiceApiKey", "fixture-stale-draft");
-    const next = { connections: [{ ...service, enabled: false }], revision: "2" };
+    const next = {
+      connections: [integrationConnectionView({ ...service, enabled: false })],
+      revision: "2",
+    };
     harness.emitServerEvent(broadcast(state, next));
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Draft name");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "");
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
-    harness.emitServerEvent(broadcast(state, state.audioServices));
+    harness.emitServerEvent(broadcast(state, state.integrationConnections));
     await harness.settle();
     harness.click("#reloadAudioServiceButton");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceEnabled")!.checked, false);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, service.name);
-    harness.setServerState({ ...state, audioServices: next });
+    harness.setServerState({ ...state, integrationConnections: next });
     toggle(harness, true);
     harness.click("#saveAudioServiceButton");
     await harness.settle();
-    assert.equal(audioCommands(harness).at(-1)!.audioServices.expectedRevision, "2");
+    assert.equal(audioCommands(harness).at(-1)!.integrationConnections.expectedRevision, "2");
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
@@ -171,7 +198,9 @@ test("rejected stale save retains non-secret draft fields and never restores a s
   try {
     harness.input("#audioServiceName", "Keep my draft");
     harness.input("#audioServiceApiKey", "fixture-rejected-key");
-    harness.setServerState({ ...state, audioServices: { connections: [service], revision: "2" } });
+    harness.setServerState({ ...state, integrationConnections: {
+      connections: [integrationConnectionView(service)], revision: "2",
+    } });
     harness.click("#saveAudioServiceButton");
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "");
@@ -216,7 +245,7 @@ for (const [isNew, withState] of [[false, false], [false, true], [true, false], 
         harness.emitServerEventOpen();
         await waitForCondition(() => !harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled,
           "Expected covering authoritative state and stream reconnection to finish reconciliation.");
-        assert.deepEqual(JSON.parse(JSON.stringify(harness.readBootstrappedClientStateReference().audioServices)), state.audioServices);
+        assert.deepEqual(JSON.parse(JSON.stringify(harness.readBootstrappedClientStateReference().integrationConnections)), state.integrationConnections);
       }
       assert.equal(selectedAudioService(harness), id);
       assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Keep unknown draft");
@@ -230,7 +259,7 @@ for (const [isNew, withState] of [[false, false], [false, true], [true, false], 
       assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Keep unknown draft");
       harness.click("#saveAudioServiceButton");
       await harness.settle();
-      const retry = audioCommands(harness).at(-1)!.audioServices;
+      const retry = audioCommands(harness).at(-1)!.integrationConnections;
       assert.equal(retry.action, "upsert");
       if (retry.action === "upsert") assert.equal(Object.hasOwn(retry.connection, "apiKey"), false);
       assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
@@ -301,7 +330,7 @@ test("key-only peer changes invalidate an existing draft even when every visible
   try {
     harness.input("#audioServiceName", "My pending edit");
     harness.input("#audioServiceApiKey", "fixture-stale-replacement");
-    harness.emitServerEvent(broadcast(state, { ...state.audioServices, revision: "2" }));
+    harness.emitServerEvent(broadcast(state, { ...state.integrationConnections, revision: "2" }));
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "");
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceConflict")!.hidden, false);
@@ -317,7 +346,10 @@ test("removing a selected connection in a peer window cannot let its draft recre
   const harness = await createDialogHarness(state);
   try {
     harness.input("#audioServiceName", "Removed draft");
-    harness.emitServerEvent(broadcast(state, { connections: [musicService], revision: "2" }));
+    harness.emitServerEvent(broadcast(state, {
+      connections: [integrationConnectionView(musicService)],
+      revision: "2",
+    }));
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
     harness.click("#reloadAudioServiceButton");

@@ -4,11 +4,11 @@ import test, { type TestContext } from "node:test";
 import { createSunoAudioAdapter } from "../audio-services/suno.js";
 import { createHostAbortController } from "../runtime/host.js";
 import { loadAudioJob } from "../storage/audio-jobs.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { downloadAudioOutput, retrieveMusic } from "./audio-generation.js";
 import { SessionMutationFence, sessionMutationFenceKey } from "./session-mutation-fence.js";
 import { clipIds, connection, fixtureToken, manifest, retrievalHarness } from "./audio-retrieval-test-helpers.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 async function authorizationHarness(t: TestContext) {
   const h = await retrievalHarness(t);
@@ -73,9 +73,9 @@ test("connection edits during a pending selected permission read prevent the aut
       await entered.promise;
       await h.change(async () => {
         if (change === "logout") await h.sessions.clear(connection.id);
-        else if (change === "disable") await saveGlobalSettings(h.directory, { audioServices: {
-          action: "upsert", expectedRevision: "1", connection: { ...connection, enabled: false },
-        } });
+        else if (change === "disable") {
+          await saveIntegrationConnection(h.directory, "1", { ...connection, enabled: false });
+        }
         else await h.sessions.save(connection.id, { accountId: change === "account" ? "user_other" : "user_fixture",
           clientToken: fixtureToken("changed") });
       });

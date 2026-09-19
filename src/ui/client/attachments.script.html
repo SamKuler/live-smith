@@ -418,9 +418,13 @@
 
       function audioInputStatus() {
         const runtime = activeSavedRuntime();
-        const services = getState().audioServices?.connections || [];
-        if (services.some((service) => service.enabled && service.apiKeyConfigured &&
-          __AUDIO_SERVICE_CAPABILITIES__[service.provider]?.operations.includes("separate_stems")) &&
+        const services = getState().integrationConnections?.connections || [];
+        if (services.some((connection) => {
+          const descriptor = Object.values(__BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__)
+            .find((candidate) => candidate.pluginId === connection.pluginId);
+          return connection.enabled && connection.configuredSecrets?.includes("apiKey") &&
+            descriptor?.operations.includes("separate_stems");
+        }) &&
           runtime?.capabilities?.tools === true) {
           return "supported";
         }

@@ -13,11 +13,15 @@ import { saveSessionAttachment } from "../storage/attachments.js";
 import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
 import { createSession } from "../storage/sessions.js";
 import {
-  audioConnectionFingerprint, availableAudioServices, captureAudioServiceConnections, resolveAudioService,
-} from "./audio-service-connections.js";
+  integrationConnectionFingerprint, availableIntegrationConnections, captureIntegrationConnections, resolveIntegrationConnection,
+} from "./integration-connections.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
 import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { builtInAudioPlugin } from "../plugins/builtins/index.js";
+import {
+  runtimeIntegrationConnectionFixture,
+  saveIntegrationConnection,
+} from "./integration-connection-test-helpers.js";
 
 const owner: AudioServiceConnection = {
   id: "chosen", name: "Original account", provider: "elevenlabs", enabled: true,
@@ -34,7 +38,7 @@ const toolName = (
 const musicCall = (connection: AudioServiceConnection = owner) => ({
   id: "generate",
   name: toolName(connection, "generate_music"),
-  arguments: JSON.stringify({ serviceId: connection.id, prompt: "Piano", instrumental: true }),
+  arguments: JSON.stringify({ connectionId: connection.id, prompt: "Piano", instrumental: true }),
 });
 
 async function harness(t: TestContext, connection = owner) {
@@ -43,14 +47,17 @@ async function harness(t: TestContext, connection = owner) {
   const session = await createSession(storage, sessionInput);
   const save = async (value: AudioServiceConnection) => {
     const settings = await loadAgentSettings(storage);
-    await saveGlobalSettings(storage, { audioServices: {
-      action: "upsert", expectedRevision: settings.audioServices?.revision ?? "0", connection: value,
-    } });
+    await saveIntegrationConnection(
+      storage,
+      settings.integrationConnections?.revision ?? "0",
+      value,
+    );
   };
   const remove = async () => {
     const settings = await loadAgentSettings(storage);
-    await saveGlobalSettings(storage, { audioServices: {
-      action: "remove", expectedRevision: settings.audioServices!.revision, serviceId: connection.id,
+    await saveGlobalSettings(storage, { integrationConnections: {
+      action: "remove", expectedRevision: settings.integrationConnections!.revision,
+      connectionId: connection.id,
     } });
   };
   await save(connection);
@@ -104,7 +111,7 @@ for (const scenario of driftCases) {
       tool.function.name === toolName(admitted, "generate_music"))!;
     assert.ok(declared);
     const properties = declared.function.parameters?.properties as Record<string, unknown>;
-    assert.deepEqual(properties.serviceId, { type: "string", enum: [owner.id] });
+    assert.deepEqual(properties.connectionId, { type: "string", enum: [owner.id] });
     assert.match(declared.function.description, new RegExp((scenario.initial ?? owner).provider));
     if (scenario.replacement) await h.save(scenario.replacement);
     else await h.remove();
@@ -119,54 +126,64 @@ for (const scenario of driftCases) {
 
 test("connection resolution rejects an ID absent from the admitted snapshot", async (t) => {
   const h = await harness(t);
-  await assert.rejects(resolveAudioService(h.storage, owner.id, "generate_music", []), /admi|changed|unavailable/i);
+  await assert.rejects(resolveIntegrationConnection(h.storage, owner.id, "generate_music", []), /admi|changed|unavailable/i);
 });
 
 test("capture retains only configured enabled connections and isolates every saved field", async (t) => {
-  assert.deepEqual(await captureAudioServiceConnections(undefined), []);
+  assert.deepEqual(await captureIntegrationConnections(undefined), []);
   const h = await harness(t, suno);
   await h.save({ ...owner, id: "disabled", name: "Disabled", enabled: false });
   await h.save({ ...owner, id: "empty", name: "Unconfigured", enabled: false, apiKey: "" });
-  const admitted = await captureAudioServiceConnections(h.storage);
-  assert.deepEqual(admitted, [suno]);
-  assert.deepEqual(await availableAudioServices(h.storage), [{
-    id: suno.id, name: suno.name, provider: suno.provider, modelId: suno.modelId,
+  const admitted = await captureIntegrationConnections(h.storage);
+  assert.deepEqual(admitted, [runtimeIntegrationConnectionFixture(suno)]);
+  assert.deepEqual(await availableIntegrationConnections(h.storage), [{
+    id: suno.id,
+    name: suno.name,
+    pluginId: builtInAudioPlugin(suno.provider).id,
+    provider: suno.provider,
+    modelId: suno.modelId,
   }]);
   await h.save({ ...suno, apiKey: "fixture-admission-owner-b", modelId: "V5", callbackUrl: "https://hooks.example.com/replacement" });
-  assert.deepEqual(admitted, [suno]);
+  assert.deepEqual(admitted, [runtimeIntegrationConnectionFixture(suno)]);
   assert.throws(() => { admitted[0]!.apiKey = "fixture-unintended-mutation"; }, TypeError);
   assert.equal(admitted[0]!.apiKey, suno.apiKey);
 });
 
 test("resolver errors do not expose admitted or replacement connection details", async (t) => {
   const h = await harness(t, suno);
-  const admitted = await captureAudioServiceConnections(h.storage);
+  const admitted = await captureIntegrationConnections(h.storage);
   await h.save({ ...suno, apiKey: "fixture-admission-owner-b" });
-  await assert.rejects(resolveAudioService(h.storage, suno.id, "generate_music", admitted), (error: unknown) => {
+  await assert.rejects(resolveIntegrationConnection(h.storage, suno.id, "generate_music", admitted), (error: unknown) => {
     assert.ok(error instanceof Error);
     assert.match(error.message, /changed after this request was admitted/);
     assert.doesNotMatch(String(error), /fixture-admission-|hooks\.example\.com/);
     return true;
   });
-  await assert.rejects(resolveAudioService(undefined, suno.id, "generate_music", admitted), /private persistent storage/);
+  await assert.rejects(resolveIntegrationConnection(undefined, suno.id, "generate_music", admitted), /private persistent storage/);
 });
 
 test("admission preserves capability validation and callers without a send snapshot", async (t) => {
   const h = await harness(t);
-  const admitted = await captureAudioServiceConnections(h.storage);
-  await assert.rejects(resolveAudioService(h.storage, owner.id, "separate_stems", admitted), /does not support/);
+  const admitted = await captureIntegrationConnections(h.storage);
+  await assert.rejects(resolveIntegrationConnection(h.storage, owner.id, "separate_stems", admitted), /does not expose/);
   const replacement = { ...owner, apiKey: "fixture-admission-owner-b" };
   await h.save(replacement);
-  assert.deepEqual(await resolveAudioService(h.storage, owner.id, "generate_music"), replacement);
+  assert.deepEqual(
+    await resolveIntegrationConnection(h.storage, owner.id, "generate_music"),
+    runtimeIntegrationConnectionFixture(replacement),
+  );
 });
 
 test("connection resolution returns the original admitted object when another connection changes", async (t) => {
   const h = await harness(t);
-  const admitted = await captureAudioServiceConnections(h.storage);
+  const admitted = await captureIntegrationConnections(h.storage);
   await h.save({ ...suno, id: "other", name: "Other account", apiKey: "fixture-other-account" });
-  const resolved = await resolveAudioService(h.storage, owner.id, "generate_music", admitted);
+  const resolved = await resolveIntegrationConnection(h.storage, owner.id, "generate_music", admitted);
   assert.equal(resolved, admitted[0]);
-  assert.equal(audioConnectionFingerprint(resolved), audioConnectionFingerprint(owner));
+  assert.equal(
+    integrationConnectionFingerprint(resolved),
+    integrationConnectionFingerprint(runtimeIntegrationConnectionFixture(owner)),
+  );
 });
 
 test("another connection changing does not invalidate advertised generation", async (t) => {
@@ -179,7 +196,8 @@ test("another connection changing does not invalidate advertised generation", as
   assert.equal(result.failed, undefined);
   assert.deepEqual(h.calls, ["generate"]);
   const [job] = await listAudioJobs(h.storage, h.session.id);
-  assert.equal(job?.connectionFingerprint, audioConnectionFingerprint(owner));
+  assert.equal(job?.connectionFingerprint,
+    integrationConnectionFingerprint(runtimeIntegrationConnectionFixture(owner)));
   assert.equal(job?.status, "completed");
 });
 
@@ -193,7 +211,8 @@ test("a later send admits the replacement connection after rejecting an old send
   const newSend = await createRequestAudioTools(h.input);
   assert.equal((await newSend.execute(musicCall())).failed, undefined);
   assert.deepEqual(h.calls, ["generate"]);
-  assert.equal((await listAudioJobs(h.storage, h.session.id))[0]?.connectionFingerprint, audioConnectionFingerprint(replacement));
+  assert.equal((await listAudioJobs(h.storage, h.session.id))[0]?.connectionFingerprint,
+    integrationConnectionFingerprint(runtimeIntegrationConnectionFixture(replacement)));
 });
 
 for (const state of ["added", "enabled"] as const) {
@@ -201,12 +220,12 @@ for (const state of ["added", "enabled"] as const) {
     const h = await harness(t);
     const late = { ...owner, id: "late", name: "Later account" };
     if (state === "enabled") await h.save({ ...late, enabled: false });
-    const admitted = await captureAudioServiceConnections(h.storage);
+    const admitted = await captureIntegrationConnections(h.storage);
     const tools = await createRequestAudioTools(h.input);
     await h.save(late);
-    await assert.rejects(resolveAudioService(h.storage, late.id, "generate_music", admitted), /not admitted/);
+    await assert.rejects(resolveIntegrationConnection(h.storage, late.id, "generate_music", admitted), /not admitted/);
     const result = await tools.execute({ ...musicCall(), arguments: JSON.stringify({
-      serviceId: late.id, prompt: "Piano", instrumental: true,
+      connectionId: late.id, prompt: "Piano", instrumental: true,
     }) });
     assert.equal(result.invalidArguments, true);
     assert.deepEqual(h.calls, []);
@@ -218,7 +237,7 @@ test("sound effects also retain the admitted credential owner", async (t) => {
   const tools = await createRequestAudioTools(h.input);
   await h.save({ ...owner, apiKey: "fixture-admission-owner-b" });
   const result = await tools.execute({ id: "effect", name: toolName(owner, "generate_sound_effect"), arguments: JSON.stringify({
-    serviceId: owner.id, prompt: "Wind", durationSeconds: 2, loop: false,
+    connectionId: owner.id, prompt: "Wind", durationSeconds: 2, loop: false,
   }) });
   assert.deepEqual(h.calls, []);
   assert.equal(result.failed, true);
@@ -232,7 +251,7 @@ test("stem separation rejects a replaced connection before reading or uploading 
   const tools = await createRequestAudioTools({ ...h.input, attachmentRefs: [ref] });
   await h.save({ ...splitter, apiKey: "fixture-admission-owner-b" });
   const result = await tools.execute({ id: "split", name: toolName(splitter, "separate_stems"), arguments: JSON.stringify({
-    serviceId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
+    connectionId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
   }) });
   assert.deepEqual(h.calls, []);
   assert.equal(result.failed, true);
@@ -264,7 +283,7 @@ for (const stage of ["before upload", "after upload"] as const) {
       if (stage === "before upload") await replace();
     } });
     const result = await tools.execute({ id: "split", name: toolName(splitter, "separate_stems"), arguments: JSON.stringify({
-      serviceId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
+      connectionId: owner.id, stems: ["vocals"], source: { kind: "request_audio_attachment", requestId: "request", audioIndex: 0 },
     }) });
     assert.deepEqual(h.calls, stage === "before upload" ? [] : ["upload"]);
     assert.equal(result.failed, true);

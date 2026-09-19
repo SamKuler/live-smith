@@ -2,19 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseAudioToolRequest, validateAudioServiceRequest } from "./audio-tools.js";
 import { AgentExternalToolReportingError, runAgentLoop } from "./loop.js";
-import type { AudioServiceChoice } from "../audio-services/capabilities.js";
+import type { BuiltInIntegrationConnectionChoice } from "../plugins/builtins/contracts.js";
 import type { ModelFunctionTool } from "../model/provider.js";
 import {
   builtInAudioLocalToolName,
   createBuiltInAudioToolsets,
 } from "../plugins/builtins/audio-toolsets.js";
+import { builtInAudioPluginId } from "../plugins/builtins/index.js";
+
+type ChoiceInput = Omit<BuiltInIntegrationConnectionChoice, "pluginId">;
+const choices = (services: readonly ChoiceInput[]): BuiltInIntegrationConnectionChoice[] =>
+  services.map((service) => ({
+    ...service,
+    pluginId: builtInAudioPluginId(service.provider),
+  }));
 
 function pluginTools(
-  services: readonly AudioServiceChoice[],
+  services: readonly ChoiceInput[],
   includeModelAudioInput = false,
 ): ModelFunctionTool[] {
   return createBuiltInAudioToolsets({
-    services,
+    services: choices(services),
     includeModelAudioInput,
     execute: async () => ({ content: "unused" }),
   }).flatMap((toolset) => toolset.tools());
@@ -33,7 +41,7 @@ test("audio tools project supported combinations and strictly parse bounded sour
     { kind: "listen_to_audio_asset", assetRef: "asset_known" });
   assert.throws(() => parseAudioToolRequest("listen_to_audio_asset", JSON.stringify({ assetRef: "../private" })));
   assert.equal(pluginTools([{ id: "splitter", name: "Stems", provider: "lalal" }]).length, 3);
-  const request = { serviceId: "splitter", source: { kind: "audio_asset", assetRef: "asset_known" }, stems: ["vocals", "drums"] };
+  const request = { connectionId: "splitter", source: { kind: "audio_asset", assetRef: "asset_known" }, stems: ["vocals", "drums"] };
   assert.deepEqual(parseAudioToolRequest("separate_stems", JSON.stringify(request)), { kind: "separate_stems", ...request });
   for (const invalid of [
     { ...request, stems: ["vocals", "vocals"] },
@@ -63,12 +71,12 @@ test("audio tools expose distinct operations only for eligible named connections
 });
 
 test("music and sound-effect requests validate operation-specific options and never accept connection secrets", () => {
-  const music = { serviceId: "music-one", prompt: "Sparse ambient piano", durationSeconds: 12, instrumental: true };
+  const music = { connectionId: "music-one", prompt: "Sparse ambient piano", durationSeconds: 12, instrumental: true };
   assert.deepEqual(parseAudioToolRequest("generate_music", JSON.stringify(music)), { kind: "generate_music", ...music });
-  const effect = { serviceId: "music-one", prompt: "Gentle rain", durationSeconds: 2.5, loop: true };
+  const effect = { connectionId: "music-one", prompt: "Gentle rain", durationSeconds: 2.5, loop: true };
   assert.deepEqual(parseAudioToolRequest("generate_sound_effect", JSON.stringify(effect)), { kind: "generate_sound_effect", ...effect });
   for (const invalid of [
-    { ...music, serviceId: "../key" }, { ...music, apiKey: "secret" },
+    { ...music, connectionId: "../key" }, { ...music, apiKey: "secret" },
     { ...music, baseUrl: "https://example.com" }, { ...music, prompt: " " },
     { ...music, prompt: "x".repeat(4101) }, { ...music, durationSeconds: 601 },
     { ...music, instrumental: "yes" }, { ...music, loop: true },
@@ -80,21 +88,21 @@ test("music and sound-effect requests validate operation-specific options and ne
 });
 
 test("third-party Suno music declares its prompt limit and does not silently discard a duration", () => {
-  const services = [{ id: "suno-third-party", name: "Suno via SunoAPI.org", provider: "sunoapi" as const }];
+  const services = choices([{ id: "suno-third-party", name: "Suno via SunoAPI.org", provider: "sunoapi" as const }]);
   const tools = pluginTools(services);
   const music = localTool(tools, "generate_music")!;
   assert.match(music.function.description, /sunoapi/);
   assert.match(JSON.stringify(music.function.parameters), /3000/);
   assert.doesNotMatch(JSON.stringify(music.function.parameters), /durationSeconds/);
   assert.ok(!localTool(tools, "generate_sound_effect"));
-  const parsed = parseAudioToolRequest("generate_music", JSON.stringify({ serviceId: services[0]!.id, prompt: "Ambient piano", instrumental: true }));
+  const parsed = parseAudioToolRequest("generate_music", JSON.stringify({ connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: true }));
   validateAudioServiceRequest(parsed, services);
-  assert.throws(() => validateAudioServiceRequest({ ...parsed, kind: "generate_music", serviceId: services[0]!.id, prompt: "Ambient piano", instrumental: true, durationSeconds: 10 }, services));
-  assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", serviceId: services[0]!.id, prompt: "a".repeat(3001), instrumental: false }, services));
+  assert.throws(() => validateAudioServiceRequest({ ...parsed, kind: "generate_music", connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: true, durationSeconds: 10 }, services));
+  assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", connectionId: services[0]!.id, prompt: "a".repeat(3001), instrumental: false }, services));
 });
 
 test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", () => {
-  const services = [{ id: "mureka-studio", name: "Mureka studio", provider: "mureka" as const }];
+  const services = choices([{ id: "mureka-studio", name: "Mureka studio", provider: "mureka" as const }]);
   const tools = pluginTools(services);
   const music = localTool(tools, "generate_music")!;
   const schema = JSON.stringify(music.function.parameters);
@@ -105,7 +113,7 @@ test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", ()
   assert.ok(localTool(tools, "generate_lyrics"));
   assert.ok(localTool(tools, "generate_song_from_lyrics"));
   const parsed = parseAudioToolRequest("generate_music", JSON.stringify({
-    serviceId: services[0]!.id, prompt: "Ambient piano", instrumental: false,
+    connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: false,
   }));
   assert.equal(parsed.kind, "generate_music");
   if (parsed.kind !== "generate_music") assert.fail("expected music generation");
@@ -115,17 +123,17 @@ test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", ()
 });
 
 test("official Suno Platform exposes only its supported custom fields", () => {
-  const services = [{ id: "official-suno", name: "Official Suno", provider: "suno-platform" as const }];
+  const services = choices([{ id: "official-suno", name: "Official Suno", provider: "suno-platform" as const }]);
   const tool = localTool(pluginTools(services), "generate_music")!;
   const schema = JSON.stringify(tool.function.parameters);
   for (const field of ["title", "styles", "personaId"]) assert.match(schema, new RegExp(field));
   for (const field of ["negativeStyles", "weirdness", "styleInfluence", "durationSeconds"]) {
     assert.doesNotMatch(schema, new RegExp(field));
   }
-  const variants = tool.function.parameters?.oneOf as Array<{ properties: { serviceId: { const: string }; options?: { required?: string[] } } }>;
-  assert.deepEqual(variants.find((entry) => entry.properties.serviceId.const === services[0]!.id && entry.properties.options)?.properties.options?.required,
+  const variants = tool.function.parameters?.oneOf as Array<{ properties: { connectionId: { const: string }; options?: { required?: string[] } } }>;
+  assert.deepEqual(variants.find((entry) => entry.properties.connectionId.const === services[0]!.id && entry.properties.options)?.properties.options?.required,
     ["mode", "styles"]);
-  const request = parseAudioToolRequest("generate_music", JSON.stringify({ serviceId: services[0]!.id,
+  const request = parseAudioToolRequest("generate_music", JSON.stringify({ connectionId: services[0]!.id,
     prompt: "lyrics", instrumental: false, options: { mode: "custom", styles: "dream pop" } }));
   assert.equal(request.kind, "generate_music");
   if (request.kind !== "generate_music") assert.fail("expected music generation");
@@ -137,16 +145,16 @@ test("official Suno Platform exposes only its supported custom fields", () => {
 });
 
 test("Suno.com exposes its bounded duration and vocal controls only on that connection", () => {
-  const website = { id: "website", name: "Suno subscription", provider: "suno" as const };
+  const website = choices([{ id: "website", name: "Suno subscription", provider: "suno" as const }])[0]!;
   const tool = localTool(pluginTools([website]), "generate_music")!;
   const variants = tool.function.parameters?.oneOf as Array<{
-    properties: { serviceId: { const: string }; durationSeconds?: { minimum: number; maximum: number }; options?: { properties?: object } };
+    properties: { connectionId: { const: string }; durationSeconds?: { minimum: number; maximum: number }; options?: { properties?: object } };
   }>;
-  const custom = variants.find((entry) => entry.properties.serviceId.const === website.id && entry.properties.options)!;
+  const custom = variants.find((entry) => entry.properties.connectionId.const === website.id && entry.properties.options)!;
   assert.deepEqual(custom.properties.durationSeconds, { type: "number", minimum: 10, maximum: 480 });
   assert.ok(Object.hasOwn(custom.properties.options!.properties!, "vocalGender"));
   const request = parseAudioToolRequest("generate_music", JSON.stringify({
-    serviceId: website.id, prompt: "[Verse]\nHello", durationSeconds: 10, instrumental: false,
+    connectionId: website.id, prompt: "[Verse]\nHello", durationSeconds: 10, instrumental: false,
     options: { mode: "custom", styles: "dream pop", vocalGender: "female" },
   }));
   assert.equal(request.kind, "generate_music");

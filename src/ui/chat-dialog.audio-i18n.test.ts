@@ -3,13 +3,12 @@ import test from "node:test";
 import { uiMessage } from "../i18n/ui-message.js";
 import { audioState, broadcast, job } from "./chat-dialog.audio-test-helpers.js";
 import { createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js";
-import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
-import type { AudioProvider } from "../audio-services/contracts.js";
 import { uiCatalogs } from "./i18n/messages.js";
 import {
   builtInAudioLocalToolName,
   createBuiltInAudioToolsets,
 } from "../plugins/builtins/audio-toolsets.js";
+import { BUILT_IN_AUDIO_PLUGINS } from "../plugins/builtins/index.js";
 
 test("serializable audio progress translates on locale changes and structural replay", async () => {
   const state = audioState(); state.settings.uiLanguage = "zh-CN";
@@ -20,7 +19,7 @@ test("serializable audio progress translates on locale changes and structural re
     h.emitServerEvent({ type: "progress", sendId: h.sendIds[0], sessionId: state.activeSessionId, message,
       activity: { status: "running", message: JSON.parse(JSON.stringify(message)) } });
     assert.equal(h.document.querySelector("#status")!.textContent, "正在分离音轨（42%）");
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
     assert.equal(h.document.querySelector("#status")!.textContent, "Separating stems (42%)");
     h.emitServerEvent({ type: "progress", sendId: h.sendIds[0], sessionId: state.activeSessionId,
       message: { source: "Separating stems", values: { invalid: { html: "<img>" } } } });
@@ -41,7 +40,7 @@ test("audio command progress and terminal notices retain locale identity", async
     assert.equal(h.document.querySelector("#status")!.textContent, "正在下载所选 Suno 歌曲");
     h.setServerState({ ...state, status: notice }); h.releaseHeldCommand(); held = false; await h.settle();
     assert.match(h.document.querySelector("#status")!.textContent!, /已下载到 Live Smith/);
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
     assert.equal(h.document.querySelector("#status")!.textContent, notice.source);
     assert.deepEqual(h.errors, []);
   } finally { if (held) h.releaseHeldCommand(); await h.settle(); h.close(); }
@@ -60,7 +59,12 @@ test("nested stem labels translate without interpreting diagnostic parameters", 
 });
 
 test("every registered audio tool has a translated title in the real activity DOM", async () => {
-  const services = Object.keys(AUDIO_SERVICE_CAPABILITIES).map(provider => ({ id: "test-" + provider, name: provider, provider: provider as AudioProvider }));
+  const services = BUILT_IN_AUDIO_PLUGINS.map((plugin) => ({
+    id: `test-${plugin.provider}`,
+    name: plugin.provider,
+    pluginId: plugin.id,
+    provider: plugin.provider,
+  }));
   const tools = createBuiltInAudioToolsets({
     services,
     includeModelAudioInput: true,

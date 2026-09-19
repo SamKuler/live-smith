@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MUREKA_MUSIC_MODELS } from "../audio-services/capabilities.js";
+import { murekaPlugin, MUREKA_MUSIC_MODELS } from "../plugins/builtins/mureka.js";
 import { createDialogHarness } from "./chat-dialog.test-harness.js";
 import { audioCommands, audioState, job, toggle } from "./chat-dialog.audio-test-helpers.js";
 
@@ -39,10 +39,16 @@ test("Mureka uses the named API-key workflow and provider-owned model suggestion
     harness.releaseHeldCommand();
     await harness.settle();
 
-    const patch = audioCommands(harness)[0]!.audioServices;
+    const patch = audioCommands(harness)[0]!.integrationConnections;
     if (patch.action !== "upsert") assert.fail("expected an upsert");
-    assert.deepEqual(patch.connection, { id: patch.connection.id, name: "Mureka studio", provider: "mureka",
-      enabled: true, apiKey: "fixture-mureka-ui-key", modelId: "mureka-9.5" });
+    assert.deepEqual(patch.connection, {
+      id: patch.connection.id,
+      name: "Mureka studio",
+      pluginId: murekaPlugin.id,
+      enabled: true,
+      configuration: { modelId: "mureka-9.5" },
+      secrets: { apiKey: "fixture-mureka-ui-key" },
+    });
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }

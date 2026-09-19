@@ -3,9 +3,7 @@ import { isIP } from "node:net";
 import { URL, URLSearchParams } from "node:url";
 
 import { cloneJsonValue } from "./json-clone.js";
-import { AUDIO_PROVIDERS, MAX_AUDIO_SERVICES, type AudioServiceConnection, type AudioServicesSettings } from "../audio-services/contracts.js";
-import { AUDIO_SERVICE_CAPABILITIES } from "../audio-services/capabilities.js";
-import { isAudioServiceModelId } from "../audio-services/model-id.js";
+import type { IntegrationConnectionsSettings } from "../plugins/integration-connections.js";
 import type { UiLanguage } from "../i18n/languages.js";
 export { isUiLanguage, type UiLanguage } from "../i18n/languages.js";
 
@@ -193,7 +191,7 @@ export type CustomInstructionsRevision = string;
 
 export const MAX_CUSTOM_INSTRUCTIONS_CODE_POINTS = 8_000;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 8 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 9 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;
@@ -210,42 +208,7 @@ export interface AgentSettings {
   uiLanguageRevision: UiLanguageRevision;
   customInstructions: string;
   customInstructionsRevision: CustomInstructionsRevision;
-  audioServices?: AudioServicesSettings;
-}
-
-export function normalizeAudioServiceConnection(value: unknown): AudioServiceConnection {
-  if (!isRecord(value) || Object.keys(value).some((key) =>
-    !["id", "name", "provider", "enabled", "apiKey", "modelId", "callbackUrl"].includes(key)) ||
-    !isProfileId(value.id) || typeof value.name !== "string" ||
-    !value.name.trim() || value.name.length > 120 || /[\x00-\x1f\x7f]/.test(value.name) ||
-    !AUDIO_PROVIDERS.includes(value.provider as AudioServiceConnection["provider"]) ||
-    typeof value.enabled !== "boolean" ||
-    typeof value.apiKey !== "string" || value.apiKey.length > 4096 ||
-    /[^\x21-\x7e]/.test(value.apiKey) ||
-    (Object.hasOwn(value, "modelId") && !isAudioServiceModelId(value.modelId))) {
-    throw new ProfileValidationError("audioServices", "Audio connections require a safe ID, a name, a supported provider, valid credentials, and an optional model ID.");
-  }
-  const provider = value.provider as AudioServiceConnection["provider"];
-  if (Object.hasOwn(value, "modelId") && !AUDIO_SERVICE_CAPABILITIES[provider].modelConfigurable) {
-    throw new ProfileValidationError("audioServices", "A music model ID is not configurable for this provider.");
-  }
-  if (Object.hasOwn(value, "callbackUrl") && (provider !== "sunoapi" || !isAudioServiceCallbackUrl(value.callbackUrl)) ||
-    provider === "sunoapi" && value.enabled && !Object.hasOwn(value, "callbackUrl")) {
-    throw new ProfileValidationError("audioServices", "SunoAPI.org requires an HTTP or HTTPS callback URL to enable: at most 2048 characters, valid encoding, and no embedded credentials, fragment, or whitespace. Other providers do not support a callback URL.");
-  }
-  if (typeof value.callbackUrl === "string" && value.apiKey &&
-    decodeURIComponent(value.callbackUrl).toLowerCase().includes(value.apiKey.toLowerCase())) {
-    throw new ProfileValidationError("audioServices", "The callback URL must not contain API credentials.");
-  }
-  if (value.enabled && !AUDIO_SERVICE_CAPABILITIES[provider].tools.length) {
-    throw new ProfileValidationError("audioServices", "This audio provider has no available public protocol and cannot be enabled.");
-  }
-  if (value.enabled && !value.apiKey && !AUDIO_SERVICE_CAPABILITIES[provider].sessionImport) {
-    throw new ProfileValidationError("audioServices", "An enabled audio connection requires an API key.");
-  }
-  return { id: value.id, name: value.name.trim(), provider, enabled: value.enabled,
-    apiKey: value.apiKey, ...(typeof value.modelId === "string" ? { modelId: value.modelId } : {}),
-    ...(typeof value.callbackUrl === "string" ? { callbackUrl: value.callbackUrl } : {}) };
+  integrationConnections?: IntegrationConnectionsSettings;
 }
 
 /** Syntax and credential boundary only; Live Smith never resolves or contacts it. */
@@ -260,20 +223,6 @@ export function isAudioServiceCallbackUrl(value: unknown): value is string {
     return ["http:", "https:"].includes(url.protocol) && Boolean(authority) && !authority!.includes("@") &&
       !url.username && !url.password;
   } catch { return false; }
-}
-
-export function normalizeAudioServicesSettings(value: unknown): AudioServicesSettings {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["connections", "revision"].includes(key)) ||
-    !Array.isArray(value.connections) || value.connections.length > MAX_AUDIO_SERVICES ||
-    !isNetworkProxyRevision(value.revision)) {
-    throw new ProfileValidationError("audioServices", "Audio tools require at most 20 named connections and a valid revision.");
-  }
-  const connections = value.connections.map(normalizeAudioServiceConnection);
-  if (new Set(connections.map((connection) => connection.id)).size !== connections.length ||
-    new Set(connections.map((connection) => connection.name.toLowerCase())).size !== connections.length) {
-    throw new ProfileValidationError("audioServices", "Audio connection IDs and names must be unique.");
-  }
-  return { connections, revision: value.revision };
 }
 
 export class ProfileValidationError extends Error {

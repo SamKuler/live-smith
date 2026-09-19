@@ -4,12 +4,12 @@ import * as fs from "node:fs/promises";
 import { Buffer } from "node:buffer";
 import { createRequestAudioTools } from "./request-audio-tools.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import type { AudioGenerationRequest } from "../audio-services/contracts.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { builtInAudioToolName } from "../plugins/builtins/audio-toolsets.js";
 import { sunoWebsitePlugin } from "../plugins/builtins/suno-website.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const clipId = "11111111-1111-4111-8111-111111111111";
 const token = ["{}", "fixture-client", "fixture-signature"].map((part) => Buffer.from(part).toString("base64url")).join(".");
@@ -19,9 +19,9 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Music tools", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
   for (const [index, id] of ["personal", "work"].entries()) {
-    await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: String(index), connection: {
+    await saveIntegrationConnection(directory, String(index), {
       id, name: id, provider: "suno", enabled: true, apiKey: "",
-    } } });
+    });
     await new SunoSessions(directory).save(id, { accountId: `user_${id}`, clientToken: token });
   }
   const calls: { queries: unknown[]; submissions: AudioGenerationRequest[] } = { queries: [], submissions: [] };
@@ -54,14 +54,14 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
 
 test("library tools strip host routing fields and admit only observed clip references on their connection", async (t) => {
   const h = await harness(t);
-  const extension = { serviceId: "personal", clipId, startSeconds: 10, prompt: "new verse", instrumental: false };
+  const extension = { connectionId: "personal", clipId, startSeconds: 10, prompt: "new verse", instrumental: false };
   assert.equal((await h.execute("extend_music", extension)).invalidArguments, true);
   assert.equal(h.calls.submissions.length, 0);
-  const library = await h.execute("inspect_music_service", { serviceId: "personal", query: "library", search: "piano" });
+  const library = await h.execute("inspect_music_service", { connectionId: "personal", query: "library", search: "piano" });
   assert.equal(library.failed, undefined);
   assert.deepEqual(h.calls.queries, [{ query: "library", search: "piano" }]);
   assert.doesNotMatch(library.content, new RegExp(token.replaceAll(".", "\\.")));
-  assert.equal((await h.execute("extend_music", { ...extension, serviceId: "work" })).invalidArguments, true);
+  assert.equal((await h.execute("extend_music", { ...extension, connectionId: "work" })).invalidArguments, true);
   const result = await h.execute("extend_music", extension);
   assert.equal(result.failed, undefined);
   assert.equal(JSON.parse(result.content).operation, "extend_music");
@@ -71,7 +71,7 @@ test("library tools strip host routing fields and admit only observed clip refer
 test("custom parameters survive the chat-to-runtime boundary without connection data", async (t) => {
   const h = await harness(t);
   const fields = { prompt: "my lyrics", instrumental: false, options: { mode: "custom", styles: "piano", weirdness: 40, styleInfluence: 60 } };
-  const result = await h.execute("generate_music", { serviceId: "personal", ...fields });
+  const result = await h.execute("generate_music", { connectionId: "personal", ...fields });
   assert.equal(result.failed, undefined);
   assert.deepEqual(h.calls.submissions, [{ operation: "generate_music", ...fields }]);
   assert.doesNotMatch(JSON.stringify(h.tools.tools), /clientToken|user_personal|fixture-client/);
@@ -80,10 +80,10 @@ test("custom parameters survive the chat-to-runtime boundary without connection 
 test("a connection cleared during a library read cannot release that account's results or enable editing", async (t) => {
   const h = await harness(t);
   h.mode.changeCredential = true;
-  const library = await h.execute("inspect_music_service", { serviceId: "personal", query: "library" });
+  const library = await h.execute("inspect_music_service", { connectionId: "personal", query: "library" });
   assert.equal(library.failed, true);
   assert.equal(library.stop, true);
   assert.doesNotMatch(library.content, /An observed song|11111111/);
-  assert.equal((await h.execute("get_whole_song", { serviceId: "personal", clipId })).invalidArguments, true);
+  assert.equal((await h.execute("get_whole_song", { connectionId: "personal", clipId })).invalidArguments, true);
   assert.equal(h.calls.submissions.length, 0);
 });

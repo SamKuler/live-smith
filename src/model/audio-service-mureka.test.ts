@@ -6,7 +6,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 
 import type { AudioGenerationRequest, RemoteAudioOutput } from "../audio-services/contracts.js";
-import { MUREKA_MUSIC_MODELS } from "../audio-services/capabilities.js";
+import { MUREKA_MUSIC_MODELS } from "../plugins/builtins/mureka.js";
 import { createMurekaAudioAdapter, generateMurekaLyrics } from "../audio-services/mureka.js";
 import { createHostAbortController } from "../runtime/host.js";
 

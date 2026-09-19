@@ -12,7 +12,7 @@ import { createSunoSessionVerifier } from "../audio-services/suno-session.js";
 import type { SunoSessionVerifier } from "../audio-services/suno-session-contracts.js";
 import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openAudioDownload } from "../runtime/audio-download-browser.js";
-import { audioServicesView } from "../storage/settings.js";
+import { integrationConnectionsView } from "../storage/settings.js";
 import { readAudioAsset, deleteSessionAudio, listSessionAudioDirectoryIds } from "../storage/audio-assets.js";
 import {
   deleteSessionMidiArtifacts,
@@ -1436,8 +1436,8 @@ export async function runAgentFlow(
         ? undefined
         : oauthAuthByScope.get(oauthScopeKey(modelAuthScope));
       const audioJobs = await audioJobViews(storageDirectory, activeSession.id);
-      const sunoAccounts = await sunoSessions.views(settings.audioServices?.connections ?? []);
-      const catalog = await sunoModelCatalog.view(settings.audioServices?.revision);
+      const sunoAccounts = await sunoSessions.views(settings.integrationConnections?.connections ?? []);
+      const catalog = await sunoModelCatalog.view(settings.integrationConnections?.revision);
       throwIfAborted(signal);
       return {
         contextSummary: activeInteraction?.summary ??
@@ -1464,7 +1464,7 @@ export async function runAgentFlow(
         approvalMode: activeSession.approvalMode ?? "manual",
         events,
         pendingAttachments,
-        ...(settings.audioServices ? { audioServices: audioServicesView(settings.audioServices) } : {}),
+        ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
         audioJobs,
         sunoAccounts,
         ...(catalog === undefined ? {} : { sunoModelCatalog: catalog }),
@@ -2261,14 +2261,14 @@ export async function runAgentFlow(
                 ? { showContextUsage: commandInput.showContextUsage }
                 : "uiLanguage" in commandInput
                 ? { uiLanguage: commandInput.uiLanguage }
-                : "audioServices" in commandInput
-                ? { audioServices: commandInput.audioServices }
+                : "integrationConnections" in commandInput
+                ? { integrationConnections: commandInput.integrationConnections }
                 : "customInstructions" in commandInput
                 ? { customInstructions: commandInput.customInstructions }
                 : { networkProxy: commandInput.networkProxy },
             );
             publishGlobalSettingsChange(storageDirectory, {
-              ...(settings.audioServices ? { audioServices: audioServicesView(settings.audioServices) } : {}),
+              ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
               defaultFollowUpBehaviorRevision:
                 settings.defaultFollowUpBehaviorRevision,
@@ -2284,18 +2284,18 @@ export async function runAgentFlow(
               commandId: commandContext.commandId,
             });
             status = "Global settings saved.";
-            if ("audioServices" in commandInput) notifyGlobalStateChanged();
+            if ("integrationConnections" in commandInput) notifyGlobalStateChanged();
             return buildStateAfterCommandMutation();
           } catch (cause) {
             if (!isStorageCommitOutcomeUnknownError(cause)) throw cause;
 
-            if ("audioServices" in commandInput) notifyGlobalStateChanged();
+            if ("integrationConnections" in commandInput) notifyGlobalStateChanged();
             try {
               const settings = await loadAgentSettings(
                 storageDirectory,
               );
               publishGlobalSettingsChange(storageDirectory, {
-                ...(settings.audioServices ? { audioServices: audioServicesView(settings.audioServices) } : {}),
+                ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
                 defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
                 defaultFollowUpBehaviorRevision:
                   settings.defaultFollowUpBehaviorRevision,

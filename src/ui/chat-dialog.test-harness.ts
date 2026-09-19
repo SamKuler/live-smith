@@ -358,7 +358,7 @@ function stateFixture(): ChatBridgeState {
     oauthAuthProvider: "openai",
     oauthAuthGeneration: 0,
     settings: {
-      schemaVersion: 8,
+      schemaVersion: 9,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
@@ -1479,7 +1479,7 @@ async function createDialogHarness(
                 showContextUsage?: boolean;
                 uiLanguage?: UiLanguage;
                 networkProxy?: NetworkProxySettings;
-                audioServices?: import("../audio-services/contracts.js").AudioServicesSettingsPatch;
+                integrationConnections?: import("../plugins/integration-connections.js").IntegrationConnectionsSettingsPatch;
                 customInstructions?: string;
                 profile?: SavedProfile;
                 profileId?: string;
@@ -1568,26 +1568,34 @@ async function createDialogHarness(
               } else if (
                 command.kind === "save_global_settings"
               ) {
-                if (command.audioServices) {
-                  const patch = command.audioServices;
-                  const current = serverState.audioServices ?? { connections: [], revision: "0" };
+                if (command.integrationConnections) {
+                  const patch = command.integrationConnections;
+                  const current = serverState.integrationConnections ?? { connections: [], revision: "0" };
                   if (patch.expectedRevision !== current.revision) {
-                    return failedResponse({ commandId, error: "Audio settings changed in another window.", field: "audioServices" }, 409, "Conflict");
+                    return failedResponse({ commandId, error: "Audio settings changed in another window.", field: "integrationConnections" }, 409, "Conflict");
                   }
                   const connections = [...current.connections];
                   if (patch.action === "remove") {
-                    const index = connections.findIndex((service) => service.id === patch.serviceId);
+                    const index = connections.findIndex((service) => service.id === patch.connectionId);
                     if (index >= 0) connections.splice(index, 1);
                   } else {
-                    const { apiKey, ...fields } = patch.connection;
+                    const { secrets, ...fields } = patch.connection;
                     const index = connections.findIndex((service) => service.id === fields.id);
                     const previous = connections[index];
-                    const service = { ...fields, apiKeyConfigured: apiKey === undefined
-                      ? previous?.provider === fields.provider && previous.apiKeyConfigured : Boolean(apiKey) };
+                    const service = {
+                      ...fields,
+                      configuredSecrets: secrets === undefined
+                        ? previous?.pluginId === fields.pluginId
+                          ? [...(previous?.configuredSecrets ?? [])]
+                          : []
+                        : Object.entries(secrets)
+                          .filter(([, value]) => Boolean(value))
+                          .map(([name]) => name),
+                    };
                     if (index < 0) connections.push(service);
                     else connections[index] = service;
                   }
-                  serverState.audioServices = { connections, revision: incrementNetworkProxyRevision(current.revision) };
+                  serverState.integrationConnections = { connections, revision: incrementNetworkProxyRevision(current.revision) };
                 } else if (command.uiLanguage) {
                   serverState.settings.uiLanguage = command.uiLanguage;
                   serverState.settings.uiLanguageRevision = String(BigInt(serverState.settings.uiLanguageRevision) + 1n);

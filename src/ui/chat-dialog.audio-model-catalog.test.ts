@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioState, audioCommands, broadcast, musicService, selectAudioService } from "./chat-dialog.audio-test-helpers.js";
+import { audioState, audioCommands, broadcast, integrationConnectionView,
+  musicService, selectAudioService } from "./chat-dialog.audio-test-helpers.js";
 
 const website = { id: "suno-personal", name: "Personal Suno", provider: "suno" as const, enabled: false, apiKeyConfigured: false };
 const account = { serviceId: website.id, status: "saved" as const, accountId: "user_personal", accountName: "Musician" };
@@ -12,7 +13,7 @@ const models = [
   { id: "model-unknown", name: "Unknown version" },
 ];
 const initial = () => ({ ...audioState([website, musicService]), sunoAccounts: [{ ...account }] });
-const catalog = () => ({ serviceId: website.id, accountId: account.accountId, audioServicesRevision: "1", models: models.map(model => ({ ...model })) });
+const catalog = () => ({ serviceId: website.id, accountId: account.accountId, integrationConnectionsRevision: "1", models: models.map(model => ({ ...model })) });
 
 test("Suno versions load through one read-only account command and save only an explicit selected ID", async () => {
   const state = initial();
@@ -35,14 +36,14 @@ test("Suno versions load through one read-only account command and save only an 
     assert.equal(picker.querySelector<HTMLOptionElement>('[value="model-unknown"]')!.disabled, true);
     h.select("#sunoModelPicker", "model-previous");
     assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceModel")!.value, "model-previous");
-    h.setServerState({ ...state, sunoModelCatalog: { ...catalog(), audioServicesRevision: "2" } });
+    h.setServerState({ ...state, sunoModelCatalog: { ...catalog(), integrationConnectionsRevision: "2" } });
     h.click("#saveAudioServiceButton"); await h.settle();
-    const write = audioCommands(h).at(-1)!.audioServices;
+    const write = audioCommands(h).at(-1)!.integrationConnections;
     assert.equal(write.action, "upsert");
     if (write.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(write.connection.modelId, "model-previous");
+    assert.equal(write.connection.configuration.modelId, "model-previous");
     assert.equal(write.connection.enabled, false, "version selection never enables generation");
-    assert.equal(Object.hasOwn(write.connection, "apiKey"), false);
+    assert.equal(Object.hasOwn(write.connection, "secrets"), false);
     assert.equal(picker.value, "model-previous");
     assert.equal(picker.selectedOptions[0]!.textContent, "Previous version", "saving a version retains its account catalog label");
     assert.deepEqual(h.errors, []);
@@ -50,7 +51,9 @@ test("Suno versions load through one read-only account command and save only an 
 });
 
 test("account default removes the override and missing saved models never silently switch", async () => {
-  const state = { ...initial(), audioServices: { revision: "1", connections: [{ ...website, modelId: "model-removed" }] }, sunoModelCatalog: catalog() };
+  const state = { ...initial(), integrationConnections: { revision: "1", connections: [
+    integrationConnectionView({ ...website, modelId: "model-removed" }),
+  ] }, sunoModelCatalog: catalog() };
   const h = await createDialogHarness(state);
   try {
     const picker = h.document.querySelector<HTMLSelectElement>("#sunoModelPicker")!;
@@ -59,15 +62,17 @@ test("account default removes the override and missing saved models never silent
     assert.equal(h.document.querySelector<HTMLDetailsElement>("#audioServiceModelField")!.open, false);
     h.select("#sunoModelPicker", "");
     h.click("#saveAudioServiceButton"); await h.settle();
-    const write = audioCommands(h).at(-1)!.audioServices;
+    const write = audioCommands(h).at(-1)!.integrationConnections;
     if (write.action !== "upsert") throw new Error("Expected upsert");
-    assert.equal(Object.hasOwn(write.connection, "modelId"), false);
+    assert.equal(Object.hasOwn(write.connection.configuration, "modelId"), false);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
 
 test("loading failure is inline, leaves the saved version intact and permits explicit retry", async () => {
-  const state = { ...initial(), audioServices: { revision: "1", connections: [{ ...website, modelId: "model-previous" }] } };
+  const state = { ...initial(), integrationConnections: { revision: "1", connections: [
+    integrationConnectionView({ ...website, modelId: "model-previous" }),
+  ] } };
   const h = await createDialogHarness(state);
   try {
     h.failNextCommand("Suno.com audio service: request rejected (HTTP 503).");
@@ -96,7 +101,7 @@ test("late catalog for another connection does not overwrite the selected connec
     assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceModel")!.value, musicService.modelId);
     selectAudioService(h, website.id);
     h.select("#sunoModelPicker", "model-previous");
-    h.emitServerEvent({ ...broadcast(state, state.audioServices), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
+    h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "zh-CN", uiLanguageRevision: "1" });
     await h.settle();
     assert.equal(h.document.querySelector<HTMLSelectElement>("#sunoModelPicker")!.value, "model-previous");
     assert.match(h.document.querySelector("#sunoModelPicker")!.textContent!, /账号默认/);
@@ -110,7 +115,7 @@ test("peer edits invalidate the old catalog and retain the explicit draft under 
   const h = await createDialogHarness(state);
   try {
     h.select("#sunoModelPicker", "model-previous");
-    const next = { ...state.audioServices, revision: "2" };
+    const next = { ...state.integrationConnections, revision: "2" };
     h.emitServerEvent(broadcast(state, next)); await h.settle();
     const picker = h.document.querySelector<HTMLSelectElement>("#sunoModelPicker")!;
     assert.equal(picker.value, "model-previous");

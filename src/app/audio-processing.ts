@@ -4,10 +4,9 @@ import { setTimeout, clearTimeout } from "node:timers";
 
 import {
   audioJobRemoteSettled, audioJobView, type AudioAsset, type AudioJob, type AudioJobView,
-  type AudioOrigin, type AudioServiceAdapter, type AudioServiceConnection, type AudioGenerationAdapter,
+  type AudioOrigin, type AudioServiceAdapter, type AudioGenerationAdapter,
   type SeparationStem, type AudioDownloadAuthorization, type AudioServiceAuthorization,
 } from "../audio-services/contracts.js";
-import { createLalalAudioAdapter } from "../audio-services/lalal.js";
 import { AttachmentProcessingError } from "../attachments/contracts.js";
 import {
   createHostAbortController, throwIfAborted, waitForPromiseWithSignal,
@@ -16,15 +15,15 @@ import { assertAudioOutputCapacity, saveAudioAsset, readAudioAsset, readAudioSes
 import {
   createAudioJob, loadAudioJob, updateAudioJob,
 } from "../storage/audio-jobs.js";
-import { providerFetchForStorage } from "./provider-fetch.js";
-import { audioServiceSupports } from "../audio-services/capabilities.js";
-import { audioConnectionFingerprint, availableAudioServices, resolveAudioService, type RuntimeAudioServiceConnection } from "./audio-service-connections.js";
+import { integrationConnectionFingerprint, availableIntegrationConnections, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "./integration-connections.js";
+import { builtInAudioPluginById } from "../plugins/builtins/index.js";
+import { builtInAudioHostRuntime } from "./built-in-plugin-runtime.js";
 import { acquireAudioJob, audioJobIsActive, boundedAudioMessage, reconcileLocalAudioJob, safeAudioFailure } from "./audio-job-runtime.js";
 import { resumeAudioGeneration } from "./audio-generation.js";
 import { audioPollScheduler } from "./audio-polling.js";
 import { formatUiMessage, type UiMessage } from "../i18n/ui-message.js";
 import { audioMessage as m, audioRoleMessage } from "./audio-messages.js";
-export { audioConnectionFingerprint } from "./audio-service-connections.js";
+export { integrationConnectionFingerprint } from "./integration-connections.js";
 export { downloadAudioOutput } from "./audio-generation.js";
 
 export interface AudioProcessingContext {
@@ -32,7 +31,7 @@ export interface AudioProcessingContext {
   sessionId: string;
   signal: AbortSignal;
   /** Saved connections captured before this request advertises audio tools. */
-  admittedConnections?: readonly RuntimeAudioServiceConnection[];
+  admittedConnections?: readonly RuntimeIntegrationConnection[];
   onProgress?(message: UiMessage): Promise<void> | void;
   /** The explicit download command supplies the shared global-settings fence. */
   withDownloadAuthorization?: AudioDownloadAuthorization;
@@ -45,7 +44,8 @@ export interface AudioProcessingContext {
 }
 
 export async function audioProcessingAvailable(storageDirectory: string | undefined): Promise<boolean> {
-  return (await availableAudioServices(storageDirectory)).some((service) => audioServiceSupports(service.provider, "separate_stems"));
+  return (await availableIntegrationConnections(storageDirectory)).some((connection) =>
+    builtInAudioPluginById(connection.pluginId)?.audio.operations.includes("separate_stems"));
 }
 
 export async function audioJobViews(
@@ -70,14 +70,19 @@ export async function audioJobViews(
 }
 
 async function service(context: AudioProcessingContext, serviceId: string): Promise<{
-  settings: AudioServiceConnection; adapter: AudioServiceAdapter;
+  settings: RuntimeIntegrationConnection; adapter: AudioServiceAdapter;
 }> {
-  const settings = await resolveAudioService(context.storageDirectory, serviceId, "separate_stems", context.admittedConnections);
+  const settings = await resolveIntegrationConnection(context.storageDirectory, serviceId, "separate_stems", context.admittedConnections);
+  const plugin = builtInAudioPluginById(settings.pluginId);
+  if (!plugin || plugin.provider !== settings.provider || !plugin.createProcessingAdapter) {
+    throw new Error("This Plugin does not expose an audio-processing adapter.");
+  }
   return {
     settings,
-    adapter: context.adapter ?? createLalalAudioAdapter(settings.apiKey, {
-      fetchImpl: providerFetchForStorage(context.storageDirectory),
-    }),
+    adapter: context.adapter ?? plugin.createProcessingAdapter(
+      settings,
+      builtInAudioHostRuntime(context.storageDirectory),
+    ),
   };
 }
 
@@ -94,7 +99,7 @@ export async function separateAudioStems(
   }
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: "separate_stems",
-    connectionFingerprint: audioConnectionFingerprint(settings), stems,
+    connectionFingerprint: integrationConnectionFingerprint(settings), stems,
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try { return await ownJob(context, job, settings, adapter, source); }
@@ -111,7 +116,7 @@ export async function resumeAudioJob(context: AudioProcessingContext, jobId: str
     if (job.status === "completed" || audioJobRemoteSettled(job)) return job;
     if (job.operation !== "separate_stems") return await resumeAudioGeneration(context, job);
     const { settings, adapter } = await service(context, job.serviceId);
-    if (job.connectionFingerprint !== audioConnectionFingerprint(settings)) {
+    if (job.connectionFingerprint !== integrationConnectionFingerprint(settings)) {
       throw new Error("This audio job belongs to a different service connection. Restore that connection to retrieve it.");
     }
     if (!job.remoteTaskId) {
@@ -122,7 +127,7 @@ export async function resumeAudioJob(context: AudioProcessingContext, jobId: str
 }
 
 async function ownJob(
-  context: AudioProcessingContext, initial: AudioJob, settings: AudioServiceConnection,
+  context: AudioProcessingContext, initial: AudioJob, settings: RuntimeIntegrationConnection,
   adapter: AudioServiceAdapter,
   source?: () => Promise<{ bytes: Uint8Array; label: string; origin: AudioOrigin }>,
 ): Promise<AudioJob> {
@@ -147,14 +152,14 @@ async function ownJob(
       await update({ sourceAssetId: asset.id });
       await assertAudioOutputCapacity(context.storageDirectory, context.sessionId, job.stems.length + 1);
       await context.onProgress?.(m("Uploading audio for stem separation"));
-      await resolveAudioService(context.storageDirectory, settings.id, job.operation, [settings]);
+      await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
       const remoteSourceId = await adapter.upload(snapshot.bytes, asset.mediaType, context.signal);
       await update({ remoteSourceId });
       throwIfAborted(context.signal);
       // A lost reply from this point has an unknown paid submission outcome.
       await update({ status: "submitting" });
-      await resolveAudioService(context.storageDirectory, settings.id, job.operation, [settings]);
+      await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
       submissionStarted = true;
       const remoteTaskId = await adapter.submit(remoteSourceId, job.stems, randomUUID(), context.signal, asset.mediaType);

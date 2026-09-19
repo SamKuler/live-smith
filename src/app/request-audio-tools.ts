@@ -14,6 +14,7 @@ import { readArrangementAudio } from "../live/observer.js";
 import type { LiveTarget } from "../live/target.js";
 import type { ModelToolCall } from "../model/contracts.js";
 import { createBuiltInAudioToolsets } from "../plugins/builtins/audio-toolsets.js";
+import { builtInAudioPluginById } from "../plugins/builtins/index.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { readAudioAsset, readExpectedAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
@@ -24,12 +25,13 @@ import {
   resumeAudioJob, separateAudioStems,
   type AudioProcessingContext,
 } from "./audio-processing.js";
-import { audioConnectionFingerprint, captureAudioServiceConnections, resolveAudioService } from "./audio-service-connections.js";
+import { integrationConnectionFingerprint, captureIntegrationConnections, resolveIntegrationConnection } from "./integration-connections.js";
 import { generateAudio, retrieveMusic } from "./audio-generation.js";
 import { readSunoMusicService } from "../audio-services/suno.js";
-import { generateMurekaLyrics } from "../audio-services/mureka.js";
+import type { generateMurekaLyrics } from "../audio-services/mureka.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
+import { builtInAudioHostRuntime } from "./built-in-plugin-runtime.js";
 
 export async function createRequestAudioTools(input: {
   context: ExtensionContext<"1.0.0">;
@@ -51,19 +53,25 @@ export async function createRequestAudioTools(input: {
     murekaLyricsGenerator?: typeof generateMurekaLyrics;
   };
 }) {
-  const admittedConnections = await captureAudioServiceConnections(input.storageDirectory);
-  const services = admittedConnections.map(({ id, name, provider }) => ({ id, name, provider }));
+  const admittedConnections = await captureIntegrationConnections(input.storageDirectory);
+  const services = admittedConnections.map(({ id, name, pluginId, provider, modelId }) => ({
+    id,
+    name,
+    pluginId,
+    provider,
+    ...(modelId === undefined ? {} : { modelId }),
+  }));
   const jobs = input.storageDirectory ? await listAudioJobs(input.storageDirectory, input.sessionId) : [];
   const observedClips = new Map<string, Set<string>>();
-  const rememberClips = (serviceId: string, clips: readonly { id: string }[]) => {
-    const observed = observedClips.get(serviceId) ?? new Set<string>();
+  const rememberClips = (connectionId: string, clips: readonly { id: string }[]) => {
+    const observed = observedClips.get(connectionId) ?? new Set<string>();
     for (const clip of clips) observed.add(clip.id);
-    observedClips.set(serviceId, observed);
+    observedClips.set(connectionId, observed);
   };
   const rememberJobs = (current: typeof jobs) => {
     for (const job of current) {
       const connection = admittedConnections.find((entry) => entry.id === job.serviceId && entry.provider === "suno");
-      if (connection && audioConnectionFingerprint(connection) === job.connectionFingerprint) {
+      if (connection && integrationConnectionFingerprint(connection) === job.connectionFingerprint) {
         rememberClips(connection.id, job.remoteOutputs?.map((output) => ({ id: output.key })) ?? []);
       }
     }
@@ -154,9 +162,9 @@ export async function createRequestAudioTools(input: {
           };
         }
         if (request.kind === "inspect_music_service") {
-          const connection = await resolveAudioService(input.storageDirectory, request.serviceId, "generate_music", admittedConnections);
+          const connection = await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", admittedConnections);
           if (connection.provider !== "suno" || !connection.sunoSession) throw new Error("Music account unavailable.");
-          const { kind: _kind, serviceId: _id, ...query } = request;
+          const { kind: _kind, connectionId: _id, ...query } = request;
           const result = await (input.processing?.musicServiceReader ?? readSunoMusicService)(
             connection.sunoSession,
             query,
@@ -172,50 +180,60 @@ export async function createRequestAudioTools(input: {
             ),
           );
           // Validate the owner again before returning a private account's library.
-          await resolveAudioService(input.storageDirectory, request.serviceId, "generate_music", [connection]);
+          await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", [connection]);
           if (request.query === "library" && "clips" in result) rememberClips(connection.id, result.clips);
           return { content: JSON.stringify(result) };
         }
         if (request.kind === "generate_lyrics") {
-          const connection = await resolveAudioService(
+          const connection = await resolveIntegrationConnection(
             input.storageDirectory,
-            request.serviceId,
+            request.connectionId,
             "generate_music",
             admittedConnections,
           );
-          if (connection.provider !== "mureka") throw new Error("Mureka connection unavailable.");
+          const plugin = builtInAudioPluginById(connection.pluginId);
+          if (!plugin || plugin.provider !== connection.provider || !plugin.generateLyrics) {
+            throw new Error("This Plugin does not expose lyrics generation.");
+          }
           if (!input.withGenerationAuthorization) throw new Error("Generation authorization unavailable.");
           const result = await input.withGenerationAuthorization(input.signal, async () => {
-            const current = await resolveAudioService(
+            const current = await resolveIntegrationConnection(
               input.storageDirectory,
-              request.serviceId,
+              request.connectionId,
               "generate_music",
               [connection],
             );
-            if (current.provider !== "mureka") throw new Error("Mureka connection unavailable.");
+            if (current.pluginId !== plugin.id) throw new Error("The Integration Connection Plugin changed.");
             throwIfAborted(input.signal);
-            return (input.processing?.murekaLyricsGenerator ?? generateMurekaLyrics)(
-              current.apiKey,
-              request.prompt,
-              input.signal,
-              { fetchImpl: providerFetchForStorage(input.storageDirectory) },
-            );
+            return input.processing?.murekaLyricsGenerator
+              ? input.processing.murekaLyricsGenerator(
+                  current.apiKey,
+                  request.prompt,
+                  input.signal,
+                  { fetchImpl: providerFetchForStorage(input.storageDirectory) },
+                )
+              : plugin.generateLyrics!(
+                  current,
+                  request.prompt,
+                  input.signal,
+                  builtInAudioHostRuntime(input.storageDirectory),
+                );
           });
           throwIfAborted(input.signal);
           return { content: JSON.stringify(result) };
         }
         const clipIds = request.kind === "retrieve_music" ? request.clipIds
           : request.kind === "extend_music" || request.kind === "get_whole_song" ? [request.clipId] : [];
-        if (clipIds.length && "serviceId" in request && clipIds.some((id) => !observedClips.get(request.serviceId)?.has(id))) {
+        if (clipIds.length && "connectionId" in request && clipIds.some((id) => !observedClips.get(request.connectionId)?.has(id))) {
           return { content: "Read this connection's library or saved audio jobs first, then use an observed clip ID.", failed: true, invalidArguments: true };
         }
         const job = request.kind === "resume_audio_job"
           ? await resumeAudioJob(processing, request.jobId)
           : request.kind === "separate_stems"
-          ? await separateAudioStems(processing, request.serviceId, request.stems, () => snapshot(request.source))
+          ? await separateAudioStems(processing, request.connectionId, request.stems, () => snapshot(request.source))
           : request.kind === "retrieve_music"
-          ? await retrieveMusic(processing, request.serviceId, request.clipIds)
-          : await generateAudio(processing, request.serviceId, generationRequest(request));
+          ? await retrieveMusic(processing, request.connectionId, request.clipIds)
+          : await generateAudio(processing, request.connectionId, generationRequest(request));
         rememberJobs([job]);
         await registerAssets(job.outputAssets);
         throwIfAborted(input.signal);
@@ -229,7 +247,7 @@ export async function createRequestAudioTools(input: {
     } catch (error) {
       throwIfAborted(input.signal);
       // Never feed a possibly credential-bearing raw cause back to the model.
-      return { content: "Audio processing could not complete. Check Audio tools settings and this Session's saved audio jobs before retrying. No Live changes were performed by this tool.", failed: true, stop: true };
+      return { content: "Audio processing could not complete. Check Connections settings and this Session's saved audio jobs before retrying. No Live changes were performed by this tool.", failed: true, stop: true };
     }
   };
   const toolsets = services.length || jobs.length
@@ -257,10 +275,10 @@ function musicClipReferences(job: import("../audio-services/contracts.js").Audio
 
 function generationRequest(request: Extract<AudioToolRequest, { kind: AudioGenerationRequest["operation"] }>): AudioGenerationRequest {
   switch (request.kind) {
-    case "generate_music": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "generate_sound_effect": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "generate_song_from_lyrics": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "extend_music": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "get_whole_song": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "generate_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "generate_sound_effect": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "generate_song_from_lyrics": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "extend_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "get_whole_song": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
   }
 }

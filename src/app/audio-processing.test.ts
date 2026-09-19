@@ -6,12 +6,12 @@ import { Buffer } from "node:buffer";
 
 import { SEPARATION_STEMS, type AudioServiceAdapter } from "../audio-services/contracts.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
 import { listAudioJobs, updateAudioJob } from "../storage/audio-jobs.js";
 import { readAudioAsset } from "../storage/audio-assets.js";
 import { mp3Bytes } from "../storage/audio-storage-test-helpers.js";
 import { resumeAudioJob, separateAudioStems, audioJobViews } from "./audio-processing.js";
 import { subscribeSessionStateInvalidations } from "./session-state-events.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 const key = "fixture-audio-service-key";
 function wave(): Uint8Array {
@@ -28,8 +28,9 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-audio-run-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Audio", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Audio" } });
-  await saveGlobalSettings(directory, { audioServices: { action: "upsert", expectedRevision: "0",
-    connection: { id: "splitter", name: "Stem account", provider: "lalal", enabled: true, apiKey: key } } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "splitter", name: "Stem account", provider: "lalal", enabled: true, apiKey: key,
+  });
   const calls: string[] = [];
   const submittedMediaTypes: string[] = [];
   const adapter: AudioServiceAdapter = {
@@ -127,8 +128,10 @@ test("resume is scoped to the exact credential owner", async (t) => {
   const h = await harness(t);
   h.adapter.download = async () => { throw new Error("offline"); };
   const job = await separateAudioStems(h.context, "splitter", ["vocals"], h.source);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1",
-    connection: { id: "splitter", name: "Stem account", provider: "lalal", enabled: true, apiKey: "other-account" } } });
+  await saveIntegrationConnection(h.directory, "1", {
+    id: "splitter", name: "Stem account", provider: "lalal", enabled: true,
+    apiKey: "other-account",
+  });
   const before = h.calls.length;
   await assert.rejects(resumeAudioJob(h.context, job.id), /different service connection/);
   assert.equal(h.calls.length, before);

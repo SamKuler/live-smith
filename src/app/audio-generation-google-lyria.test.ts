@@ -14,6 +14,8 @@ import { createSession } from "../storage/sessions.js";
 import { saveGlobalSettings } from "../storage/settings.js";
 import { generateAudio } from "./audio-generation.js";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
+import { googleLyriaPlugin } from "../plugins/builtins/google-lyria.js";
 
 const pluginTools = (services: Parameters<typeof createBuiltInAudioToolsets>[0]["services"]) =>
   createBuiltInAudioToolsets({
@@ -38,9 +40,7 @@ async function harness(
     provider: "google-lyria" as const, enabled: true,
     apiKey: "fixture-google-lyria-app-key", modelId,
   };
-  await saveGlobalSettings(directory, { audioServices: {
-    action: "upsert", expectedRevision: "0", connection,
-  } });
+  await saveIntegrationConnection(directory, "0", connection);
   let submissions = 0;
   const adapter: AudioGenerationAdapter = {
     provider: "google-lyria",
@@ -56,12 +56,13 @@ async function harness(
 
 test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle", async (t) => {
   const h = await harness(t, "lyria-3.5");
-  const services = [{ id: h.connection.id, name: h.connection.name, provider: h.connection.provider,
+  const services = [{ id: h.connection.id, name: h.connection.name,
+    pluginId: googleLyriaPlugin.id, provider: h.connection.provider,
     modelId: h.connection.modelId }];
   const tool = musicTool(services);
   assert.ok(tool);
-  assert.ok((tool.function.parameters?.oneOf as Array<{ properties: { serviceId: { const: string } } }>).some(
-    (schema) => schema.properties.serviceId.const === h.connection.id,
+  assert.ok((tool.function.parameters?.oneOf as Array<{ properties: { connectionId: { const: string } } }>).some(
+    (schema) => schema.properties.connectionId.const === h.connection.id,
   ));
 
   const job = await generateAudio(h.context, h.connection.id, {
@@ -79,8 +80,8 @@ test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle
   await updateAudioJob(h.directory, h.session.id, job.id, {
     status: "collecting", outputAssets: [],
   });
-  await saveGlobalSettings(h.directory, { audioServices: {
-    action: "remove", expectedRevision: "1", serviceId: h.connection.id,
+  await saveGlobalSettings(h.directory, { integrationConnections: {
+    action: "remove", expectedRevision: "1", connectionId: h.connection.id,
   } });
   const recovered = await resumeAudioJob(h.context, job.id);
   assert.equal(recovered.status, "completed");
@@ -90,7 +91,10 @@ test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle
 
 test("model-specific Lyria limits reject before a job or paid submission exists", async (t) => {
   const realtime = await harness(t, "lyria-realtime-exp");
-  const realtimeTool = musicTool([realtime.connection])!;
+  const realtimeTool = musicTool([{
+    ...realtime.connection,
+    pluginId: googleLyriaPlugin.id,
+  }])!;
   const realtimeSchema = (realtimeTool.function.parameters?.oneOf as Array<{
     properties: { instrumental: { const?: boolean } };
   }>)[0]!;
@@ -102,7 +106,7 @@ test("model-specific Lyria limits reject before a job or paid submission exists"
   assert.deepEqual(await listAudioJobs(realtime.directory, realtime.session.id), []);
 
   const clip = await harness(t, "lyria-3-clip-preview");
-  const clipTool = musicTool([clip.connection])!;
+  const clipTool = musicTool([{ ...clip.connection, pluginId: googleLyriaPlugin.id }])!;
   const clipSchema = (clipTool.function.parameters?.oneOf as Array<{
     properties: { durationSeconds: { const?: number } };
   }>)[0]!;

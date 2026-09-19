@@ -5,11 +5,11 @@ import test from "node:test";
 import { MAX_AUDIO_ASSET_BYTES } from "../audio-services/contracts.js";
 import { createAudioJob, listAudioJobs } from "../storage/audio-jobs.js";
 import { createSession } from "../storage/sessions.js";
-import { saveGlobalSettings } from "../storage/settings.js";
-import { audioConnectionFingerprint, captureAudioServiceConnections } from "./audio-service-connections.js";
+import { integrationConnectionFingerprint, captureIntegrationConnections } from "./integration-connections.js";
 import { retrieveMusic } from "./audio-generation.js";
 import { downloadAudioOutput, resumeAudioJob } from "./audio-processing.js";
 import { clipIds, connection, fixtureToken, manifest, retrievalHarness } from "./audio-retrieval-test-helpers.js";
+import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
 
 test("duplicate retrieval and Resume share exclusion while a manifest is collecting", async (t) => {
   const h = await retrievalHarness(t);
@@ -91,8 +91,11 @@ test("reuse stays within its exact Session and service even when account and man
     scope: { kind: "selection", identity: "other", label: "Audio" } });
   const otherSession = await retrieveMusic({ ...h.context, sessionId: session.id }, connection.id, clipIds);
   assert.notEqual(otherSession.id, original.id);
-  await saveGlobalSettings(h.directory, { audioServices: { action: "upsert", expectedRevision: "1",
-    connection: { ...connection, id: "another", name: "Another connection" } } });
+  await saveIntegrationConnection(h.directory, "1", {
+    ...connection,
+    id: "another",
+    name: "Another connection",
+  });
   await h.sessions.save("another", { accountId: "user_fixture", clientToken: fixtureToken("another") });
   const otherService = await retrieveMusic(h.context, "another", clipIds);
   assert.notEqual(otherService.id, original.id);
@@ -101,9 +104,9 @@ test("reuse stays within its exact Session and service even when account and man
 
 test("repeated retrieval reuses a receipt left by a crash before first inspection at the job limit", async (t) => {
   const h = await retrievalHarness(t);
-  const selected = (await captureAudioServiceConnections(h.directory))[0]!;
+  const selected = (await captureIntegrationConnections(h.directory))[0]!;
   const config = { provider: "suno" as const, serviceId: connection.id, operation: "retrieve_music" as const,
-    connectionFingerprint: audioConnectionFingerprint(selected), stems: [] };
+    connectionFingerprint: integrationConnectionFingerprint(selected), stems: [] };
   const job = await createAudioJob(h.directory, h.session.id, config, { remoteTaskId: clipIds[0]!, expectedOutputs: manifest });
   for (let index = 1; index < 40; index++) {
     await createAudioJob(h.directory, h.session.id, { ...config, operation: "generate_music" });
