@@ -8,9 +8,11 @@ import {
   deletePlugin,
   installPlugin,
   listInstalledPlugins,
+  preparePluginRuntime,
   readInstalledPluginArchive,
   readEnabledPluginPackagesInTransaction,
   setPluginEnabled,
+  setPluginMcpServerApproved,
 } from "./plugins.js";
 import { withStorageTransaction } from "./persistence.js";
 
@@ -34,6 +36,7 @@ test("Plugin catalog installs immutable bytes disabled and returns defensive cop
   assert.equal(installed.id, "fixture-plugin");
   assert.equal(installed.enabled, false);
   assert.equal(installed.version, "1.0.0");
+  assert.deepEqual(installed.approvedMcpServerIds, []);
   source.fill(0);
   const stored = await readInstalledPluginArchive(directory, installed.id);
   assert.notEqual(stored[0], 0);
@@ -42,6 +45,43 @@ test("Plugin catalog installs immutable bytes disabled and returns defensive cop
   assert.deepEqual((await listInstalledPlugins(directory)).map(({ id, enabled }) => ({ id, enabled })), [
     { id: "fixture-plugin", enabled: false },
   ]);
+});
+
+test("runtime files materialize from the verified archive and keep Plugin data separate", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  const first = await preparePluginRuntime(directory, "fixture-plugin");
+  assert.match(first.pluginRoot, /live-smith-plugins\/runtime\/fixture-plugin\/[a-f0-9]{64}$/u);
+  assert.match(first.pluginData, /live-smith-plugins\/data\/fixture-plugin$/u);
+  assert.equal(JSON.parse(await fs.readFile(`${first.pluginRoot}/plugin.json`, "utf8")).name, "fixture-plugin");
+  await fs.chmod(`${first.pluginRoot}/plugin.json`, 0o600);
+  await fs.writeFile(`${first.pluginRoot}/plugin.json`, "tampered", "utf8");
+  const repaired = await preparePluginRuntime(directory, "fixture-plugin");
+  assert.equal(JSON.parse(await fs.readFile(`${repaired.pluginRoot}/plugin.json`, "utf8")).name, "fixture-plugin");
+  await fs.writeFile(`${first.pluginData}/state.json`, "persistent", "utf8");
+  await installPlugin(directory, packageBytes("2.0.0"), { replace: true });
+  assert.equal(await fs.readFile(`${first.pluginData}/state.json`, "utf8"), "persistent");
+});
+
+test("MCP server execution requires an approval bound to the installed package", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const archive = zipSync({
+    "plugin.json": strToU8(JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "fixture-plugin",
+    })),
+    "mcp.json": strToU8(JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    })),
+  });
+  await installPlugin(directory, archive);
+  assert.deepEqual((await setPluginMcpServerApproved(directory, "fixture-plugin", "local", true)).approvedMcpServerIds, ["local"]);
+  assert.deepEqual((await setPluginMcpServerApproved(directory, "fixture-plugin", "local", false)).approvedMcpServerIds, []);
+  await assert.rejects(setPluginMcpServerApproved(directory, "fixture-plugin", "missing", true), /does not expose/u);
 });
 
 test("Plugin replacement is explicit and enablement remains an independent user decision", async (t) => {
@@ -53,6 +93,7 @@ test("Plugin replacement is explicit and enablement remains an independent user 
   const replaced = await installPlugin(directory, packageBytes("2.0.0"), { replace: true });
   assert.equal(replaced.version, "2.0.0");
   assert.equal(replaced.enabled, false);
+  assert.deepEqual(replaced.approvedMcpServerIds, []);
   assert.equal((await listInstalledPlugins(directory))[0]!.version, "2.0.0");
 });
 
@@ -60,6 +101,7 @@ test("Plugin catalog serializes concurrent installs and deletes only the selecte
   const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const second = zipSync({ "plugin.json": strToU8(JSON.stringify({
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
     name: "second-plugin", version: "1.0.0", description: "Second",
   })) });
   await Promise.all([installPlugin(directory, packageBytes("1.0.0")), installPlugin(directory, second)]);

@@ -15,7 +15,7 @@
     "start": "npm run build:dev && extensions-cli run --storage-directory .live-smith-data",
     "test": "npm run test:structure && npm run test:core && npm run test:ui",
     "test:structure": "tsx scripts/check-test-structure.ts",
-    "test:core": "tsx --test \"src/agent/**/*.test.ts\" \"src/app/**/*.test.ts\" \"src/attachments/**/*.test.ts\" \"src/live/**/*.test.ts\" \"src/model/**/*.test.ts\" \"src/release/**/*.test.ts\" \"src/runtime/**/*.test.ts\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.ts\"",
+    "test:core": "tsx --test \"src/agent/**/*.test.ts\" \"src/app/**/*.test.ts\" \"src/attachments/**/*.test.ts\" \"src/live/**/*.test.ts\" \"src/model/**/*.test.ts\" \"src/plugins/**/*.test.ts\" \"src/release/**/*.test.ts\" \"src/runtime/**/*.test.ts\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.ts\"",
     "test:ui": "tsx --test \"src/ui/**/*.test.ts\"",
     "verify:client": "tsx scripts/check-dialog-client-syntax.ts",
     "verify": "npm test && npm run build && npm run verify:client && npm audit --json",
@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@ableton-extensions/sdk": "file:extensions-sdk-1/ableton-extensions-sdk-1.0.0-beta.1.tgz",
+    "@modelcontextprotocol/client": "2.0.0",
     "dompurify": "^3.4.13",
     "fast-xml-parser": "5.10.1",
     "fflate": "0.8.3",

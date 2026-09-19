@@ -6,12 +6,13 @@ export type PluginSourceFormat = "agent-plugins-1.0" | "codex" | "claude";
 export interface PluginComponents {
   skillsDirectory?: string;
   mcpConfigPath?: string;
+  mcpManifestPath?: string;
 }
 
 export interface PluginManifest {
   id: PluginId;
-  version: string;
-  description: string;
+  version?: string;
+  description?: string;
   sourceFormat: PluginSourceFormat;
   components: PluginComponents;
 }
@@ -19,6 +20,7 @@ export interface PluginManifest {
 export interface PluginToolDefinition {
   pluginId: PluginId;
   serverId: string;
+  name: string;
   tool: ModelFunctionTool;
 }
 
@@ -28,6 +30,18 @@ export interface PluginToolResult {
   isError?: boolean;
 }
 
+export interface PluginToolIssue {
+  pluginId: PluginId;
+  serverId?: string;
+  code: "invalid_configuration" | "unsupported_transport" | "approval_required" | "connection_failed" | "invalid_tool";
+  message: string;
+}
+
+export interface PluginToolsResult {
+  tools: readonly PluginToolDefinition[];
+  issues: readonly PluginToolIssue[];
+}
+
 export interface PluginToolContext {
   signal: AbortSignal;
   sessionId: string;
@@ -35,6 +49,7 @@ export interface PluginToolContext {
 
 export interface PluginPackage {
   readonly manifest: PluginManifest;
-  tools(context: PluginToolContext): Promise<readonly PluginToolDefinition[]>;
-  callTool(name: string, argumentsValue: unknown, context: PluginToolContext): Promise<PluginToolResult>;
+  tools(context: PluginToolContext): Promise<PluginToolsResult>;
+  callTool(serverId: string, name: string, argumentsValue: unknown, context: PluginToolContext): Promise<PluginToolResult>;
+  close(): Promise<void>;
 }

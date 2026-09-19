@@ -6,6 +6,7 @@ import { strToU8, zipSync } from "fflate/browser";
 import { pluginSkillsFromArchive } from "./plugin-package.js";
 
 const manifest = (name: string): Uint8Array => strToU8(JSON.stringify({
+  $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   name, version: "1.0.0", description: "Fixture Plugin",
 }));
 

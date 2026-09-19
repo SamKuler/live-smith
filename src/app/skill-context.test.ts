@@ -65,6 +65,7 @@ test("enabled Plugin Skills resolve by namespaced persistent or one-turn IDs", a
   const directory = await temporaryDirectory();
   await installPlugin(directory, zipSync({
     "plugin.json": strToU8(JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "music-tools", version: "1.0.0", description: "Music tools",
     })),
     "skills/audio-to-midi/SKILL.md": strToU8([

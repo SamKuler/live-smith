@@ -2031,7 +2031,7 @@
           !isWireSkillId(value.id) || typeof value.description !== "string" || !isWireSkillSource(value.source)) return false;
         if (value.source !== "plugin") return value.pluginId === undefined && !value.id.includes(":");
         return typeof value.pluginId === "string" &&
-          /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.pluginId) &&
+          /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(value.pluginId) &&
           value.id.startsWith(value.pluginId + ":");
       }
 

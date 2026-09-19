@@ -15,12 +15,15 @@ import {
   type AgentConfirmationDecision,
   type AgentLoopTraceEvent,
 } from "../agent/loop.js";
+import { AgentToolRegistry } from "../agent/external-tool-registry.js";
 import {
   observationRequestForAction,
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import { createRequestAudioTools } from "./request-audio-tools.js";
+import { createRequestPluginTools } from "./request-plugin-tools.js";
+import { providerFetchForStorage } from "./provider-fetch.js";
 import { audioProcessingAvailable, type AudioProcessingContext } from "./audio-processing.js";
 import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "./audio-asset-sources.js";
 import {
@@ -315,6 +318,22 @@ export async function handleAgentRequest(
       ].filter(Boolean).join("\n\n");
     },
   });
+  const pluginTools = await createRequestPluginTools({
+    storageDirectory,
+    sessionId: session.id,
+    signal: callbacks.signal,
+    fetchImpl: providerFetchForStorage(storageDirectory),
+  });
+  let externalTools: AgentToolRegistry;
+  try {
+    externalTools = new AgentToolRegistry([{
+      tools: () => audioTools.tools,
+      callTool: audioTools.execute,
+    }, pluginTools]);
+  } catch (error) {
+    await pluginTools.close();
+    throw error;
+  }
   const canReadArrangementAudio = () => supportsArrangementAudioInput &&
     attachmentRequestQuotaIsWithinLimits([
       ...requestAttachmentQuota,
@@ -491,8 +510,8 @@ export async function handleAgentRequest(
     await callbacks.onProgress("Starting agent loop");
     const loopResult = await runAgentLoop({
       externalTools: {
-        names: audioTools.tools.map((tool) => tool.function.name),
-        execute: audioTools.execute,
+        names: externalTools.tools().map((tool) => tool.function.name),
+        execute: (call) => externalTools.callTool(call),
       },
       maxConsecutiveFailures: maxConsecutiveInvalidToolCalls,
       maxIterations: 12,
@@ -579,7 +598,7 @@ export async function handleAgentRequest(
           runtimeProfile,
           [...liveSmithTools({
             readArrangementAudio: canReadArrangementAudio(),
-          }), ...audioTools.tools],
+          }), ...externalTools.tools()],
           Math.min(
             HOSTED_WEB_SEARCH_REQUEST_MAX_USES,
             Math.max(
@@ -921,6 +940,7 @@ export async function handleAgentRequest(
     }
     throw error;
   } finally {
+    await externalTools.close();
     unsubscribeEditScopes();
     unsubscribeEditScopesInvalidations();
   }

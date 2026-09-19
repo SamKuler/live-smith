@@ -181,7 +181,8 @@ export function isSafeSkillReferenceId(value: unknown): value is string {
   if (typeof value !== "string" || value.length > MAX_SKILL_REFERENCE_ID_LENGTH) return false;
   const separator = value.indexOf(":");
   return separator > 0 && separator === value.lastIndexOf(":") &&
-    isSafeSkillId(value.slice(0, separator)) && isSafeSkillId(value.slice(separator + 1));
+    /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u.test(value.slice(0, separator)) &&
+    isSafeSkillId(value.slice(separator + 1));
 }
 
 function firstForbiddenControlIndex(value: string): number {

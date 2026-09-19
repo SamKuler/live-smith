@@ -26,6 +26,20 @@ test("portable Agent Plugins manifest is canonical and discovers fixed component
   });
 });
 
+test("portable identity accepts optional metadata and dotted names", () => {
+  assert.deepEqual(parsePluginPackageManifest([file("plugin.json", {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "acme.audio-tools",
+    author: { name: "Acme" },
+    extensions: "ignored by the core contract",
+    futureField: { ignored: true },
+  })]), {
+    id: "acme.audio-tools",
+    sourceFormat: "agent-plugins-1.0",
+    components: {},
+  });
+});
+
 test("Codex and Claude compatibility manifests use one bounded identity contract", () => {
   for (const [path, sourceFormat] of [
     [".codex-plugin/plugin.json", "codex"],
@@ -34,15 +48,31 @@ test("Codex and Claude compatibility manifests use one bounded identity contract
     assert.deepEqual(parsePluginPackageManifest([file(path, {
       name: "fixture-plugin", version: "0.4.0", description: "Fixture tools",
       skills: "./skills/", mcpServers: "./.mcp.json",
-    })]), {
+    }), file(".mcp.json", { mcpServers: {} })]), {
       id: "fixture-plugin", version: "0.4.0", description: "Fixture tools", sourceFormat,
       components: { skillsDirectory: "skills", mcpConfigPath: ".mcp.json" },
     });
   }
 });
 
+test("Claude-compatible manifests may embed MCP server declarations", () => {
+  assert.deepEqual(parsePluginPackageManifest([file(".claude-plugin/plugin.json", {
+    name: "fixture-plugin", version: "0.4.0", description: "Fixture tools",
+    mcpServers: { local: { command: "node", args: ["server.js"] } },
+  })]).components, { mcpManifestPath: ".claude-plugin/plugin.json" });
+});
+
+test("compatibility manifests cannot reference a missing MCP configuration", () => {
+  assert.throws(() => parsePluginPackageManifest([file(".claude-plugin/plugin.json", {
+    name: "fixture-plugin", mcpServers: "./.mcp.json",
+  })]), /missing/u);
+});
+
 test("portable identity wins only when compatibility overlays agree", () => {
-  const portable = file("plugin.json", { name: "fixture-plugin", version: "1.0.0", description: "Portable" });
+  const portable = file("plugin.json", {
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "fixture-plugin", version: "1.0.0", description: "Portable",
+  });
   assert.throws(() => parsePluginPackageManifest([
     portable,
     file(".claude-plugin/plugin.json", { name: "another-plugin", version: "1.0.0", description: "Claude" }),
@@ -57,7 +87,16 @@ test("manifest paths and identities cannot escape their package", () => {
   }
   for (const name of ["Fixture Plugin", "../fixture", "fixture:plugin", "a".repeat(65)]) {
     assert.throws(() => parsePluginPackageManifest([file("plugin.json", {
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name, version: "1.0.0", description: "Fixture",
+    })]), /name/u);
+  }
+  assert.throws(() => parsePluginPackageManifest([file("plugin.json", {
+    name: "fixture", version: "1.0.0", description: "Fixture",
+  })]), /schema/u);
+  for (const name of ["double--dash", "double..dot", ".leading", "trailing."]) {
+    assert.throws(() => parsePluginPackageManifest([file("plugin.json", {
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name,
     })]), /name/u);
   }
 });
