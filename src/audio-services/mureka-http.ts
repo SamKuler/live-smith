@@ -18,6 +18,13 @@ const SUBMIT_STOP_GRACE_MS = 3_000;
 class MurekaError extends Error {}
 
 export type MurekaTaskKind = "song" | "instrumental";
+export type MurekaSubmitKind = "prompt-song" | "lyrics-song" | "instrumental" | "lyrics";
+const MUREKA_SUBMIT_PATHS: Readonly<Record<MurekaSubmitKind, string>> = {
+  "prompt-song": "/v1/song/easy-generate",
+  "lyrics-song": "/v1/song/generate",
+  instrumental: "/v1/instrumental/generate",
+  lyrics: "/v1/lyrics/generate",
+};
 
 export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
   const fail = (detail: string): Error => {
@@ -110,7 +117,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
   };
 
   const json = async (
-    method: "GET" | "POST", kind: MurekaTaskKind, taskId: string | undefined,
+    method: "GET" | "POST", kind: MurekaTaskKind | MurekaSubmitKind, taskId: string | undefined,
     body: Record<string, unknown> | undefined, signal: AbortSignal, preserveReceipt = false,
   ): Promise<Record<string, unknown>> => {
     let encoded: string | undefined;
@@ -118,12 +125,15 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
     try {
       if (method === "POST") {
         if (taskId !== undefined || body === undefined) throw new Error();
-        path = kind === "song" ? "/v1/song/easy-generate" : "/v1/instrumental/generate";
+        path = MUREKA_SUBMIT_PATHS[kind as MurekaSubmitKind];
+        if (!path) throw new Error();
         validateJson(body, MAX_REQUEST_JSON_NODES);
         encoded = JSON.stringify(body);
         if (Buffer.byteLength(encoded, "utf8") > 32 * 1024) throw new Error();
       } else {
-        if (body !== undefined || taskId === undefined) throw new Error();
+        if (body !== undefined || taskId === undefined || kind !== "song" && kind !== "instrumental") {
+          throw new Error();
+        }
         path = `/v1/${kind}/query/${identifier(taskId)}`;
       }
     } catch { throw fail("request route or body is not allowed."); }
@@ -148,7 +158,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
 
   return {
     fail, active, object, identifier, outputUrl,
-    submit: (kind: MurekaTaskKind, body: Record<string, unknown>, signal: AbortSignal) =>
+    submit: (kind: MurekaSubmitKind, body: Record<string, unknown>, signal: AbortSignal) =>
       json("POST", kind, undefined, body, signal, true),
     inspect: (kind: MurekaTaskKind, taskId: string, signal: AbortSignal) =>
       json("GET", kind, taskId, undefined, signal),

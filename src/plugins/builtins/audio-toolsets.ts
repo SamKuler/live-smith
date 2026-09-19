@@ -48,7 +48,7 @@ const sourceSchema = {
   ],
 };
 const soundEffectDurationSchema = { type: "number", minimum: 0.5, maximum: 30 };
-const providerLocalToolNames = [
+const sharedProviderLocalToolNames = [
   "separate_stems",
   "generate_music",
   "generate_sound_effect",
@@ -75,7 +75,7 @@ export function builtInAudioLocalToolName(name: string): string | undefined {
     return name;
   }
   for (const plugin of BUILT_IN_AUDIO_PLUGINS) {
-    for (const localName of providerLocalToolNames) {
+    for (const localName of pluginLocalToolNames(plugin)) {
       if (name === builtInAudioToolName(plugin, localName)) return localName;
     }
   }
@@ -87,7 +87,7 @@ export function builtInAudioToolNames(): Readonly<Record<string, string>> {
     ...["listen_to_audio_asset", "resume_audio_job", "list_audio_jobs"]
       .map((name) => [name, name] as const),
     ...BUILT_IN_AUDIO_PLUGINS.flatMap((plugin) =>
-      providerLocalToolNames.map((localName) => [
+      pluginLocalToolNames(plugin).map((localName) => [
         builtInAudioToolName(plugin, localName),
         localName,
       ] as const)),
@@ -176,7 +176,12 @@ function providerTools(
     tools.push(generationTool(plugin, services, "generate_sound_effect"));
   }
   tools.push(...musicServiceTools(services));
+  tools.push(...(plugin.toolExtension?.tools(services) ?? []));
   return tools;
+}
+
+function pluginLocalToolNames(plugin: BuiltInAudioPluginDefinition): readonly string[] {
+  return [...sharedProviderLocalToolNames, ...(plugin.toolExtension?.localToolNames ?? [])];
 }
 
 function separationTool(services: readonly AudioServiceChoice[]): ModelFunctionTool {
@@ -364,6 +369,7 @@ function providerAudioToolset(
     const localName = tool.function.name;
     return [builtInAudioToolName(plugin, localName), localName] as const;
   }));
+  const extensionNames = new Set(plugin.toolExtension?.localToolNames ?? []);
   const tools = localTools.map((tool): ModelFunctionTool => ({
     ...tool,
     function: {
@@ -377,7 +383,13 @@ function providerAudioToolset(
     async callTool(call) {
       const localName = routes.get(call.name);
       if (!localName) return invalidArguments();
-      return parseAndExecute({ ...call, name: localName }, new Set([localName]), services, execute);
+      return parseAndExecute(
+        { ...call, name: localName },
+        new Set([localName]),
+        services,
+        execute,
+        extensionNames.has(localName) ? plugin.toolExtension?.parse : undefined,
+      );
     },
   };
 }
@@ -387,11 +399,12 @@ async function parseAndExecute(
   admittedNames: ReadonlySet<string>,
   services: readonly AudioServiceChoice[],
   execute: BuiltInAudioExecutor,
+  parse: typeof parseAudioToolRequest = parseAudioToolRequest,
 ): Promise<AgentExternalToolResult> {
   if (!admittedNames.has(call.name)) return invalidArguments();
   let request: AudioToolRequest;
   try {
-    request = parseAudioToolRequest(call.name, call.arguments);
+    request = parse(call.name, call.arguments);
     validateAudioServiceRequest(request, services);
   } catch {
     return invalidArguments();

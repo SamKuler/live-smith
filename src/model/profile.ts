@@ -237,7 +237,7 @@ export function normalizeAudioServiceConnection(value: unknown): AudioServiceCon
     decodeURIComponent(value.callbackUrl).toLowerCase().includes(value.apiKey.toLowerCase())) {
     throw new ProfileValidationError("audioServices", "The callback URL must not contain API credentials.");
   }
-  if (value.enabled && !AUDIO_SERVICE_CAPABILITIES[provider].operations.length) {
+  if (value.enabled && !AUDIO_SERVICE_CAPABILITIES[provider].tools.length) {
     throw new ProfileValidationError("audioServices", "This audio provider has no available public protocol and cannot be enabled.");
   }
   if (value.enabled && !value.apiKey && !AUDIO_SERVICE_CAPABILITIES[provider].sessionImport) {

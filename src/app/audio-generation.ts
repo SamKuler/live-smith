@@ -110,6 +110,16 @@ export async function generateAudio(
       throw new Error(`The selected model has a fixed ${fixed}-second music duration.`);
     }
   }
+  if (request.operation === "generate_song_from_lyrics") {
+    if (settings.provider !== "mureka") throw new Error("This service does not support lyrics-to-song generation.");
+    if (!validGenerationText(request.lyrics, 5000)) throw new Error("Lyrics must contain 1–5000 characters.");
+    if (request.prompt !== undefined && !validGenerationText(request.prompt, 1024)) {
+      throw new Error("The optional song prompt must contain 1–1024 characters.");
+    }
+    if (request.gender !== undefined && request.gender !== "female" && request.gender !== "male") {
+      throw new Error("The vocal gender is invalid.");
+    }
+  }
   const adapter = generationAdapter(context, settings);
   if (settings.provider !== "suno") await assertAudioOutputCapacity(context.storageDirectory, context.sessionId,
     request.operation === "get_whole_song" ? 1 : AUDIO_SERVICE_CAPABILITIES[settings.provider].generationOutputCount);
@@ -123,6 +133,11 @@ export async function generateAudio(
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try { return await runGeneration(context, job, settings, adapter, request); }
   finally { release(); }
+}
+
+function validGenerationText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && Boolean(value.trim()) && !value.includes("\0") &&
+    !exceedsAudioPromptLimit(value, maximum);
 }
 
 export async function retrieveMusic(

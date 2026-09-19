@@ -1,4 +1,9 @@
 import type { BuiltInAudioPluginDefinition } from "./contracts.js";
+import {
+  MUREKA_EXTENSION_TOOL_NAMES,
+  murekaExtensionTools,
+  parseMurekaExtensionTool,
+} from "./mureka-tools.js";
 
 export const MUREKA_MUSIC_MODELS = [
   "auto",
@@ -17,12 +22,17 @@ export const murekaPlugin: BuiltInAudioPluginDefinition = {
   provider: "mureka",
   capabilities: {
     label: "Mureka",
-    operations: ["generate_music"],
+    operations: ["generate_music", "generate_song_from_lyrics"],
     generationOutputCount: 1,
     musicPromptCharacters: 1024,
     modelIds: MUREKA_MUSIC_MODELS,
     defaultModelId: DEFAULT_MUREKA_MUSIC_MODEL,
     modelConfigurable: true,
     instrumentalUnsupportedModelIds: ["mureka-o2"],
+  },
+  toolExtension: {
+    localToolNames: MUREKA_EXTENSION_TOOL_NAMES,
+    tools: murekaExtensionTools,
+    parse: parseMurekaExtensionTool,
   },
 };

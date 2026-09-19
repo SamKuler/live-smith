@@ -16,6 +16,8 @@ export type AudioToolRequest =
   | MusicServiceRequest
   | { kind: "separate_stems"; serviceId: string; source: AudioProcessingSource; stems: SeparationStem[] }
   | { kind: "generate_music"; serviceId: string; prompt: string; durationSeconds?: number; instrumental: boolean; options?: MusicGenerationOptions }
+  | { kind: "generate_lyrics"; serviceId: string; prompt: string }
+  | { kind: "generate_song_from_lyrics"; serviceId: string; lyrics: string; prompt?: string; gender?: "female" | "male" }
   | { kind: "generate_sound_effect"; serviceId: string; prompt: string; durationSeconds: number; loop: boolean }
   | { kind: "listen_to_audio_asset"; assetRef: string }
   | { kind: "list_audio_jobs" }
@@ -25,6 +27,10 @@ export function validateAudioServiceRequest(request: AudioToolRequest, services:
   if (request.kind === "list_audio_jobs" || request.kind === "resume_audio_job" ||
     request.kind === "listen_to_audio_asset") return;
   const service = services.find((entry) => entry.id === request.serviceId);
+  if (request.kind === "generate_lyrics" || request.kind === "generate_song_from_lyrics") {
+    if (!service || service.provider !== "mureka") throw new Error("Mureka connection unavailable.");
+    return;
+  }
   if (request.kind === "inspect_music_service") {
     if (!service || !AUDIO_SERVICE_CAPABILITIES[service.provider].musicLibrary) throw new Error("Music library unavailable.");
     return;

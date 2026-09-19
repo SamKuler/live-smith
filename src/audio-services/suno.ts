@@ -10,7 +10,9 @@ export { readSunoMusicService } from "./suno-catalog.js";
 export type { SunoMusicServiceRequest } from "./suno-catalog.js";
 
 type SunoHttp = ReturnType<typeof createSunoHttp>;
-type MusicRequest = Exclude<AudioGenerationRequest, { operation: "generate_sound_effect" }>;
+type MusicRequest = Extract<AudioGenerationRequest, {
+  operation: "generate_music" | "extend_music" | "get_whole_song";
+}>;
 type Manifest = NonNullable<AudioJob["expectedOutputs"]>;
 function terminal(status: unknown): boolean { return status === "complete" || status === "error"; }
 

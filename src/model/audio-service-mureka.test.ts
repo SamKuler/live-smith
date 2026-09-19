@@ -7,7 +7,7 @@ import { setImmediate } from "node:timers/promises";
 
 import type { AudioGenerationRequest, RemoteAudioOutput } from "../audio-services/contracts.js";
 import { MUREKA_MUSIC_MODELS } from "../audio-services/capabilities.js";
-import { createMurekaAudioAdapter } from "../audio-services/mureka.js";
+import { createMurekaAudioAdapter, generateMurekaLyrics } from "../audio-services/mureka.js";
 import { createHostAbortController } from "../runtime/host.js";
 
 const KEY = "fixture-mureka-key-only";
@@ -81,6 +81,79 @@ test("Mureka prompt-to-song submit captures the current official request contrac
   assert.equal(requests[0]!.init.redirect, "error");
   assert.equal(requests[0]!.init.credentials, "omit");
   assert.equal(requests[0]!.init.referrerPolicy, "no-referrer");
+});
+
+test("Mureka lyrics-to-song uses literal lyrics and the dedicated official route", async () => {
+  const { adapter, requests } = replay([receipt()]);
+  assert.deepEqual(await adapter.submit({
+    operation: "generate_song_from_lyrics",
+    lyrics: "[Verse]\nCity lights in the rain",
+    prompt: "future garage",
+    gender: "female",
+  }, signal()), { kind: "task", taskId: SONG_TASK });
+  assert.equal(requests[0]!.url, "https://api.mureka.ai/v1/song/generate");
+  assert.deepEqual(requests[0]!.body, {
+    model: "auto",
+    n: 1,
+    lyrics: "[Verse]\nCity lights in the rain",
+    prompt: "future garage",
+    gender: "female",
+    stream: false,
+  });
+});
+
+test("Mureka lyric generation returns only bounded title and lyrics", async () => {
+  const requests: Array<{ url: string; init: RequestInit; body: unknown }> = [];
+  const fetchImpl = (async (input, init = {}) => {
+    requests.push({
+      url: String(input),
+      init,
+      body: typeof init.body === "string" ? JSON.parse(init.body) : init.body,
+    });
+    return json({
+      title: "Afterlight",
+      lyrics: "[Verse]\nRain on the glass",
+      trace_id: "must-not-be-returned",
+    });
+  }) as typeof fetch;
+  assert.deepEqual(await generateMurekaLyrics(
+    KEY,
+    "A hopeful night-drive song",
+    signal(),
+    { fetchImpl },
+  ), {
+    title: "Afterlight",
+    lyrics: "[Verse]\nRain on the glass",
+  });
+  assert.equal(requests[0]!.url, "https://api.mureka.ai/v1/lyrics/generate");
+  assert.equal(requests[0]!.init.method, "POST");
+  assert.deepEqual(requests[0]!.body, { prompt: "A hopeful night-drive song" });
+});
+
+test("Mureka lyric and lyrics-to-song validation rejects unsafe input before HTTP", async () => {
+  const { adapter, requests } = replay([]);
+  for (const request of [
+    { operation: "generate_song_from_lyrics", lyrics: "" },
+    { operation: "generate_song_from_lyrics", lyrics: "x".repeat(5001) },
+    { operation: "generate_song_from_lyrics", lyrics: "Lyrics", prompt: "x".repeat(1025) },
+    { operation: "generate_song_from_lyrics", lyrics: "Lyrics", gender: "unknown" },
+  ]) await safeFailure(adapter.submit(request as AudioGenerationRequest, signal()));
+  assert.equal(requests.length, 0);
+
+  let lyricRequests = 0;
+  const fetchImpl = (async () => { lyricRequests++; return json({ title: "Title", lyrics: "Lyrics" }); }) as typeof fetch;
+  await safeFailure(generateMurekaLyrics(KEY, "x".repeat(8001), signal(), { fetchImpl }));
+  assert.equal(lyricRequests, 0);
+  for (const response of [
+    { title: "", lyrics: "Lyrics" },
+    { title: "Title\nInjected", lyrics: "Lyrics" },
+    { title: "Title", lyrics: "\u0001unsafe" },
+    { title: "Title", lyrics: "x".repeat(20_001) },
+  ]) {
+    await safeFailure(generateMurekaLyrics(KEY, "Brief", signal(), {
+      fetchImpl: (async () => json(response)) as typeof fetch,
+    }));
+  }
 });
 
 test("Mureka instrumentals use their dedicated submit and resumable query routes", async () => {

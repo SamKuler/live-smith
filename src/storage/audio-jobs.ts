@@ -271,7 +271,7 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
   const validOperation = value.provider === "lalal" ? value.operation === "separate_stems"
     : value.provider === "elevenlabs" ? ["generate_music", "generate_sound_effect"].includes(value.operation as string)
     : value.provider === "google-lyria" ? value.operation === "generate_music"
-    : value.provider === "mureka" ? value.operation === "generate_music"
+    : value.provider === "mureka" ? ["generate_music", "generate_song_from_lyrics"].includes(value.operation as string)
     : value.provider === "suno-platform" ? value.operation === "generate_music"
     : value.provider === "suno" ? ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(value.operation as string)
     : value.provider === "sunoapi" && value.operation === "generate_music";
@@ -286,7 +286,7 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
 function validExpectedOutputRoles(job: JobConfiguration, roles: unknown): boolean {
   if (!Array.isArray(roles)) return false;
   if (job.operation === "generate_sound_effect") return roles.length === 1 && roles[0] === "sound_effect";
-  return ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(job.operation) && roles[0] === "music" &&
+  return ["generate_music", "generate_song_from_lyrics", "extend_music", "get_whole_song", "retrieve_music"].includes(job.operation) && roles[0] === "music" &&
     (roles.length === 1 || job.operation !== "get_whole_song" && ["sunoapi", "suno"].includes(job.provider) &&
       roles.length === 2 && roles[1] === "music_alternative");
 }
@@ -339,6 +339,7 @@ export function audioJobOwnsAssetRole(
       (role === "source" || role === "residual" || job.stems.some((stem) => stem === role));
     case "generate_music": return (["elevenlabs", "google-lyria", "mureka", "suno-platform"].includes(job.provider) && role === "music") ||
       (["sunoapi", "suno"].includes(job.provider) && (role === "music" || role === "music_alternative"));
+    case "generate_song_from_lyrics": return job.provider === "mureka" && role === "music";
     case "extend_music":
     case "retrieve_music": return job.provider === "suno" && (role === "music" || role === "music_alternative");
     case "get_whole_song": return job.provider === "suno" && role === "music";

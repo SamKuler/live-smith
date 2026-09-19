@@ -27,9 +27,13 @@ test("built-in provider Plugins own distinct tools without a central generation 
   }));
   const names = registry.tools().map((tool) => tool.function.name);
   const mureka = builtInAudioToolName(murekaPlugin, "generate_music");
+  const murekaLyrics = builtInAudioToolName(murekaPlugin, "generate_lyrics");
+  const murekaSongFromLyrics = builtInAudioToolName(murekaPlugin, "generate_song_from_lyrics");
   const elevenMusic = builtInAudioToolName(elevenLabsPlugin, "generate_music");
   const elevenEffect = builtInAudioToolName(elevenLabsPlugin, "generate_sound_effect");
   assert.ok(names.includes(mureka));
+  assert.ok(names.includes(murekaLyrics));
+  assert.ok(names.includes(murekaSongFromLyrics));
   assert.ok(names.includes(elevenMusic));
   assert.ok(names.includes(elevenEffect));
   assert.equal(names.includes("generate_music"), false);
@@ -50,6 +54,35 @@ test("built-in provider Plugins own distinct tools without a central generation 
     instrumental: true,
   }]);
 
+  assert.equal((await registry.callTool({
+    id: "mureka-lyrics",
+    name: murekaLyrics,
+    arguments: JSON.stringify({
+      serviceId: "mureka-main",
+      prompt: "A hopeful night-drive song",
+    }),
+  })).failed, undefined);
+  assert.equal((await registry.callTool({
+    id: "mureka-song-from-lyrics",
+    name: murekaSongFromLyrics,
+    arguments: JSON.stringify({
+      serviceId: "mureka-main",
+      lyrics: "[Verse]\nCity lights",
+    }),
+  })).failed, undefined);
+  assert.deepEqual(requests.slice(1), [
+    {
+      kind: "generate_lyrics",
+      serviceId: "mureka-main",
+      prompt: "A hopeful night-drive song",
+    },
+    {
+      kind: "generate_song_from_lyrics",
+      serviceId: "mureka-main",
+      lyrics: "[Verse]\nCity lights",
+    },
+  ]);
+
   const wrongOwner = await registry.callTool({
     id: "wrong-owner",
     name: mureka,
@@ -60,7 +93,7 @@ test("built-in provider Plugins own distinct tools without a central generation 
     }),
   });
   assert.equal(wrongOwner.invalidArguments, true);
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 3);
 });
 
 test("Session media tools remain one built-in Plugin independent of connections", () => {

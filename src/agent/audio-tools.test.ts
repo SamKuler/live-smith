@@ -93,7 +93,7 @@ test("third-party Suno music declares its prompt limit and does not silently dis
   assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", serviceId: services[0]!.id, prompt: "a".repeat(3001), instrumental: false }, services));
 });
 
-test("Mureka exposes only bounded prompt-based music generation", () => {
+test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", () => {
   const services = [{ id: "mureka-studio", name: "Mureka studio", provider: "mureka" as const }];
   const tools = pluginTools(services);
   const music = localTool(tools, "generate_music")!;
@@ -102,6 +102,8 @@ test("Mureka exposes only bounded prompt-based music generation", () => {
   assert.match(schema, /1024/);
   assert.doesNotMatch(schema, /durationSeconds|options/);
   assert.ok(!localTool(tools, "generate_sound_effect"));
+  assert.ok(localTool(tools, "generate_lyrics"));
+  assert.ok(localTool(tools, "generate_song_from_lyrics"));
   const parsed = parseAudioToolRequest("generate_music", JSON.stringify({
     serviceId: services[0]!.id, prompt: "Ambient piano", instrumental: false,
   }));

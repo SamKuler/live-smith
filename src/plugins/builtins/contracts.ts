@@ -3,6 +3,15 @@ import type {
   AudioProvider,
   MusicGenerationOptionField,
 } from "../../audio-services/contracts.js";
+import type { AudioToolRequest } from "../../agent/audio-tools.js";
+import type { AudioServiceChoice } from "../../audio-services/capabilities.js";
+import type { ModelFunctionTool } from "../../model/provider.js";
+
+export interface BuiltInAudioToolExtension {
+  localToolNames: readonly string[];
+  tools(services: readonly AudioServiceChoice[]): ModelFunctionTool[];
+  parse(name: string, argumentsJson: string): AudioToolRequest;
+}
 
 export interface BuiltInAudioCapabilities {
   label: string;
@@ -31,4 +40,5 @@ export interface BuiltInAudioPluginDefinition {
   description: string;
   provider: AudioProvider;
   capabilities: BuiltInAudioCapabilities;
+  toolExtension?: BuiltInAudioToolExtension;
 }

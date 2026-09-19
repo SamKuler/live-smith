@@ -21,7 +21,8 @@ export const MAX_AUDIO_SERVICES = 20;
 export const LEGACY_AUDIO_SERVICE_ID = "audio-service-lalal";
 export const AUDIO_PROVIDERS = ["lalal", "elevenlabs", "google-lyria", "mureka", "suno-platform", "suno", "sunoapi"] as const;
 export type AudioProvider = (typeof AUDIO_PROVIDERS)[number];
-export type AudioOperation = "separate_stems" | "generate_music" | "generate_sound_effect" | "extend_music" | "get_whole_song" | "retrieve_music";
+export type AudioOperation = "separate_stems" | "generate_music" | "generate_song_from_lyrics" |
+  "generate_sound_effect" | "extend_music" | "get_whole_song" | "retrieve_music";
 
 export interface AudioServiceConnection {
   id: string;
@@ -68,6 +69,7 @@ export type MusicGenerationOptionField = Exclude<keyof MusicGenerationOptions, "
 
 export type AudioGenerationRequest =
   | { operation: "generate_music"; prompt: string; durationSeconds?: number; instrumental: boolean; options?: MusicGenerationOptions }
+  | { operation: "generate_song_from_lyrics"; lyrics: string; prompt?: string; gender?: "female" | "male" }
   | { operation: "extend_music"; clipId: string; startSeconds: number; prompt: string; instrumental: boolean; options?: MusicGenerationOptions }
   | { operation: "get_whole_song"; clipId: string }
   | { operation: "generate_sound_effect"; prompt: string; durationSeconds: number; loop: boolean };

@@ -106,12 +106,15 @@ test("progress labels identify object-aware inspections", () => {
 });
 
 test("provider-qualified Plugin tools retain human progress labels", () => {
-  assert.equal(
-    progressLabelForToolCall({
-      id: "mureka",
-      name: builtInAudioToolName(murekaPlugin, "generate_music"),
+  for (const [localName, label] of [
+    ["generate_music", "Generating music"],
+    ["generate_lyrics", "Generating lyrics"],
+    ["generate_song_from_lyrics", "Generating song from lyrics"],
+  ] as const) {
+    assert.equal(progressLabelForToolCall({
+      id: `mureka-${localName}`,
+      name: builtInAudioToolName(murekaPlugin, localName),
       arguments: "{}",
-    }),
-    "Generating music",
-  );
+    }), label);
+  }
 });

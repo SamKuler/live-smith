@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { MUREKA_MUSIC_MODELS } from "../audio-services/capabilities.js";
 import { createDialogHarness } from "./chat-dialog.test-harness.js";
-import { audioCommands, toggle } from "./chat-dialog.audio-test-helpers.js";
+import { audioCommands, audioState, job, toggle } from "./chat-dialog.audio-test-helpers.js";
 
 test("Mureka uses the named API-key workflow and provider-owned model suggestions", async () => {
   const harness = await createDialogHarness();
@@ -20,7 +20,7 @@ test("Mureka uses the named API-key workflow and provider-owned model suggestion
     assert.equal(harness.document.querySelector<HTMLElement>("#sunoPlatformActions")!.hidden, true);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceKeyField")!.hidden, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceModelField")!.hidden, false);
-    assert.match(harness.document.querySelector("#audioServiceOperations")!.textContent!, /Music generation/);
+    assert.match(harness.document.querySelector("#audioServiceOperations")!.textContent!, /Generate lyrics.*Lyrics to song.*Music generation/);
     assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /prompt.*external service.*API charges/i);
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /auto.*prompt-based generation/i);
 
@@ -44,6 +44,42 @@ test("Mureka uses the named API-key workflow and provider-owned model suggestion
     assert.deepEqual(patch.connection, { id: patch.connection.id, name: "Mureka studio", provider: "mureka",
       enabled: true, apiKey: "fixture-mureka-ui-key", modelId: "mureka-9.5" });
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("Mureka lyrics-to-song jobs retain their Plugin operation and translated audio card", async () => {
+  const connection = {
+    id: "mureka-studio",
+    name: "Mureka studio",
+    provider: "mureka" as const,
+    enabled: true,
+    apiKeyConfigured: true,
+    modelId: "mureka-9.5",
+  };
+  const state = audioState([connection]);
+  const output = {
+    ...job(state.activeSessionId).outputs[0]!,
+    role: "music" as const,
+    label: "Music",
+    origin: { kind: "generated" as const },
+  };
+  state.audioJobs = [job(state.activeSessionId, {
+    provider: "mureka",
+    serviceId: connection.id,
+    operation: "generate_song_from_lyrics",
+    modelId: connection.modelId,
+    stems: [],
+    status: "completed",
+    resumable: false,
+    outputs: [output],
+  })];
+  state.settings.uiLanguage = "zh-CN";
+  const harness = await createDialogHarness(state);
+  try {
+    const card = harness.document.querySelector<HTMLElement>("[data-audio-job-id]")!;
+    assert.match(card.textContent!, /按歌词生成歌曲.*Mureka studio.*Mureka.*mureka-9\.5/s);
+    assert.equal(card.querySelectorAll("audio").length, 1);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

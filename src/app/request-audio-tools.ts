@@ -27,6 +27,7 @@ import {
 import { audioConnectionFingerprint, captureAudioServiceConnections, resolveAudioService } from "./audio-service-connections.js";
 import { generateAudio, retrieveMusic } from "./audio-generation.js";
 import { readSunoMusicService } from "../audio-services/suno.js";
+import { generateMurekaLyrics } from "../audio-services/mureka.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
 
@@ -47,6 +48,7 @@ export async function createRequestAudioTools(input: {
   /** Test seam; production uses the saved service and shared network route. */
   processing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "wait"> & {
     musicServiceReader?: typeof readSunoMusicService;
+    murekaLyricsGenerator?: typeof generateMurekaLyrics;
   };
 }) {
   const admittedConnections = await captureAudioServiceConnections(input.storageDirectory);
@@ -174,6 +176,34 @@ export async function createRequestAudioTools(input: {
           if (request.query === "library" && "clips" in result) rememberClips(connection.id, result.clips);
           return { content: JSON.stringify(result) };
         }
+        if (request.kind === "generate_lyrics") {
+          const connection = await resolveAudioService(
+            input.storageDirectory,
+            request.serviceId,
+            "generate_music",
+            admittedConnections,
+          );
+          if (connection.provider !== "mureka") throw new Error("Mureka connection unavailable.");
+          if (!input.withGenerationAuthorization) throw new Error("Generation authorization unavailable.");
+          const result = await input.withGenerationAuthorization(input.signal, async () => {
+            const current = await resolveAudioService(
+              input.storageDirectory,
+              request.serviceId,
+              "generate_music",
+              [connection],
+            );
+            if (current.provider !== "mureka") throw new Error("Mureka connection unavailable.");
+            throwIfAborted(input.signal);
+            return (input.processing?.murekaLyricsGenerator ?? generateMurekaLyrics)(
+              current.apiKey,
+              request.prompt,
+              input.signal,
+              { fetchImpl: providerFetchForStorage(input.storageDirectory) },
+            );
+          });
+          throwIfAborted(input.signal);
+          return { content: JSON.stringify(result) };
+        }
         const clipIds = request.kind === "retrieve_music" ? request.clipIds
           : request.kind === "extend_music" || request.kind === "get_whole_song" ? [request.clipId] : [];
         if (clipIds.length && "serviceId" in request && clipIds.some((id) => !observedClips.get(request.serviceId)?.has(id))) {
@@ -229,6 +259,7 @@ function generationRequest(request: Extract<AudioToolRequest, { kind: AudioGener
   switch (request.kind) {
     case "generate_music": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
     case "generate_sound_effect": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
+    case "generate_song_from_lyrics": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
     case "extend_music": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
     case "get_whole_song": { const { kind, serviceId: _id, ...fields } = request; return { operation: kind, ...fields }; }
   }

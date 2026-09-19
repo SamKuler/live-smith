@@ -90,6 +90,8 @@ export function progressLabelForToolCall(toolCall: ModelToolCall): string {
   }
 
   if (toolName === "generate_music") return "Generating music";
+  if (toolName === "generate_lyrics") return "Generating lyrics";
+  if (toolName === "generate_song_from_lyrics") return "Generating song from lyrics";
   if (toolName === "generate_sound_effect") return "Generating a sound effect";
   if (toolName === "separate_stems") return "Separating audio stems";
   if (toolName === "inspect_music_service") return "Reading music account";
