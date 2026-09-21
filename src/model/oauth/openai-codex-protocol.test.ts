@@ -91,14 +91,15 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
       return new Response(JSON.stringify({
         models: [
           {
-            slug: "gpt-account-model",
-            display_name: "GPT Account Model",
+            slug: "gpt-6-astra",
+            display_name: "GPT-6 Astra",
             supported_in_api: true,
             visibility: "list",
             supported_reasoning_levels: [
               { effort: "low", description: "Fast" },
               { effort: "medium", description: "Balanced" },
               { effort: "high", description: "Deep" },
+              { effort: "ultra", description: "Deepest" },
             ],
             context_window: 272_000,
             input_modalities: ["text", "image", "audio", "pdf"],
@@ -130,14 +131,14 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
 
   assert.equal(
     capturedUrl,
-    "https://chatgpt.com/backend-api/codex/models?client_version=0.149.0",
+    "https://chatgpt.com/backend-api/codex/models?client_version=0.155.0",
   );
   assert.equal(capturedHeaders?.get("authorization"), "Bearer openai-access");
   assert.equal(capturedHeaders?.get("chatgpt-account-id"), "account-1");
   assert.deepEqual(models, [
     {
-      id: "gpt-account-model",
-      displayName: "GPT Account Model",
+      id: "gpt-6-astra",
+      displayName: "GPT-6 Astra",
       capabilities: {
         tools: true,
         streaming: true,
@@ -146,7 +147,7 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
         reasoning: {
           supported: true,
           canDisable: false,
-          efforts: ["low", "medium", "high"],
+          efforts: ["low", "medium", "high", "ultra"],
           budgetTokens: false,
           strategy: "effort",
         },

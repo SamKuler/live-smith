@@ -61,7 +61,7 @@ import type { OAuthModelProtocol } from "./protocol.js";
 
 const codexBaseUrl = "https://chatgpt.com/backend-api/codex";
 // The catalog is filtered by Codex protocol compatibility, not product version.
-const codexCatalogCompatibilityVersion = "0.149.0";
+const codexCatalogCompatibilityVersion = "0.155.0";
 const maximumTurnStateLength = 16_384;
 const codexTurnStateByReconnectState = new WeakMap<object, string>();
 
