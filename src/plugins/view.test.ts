@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { strToU8, zipSync } from "fflate/browser";
@@ -39,20 +40,22 @@ function pluginPackage(): InstalledPluginPackage {
 }
 
 test("Plugin wire view exposes capabilities and approval without private runtime details", async () => {
-  const [view] = await installedPluginViews([pluginPackage()]);
+  const entry = pluginPackage();
+  const [view] = await installedPluginViews([entry]);
   assert.deepEqual(view, {
-    id: "audio-to-midi", version: "1.0.0", description: "Convert audio",
+    id: "audio-to-midi", sha256: createHash("sha256").update(entry.bytes).digest("hex"),
+    version: "1.0.0", description: "Convert audio",
     sourceFormat: "agent-plugins-1.0", enabled: true, skillCount: 1,
     mcpServers: [
       { id: "local", type: "stdio", approved: false, artifactInputApproved: false,
-        artifactOutputApproved: false, target: "./bin/converter" },
+        artifactOutputApproved: false, target: "./bin/converter", credentialFields: [] },
       { id: "remote", type: "streamable-http", approved: true, artifactInputApproved: false,
-        artifactOutputApproved: false, target: "https://api.example.com" },
+        artifactOutputApproved: false, target: "https://api.example.com", credentialFields: [] },
     ],
     unsupportedComponents: [],
     issues: ["invalid_skill", "unsupported_mcp_transport"],
   });
-  assert.doesNotMatch(JSON.stringify(view), /private\/path|token=hidden|sha256|PLUGIN_DATA/u);
+  assert.doesNotMatch(JSON.stringify(view), /private\/path|token=hidden|PLUGIN_DATA/u);
 });
 
 test("Plugin install preview binds review metadata to the exact archive", async () => {

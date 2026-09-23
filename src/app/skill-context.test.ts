@@ -86,6 +86,18 @@ test("enabled Plugin Skills resolve by namespaced persistent or one-turn IDs", a
     prompt: "Use $music-tools:audio-to-midi for this clip.",
   });
   assert.deepEqual(mentioned.activeSkillIds, ["music-tools:audio-to-midi"]);
+  await setPluginEnabled(directory, "music-tools", false);
+  assert.deepEqual(await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["music-tools:audio-to-midi"],
+    prompt: "Convert this audio.",
+  }), { activeSkillIds: [], instructionBlock: "" });
+  await installSkill(directory, skillBytes("music-tools"));
+  assert.deepEqual((await resolveSkillContext({
+    storageDirectory: directory,
+    sessionSkillIds: ["music-tools", "music-tools:audio-to-midi"],
+    prompt: "Review this track.",
+  })).activeSkillIds, ["music-tools"]);
 });
 
 test("skill mention lexer leaves unknown, currency, email, path, and code text ordinary", async () => {

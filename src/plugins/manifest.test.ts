@@ -40,6 +40,14 @@ test("portable identity accepts optional metadata and dotted names", () => {
   });
 });
 
+test("installed packages cannot claim Live Smith's tool identity namespace", () => {
+  for (const name of ["live-smith.lalal", "live-smith.artifacts", "live-smith.media"]) {
+    assert.throws(() => parsePluginPackageManifest([file("plugin.json", {
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name,
+    })]), /host namespace/u);
+  }
+});
+
 test("Codex and Claude compatibility manifests use one bounded identity contract", () => {
   for (const [path, sourceFormat] of [
     [".codex-plugin/plugin.json", "codex"],

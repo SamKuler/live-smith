@@ -192,6 +192,30 @@ test("conflicting peer revisions retain fields, clear keys, require reload, and 
   } finally { harness.close(); }
 });
 
+test("an adjacent MCP-only connection revision preserves an in-progress audio draft", async () => {
+  const state = audioState();
+  const harness = await createDialogHarness(state);
+  try {
+    harness.input("#audioServiceName", "Draft name");
+    harness.input("#audioServiceApiKey", "fixture-unsent-key");
+    const next = { revision: "2", lastChangeTouchesAudio: false,
+      connections: [...state.integrationConnections!.connections, {
+        id: "mcp-account", name: "MCP account", pluginId: "accounts-plugin", enabled: true,
+        configuration: { serverId: "remote", pluginDigest: "a".repeat(64) }, configuredSecrets: ["TOKEN"],
+      }] };
+    harness.setServerState({ ...state, integrationConnections: next });
+    harness.emitServerEvent(broadcast(state, next));
+    await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Draft name");
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "fixture-unsent-key");
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, false);
+    harness.click("#saveAudioServiceButton");
+    await harness.settle();
+    assert.equal(audioCommands(harness).at(-1)!.integrationConnections.expectedRevision, "2");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("rejected stale save retains non-secret draft fields and never restores a submitted key", async () => {
   const state = audioState();
   const harness = await createDialogHarness(state);

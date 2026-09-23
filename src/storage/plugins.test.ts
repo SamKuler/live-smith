@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { platform } from "node:process";
 import test from "node:test";
 
 import { strToU8, zipSync } from "fflate/browser";
@@ -118,6 +120,8 @@ test("historical Plugin catalogs default missing artifact grants without rewriti
   await installPlugin(directory, packageBytes("1.0.0"));
   const target = `${directory}/live-smith-plugins/catalog.json`;
   const catalog = JSON.parse(await fs.readFile(target, "utf8"));
+  catalog.schemaVersion = 1;
+  delete catalog.pendingCleanup;
   delete catalog.plugins[0].approvedArtifactInputServerIds;
   delete catalog.plugins[0].approvedArtifactOutputServerIds;
   await fs.writeFile(target, JSON.stringify(catalog, null, 2));
@@ -126,6 +130,10 @@ test("historical Plugin catalogs default missing artifact grants without rewriti
   assert.deepEqual(loaded?.approvedArtifactInputServerIds, []);
   assert.deepEqual(loaded?.approvedArtifactOutputServerIds, []);
   assert.equal(await fs.readFile(target, "utf8"), before);
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  const upgraded = JSON.parse(await fs.readFile(target, "utf8"));
+  assert.equal(upgraded.schemaVersion, 2);
+  assert.deepEqual(upgraded.pendingCleanup, []);
 });
 
 test("Plugin catalog serializes concurrent installs and deletes only the selected package", async (t) => {
@@ -142,6 +150,93 @@ test("Plugin catalog serializes concurrent installs and deletes only the selecte
   await assert.rejects(readInstalledPluginArchive(directory, "fixture-plugin"), /not installed/u);
 });
 
+test("a committed Plugin deletion retains and retries private-data cleanup", { skip: platform === "win32" }, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  const data = path.join(directory, "live-smith-plugins", "data", "fixture-plugin");
+  t.after(async () => {
+    await fs.chmod(data, 0o700).catch(() => undefined);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await installPlugin(directory, packageBytes("1.0.0"));
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  await preparePluginRuntime(directory, "fixture-plugin");
+  await setPluginEnabled(directory, "fixture-plugin", false);
+  await fs.writeFile(path.join(data, "state.json"), "private", { mode: 0o600 });
+  await fs.chmod(data, 0o500);
+
+  assert.equal(await deletePlugin(directory, "fixture-plugin"), false);
+  assert.deepEqual(await listInstalledPlugins(directory), []);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "live-smith-plugins", "catalog.json"), "utf8"))
+    .pendingCleanup, [{ kind: "delete", pluginId: "fixture-plugin" }]);
+  await assert.rejects(installPlugin(directory, packageBytes("2.0.0")), /awaiting cleanup/u);
+  await fs.chmod(data, 0o700);
+  assert.deepEqual(await listInstalledPlugins(directory), []);
+  await assert.rejects(fs.lstat(data), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "live-smith-plugins", "catalog.json"), "utf8"))
+    .pendingCleanup, []);
+});
+
+test("pending Plugin cleanup never follows a replaced private-data ancestor", { skip: platform === "win32" }, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  const dataRoot = path.join(directory, "live-smith-plugins", "data");
+  const data = path.join(dataRoot, "fixture-plugin");
+  const held = `${dataRoot}.held`;
+  const outside = path.join(directory, "outside");
+  t.after(async () => {
+    await fs.chmod(data, 0o700).catch(() => undefined);
+    await fs.chmod(path.join(held, "fixture-plugin"), 0o700).catch(() => undefined);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await installPlugin(directory, packageBytes("1.0.0"));
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  await preparePluginRuntime(directory, "fixture-plugin");
+  await setPluginEnabled(directory, "fixture-plugin", false);
+  await fs.writeFile(path.join(data, "state.json"), "private");
+  await fs.chmod(data, 0o500);
+  assert.equal(await deletePlugin(directory, "fixture-plugin"), false);
+  await fs.chmod(data, 0o700);
+  await fs.rename(dataRoot, held);
+  await fs.mkdir(path.join(outside, "fixture-plugin"), { recursive: true });
+  const marker = path.join(outside, "fixture-plugin", "keep.txt");
+  await fs.writeFile(marker, "untouched");
+  await fs.symlink(outside, dataRoot);
+
+  assert.deepEqual(await listInstalledPlugins(directory), []);
+  assert.equal(await fs.readFile(marker, "utf8"), "untouched");
+  assert.equal(JSON.parse(await fs.readFile(path.join(directory, "live-smith-plugins", "catalog.json"), "utf8"))
+    .pendingCleanup.length, 1);
+  await fs.unlink(dataRoot);
+  await fs.rename(held, dataRoot);
+  await listInstalledPlugins(directory);
+  await assert.rejects(fs.lstat(data), { code: "ENOENT" });
+});
+
+test("a committed Plugin replacement succeeds while old runtime cleanup is pending", { skip: platform === "win32" }, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  let oldRuntime: string | undefined;
+  t.after(async () => {
+    if (oldRuntime) await fs.chmod(oldRuntime, 0o700).catch(() => undefined);
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const old = await installPlugin(directory, packageBytes("1.0.0"));
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  oldRuntime = (await preparePluginRuntime(directory, "fixture-plugin")).pluginRoot;
+  await setPluginEnabled(directory, "fixture-plugin", false);
+  await fs.chmod(oldRuntime, 0o500);
+
+  const replacement = await installPlugin(directory, packageBytes("2.0.0"), { replace: true });
+  assert.equal(replacement.version, "2.0.0");
+  assert.equal((await listInstalledPlugins(directory))[0]?.sha256, replacement.sha256);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "live-smith-plugins", "catalog.json"), "utf8"))
+    .pendingCleanup, [{ kind: "replace", pluginId: "fixture-plugin", sha256: old.sha256 }]);
+  await setPluginEnabled(directory, "fixture-plugin", true);
+  assert.equal(JSON.parse(await fs.readFile(path.join(directory, "live-smith-plugins", "catalog.json"), "utf8"))
+    .pendingCleanup.length, 1);
+  await fs.chmod(oldRuntime, 0o700);
+  await listInstalledPlugins(directory);
+  await assert.rejects(fs.lstat(oldRuntime), { code: "ENOENT" });
+});
+
 test("invalid packages never create a Plugin catalog", async (t) => {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -155,6 +250,19 @@ test("corrupt catalog fails closed without rewriting its bytes", async (t) => {
   await installPlugin(directory, packageBytes("1.0.0"));
   const target = `${directory}/live-smith-plugins/catalog.json`;
   await fs.writeFile(target, "{broken", "utf8");
+  const before = await fs.readFile(target);
+  await assert.rejects(listInstalledPlugins(directory), /storage is invalid/u);
+  assert.deepEqual(await fs.readFile(target), before);
+});
+
+test("Plugin cleanup intent rejects paths outside its owned Plugin ID", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const target = path.join(directory, "live-smith-plugins", "catalog.json");
+  const catalog = JSON.parse(await fs.readFile(target, "utf8"));
+  catalog.pendingCleanup = [{ kind: "delete", pluginId: "../outside" }];
+  await fs.writeFile(target, JSON.stringify(catalog));
   const before = await fs.readFile(target);
   await assert.rejects(listInstalledPlugins(directory), /storage is invalid/u);
   assert.deepEqual(await fs.readFile(target), before);

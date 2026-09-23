@@ -22,6 +22,7 @@ import {
   isBuiltInSkillId,
 } from "../skills/builtins.js";
 import { previewPluginArchive } from "../plugins/view.js";
+import { builtInAudioPluginById } from "../plugins/builtins/index.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -1341,12 +1342,12 @@ async function createDialogHarness(
                 }
               }
               if (!existing || existingDigest !== preview.sha256) {
-                const { sha256, byteLength, ...installed } = preview;
+                const { byteLength, ...installed } = preview;
                 serverState.plugins = [
                   ...serverState.plugins.filter((plugin) => plugin.id !== installed.id),
                   installed,
                 ].sort((left, right) => left.id.localeCompare(right.id));
-                installedPluginDigests.set(installed.id, sha256);
+                installedPluginDigests.set(installed.id, preview.sha256);
                 void byteLength;
               }
               const responseRejection = pluginResponseRejections.shift();
@@ -1575,6 +1576,8 @@ async function createDialogHarness(
                     return failedResponse({ commandId, error: "Audio settings changed in another window.", field: "integrationConnections" }, 409, "Conflict");
                   }
                   const connections = [...current.connections];
+                  const changedId = patch.action === "remove" ? patch.connectionId : patch.connection.id;
+                  const before = connections.find((connection) => connection.id === changedId);
                   if (patch.action === "remove") {
                     const index = connections.findIndex((service) => service.id === patch.connectionId);
                     if (index >= 0) connections.splice(index, 1);
@@ -1582,20 +1585,31 @@ async function createDialogHarness(
                     const { secrets, ...fields } = patch.connection;
                     const index = connections.findIndex((service) => service.id === fields.id);
                     const previous = connections[index];
+                    const sameBinding = previous?.pluginId === fields.pluginId &&
+                      previous.configuration.serverId === fields.configuration.serverId &&
+                      previous.configuration.pluginDigest === fields.configuration.pluginDigest;
                     const service = {
                       ...fields,
                       configuredSecrets: secrets === undefined
-                        ? previous?.pluginId === fields.pluginId
+                        ? sameBinding
                           ? [...(previous?.configuredSecrets ?? [])]
                           : []
-                        : Object.entries(secrets)
-                          .filter(([, value]) => Boolean(value))
-                          .map(([name]) => name),
+                        : sameBinding && !builtInAudioPluginById(fields.pluginId)
+                          ? [...new Set([...previous?.configuredSecrets ?? [], ...Object.keys(secrets)])]
+                            .filter((name) => !Object.hasOwn(secrets, name) || Boolean(secrets[name]))
+                          : Object.entries(secrets)
+                            .filter(([, value]) => Boolean(value))
+                            .map(([name]) => name),
                     };
                     if (index < 0) connections.push(service);
                     else connections[index] = service;
                   }
-                  serverState.integrationConnections = { connections, revision: incrementNetworkProxyRevision(current.revision) };
+                  const after = connections.find((connection) => connection.id === changedId);
+                  serverState.integrationConnections = { connections, revision: incrementNetworkProxyRevision(current.revision),
+                    lastChangeTouchesAudio: Boolean(
+                      before && builtInAudioPluginById(before.pluginId) ||
+                      after && builtInAudioPluginById(after.pluginId)),
+                  };
                 } else if (command.uiLanguage) {
                   serverState.settings.uiLanguage = command.uiLanguage;
                   serverState.settings.uiLanguageRevision = String(BigInt(serverState.settings.uiLanguageRevision) + 1n);

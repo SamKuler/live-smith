@@ -154,6 +154,9 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
     })) }),
     ...(state.integrationConnections === undefined ? {} : { integrationConnections: {
       revision: state.integrationConnections.revision,
+      ...(state.integrationConnections.lastChangeTouchesAudio === undefined ? {} : {
+        lastChangeTouchesAudio: state.integrationConnections.lastChangeTouchesAudio,
+      }),
       connections: state.integrationConnections.connections.map((connection) => ({
         id: connection.id,
         name: connection.name,

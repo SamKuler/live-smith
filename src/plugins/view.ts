@@ -7,6 +7,7 @@ import type { InstalledPluginPackage } from "../storage/plugins.js";
 import { openPluginArchive, type OpenPluginArchive } from "./archive.js";
 import type { PluginManifest, PluginSourceFormat } from "./contracts.js";
 import { pluginMcpConfigFromArchive, PluginMcpConfigError } from "./mcp/config.js";
+import { mcpCredentialFields, type McpCredentialField } from "./mcp/credentials.js";
 
 export type PluginViewIssue =
   | "invalid_skill"
@@ -21,10 +22,12 @@ export interface PluginMcpServerView {
   artifactInputApproved: boolean;
   artifactOutputApproved: boolean;
   target: string;
+  credentialFields: McpCredentialField[];
 }
 
 export interface InstalledPluginView {
   id: string;
+  sha256: string;
   version?: string;
   description?: string;
   sourceFormat: PluginSourceFormat;
@@ -36,7 +39,6 @@ export interface InstalledPluginView {
 }
 
 export interface PluginInstallPreview extends InstalledPluginView {
-  sha256: string;
   byteLength: number;
 }
 
@@ -102,6 +104,7 @@ async function pluginView(
         artifactInputApproved: approvedArtifactInputServerIds.includes(server.id),
         artifactOutputApproved: approvedArtifactOutputServerIds.includes(server.id),
         target: server.type === "stdio" ? commandLabel(server.command) : new URL(server.url).origin,
+        credentialFields: mcpCredentialFields(server),
       }));
       if (config.issues.some((issue) => issue.code === "invalid_server")) issues.push("invalid_mcp_server");
       if (config.issues.some((issue) => issue.code === "unsupported_transport")) issues.push("unsupported_mcp_transport");
@@ -112,6 +115,7 @@ async function pluginView(
   }
   return {
     id: manifest.id,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
     ...(manifest.version === undefined ? {} : { version: manifest.version }),
     ...(manifest.description === undefined ? {} : { description: manifest.description }),
     sourceFormat: manifest.sourceFormat,

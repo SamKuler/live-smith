@@ -7,6 +7,7 @@ import { createHostAbortController } from "../runtime/host.js";
 import { createSession } from "./sessions.js";
 import {
   deleteSessionMidiArtifacts,
+  inspectMidiArtifacts,
   listMidiArtifacts,
   listSessionMidiArtifactDirectoryIds,
   MidiArtifactStorageError,
@@ -102,6 +103,77 @@ test("MIDI artifacts persist immutable ownership and parse again on every read",
   await deleteSessionMidiArtifacts(h.directory, h.session.id);
   assert.deepEqual(await listMidiArtifacts(h.directory, h.session.id), []);
   assert.deepEqual(await listSessionMidiArtifactDirectoryIds(h.directory), []);
+});
+
+test("incomplete MIDI writes do not poison a Session or hide committed artifacts", async (t) => {
+  const h = await harness(t);
+  const bytes = midiFile();
+  const committed = await saveMidiArtifact(h.directory, h.session.id, {
+    pluginId: "audio-to-midi",
+    serverId: "local",
+    toolName: "transcribe",
+    label: "Committed",
+    bytes,
+    signal: h.signal,
+  });
+  const root = path.join(h.directory, "live-smith-midi", h.session.id);
+  const incompleteId = "midi_incomplete";
+  await fs.writeFile(path.join(root, `${incompleteId}.midi.json`), JSON.stringify({
+    ...committed,
+    id: incompleteId,
+    label: "Interrupted metadata-first save",
+  }), { mode: 0o600 });
+  await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
+  await fs.writeFile(path.join(root, ".midi_orphan.mid.tmp_interrupted"), bytes, { mode: 0o600 });
+  assert.deepEqual(await listMidiArtifacts(h.directory, h.session.id), [committed]);
+  assert.equal((await inspectMidiArtifacts(h.directory, h.session.id)).unavailableCount, 1);
+  assert.deepEqual((await fs.readdir(root)).sort(), [
+    `${committed.id}.mid`, `${committed.id}.midi.json`,
+    `${incompleteId}.midi.json`, "midi_orphan.mid", ".midi_orphan.mid.tmp_interrupted",
+  ].sort());
+  const next = await saveMidiArtifact(h.directory, h.session.id, {
+    pluginId: "audio-to-midi",
+    serverId: "local",
+    toolName: "transcribe",
+    label: "After recovery",
+    bytes,
+    signal: h.signal,
+  });
+  assert.deepEqual((await listMidiArtifacts(h.directory, h.session.id)).map(({ id }) => id),
+    [committed.id, next.id]);
+});
+
+test("fresh incomplete MIDI files remain untouched while another process may be writing", async (t) => {
+  const h = await harness(t);
+  const bytes = midiFile();
+  const committed = await saveMidiArtifact(h.directory, h.session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
+    label: "Committed", bytes, signal: h.signal,
+  });
+  const root = path.join(h.directory, "live-smith-midi", h.session.id);
+  const incomplete = "midi_incomplete";
+  await fs.writeFile(path.join(root, `${incomplete}.midi.json`), JSON.stringify({ ...committed, id: incomplete }),
+    { mode: 0o600 });
+  await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
+  await fs.writeFile(path.join(root, ".midi_orphan.mid.tmp_writing"), bytes, { mode: 0o600 });
+  assert.deepEqual(await listMidiArtifacts(h.directory, h.session.id), [committed]);
+  assert.ok((await fs.readdir(root)).includes(`${incomplete}.midi.json`));
+  assert.ok((await fs.readdir(root)).includes("midi_orphan.mid"));
+  assert.ok((await fs.readdir(root)).includes(".midi_orphan.mid.tmp_writing"));
+});
+
+test("MIDI recovery never follows or removes an orphan symlink target", async (t) => {
+  const h = await harness(t);
+  const root = path.join(h.directory, "live-smith-midi", h.session.id);
+  await saveMidiArtifact(h.directory, h.session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
+    label: "Committed", bytes: midiFile(), signal: h.signal,
+  });
+  const outside = path.join(h.directory, "outside.mid");
+  await fs.writeFile(outside, midiFile());
+  await fs.symlink(outside, path.join(root, "midi_orphan.mid"));
+  await assert.rejects(listMidiArtifacts(h.directory, h.session.id), MidiArtifactStorageError);
+  assert.deepEqual(new Uint8Array(await fs.readFile(outside)), midiFile());
 });
 
 test("MIDI artifact reads reject cross-Session IDs, tampered bytes and symlinks", async (t) => {

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import type { UiMessage } from "../i18n/ui-message.js";
+import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 
 import {
   AgentPartialCompletionError,
@@ -521,6 +521,12 @@ export async function handleAgentRequest(
   );
   try {
     await callbacks.onProgress("Starting agent loop");
+    if (pluginTools.unavailableMidiArtifacts) {
+      await callbacks.onProgress(uiMessage(
+        "{count} saved MIDI artifacts are unavailable; their metadata was preserved.",
+        { count: pluginTools.unavailableMidiArtifacts },
+      ));
+    }
     const loopResult = await runAgentLoop({
       externalTools: {
         names: externalTools.tools().map((tool) => tool.function.name),

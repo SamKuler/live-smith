@@ -107,6 +107,20 @@ test("one failed MCP server does not hide independent Plugin tools", async () =>
   await plugin.close();
 });
 
+test("closing a Plugin package prevents later discovery from reopening its MCP process", async () => {
+  let connects = 0;
+  const plugin = createMcpPluginPackage(await prepared(["primary"]), {
+    connector: async (server) => {
+      connects += 1;
+      return connection(server, []);
+    },
+  });
+  await plugin.close();
+  const discovered = await plugin.tools({ sessionId: "session", signal: createHostAbortController().signal });
+  assert.deepEqual(discovered.tools, []);
+  assert.equal(connects, 0);
+});
+
 test("Plugin MCP results cannot expose materialized package or private data paths", async () => {
   const connector: PluginMcpConnector = async (server) => ({
     ...connection(server, []),

@@ -7,6 +7,11 @@ import {
   type IntegrationConnectionsSettingsPatch,
 } from "../plugins/integration-connections.js";
 import { builtInAudioPluginId } from "../plugins/builtins/index.js";
+import { builtInAudioPluginById } from "../plugins/builtins/index.js";
+import { openPluginArchive } from "../plugins/archive.js";
+import { pluginMcpConfigFromArchive } from "../plugins/mcp/config.js";
+import { mcpCredentialFields } from "../plugins/mcp/credentials.js";
+import { readInstalledPluginPackageInTransaction } from "./plugins.js";
 
 import {
   activeSavedProfile,
@@ -358,18 +363,44 @@ export async function saveGlobalSettings(
       } else {
         const previous = connections[index];
         const replacement = connectionPatch.connection;
+        const sameIdentity = previous?.pluginId === replacement.pluginId &&
+          previous.configuration.serverId === replacement.configuration.serverId &&
+          previous.configuration.pluginDigest === replacement.configuration.pluginDigest;
         const connection = normalizeIntegrationConnection({
           ...replacement,
-          secrets: replacement.secrets ??
-            (previous?.pluginId === replacement.pluginId ? previous.secrets : {}),
+          secrets: replacement.secrets === undefined
+            ? sameIdentity ? previous?.secrets ?? {} : {}
+            : sameIdentity && !builtInAudioPluginById(replacement.pluginId)
+              ? { ...previous?.secrets, ...replacement.secrets }
+              : replacement.secrets,
         });
+        if (!builtInAudioPluginById(connection.pluginId)) {
+          const installed = await readInstalledPluginPackageInTransaction(transaction, storageDirectory, connection.pluginId);
+          if (!installed || installed.plugin.sha256 !== connection.configuration.pluginDigest) {
+            throw new ProfileValidationError("integrationConnections", "The Plugin package changed. Review this MCP connection and enter its credentials again.");
+          }
+          const archive = await openPluginArchive(installed.bytes);
+          const server = pluginMcpConfigFromArchive(archive)?.servers.find((entry) =>
+            entry.id === connection.configuration.serverId);
+          if (!server) throw new ProfileValidationError("integrationConnections", "The selected MCP server is unavailable.");
+          const fields = mcpCredentialFields(server);
+          if (Object.keys(connection.secrets).some((name) => !fields.some((field) => field.name === name)) ||
+              connection.enabled && fields.some((field) => field.required &&
+                (!Object.hasOwn(connection.secrets, field.name) || !connection.secrets[field.name]))) {
+            throw new ProfileValidationError("integrationConnections", "The MCP connection credentials do not match the server configuration.");
+          }
+        }
         if (index < 0) connections.push(connection);
         else connections[index] = connection;
       }
-      const integrationConnections = normalizeIntegrationConnectionsSettings({ connections,
-        revision: incrementNetworkProxyRevision(revision) });
       const previous = settings.integrationConnections?.connections.find((connection) => connection.id === connectionId);
-      const next = integrationConnections.connections.find((connection) => connection.id === connectionId);
+      const next = connections.find((connection) => connection.id === connectionId);
+      const integrationConnections = normalizeIntegrationConnectionsSettings({ connections,
+        revision: incrementNetworkProxyRevision(revision),
+        lastChangeTouchesAudio: Boolean(
+          previous && builtInAudioPluginById(previous.pluginId) ||
+          next && builtInAudioPluginById(next.pluginId)),
+      });
       const sunoPluginId = builtInAudioPluginId("suno");
       const clearedSession = previous?.pluginId === sunoPluginId && next?.pluginId !== sunoPluginId
         ? await new SunoSessions(storageDirectory).clear(previous.id, transaction) : false;

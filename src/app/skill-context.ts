@@ -15,7 +15,11 @@ import {
   readInstalledSkillInTransaction,
   type SkillCatalogTransaction,
 } from "../storage/skills.js";
-import { readEnabledPluginPackagesInTransaction } from "../storage/plugins.js";
+import {
+  listInstalledPluginsInTransaction,
+  readEnabledPluginPackagesInTransaction,
+  type InstalledPlugin,
+} from "../storage/plugins.js";
 import { withStorageTransaction, type StorageTransactionContext } from "../storage/persistence.js";
 
 export const MAX_ACTIVE_SKILL_INSTRUCTION_BYTES = 128 * 1024;
@@ -49,10 +53,15 @@ export async function resolveSkillContextInTransaction(
     prompt: string;
   },
 ): Promise<ResolvedSkillContext> {
+  assertSessionSkillIds(input.sessionSkillIds);
+  const plugins = await listInstalledPluginsInTransaction(transaction, input.storageDirectory);
   const pluginSkills = await pluginSkillsFromPackages(
     await readEnabledPluginPackagesInTransaction(transaction, input.storageDirectory),
   );
-  return resolveSkillContextFromCatalog(input, {
+  return resolveSkillContextFromCatalog({
+    ...input,
+    sessionSkillIds: sessionSkillIdsForEnabledPlugins(input.sessionSkillIds, plugins),
+  }, {
     listInstalledSkills: () => listInstalledSkillsInTransaction(
       transaction,
       input.storageDirectory,
@@ -65,6 +74,17 @@ export async function resolveSkillContextInTransaction(
   }, pluginSkills);
 }
 
+export function sessionSkillIdsForEnabledPlugins(
+  skillIds: readonly string[],
+  plugins: readonly Pick<InstalledPlugin, "id" | "enabled">[],
+): string[] {
+  const disabled = new Set(plugins.filter((plugin) => !plugin.enabled).map((plugin) => plugin.id));
+  return skillIds.filter((skillId) => {
+    const separator = skillId.indexOf(":");
+    return separator < 0 || !disabled.has(skillId.slice(0, separator));
+  });
+}
+
 async function resolveSkillContextFromCatalog(
   input: {
     sessionSkillIds: readonly string[];
@@ -73,7 +93,6 @@ async function resolveSkillContextFromCatalog(
   catalog: Pick<SkillCatalogTransaction, "listInstalledSkills" | "readInstalledSkill">,
   pluginSkills: readonly PluginSkillDefinition[] = [],
 ): Promise<ResolvedSkillContext> {
-  assertSessionSkillIds(input.sessionSkillIds);
   const mentionedCandidates = skillMentionCandidates(input.prompt);
   if (input.sessionSkillIds.length === 0 && mentionedCandidates.length === 0) {
     return { activeSkillIds: [], instructionBlock: "" };

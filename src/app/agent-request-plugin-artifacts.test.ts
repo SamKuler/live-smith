@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { MidiClip, MidiTrack } from "@ableton-extensions/sdk";
 
+import type { UiMessage } from "../i18n/ui-message.js";
 import type { DirectApiProfile } from "../model/profile.js";
 import { saveMidiArtifact } from "../storage/midi-artifacts.js";
 import { createSession } from "../storage/sessions.js";
@@ -161,6 +162,43 @@ test("saved Plugin MIDI imports through ordinary confirmed Live action safeguard
   assert.equal(created[0]!.durationBeats, 2);
   assert.equal(created[0]!.clip.name, "Lead transcription");
   assert.deepEqual(created[0]!.clip.notes, [{ pitch: 67, startTime: 0, duration: 2, velocity: 104 }]);
+});
+
+test("damaged saved MIDI metadata does not block a normal send and surfaces a warning", async (t) => {
+  const directory = await fs.mkdtemp(path.join("/private/tmp", "live-smith-plugin-midi-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const session = await createSession(directory, {
+    title: "Plugin MIDI", projectKey: "project",
+    scope: { kind: "selection", identity: "selection", label: "Selection" },
+  });
+  const signal = new AbortController().signal;
+  const artifact = await saveMidiArtifact(directory, session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
+    label: "Missing MIDI", bytes: midiFile(), signal,
+  });
+  await fs.rm(path.join(directory, "live-smith-midi", session.id, `${artifact.id}.mid`));
+  const progress: UiMessage[] = [];
+  const result = await handleAgentRequest(
+    { application: { song: { handle: { id: 1n }, tempo: 120, tracks: [],
+      returnTracks: [], scenes: [], cuePoints: [] } },
+      environment: { storageDirectory: directory, tempDirectory: directory } } as never,
+    directory,
+    { presentation: liveContextPresentationFixture("Selection"), summary: "Selection",
+      target: {}, scope: { kind: "selection", identity: "selection", label: "Selection" } },
+    "Answer without using MIDI artifacts.",
+    runtimeProfileForSavedProfile(profile()),
+    "project",
+    session.id,
+    { signal, onDelta() {}, onProgress(message) { progress.push(message); }, onSessionEvent() {},
+      confirmActions: async () => false, withActionExecutionLock: (operation) => operation() },
+    async () => ({ content: "Done.", toolCalls: [] }),
+  );
+  assert.equal(result, "Done.");
+  assert.ok(progress.some((message) => typeof message === "object" &&
+    message.source === "{count} saved MIDI artifacts are unavailable; their metadata was preserved." &&
+    message.values.count === 1));
+  assert.ok((await fs.readdir(path.join(directory, "live-smith-midi", session.id)))
+    .includes(`${artifact.id}.midi.json`));
 });
 
 function profile(): DirectApiProfile {

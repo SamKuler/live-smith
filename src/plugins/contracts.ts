@@ -27,6 +27,7 @@ export interface PluginManifest {
 export interface PluginToolDefinition {
   pluginId: PluginId;
   serverId: string;
+  connectionId?: string;
   name: string;
   tool: ModelFunctionTool;
   artifactContract?: PluginArtifactToolContract;

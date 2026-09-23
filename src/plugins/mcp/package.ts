@@ -29,6 +29,7 @@ import {
   type ParsedPluginMcpConfig,
   type PluginMcpServer,
 } from "./config.js";
+import { bindMcpServerCredentials } from "./credentials.js";
 
 const MAX_TOOLS_PER_SERVER = 128;
 const MAX_TOOL_NAME_LENGTH = 128;
@@ -45,6 +46,8 @@ export type PluginMcpConnector = (
 
 export interface McpPluginPackageOptions extends ConnectPluginMcpServerOptions {
   connector?: PluginMcpConnector;
+  connection?: { id: string; name: string; serverId: string; secrets: Readonly<Record<string, string>> };
+  serverIds?: readonly string[];
 }
 
 export class PluginToolRuntimeError extends Error {
@@ -67,8 +70,11 @@ class McpPluginPackage implements PluginPackage {
   private readonly configError: PluginMcpConfigError | undefined;
   private readonly connector: PluginMcpConnector;
   private readonly connectionOptions: ConnectPluginMcpServerOptions;
+  private readonly boundConnection: McpPluginPackageOptions["connection"];
+  private readonly serverIds: ReadonlySet<string> | undefined;
   private readonly connections = new Map<string, Promise<ConnectedPluginMcpServer>>();
   private readonly toolCache = new Map<string, readonly Tool[]>();
+  private closed = false;
 
   constructor(
     private readonly prepared: PreparedPluginRuntime,
@@ -76,6 +82,8 @@ class McpPluginPackage implements PluginPackage {
   ) {
     this.manifest = cloneJsonValue(prepared.archive.manifest);
     this.connector = options.connector ?? connectPluginMcpServer;
+    this.boundConnection = options.connection;
+    this.serverIds = options.serverIds === undefined ? undefined : new Set(options.serverIds);
     this.connectionOptions = options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl };
     try {
       this.config = pluginMcpConfigFromArchive(prepared.archive);
@@ -91,6 +99,8 @@ class McpPluginPackage implements PluginPackage {
     const issues = this.configurationIssues();
     const definitions: PluginToolDefinition[] = [];
     for (const server of this.config?.servers ?? []) {
+      if (this.serverIds && !this.serverIds.has(server.id) ||
+          this.boundConnection && server.id !== this.boundConnection.serverId) continue;
       if (!this.prepared.plugin.approvedMcpServerIds.includes(server.id)) {
         issues.push(issue(this.manifest.id, server.id, "approval_required", "MCP server requires user approval."));
         continue;
@@ -112,7 +122,7 @@ class McpPluginPackage implements PluginPackage {
         try {
           if (names.has(tool.name)) throw new Error("MCP server exposes a duplicate tool name.");
           names.add(tool.name);
-          definitions.push(toolDefinition(this.manifest.id, server, tool));
+          definitions.push(toolDefinition(this.manifest.id, server, tool, this.boundConnection));
         } catch {
           issues.push(issue(this.manifest.id, server.id, "invalid_tool", "MCP server exposes an invalid tool definition."));
         }
@@ -129,6 +139,12 @@ class McpPluginPackage implements PluginPackage {
   ): Promise<PluginToolResult> {
     const server = this.config?.servers.find((candidate) => candidate.id === serverId);
     if (!server) throw new PluginToolRuntimeError("Plugin MCP server is unavailable.");
+    if (this.serverIds && !this.serverIds.has(serverId)) {
+      throw new PluginToolRuntimeError("Plugin MCP server is not exposed by this package route.");
+    }
+    if (this.boundConnection && this.boundConnection.serverId !== serverId) {
+      throw new PluginToolRuntimeError("Plugin MCP server is not bound to this connection.");
+    }
     if (!this.prepared.plugin.approvedMcpServerIds.includes(serverId)) {
       throw new PluginToolRuntimeError("Plugin MCP server is not approved.");
     }
@@ -147,6 +163,8 @@ class McpPluginPackage implements PluginPackage {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     const pending = [...this.connections.values()];
     this.connections.clear();
     this.toolCache.clear();
@@ -174,9 +192,11 @@ class McpPluginPackage implements PluginPackage {
   }
 
   private connection(server: PluginMcpServer, signal: AbortSignal): Promise<ConnectedPluginMcpServer> {
+    if (this.closed) throw new PluginToolRuntimeError("Plugin MCP connection has been closed.");
     const existing = this.connections.get(server.id);
     if (existing) return existing;
-    const pending = this.connector(server, {
+    const bound = bindMcpServerCredentials(server, this.boundConnection?.secrets ?? {});
+    const pending = this.connector(bound, {
       pluginRoot: this.prepared.pluginRoot,
       pluginData: this.prepared.pluginData,
     }, signal, this.connectionOptions);
@@ -188,7 +208,12 @@ class McpPluginPackage implements PluginPackage {
   }
 }
 
-function toolDefinition(pluginId: string, server: PluginMcpServer, tool: Tool): PluginToolDefinition {
+function toolDefinition(
+  pluginId: string,
+  server: PluginMcpServer,
+  tool: Tool,
+  connection?: McpPluginPackageOptions["connection"],
+): PluginToolDefinition {
   if (typeof tool.name !== "string" || !tool.name || tool.name.length > MAX_TOOL_NAME_LENGTH ||
       /[\u0000-\u001f\u007f]/u.test(tool.name)) throw new Error("Invalid tool name.");
   const description = tool.description ?? tool.title ?? `Tool ${tool.name}`;
@@ -203,23 +228,24 @@ function toolDefinition(pluginId: string, server: PluginMcpServer, tool: Tool): 
   return {
     pluginId,
     serverId: server.id,
+    ...(connection ? { connectionId: connection.id } : {}),
     name: tool.name,
     ...(artifactContract ? { artifactContract } : {}),
     tool: {
       type: "function",
       function: {
-        name: pluginToolCallName(pluginId, server.id, tool.name),
-        description: artifactContract
+        name: pluginToolCallName(pluginId, server.id, tool.name, connection?.id),
+        description: `${connection ? `Named connection: ${connection.name}. ` : ""}${artifactContract
           ? `${description} Live Smith stages declared Session audio inputs and saves one validated MIDI output; arguments never contain user filesystem paths. Do not retry an unknown outcome automatically; use list_session_artifacts to check saved results first.`
-          : description,
+          : description}`,
         parameters,
       },
     },
   };
 }
 
-export function pluginToolCallName(pluginId: string, serverId: string, toolName: string): string {
-  const identity = `${pluginId}\0${serverId}\0${toolName}`;
+export function pluginToolCallName(pluginId: string, serverId: string, toolName: string, connectionId?: string): string {
+  const identity = `${pluginId}\0${serverId}\0${toolName}${connectionId === undefined ? "" : `\0${connectionId}`}`;
   const digest = createHash("sha256").update(identity).digest("hex").slice(0, 16);
   return `plg_${slug(pluginId, 8)}_${slug(serverId, 8)}_${slug(toolName, 20)}_${digest}`;
 }

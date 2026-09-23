@@ -11,6 +11,186 @@
       const maxPluginArchiveBytes = __MAX_PLUGIN_ARCHIVE_BYTES__;
       let busy = false;
       let renderedKey = null;
+      let editingConnection = null;
+
+      function pluginConnections(plugin, server) {
+        return (getState().integrationConnections?.connections || []).filter((connection) =>
+          connection.pluginId === plugin.id && connection.configuration?.serverId === server.id);
+      }
+
+      function connectionEditor(plugin, server) {
+        const draft = editingConnection;
+        const form = document.createElement("form");
+        form.className = "plugin-connection-editor";
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          void saveConnection(plugin, server);
+        });
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = t("Connection name");
+        const name = document.createElement("input");
+        name.className = "field-control";
+        name.name = "connectionName";
+        name.autocomplete = "off";
+        name.maxLength = 120;
+        name.required = true;
+        name.value = draft.name;
+        name.addEventListener("input", () => { draft.name = name.value; });
+        nameLabel.append(name);
+        form.append(nameLabel);
+        for (const field of server.credentialFields) {
+          const label = document.createElement("label");
+          label.textContent = field.required ? t("{name} credential", { name: field.name })
+            : t("{name} credential (optional)", { name: field.name });
+          label.setAttribute("translate", "no");
+          const input = document.createElement("input");
+          input.className = "field-control";
+          input.type = "password";
+          input.name = field.name;
+          input.autocomplete = "off";
+          input.autocapitalize = "none";
+          input.spellcheck = false;
+          input.maxLength = 4096;
+          const clearOnSave = Object.hasOwn(draft.secrets, field.name) && draft.secrets[field.name] === "";
+          input.value = clearOnSave ? "" : draft.secrets[field.name] || "";
+          input.disabled = clearOnSave;
+          input.placeholder = draft.saved?.configuredSecrets.includes(field.name) &&
+            draft.saved.configuration.pluginDigest === plugin.sha256
+            ? t("Saved; leave blank to keep") : "";
+          input.addEventListener("input", () => {
+            if (input.value) draft.secrets[field.name] = input.value;
+            else delete draft.secrets[field.name];
+          });
+          label.append(input);
+          form.append(label);
+          if (draft.saved?.configuredSecrets.includes(field.name) &&
+              draft.saved.configuration.pluginDigest === plugin.sha256) {
+            const clearLabel = document.createElement("label");
+            clearLabel.className = "plugin-clear-secret";
+            const clear = document.createElement("input");
+            clear.type = "checkbox";
+            clear.name = `clear-${field.name}`;
+            clear.checked = clearOnSave;
+            clear.addEventListener("change", () => {
+              input.disabled = clear.checked;
+              input.value = "";
+              if (clear.checked) draft.secrets[field.name] = "";
+              else delete draft.secrets[field.name];
+            });
+            clearLabel.append(clear, document.createTextNode(t("Clear on save")));
+            form.append(clearLabel);
+          }
+        }
+        const enabledLabel = document.createElement("label");
+        enabledLabel.className = "plugin-connection-enabled settings-switch";
+        const enabledText = document.createElement("span");
+        enabledText.textContent = t("Enable this connection");
+        const enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.name = "connectionEnabled";
+        enabled.role = "switch";
+        enabled.checked = draft.enabled;
+        enabled.addEventListener("change", () => { draft.enabled = enabled.checked; });
+        const enabledTrack = document.createElement("span");
+        enabledTrack.className = "settings-switch-track";
+        enabledTrack.setAttribute("aria-hidden", "true");
+        enabledLabel.append(enabledText, enabled, enabledTrack);
+        form.append(enabledLabel);
+        const actions = document.createElement("div");
+        actions.className = "plugin-connection-actions";
+        const cancel = makeButton(t("Cancel"), "secondary", async () => {
+          editingConnection = null;
+          render(true);
+        });
+        const save = document.createElement("button");
+        save.type = "submit";
+        save.className = "primary";
+        save.textContent = t("Save connection");
+        cancel.disabled = save.disabled = busy;
+        actions.append(cancel, save);
+        form.append(actions);
+        return form;
+      }
+
+      function editConnection(plugin, server, saved) {
+        editingConnection = {
+          id: saved?.id || (window.crypto?.randomUUID?.() || `mcp-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+          pluginId: plugin.id,
+          serverId: server.id,
+          pluginDigest: plugin.sha256,
+          name: saved?.name || "",
+          enabled: saved?.enabled ?? true,
+          saved,
+          secrets: Object.create(null),
+          expectedRevision: getState().integrationConnections?.revision || "0",
+        };
+        render(true);
+        document.querySelector('.plugin-connection-editor [name="connectionName"]')?.focus();
+      }
+
+      async function saveConnection(plugin, server) {
+        const draft = editingConnection;
+        if (!draft || busy || !draft.name.trim()) return;
+        if (draft.pluginDigest !== plugin.sha256) {
+          editingConnection = null;
+          showStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
+          render(true);
+          return;
+        }
+        const secrets = { ...draft.secrets };
+        if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) {
+          showStatus(t("Credentials must be printable ASCII without spaces."), true);
+          return;
+        }
+        busy = true;
+        render(true);
+        try {
+          const changed = await runCommand("save_global_settings", {
+            integrationConnections: {
+              action: "upsert",
+              expectedRevision: draft.expectedRevision,
+              connection: {
+                id: draft.id,
+                name: draft.name.trim(),
+                pluginId: plugin.id,
+                enabled: draft.enabled,
+                configuration: { serverId: draft.serverId, pluginDigest: draft.pluginDigest },
+                ...(Object.keys(secrets).length ? { secrets } : {}),
+              },
+            },
+          });
+          if (changed) editingConnection = null;
+        } finally {
+          busy = false;
+          render(true);
+        }
+      }
+
+      async function removeConnection(connection) {
+        const expectedRevision = getState().integrationConnections?.revision || "0";
+        if (busy || !(await confirmAction({
+          title: window.LiveSmithI18n.message("Remove this connection?"),
+          message: window.LiveSmithI18n.message("Remove named connection {name} and its saved credentials?", { name: connection.name }),
+          acceptLabel: window.LiveSmithI18n.message("Remove"),
+          danger: true,
+        }))) return;
+        if ((getState().integrationConnections?.revision || "0") !== expectedRevision) {
+          showStatus(t("Connections changed while removing. Review the connection and try again."), true);
+          return;
+        }
+        busy = true;
+        render(true);
+        try {
+          await runCommand("save_global_settings", { integrationConnections: {
+            action: "remove",
+            expectedRevision,
+            connectionId: connection.id,
+          } });
+        } finally {
+          busy = false;
+          render(true);
+        }
+      }
 
       function sourceLabel(source) {
         if (source === "agent-plugins-1.0") return t("Agent Plugin");
@@ -72,6 +252,8 @@
       }
 
       function renderServer(plugin, server) {
+        const group = document.createElement("div");
+        group.className = "plugin-server-group";
         const row = document.createElement("div");
         row.className = "plugin-server-row";
         const copy = document.createElement("span");
@@ -111,7 +293,38 @@
           }
         }
         row.append(copy, controls);
-        return row;
+        group.append(row);
+        const connections = document.createElement("div");
+        connections.className = "plugin-server-connections";
+        for (const connection of pluginConnections(plugin, server)) {
+          const item = document.createElement("div");
+          item.className = "plugin-connection-row";
+          const label = document.createElement("span");
+          label.textContent = `${connection.name} · ${connection.configuration.pluginDigest === plugin.sha256
+            ? connection.enabled ? t("Enabled") : t("Disabled")
+            : t("Needs setup")}`;
+          const edit = makeButton(t("Edit"), "secondary", async () => editConnection(plugin, server, connection));
+          const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
+          edit.disabled = remove.disabled = busy;
+          item.append(label, edit, remove);
+          connections.append(item);
+          if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
+              editingConnection.id === connection.id) {
+            connections.append(connectionEditor(plugin, server));
+          }
+        }
+        if ((getState().integrationConnections?.connections.length || 0) < __MAX_INTEGRATION_CONNECTIONS__) {
+          const add = makeButton(t("Add connection"), "secondary plugin-add-connection", async () =>
+            editConnection(plugin, server));
+          add.disabled = busy;
+          connections.append(add);
+        }
+        if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
+            !editingConnection.saved) {
+          connections.append(connectionEditor(plugin, server));
+        }
+        group.append(connections);
+        return group;
       }
 
       function renderPlugin(plugin) {
@@ -184,11 +397,33 @@
           for (const server of plugin.mcpServers) servers.append(renderServer(plugin, server));
           card.append(servers);
         }
+        const currentServers = new Set(plugin.mcpServers.map((server) => server.id));
+        const orphaned = (getState().integrationConnections?.connections || []).filter((connection) =>
+          connection.pluginId === plugin.id && !currentServers.has(connection.configuration?.serverId));
+        if (orphaned.length) {
+          const list = document.createElement("div");
+          list.className = "plugin-orphan-connections";
+          for (const connection of orphaned) {
+            const row = document.createElement("div");
+            row.className = "plugin-connection-row";
+            const label = document.createElement("span");
+            label.textContent = `${connection.name} · ${connection.configuration.serverId} · ${t("Needs setup")}`;
+            const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
+            remove.disabled = busy;
+            row.append(label, remove);
+            list.append(row);
+          }
+          card.append(list);
+        }
         const actions = document.createElement("div");
         actions.className = "plugin-card-actions";
         const remove = makeButton(t("Delete"), "secondary danger-action", () => deleteInstalledPlugin(plugin));
-        remove.disabled = busy || plugin.enabled;
-        remove.title = plugin.enabled ? t("Disable this Plugin before deleting it.") : t("Delete Plugin {pluginId}", { pluginId: plugin.id });
+        const hasConnections = (getState().integrationConnections?.connections || []).some((connection) =>
+          connection.pluginId === plugin.id);
+        remove.disabled = busy || plugin.enabled || hasConnections;
+        remove.title = plugin.enabled ? t("Disable this Plugin before deleting it.")
+          : hasConnections ? t("Remove this Plugin's connections before deleting it.")
+          : t("Delete Plugin {pluginId}", { pluginId: plugin.id });
         actions.append(remove);
         card.append(actions);
         return card;
@@ -199,7 +434,14 @@
         const empty = document.getElementById("pluginEmptyState");
         if (!list || !empty) return;
         const plugins = [...(getState().plugins || [])].sort((left, right) => left.id.localeCompare(right.id));
-        const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins, busy });
+        if (editingConnection && !plugins.some((plugin) =>
+          plugin.id === editingConnection.pluginId && plugin.sha256 === editingConnection.pluginDigest &&
+          plugin.mcpServers.some((server) => server.id === editingConnection.serverId))) {
+          editingConnection = null;
+          showStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
+        }
+        const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins,
+          connections: getState().integrationConnections, editorId: editingConnection?.id, busy });
         if (!force && key === renderedKey) return;
         const focusedId = document.activeElement?.closest?.(".plugin-card")?.dataset.pluginId;
         list.replaceChildren(...plugins.map(renderPlugin));

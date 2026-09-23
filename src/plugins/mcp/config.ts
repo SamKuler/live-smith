@@ -4,6 +4,7 @@ import { TextDecoder } from "node:util";
 
 import type { OpenPluginArchive } from "../archive.js";
 import type { PluginSourceFormat } from "../contracts.js";
+import { isMcpCredentialFieldName, MAX_MCP_CREDENTIAL_FIELDS, mcpCredentialFields } from "./credentials.js";
 
 export const PORTABLE_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
@@ -94,6 +95,11 @@ export function parsePluginMcpConfig(
       if (server === undefined) {
         issues.push({ code: "unsupported_transport", serverId, message: "Legacy SSE and WebSocket MCP transports are not supported." });
       } else {
+        const fields = mcpCredentialFields(server);
+        if (fields.length > MAX_MCP_CREDENTIAL_FIELDS ||
+            fields.some((field) => !isMcpCredentialFieldName(field.name))) {
+          throw new Error(`MCP server credentials require at most ${MAX_MCP_CREDENTIAL_FIELDS} names of up to 64 characters.`);
+        }
         servers.push(server);
       }
     } catch (error) {
@@ -255,7 +261,9 @@ function stringMap(value: unknown, label: string, environment: boolean): Record<
         (environment && ["PLUGIN_ROOT", "PLUGIN_DATA"].includes(key.toUpperCase()))) {
       throw new Error(`${label} contains an invalid name.`);
     }
-    result[key] = boundedOpaqueString(entry, label);
+    Object.defineProperty(result, key, {
+      value: boundedOpaqueString(entry, label), enumerable: true, writable: true, configurable: true,
+    });
   }
   return result;
 }

@@ -704,16 +704,28 @@ approval. Replacement is explicit, preserves the separate mutable Plugin data
 directory, disables the new package, and clears prior approvals. Runtime files
 are materialized from the verified immutable archive into a digest-specific
 directory; any mismatch is repaired from the archive rather than trusted.
-The product command requires a Plugin to be disabled and unreferenced by every
-Session Plugin Skill before removal.
+Catalog entries retain bounded cleanup intent for replaced archives and removed
+Plugins. Cleanup is idempotent and retried when the catalog is opened; a Plugin
+ID cannot be reinstalled while its prior private data awaits deletion within
+the process-wide storage transaction. Concurrent Extension Host processes
+sharing one storage directory are not serialized by this queue. The
+product command requires a Plugin to be disabled before removal and clears its
+namespaced Session Skill selections before deleting the package.
+Catalog schema 2 reads historical schema-1 records without rewriting them until
+the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
 Enabled installed Plugins are discovered per request. The request snapshot binds
-the package ID, digest, exact MCP server, exposed tool, server approval, and
-artifact approvals. Execution rechecks that admission inside the Plugin
+the package ID, digest, exact MCP server, optional named Connection ID and
+private credential snapshot, exposed tool, server approval, and artifact
+approvals. Execution rechecks that admission inside the Plugin
 authorization fence. A changed, disabled, replaced, or unapproved package cannot
 reuse an older model-visible tool call.
+Discovery registers each MCP package before opening a connection. Cancellation
+closes packages already registered; disabling a Plugin or revoking MCP or
+artifact approval closes its active packages before the configuration command
+returns. A closed package cannot reopen a process during an in-flight request.
 
 Local MCP commands use no shell, receive a minimal environment, resolve package
 and data placeholders only inside their owned roots, and run as the current
@@ -729,6 +741,13 @@ replaces an opaque Session audio reference with one read-only temporary file for
 the duration of the call. An independently approved artifact-output contract
 supplies one host-owned temporary destination, accepts only a regular contained
 file, parses bounded Standard MIDI, and stores an immutable Session artifact.
+The MIDI bytes are durably written before their metadata commit. Listing under
+the storage transaction admits only structurally complete pairs. Unpaired files
+remain private and count toward the storage limit; missing blobs retain their
+metadata and are reported as unavailable while healthy artifacts remain usable.
+An unavailable artifact cannot be imported, and ordinary Session sends continue
+with a warning. Import verifies the bytes and parsed MIDI against the saved
+metadata; malformed or substituted files fail validation.
 The model receives only its opaque artifact reference. A later
 `create_midi_clip_from_artifact` action still passes the ordinary schema, Edit
 Scope, Approval, preflight, cancellation, mutation queue, and drift checks.
@@ -746,9 +765,18 @@ infer tools from a provider switch or central capability table.
 An Integration Connection is a separately persisted user instance keyed by a
 Plugin ID, with public configuration and private write-only secrets. Connection
 state is not a Plugin, a Skill, or a model Profile. Current host-managed
-Connection descriptors belong to built-in provider Plugins; installed MCP
-packages do not receive Connection secrets from model arguments or ordinary
-browser state. The settings decoder migrates schema-8 `audioServices` records to
+Connection descriptors belong to built-in provider Plugins. Installed MCP
+servers can bind multiple named Connections to exact package digests and server
+IDs. Declared stdio environment and remote header placeholders resolve from
+private Connection secrets at transport admission; the browser receives only
+credential field names and configured flags, and the model receives no secret
+fields or arguments. An omitted credential may inherit only from the same
+Plugin, server, and package digest. Replacing a package leaves older Connections
+visible but unable to execute until explicitly rebound with new credentials.
+The collection revision remains the compare-and-swap owner for all Connections.
+Its latest-change audio marker lets the client retain audio drafts across one
+adjacent MCP-only update; missing revisions or audio changes still conflict.
+The settings decoder migrates schema-8 `audioServices` records to
 schema-9 `integrationConnections` without rewriting on read. Existing audio job
 records retain historical provider, operation, and `serviceId` facts; new records
 also persist `pluginId`, `toolId`, and `toolVersion`, and legacy records derive
@@ -802,8 +830,10 @@ operations are drained before the transaction releases.
 Enabled Plugin Skill definitions are instead read and hash-verified from the
 immutable archive under the same storage transaction that snapshots availability.
 Disabling a Plugin removes those Skills from new request admission. Product-level
-Plugin deletion requires the Plugin to be disabled and scans every Session for
-its namespaced Skill IDs before deleting the archive and Plugin data.
+Plugin disable commits the disabled state before clearing namespaced selections
+from Sessions. A failed Session cleanup leaves the Plugin disabled; request and
+UI projection ignore those inactive IDs, and later disable, enable, or delete
+commands retry the cleanup before enabling or removing the Plugin.
 
 `AgentSession.activeSkillIds` is an optional, sorted, unique list of at most four
 safe IDs. Activation validates the Session and the combined available IDs, then

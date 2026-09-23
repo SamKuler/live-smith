@@ -146,6 +146,9 @@ function readIdentity(value: Record<string, unknown>): Pick<PluginManifest, "id"
   if (!isSafePluginId(name)) {
     throw new Error("Plugin manifest name is invalid.");
   }
+  if (name.startsWith("live-smith.")) {
+    throw new Error("Plugin manifest name belongs to the Live Smith host namespace.");
+  }
   if (version !== undefined && (typeof version !== "string" || !isSemanticVersion(version))) {
     throw new Error("Plugin manifest version is invalid.");
   }

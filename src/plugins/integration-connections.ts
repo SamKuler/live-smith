@@ -10,6 +10,7 @@ import {
   type AudioProvider,
 } from "../audio-services/contracts.js";
 import { isSafePluginId } from "./contracts.js";
+import { MAX_MCP_CREDENTIAL_FIELDS } from "./mcp/credentials.js";
 import {
   builtInAudioPluginById,
   builtInAudioPluginId,
@@ -29,6 +30,7 @@ export interface IntegrationConnection {
 export interface IntegrationConnectionsSettings {
   connections: IntegrationConnection[];
   revision: string;
+  lastChangeTouchesAudio?: boolean;
 }
 
 export interface IntegrationConnectionView extends Omit<IntegrationConnection, "secrets"> {
@@ -38,6 +40,7 @@ export interface IntegrationConnectionView extends Omit<IntegrationConnection, "
 export interface IntegrationConnectionsView {
   connections: IntegrationConnectionView[];
   revision: string;
+  lastChangeTouchesAudio?: boolean;
 }
 
 export type IntegrationConnectionsSettingsPatch =
@@ -66,9 +69,23 @@ export function normalizeIntegrationConnection(value: unknown): IntegrationConne
     throw invalid("Integration connections require a safe ID, name, Plugin ID, enabled state, configuration, and secrets.");
   }
   const plugin = builtInAudioPluginById(record.pluginId);
-  if (!plugin) throw invalid("The selected Plugin does not expose a supported Integration Connection.");
   const configuration = stringMap(record.configuration, 16, 2_048, "configuration");
-  const secrets = stringMap(record.secrets, 8, 4_096, "secrets", true);
+  const secrets = stringMap(record.secrets, MAX_MCP_CREDENTIAL_FIELDS, 4_096, "secrets", true);
+  if (!plugin) {
+    if (Object.keys(configuration).some((key) => !["serverId", "pluginDigest"].includes(key)) ||
+        !/^[A-Za-z0-9_-]{1,64}$/u.test(configuration.serverId ?? "") ||
+        !/^[a-f0-9]{64}$/u.test(configuration.pluginDigest ?? "")) {
+      throw invalid("MCP Integration Connections require a server ID and installed Plugin digest.");
+    }
+    return {
+      id: record.id,
+      name: record.name.trim(),
+      pluginId: record.pluginId,
+      enabled: record.enabled,
+      configuration,
+      secrets,
+    };
+  }
   const allowedConfiguration = new Set<string>([
     ...(plugin.connection.modelConfigurable ? ["modelId"] : []),
     ...(plugin.connection.callbackUrl ? ["callbackUrl"] : []),
@@ -117,9 +134,10 @@ export function normalizeIntegrationConnectionsSettings(
   value: unknown,
 ): IntegrationConnectionsSettings {
   const record = plainRecord(value);
-  if (!record || Object.keys(record).some((key) => !["connections", "revision"].includes(key)) ||
+  if (!record || Object.keys(record).some((key) => !["connections", "revision", "lastChangeTouchesAudio"].includes(key)) ||
       !Array.isArray(record.connections) || record.connections.length > MAX_INTEGRATION_CONNECTIONS ||
-      !isRevision(record.revision)) {
+      !isRevision(record.revision) ||
+      (record.lastChangeTouchesAudio !== undefined && typeof record.lastChangeTouchesAudio !== "boolean")) {
     throw invalid("Integration Connections require at most 20 named connections and a valid revision.");
   }
   const connections = record.connections.map(normalizeIntegrationConnection);
@@ -127,7 +145,8 @@ export function normalizeIntegrationConnectionsSettings(
       new Set(connections.map((connection) => connection.name.toLowerCase())).size !== connections.length) {
     throw invalid("Integration Connection IDs and names must be unique.");
   }
-  return { connections, revision: record.revision };
+  return { connections, revision: record.revision,
+    ...(record.lastChangeTouchesAudio === undefined ? {} : { lastChangeTouchesAudio: record.lastChangeTouchesAudio }) };
 }
 
 export function migrateAudioServicesSettings(
@@ -232,6 +251,9 @@ export function integrationConnectionsView(
         .sort(),
     })),
     revision: settings?.revision ?? "0",
+    ...(settings?.lastChangeTouchesAudio === undefined ? {} : {
+      lastChangeTouchesAudio: settings.lastChangeTouchesAudio,
+    }),
   };
 }
 
@@ -261,12 +283,12 @@ function stringMap(
   }
   const result: Record<string, string> = {};
   for (const [key, entry] of Object.entries(record)) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(key) || typeof entry !== "string" ||
+    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(key) || typeof entry !== "string" ||
         entry.length > maximumValueLength || entry.includes("\0") ||
         printableAscii && /[^\x21-\x7e]/u.test(entry)) {
       throw invalid(`Integration Connection ${label} is invalid.`);
     }
-    result[key] = entry;
+    Object.defineProperty(result, key, { value: entry, enumerable: true, writable: true, configurable: true });
   }
   return result;
 }

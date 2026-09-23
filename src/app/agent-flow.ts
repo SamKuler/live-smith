@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
 import { downloadAudioOutput } from "./audio-generation.js";
 import { audioMessage as m } from "./audio-messages.js";
-import type { UiMessage } from "../i18n/ui-message.js";
+import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 import { SunoSessionManager } from "./suno-session-manager.js";
 import { SunoModelCatalog } from "./suno-model-catalog.js";
 import type { readSunoMusicService } from "../audio-services/suno-catalog.js";
@@ -246,7 +246,7 @@ import {
   releaseSessionClaims,
   sessionIsClaimedByAnotherOwner,
 } from "./session-claims.js";
-import { resolveSkillContextInTransaction } from "./skill-context.js";
+import { resolveSkillContextInTransaction, sessionSkillIdsForEnabledPlugins } from "./skill-context.js";
 import {
   invalidateGlobalState,
   invalidateSessionState,
@@ -272,6 +272,7 @@ import {
   steeringReceiptFor,
   type AgentModelTurnRequester,
 } from "./agent-request.js";
+import { closeActivePluginConnections } from "./request-plugin-tools.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { resolveConversationHistory } from "./attachment-context.js";
 import { createConversationCheckpoint } from "./context-compaction.js";
@@ -1319,10 +1320,7 @@ export async function runAgentFlow(
         const storageSnapshot = await withStorageTransaction(
           storageDirectory,
           async (transaction) => {
-            const allSessions = await sessionSummaries(
-              storageDirectory,
-              await listSessionsInTransaction(transaction, storageDirectory),
-            );
+            const savedSessions = await listSessionsInTransaction(transaction, storageDirectory);
             const installedSkills = await listInstalledSkillsInTransaction(
               transaction,
               storageDirectory,
@@ -1330,6 +1328,16 @@ export async function runAgentFlow(
             const pluginPackages = await readInstalledPluginPackagesInTransaction(
               transaction,
               storageDirectory,
+            );
+            const allSessions = await sessionSummaries(
+              storageDirectory,
+              savedSessions.map((session) => ({
+                ...session,
+                activeSkillIds: sessionSkillIdsForEnabledPlugins(
+                  session.activeSkillIds ?? [],
+                  pluginPackages.map(({ plugin }) => plugin),
+                ),
+              })),
             );
             const pluginSkills = await pluginSkillsFromPackages(
               pluginPackages.filter((entry) => entry.plugin.enabled),
@@ -2248,11 +2256,7 @@ export async function runAgentFlow(
         async () => {
           throwIfAborted(signal);
           try {
-            const settings = await (
-              dependencies.saveGlobalSettings ?? saveGlobalSettings
-            )(
-              storageDirectory,
-              "defaultFollowUpBehavior" in commandInput
+            const patch = "defaultFollowUpBehavior" in commandInput
                 ? {
                     defaultFollowUpBehavior:
                       commandInput.defaultFollowUpBehavior,
@@ -2265,8 +2269,26 @@ export async function runAgentFlow(
                 ? { integrationConnections: commandInput.integrationConnections }
                 : "customInstructions" in commandInput
                 ? { customInstructions: commandInput.customInstructions }
-                : { networkProxy: commandInput.networkProxy },
-            );
+                : { networkProxy: commandInput.networkProxy };
+            const persist = async () => {
+              const before = "integrationConnections" in commandInput
+                ? await loadAgentSettings(storageDirectory) : undefined;
+              const saved = await (dependencies.saveGlobalSettings ?? saveGlobalSettings)(storageDirectory, patch);
+              if ("integrationConnections" in commandInput) {
+                const changedId = commandInput.integrationConnections.action === "remove"
+                  ? commandInput.integrationConnections.connectionId
+                  : commandInput.integrationConnections.connection.id;
+                const affected = new Set([
+                  before?.integrationConnections?.connections.find((entry) => entry.id === changedId)?.pluginId,
+                  saved.integrationConnections?.connections.find((entry) => entry.id === changedId)?.pluginId,
+                ].filter((id): id is string => Boolean(id)));
+                for (const pluginId of affected) await closeActivePluginConnections(storageDirectory, pluginId, changedId);
+              }
+              return saved;
+            };
+            const settings = "integrationConnections" in commandInput
+              ? await requestConfigurationFence.run(requestConfigurationFenceKey, signal, persist)
+              : await persist();
             publishGlobalSettingsChange(storageDirectory, {
               ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
               defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
@@ -3118,88 +3140,122 @@ export async function runAgentFlow(
       commandInput.kind === "delete_plugin"
     ) {
       let changed = false;
+      let sessionCleanupPending = false;
+      let privateCleanupPending = false;
       try {
         await requestConfigurationFence.run(
           requestConfigurationFenceKey,
           signal,
-          () => withStorageTransaction(storageDirectory, async (transaction) => {
-            throwIfAborted(signal);
-            const plugins = await listInstalledPluginsInTransaction(transaction, storageDirectory);
-            const plugin = plugins.find((candidate) => candidate.id === commandInput.pluginId);
-            if (!plugin) throw new ChatBridgeResourceNotFoundError("That Plugin is not installed.");
-            if (commandInput.kind === "set_plugin_enabled") {
-              if (plugin.enabled === commandInput.enabled) return;
-              if (!commandInput.enabled) {
-                const prefix = `${plugin.id}:`;
-                for (const session of await listSessionsInTransaction(transaction, storageDirectory)) {
-                  const current = session.activeSkillIds ?? [];
-                  const retained = current.filter((skillId) => !skillId.startsWith(prefix));
-                  if (retained.length !== current.length) {
-                    await updateSessionInTransaction(transaction, storageDirectory, session.id, {
-                      activeSkillIds: retained,
-                    });
+          async () => {
+            try {
+              await withStorageTransaction(storageDirectory, async (transaction) => {
+                throwIfAborted(signal);
+                const plugins = await listInstalledPluginsInTransaction(transaction, storageDirectory);
+                const plugin = plugins.find((candidate) => candidate.id === commandInput.pluginId);
+                if (!plugin) throw new ChatBridgeResourceNotFoundError("That Plugin is not installed.");
+                const removeSessionSelections = async () => {
+                  const prefix = `${plugin.id}:`;
+                  for (const session of await listSessionsInTransaction(transaction, storageDirectory)) {
+                    const current = session.activeSkillIds ?? [];
+                    const retained = current.filter((skillId) => !skillId.startsWith(prefix));
+                    if (retained.length === current.length) continue;
+                    await (dependencies.updateSessionInTransaction ?? updateSessionInTransaction)(
+                      transaction, storageDirectory, session.id, { activeSkillIds: retained },
+                    );
+                    notifySessionStateChanged(session.id);
                   }
+                };
+                if (commandInput.kind === "set_plugin_enabled") {
+                  if (commandInput.enabled) {
+                    if (plugin.enabled) return;
+                    await removeSessionSelections();
+                    await setPluginEnabledInTransaction(transaction, storageDirectory, plugin.id, true);
+                    changed = true;
+                    return;
+                  }
+                  if (plugin.enabled) {
+                    await setPluginEnabledInTransaction(transaction, storageDirectory, plugin.id, false);
+                    changed = true;
+                  }
+                  try {
+                    await removeSessionSelections();
+                  } catch {
+                    throwIfAborted(signal);
+                    sessionCleanupPending = true;
+                  }
+                  return;
                 }
+                if (commandInput.kind === "set_plugin_mcp_server_approved") {
+                  if (plugin.approvedMcpServerIds.includes(commandInput.serverId) === commandInput.approved) return;
+                  await setPluginMcpServerApprovedInTransaction(
+                    transaction,
+                    storageDirectory,
+                    plugin.id,
+                    commandInput.serverId,
+                    commandInput.approved,
+                  );
+                  changed = true;
+                  return;
+                }
+                if (commandInput.kind === "set_plugin_artifact_permission") {
+                  const current = commandInput.permission === "input"
+                    ? plugin.approvedArtifactInputServerIds
+                    : plugin.approvedArtifactOutputServerIds;
+                  if (current.includes(commandInput.serverId) === commandInput.approved) return;
+                  await setPluginArtifactPermissionApprovedInTransaction(
+                    transaction,
+                    storageDirectory,
+                    plugin.id,
+                    commandInput.serverId,
+                    commandInput.permission,
+                    commandInput.approved,
+                  );
+                  changed = true;
+                  return;
+                }
+                if (plugin.enabled) {
+                  throw new ChatBridgeConflictError("Disable this Plugin before deleting it.");
+                }
+                const settings = await loadAgentSettings(storageDirectory);
+                if (settings.integrationConnections?.connections.some((connection) =>
+                  connection.pluginId === plugin.id)) {
+                  throw new ChatBridgeConflictError("Remove this Plugin's Integration Connections before deleting it.");
+                }
+                await removeSessionSelections();
+                privateCleanupPending = !(await deletePluginInTransaction(transaction, storageDirectory, plugin.id));
+                changed = true;
+              });
+            } finally {
+              if (commandInput.kind === "delete_plugin" ||
+                  commandInput.kind === "set_plugin_enabled" && !commandInput.enabled ||
+                  commandInput.kind === "set_plugin_mcp_server_approved" && !commandInput.approved ||
+                  commandInput.kind === "set_plugin_artifact_permission" && !commandInput.approved) {
+                await closeActivePluginConnections(storageDirectory, commandInput.pluginId);
               }
-              await setPluginEnabledInTransaction(
-                transaction,
-                storageDirectory,
-                plugin.id,
-                commandInput.enabled,
-              );
-              changed = true;
-              return;
             }
-            if (commandInput.kind === "set_plugin_mcp_server_approved") {
-              if (plugin.approvedMcpServerIds.includes(commandInput.serverId) === commandInput.approved) return;
-              await setPluginMcpServerApprovedInTransaction(
-                transaction,
-                storageDirectory,
-                plugin.id,
-                commandInput.serverId,
-                commandInput.approved,
-              );
-              changed = true;
-              return;
-            }
-            if (commandInput.kind === "set_plugin_artifact_permission") {
-              const current = commandInput.permission === "input"
-                ? plugin.approvedArtifactInputServerIds
-                : plugin.approvedArtifactOutputServerIds;
-              if (current.includes(commandInput.serverId) === commandInput.approved) return;
-              await setPluginArtifactPermissionApprovedInTransaction(
-                transaction,
-                storageDirectory,
-                plugin.id,
-                commandInput.serverId,
-                commandInput.permission,
-                commandInput.approved,
-              );
-              changed = true;
-              return;
-            }
-            if (plugin.enabled) {
-              throw new ChatBridgeConflictError("Disable this Plugin before deleting it.");
-            }
-            if ((await listSessionsInTransaction(transaction, storageDirectory)).some((session) =>
-              session.activeSkillIds?.some((skillId) => skillId.startsWith(`${plugin.id}:`)))) {
-              throw new ChatBridgeConflictError("Remove this Plugin's Skills from every Session before deleting it.");
-            }
-            await deletePluginInTransaction(transaction, storageDirectory, plugin.id);
-            changed = true;
-          }),
+          },
         );
       } catch (error) {
         if (error instanceof PluginStorageCorruptionError) {
           throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
         }
+        if (isStorageCommitOutcomeUnknownError(error)) notifyGlobalStateChanged();
         throw error;
+      } finally {
+        if (changed) notifyGlobalStateChanged();
       }
-      if (changed) notifyGlobalStateChanged();
       status = commandInput.kind === "delete_plugin"
-        ? `Plugin ${commandInput.pluginId} deleted.`
+        ? privateCleanupPending
+          ? uiMessage("Plugin {pluginId} removed; private data cleanup will retry if it has not completed.", {
+              pluginId: commandInput.pluginId,
+            })
+          : `Plugin ${commandInput.pluginId} deleted.`
         : commandInput.kind === "set_plugin_enabled"
-          ? `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
+          ? sessionCleanupPending
+            ? uiMessage("Plugin {pluginId} disabled; Session Skill cleanup is pending.", {
+                pluginId: commandInput.pluginId,
+              })
+            : `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
           : commandInput.kind === "set_plugin_artifact_permission"
             ? `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} artifact ${commandInput.permission} ${commandInput.approved ? "approved" : "revoked"}.`
           : `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} ${commandInput.approved ? "approved" : "revoked"}.`;

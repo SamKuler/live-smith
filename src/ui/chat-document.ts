@@ -62,7 +62,9 @@ export interface ChatClientScripts {
 }
 
 function injectPluginContract(script: string): string {
-  return script.replaceAll("__MAX_PLUGIN_ARCHIVE_BYTES__", String(MAX_PLUGIN_ARCHIVE_BYTES));
+  return script
+    .replaceAll("__MAX_PLUGIN_ARCHIVE_BYTES__", String(MAX_PLUGIN_ARCHIVE_BYTES))
+    .replaceAll("__MAX_INTEGRATION_CONNECTIONS__", String(MAX_INTEGRATION_CONNECTIONS));
 }
 
 function injectAttachmentContract(script: string): string {

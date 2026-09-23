@@ -370,8 +370,13 @@ Remote MCP servers also require approval. A Plugin tool cannot edit Live directl
 declared audio input is staged as a temporary read-only file, declared MIDI output
 is validated and saved to the Session, and importing it remains a separate scoped
 and approved Live action. Removing a Plugin does not remove already saved Session
-artifacts. A Session must stop referencing a Plugin Skill before that Plugin can
-be removed.
+artifacts. Each MCP server can have multiple named connections with separately
+saved credentials. Add them under the server in Plugin settings; credentials are
+write-only and are used only for declared local environment values or remote
+headers, never as model tool arguments. A connection remains bound to the exact
+installed package version; after replacement, review it and enter credentials
+again. Remove a Plugin's connections and stop referencing its Skills before
+deleting the Plugin.
 
 **Attachments** support PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 Office documents are read as text. Image, native PDF, and audio use depends on

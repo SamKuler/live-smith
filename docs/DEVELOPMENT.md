@@ -163,6 +163,13 @@ starts no process during inspection or installation. The user must enable the
 Plugin and approve each MCP server; local commands then execute without a shell
 as the current operating-system user, not in an OS sandbox. Do not put API keys,
 tokens, authorization headers, or other credentials in a package or fixture.
+For host-managed credentials, declare `${NAME}` or `${NAME:-default}` only in
+stdio `env` values or Streamable HTTP `headers` values. Plugin settings expose
+each placeholder name as a write-only field on a named Integration Connection.
+One MCP server may declare at most eight distinct credential names.
+Multiple connections can bind the same server; tool identities include the
+Connection ID. Secrets stay in private settings and never enter tool schemas or
+arguments. Replacing a package requires an explicit credential rebind.
 
 An MCP tool can opt into the artifact bridge with
 `_meta["io.github.samkuler/live-smith-artifacts"]` version 1. Audio inputs are

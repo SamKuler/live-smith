@@ -28,6 +28,8 @@
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
       const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
       const audioConnectionDescriptorsByPluginId = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+      const isBuiltInAudioPluginId = (pluginId) =>
+        Object.hasOwn(audioConnectionDescriptorsByPluginId, pluginId);
       const audioServiceCapabilities = Object.fromEntries(
         Object.values(audioConnectionDescriptorsByPluginId)
           .map((descriptor) => [descriptor.provider, descriptor]),
@@ -160,11 +162,14 @@
         "download_audio_output",
         "open_audio_download",
       ]);
+      let confirmedMcpConnections = (getState().integrationConnections?.connections || [])
+        .filter((connection) => !isBuiltInAudioPluginId(connection.pluginId));
       let confirmedIntegrationConnections = integrationConnectionsForEditor(
         getState().integrationConnections,
       );
       let confirmedSunoAccounts = getState().sunoAccounts || [];
       let confirmedSunoModelCatalog = getState().sunoModelCatalog;
+      let retainSunoCatalogForMcpRevision = null;
       let sunoModelLoadingId = null;
       let sunoModelLoadErrorId = null;
       let sunoAccountsRevision = getState().bridgeStateRevision;
@@ -2814,7 +2819,8 @@
 
       function integrationConnectionForEditor(connection) {
         if (!connection) return null;
-        const descriptor = audioConnectionDescriptorsByPluginId[connection.pluginId];
+        const descriptor = isBuiltInAudioPluginId(connection.pluginId)
+          ? audioConnectionDescriptorsByPluginId[connection.pluginId] : undefined;
         return {
           id: connection.id,
           name: connection.name,
@@ -2833,7 +2839,11 @@
       function integrationConnectionsForEditor(value) {
         return value ? {
           revision: value.revision,
-          connections: value.connections.map(integrationConnectionForEditor),
+          ...(value.lastChangeTouchesAudio === undefined ? {} : {
+            lastChangeTouchesAudio: value.lastChangeTouchesAudio,
+          }),
+          connections: value.connections.filter((connection) =>
+            isBuiltInAudioPluginId(connection.pluginId)).map(integrationConnectionForEditor),
         } : null;
       }
 
@@ -2855,7 +2865,10 @@
       function integrationConnectionsForWire(value) {
         return value ? {
           revision: value.revision,
-          connections: value.connections.map(integrationConnectionForWire),
+          ...(value.lastChangeTouchesAudio === undefined ? {} : {
+            lastChangeTouchesAudio: value.lastChangeTouchesAudio,
+          }),
+          connections: [...value.connections.map(integrationConnectionForWire), ...confirmedMcpConnections],
         } : undefined;
       }
 
@@ -2879,8 +2892,9 @@
       }
 
       function isWireIntegrationConnections(value) {
-        return isWireRecord(value) && hasOnlyWireKeys(value, ["connections", "revision"]) &&
+        return isWireRecord(value) && hasOnlyWireKeys(value, ["connections", "revision", "lastChangeTouchesAudio"]) &&
           isDecimalRevision(value.revision) && Array.isArray(value.connections) &&
+          (value.lastChangeTouchesAudio === undefined || typeof value.lastChangeTouchesAudio === "boolean") &&
           value.connections.length <= __MAX_INTEGRATION_CONNECTIONS__ &&
           value.connections.every((connection) => {
             if (!isWireRecord(connection) || !hasOnlyWireKeys(connection, [
@@ -2889,12 +2903,21 @@
               connection.name !== connection.name.trim() || connection.name.length === 0 ||
               connection.name.length > 120 || /[\x00-\x1f\x7f]/.test(connection.name) ||
               typeof connection.pluginId !== "string" ||
-              !Object.hasOwn(audioConnectionDescriptorsByPluginId, connection.pluginId) ||
+              !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(connection.pluginId) ||
               typeof connection.enabled !== "boolean" || !isWireRecord(connection.configuration) ||
-              !hasOnlyWireKeys(connection.configuration, ["modelId", "callbackUrl"]) ||
-              !Array.isArray(connection.configuredSecrets) || connection.configuredSecrets.length > 1 ||
-              new Set(connection.configuredSecrets).size !== connection.configuredSecrets.length ||
-              !connection.configuredSecrets.every((name) => name === "apiKey")) return false;
+              !Array.isArray(connection.configuredSecrets) ||
+              new Set(connection.configuredSecrets).size !== connection.configuredSecrets.length) return false;
+            if (!isBuiltInAudioPluginId(connection.pluginId)) {
+              return hasOnlyWireKeys(connection.configuration, ["serverId", "pluginDigest"]) &&
+                /^[A-Za-z0-9_-]{1,64}$/.test(connection.configuration.serverId || "") &&
+                /^[a-f0-9]{64}$/.test(connection.configuration.pluginDigest || "") &&
+                connection.configuredSecrets.length <= 8 &&
+                connection.configuredSecrets.every((name) => typeof name === "string" &&
+                  /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name));
+            }
+            if (!hasOnlyWireKeys(connection.configuration, ["modelId", "callbackUrl"]) ||
+                connection.configuredSecrets.length > 1 ||
+                !connection.configuredSecrets.every((name) => name === "apiKey")) return false;
             const service = integrationConnectionForEditor(connection);
             return isWireAudioModelId(service.modelId) &&
               (!Object.hasOwn(service, "modelId") || audioServiceCapabilities[service.provider].modelConfigurable === true) &&
@@ -3015,11 +3038,12 @@
           "unsupported_mcp_transport",
         ]);
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
-          "id", "version", "description", "sourceFormat", "enabled",
+          "id", "sha256", "version", "description", "sourceFormat", "enabled",
           "skillCount", "mcpServers", "unsupportedComponents", "issues",
         ]) ||
           typeof value.id !== "string" ||
           !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(value.id) ||
+          !/^[a-f0-9]{64}$/.test(value.sha256 || "") ||
           (value.version !== undefined && (typeof value.version !== "string" || value.version.length > 128)) ||
           (value.description !== undefined && (typeof value.description !== "string" || value.description.length > 1024)) ||
           !["agent-plugins-1.0", "codex", "claude"].includes(value.sourceFormat) ||
@@ -3027,7 +3051,7 @@
           !Number.isInteger(value.skillCount) || value.skillCount < 0 || value.skillCount > 2048 ||
           !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
           !value.mcpServers.every((server) => isWireRecord(server) &&
-            hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target"]) &&
+            hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "credentialFields"]) &&
             typeof server.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(server.id) &&
             ["stdio", "streamable-http"].includes(server.type) &&
             typeof server.approved === "boolean" &&
@@ -3036,7 +3060,13 @@
             (!server.artifactInputApproved && !server.artifactOutputApproved ||
               server.type === "stdio" && server.approved) &&
             typeof server.target === "string" && server.target.length > 0 && server.target.length <= 2048 &&
-            !/[\u0000-\u001f\u007f]/.test(server.target)) ||
+            !/[\u0000-\u001f\u007f]/.test(server.target) &&
+            Array.isArray(server.credentialFields) && server.credentialFields.length <= 64 &&
+            new Set(server.credentialFields.map((field) => field.name)).size === server.credentialFields.length &&
+            server.credentialFields.every((field) => isWireRecord(field) &&
+              hasOnlyWireKeys(field, ["name", "required"]) &&
+              typeof field.name === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(field.name) &&
+              typeof field.required === "boolean")) ||
           new Set(value.mcpServers.map((server) => server.id)).size !== value.mcpServers.length ||
           !Array.isArray(value.unsupportedComponents) || value.unsupportedComponents.length > 32 ||
           new Set(value.unsupportedComponents).size !== value.unsupportedComponents.length ||
@@ -3057,7 +3087,6 @@
           !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 ||
           value.byteLength > __MAX_PLUGIN_ARCHIVE_BYTES__) return false;
         const installed = { ...value };
-        delete installed.sha256;
         delete installed.byteLength;
         return isWireInstalledPlugin(installed) && installed.enabled === false &&
           installed.mcpServers.every((server) => server.approved === false &&
@@ -3667,8 +3696,27 @@
         if (!isWireIntegrationConnections(value) || confirmedIntegrationConnections &&
           compareDecimalRevisions(value.revision, confirmedIntegrationConnections.revision) <= 0) return false;
         const nextConnections = integrationConnectionsForEditor(value);
-        confirmedSunoModelCatalog = undefined;
+        const mcpOnlyChange = confirmedIntegrationConnections &&
+          value.lastChangeTouchesAudio === false &&
+          JSON.stringify(nextConnections.connections) === JSON.stringify(confirmedIntegrationConnections.connections) &&
+          BigInt(value.revision) === BigInt(confirmedIntegrationConnections.revision) + 1n;
+        confirmedMcpConnections = value.connections.filter((connection) =>
+          !isBuiltInAudioPluginId(connection.pluginId));
+        if (mcpOnlyChange) {
+          retainSunoCatalogForMcpRevision = value.revision;
+          if (confirmedSunoModelCatalog) confirmedSunoModelCatalog = {
+            ...confirmedSunoModelCatalog,
+            integrationConnectionsRevision: value.revision,
+          };
+        } else {
+          confirmedSunoModelCatalog = undefined;
+          retainSunoCatalogForMcpRevision = null;
+        }
         for (const [id, draft] of audioSettingsDrafts) {
+          if (mcpOnlyChange) {
+            if (!draft.conflict) draft.expectedRevision = value.revision;
+            continue;
+          }
           const next = nextConnections.connections.find((service) => service.id === id) || null;
           // A key-only change is invisible in the view. Existing drafts keep their
           // original collection revision; presence flags cannot prove credential identity.
@@ -3703,7 +3751,14 @@
           compareDecimalRevisions(state.bridgeStateRevision, sunoAccountsRevision) <= 0 ||
           confirmedIntegrationConnections && state.integrationConnections?.revision !== confirmedIntegrationConnections.revision) return;
         confirmedSunoAccounts = (state.sunoAccounts || []).map((account) => ({ ...account }));
-        confirmedSunoModelCatalog = state.sunoModelCatalog || undefined;
+        const retainedCatalog = retainSunoCatalogForMcpRevision === state.integrationConnections?.revision &&
+          confirmedSunoModelCatalog && confirmedSunoAccounts.some((account) =>
+            account.serviceId === confirmedSunoModelCatalog.serviceId &&
+            account.accountId === confirmedSunoModelCatalog.accountId &&
+            ["signed_in", "saved"].includes(account.status));
+        confirmedSunoModelCatalog = state.sunoModelCatalog ||
+          (retainedCatalog ? confirmedSunoModelCatalog : undefined);
+        retainSunoCatalogForMcpRevision = null;
         sunoAccountsRevision = state.bridgeStateRevision;
         sunoAccountsCoveredThroughRevision = state.bridgeStateCoveredThroughRevision;
       }

@@ -60,6 +60,11 @@ export interface ParsedMidiArtifact {
   notes: NoteDescription[];
 }
 
+export interface MidiArtifactListing {
+  artifacts: MidiArtifact[];
+  unavailableCount: number;
+}
+
 export class MidiArtifactStorageError extends Error {
   constructor(message = "Saved MIDI artifact data is invalid, unavailable, or changed.") {
     super(message);
@@ -158,14 +163,14 @@ export async function saveMidiArtifact(
     await requireSession(storageDirectory, sessionId);
     const directory = await bindSessionDirectory(storageDirectory, sessionId, true);
     const entries = await readArtifacts(directory!);
-    if (entries.length >= MAX_MIDI_ARTIFACTS_PER_SESSION ||
+    if (entries.artifacts.length + entries.unavailableCount >= MAX_MIDI_ARTIFACTS_PER_SESSION ||
         await storedMidiBytes(directory!) + bytes.byteLength > MAX_MIDI_SESSION_BYTES) {
       throw new MidiArtifactStorageError("This Session has reached its MIDI artifact storage limit.");
     }
     await assertDirectory(directory!);
-    await writeJsonAtomicallyCreateOnly(metadataPath(directory!, artifact.id), artifact);
-    await assertDirectory(directory!);
     await writeBytesAtomicallyCreateOnly(blobPath(directory!, artifact.id), bytes);
+    await assertDirectory(directory!);
+    await writeJsonAtomicallyCreateOnly(metadataPath(directory!, artifact.id), artifact);
     await assertDirectory(directory!);
     return cloneArtifact(artifact);
   });
@@ -175,11 +180,20 @@ export async function listMidiArtifacts(
   storageDirectory: string | undefined,
   sessionId: string,
 ): Promise<MidiArtifact[]> {
-  if (!storageDirectory) return [];
+  return (await inspectMidiArtifacts(storageDirectory, sessionId)).artifacts;
+}
+
+export async function inspectMidiArtifacts(
+  storageDirectory: string | undefined,
+  sessionId: string,
+): Promise<MidiArtifactListing> {
+  if (!storageDirectory) return { artifacts: [], unavailableCount: 0 };
   requireSafeStorageId(sessionId, "Session ID");
-  await requireSession(storageDirectory, sessionId);
-  const directory = await bindSessionDirectory(storageDirectory, sessionId);
-  return directory ? readArtifacts(directory) : [];
+  return withStorageTransaction(storageDirectory, async () => {
+    await requireSession(storageDirectory, sessionId);
+    const directory = await bindSessionDirectory(storageDirectory, sessionId);
+    return directory ? readArtifacts(directory) : { artifacts: [], unavailableCount: 0 };
+  });
 }
 
 export async function readMidiArtifact(
@@ -421,23 +435,39 @@ async function assertDirectory(binding: DirectoryBinding): Promise<void> {
   }
 }
 
-async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifact[]> {
+async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifactListing> {
   const entries = await fs.readdir(directory.path);
   const metadataIds = entries.filter((name) => name.endsWith(".midi.json")).map((name) => name.slice(0, -10));
   const artifacts: MidiArtifact[] = [];
+  let unavailableCount = 0;
   for (const id of metadataIds) {
     if (!isSafeStorageId(id)) throw new MidiArtifactStorageError();
     const artifact = await readMetadata(directory, id);
     if (!artifact) throw new MidiArtifactStorageError();
-    const blob = await fs.lstat(blobPath(directory, id));
+    let blob;
+    try { blob = await fs.lstat(blobPath(directory, id)); }
+    catch (error) {
+      if (!isMissingFileError(error)) throw error;
+      unavailableCount += 1;
+      continue;
+    }
     if (!blob.isFile() || blob.isSymbolicLink() || blob.nlink !== 1 || blob.size !== artifact.byteLength) {
       throw new MidiArtifactStorageError();
     }
     artifacts.push(artifact);
   }
   for (const name of entries) {
-    if (name.endsWith(".mid") && !metadataIds.includes(name.slice(0, -4)) ||
-        !name.endsWith(".mid") && !name.endsWith(".midi.json") && !validAtomicTemporary(name)) {
+    if (name.endsWith(".mid") && !metadataIds.includes(name.slice(0, -4))) {
+      const id = name.slice(0, -4);
+      if (!isSafeStorageId(id)) throw new MidiArtifactStorageError();
+      const info = await fs.lstat(blobPath(directory, id));
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size < 1 ||
+          info.size > MAX_MIDI_ARTIFACT_BYTES || (supportsPosixPermissions && getuid && info.uid !== getuid())) {
+        throw new MidiArtifactStorageError();
+      }
+      continue;
+    }
+    if (!name.endsWith(".mid") && !name.endsWith(".midi.json") && !validAtomicTemporary(name)) {
       throw new MidiArtifactStorageError();
     }
     if (validAtomicTemporary(name)) {
@@ -449,7 +479,8 @@ async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifact[
     }
   }
   await assertDirectory(directory);
-  return artifacts.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  return { artifacts: artifacts.sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)), unavailableCount };
 }
 
 async function storedMidiBytes(directory: DirectoryBinding): Promise<number> {

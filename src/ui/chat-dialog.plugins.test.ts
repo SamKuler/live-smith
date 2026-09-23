@@ -62,6 +62,7 @@ async function waitForPluginIdle(
 function installedPlugin(enabled = false) {
   return {
     id: "music-tools",
+    sha256: "a".repeat(64),
     version: "1.2.0",
     description: "Convert audio into MIDI",
     sourceFormat: "agent-plugins-1.0" as const,
@@ -75,6 +76,7 @@ function installedPlugin(enabled = false) {
         artifactInputApproved: false,
         artifactOutputApproved: false,
         target: "./bin/converter",
+        credentialFields: [],
       },
       {
         id: "catalog",
@@ -83,6 +85,7 @@ function installedPlugin(enabled = false) {
         artifactInputApproved: false,
         artifactOutputApproved: false,
         target: "https://plugins.example.test",
+        credentialFields: [],
       },
     ],
     unsupportedComponents: ["hooks"],

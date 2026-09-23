@@ -13,7 +13,7 @@ import {
 } from "../storage/plugins.js";
 import { createSession } from "../storage/sessions.js";
 import { audioStorageHarness } from "../storage/audio-storage-test-helpers.js";
-import { listMidiArtifacts } from "../storage/midi-artifacts.js";
+import { listMidiArtifacts, saveMidiArtifact } from "../storage/midi-artifacts.js";
 import { LIVE_SMITH_ARTIFACT_META_KEY } from "../plugins/artifacts.js";
 import { createRequestPluginTools } from "./request-plugin-tools.js";
 
@@ -140,6 +140,71 @@ test("unapproved Plugin MCP servers never start during request discovery", async
   ]);
 });
 
+test("discovery cancellation closes MCP packages opened by earlier Plugins", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-request-plugin-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  for (const id of ["a-plugin", "b-plugin"]) {
+    await installPlugin(directory, zipSync({
+      "plugin.json": strToU8(JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: id,
+      })),
+      "mcp.json": strToU8('{"mcpServers":{}}'),
+    }));
+    await setPluginEnabled(directory, id, true);
+  }
+  const session = await createSession(directory, { title: "Plugin", projectKey: "project",
+    scope: { kind: "selection", identity: "selection", label: "Plugin" } });
+  const controller = createHostAbortController();
+  const closed: string[] = [];
+  await assert.rejects(createRequestPluginTools({
+    storageDirectory: directory,
+    sessionId: session.id,
+    signal: controller.signal,
+    createPackage: (runtime) => ({
+      manifest: runtime.archive.manifest,
+      async tools() {
+        if (runtime.plugin.id === "a-plugin") controller.abort();
+        return { tools: [], issues: [] };
+      },
+      async callTool() { return { content: [] }; },
+      async close() { closed.push(runtime.plugin.id); },
+    }),
+  }));
+  assert.deepEqual(closed, ["a-plugin"]);
+});
+
+test("an unavailable saved MIDI artifact is reported without blocking the Session request", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-request-plugin-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const session = await createSession(directory, { title: "Plugin", projectKey: "project",
+    scope: { kind: "selection", identity: "selection", label: "Plugin" } });
+  const bytes = new Uint8Array([77,84,104,100,0,0,0,6,0,0,0,1,1,224,77,84,114,107,
+    0,0,0,13,0,144,60,100,131,96,128,60,64,0,255,47,0]);
+  const saved = await saveMidiArtifact(directory, session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
+    label: "Lost blob", bytes, signal: createHostAbortController().signal,
+  });
+  await fs.rm(`${directory}/live-smith-midi/${session.id}/${saved.id}.mid`);
+
+  const request = await createRequestPluginTools({
+    storageDirectory: directory,
+    sessionId: session.id,
+    signal: createHostAbortController().signal,
+  });
+  t.after(() => request.close());
+  assert.equal(request.unavailableMidiArtifacts, 1);
+  const listed = await request.callTool({ id: "list", name: "list_session_artifacts", arguments: "{}" });
+  assert.deepEqual(JSON.parse(listed.content), {
+    artifacts: [], unavailableCount: 1,
+    warning: "One or more saved MIDI artifacts are unavailable. Their metadata was preserved.",
+  });
+  const next = await saveMidiArtifact(directory, session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
+    label: "New artifact", bytes, signal: createHostAbortController().signal,
+  });
+  assert.deepEqual((await listMidiArtifacts(directory, session.id)).map(({ id }) => id), [next.id]);
+});
+
 test("approved artifact tools receive exact staged audio and return only saved MIDI references", async (t) => {
   const h = await audioStorageHarness(t);
   const source = await h.save();
@@ -169,6 +234,7 @@ test("approved artifact tools receive exact staged audio and return only saved M
     withAuthorization: async (_signal, operation) => { authorizations++; return operation(); },
   });
   t.after(() => request.close());
+  const discoveryAuthorizations = authorizations;
   const tool = request.tools().find((entry) => /^plg_/u.test(entry.function.name))!;
   assert.ok(tool);
   assert.doesNotMatch(JSON.stringify(tool.function.parameters), /destination/u);
@@ -179,7 +245,7 @@ test("approved artifact tools receive exact staged audio and return only saved M
     arguments: JSON.stringify({ source: source.id }),
   });
   assert.equal(result.failed, undefined);
-  assert.equal(authorizations, 1);
+  assert.equal(authorizations, discoveryAuthorizations + 1);
   assert.doesNotMatch(result.content, new RegExp(h.storage.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
   const parsed = JSON.parse(result.content);
   assert.match(parsed.content[0].text, /converted .* bytes/);

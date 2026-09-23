@@ -46,7 +46,7 @@ export async function captureIntegrationConnections(
   const settings = await loadAgentSettings(storageDirectory);
   const result: RuntimeIntegrationConnection[] = [];
   for (const connection of settings.integrationConnections?.connections ?? []) {
-    if (!connection.enabled) continue;
+    if (!connection.enabled || !builtInAudioPluginById(connection.pluginId)) continue;
     try {
       const credential = await runtimeConnection(storageDirectory, connection);
       if (credential) result.push(Object.freeze(credential));

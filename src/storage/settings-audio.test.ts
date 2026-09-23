@@ -162,6 +162,7 @@ test("SunoAPI configuration persists without exposing secrets and enabling requi
     configuration: { callbackUrl, modelId: "V4_5ALL" },
     secrets: { apiKey: "fixture-suno" },
   } });
+  assert.equal(saved.integrationConnections?.lastChangeTouchesAudio, true);
   assert.deepEqual(saved.integrationConnections!.connections[0], disabled.integrationConnections!.connections[0]);
   const clone = cloneAgentSettings(saved);
   clone.integrationConnections!.connections[1]!.configuration.callbackUrl = "https://other.example.com/hook";

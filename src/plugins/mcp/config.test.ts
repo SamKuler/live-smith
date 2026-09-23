@@ -49,6 +49,44 @@ test("invalid and unsupported server entries do not disable independent servers"
   ]);
 });
 
+test("MCP servers with credentials outside the named-connection contract are skipped", () => {
+  const parsed = parsePluginMcpConfig(bytes({
+    $schema: PORTABLE_MCP_SCHEMA,
+    mcpServers: {
+      valid: { type: "stdio", command: "node", env: { TOKEN: "${TOKEN}" } },
+      tooMany: { type: "stdio", command: "node", env: {
+        TOKENS: Array.from({ length: 9 }, (_, index) => `\${TOKEN_${index}}`).join(" "),
+      } },
+      longName: { type: "streamable-http", url: "https://example.test/mcp", headers: {
+        Authorization: `Bearer \${${"A".repeat(65)}}`,
+      } },
+    },
+  }), { sourceFormat: "agent-plugins-1.0" });
+  assert.deepEqual(parsed.servers.map((server) => server.id), ["valid"]);
+  assert.deepEqual(parsed.issues.map((issue) => [issue.serverId, issue.code]), [
+    ["tooMany", "invalid_server"], ["longName", "invalid_server"],
+  ]);
+});
+
+test("MCP env and header maps retain accepted prototype-like field names", () => {
+  const parsed = parsePluginMcpConfig(bytes({
+    $schema: PORTABLE_MCP_SCHEMA,
+    mcpServers: {
+      local: { type: "stdio", command: "node", env: Object.fromEntries([["__proto__", "${TOKEN}"]]) },
+      remote: { type: "streamable-http", url: "https://example.test/mcp",
+        headers: Object.fromEntries([["__proto__", "literal"]]) },
+    },
+  }), { sourceFormat: "agent-plugins-1.0" });
+  assert.equal(parsed.issues.length, 0);
+  assert.equal(parsed.servers[0]?.type, "stdio");
+  assert.equal(parsed.servers[1]?.type, "streamable-http");
+  if (parsed.servers[0]?.type !== "stdio" || parsed.servers[1]?.type !== "streamable-http") {
+    throw new Error("Expected both MCP transports.");
+  }
+  assert.equal(Object.hasOwn(parsed.servers[0].env, "__proto__"), true);
+  assert.equal(Object.hasOwn(parsed.servers[1].headers, "__proto__"), true);
+});
+
 test("portable MCP top-level schema is closed and fatal only to the MCP component", () => {
   for (const value of [
     { mcpServers: {} },

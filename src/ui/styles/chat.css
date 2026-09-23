@@ -1803,6 +1803,23 @@ details.timeline-item > .timeline-content {
   @apply flex flex-wrap items-center justify-end gap-1;
 }
 
+.plugin-server-group { @apply grid gap-1; }
+.plugin-server-connections { @apply grid min-w-0 gap-1; }
+.plugin-orphan-connections { @apply grid gap-1 rounded-control border border-border px-2 py-1; }
+.plugin-connection-row { @apply flex min-w-0 items-center gap-1 text-small text-muted; }
+.plugin-connection-row > span { @apply min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap; }
+.plugin-connection-row > button,
+.plugin-add-connection,
+.plugin-connection-actions > button { @apply h-control-compact px-2 py-0 text-small; }
+.plugin-add-connection { @apply justify-self-start; }
+.plugin-connection-editor { @apply grid min-w-0 gap-2 rounded-control border border-border bg-pane px-2 py-2; }
+.plugin-connection-editor > label { @apply grid gap-1 text-small text-muted; }
+.plugin-connection-editor > .plugin-connection-enabled { @apply text-small; }
+.plugin-connection-editor > .plugin-clear-secret { @apply flex items-center gap-2 cursor-pointer; }
+.plugin-clear-secret > input { @apply m-0 size-[14px] flex-none p-0; accent-color: var(--color-accent); }
+.plugin-clear-secret > input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.plugin-connection-actions { @apply flex justify-end gap-1; }
+
 .plugin-artifact-permission[aria-pressed="true"] {
   @apply border-accent-soft bg-accent-soft text-text;
 }
