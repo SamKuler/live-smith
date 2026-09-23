@@ -144,8 +144,9 @@ export async function createRequestPluginTools(input: {
             }> = [{ serverIds: unboundIds }];
             for (const connection of connections) {
               const serverId = connection.configuration.serverId;
-              if (!config?.servers.some((server) => server.id === serverId)) continue;
-              selections.push({ serverIds: [serverId!], connection });
+              const server = config?.servers.find((entry) => entry.id === serverId);
+              if (!server || mcpCredentialFields(server).length === 0) continue;
+              selections.push({ serverIds: [server.id], connection });
             }
             const selectedIds = new Set(selections.flatMap((selection) => selection.serverIds));
             for (const server of config?.servers ?? []) {

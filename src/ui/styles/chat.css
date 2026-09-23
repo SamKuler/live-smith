@@ -1705,6 +1705,9 @@ details.timeline-item > .timeline-content {
   @apply mt-3 gap-2 border-t border-t-divider pt-3;
 }
 
+.plugin-manager [hidden] { @apply hidden; }
+.plugin-manager.drop-target { outline: 2px dashed var(--color-accent); outline-offset: -2px; }
+
 .plugin-section-heading {
   @apply flex min-w-0 items-center justify-between gap-2;
 }
@@ -1720,6 +1723,17 @@ details.timeline-item > .timeline-content {
 .plugin-section-heading > button {
   @apply h-control-compact shrink-0 px-2 py-0 text-small;
 }
+
+.plugin-status,
+.plugin-connection-feedback {
+  @apply m-0 rounded-control border border-border bg-pane px-2 py-[6px] text-small text-muted;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.plugin-status { @apply sticky top-0 z-[2]; }
+.plugin-status.error,
+.plugin-connection-feedback.error { @apply text-danger; }
 
 .plugin-drop-zone {
   @apply grid min-h-[62px] place-content-center gap-[3px] rounded-panel border border-dashed border-[#626262] px-3 py-2 text-center text-small text-quiet;
@@ -1789,8 +1803,7 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-server-row {
-  @apply grid min-w-0 items-center gap-2 rounded-control border border-border bg-pane px-2 py-[6px];
-  grid-template-columns: minmax(0, 1fr) auto;
+  @apply grid min-w-0 gap-[6px] rounded-control border border-border bg-pane px-2 py-[7px];
 }
 
 .plugin-server-approval,
@@ -1800,20 +1813,40 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-server-controls {
-  @apply flex flex-wrap items-center justify-end gap-1;
+  @apply grid justify-items-start gap-1;
 }
 
+.plugin-server-permissions { @apply flex flex-wrap gap-1; }
+
 .plugin-server-group { @apply grid gap-1; }
-.plugin-server-connections { @apply grid min-w-0 gap-1; }
+.plugin-server-connections { @apply grid min-w-0 gap-1 border-l border-divider pl-2; }
 .plugin-orphan-connections { @apply grid gap-1 rounded-control border border-border px-2 py-1; }
-.plugin-connection-row { @apply flex min-w-0 items-center gap-1 text-small text-muted; }
-.plugin-connection-row > span { @apply min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap; }
-.plugin-connection-row > button,
+.plugin-connection-row {
+  @apply grid min-w-0 items-center py-1 text-small text-muted;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 6px;
+  row-gap: 3px;
+}
+.plugin-connection-label { display: contents; }
+.plugin-connection-name {
+  @apply text-label text-text;
+  grid-column: 1 / -1;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.plugin-connection-state,
+.plugin-connection-unbound { @apply text-small text-quiet; overflow-wrap: anywhere; }
+.plugin-connection-state { grid-column: 1; }
+.plugin-connection-row-actions { @apply flex flex-wrap justify-end gap-1; grid-column: 2; grid-row: 2; }
+.plugin-connection-row-actions > button,
 .plugin-add-connection,
 .plugin-connection-actions > button { @apply h-control-compact px-2 py-0 text-small; }
 .plugin-add-connection { @apply justify-self-start; }
 .plugin-connection-editor { @apply grid min-w-0 gap-2 rounded-control border border-border bg-pane px-2 py-2; }
-.plugin-connection-editor > label { @apply grid gap-1 text-small text-muted; }
+.plugin-connection-editor > label { @apply grid gap-1 text-label text-muted; }
 .plugin-connection-editor > .plugin-connection-enabled { @apply text-small; }
 .plugin-connection-editor > .plugin-clear-secret { @apply flex items-center gap-2 cursor-pointer; }
 .plugin-clear-secret > input { @apply m-0 size-[14px] flex-none p-0; accent-color: var(--color-accent); }
@@ -1825,8 +1858,11 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-card-actions {
-  @apply flex justify-end;
+  @apply grid justify-items-end gap-1;
 }
+
+.plugin-card-actions button:disabled { @apply opacity-[0.65]; }
+.plugin-delete-reason { @apply text-right text-small text-muted; line-height: 1.4; }
 
 @media (max-width: 680px) {
   #audioJobs [data-audio-results] { @apply grid-cols-1; }
@@ -2574,14 +2610,6 @@ label {
 }
 
 @media (max-width: 520px) {
-  .plugin-server-row {
-    @apply grid-cols-1 items-stretch;
-  }
-
-  .plugin-server-controls {
-    justify-self: end;
-  }
-
   .skill-row[data-skill-source="user"] {
     @apply grid-cols-1 items-stretch;
   }

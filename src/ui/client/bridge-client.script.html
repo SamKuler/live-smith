@@ -4376,8 +4376,9 @@
       }
 
       async function runCommand(kind, extra, options) {
+        const reportStatus = options?.statusPresenter || showStatus;
         if (attachmentOperationInProgress || skillOperationInProgress) {
-          showStatus(window.LiveSmithI18n.message("Wait for the current file or Skill operation to finish."), true);
+          reportStatus(window.LiveSmithI18n.message("Wait for the current file or Skill operation to finish."), true);
           return false;
         }
         const sessionCommand = sessionCommandKinds.has(kind);
@@ -4386,12 +4387,12 @@
           (sendAttemptsBySession.size || runnableQueuedFollowUpCount()) &&
           !allowedDuringSend
         ) {
-          showStatus(window.LiveSmithI18n.message("Profile settings cannot change while an agent request is active."));
+          reportStatus(window.LiveSmithI18n.message("Profile settings cannot change while an agent request is active."));
           return false;
         }
         if (commandInProgress || commandReconciliationBlocked) {
           if (commandInProgress) {
-            showStatus(window.LiveSmithI18n.message("Wait for the current operation to finish."));
+            reportStatus(window.LiveSmithI18n.message("Wait for the current operation to finish."));
           }
           return false;
         }
@@ -4660,12 +4661,12 @@
           }
         }
         if (commandWarning) {
-          showStatus(commandWarning, true, {
+          reportStatus(commandWarning, true, {
             canceledFollowUpCount: attempt.canceledFollowUpCount || 0,
           });
         }
         if (commandStopped) {
-          showStatus(window.LiveSmithI18n.message("Command stopped."));
+          reportStatus(window.LiveSmithI18n.message("Command stopped."));
         }
         if (commandError) {
           const message = commandError.message || String(commandError);
@@ -4673,9 +4674,9 @@
             !commandError.field ||
             !requireView().showFieldError(commandError.field, message)
           ) {
-            showStatus(message, true);
+            reportStatus(message, true);
           } else {
-            showStatus("");
+            reportStatus("");
           }
         }
         options?.onOutcome?.({
@@ -8235,12 +8236,12 @@
         );
       }
 
-      async function requestPlugin(path, init, causalAttempt) {
+      async function requestPlugin(path, init, causalAttempt, reportStatus) {
         try {
           return await requestPluginAttempt(path, pluginRequestWithNewCommandId(init), causalAttempt);
         } catch (error) {
           if (error.pluginNetworkFailure !== true) throw error;
-          showStatus(
+          reportStatus(
             window.LiveSmithI18n.message("Lost the Plugin response. Waiting for authoritative bridge state…"),
             true,
           );
@@ -8339,7 +8340,7 @@
         });
       }
 
-      async function installPlugin(file, replace) {
+      async function installPlugin(file, replace, reportStatus = showStatus) {
         return runFileOperation("plugin", async (causalAttempt) => {
           const contentSha256 = await fileContentSha256(file);
           if (!contentSha256) {
@@ -8356,6 +8357,7 @@
               body: file,
             },
             causalAttempt,
+            reportStatus,
           );
           const receipt = result.receipt;
           if (!receipt || typeof receipt.id !== "string" ||

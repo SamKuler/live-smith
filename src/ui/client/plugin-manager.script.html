@@ -5,13 +5,37 @@
         inspectPlugin,
         installPlugin,
         runCommand,
-        showStatus,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const maxPluginArchiveBytes = __MAX_PLUGIN_ARCHIVE_BYTES__;
       let busy = false;
       let renderedKey = null;
       let editingConnection = null;
+
+      function reportPluginStatus(message, isError = false) {
+        const status = document.getElementById("pluginStatus");
+        const text = window.LiveSmithI18n.text(message);
+        status.textContent = text;
+        status.hidden = !text;
+        status.classList.toggle("error", Boolean(isError));
+      }
+
+      function reportConnectionStatus(message, isError = false) {
+        if (!editingConnection) return reportPluginStatus(message, isError);
+        editingConnection.feedback = { message: message || "", isError: Boolean(isError) };
+        const status = document.querySelector(".plugin-connection-feedback");
+        if (status) {
+          const text = window.LiveSmithI18n.text(message);
+          status.textContent = text;
+          status.hidden = !text;
+          status.classList.toggle("error", Boolean(isError));
+        }
+      }
+
+      async function runPluginCommand(kind, payload, statusPresenter = reportPluginStatus) {
+        statusPresenter("");
+        return runCommand(kind, payload, { statusPresenter });
+      }
 
       function pluginConnections(plugin, server) {
         return (getState().integrationConnections?.connections || []).filter((connection) =>
@@ -96,6 +120,14 @@
         enabledTrack.setAttribute("aria-hidden", "true");
         enabledLabel.append(enabledText, enabled, enabledTrack);
         form.append(enabledLabel);
+        const feedback = document.createElement("p");
+        feedback.className = "plugin-connection-feedback";
+        feedback.setAttribute("role", "status");
+        feedback.setAttribute("aria-live", "polite");
+        feedback.textContent = window.LiveSmithI18n.text(draft.feedback?.message);
+        feedback.hidden = !draft.feedback?.message;
+        feedback.classList.toggle("error", Boolean(draft.feedback?.isError));
+        form.append(feedback);
         const actions = document.createElement("div");
         actions.className = "plugin-connection-actions";
         const cancel = makeButton(t("Cancel"), "secondary", async () => {
@@ -122,30 +154,47 @@
           enabled: saved?.enabled ?? true,
           saved,
           secrets: Object.create(null),
+          feedback: null,
           expectedRevision: getState().integrationConnections?.revision || "0",
         };
+        reportPluginStatus("");
         render(true);
         document.querySelector('.plugin-connection-editor [name="connectionName"]')?.focus();
       }
 
       async function saveConnection(plugin, server) {
         const draft = editingConnection;
-        if (!draft || busy || !draft.name.trim()) return;
+        if (!draft || busy) return;
+        if (!draft.name.trim()) {
+          reportConnectionStatus(t("Enter a unique connection name."), true);
+          return;
+        }
         if (draft.pluginDigest !== plugin.sha256) {
           editingConnection = null;
-          showStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
+          reportPluginStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
           render(true);
           return;
         }
         const secrets = { ...draft.secrets };
         if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) {
-          showStatus(t("Credentials must be printable ASCII without spaces."), true);
+          reportConnectionStatus(t("Credentials must be printable ASCII without spaces."), true);
           return;
         }
+        if (draft.enabled) {
+          const missing = server.credentialFields.find((field) => field.required &&
+            !secrets[field.name] && !(secrets[field.name] === undefined &&
+              draft.saved?.configuration.pluginDigest === plugin.sha256 &&
+              draft.saved.configuredSecrets.includes(field.name)));
+          if (missing) {
+            reportConnectionStatus(t("Enter {name} before enabling this MCP connection.", { name: missing.name }), true);
+            return;
+          }
+        }
+        reportConnectionStatus("");
         busy = true;
         render(true);
         try {
-          const changed = await runCommand("save_global_settings", {
+          const changed = await runPluginCommand("save_global_settings", {
             integrationConnections: {
               action: "upsert",
               expectedRevision: draft.expectedRevision,
@@ -158,7 +207,7 @@
                 ...(Object.keys(secrets).length ? { secrets } : {}),
               },
             },
-          });
+          }, reportConnectionStatus);
           if (changed) editingConnection = null;
         } finally {
           busy = false;
@@ -175,13 +224,13 @@
           danger: true,
         }))) return;
         if ((getState().integrationConnections?.revision || "0") !== expectedRevision) {
-          showStatus(t("Connections changed while removing. Review the connection and try again."), true);
+          reportPluginStatus(t("Connections changed while removing. Review the connection and try again."), true);
           return;
         }
         busy = true;
         render(true);
         try {
-          await runCommand("save_global_settings", { integrationConnections: {
+          await runPluginCommand("save_global_settings", { integrationConnections: {
             action: "remove",
             expectedRevision,
             connectionId: connection.id,
@@ -277,6 +326,8 @@
           : t("Approve MCP server {serverId}", { serverId: server.id }));
         controls.append(approval);
         if (server.type === "stdio") {
+          const permissions = document.createElement("div");
+          permissions.className = "plugin-server-permissions";
           for (const [permission, property, label] of [
             ["input", "artifactInputApproved", "Audio input"],
             ["output", "artifactOutputApproved", "MIDI output"],
@@ -289,8 +340,9 @@
             button.setAttribute("aria-label", granted
               ? t("Revoke {permission} access from MCP server {serverId}", { permission: t(label), serverId: server.id })
               : t("Allow {permission} access for MCP server {serverId}", { permission: t(label), serverId: server.id }));
-            controls.append(button);
+            permissions.append(button);
           }
+          controls.append(permissions);
         }
         row.append(copy, controls);
         group.append(row);
@@ -299,31 +351,50 @@
         for (const connection of pluginConnections(plugin, server)) {
           const item = document.createElement("div");
           item.className = "plugin-connection-row";
-          const label = document.createElement("span");
-          label.textContent = `${connection.name} · ${connection.configuration.pluginDigest === plugin.sha256
+          const label = document.createElement("div");
+          label.className = "plugin-connection-label";
+          const name = document.createElement("strong");
+          name.className = "plugin-connection-name";
+          name.textContent = connection.name;
+          name.title = connection.name;
+          const state = document.createElement("span");
+          state.className = "plugin-connection-state";
+          state.textContent = connection.configuration.pluginDigest === plugin.sha256
             ? connection.enabled ? t("Enabled") : t("Disabled")
-            : t("Needs setup")}`;
+            : t("Needs setup");
+          label.append(name, state);
+          const actions = document.createElement("div");
+          actions.className = "plugin-connection-row-actions";
           const edit = makeButton(t("Edit"), "secondary", async () => editConnection(plugin, server, connection));
           const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
           edit.disabled = remove.disabled = busy;
-          item.append(label, edit, remove);
+          edit.setAttribute("aria-label", t("Edit MCP connection {name}", { name: connection.name }));
+          remove.setAttribute("aria-label", t("Remove MCP connection {name}", { name: connection.name }));
+          actions.append(edit, remove);
+          item.append(label, actions);
           connections.append(item);
           if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
               editingConnection.id === connection.id) {
             connections.append(connectionEditor(plugin, server));
           }
         }
-        if ((getState().integrationConnections?.connections.length || 0) < __MAX_INTEGRATION_CONNECTIONS__) {
-          const add = makeButton(t("Add connection"), "secondary plugin-add-connection", async () =>
+        if (server.credentialFields.length &&
+            (getState().integrationConnections?.connections.length || 0) < __MAX_INTEGRATION_CONNECTIONS__) {
+          const add = makeButton(t("Add MCP connection"), "secondary plugin-add-connection", async () =>
             editConnection(plugin, server));
           add.disabled = busy;
           connections.append(add);
+        } else if (!server.credentialFields.length && !connections.childElementCount) {
+          const noSetup = document.createElement("span");
+          noSetup.className = "plugin-connection-unbound";
+          noSetup.textContent = t("No connection setup needed");
+          row.append(noSetup);
         }
         if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
             !editingConnection.saved) {
           connections.append(connectionEditor(plugin, server));
         }
-        group.append(connections);
+        if (connections.childElementCount) group.append(connections);
         return group;
       }
 
@@ -406,11 +477,23 @@
           for (const connection of orphaned) {
             const row = document.createElement("div");
             row.className = "plugin-connection-row";
-            const label = document.createElement("span");
-            label.textContent = `${connection.name} · ${connection.configuration.serverId} · ${t("Needs setup")}`;
+            const label = document.createElement("div");
+            label.className = "plugin-connection-label";
+            const name = document.createElement("strong");
+            name.className = "plugin-connection-name";
+            name.textContent = connection.name;
+            name.title = connection.name;
+            const state = document.createElement("span");
+            state.className = "plugin-connection-state";
+            state.textContent = `${connection.configuration.serverId} · ${t("Needs setup")}`;
+            label.append(name, state);
+            const actions = document.createElement("div");
+            actions.className = "plugin-connection-row-actions";
             const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
             remove.disabled = busy;
-            row.append(label, remove);
+            remove.setAttribute("aria-label", t("Remove MCP connection {name}", { name: connection.name }));
+            actions.append(remove);
+            row.append(label, actions);
             list.append(row);
           }
           card.append(list);
@@ -421,31 +504,38 @@
         const hasConnections = (getState().integrationConnections?.connections || []).some((connection) =>
           connection.pluginId === plugin.id);
         remove.disabled = busy || plugin.enabled || hasConnections;
+        remove.setAttribute("aria-label", t("Delete Plugin {pluginId}", { pluginId: plugin.id }));
         remove.title = plugin.enabled ? t("Disable this Plugin before deleting it.")
           : hasConnections ? t("Remove this Plugin's connections before deleting it.")
           : t("Delete Plugin {pluginId}", { pluginId: plugin.id });
         actions.append(remove);
+        if (plugin.enabled || hasConnections) {
+          const reason = document.createElement("span");
+          reason.className = "plugin-delete-reason";
+          reason.textContent = remove.title;
+          actions.append(reason);
+        }
         card.append(actions);
         return card;
       }
 
       function render(force = false) {
         const list = document.getElementById("pluginList");
-        const empty = document.getElementById("pluginEmptyState");
-        if (!list || !empty) return;
+        const drop = document.getElementById("pluginDropZone");
+        if (!list || !drop) return;
         const plugins = [...(getState().plugins || [])].sort((left, right) => left.id.localeCompare(right.id));
         if (editingConnection && !plugins.some((plugin) =>
           plugin.id === editingConnection.pluginId && plugin.sha256 === editingConnection.pluginDigest &&
           plugin.mcpServers.some((server) => server.id === editingConnection.serverId))) {
           editingConnection = null;
-          showStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
+          reportPluginStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
         }
         const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins,
           connections: getState().integrationConnections, editorId: editingConnection?.id, busy });
         if (!force && key === renderedKey) return;
         const focusedId = document.activeElement?.closest?.(".plugin-card")?.dataset.pluginId;
         list.replaceChildren(...plugins.map(renderPlugin));
-        empty.hidden = plugins.length !== 0;
+        drop.hidden = plugins.length !== 0;
         renderedKey = key;
         if (focusedId) [...list.querySelectorAll(".plugin-card")]
           .find((card) => card.dataset.pluginId === focusedId)
@@ -461,7 +551,7 @@
           render(true);
           return;
         }
-        const changed = await runCommand("set_plugin_enabled", { pluginId: plugin.id, enabled });
+        const changed = await runPluginCommand("set_plugin_enabled", { pluginId: plugin.id, enabled });
         if (!changed) render(true);
       }
 
@@ -477,7 +567,7 @@
             acceptLabel: window.LiveSmithI18n.message("Approve"),
           }))) return;
         }
-        const changed = await runCommand("set_plugin_mcp_server_approved", {
+        const changed = await runPluginCommand("set_plugin_mcp_server_approved", {
           pluginId: plugin.id,
           serverId: server.id,
           approved,
@@ -499,7 +589,7 @@
             acceptLabel: window.LiveSmithI18n.message("Allow"),
           }))) return;
         }
-        const changed = await runCommand("set_plugin_artifact_permission", {
+        const changed = await runPluginCommand("set_plugin_artifact_permission", {
           pluginId: plugin.id,
           serverId: server.id,
           permission,
@@ -516,20 +606,20 @@
           acceptLabel: window.LiveSmithI18n.message("Delete"),
           danger: true,
         }))) return;
-        await runCommand("delete_plugin", { pluginId: plugin.id });
+        await runPluginCommand("delete_plugin", { pluginId: plugin.id });
       }
 
       async function importPluginFile(file) {
         if (!file) return;
         if (file.size === 0 || file.size > maxPluginArchiveBytes) {
-          showStatus(t("Plugin ZIP must contain 1-{maxPluginArchiveBytes} bytes.", { maxPluginArchiveBytes }), true);
+          reportPluginStatus(t("Plugin ZIP must contain 1-{maxPluginArchiveBytes} bytes.", { maxPluginArchiveBytes }), true);
           return;
         }
         try {
           const preview = await inspectPlugin(file);
           const existing = (getState().plugins || []).find((plugin) => plugin.id === preview.id);
           if (existing?.enabled) {
-            showStatus(t("Disable Plugin {pluginId} before replacing it.", { pluginId: preview.id }), true);
+            reportPluginStatus(t("Disable Plugin {pluginId} before replacing it.", { pluginId: preview.id }), true);
             return;
           }
           const replacing = Boolean(existing);
@@ -538,12 +628,12 @@
             message: () => installReview(preview, replacing),
             acceptLabel: window.LiveSmithI18n.message(replacing ? "Replace" : "Install"),
           }))) return;
-          const receipt = await installPlugin(file, replacing);
-          showStatus(t(replacing
+          const receipt = await installPlugin(file, replacing, reportPluginStatus);
+          reportPluginStatus(t(replacing
             ? "Plugin {pluginId} replaced. Review permissions before enabling it."
             : "Plugin {pluginId} installed. Review permissions before enabling it.", { pluginId: receipt.id }));
         } catch (error) {
-          showStatus(error.message || String(error), true);
+          reportPluginStatus(error.message || String(error), true);
         }
       }
 
@@ -561,28 +651,33 @@
       function initialize() {
         const input = document.getElementById("pluginFileInput");
         const drop = document.getElementById("pluginDropZone");
+        const manager = document.getElementById("pluginManager");
         document.getElementById("choosePluginButton")?.addEventListener("click", () => input?.click());
         input?.addEventListener("change", () => {
           const file = input.files?.[0];
           input.value = "";
           void importPluginFile(file);
         });
-        drop?.addEventListener("dragover", (event) => {
+        manager?.addEventListener("dragover", (event) => {
           if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
           event.preventDefault();
-          if (!busy) drop.classList.add("drop-target");
+          if (!busy) (drop.hidden ? manager : drop).classList.add("drop-target");
         });
-        drop?.addEventListener("dragleave", (event) => {
-          if (!drop.contains(event.relatedTarget)) drop.classList.remove("drop-target");
+        manager?.addEventListener("dragleave", (event) => {
+          if (!manager.contains(event.relatedTarget)) {
+            manager.classList.remove("drop-target");
+            drop.classList.remove("drop-target");
+          }
         });
-        drop?.addEventListener("drop", (event) => {
+        manager?.addEventListener("drop", (event) => {
           const files = [...(event.dataTransfer?.files || [])];
+          manager.classList.remove("drop-target");
+          drop.classList.remove("drop-target");
           if (!files.length) return;
           event.preventDefault();
-          drop.classList.remove("drop-target");
           if (busy) return;
           if (files.length !== 1) {
-            showStatus(t("Drop one Plugin ZIP at a time."), true);
+            reportPluginStatus(t("Drop one Plugin ZIP at a time."), true);
             return;
           }
           void importPluginFile(files[0]);

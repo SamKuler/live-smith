@@ -510,11 +510,11 @@
               </section>
               <section id="audioSettingsSection" class="settings-section" aria-labelledby="audioSettingsHeading">
                 <div class="audio-section-heading">
-                  <h3 id="audioSettingsHeading" data-i18n="Connections">Connections</h3>
-                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add connection">Add connection</button>
+                  <h3 id="audioSettingsHeading" data-i18n="Audio services">Audio services</h3>
+                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add audio connection">Add audio connection</button>
                 </div>
-                <div id="audioServiceSelector" class="audio-service-list" role="group" aria-label="Connections" data-i18n-aria-label="Connections"></div>
-                <p id="audioServiceEmpty" class="field-hint" data-i18n="Add a named connection for a Plugin. Each connection keeps its own local setup and credentials.">Add a named connection for a Plugin. Each connection keeps its own local setup and credentials.</p>
+                <div id="audioServiceSelector" class="audio-service-list" role="group" aria-label="Audio services" data-i18n-aria-label="Audio services"></div>
+                <p id="audioServiceEmpty" class="field-hint" data-i18n="Add an audio service connection to use its tools.">Add an audio service connection to use its tools.</p>
                 <details id="audioServiceFields" class="audio-connection-editor settings-disclosure" hidden>
                   <summary id="audioServiceEditorSummary" data-i18n="Connection settings">Connection settings</summary>
                   <div class="audio-editor-body">
@@ -642,12 +642,12 @@
                   <button id="choosePluginButton" class="secondary" type="button" data-i18n="Install Plugin">Install Plugin</button>
                   <input id="pluginFileInput" name="pluginArchive" type="file" accept=".zip,application/zip" hidden />
                 </div>
+                <p id="pluginStatus" class="plugin-status" role="status" aria-live="polite" hidden></p>
                 <div id="pluginDropZone" class="plugin-drop-zone">
                   <strong data-i18n="Drop Plugin ZIP">Drop Plugin ZIP</strong>
                   <span data-i18n="Plugins start disabled. Local processes and remote MCP servers require separate approval.">Plugins start disabled. Local processes and remote MCP servers require separate approval.</span>
                 </div>
                 <div id="pluginList" class="plugin-list" role="list" aria-labelledby="pluginsHeading"></div>
-                <p id="pluginEmptyState" class="field-hint" data-i18n="No Plugins installed.">No Plugins installed.</p>
               </section>
               </section>
             </div>

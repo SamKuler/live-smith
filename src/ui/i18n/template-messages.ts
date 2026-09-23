@@ -160,7 +160,6 @@ export const templateMessages: Record<string, string> = {
   "Install Plugin": "安装插件",
   "Drop Plugin ZIP": "拖入插件 ZIP",
   "Plugins start disabled. Local processes and remote MCP servers require separate approval.": "插件安装后默认禁用。本地进程与远程 MCP 服务器均需单独授权。",
-  "No Plugins installed.": "尚未安装插件。",
   "App Preferences": "应用偏好设置",
   "Conversation & Display": "对话与显示",
   "Interface language": "界面语言",

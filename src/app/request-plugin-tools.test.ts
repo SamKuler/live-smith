@@ -12,6 +12,7 @@ import {
   setPluginMcpServerApproved,
 } from "../storage/plugins.js";
 import { createSession } from "../storage/sessions.js";
+import { saveGlobalSettings } from "../storage/settings.js";
 import { audioStorageHarness } from "../storage/audio-storage-test-helpers.js";
 import { listMidiArtifacts, saveMidiArtifact } from "../storage/midi-artifacts.js";
 import { LIVE_SMITH_ARTIFACT_META_KEY } from "../plugins/artifacts.js";
@@ -118,6 +119,26 @@ test("request Plugin tools run an approved installed local MCP server end to end
     content: [{ type: "text", text: "converted:take.wav" }],
     structuredContent: { artifact: "result.mid" },
   });
+});
+
+test("a historical named connection cannot duplicate a credential-free MCP tool", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-request-plugin-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const plugin = await installPlugin(directory, packageBytes());
+  await setPluginMcpServerApproved(directory, plugin.id, "local", true);
+  await setPluginEnabled(directory, plugin.id, true);
+  await saveGlobalSettings(directory, { integrationConnections: { action: "upsert", expectedRevision: "0",
+    connection: { id: "legacy", name: "Legacy no-secret route", pluginId: plugin.id, enabled: true,
+      configuration: { serverId: "local", pluginDigest: plugin.sha256 } },
+  } });
+  const session = await createSession(directory, { title: "Plugin", projectKey: "project",
+    scope: { kind: "selection", identity: "selection", label: "Plugin" } });
+  const request = await createRequestPluginTools({ storageDirectory: directory, sessionId: session.id,
+    signal: createHostAbortController().signal,
+    withAuthorization: async (_signal, operation) => operation() });
+  t.after(() => request.close());
+  assert.equal(request.tools().length, 1);
+  assert.doesNotMatch(JSON.stringify(request.tools()), /Legacy no-secret route/u);
 });
 
 test("unapproved Plugin MCP servers never start during request discovery", async (t) => {

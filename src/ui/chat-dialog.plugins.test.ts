@@ -107,10 +107,63 @@ test("Plugin cards expose bounded capabilities and compact management actions", 
     assert.match(card.textContent ?? "", /Not used by Live Smith: hooks/);
     assert.doesNotMatch(card.textContent ?? "", /private\/catalog|token=hidden/u);
     assert.equal(card.querySelector<HTMLButtonElement>(".danger-action")?.disabled, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#pluginDropZone")?.hidden, true);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
+});
+
+test("the empty Plugin section retains ZIP drop while blocked deletion explains its reason", async () => {
+  const empty = await createDialogHarness(stateFixture());
+  try {
+    assert.equal(empty.document.querySelector<HTMLElement>("#pluginDropZone")?.hidden, false);
+  } finally { empty.close(); }
+  const state = stateFixture();
+  state.plugins = [installedPlugin(true)];
+  const harness = await createDialogHarness(state);
+  try {
+    const actions = harness.document.querySelector(".plugin-card-actions");
+    assert.equal(actions?.querySelector<HTMLButtonElement>("button")?.disabled, true);
+    assert.match(actions?.textContent ?? "", /Disable this Plugin before deleting it/u);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("an installed Plugin still accepts ZIP replacement drops without a persistent drop zone", async () => {
+  const state = stateFixture();
+  state.plugins = [installedPlugin(false)];
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(harness.document.querySelector<HTMLElement>("#pluginDropZone")?.hidden, true);
+    const event = new harness.window.Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { files: [pluginFile(harness)], types: ["Files"] } });
+    harness.document.querySelector('[data-plugin-id="music-tools"]')?.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+    await waitForCondition(() => harness.calls.some((call) => call.path === "/plugins/inspect"),
+      "Expected a replacement ZIP to be inspected.");
+    await waitForCondition(() => harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden === false,
+      "Expected a replacement review.");
+    await harness.cancelAppConfirmation();
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("Plugin permission errors are announced inside the Inspector", async () => {
+  const state = stateFixture();
+  state.plugins = [installedPlugin(false)];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.failNextCommand("Unable to approve this server", "plugins");
+    harness.click('[data-plugin-id="music-tools"] .plugin-server-approval');
+    await harness.acceptAppConfirmation();
+    await harness.settle();
+    assert.match(harness.document.querySelector("#pluginStatus")?.textContent ?? "", /Unable to approve this server/u);
+    assert.equal(harness.document.querySelector("#pluginStatus")?.getAttribute("role"), "status");
+    assert.doesNotMatch(harness.document.querySelector("#status")?.textContent ?? "", /Unable to approve this server/u);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
 });
 
 test("Plugin enable, disable, server approval, and deletion use explicit commands", async () => {
@@ -291,6 +344,7 @@ test("Plugin replacement is reviewed, disabled, and reconciled after a lost resp
       )?.checked,
       false,
     );
+    assert.doesNotMatch(harness.document.querySelector("#status")?.textContent ?? "", /Lost the Plugin response/u);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

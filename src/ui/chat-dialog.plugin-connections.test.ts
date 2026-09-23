@@ -4,6 +4,129 @@ import test from "node:test";
 import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 import { commandCalls, createDialogHarness, stateFixture, waitForCondition } from "./chat-dialog.test-harness.js";
 
+test("audio and MCP connection entries describe distinct setup paths", async () => {
+  const state = stateFixture();
+  state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
+    enabled: true, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
+      { id: "transcribe", type: "stdio", target: "./bin/transcribe", approved: true,
+        artifactInputApproved: false, artifactOutputApproved: false, credentialFields: [] },
+      { id: "private-api", type: "streamable-http", target: "https://example.test", approved: true,
+        artifactInputApproved: false, artifactOutputApproved: false,
+        credentialFields: [{ name: "TOKEN", required: true }] },
+    ] }];
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "Audio services");
+    assert.equal(harness.document.querySelector("#addAudioServiceButton")?.textContent, "Add audio connection");
+    const servers = [...harness.document.querySelectorAll(".plugin-server-group")];
+    assert.equal(servers[0]?.querySelector(".plugin-add-connection"), null);
+    assert.match(servers[0]?.textContent ?? "", /No connection setup needed/u);
+    assert.equal(servers[1]?.querySelector(".plugin-add-connection")?.textContent, "Add MCP connection");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("MCP connection errors stay visible in Plugin settings and required credentials are checked before saving", async () => {
+  const state = stateFixture();
+  state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
+    enabled: true, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
+      { id: "private-api", type: "streamable-http", target: "https://example.test", approved: true,
+        artifactInputApproved: false, artifactOutputApproved: false,
+        credentialFields: [{ name: "TOKEN", required: true }] },
+    ] }];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click(".plugin-add-connection");
+    harness.input('.plugin-connection-editor [name="connectionName"]', "Primary");
+    harness.click('.plugin-connection-editor button[type="submit"]');
+    await harness.settle();
+    assert.equal(commandCalls(harness).length, 0);
+    assert.match(harness.document.querySelector(".plugin-connection-feedback")?.textContent ?? "", /TOKEN/u);
+    harness.input('.plugin-connection-editor [name="TOKEN"]', "secret");
+    harness.failNextCommand("Unable to save this connection", "integrationConnections");
+    harness.click('.plugin-connection-editor button[type="submit"]');
+    await harness.settle();
+    assert.match(harness.document.querySelector(".plugin-connection-feedback")?.textContent ?? "", /Unable to save this connection/u);
+    assert.doesNotMatch(harness.document.querySelector("#status")?.textContent ?? "", /Unable to save this connection/u);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("saved MCP connection actions identify their account and keep state separate from its name", async () => {
+  const state = stateFixture();
+  state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
+    enabled: true, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
+      { id: "private-api", type: "streamable-http", target: "https://example.test", approved: true,
+        artifactInputApproved: false, artifactOutputApproved: false,
+        credentialFields: [{ name: "TOKEN", required: true }] },
+    ] }];
+  state.integrationConnections = { revision: "1", connections: [{ id: "primary", name: "A long named account",
+    pluginId: "tool-plugin", enabled: true,
+    configuration: { serverId: "private-api", pluginDigest: "a".repeat(64) }, configuredSecrets: ["TOKEN"] }] };
+  const harness = await createDialogHarness(state);
+  try {
+    const row = harness.document.querySelector(".plugin-connection-row");
+    assert.equal(row?.querySelector(".plugin-connection-name")?.textContent, "A long named account");
+    assert.equal(row?.querySelector(".plugin-connection-state")?.textContent, "Enabled");
+    assert.match(row?.querySelector<HTMLButtonElement>("button.secondary")?.getAttribute("aria-label") ?? "",
+      /Edit.*A long named account/u);
+    assert.match(row?.querySelector<HTMLButtonElement>("button.danger-action")?.getAttribute("aria-label") ?? "",
+      /Remove.*A long named account/u);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("clearing a required MCP credential first requires disabling its saved connection", async () => {
+  const state = stateFixture();
+  state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
+    enabled: true, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
+      { id: "private-api", type: "streamable-http", target: "https://example.test", approved: true,
+        artifactInputApproved: false, artifactOutputApproved: false,
+        credentialFields: [{ name: "TOKEN", required: true }] },
+    ] }];
+  state.integrationConnections = { revision: "1", connections: [{ id: "primary", name: "Primary",
+    pluginId: "tool-plugin", enabled: true,
+    configuration: { serverId: "private-api", pluginDigest: "a".repeat(64) }, configuredSecrets: ["TOKEN"] }] };
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click(".plugin-connection-row button.secondary");
+    harness.click(".plugin-clear-secret input");
+    harness.click('.plugin-connection-editor button[type="submit"]');
+    await harness.settle();
+    assert.equal(commandCalls(harness).length, 0);
+    assert.match(harness.document.querySelector(".plugin-connection-feedback")?.textContent ?? "", /TOKEN/u);
+    harness.click('.plugin-connection-editor [name="connectionEnabled"]');
+    harness.click('.plugin-connection-editor button[type="submit"]');
+    await harness.settle();
+    const connection = (commandCalls(harness).at(-1)?.body as any)?.integrationConnections?.connection;
+    assert.equal(connection.enabled, false);
+    assert.equal(connection.secrets.TOKEN, "");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("historical no-credential MCP connections remain removable without offering new ones", async () => {
+  const state = stateFixture();
+  state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
+    enabled: false, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
+      { id: "transcribe", type: "stdio", target: "./bin/transcribe", approved: false,
+        artifactInputApproved: false, artifactOutputApproved: false, credentialFields: [] },
+    ] }];
+  state.integrationConnections = { revision: "1", connections: [{ id: "legacy", name: "Legacy",
+    pluginId: "tool-plugin", enabled: true,
+    configuration: { serverId: "transcribe", pluginDigest: "a".repeat(64) }, configuredSecrets: [] }] };
+  const harness = await createDialogHarness(state);
+  try {
+    assert.equal(harness.document.querySelector(".plugin-add-connection"), null);
+    assert.match(harness.document.querySelector(".plugin-connection-row")?.textContent ?? "", /Legacy/u);
+    harness.click(".plugin-connection-row .danger-action");
+    await harness.acceptAppConfirmation();
+    await harness.settle();
+    assert.equal((commandCalls(harness).at(-1)?.body as any)?.integrationConnections?.action, "remove");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("Plugin manager saves two named server connections without dropping an audio connection", async () => {
   const state = stateFixture();
   state.plugins = [{
