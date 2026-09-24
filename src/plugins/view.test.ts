@@ -48,7 +48,7 @@ test("Plugin wire view exposes capabilities and approval without private runtime
     sourceFormat: "agent-plugins-1.0", enabled: true, skillCount: 1,
     mcpServers: [
       { id: "local", type: "stdio", approved: false, artifactInputApproved: false,
-        artifactOutputApproved: false, target: "./bin/converter", credentialFields: [] },
+        artifactOutputApproved: false, target: "./bin/converter", args: [], envNames: [], credentialFields: [] },
       { id: "remote", type: "streamable-http", approved: true, artifactInputApproved: false,
         artifactOutputApproved: false, target: "https://api.example.com", credentialFields: [] },
     ],
@@ -74,4 +74,28 @@ test("Plugin install preview binds review metadata to the exact archive", async 
     { id: "remote", approved: false, target: "https://api.example.com" },
   ]);
   assert.doesNotMatch(JSON.stringify(preview), /private\/path|token=hidden|PLUGIN_DATA/u);
+});
+
+test("compatible stdio review exposes the complete launch without environment values", async () => {
+  for (const [manifestPath, sourceFormat] of [
+    [".codex-plugin/plugin.json", "codex"],
+    [".claude-plugin/plugin.json", "claude"],
+  ] as const) {
+    const bytes = zipSync({
+      [manifestPath]: strToU8(JSON.stringify({ name: "launch-review", version: "1.0.0", mcpServers: "./.mcp.json" })),
+      ".mcp.json": strToU8(JSON.stringify({ mcpServers: {
+        local: { command: "/opt/tools/node", args: ["--no-warnings", "/opt/plugin/server.mjs"],
+          cwd: "/opt/plugin", env: { ACCESS_TOKEN: "private-access-value", MODE: "production" } },
+      } })),
+    });
+    const preview = await previewPluginArchive(bytes);
+    assert.equal(preview.sourceFormat, sourceFormat);
+    assert.deepEqual(preview.mcpServers[0], {
+      id: "local", type: "stdio", approved: false, artifactInputApproved: false,
+      artifactOutputApproved: false, target: "/opt/tools/node",
+      args: ["--no-warnings", "/opt/plugin/server.mjs"], cwd: "/opt/plugin",
+      envNames: ["ACCESS_TOKEN", "MODE"], credentialFields: [],
+    });
+    assert.doesNotMatch(JSON.stringify(preview), /private-access-value/u);
+  }
 });

@@ -8,7 +8,7 @@ test("audio and MCP connection entries describe distinct setup paths", async () 
   const state = stateFixture();
   state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
     enabled: true, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
-      { id: "transcribe", type: "stdio", target: "./bin/transcribe", approved: true,
+      { id: "transcribe", type: "stdio", target: "./bin/transcribe", args: [], envNames: [], approved: true,
         artifactInputApproved: false, artifactOutputApproved: false, credentialFields: [] },
       { id: "private-api", type: "streamable-http", target: "https://example.test", approved: true,
         artifactInputApproved: false, artifactOutputApproved: false,
@@ -109,7 +109,7 @@ test("historical no-credential MCP connections remain removable without offering
   const state = stateFixture();
   state.plugins = [{ id: "tool-plugin", sha256: "a".repeat(64), sourceFormat: "agent-plugins-1.0",
     enabled: false, skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [
-      { id: "transcribe", type: "stdio", target: "./bin/transcribe", approved: false,
+      { id: "transcribe", type: "stdio", target: "./bin/transcribe", args: [], envNames: [], approved: false,
         artifactInputApproved: false, artifactOutputApproved: false, credentialFields: [] },
     ] }];
   state.integrationConnections = { revision: "1", connections: [{ id: "legacy", name: "Legacy",

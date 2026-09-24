@@ -76,6 +76,8 @@ function installedPlugin(enabled = false) {
         artifactInputApproved: false,
         artifactOutputApproved: false,
         target: "./bin/converter",
+        args: [],
+        envNames: [],
         credentialFields: [],
       },
       {
@@ -311,6 +313,41 @@ test("Plugin ZIP is inspected and reviewed before installation writes anything",
   } finally {
     harness.close();
   }
+});
+
+test("compatible local MCP launch is visible at install and approval review without environment values", async () => {
+  const bytes = zipSync({
+    ".codex-plugin/plugin.json": strToU8(JSON.stringify({
+      name: "launch-review", version: "1.0.0", mcpServers: "./.mcp.json",
+    })),
+    ".mcp.json": strToU8(JSON.stringify({ mcpServers: {
+      local: { command: "/opt/tools/node", args: ["--no-warnings", "/opt/plugin/server.mjs"],
+        cwd: "/opt/plugin", env: { ACCESS_TOKEN: "private-access-value", MODE: "production" } },
+    } })),
+  });
+  const harness = await createDialogHarness(stateFixture());
+  try {
+    harness.dropPluginFile(pluginFile(harness, bytes));
+    await waitForCondition(() => harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden === false,
+      "Expected installation review.");
+    const review = harness.document.querySelector("#appConfirmationMessage")?.textContent ?? "";
+    for (const detail of ["/opt/tools/node", "--no-warnings", "/opt/plugin/server.mjs", "/opt/plugin", "ACCESS_TOKEN", "MODE"]) {
+      assert.ok(review.includes(detail), `Install review omitted ${detail}`);
+    }
+    assert.doesNotMatch(review, /private-access-value/u);
+    await harness.acceptAppConfirmation();
+    await waitForPluginIdle(harness);
+    harness.click('[data-plugin-id="launch-review"] .plugin-server-approval');
+    await waitForCondition(() => harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden === false,
+      "Expected process approval review.");
+    const approval = harness.document.querySelector("#appConfirmationMessage")?.textContent ?? "";
+    for (const detail of ["/opt/tools/node", "--no-warnings", "/opt/plugin/server.mjs", "/opt/plugin", "ACCESS_TOKEN", "MODE"]) {
+      assert.ok(approval.includes(detail), `Approval review omitted ${detail}`);
+    }
+    assert.doesNotMatch(approval, /private-access-value/u);
+    await harness.cancelAppConfirmation();
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
 });
 
 test("Plugin replacement is reviewed, disabled, and reconciled after a lost response", async () => {

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import * as path from "node:path";
 import { URL } from "node:url";
 
 import { pluginSkillsFromArchive } from "../skills/plugin-package.js";
@@ -22,6 +21,9 @@ export interface PluginMcpServerView {
   artifactInputApproved: boolean;
   artifactOutputApproved: boolean;
   target: string;
+  args?: string[];
+  cwd?: string;
+  envNames?: string[];
   credentialFields: McpCredentialField[];
 }
 
@@ -103,7 +105,12 @@ async function pluginView(
         approved: approvedMcpServerIds.includes(server.id),
         artifactInputApproved: approvedArtifactInputServerIds.includes(server.id),
         artifactOutputApproved: approvedArtifactOutputServerIds.includes(server.id),
-        target: server.type === "stdio" ? commandLabel(server.command) : new URL(server.url).origin,
+        target: server.type === "stdio" ? server.command : new URL(server.url).origin,
+        ...(server.type === "stdio" ? {
+          args: [...server.args],
+          ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+          envNames: Object.keys(server.env).sort(),
+        } : {}),
         credentialFields: mcpCredentialFields(server),
       }));
       if (config.issues.some((issue) => issue.code === "invalid_server")) issues.push("invalid_mcp_server");
@@ -125,9 +132,4 @@ async function pluginView(
     unsupportedComponents: [...(manifest.unsupportedComponents ?? [])],
     issues: [...new Set(issues)],
   };
-}
-
-function commandLabel(command: string): string {
-  if (command.startsWith("./") || !command.includes("/") && !command.includes("\\")) return command;
-  return path.basename(command) || "local process";
 }

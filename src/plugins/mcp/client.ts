@@ -8,7 +8,10 @@ import {
 } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import * as path from "node:path";
+import { clearTimeout, setTimeout } from "node:timers";
+import { TransformStream } from "node:stream/web";
 import { URL } from "node:url";
+import { TextDecoder } from "node:util";
 
 import { resolveFetchImplementation, throwIfAborted } from "../../runtime/host.js";
 import type { PluginMcpServer, PluginMcpStdioServer } from "./config.js";
@@ -17,6 +20,8 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const LIST_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 10 * 60_000;
 const MAX_STDIO_MESSAGE_BYTES = 4 * 1024 * 1024;
+const MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024;
+const TERMINATE_TIMEOUT_MS = 1_000;
 
 export interface PluginMcpRuntimePaths {
   pluginRoot: string;
@@ -106,8 +111,20 @@ export async function connectPluginMcpServer(
       }
     },
     async close() {
-      if (remoteTransport) await remoteTransport.terminateSession().catch(() => undefined);
-      await client.close().catch(() => undefined);
+      try {
+        if (remoteTransport) {
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              remoteTransport.terminateSession(),
+              new Promise<void>((resolve) => { timeout = setTimeout(resolve, TERMINATE_TIMEOUT_MS); }),
+            ]);
+          } catch { /* Session termination is best effort. */ }
+          finally { if (timeout) clearTimeout(timeout); }
+        }
+      } finally {
+        await client.close().catch(() => undefined);
+      }
     },
   };
 }
@@ -161,8 +178,87 @@ function redirectRejectingFetch(fetchImpl: typeof fetch): FetchLike {
       response.body?.cancel().catch(() => undefined);
       throw new Error("Plugin MCP redirect was rejected.");
     }
-    return response;
+    return boundedRemoteResponse(response);
   };
+}
+
+function boundedRemoteResponse(response: Response): Response {
+  const sse = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
+  let bytes = 0;
+  let lineHasContent = false;
+  let afterCarriageReturn = false;
+  let blankCarriageReturn = false;
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (sse) {
+        for (const byte of chunk) {
+          bytes += 1;
+          if (byte === 13) {
+            blankCarriageReturn = !lineHasContent;
+            if (blankCarriageReturn) bytes = 0;
+            lineHasContent = false;
+            afterCarriageReturn = true;
+          } else if (byte === 10) {
+            if (afterCarriageReturn) {
+              if (blankCarriageReturn) bytes = 0;
+              afterCarriageReturn = false;
+              blankCarriageReturn = false;
+            }
+            else {
+              if (!lineHasContent) bytes = 0;
+              lineHasContent = false;
+            }
+          } else {
+            lineHasContent = true;
+            afterCarriageReturn = false;
+            blankCarriageReturn = false;
+          }
+          if (bytes > MAX_REMOTE_RESPONSE_BYTES) break;
+        }
+      } else bytes += chunk.byteLength;
+      if (bytes > MAX_REMOTE_RESPONSE_BYTES) {
+        throw new Error("Plugin MCP response exceeded the byte limit.");
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  // Node's Web Stream declarations differ from Fetch's DOM stream declarations.
+  const body = response.body?.pipeThrough(limiter as never) as ReadableStream<Uint8Array> | undefined;
+  const readText = async (): Promise<string> => {
+    if (!body) return "";
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    const parts: string[] = [];
+    let readBytes = 0;
+    let completed = false;
+    try {
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) { completed = true; break; }
+        if (sse) {
+          readBytes += result.value.byteLength;
+          if (readBytes > MAX_REMOTE_RESPONSE_BYTES) {
+            throw new Error("Plugin MCP response exceeded the byte limit.");
+          }
+        }
+        parts.push(decoder.decode(result.value, { stream: true }));
+      }
+      parts.push(decoder.decode());
+      return parts.join("");
+    } finally {
+      if (!completed) void reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+  };
+  return new Proxy(response, {
+    get(target, property) {
+      if (property === "body") return body ?? null;
+      if (property === "text") return readText;
+      if (property === "json") return async () => JSON.parse(await readText()) as unknown;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function toolArguments(value: unknown): Record<string, unknown> {

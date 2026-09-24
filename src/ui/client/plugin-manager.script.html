@@ -256,11 +256,21 @@
         }[issue] || issue;
       }
 
+      function localServerReview(server) {
+        return [
+          t("Local process"),
+          `command=${JSON.stringify(server.target)}`,
+          `args=${JSON.stringify(server.args || [])}`,
+          `cwd=${JSON.stringify(server.cwd || "${PLUGIN_ROOT}")}`,
+          `envNames=${JSON.stringify(server.envNames || [])}`,
+        ].join(" · ");
+      }
+
       function installReview(preview, replacing) {
         const identity = [preview.id, preview.version].filter(Boolean).join(" ");
         const servers = preview.mcpServers.length
           ? preview.mcpServers.map((server) =>
-              `• ${server.id} — ${server.type === "stdio" ? t("Local process") : t("Remote MCP")} · ${server.target}`
+              `• ${server.id} — ${server.type === "stdio" ? localServerReview(server) : `${t("Remote MCP")} · ${server.target}`}`
             ).join("\n")
           : t("No MCP servers declared.");
         const warnings = preview.issues.length
@@ -311,7 +321,7 @@
         title.textContent = server.id;
         title.setAttribute("translate", "no");
         const detail = document.createElement("span");
-        detail.textContent = `${server.type === "stdio" ? t("Local process") : t("Remote MCP")} · ${server.target}`;
+        detail.textContent = server.type === "stdio" ? localServerReview(server) : `${t("Remote MCP")} · ${server.target}`;
         copy.append(title, detail);
         const controls = document.createElement("div");
         controls.className = "plugin-server-controls";
@@ -562,7 +572,7 @@
           if (!(await confirmAction({
             title: window.LiveSmithI18n.message(local ? "Allow local Plugin process?" : "Allow remote Plugin connection?"),
             message: local
-              ? window.LiveSmithI18n.message("Plugin {pluginId} will start local MCP server {serverId} as your operating-system user. This process is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })
+              ? `${t("Plugin {pluginId} will start local MCP server {serverId} as your operating-system user. This process is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })}\n${localServerReview(server)}`
               : window.LiveSmithI18n.message("Plugin {pluginId} will connect to MCP server {serverId} at {target}. Header values and URL details remain hidden.", { pluginId: plugin.id, serverId: server.id, target: server.target }),
             acceptLabel: window.LiveSmithI18n.message("Approve"),
           }))) return;

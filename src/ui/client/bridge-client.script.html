@@ -3051,7 +3051,7 @@
           !Number.isInteger(value.skillCount) || value.skillCount < 0 || value.skillCount > 2048 ||
           !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
           !value.mcpServers.every((server) => isWireRecord(server) &&
-            hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "credentialFields"]) &&
+            hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "args", "cwd", "envNames", "credentialFields"]) &&
             typeof server.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(server.id) &&
             ["stdio", "streamable-http"].includes(server.type) &&
             typeof server.approved === "boolean" &&
@@ -3059,8 +3059,19 @@
             typeof server.artifactOutputApproved === "boolean" &&
             (!server.artifactInputApproved && !server.artifactOutputApproved ||
               server.type === "stdio" && server.approved) &&
-            typeof server.target === "string" && server.target.length > 0 && server.target.length <= 2048 &&
-            !/[\u0000-\u001f\u007f]/.test(server.target) &&
+            typeof server.target === "string" && server.target.length > 0 &&
+            (server.type === "stdio"
+              ? server.target.length <= 8192 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(server.target) &&
+                Array.isArray(server.args) && server.args.length <= 128 &&
+                server.args.every((arg) => typeof arg === "string" && arg.length <= 8192 && !arg.includes("\0")) &&
+                (server.cwd === undefined || typeof server.cwd === "string" && server.cwd.length > 0 &&
+                  server.cwd.length <= 8192 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(server.cwd)) &&
+                Array.isArray(server.envNames) && server.envNames.length <= 64 &&
+                new Set(server.envNames).size === server.envNames.length &&
+                server.envNames.every((name) => typeof name === "string" && name.length > 0 &&
+                  name.length <= 256 && !name.includes("\0") && !name.includes("="))
+              : server.target.length <= 2048 && !/[\u0000-\u001f\u007f]/.test(server.target) &&
+                server.args === undefined && server.cwd === undefined && server.envNames === undefined) &&
             Array.isArray(server.credentialFields) && server.credentialFields.length <= 64 &&
             new Set(server.credentialFields.map((field) => field.name)).size === server.credentialFields.length &&
             server.credentialFields.every((field) => isWireRecord(field) &&

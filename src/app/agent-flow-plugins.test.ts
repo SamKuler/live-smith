@@ -121,6 +121,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
             byteLength: number;
             mcpServers: Array<{ id: string; target: string; approved: boolean;
               artifactInputApproved: boolean; artifactOutputApproved: boolean;
+              args?: string[]; cwd?: string; envNames?: string[];
               credentialFields: Array<{ name: string; required: boolean }> }>;
           };
         };
@@ -129,7 +130,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
         assert.equal(preview.preview.byteLength, versionOne.byteLength);
         assert.deepEqual(preview.preview.mcpServers, [
           { id: "converter", target: "./bin/converter", approved: false, artifactInputApproved: false,
-            artifactOutputApproved: false, type: "stdio", credentialFields: [] },
+            artifactOutputApproved: false, type: "stdio", args: [], envNames: [], credentialFields: [] },
           { id: "catalog", target: "https://plugins.example.test", approved: false, artifactInputApproved: false,
             artifactOutputApproved: false, type: "streamable-http", credentialFields: [] },
         ]);
