@@ -59,6 +59,23 @@ test("the shared route resolver applies HTTPS proxy and bypass rules to WSS targ
   assert.equal(system.selectProxy(new URL("wss://bypass.example/ws")), null);
 });
 
+test("port-scoped system bypass applies to HTTP and matching WebSocket schemes", async () => {
+  const proxy = "http://secure-proxy.example:8443";
+  const system = await resolveNetworkRoute(async () => ({ mode: "system", url: "" }), undefined, {
+    readSystemProxy: async () => ({
+      httpProxy: proxy,
+      httpsProxy: proxy,
+      noProxy: ["secure.example:443", "plain.example:80"],
+    }),
+  });
+
+  for (const target of ["https://secure.example", "wss://secure.example/ws",
+    "http://plain.example", "ws://plain.example/ws"]) {
+    assert.equal(system.selectProxy(new URL(target)), null, target);
+  }
+  assert.equal(system.selectProxy(new URL("wss://secure.example:444/ws")), proxy);
+});
+
 test("WebSocket cancellation and invalid frames close the owned socket without exposing payloads", async (t) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
   await once(server, "listening");

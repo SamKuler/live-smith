@@ -102,7 +102,8 @@ function proxyForTarget(
   target: URL,
 ): string | null {
   const effectivePort = target.port ||
-    (target.protocol === "https:" ? "443" : target.protocol === "http:" ? "80" : "");
+    (target.protocol === "https:" || target.protocol === "wss:" ? "443"
+      : target.protocol === "http:" || target.protocol === "ws:" ? "80" : "");
   if (shouldBypassProxy(
     target.hostname,
     effectivePort,
