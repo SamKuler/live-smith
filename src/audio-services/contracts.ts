@@ -94,7 +94,8 @@ export interface AudioGenerationAdapter {
   readonly provider: "elevenlabs" | "google-lyria" | "mureka" | "suno-platform" | "suno" | "sunoapi";
   /** Read-only validation and challenge preflight, before the paid submission boundary. */
   prepare?(request: AudioGenerationRequest, signal: AbortSignal): Promise<void>;
-  submit(request: AudioGenerationRequest, signal: AbortSignal): Promise<AudioGenerationSubmission>;
+  submit(request: AudioGenerationRequest, signal: AbortSignal,
+    onAuthorizedDispatch?: () => Promise<void>): Promise<AudioGenerationSubmission>;
   inspect?(taskId: string, signal: AbortSignal, expectedOutputs?: AudioJob["expectedOutputs"]): Promise<RemoteAudioStatus>;
   download?(output: RemoteAudioOutput, signal: AbortSignal): Promise<Uint8Array>;
   /** Freshly validate and collect only this observed output, without sibling dependencies or caller URLs. */

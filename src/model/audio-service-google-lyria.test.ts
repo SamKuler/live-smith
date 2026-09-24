@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 
 import { inspectAudioAttachment } from "../attachments/audio.js";
@@ -174,6 +175,93 @@ test("Lyria RealTime follows setup ordering, collects exact PCM duration, stops,
   ]);
   assert.equal(scripted.connection.closes, 1);
   assert.equal(scripted.connection.terminations, 0);
+});
+
+test("realtime 600-second playback keeps its duration budget after setup and still obeys Stop", { timeout: 2_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  syncBuiltinESMExports();
+  try {
+    const controller = createHostAbortController();
+    const streaming = Promise.withResolvers<void>();
+    let activeSignal: AbortSignal | undefined;
+    let receives = 0;
+    let terminations = 0;
+    const connection: ProviderWebSocketConnection = {
+      sendText: async () => undefined,
+      receiveText: async (receiveSignal) => {
+        if (receives++ === 0) {
+          t.mock.timers.tick(30_000);
+          return JSON.stringify({ setupComplete: {} });
+        }
+        streaming.resolve();
+        return new Promise<string>((_resolve, reject) => {
+          receiveSignal.addEventListener("abort", () => reject(new Error("fixture socket aborted")), { once: true });
+        });
+      },
+      close: async () => undefined,
+      terminate() { terminations += 1; },
+    };
+    const adapter = createGoogleLyriaAudioAdapter(KEY, {
+      modelId: "lyria-realtime-exp",
+      openWebSocket: async (_url, options) => { activeSignal = options.signal; return connection; },
+    });
+    const pending = adapter.submit({ ...MUSIC, instrumental: true, durationSeconds: 600 }, controller.signal);
+    await streaming.promise;
+    t.mock.timers.tick(600_000);
+    const survivedDuration = activeSignal?.aborted === false;
+    controller.abort();
+    await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+    assert.equal(survivedDuration, true, "setup time must not consume the full advertised playback duration");
+    assert.ok(terminations > 0);
+  } finally {
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  }
+});
+
+test("realtime setup and playback each have a bounded deadline", { timeout: 2_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  syncBuiltinESMExports();
+  try {
+    for (const phase of ["setup", "playback"] as const) {
+      let receives = 0;
+      let terminations = 0;
+      let activeSignal: AbortSignal | undefined;
+      const waiting = Promise.withResolvers<void>();
+      const connection: ProviderWebSocketConnection = {
+        sendText: async () => undefined,
+        receiveText: async (receiveSignal) => {
+          if (phase === "playback" && receives++ === 0) return JSON.stringify({ setupComplete: {} });
+          waiting.resolve();
+          return new Promise<string>((_resolve, reject) => {
+            receiveSignal.addEventListener("abort", () => reject(new Error("fixture socket aborted")), { once: true });
+          });
+        },
+        close: async () => undefined,
+        terminate() { terminations += 1; },
+      };
+      const adapter = createGoogleLyriaAudioAdapter(KEY, {
+        modelId: "lyria-realtime-exp",
+        openWebSocket: async (_url, options) => { activeSignal = options.signal; return connection; },
+      });
+      const pending = adapter.submit({ ...MUSIC, instrumental: true, durationSeconds: 3 }, signal());
+      await waiting.promise;
+      t.mock.timers.tick(phase === "setup" ? 60_000 : 63_000);
+      const expiredAtBudget = activeSignal?.aborted === true;
+      if (!expiredAtBudget) t.mock.timers.tick(600_000);
+      await assert.rejects(pending, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /timed out/);
+        assert.equal(error instanceof AudioSubmissionNotStartedError, phase === "setup");
+        return true;
+      });
+      assert.equal(expiredAtBudget, true, `${phase} must expire at its own deadline`);
+      assert.ok(terminations > 0);
+    }
+  } finally {
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  }
 });
 
 test("realtime safety filtering is known not to have submitted generation and never exposes provider text", async () => {

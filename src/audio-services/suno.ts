@@ -244,7 +244,7 @@ export function createSunoAudioAdapter(
       if (JSON.stringify(validateRequest(request, http)) !== signature) throw http.fail("music parameters changed during preparation.");
       prepared.set(request, { signature, signal, path, body, ...(proof ? { proof } : {}) });
     },
-    async submit(request, signal) {
+    async submit(request, signal, onAuthorizedDispatch) {
       const plan = prepared.get(request);
       prepared.delete(request);
       const beforeSend = () => {
@@ -262,6 +262,8 @@ export function createSunoAudioAdapter(
       const dispatch = async (): Promise<AudioGenerationSubmission> => {
         beforeSend();
         const snapshot = validateRequest(request, http);
+        await onAuthorizedDispatch?.();
+        beforeSend();
         const receipt = await http.request("POST", plan!.path, plan!.body, signal, beforeSend);
         // A validated receipt may race Stop; retain every acknowledged identity.
         const expectedOutputs = manifestFromReceipt(receipt, snapshot.operation === "get_whole_song", http);

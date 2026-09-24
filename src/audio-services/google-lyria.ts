@@ -23,8 +23,9 @@ import { readAudioResponseBytes } from "./response-bytes.js";
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const LIVE_MUSIC_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateMusic";
 const BATCH_TIMEOUT_MS = 10 * 60_000;
-const LIVE_TIMEOUT_MS = 10 * 60_000;
 const HANDSHAKE_TIMEOUT_MS = 30_000;
+const LIVE_SETUP_TIMEOUT_MS = 60_000;
+const LIVE_PLAYBACK_GRACE_MS = 60_000;
 const MAX_INTERACTION_JSON_BYTES = Math.ceil(MAX_AUDIO_ASSET_BYTES / 3) * 4 + 1024 * 1024;
 const MAX_LIVE_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_LIVE_MESSAGES = 100_000;
@@ -221,10 +222,14 @@ async function generateRealtime(
   const onAbort = (): void => controller.abort();
   signal.addEventListener("abort", onAbort, { once: true });
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, LIVE_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const armTimeout = (milliseconds: number): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, milliseconds);
+  };
   let connection: ProviderWebSocketConnection | undefined;
   let completed = false;
   let playbackMayHaveStarted = false;
@@ -237,6 +242,7 @@ async function generateRealtime(
     }
     const pcm = Buffer.allocUnsafe(pcmBytes);
     let written = 0;
+    armTimeout(LIVE_SETUP_TIMEOUT_MS);
     connection = await openWebSocket(LIVE_MUSIC_URL, {
       headers: { "x-goog-api-key": apiKey },
       signal: controller.signal,
@@ -258,6 +264,7 @@ async function generateRealtime(
     // A failed send callback cannot prove whether PLAY reached the service.
     playbackMayHaveStarted = true;
     await connection.sendText(JSON.stringify({ playbackControl: "PLAY" }));
+    armTimeout(duration * 1_000 + LIVE_PLAYBACK_GRACE_MS);
 
     while (written < pcmBytes) {
       if (++messages > MAX_LIVE_MESSAGES) throw fail("realtime stream returned too many messages.");
@@ -311,7 +318,7 @@ async function generateRealtime(
         error instanceof NetworkProxyError) throw error;
     throw fail("realtime generation failed; its remote outcome may be unknown.");
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     signal.removeEventListener("abort", onAbort);
     if (!completed) connection?.terminate();
   }

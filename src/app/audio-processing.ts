@@ -35,7 +35,7 @@ export interface AudioProcessingContext {
   onProgress?(message: UiMessage): Promise<void> | void;
   /** The explicit download command supplies the shared global-settings fence. */
   withDownloadAuthorization?: AudioDownloadAuthorization;
-  /** Paid generation uses the same settings lifecycle owner, after preparation. */
+  /** Paid audio submissions use the shared settings lifecycle owner after preparation. */
   withGenerationAuthorization?: AudioServiceAuthorization;
   /** Injected service and wait are used by protocol-independent lifecycle tests. */
   adapter?: AudioServiceAdapter;
@@ -157,12 +157,18 @@ async function ownJob(
       const remoteSourceId = await adapter.upload(snapshot.bytes, asset.mediaType, context.signal);
       await update({ remoteSourceId });
       throwIfAborted(context.signal);
-      // A lost reply from this point has an unknown paid submission outcome.
-      await update({ status: "submitting" });
-      await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
-      throwIfAborted(context.signal);
-      submissionStarted = true;
-      const remoteTaskId = await adapter.submit(remoteSourceId, job.stems, randomUUID(), context.signal, asset.mediaType);
+      const submit = async () => {
+        await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
+        throwIfAborted(context.signal);
+        // A lost reply from this point has an unknown paid submission outcome.
+        await update({ status: "submitting" });
+        throwIfAborted(context.signal);
+        submissionStarted = true;
+        return adapter.submit(remoteSourceId, job.stems, randomUUID(), context.signal, asset.mediaType);
+      };
+      const remoteTaskId = context.withGenerationAuthorization
+        ? await context.withGenerationAuthorization(context.signal, submit)
+        : await submit();
       acceptedTaskId = remoteTaskId;
       // Persist the accepted ticket even when cancellation raced the reply.
       await update({ remoteTaskId, status: "running", message: m("Stem separation is processing.") });

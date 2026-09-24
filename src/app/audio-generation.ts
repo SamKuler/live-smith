@@ -276,11 +276,23 @@ async function runGeneration(
       await context.onProgress?.(m(request.operation === "generate_sound_effect" ? "Generating a sound effect" : "Preparing music generation"));
       throwIfAborted(context.signal);
       await adapter.prepare?.(request, context.signal);
-      await update({ status: "submitting", message: m("Waiting for the audio service. Do not submit duplicates.") });
-      await resolveIntegrationConnection(context.storageDirectory, settings.id, request.operation, [settings]);
-      throwIfAborted(context.signal);
-      submissionStarted = true;
-      const result = await adapter.submit(request, context.signal);
+      const markSubmitting = async () => {
+        await update({ status: "submitting", message: m("Waiting for the audio service. Do not submit duplicates.") });
+        throwIfAborted(context.signal);
+        submissionStarted = true;
+      };
+      const submit = async () => {
+        await resolveIntegrationConnection(context.storageDirectory, settings.id, request.operation, [settings]);
+        throwIfAborted(context.signal);
+        if (settings.provider === "suno") return adapter.submit(request, context.signal, markSubmitting);
+        await markSubmitting();
+        return adapter.submit(request, context.signal);
+      };
+      // The Suno.com adapter acquires this fence after human verification, at
+      // its own paid dispatch boundary. An outer lease would nest the same lock.
+      const result = settings.provider === "suno" || !context.withGenerationAuthorization
+        ? await submit()
+        : await context.withGenerationAuthorization(context.signal, submit);
       if (result.kind === "audio") {
         hasCompleteAudio = true;
         for (const output of result.outputs) await save(output, true);

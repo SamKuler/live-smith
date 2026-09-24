@@ -7,11 +7,13 @@ import { createSession } from "../storage/sessions.js";
 import { loadAgentSettings, saveGlobalSettings } from "../storage/settings.js";
 import { SunoSessions } from "../storage/suno-sessions.js";
 import { readAudioAsset } from "../storage/audio-assets.js";
+import { listAudioJobs } from "../storage/audio-jobs.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { MUSIC, session as sunoSession, replay, accountStep, gateStep, submitStep, pollStep, clip, A, B,
   downloadPath } from "../model/audio-service-suno-harness.js";
 import { resolveIntegrationConnection } from "./integration-connections.js";
 import { generateAudio, downloadAudioOutput } from "./audio-generation.js";
+import { audioJobViews } from "./audio-processing.js";
 import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 import { SessionMutationFence } from "./session-mutation-fence.js";
 import { saveIntegrationConnection } from "./integration-connection-test-helpers.js";
@@ -108,10 +110,46 @@ test("a proxy revision change after native verification rejects before a paid fe
 test("no-challenge generation never opens the native verifier", async (t) => {
   const h = await harness(t);
   const wire = replay([accountStep(), gateStep(), submitStep(), pollStep([clip(A), clip(B)])]);
-  const adapter = createAppSunoGenerationAdapter(h.context, h.settings, false, { fetchImpl: wire.fetchImpl,
+  const fetchImpl = (async (input, init) => {
+    if (String(input).includes("/api/generate/")) {
+      assert.equal((await listAudioJobs(h.directory, h.chat.id))[0]?.status, "submitting");
+    }
+    return wire.fetchImpl(input, init);
+  }) as typeof fetch;
+  const adapter = createAppSunoGenerationAdapter(h.context, h.settings, false, { fetchImpl,
     verify: async () => { assert.fail("No verifier for a no-challenge request"); },
   });
   assert.equal((await generateAudio({ ...h.context, generationAdapter: adapter }, connection.id, { ...MUSIC })).status, "ready");
+  wire.done();
+});
+
+test("Suno remains pre-submit while its inner settings authorization is queued", async (t) => {
+  const h = await harness(t);
+  const occupied = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const blocker = h.change(async () => {
+    occupied.resolve();
+    await release.promise;
+  });
+  await occupied.promise;
+  const queued = Promise.withResolvers<void>();
+  const authorize = h.context.withGenerationAuthorization;
+  h.context.withGenerationAuthorization = (signal, operation) => {
+    queued.resolve();
+    return authorize(signal, operation);
+  };
+  const wire = replay([accountStep(), gateStep()]);
+  const adapter = createAppSunoGenerationAdapter(h.context, h.settings, false, { fetchImpl: wire.fetchImpl });
+  const pending = generateAudio({ ...h.context, generationAdapter: adapter }, connection.id, { ...MUSIC });
+  await queued.promise;
+  const [stored] = await listAudioJobs(h.directory, h.chat.id);
+  h.controller.abort(new Error("Stopped before Suno paid submission"));
+  release.resolve();
+  const [outcome] = await Promise.allSettled([pending, blocker]);
+  assert.equal(stored?.status, "preparing", "an abandoned queued job must not recover as an unknown paid request");
+  assert.equal(outcome.status, "rejected");
+  assert.equal((await audioJobViews(h.directory, h.chat.id))[0]?.status, "interrupted");
+  assert.equal(wire.api().filter((entry) => entry.path.startsWith("/api/generate/")).length, 0);
   wire.done();
 });
 
