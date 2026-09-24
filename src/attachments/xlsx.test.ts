@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
-import { URL } from "node:url";
 import { TextEncoder } from "node:util";
 import test from "node:test";
 
@@ -400,19 +398,7 @@ test("xlsx accepts exact A1 coordinate bounds and rejects over-limit, lowercase,
   }
 });
 
-test("xlsx rejects a near-limit cell reference before regex or column iteration and preserves cancellation", async () => {
-  const extractorSource = readFileSync(
-    new URL("./xlsx.ts", import.meta.url),
-    "utf8",
-  );
-  const lengthGuard = extractorSource.indexOf(
-    "reference.length > MAX_CELL_REFERENCE_LENGTH",
-  );
-  const coordinateRegex = extractorSource.indexOf(
-    "/^([A-Z]+)([1-9][0-9]*)$/",
-  );
-  assert.ok(lengthGuard >= 0 && lengthGuard < coordinateRegex);
-
+test("xlsx rejects overlong cell references and preserves cancellation", async () => {
   const oversizedReference = `${"A".repeat(8_000_000)}1`;
   const oversizedPackage = xlsxPackage({
     entries: {

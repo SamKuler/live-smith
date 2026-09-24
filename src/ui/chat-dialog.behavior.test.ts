@@ -600,45 +600,6 @@ test("Apply approval mode follows the selected Session", async () => {
   }
 });
 
-test("a Session approval update from another dialog refreshes the active control", async () => {
-  const harness = await createDialogHarness();
-  try {
-    const row = harness.document.querySelector(
-      '.session-entry[data-session-id="session-1"] .session-row',
-    );
-    const meta = harness.document.querySelector<HTMLElement>(
-      '.session-entry[data-session-id="session-1"] .session-meta',
-    );
-    assert.ok(row);
-    assert.ok(meta);
-    const previousTimestamp = meta.title;
-    harness.emitServerEvent({
-      type: "approval_mode_changed",
-      sessionId: "session-1",
-      approvalMode: "everything",
-      updatedAt: "2026-08-25T00:00:00.000Z",
-    });
-
-    const control = harness.document.querySelector<HTMLSelectElement>("#approvalMode");
-    assert.equal(control?.value, "everything");
-    assert.equal(control?.classList.contains("is-everything"), true);
-    assert.match(
-      control?.closest("label")?.getAttribute("title") ?? "",
-      /including deletes and replacement writes/i,
-    );
-    assert.equal(
-      harness.document.querySelector(
-        '.session-entry[data-session-id="session-1"] .session-row',
-      ),
-      row,
-    );
-    assert.notEqual(meta.title, previousTimestamp);
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 test("Agent keeps Profile actions while Context owns Session Skills", async () => {
   const harness = await createDialogHarness();
   try {

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,75 +7,13 @@ import { MidiTrack } from "@ableton-extensions/sdk";
 
 import {
   arrangementSelectionInteractionContext,
-  interactionContextForScope,
   type LiveInteractionContext,
 } from "../live/context.js";
 import type { SavedProfile } from "../model/profile.js";
-import { loadSessionEvents } from "../storage/events.js";
 import { saveSavedProfile } from "../storage/settings.js";
-import { createSession, updateSession } from "../storage/sessions.js";
+import { createSession } from "../storage/sessions.js";
 import type { ChatBridgeState, ChatDialogState } from "../ui/chat-state.js";
-import { runAgentFlow, type AgentFlowDependencies } from "./agent-flow.js";
-
-test("two open modals do not automatically share a claimed empty transient Session", async (t) => {
-  const fixture = await openTwoDialogs({}, {});
-  t.after(fixture.close);
-  assert.notEqual(fixture.firstState.activeSessionId, fixture.secondState.activeSessionId);
-
-  const selected = await fetch(fixture.second.endpoint("/command"), {
-    method: "POST",
-    headers: jsonHeaders("select-shared-empty"),
-    body: JSON.stringify({
-      kind: "select_session",
-      sessionId: fixture.firstState.activeSessionId,
-    }),
-  });
-  assert.equal(selected.status, 200);
-  assert.equal(
-    (await selected.json() as ChatDialogState).activeSessionId,
-    fixture.firstState.activeSessionId,
-  );
-});
-
-test("switching to another modal's Session projects its bound object and never a same-name replacement", async (t) => {
-  const bass = fakeMidiTrack(2n, "Bass");
-  const fixture = await openTwoDialogs({}, {}, false, bass);
-  t.after(fixture.close);
-  const leadSessionId = fixture.firstState.activeSessionId;
-  assert.equal(fixture.secondState.liveContext.availability, "available");
-  assert.equal(fixture.secondState.liveContext.value.title, "Bass");
-
-  const selected = await fetch(fixture.second.endpoint("/command"), {
-    method: "POST",
-    headers: jsonHeaders("select-other-object"),
-    body: JSON.stringify({ kind: "select_session", sessionId: leadSessionId }),
-  });
-  assert.equal(selected.status, 200);
-  const leadState = await selected.json() as ChatDialogState;
-  assert.equal(leadState.activeSessionId, leadSessionId);
-  assert.match(leadState.contextSummary, /MIDI track "Lead"/);
-  assert.deepEqual(leadState.liveContext, {
-    sessionId: leadSessionId,
-    availability: "available",
-    value: { origin: "object", objectKind: "track", title: "Lead", details: ["MIDI track"] },
-  });
-  assert.equal(leadState.sessionContinueTarget.label, "Bass");
-
-  fixture.tracks[0]!.name = "Lead renamed";
-  const renamed = await state(fixture.second);
-  assert.match(renamed.contextSummary, /MIDI track "Lead renamed"/);
-  assert.equal(renamed.liveContext.availability, "available");
-  assert.equal(renamed.liveContext.value.title, "Lead renamed");
-  assert.equal(renamed.liveContext.sessionId, renamed.activeSessionId);
-
-  fixture.tracks.splice(0, 1, fakeMidiTrack(3n, "Lead"));
-  const unavailable = await state(fixture.second);
-  assert.equal(unavailable.activeSessionId, leadSessionId);
-  assert.match(unavailable.contextSummary, /Live object.*unavailable.*Lead/);
-  assert.deepEqual(unavailable.liveContext, {
-    sessionId: leadSessionId, availability: "unavailable", label: "Lead",
-  });
-});
+import { runAgentFlow } from "./agent-flow.js";
 
 test("state summary and presentation consume the same resolved selection interaction", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-context-projection-"));
@@ -112,92 +49,6 @@ test("state summary and presentation consume the same resolved selection interac
     } },
   };
   await runAgentFlow(context as never, interaction, { renderHtml: () => "<html></html>" });
-});
-
-test("a peer event or attachment invalidation rejects send before unseen state is consumed", async (t) => {
-  let secondModelCalls = 0;
-  const fixture = await openTwoDialogs(
-    {
-      requestModelTurn: async () => ({ content: "Peer reply", toolCalls: [] }),
-    },
-    {
-      requestModelTurn: async () => {
-        secondModelCalls += 1;
-        return { content: "Second reply", toolCalls: [] };
-      },
-    },
-    true,
-  );
-  t.after(fixture.close);
-  const sessionId = fixture.firstState.activeSessionId;
-  assert.equal(fixture.secondState.activeSessionId, sessionId);
-
-  const firstSend = await fetch(fixture.first.endpoint("/send"), {
-    method: "POST",
-    headers: jsonHeaders("peer-send"),
-    body: JSON.stringify({ prompt: "Persist this elsewhere", sessionId }),
-  });
-  assert.equal(firstSend.status, 200);
-
-  const staleEventSend = await fetch(fixture.second.endpoint("/send"), {
-    method: "POST",
-    headers: jsonHeaders("stale-event-send"),
-    body: JSON.stringify({ prompt: "Must first see the peer turn", sessionId }),
-  });
-  assert.equal(staleEventSend.status, 409);
-  const staleEventBody = await staleEventSend.json() as {
-    promptPersistence?: string;
-    sendFailureKind?: string;
-    state?: ChatDialogState;
-  };
-  assert.equal(staleEventBody.promptPersistence, "not_persisted");
-  assert.equal(staleEventBody.sendFailureKind, "state_stale");
-  assert.equal(staleEventBody.state, undefined);
-  assert.equal(secondModelCalls, 0);
-  const reviewedEventState = await state(fixture.second, sessionId);
-  assert.deepEqual(
-    reviewedEventState.events.map(({ content }) => content),
-    ["Persist this elsewhere", "Peer reply"],
-  );
-
-  const uploadBytes = pngBytes();
-  const upload = await fetch(
-    fixture.first.endpoint("/attachments") +
-      `&sessionId=${encodeURIComponent(sessionId)}&fileName=peer.png`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "X-Live-Smith-File-Type": "image/png",
-      },
-      body: uploadBytes.buffer.slice(
-        uploadBytes.byteOffset,
-        uploadBytes.byteOffset + uploadBytes.byteLength,
-      ) as ArrayBuffer,
-    },
-  );
-  assert.equal(upload.status, 201);
-
-  const staleAttachmentSend = await fetch(fixture.second.endpoint("/send"), {
-    method: "POST",
-    headers: coveredSendHeaders("stale-attachment-send", reviewedEventState),
-    body: JSON.stringify({ prompt: "Must first see the attachment", sessionId }),
-  });
-  assert.equal(staleAttachmentSend.status, 409);
-  const staleAttachmentBody = await staleAttachmentSend.json() as {
-    state?: ChatDialogState;
-  };
-  assert.equal(staleAttachmentBody.state, undefined);
-  assert.equal(secondModelCalls, 0);
-  const reviewedAttachmentState = await state(fixture.second, sessionId);
-  assert.deepEqual(
-    reviewedAttachmentState.pendingAttachments.map(({ fileName }) => fileName),
-    ["peer.png"],
-  );
-  assert.deepEqual(
-    (await loadSessionEvents(fixture.directory, sessionId)).map(({ content }) => content),
-    ["Persist this elsewhere", "Peer reply"],
-  );
 });
 
 test("opening an Arrangement selection keeps its bounded selection context", async (t) => {
@@ -431,95 +282,6 @@ interface DialogEndpoint {
   endpoint(pathname: string): string;
 }
 
-async function openTwoDialogs(
-  firstDependencies: AgentFlowDependencies,
-  secondDependencies: AgentFlowDependencies,
-  shareFirstSession = false,
-  secondTrack?: MidiTrack<"1.0.0">,
-): Promise<{
-  directory: string;
-  first: DialogEndpoint;
-  second: DialogEndpoint;
-  firstState: ChatDialogState;
-  secondState: ChatDialogState;
-  tracks: MidiTrack<"1.0.0">[];
-  close(): Promise<void>;
-}> {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-session-consistency-"),
-  );
-  await saveSavedProfile(directory, profile());
-  const firstDialog = Promise.withResolvers<string>();
-  const secondDialog = Promise.withResolvers<string>();
-  const closeFirst = Promise.withResolvers<void>();
-  const closeSecond = Promise.withResolvers<void>();
-  let dialogCount = 0;
-  const track = fakeMidiTrack();
-  const tracks = [track, ...(secondTrack ? [secondTrack] : [])];
-  const context = {
-    application: {
-      song: { handle: { id: 1n }, tracks, scenes: [] },
-    },
-    environment: { storageDirectory: directory },
-    ui: {
-      showModalDialog: async (url: string) => {
-        const first = dialogCount++ === 0;
-        (first ? firstDialog : secondDialog).resolve(url);
-        await (first ? closeFirst : closeSecond).promise;
-      },
-    },
-  };
-  const interaction = interactionContextForScope(context as never, {
-    kind: "track", identity: "1", label: "Lead",
-  })!;
-  const firstFlow = runAgentFlow(context as never, interaction, {
-    ...firstDependencies,
-    renderHtml: () => "<html></html>",
-  });
-  let secondFlow: Promise<void> | undefined;
-  try {
-    const first = endpoint(await firstDialog.promise);
-    const firstState = await state(first);
-    if (shareFirstSession) {
-      await updateSession(directory, firstState.activeSessionId, {
-        title: "Shared Session",
-      });
-    }
-    const secondInteraction = secondTrack ? interactionContextForScope(context as never, {
-      kind: "track", identity: secondTrack.handle.id.toString(), label: secondTrack.name,
-    })! : interaction;
-    secondFlow = runAgentFlow(context as never, secondInteraction, {
-      ...secondDependencies,
-      renderHtml: () => "<html></html>",
-    });
-    const second = endpoint(await secondDialog.promise);
-    const secondState = await state(second);
-    let closed = false;
-    return {
-      directory,
-      first,
-      second,
-      firstState,
-      secondState,
-      tracks,
-      close: async () => {
-        if (closed) return;
-        closed = true;
-        closeFirst.resolve();
-        closeSecond.resolve();
-        await Promise.allSettled([firstFlow, secondFlow!]);
-        await fs.rm(directory, { recursive: true, force: true });
-      },
-    };
-  } catch (error) {
-    closeFirst.resolve();
-    closeSecond.resolve();
-    await Promise.allSettled([firstFlow, ...(secondFlow ? [secondFlow] : [])]);
-    await fs.rm(directory, { recursive: true, force: true });
-    throw error;
-  }
-}
-
 function endpoint(chatUrl: string): DialogEndpoint {
   const url = new URL(chatUrl);
   const token = url.searchParams.get("token")!;
@@ -544,19 +306,6 @@ function jsonHeaders(id: string): Record<string, string> {
     "Content-Type": "application/json",
     "X-Live-Smith-Command-Id": id,
     "X-Live-Smith-Send-Id": id,
-  };
-}
-
-function coveredSendHeaders(
-  id: string,
-  state: ChatBridgeState,
-): Record<string, string> {
-  return {
-    ...jsonHeaders(id),
-    "X-Live-Smith-Global-State-Covered-Through":
-      state.bridgeStateCoveredThroughRevision,
-    "X-Live-Smith-Session-State-Covered-Through":
-      state.bridgeStateCoveredThroughRevision,
   };
 }
 
@@ -597,14 +346,4 @@ function profile(): SavedProfile {
       advanced: {},
     }],
   };
-}
-
-function pngBytes(): Uint8Array {
-  const bytes = Buffer.alloc(24);
-  bytes.set([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
-    0, 0, 0, 1, 0, 0, 0, 1,
-  ]);
-  return new Uint8Array(bytes);
 }

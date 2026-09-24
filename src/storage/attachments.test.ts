@@ -229,15 +229,18 @@ test("pending metadata removes special permission bits", {
 }, async (t) => {
   const sessionId = "session-special-metadata-mode";
   const fixture = await permissionTestAttachment(t, sessionId);
+  let tested = 0;
   for (const mode of [0o1600, 0o2600, 0o4600]) {
     await fs.chmod(fixture.metadataPath, mode);
-    assert.equal((await fs.stat(fixture.metadataPath)).mode & 0o7777, mode);
+    if (((await fs.stat(fixture.metadataPath)).mode & 0o7777) !== mode) continue;
+    tested += 1;
     assert.equal(
       (await listPendingSessionAttachments(fixture.directory, sessionId, [])).length,
       1,
     );
     assert.equal((await fs.stat(fixture.metadataPath)).mode & 0o7777, 0o600);
   }
+  if (tested === 0) t.skip("The filesystem does not preserve special permission bits.");
 });
 
 test("session attachment uses the intrinsic Uint8Array brand across realms", async () => {

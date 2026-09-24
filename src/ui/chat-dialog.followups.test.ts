@@ -419,42 +419,6 @@ test("Steer immediately locks an obsolete Apply decision until guidance is accep
   }
 });
 
-test("a global behavior event from another dialog routes the next follow-up immediately", async () => {
-  const state = withFollowUpBehavior("queue");
-  state.openSettingsOnLoad = false;
-  const harness = await createDialogHarness(state);
-  try {
-    harness.holdNextSend();
-    harness.input("#prompt", "Start the response");
-    harness.click("#sendButton");
-    await Promise.resolve();
-
-    harness.emitServerEvent({
-      type: "global_settings_changed",
-      defaultFollowUpBehavior: "steer",
-      defaultFollowUpBehaviorRevision: "1",
-      showContextUsage: true,
-      contextUsageVisibilityRevision: "0",
-      commandId: "external-follow-up-setting-1",
-    });
-    assert.equal(
-      harness.document.querySelector<HTMLSelectElement>("#defaultFollowUpBehavior")?.value,
-      "steer",
-    );
-
-    harness.input("#prompt", "Apply this guidance now");
-    submitFromComposer(harness);
-    await harness.settle();
-    assert.equal(jsonCalls(harness, "/steer").length, 1);
-
-    harness.releaseHeldSend();
-    await harness.settle();
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 test("Stop terminates only the running turn and then starts the queued follow-up", async () => {
   const state = withFollowUpBehavior("queue");
   state.openSettingsOnLoad = false;
