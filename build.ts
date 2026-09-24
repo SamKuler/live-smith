@@ -47,8 +47,9 @@ const buildResult = await esbuild.build({
     __LIVE_SMITH_NATIVE_VERIFIER_CAPSULE__: JSON.stringify(JSON.stringify(nativeVerifierCapsule)),
   },
   banner: {
-    js: `/*!\n${thirdPartyNotices.replaceAll("*/", "* /")}\n*/`,
+    js: `/*!\n${thirdPartyNotices.replaceAll("*/", "* /")}\n*/\n(function () {`,
   },
+  footer: { js: "})();" },
 });
 
 const outputFiles = buildResult.outputFiles ?? [];

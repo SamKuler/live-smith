@@ -88,13 +88,14 @@ npm run verify
 
 The verification command runs structural limits, core behavior, real-dialog DOM
 interaction tests, direct plus CONNECT-proxy requests through an Extension
-Host-equivalent restricted VM, the production build, the composed dialog-client
-syntax check, and `npm audit --json`. It uses fixtures and does not require
-provider credentials or call a model provider. Focused checks remain available
-as `npm run test:core`, `npm run test:ui`, `npm run test:structure`, and
-`npm run verify:client`. `npm run verify:plugins` checks every committed Plugin
-compatibility fixture for a valid contained manifest, tracked package data,
-non-executable files, and credential-shaped content.
+Host-equivalent restricted VM, both development and production builds, the
+composed dialog-client syntax check, and `npm audit --json`. It uses fixtures
+and does not require provider credentials or call a model provider. Focused
+checks remain available as `npm run test:core`, `npm run test:ui`,
+`npm run test:structure`, and `npm run verify:client`. `npm run verify:plugins`
+checks every committed Plugin compatibility fixture for a valid contained
+manifest, tracked package data, non-executable files, and credential-shaped
+content.
 
 External pull-request automation must not expose the private Ableton SDK
 archives through repository secrets, shared caches, or a privileged workflow

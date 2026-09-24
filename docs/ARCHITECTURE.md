@@ -322,10 +322,12 @@ that host Fetch with the pinned, lazily loaded Undici dispatcher graph in
 `runtime/undici-network-fetch.ts`. Provider WSS traffic uses the bundled `ws`
 client with explicit HTTP(S) or SOCKS proxy agents. Bundle-time Node bindings
 cover only globals omitted by the restricted Extension Host VM; the Undici Web
-Fetch entrypoint is not used. Route selection remains in
-`runtime/proxy-fetch.ts` and is consumed by both network paths, so No proxy,
-System proxy, and Manual proxy do not mutate the Extension Host's process-global
-dispatcher or affect another extension. `model/json-clone.ts` clones
+Fetch entrypoint is not used. The host evaluates the extension bundle as a
+script, so the CommonJS output is wrapped in a function to keep third-party
+top-level declarations out of the host's global object. Route selection
+remains in `runtime/proxy-fetch.ts` and is consumed by both network paths, so
+No proxy, System proxy, and Manual proxy do not mutate the Extension Host's
+process-global dispatcher or affect another extension. `model/json-clone.ts` clones
 provider/Profile JSON without depending on `structuredClone`. `build.ts`
 checks these boundaries and smoke-loads the extension entrypoint without ambient
 Web APIs, while the runtime suite sends real direct and CONNECT-proxy requests

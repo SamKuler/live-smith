@@ -19,7 +19,7 @@
     "test:ui": "tsx --test \"src/ui/**/*.test.ts\"",
     "verify:client": "tsx scripts/check-dialog-client-syntax.ts",
     "verify:plugins": "tsx scripts/check-plugin-fixtures.ts",
-    "verify": "npm test && npm run build && npm run verify:client && npm run verify:plugins && npm audit --json",
+    "verify": "npm test && npm run build:dev && npm run build && npm run verify:client && npm run verify:plugins && npm audit --json",
     "package": "npm run build && extensions-cli package && npm run verify:package",
     "verify:package": "tsx scripts/verify-package.ts"
   },
