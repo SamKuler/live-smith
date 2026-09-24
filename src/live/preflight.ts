@@ -182,6 +182,16 @@ async function observeActionPreflight(
         matchingClip: matchingClip
           ? clipContentIdentity(matchingClip)
           : null,
+        ...(!lane && !matchingClip
+          ? {
+              overlappingClips: clips
+                .filter((clip) =>
+                  clip.startTime < action.startBeat + action.durationBeats &&
+                  clip.startTime + clip.duration > action.startBeat
+                )
+                .map(clipContentIdentity),
+            }
+          : {}),
       });
     }
     case "create_session_midi_clip": {

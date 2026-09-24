@@ -62,6 +62,40 @@ test("create_midi_clip snapshot detects notes edited while confirmation is open"
   assert.notEqual(after, before);
 });
 
+test("main Arrangement MIDI creation fingerprints Clips in its affected range", async () => {
+  for (const name of [undefined, "New Phrase"]) {
+    const outside = midiClip(102n);
+    Object.defineProperty(outside, "startTime", { configurable: true, value: 8 });
+    const clips = [outside];
+    const context = liveContext(midiTrack(11n, clips));
+    const action = {
+      type: "create_midi_clip" as const,
+      trackName: "Bass",
+      ...(name === undefined ? {} : { name }),
+      startBeat: 4,
+      durationBeats: 4,
+      notes: [{ pitch: 36, startTime: 0, duration: 1, velocity: 100 }],
+    };
+
+    const before = await captureLiveActionPreflightSnapshot(context, action, {});
+    outside.notes = [{ pitch: 48, startTime: 0, duration: 1, velocity: 90 }];
+    assert.equal(await captureLiveActionPreflightSnapshot(context, action, {}), before);
+
+    const overlapping = midiClip(101n);
+    Object.defineProperties(overlapping, {
+      name: { configurable: true, value: "Other" },
+      startTime: { configurable: true, value: 2 },
+      duration: { configurable: true, value: 4 },
+    });
+    clips.unshift(overlapping);
+    const withOverlap = await captureLiveActionPreflightSnapshot(context, action, {});
+    assert.notEqual(withOverlap, before);
+
+    overlapping.notes = [{ pitch: 60, startTime: 0, duration: 2, velocity: 80 }];
+    assert.notEqual(await captureLiveActionPreflightSnapshot(context, action, {}), withOverlap);
+  }
+});
+
 test("Take Lane MIDI preflight fingerprints an exact reuse and rejects other overlaps", async () => {
   const reusable = midiClip(101n);
   const unrelated = midiClip(102n);
