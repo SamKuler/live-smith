@@ -31,6 +31,139 @@ function packageBytes(version: string, description = "Fixture plugin"): Uint8Arr
   });
 }
 
+async function installedArchivePath(directory: string): Promise<string> {
+  const [plugin] = await listInstalledPlugins(directory);
+  assert.ok(plugin);
+  return path.join(directory, "live-smith-plugins", "packages", plugin.id, `${plugin.sha256}.zip`);
+}
+
+async function fileHandlePrototype(target: string): Promise<{ chmod: (mode: number) => Promise<void> }> {
+  const handle = await fs.open(target, "r");
+  const prototype = Object.getPrototypeOf(handle) as { chmod: (mode: number) => Promise<void> };
+  await handle.close();
+  return prototype;
+}
+
+async function mockFileHandleChmod(
+  t: test.TestContext,
+  target: string,
+  implementation: (mode: number) => Promise<void>,
+): Promise<void> {
+  t.mock.method(await fileHandlePrototype(target), "chmod", implementation);
+}
+
+test("installed Plugin root already at 0700 reads without path chmod", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const root = path.join(directory, "live-smith-plugins");
+  await fs.chmod(root, 0o700);
+  const before = await fs.stat(root);
+
+  assert.equal((await listInstalledPlugins(directory)).length, 1);
+  assert.equal((await fs.stat(root)).ctimeMs, before.ctimeMs);
+});
+
+test("installed Plugin archive already at 0600 reads without FileHandle chmod", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const archive = await installedArchivePath(directory);
+  await fs.chmod(archive, 0o600);
+  await mockFileHandleChmod(t, archive, async () => {
+    throw new Error("chmod unavailable");
+  });
+
+  assert.ok((await readInstalledPluginArchive(directory, "fixture-plugin")).byteLength > 0);
+});
+
+test("permissive installed Plugin root tightens to exactly 0700", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const root = path.join(directory, "live-smith-plugins");
+  await fs.chmod(root, 0o755);
+
+  assert.equal((await listInstalledPlugins(directory)).length, 1);
+  assert.equal((await fs.stat(root)).mode & 0o7777, 0o700);
+});
+
+test("permissive installed Plugin archive tightens to exactly 0600", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const archive = await installedArchivePath(directory);
+  await fs.chmod(archive, 0o644);
+  const prototype = await fileHandlePrototype(archive);
+  const chmod = prototype.chmod;
+  let calls = 0;
+  t.mock.method(prototype, "chmod", async function (this: fs.FileHandle, mode: number) {
+    calls += 1;
+    return chmod.call(this, mode);
+  });
+
+  assert.ok((await readInstalledPluginArchive(directory, "fixture-plugin")).byteLength > 0);
+  assert.equal(calls, 1);
+  assert.equal((await fs.stat(archive)).mode & 0o7777, 0o600);
+});
+
+test("permissive installed Plugin archive fails closed when chmod fails", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const archive = await installedArchivePath(directory);
+  await fs.chmod(archive, 0o644);
+  await mockFileHandleChmod(t, archive, async () => {
+    throw new Error("chmod unavailable");
+  });
+
+  await assert.rejects(readInstalledPluginArchive(directory, "fixture-plugin"));
+});
+
+test("permissive installed Plugin archive rejects ineffective chmod", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const archive = await installedArchivePath(directory);
+  await fs.chmod(archive, 0o644);
+  await mockFileHandleChmod(t, archive, async () => undefined);
+
+  await assert.rejects(readInstalledPluginArchive(directory, "fixture-plugin"), /storage is invalid/u);
+  assert.equal((await fs.stat(archive)).mode & 0o7777, 0o644);
+});
+
+test("installed Plugin storage clears special permission bits before reading", {
+  skip: platform === "win32",
+}, async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await installPlugin(directory, packageBytes("1.0.0"));
+  const root = path.join(directory, "live-smith-plugins");
+  const archive = await installedArchivePath(directory);
+  let tested = 0;
+  for (const [target, expected] of [[root, 0o700], [archive, 0o600]] as const) {
+    const mode = expected | 0o4000;
+    await fs.chmod(target, mode);
+    if (((await fs.stat(target)).mode & 0o7777) !== mode) continue;
+    tested += 1;
+    assert.ok((await readInstalledPluginArchive(directory, "fixture-plugin")).byteLength > 0);
+    assert.equal((await fs.stat(target)).mode & 0o7777, expected);
+  }
+  if (tested === 0) t.skip("The filesystem does not preserve special permission bits.");
+});
+
 test("Plugin catalog installs immutable bytes disabled and returns defensive copies", async (t) => {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-plugins-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
