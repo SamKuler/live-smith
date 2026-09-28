@@ -4,241 +4,32 @@
         getState,
         inspectPlugin,
         installPlugin,
+        openConnections,
+        openMcpServers,
+        openPlugin,
+        openSkills,
         runCommand,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const maxPluginArchiveBytes = __MAX_PLUGIN_ARCHIVE_BYTES__;
       let busy = false;
       let renderedKey = null;
-      let editingConnection = null;
+      let retainedControlFocus = null;
 
-      function reportPluginStatus(message, isError = false) {
-        const status = document.getElementById("pluginStatus");
+      function reportStatus(statusId, message, isError = false) {
+        const status = document.getElementById(statusId);
         const text = window.LiveSmithI18n.text(message);
         status.textContent = text;
         status.hidden = !text;
         status.classList.toggle("error", Boolean(isError));
       }
 
-      function reportConnectionStatus(message, isError = false) {
-        if (!editingConnection) return reportPluginStatus(message, isError);
-        editingConnection.feedback = { message: message || "", isError: Boolean(isError) };
-        const status = document.querySelector(".plugin-connection-feedback");
-        if (status) {
-          const text = window.LiveSmithI18n.text(message);
-          status.textContent = text;
-          status.hidden = !text;
-          status.classList.toggle("error", Boolean(isError));
-        }
-      }
+      const reportPluginStatus = (message, isError = false) => reportStatus("pluginStatus", message, isError);
+      const reportMcpStatus = (message, isError = false) => reportStatus("pluginMcpStatus", message, isError);
 
       async function runPluginCommand(kind, payload, statusPresenter = reportPluginStatus) {
         statusPresenter("");
         return runCommand(kind, payload, { statusPresenter });
-      }
-
-      function pluginConnections(plugin, server) {
-        return (getState().integrationConnections?.connections || []).filter((connection) =>
-          connection.pluginId === plugin.id && connection.configuration?.serverId === server.id);
-      }
-
-      function connectionEditor(plugin, server) {
-        const draft = editingConnection;
-        const form = document.createElement("form");
-        form.className = "plugin-connection-editor";
-        form.addEventListener("submit", (event) => {
-          event.preventDefault();
-          void saveConnection(plugin, server);
-        });
-        const nameLabel = document.createElement("label");
-        nameLabel.textContent = t("Connection name");
-        const name = document.createElement("input");
-        name.className = "field-control";
-        name.name = "connectionName";
-        name.autocomplete = "off";
-        name.maxLength = 120;
-        name.required = true;
-        name.value = draft.name;
-        name.addEventListener("input", () => { draft.name = name.value; });
-        nameLabel.append(name);
-        form.append(nameLabel);
-        for (const field of server.credentialFields) {
-          const label = document.createElement("label");
-          label.textContent = field.required ? t("{name} credential", { name: field.name })
-            : t("{name} credential (optional)", { name: field.name });
-          label.setAttribute("translate", "no");
-          const input = document.createElement("input");
-          input.className = "field-control";
-          input.type = "password";
-          input.name = field.name;
-          input.autocomplete = "off";
-          input.autocapitalize = "none";
-          input.spellcheck = false;
-          input.maxLength = 4096;
-          const clearOnSave = Object.hasOwn(draft.secrets, field.name) && draft.secrets[field.name] === "";
-          input.value = clearOnSave ? "" : draft.secrets[field.name] || "";
-          input.disabled = clearOnSave;
-          input.placeholder = draft.saved?.configuredSecrets.includes(field.name) &&
-            draft.saved.configuration.pluginDigest === plugin.sha256
-            ? t("Saved; leave blank to keep") : "";
-          input.addEventListener("input", () => {
-            if (input.value) draft.secrets[field.name] = input.value;
-            else delete draft.secrets[field.name];
-          });
-          label.append(input);
-          form.append(label);
-          if (draft.saved?.configuredSecrets.includes(field.name) &&
-              draft.saved.configuration.pluginDigest === plugin.sha256) {
-            const clearLabel = document.createElement("label");
-            clearLabel.className = "plugin-clear-secret";
-            const clear = document.createElement("input");
-            clear.type = "checkbox";
-            clear.name = `clear-${field.name}`;
-            clear.checked = clearOnSave;
-            clear.addEventListener("change", () => {
-              input.disabled = clear.checked;
-              input.value = "";
-              if (clear.checked) draft.secrets[field.name] = "";
-              else delete draft.secrets[field.name];
-            });
-            clearLabel.append(clear, document.createTextNode(t("Clear on save")));
-            form.append(clearLabel);
-          }
-        }
-        const enabledLabel = document.createElement("label");
-        enabledLabel.className = "plugin-connection-enabled settings-switch";
-        const enabledText = document.createElement("span");
-        enabledText.textContent = t("Enable this connection");
-        const enabled = document.createElement("input");
-        enabled.type = "checkbox";
-        enabled.name = "connectionEnabled";
-        enabled.role = "switch";
-        enabled.checked = draft.enabled;
-        enabled.addEventListener("change", () => { draft.enabled = enabled.checked; });
-        const enabledTrack = document.createElement("span");
-        enabledTrack.className = "settings-switch-track";
-        enabledTrack.setAttribute("aria-hidden", "true");
-        enabledLabel.append(enabledText, enabled, enabledTrack);
-        form.append(enabledLabel);
-        const feedback = document.createElement("p");
-        feedback.className = "plugin-connection-feedback";
-        feedback.setAttribute("role", "status");
-        feedback.setAttribute("aria-live", "polite");
-        feedback.textContent = window.LiveSmithI18n.text(draft.feedback?.message);
-        feedback.hidden = !draft.feedback?.message;
-        feedback.classList.toggle("error", Boolean(draft.feedback?.isError));
-        form.append(feedback);
-        const actions = document.createElement("div");
-        actions.className = "plugin-connection-actions";
-        const cancel = makeButton(t("Cancel"), "secondary", async () => {
-          editingConnection = null;
-          render(true);
-        });
-        const save = document.createElement("button");
-        save.type = "submit";
-        save.className = "primary";
-        save.textContent = t("Save connection");
-        cancel.disabled = save.disabled = busy;
-        actions.append(cancel, save);
-        form.append(actions);
-        return form;
-      }
-
-      function editConnection(plugin, server, saved) {
-        editingConnection = {
-          id: saved?.id || (window.crypto?.randomUUID?.() || `mcp-${Date.now()}-${Math.random().toString(16).slice(2)}`),
-          pluginId: plugin.id,
-          serverId: server.id,
-          pluginDigest: plugin.sha256,
-          name: saved?.name || "",
-          enabled: saved?.enabled ?? true,
-          saved,
-          secrets: Object.create(null),
-          feedback: null,
-          expectedRevision: getState().integrationConnections?.revision || "0",
-        };
-        reportPluginStatus("");
-        render(true);
-        document.querySelector('.plugin-connection-editor [name="connectionName"]')?.focus();
-      }
-
-      async function saveConnection(plugin, server) {
-        const draft = editingConnection;
-        if (!draft || busy) return;
-        if (!draft.name.trim()) {
-          reportConnectionStatus(t("Enter a unique connection name."), true);
-          return;
-        }
-        if (draft.pluginDigest !== plugin.sha256) {
-          editingConnection = null;
-          reportPluginStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
-          render(true);
-          return;
-        }
-        const secrets = { ...draft.secrets };
-        if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) {
-          reportConnectionStatus(t("Credentials must be printable ASCII without spaces."), true);
-          return;
-        }
-        if (draft.enabled) {
-          const missing = server.credentialFields.find((field) => field.required &&
-            !secrets[field.name] && !(secrets[field.name] === undefined &&
-              draft.saved?.configuration.pluginDigest === plugin.sha256 &&
-              draft.saved.configuredSecrets.includes(field.name)));
-          if (missing) {
-            reportConnectionStatus(t("Enter {name} before enabling this MCP connection.", { name: missing.name }), true);
-            return;
-          }
-        }
-        reportConnectionStatus("");
-        busy = true;
-        render(true);
-        try {
-          const changed = await runPluginCommand("save_global_settings", {
-            integrationConnections: {
-              action: "upsert",
-              expectedRevision: draft.expectedRevision,
-              connection: {
-                id: draft.id,
-                name: draft.name.trim(),
-                pluginId: plugin.id,
-                enabled: draft.enabled,
-                configuration: { serverId: draft.serverId, pluginDigest: draft.pluginDigest },
-                ...(Object.keys(secrets).length ? { secrets } : {}),
-              },
-            },
-          }, reportConnectionStatus);
-          if (changed) editingConnection = null;
-        } finally {
-          busy = false;
-          render(true);
-        }
-      }
-
-      async function removeConnection(connection) {
-        const expectedRevision = getState().integrationConnections?.revision || "0";
-        if (busy || !(await confirmAction({
-          title: window.LiveSmithI18n.message("Remove this connection?"),
-          message: window.LiveSmithI18n.message("Remove named connection {name} and its saved credentials?", { name: connection.name }),
-          acceptLabel: window.LiveSmithI18n.message("Remove"),
-          danger: true,
-        }))) return;
-        if ((getState().integrationConnections?.revision || "0") !== expectedRevision) {
-          reportPluginStatus(t("Connections changed while removing. Review the connection and try again."), true);
-          return;
-        }
-        busy = true;
-        render(true);
-        try {
-          await runPluginCommand("save_global_settings", { integrationConnections: {
-            action: "remove",
-            expectedRevision,
-            connectionId: connection.id,
-          } });
-        } finally {
-          busy = false;
-          render(true);
-        }
       }
 
       function sourceLabel(source) {
@@ -313,6 +104,7 @@
       function renderServer(plugin, server) {
         const group = document.createElement("div");
         group.className = "plugin-server-group";
+        group.dataset.serverId = server.id;
         const row = document.createElement("div");
         row.className = "plugin-server-row";
         const copy = document.createElement("span");
@@ -321,7 +113,7 @@
         title.textContent = server.id;
         title.setAttribute("translate", "no");
         const detail = document.createElement("span");
-        detail.textContent = server.type === "stdio" ? localServerReview(server) : `${t("Remote MCP")} · ${server.target}`;
+        detail.textContent = server.type === "stdio" ? `${t("Local process")} · ${server.target}` : `${t("Remote MCP")} · ${server.target}`;
         copy.append(title, detail);
         const controls = document.createElement("div");
         controls.className = "plugin-server-controls";
@@ -354,65 +146,76 @@
           }
           controls.append(permissions);
         }
-        row.append(copy, controls);
-        group.append(row);
-        const connections = document.createElement("div");
-        connections.className = "plugin-server-connections";
-        for (const connection of pluginConnections(plugin, server)) {
-          const item = document.createElement("div");
-          item.className = "plugin-connection-row";
-          const label = document.createElement("div");
-          label.className = "plugin-connection-label";
-          const name = document.createElement("strong");
-          name.className = "plugin-connection-name";
-          name.textContent = connection.name;
-          name.title = connection.name;
-          const state = document.createElement("span");
-          state.className = "plugin-connection-state";
-          state.textContent = connection.configuration.pluginDigest === plugin.sha256
-            ? connection.enabled ? t("Enabled") : t("Disabled")
-            : t("Needs setup");
-          label.append(name, state);
-          const actions = document.createElement("div");
-          actions.className = "plugin-connection-row-actions";
-          const edit = makeButton(t("Edit"), "secondary", async () => editConnection(plugin, server, connection));
-          const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
-          edit.disabled = remove.disabled = busy;
-          edit.setAttribute("aria-label", t("Edit MCP connection {name}", { name: connection.name }));
-          remove.setAttribute("aria-label", t("Remove MCP connection {name}", { name: connection.name }));
-          actions.append(edit, remove);
-          item.append(label, actions);
-          connections.append(item);
-          if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
-              editingConnection.id === connection.id) {
-            connections.append(connectionEditor(plugin, server));
-          }
+        const details = document.createElement("details");
+        details.className = "plugin-server-details";
+        details.dataset.serverId = server.id;
+        const summary = document.createElement("summary");
+        summary.textContent = t(server.type === "stdio" ? "Launch details" : "Connection details");
+        const fields = document.createElement("dl");
+        for (const [label, value] of server.type === "stdio" ? [
+          ["Command", server.target],
+          ["Arguments", JSON.stringify(server.args || [])],
+          ["Working directory", server.cwd || "${PLUGIN_ROOT}"],
+          ["Environment variables", JSON.stringify(server.envNames || [])],
+        ] : [["Server URL", server.target]]) {
+          const name = document.createElement("dt");
+          name.textContent = t(label);
+          const content = document.createElement("dd");
+          content.setAttribute("translate", "no");
+          content.textContent = value;
+          fields.append(name, content);
         }
-        if (server.credentialFields.length &&
-            (getState().integrationConnections?.connections.length || 0) < __MAX_INTEGRATION_CONNECTIONS__) {
-          const add = makeButton(t("Add MCP connection"), "secondary plugin-add-connection", async () =>
-            editConnection(plugin, server));
-          add.disabled = busy;
-          connections.append(add);
-        } else if (!server.credentialFields.length && !connections.childElementCount) {
+        details.append(summary, fields);
+        row.append(copy, controls, details);
+        group.append(row);
+        if (server.credentialFields.length || (getState().integrationConnections?.connections || []).some((connection) =>
+            connection.pluginId === plugin.id && connection.configuration?.serverId === server.id)) {
+          const manage = makeButton(t("Connections"), "secondary plugin-manage-connections", async () =>
+            openConnections(plugin.id, server.id));
+          manage.disabled = busy;
+          controls.append(manage);
+        } else {
           const noSetup = document.createElement("span");
           noSetup.className = "plugin-connection-unbound";
           noSetup.textContent = t("No connection setup needed");
-          row.append(noSetup);
+          group.append(noSetup);
         }
-        if (editingConnection?.pluginId === plugin.id && editingConnection.serverId === server.id &&
-            !editingConnection.saved) {
-          connections.append(connectionEditor(plugin, server));
-        }
-        if (connections.childElementCount) group.append(connections);
         return group;
+      }
+
+      function renderMcpSource(plugin) {
+        const source = document.createElement("article");
+        source.id = `pluginMcpSource-${plugin.id}`;
+        source.className = "plugin-mcp-source";
+        source.dataset.pluginId = plugin.id;
+        source.setAttribute("role", "listitem");
+        source.tabIndex = -1;
+        const header = document.createElement("div");
+        header.className = "plugin-card-header";
+        const identity = document.createElement("div");
+        identity.className = "plugin-card-identity";
+        const title = document.createElement("strong");
+        title.textContent = plugin.id;
+        title.setAttribute("translate", "no");
+        const status = document.createElement("span");
+        status.textContent = t(plugin.enabled ? "Enabled" : "Disabled");
+        identity.append(title, status);
+        const manage = makeButton(t("Manage Plugin"), "secondary plugin-source-link", () => openPlugin(plugin.id));
+        header.append(identity, manage);
+        const servers = document.createElement("div");
+        servers.className = "plugin-server-list";
+        servers.append(...plugin.mcpServers.map((server) => renderServer(plugin, server)));
+        source.append(header, servers);
+        return source;
       }
 
       function renderPlugin(plugin) {
         const card = document.createElement("article");
+        card.id = `installedPlugin-${plugin.id}`;
         card.className = "plugin-card";
         card.dataset.pluginId = plugin.id;
         card.setAttribute("role", "listitem");
+        card.tabIndex = -1;
         const header = document.createElement("div");
         header.className = "plugin-card-header";
         const identity = document.createElement("div");
@@ -447,13 +250,6 @@
           description.textContent = plugin.description;
           card.append(description);
         }
-        const summary = document.createElement("p");
-        summary.className = "plugin-summary";
-        summary.textContent = t("{skillCount} Skills · {serverCount} MCP servers", {
-          skillCount: plugin.skillCount,
-          serverCount: plugin.mcpServers.length,
-        });
-        card.append(summary);
         if (plugin.issues.length) {
           const issues = document.createElement("ul");
           issues.className = "plugin-issues";
@@ -472,41 +268,18 @@
           });
           card.append(unsupported);
         }
-        if (plugin.mcpServers.length) {
-          const servers = document.createElement("div");
-          servers.className = "plugin-server-list";
-          for (const server of plugin.mcpServers) servers.append(renderServer(plugin, server));
-          card.append(servers);
-        }
-        const currentServers = new Set(plugin.mcpServers.map((server) => server.id));
-        const orphaned = (getState().integrationConnections?.connections || []).filter((connection) =>
-          connection.pluginId === plugin.id && !currentServers.has(connection.configuration?.serverId));
-        if (orphaned.length) {
-          const list = document.createElement("div");
-          list.className = "plugin-orphan-connections";
-          for (const connection of orphaned) {
-            const row = document.createElement("div");
-            row.className = "plugin-connection-row";
-            const label = document.createElement("div");
-            label.className = "plugin-connection-label";
-            const name = document.createElement("strong");
-            name.className = "plugin-connection-name";
-            name.textContent = connection.name;
-            name.title = connection.name;
-            const state = document.createElement("span");
-            state.className = "plugin-connection-state";
-            state.textContent = `${connection.configuration.serverId} · ${t("Needs setup")}`;
-            label.append(name, state);
-            const actions = document.createElement("div");
-            actions.className = "plugin-connection-row-actions";
-            const remove = makeButton(t("Remove"), "secondary danger-action", async () => removeConnection(connection));
-            remove.disabled = busy;
-            remove.setAttribute("aria-label", t("Remove MCP connection {name}", { name: connection.name }));
-            actions.append(remove);
-            row.append(label, actions);
-            list.append(row);
-          }
-          card.append(list);
+        if (plugin.skillCount || plugin.mcpServers.length) {
+          const links = document.createElement("div");
+          links.className = "plugin-capability-links";
+          if (plugin.skillCount) links.append(makeButton(
+            t("Skills · {count}", { count: plugin.skillCount }),
+            "secondary plugin-open-skills", () => openSkills(plugin.id),
+          ));
+          if (plugin.mcpServers.length) links.append(makeButton(
+            t("MCP servers · {count}", { count: plugin.mcpServers.length }),
+            "secondary plugin-open-mcp", () => openMcpServers(plugin.id),
+          ));
+          card.append(links);
         }
         const actions = document.createElement("div");
         actions.className = "plugin-card-actions";
@@ -532,24 +305,36 @@
       function render(force = false) {
         const list = document.getElementById("pluginList");
         const drop = document.getElementById("pluginDropZone");
-        if (!list || !drop) return;
+        const mcpList = document.getElementById("pluginMcpServers");
+        if (!list || !drop || !mcpList) return;
         const plugins = [...(getState().plugins || [])].sort((left, right) => left.id.localeCompare(right.id));
-        if (editingConnection && !plugins.some((plugin) =>
-          plugin.id === editingConnection.pluginId && plugin.sha256 === editingConnection.pluginDigest &&
-          plugin.mcpServers.some((server) => server.id === editingConnection.serverId))) {
-          editingConnection = null;
-          reportPluginStatus(t("Plugin package changed. Reopen the connection and enter its credentials again."), true);
-        }
         const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins,
-          connections: getState().integrationConnections, editorId: editingConnection?.id, busy });
+          connections: getState().integrationConnections, busy });
         if (!force && key === renderedKey) return;
-        const focusedId = document.activeElement?.closest?.(".plugin-card")?.dataset.pluginId;
+        const focusedContainer = document.activeElement?.closest?.(".plugin-card, .plugin-mcp-source");
+        const focusedControlIndex = focusedContainer
+          ? [...focusedContainer.querySelectorAll("input, button, summary")].indexOf(document.activeElement) : -1;
+        const focusTarget = focusedContainer
+          ? focusedControlIndex === -1 && retainedControlFocus?.containerId === focusedContainer.id
+            ? retainedControlFocus : { containerId: focusedContainer.id, index: focusedControlIndex }
+          : null;
+        retainedControlFocus = busy ? focusTarget : null;
+        const expanded = new Set([...mcpList.querySelectorAll(".plugin-server-details[open]")].map((detail) =>
+          `${detail.closest(".plugin-mcp-source").dataset.pluginId}/${detail.dataset.serverId}`));
         list.replaceChildren(...plugins.map(renderPlugin));
+        const mcpPlugins = plugins.filter((plugin) => plugin.mcpServers.length);
+        mcpList.replaceChildren(...mcpPlugins.map(renderMcpSource));
+        document.getElementById("pluginMcpEmptyState").hidden = mcpPlugins.length !== 0;
+        for (const detail of mcpList.querySelectorAll(".plugin-server-details")) {
+          detail.open = expanded.has(`${detail.closest(".plugin-mcp-source").dataset.pluginId}/${detail.dataset.serverId}`);
+        }
         drop.hidden = plugins.length !== 0;
         renderedKey = key;
-        if (focusedId) [...list.querySelectorAll(".plugin-card")]
-          .find((card) => card.dataset.pluginId === focusedId)
-          ?.querySelector("input, button")?.focus();
+        if (focusTarget) {
+          const container = document.getElementById(focusTarget.containerId);
+          const target = container?.querySelectorAll("input, button, summary")[focusTarget.index];
+          (target && !target.disabled ? target : container)?.focus({ preventScroll: true });
+        }
       }
 
       async function togglePlugin(plugin, enabled) {
@@ -581,7 +366,7 @@
           pluginId: plugin.id,
           serverId: server.id,
           approved,
-        });
+        }, reportMcpStatus);
         if (!changed) render(true);
       }
 
@@ -604,7 +389,7 @@
           serverId: server.id,
           permission,
           approved,
-        });
+        }, reportMcpStatus);
         if (!changed) render(true);
       }
 
@@ -651,6 +436,7 @@
         busy = Boolean(nextBusy);
         const manager = document.getElementById("pluginManager");
         manager?.setAttribute("aria-busy", String(busy));
+        document.getElementById("pluginMcpServers")?.setAttribute("aria-busy", String(busy));
         const input = document.getElementById("pluginFileInput");
         const button = document.getElementById("choosePluginButton");
         if (input) input.disabled = busy;

@@ -4,6 +4,7 @@ import { profileMessages } from "./profile-messages.js";
 import { mainMessages } from "./main-messages.js";
 import { actionMessages } from "./action-messages.js";
 import { audioMessages } from "./audio-messages.js";
+import { connectionsMessages } from "./connections-messages.js";
 import { DEFAULT_UI_LOCALE, UI_LANGUAGES, type UiLocale } from "../../i18n/languages.js";
 
 const zhCNMessages: Readonly<Record<string, string>> = Object.freeze({
@@ -13,6 +14,7 @@ const zhCNMessages: Readonly<Record<string, string>> = Object.freeze({
   ...mainMessages,
   ...actionMessages,
   ...audioMessages,
+  ...connectionsMessages,
 });
 
 export const uiCatalogs: Readonly<Record<UiLocale, Readonly<Record<string, string>>>> = {

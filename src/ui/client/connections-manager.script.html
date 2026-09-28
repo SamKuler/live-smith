@@ -1,0 +1,640 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createConnectionsManager = function createConnectionsManager({
+        addAudioConnection, clearAudioSecrets, confirmAction, getAudioConnections,
+        getState, openSection, runCommand, selectAudioConnection,
+      }) {
+        const t = (message, params) => window.LiveSmithI18n.t(message, params);
+        const builtInDescriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+        let busy = false;
+        let saving = false;
+        let draft = null;
+        let renderedKey = null;
+        const connections = () => getState().integrationConnections?.connections || [];
+        const revision = () => getState().integrationConnections?.revision || "0";
+        const plugins = () => getState().plugins || [];
+        const isAudio = (connection) => Object.hasOwn(builtInDescriptors, connection.pluginId);
+
+        function button(label, className, action) {
+          const element = document.createElement("button");
+          element.type = "button";
+          element.className = className;
+          element.textContent = t(label);
+          element.addEventListener("click", () => { void action(); });
+          return element;
+        }
+
+        function reportStatus(message, isError = false) {
+          if (draft) draft.feedback = { message, isError };
+          const status = document.querySelector(".plugin-connection-feedback") || document.getElementById("connectionsStatus");
+          status.textContent = window.LiveSmithI18n.text(message);
+          status.hidden = !status.textContent;
+          status.classList.toggle("error", Boolean(isError));
+        }
+
+        function closeSourcePicker() {
+          document.getElementById("connectionSourcePicker").hidden = true;
+          document.getElementById("addConnectionButton").setAttribute("aria-expanded", "false");
+        }
+
+        function showAudio(action) {
+          clearSecrets();
+          closeSourcePicker();
+          openSection("audio");
+          action();
+          render(true);
+        }
+
+        function selectAudio(id) {
+          if (saving || getAudioConnections().find((entry) => entry.id === id)?.disabled !== false) return;
+          showAudio(() => selectAudioConnection(id));
+        }
+
+        function openEditor(next) {
+          if (busy || saving) return;
+          clearAudioSecrets();
+          closeSourcePicker();
+          openSection("mcp");
+          draft = {
+            id: next.saved?.id || (window.crypto?.randomUUID?.() || `mcp-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+            name: next.saved?.name || "", enabled: next.saved?.enabled ?? true,
+            expectedRevision: revision(), secrets: Object.create(null), feedback: null,
+            ...next,
+          };
+          reportStatus("");
+          render(true);
+          document.querySelector('.plugin-connection-editor [name="connectionName"]')?.focus();
+        }
+
+        function openStandalone(saved) {
+          const mcp = saved?.mcp || { type: "streamable-http", url: "" };
+          openEditor({ kind: "standalone", saved, mcp: { ...mcp, ...(mcp.args ? { args: [...mcp.args] } : {}) },
+            artifactInputApproved: saved?.artifactInputApproved || false,
+            artifactOutputApproved: saved?.artifactOutputApproved || false,
+            secretRows: (saved?.configuredSecrets || []).map((name) => ({ name, value: "", savedName: name, clear: false })),
+          });
+        }
+
+        function openPlugin(plugin, server, saved) {
+          openEditor({ kind: "plugin", saved, pluginId: plugin?.id || saved.pluginId,
+            serverId: server?.id || saved.configuration.serverId,
+            pluginDigest: server ? plugin.sha256 : saved.configuration.pluginDigest });
+        }
+
+        function draftPluginServer(current) {
+          const plugin = plugins().find((entry) => entry.id === current.pluginId && entry.sha256 === current.pluginDigest);
+          return { plugin, server: plugin?.mcpServers.find((entry) => entry.id === current.serverId) };
+        }
+
+        function openPluginConnections(pluginId, serverId) {
+          const plugin = plugins().find((entry) => entry.id === pluginId);
+          const server = plugin?.mcpServers.find((entry) => entry.id === serverId);
+          if (!server) return;
+          const saved = connections().find((entry) => entry.pluginId === pluginId && entry.configuration?.serverId === serverId);
+          openPlugin(plugin, server, saved);
+        }
+
+        function textField(form, labelText, name, value, onInput, options = {}) {
+          const label = document.createElement("label");
+          label.textContent = t(labelText);
+          const input = document.createElement(options.multiline ? "textarea" : "input");
+          input.className = "field-control";
+          input.name = name;
+          input.value = value;
+          input.autocomplete = "off";
+          if (!options.multiline) input.type = options.type || "text";
+          input.maxLength = options.maxLength || 8192;
+          input.required = Boolean(options.required);
+          input.spellcheck = false;
+          input.addEventListener("input", () => { onInput(input.value); updateEditorActions(); });
+          label.append(input);
+          form.append(label);
+          return input;
+        }
+
+        function switchField(form, labelText, name, checked, onChange) {
+          const label = document.createElement("label");
+          label.className = "settings-switch plugin-connection-enabled";
+          const text = document.createElement("span");
+          text.textContent = t(labelText);
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.role = "switch";
+          input.name = name;
+          input.checked = checked;
+          input.addEventListener("change", () => { onChange(input.checked); updateEditorActions(); });
+          const track = document.createElement("span");
+          track.className = "settings-switch-track";
+          track.setAttribute("aria-hidden", "true");
+          label.append(text, input, track);
+          form.append(label);
+        }
+
+        function hint(form, message) {
+          const text = document.createElement("p");
+          text.className = "field-hint";
+          text.textContent = t(message);
+          form.append(text);
+          return text;
+        }
+
+        function savedTargetMatches(current) {
+          return current.saved && JSON.stringify(current.saved.mcp) === JSON.stringify(current.mcp);
+        }
+
+        function isDirty(current) {
+          const saved = current.saved;
+          if (!saved || current.name !== saved.name || current.enabled !== saved.enabled) return true;
+          if (current.kind === "standalone") {
+            return !savedTargetMatches(current) || current.artifactInputApproved !== saved.artifactInputApproved ||
+              current.artifactOutputApproved !== saved.artifactOutputApproved ||
+              current.secretRows.some((row) => row.value || row.clear);
+          }
+          return current.pluginId !== saved.pluginId || current.serverId !== saved.configuration.serverId ||
+            current.pluginDigest !== saved.configuration.pluginDigest || Object.keys(current.secrets).length > 0;
+        }
+
+        function updateEditorActions() {
+          if (!draft) return;
+          const form = document.querySelector(".plugin-connection-editor");
+          if (!form) return;
+          const dirty = isDirty(draft);
+          const unavailable = draft.kind === "plugin" && !draftPluginServer(draft).server;
+          const targetMissing = draft.kind === "standalone" && !(draft.mcp.type === "stdio" ? draft.mcp.command : draft.mcp.url).trim();
+          form.querySelector(".editor-discard").disabled = busy || saving || !dirty;
+          form.querySelector(".editor-save").disabled = busy || saving || unavailable || !dirty || !draft.name.trim() || targetMissing;
+        }
+
+        function clearSecrets() {
+          if (!draft) return;
+          if (draft.kind === "standalone") for (const row of draft.secretRows) row.value = "";
+          else for (const name of Object.keys(draft.secrets)) if (draft.secrets[name] !== "") delete draft.secrets[name];
+          for (const input of document.querySelectorAll('.plugin-connection-editor input[type="password"]')) input.value = "";
+          updateEditorActions();
+        }
+
+        function discard() {
+          if (!draft || busy || saving) return;
+          const saved = connections().find((connection) => connection.id === draft.id);
+          if (saved?.mcp) openStandalone(saved);
+          else if (saved) openEditor({ kind: "plugin", saved, pluginId: saved.pluginId,
+            serverId: saved.configuration.serverId, pluginDigest: saved.configuration.pluginDigest });
+          else {
+            draft = null;
+            render(true);
+            document.getElementById("addConnectionButton").focus();
+          }
+        }
+
+        function updateTarget(update) {
+          update();
+          draft.secretRows = savedTargetMatches(draft)
+            ? draft.saved.configuredSecrets.map((name) => ({ name, savedName: name, value: "", clear: false }))
+            : draft.secretRows.map((row) => ({ name: row.name, value: "", clear: false }));
+          const secrets = document.querySelector(".mcp-secret-fields");
+          if (secrets) renderSecretFields(secrets);
+        }
+
+        function renderSecretFields(container) {
+          const current = draft;
+          container.replaceChildren();
+          const heading = document.createElement("div");
+          heading.className = "plugin-section-heading";
+          const title = document.createElement("h4");
+          title.textContent = t(current.mcp.type === "stdio" ? "Environment variables" : "HTTP headers");
+          const add = button("Add credential", "secondary", () => {
+            current.secretRows.push({ name: "", value: "", clear: false });
+            renderSecretFields(container);
+            updateEditorActions();
+            container.querySelector(".mcp-secret-row:last-of-type input")?.focus();
+          });
+          add.disabled = busy || saving || current.secretRows.length >= 64;
+          heading.append(title, add);
+          container.append(heading);
+          if (current.saved?.configuredSecrets.length && !savedTargetMatches(current)) {
+            hint(container, "The target changed. Enter credentials for this target; saved credentials will be cleared.");
+          }
+          const keepSaved = savedTargetMatches(current);
+          for (const [index, row] of current.secretRows.entries()) {
+            const fields = document.createElement("div");
+            fields.className = "mcp-secret-row";
+            const name = textField(fields, "Name", `secretName-${index}`, row.name, (value) => { row.name = value; }, { maxLength: 256 });
+            const value = textField(fields, "Value", `secretValue-${index}`, row.value, (value) => { row.value = value; }, { type: "password" });
+            value.placeholder = keepSaved && row.savedName === row.name ? t("Saved; leave blank to keep") : "";
+            name.disabled = Boolean(row.savedName) && keepSaved;
+            value.disabled = row.clear;
+            if (keepSaved && row.savedName) {
+              const label = document.createElement("label");
+              label.className = "plugin-clear-secret";
+              const clear = document.createElement("input");
+              clear.type = "checkbox";
+              clear.name = `clearSecret-${index}`;
+              clear.checked = row.clear;
+              clear.addEventListener("change", () => {
+                row.clear = clear.checked;
+                row.value = value.value = "";
+                value.disabled = row.clear;
+                updateEditorActions();
+              });
+              label.append(clear, document.createTextNode(t("Clear on save")));
+              fields.append(label);
+            } else {
+              const remove = button("Remove", "secondary danger-action", () => {
+                current.secretRows.splice(index, 1);
+                renderSecretFields(container);
+                updateEditorActions();
+              });
+              remove.setAttribute("aria-label", t("Remove credential row {number}", { number: index + 1 }));
+              fields.append(remove);
+            }
+            container.append(fields);
+          }
+          hint(container, "Values are write-only. Leave saved values blank to keep them, or select Clear on save.");
+        }
+
+        function renderStandaloneFields(form) {
+          const current = draft;
+          const label = document.createElement("label");
+          label.textContent = t("Transport");
+          const transport = document.createElement("select");
+          transport.name = "mcpTransport";
+          transport.append(new Option(t("Streamable HTTP"), "streamable-http"), new Option(t("Local process (stdio)"), "stdio"));
+          transport.value = current.mcp.type;
+          transport.addEventListener("change", () => {
+            current.mcp = transport.value === "stdio" ? { type: "stdio", command: "", args: [] } : { type: "streamable-http", url: "" };
+            current.secretRows = [];
+            current.artifactInputApproved = current.artifactOutputApproved = false;
+            render(true);
+          });
+          label.append(transport);
+          form.append(label);
+          if (current.mcp.type === "streamable-http") {
+            textField(form, "Server URL", "mcpUrl", current.mcp.url,
+              (value) => updateTarget(() => { current.mcp.url = value; }), { required: true, type: "url" });
+            hint(form, "Use HTTPS, or HTTP for a local server on this computer.");
+          } else {
+            textField(form, "Command", "mcpCommand", current.mcp.command,
+              (value) => updateTarget(() => { current.mcp.command = value; }), { required: true });
+            textField(form, "Arguments", "mcpArgs", current.mcp.args.join("\n"),
+              (value) => updateTarget(() => { current.mcp.args = value ? value.split(/\r?\n/u) : []; }), { multiline: true, maxLength: 1048703 });
+            hint(form, "One literal argument per line. Do not add shell quotes; shell expansion is not used.");
+            textField(form, "Working directory (optional)", "mcpCwd", current.mcp.cwd || "",
+              (value) => updateTarget(() => { if (value) current.mcp.cwd = value; else delete current.mcp.cwd; }));
+          }
+          const secrets = document.createElement("div");
+          secrets.className = "mcp-secret-fields";
+          form.append(secrets);
+          renderSecretFields(secrets);
+          if (current.mcp.type === "stdio") {
+            switchField(form, "Audio input", "artifactInputApproved", current.artifactInputApproved,
+              (value) => { current.artifactInputApproved = value; });
+            switchField(form, "MIDI output", "artifactOutputApproved", current.artifactOutputApproved,
+              (value) => { current.artifactOutputApproved = value; });
+            hint(form, "Audio input grants temporary read-only audio files. MIDI output grants a temporary output file that Live Smith validates and saves. Neither permission changes Live.");
+          }
+        }
+
+        function renderPluginFields(form, plugin, server) {
+          const current = draft;
+          for (const field of server.credentialFields) {
+            const saved = current.saved?.configuredSecrets.includes(field.name) && current.saved.configuration.pluginDigest === plugin.sha256;
+            const clear = Object.hasOwn(current.secrets, field.name) && current.secrets[field.name] === "";
+            const input = textField(form, field.required ? "{name} credential" : "{name} credential (optional)", field.name,
+              clear ? "" : current.secrets[field.name] || "", (value) => {
+                if (value) current.secrets[field.name] = value; else delete current.secrets[field.name];
+              }, { type: "password", maxLength: 4096 });
+            input.parentElement.firstChild.textContent = t(field.required ? "{name} credential" : "{name} credential (optional)", { name: field.name });
+            input.disabled = clear;
+            input.placeholder = saved ? t("Saved; leave blank to keep") : "";
+            if (saved) {
+              const label = document.createElement("label");
+              label.className = "plugin-clear-secret";
+              const toggle = document.createElement("input");
+              toggle.type = "checkbox";
+              toggle.name = `clear-${field.name}`;
+              toggle.checked = clear;
+              toggle.addEventListener("change", () => {
+                input.disabled = toggle.checked;
+                input.value = "";
+                if (toggle.checked) current.secrets[field.name] = ""; else delete current.secrets[field.name];
+                updateEditorActions();
+              });
+              label.append(toggle, document.createTextNode(t("Clear on save")));
+              form.append(label);
+            }
+          }
+        }
+
+        function renderEditor() {
+          const container = document.getElementById("mcpConnectionEditor");
+          container.replaceChildren();
+          container.hidden = !draft;
+          if (!draft) return;
+          const current = draft;
+          const { plugin, server } = current.kind === "plugin" ? draftPluginServer(current) : {};
+          const unavailable = current.kind === "plugin" && !server;
+          const form = document.createElement("form");
+          form.className = "plugin-connection-editor";
+          const heading = document.createElement("h4");
+          heading.textContent = current.kind === "standalone" ? t("MCP server") : `${current.pluginId} · ${current.serverId}`;
+          form.append(heading);
+          form.addEventListener("submit", (event) => { event.preventDefault(); void save(); });
+          const nameInput = textField(form, "Connection name", "connectionName", current.name, (value) => { current.name = value; }, { required: true, maxLength: 120 });
+          nameInput.disabled = unavailable;
+          if (current.kind === "standalone") renderStandaloneFields(form);
+          else if (server) renderPluginFields(form, plugin, server);
+          if (!unavailable) switchField(form, "Enable this connection", "connectionEnabled", current.enabled, (value) => { current.enabled = value; });
+          const feedback = document.createElement("p");
+          feedback.className = "plugin-connection-feedback";
+          feedback.setAttribute("role", "status");
+          feedback.setAttribute("aria-live", "polite");
+          feedback.textContent = window.LiveSmithI18n.text(current.feedback?.message);
+          feedback.hidden = !feedback.textContent;
+          feedback.classList.toggle("error", Boolean(current.feedback?.isError));
+          form.append(feedback);
+          const actions = document.createElement("div");
+          actions.className = "editor-actions plugin-connection-actions";
+          const saved = connections().find((connection) => connection.id === current.id);
+          if (saved) {
+            const removeButton = button("Remove", "editor-remove connection-remove secondary danger-action", () => remove(saved));
+            removeButton.setAttribute("aria-label", t("Remove connection {name}", { name: saved.name }));
+            actions.append(removeButton);
+          }
+          actions.append(button("Discard", "editor-discard secondary", discard));
+          const submit = document.createElement("button");
+          submit.type = "submit";
+          submit.className = "editor-save primary";
+          submit.textContent = t("Save");
+          submit.setAttribute("aria-label", t("Save connection"));
+          actions.append(submit);
+          form.append(actions);
+          if (busy || saving) for (const control of form.querySelectorAll("input, select, textarea, button")) control.disabled = true;
+          container.append(form);
+          updateEditorActions();
+        }
+
+        function standaloneSecrets(current) {
+          const secrets = Object.create(null);
+          const names = new Set();
+          const local = current.mcp.type === "stdio";
+          for (const row of current.secretRows) {
+            if (!row.name && !row.value && !row.clear) continue;
+            const name = row.name;
+            const key = local ? name : name.toLowerCase();
+            if (name.length > 256 || !(local ? /^[A-Za-z_][A-Za-z0-9_]*$/u : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u).test(name) || names.has(key)) {
+              throw new Error(t("Enter unique, valid credential names."));
+            }
+            names.add(key);
+            if (row.clear) secrets[name] = "";
+            else if (row.value) {
+              if (row.value.length > 8192 || (local ? /\0/u : /[^\t\x20-\x7e\x80-\xff]/u).test(row.value)) {
+                throw new Error(t("A credential value contains unsupported characters."));
+              }
+              secrets[name] = row.value;
+            }
+          }
+          return secrets;
+        }
+
+        function standaloneReview(current, secrets) {
+          const local = current.mcp.type === "stdio";
+          const kept = savedTargetMatches(current) ? current.saved.configuredSecrets : [];
+          const names = [...new Set([...kept, ...Object.keys(secrets)])].filter((name) => secrets[name] !== "");
+          const target = local ? [
+            `command=${JSON.stringify(current.mcp.command)}`,
+            `args=${JSON.stringify(current.mcp.args)}`,
+            `cwd=${JSON.stringify(current.mcp.cwd || t("Default working directory"))}`,
+            `envNames=${JSON.stringify(names)}`,
+          ].join("\n") : current.mcp.url;
+          return [t(local ? "This local MCP process runs as your operating-system user and is not sandboxed by Live Smith."
+            : "Live Smith will connect to this MCP endpoint when its tools are requested."), target,
+            local ? t("Audio input: {input} · MIDI output: {output}", {
+              input: t(current.artifactInputApproved ? "Allowed" : "Not allowed"),
+              output: t(current.artifactOutputApproved ? "Allowed" : "Not allowed"),
+            }) : ""].filter(Boolean).join("\n\n");
+        }
+
+        async function save() {
+          const current = draft;
+          if (!current || busy || saving || !isDirty(current)) return;
+          if (!current.name.trim() || connections().some((entry) => entry.id !== current.id && entry.name.toLowerCase() === current.name.trim().toLowerCase())) {
+            reportStatus(t("Enter a unique connection name."), true);
+            return;
+          }
+          if (revision() !== current.expectedRevision) {
+            reportStatus(t("Connections changed. Close and reopen this editor before saving."), true);
+            return;
+          }
+          let connection;
+          try {
+            if (current.kind === "standalone") {
+              if (current.mcp.type === "stdio") {
+                if (!current.mcp.command.trim() || current.mcp.args.length > 128 || current.mcp.args.some((arg) => arg.length > 8192)) {
+                  throw new Error(t("Enter a command and at most 128 arguments."));
+                }
+              } else {
+                const url = new URL(current.mcp.url);
+                const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/u.test(url.hostname);
+                const authority = current.mcp.url.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/iu)?.[1] || "";
+                if (!((url.protocol === "https:") || (url.protocol === "http:" && loopback)) ||
+                    url.username || url.password || authority.includes("@") || /[\s\\#]/u.test(current.mcp.url)) {
+                  throw new Error(t("Use an HTTPS URL or a loopback HTTP URL without credentials or a fragment."));
+                }
+              }
+              const secrets = standaloneSecrets(current);
+              connection = { id: current.id, name: current.name.trim(), enabled: current.enabled,
+                mcp: { ...current.mcp }, artifactInputApproved: current.artifactInputApproved,
+                artifactOutputApproved: current.artifactOutputApproved,
+                ...(Object.keys(secrets).length ? { secrets } : {}) };
+              if (!current.saved || !savedTargetMatches(current) || current.enabled && !current.saved.enabled ||
+                  current.artifactInputApproved && !current.saved.artifactInputApproved || current.artifactOutputApproved && !current.saved.artifactOutputApproved) {
+                const accepted = await confirmAction({
+                  title: window.LiveSmithI18n.message(current.mcp.type === "stdio" ? "Allow local MCP process?" : "Allow MCP connection?"),
+                  message: standaloneReview(current, secrets), acceptLabel: window.LiveSmithI18n.message("Save connection"),
+                });
+                if (!accepted || draft !== current) return;
+              }
+            } else {
+              const { plugin, server } = draftPluginServer(current);
+              if (!server) throw new Error(t("Plugin package changed. Reopen the connection and enter its credentials again."));
+              const secrets = { ...current.secrets };
+              if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) throw new Error(t("Credentials must be printable ASCII without spaces."));
+              const missing = current.enabled && server.credentialFields.find((field) => field.required && !secrets[field.name] &&
+                !(secrets[field.name] === undefined && current.saved?.configuration.pluginDigest === plugin.sha256 && current.saved.configuredSecrets.includes(field.name)));
+              if (missing) throw new Error(t("Enter {name} before enabling this MCP connection.", { name: missing.name }));
+              connection = { id: current.id, name: current.name.trim(), enabled: current.enabled, pluginId: current.pluginId,
+                configuration: { serverId: current.serverId, pluginDigest: current.pluginDigest },
+                ...(Object.keys(secrets).length ? { secrets } : {}) };
+            }
+          } catch (error) {
+            reportStatus(error instanceof TypeError ? t("Enter a valid server URL.") : error.message, true);
+            return;
+          }
+          if (revision() !== current.expectedRevision) {
+            reportStatus(t("Connections changed. Close and reopen this editor before saving."), true);
+            return;
+          }
+          reportStatus("");
+          saving = true;
+          render(true);
+          try {
+            await runCommand("save_global_settings", { integrationConnections: {
+              action: "upsert", expectedRevision: current.expectedRevision, connection,
+            } }, { statusPresenter: reportStatus, onOutcome: (outcome) => {
+              if (outcome.known && outcome.succeeded && draft === current) draft = null;
+            } });
+          } finally { saving = false; render(true); }
+        }
+
+        async function remove(connection) {
+          if (busy || saving) return;
+          const expectedRevision = revision();
+          if (!(await confirmAction({ title: window.LiveSmithI18n.message("Remove this connection?"),
+            message: window.LiveSmithI18n.message("Remove named connection {name} and its saved credentials?", { name: connection.name }),
+            acceptLabel: window.LiveSmithI18n.message("Remove"), danger: true }))) return;
+          if (revision() !== expectedRevision) {
+            reportStatus(t("Connections changed while removing. Review the connection and try again."), true);
+            return;
+          }
+          saving = true;
+          render(true);
+          try {
+            await runCommand("save_global_settings", { integrationConnections: {
+              action: "remove", expectedRevision, connectionId: connection.id,
+            } }, { statusPresenter: reportStatus, onOutcome: (outcome) => {
+              if (outcome.known && outcome.succeeded && draft?.id === connection.id) draft = null;
+            } });
+          } finally { saving = false; render(true); }
+        }
+
+        function connectionRows() {
+          const audio = getAudioConnections().map((entry) => ({ ...entry, kind: "audio" }));
+          return [...audio, ...connections().filter((connection) => !isAudio(connection)).map((connection) => {
+            const plugin = plugins().find((entry) => entry.id === connection.pluginId);
+            const server = plugin?.mcpServers.find((entry) => entry.id === connection.configuration?.serverId);
+            const needsSetup = !connection.mcp && (!server || connection.configuration.pluginDigest !== plugin.sha256 ||
+              server.credentialFields.some((field) => field.required && !connection.configuredSecrets.includes(field.name)));
+            const blocked = !connection.mcp && !needsSetup && (!plugin.enabled || !server.approved);
+            return { id: connection.id, name: connection.name, kind: "mcp", connection, plugin, server,
+              source: connection.mcp ? t("Standalone MCP") + " · " + t(connection.mcp.type === "stdio" ? "Local process" : "Streamable HTTP")
+                : `${connection.pluginId} · ${connection.configuration.serverId}`,
+              label: t(needsSetup ? "Needs setup" : !connection.enabled ? "Disabled" : blocked ? "Not available" : "Enabled"),
+              status: needsSetup || blocked ? "needs-attention" : connection.enabled ? "ready" : "disabled",
+            };
+          })];
+        }
+
+        function renderRow(entry, row = document.createElement("div")) {
+          row.className = "connection-row" + (entry.kind === "mcp" ? " plugin-connection-row" : "");
+          row.dataset.connectionId = entry.id;
+          row.setAttribute("role", "listitem");
+          const choice = row.querySelector(".connection-choice") || document.createElement("button");
+          choice.type = "button";
+          choice.className = "secondary connection-choice audio-service-row";
+          choice.onclick = () => {
+            if (entry.kind === "audio") selectAudio(entry.id);
+            else if (entry.connection.mcp) openStandalone(entry.connection);
+            else openPlugin(entry.plugin, entry.server, entry.connection);
+          };
+          if (entry.kind === "audio") choice.dataset.audioServiceId = entry.id;
+          else delete choice.dataset.audioServiceId;
+          choice.title = entry.title || [entry.name, entry.source, entry.label].join(" · ");
+          choice.setAttribute("aria-label", t("Edit connection {name}", { name: entry.name }));
+          choice.setAttribute("aria-pressed", String(entry.kind === "audio" ? entry.selected : draft?.id === entry.id));
+          choice.disabled = saving || (entry.kind === "audio" ? entry.disabled : busy);
+          const copy = choice.querySelector(".audio-service-label") || document.createElement("span");
+          copy.className = "audio-service-label";
+          const name = copy.querySelector("strong") || document.createElement("strong");
+          name.className = "plugin-connection-name";
+          name.textContent = entry.name || t("New connection");
+          const meta = copy.querySelector(".connection-meta") || document.createElement("small");
+          meta.className = "connection-meta";
+          const source = meta.querySelector(".connection-source") || document.createElement("span");
+          source.className = "connection-source";
+          source.textContent = entry.source;
+          const status = meta.querySelector(".audio-service-status") || document.createElement("span");
+          status.className = "audio-service-status activity-state plugin-connection-state";
+          status.textContent = entry.label;
+          status.dataset.status = entry.status;
+          if (!meta.childElementCount) {
+            const separator = document.createElement("span");
+            separator.textContent = "·";
+            separator.setAttribute("aria-hidden", "true");
+            meta.append(source, separator, status);
+          }
+          if (!copy.childElementCount) copy.append(name, meta);
+          const edit = choice.querySelector(".connection-edit") || document.createElement("span");
+          edit.className = "connection-edit";
+          edit.textContent = t("Edit");
+          edit.setAttribute("aria-hidden", "true");
+          if (!choice.childElementCount) choice.append(copy, edit);
+          if (!row.childElementCount) row.append(choice);
+          return row;
+        }
+
+        function renderRows(list, rows) {
+          const existing = new Map([...list.children].map((row) => [row.dataset.connectionId, row]));
+          const retainedIds = new Set(rows.map((entry) => entry.id));
+          for (const [id, row] of existing) if (!retainedIds.has(id)) row.remove();
+          rows.forEach((entry, index) => {
+            const row = renderRow(entry, existing.get(entry.id));
+            if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+          });
+          list.hidden = !rows.length;
+        }
+
+        function render(force = false) {
+          if (draft?.kind === "plugin" && !draftPluginServer(draft).server) {
+            draft.secrets = Object.create(null);
+            if (!draft.feedback?.message) draft.feedback = {
+              message: t("This MCP server is unavailable. Reopen the connection after restoring its Plugin, or remove the connection."),
+              isError: true,
+            };
+          }
+          const rows = connectionRows();
+          const key = JSON.stringify([window.LiveSmithI18n.locale, getState().integrationConnections, plugins(), rows, draft?.id, busy, saving]);
+          if (!force && renderedKey === key) return;
+          renderedKey = key;
+          document.getElementById("connectionsManager").setAttribute("aria-busy", String(busy || saving));
+          const audioRows = rows.filter((row) => row.kind === "audio");
+          const mcpRows = rows.filter((row) => row.kind === "mcp");
+          renderRows(document.getElementById("audioServiceSelector"), audioRows);
+          renderRows(document.getElementById("mcpConnectionList"), mcpRows);
+          document.getElementById("audioConnectionsEmpty").hidden = Boolean(audioRows.length);
+          document.getElementById("connectionsEmpty").hidden = Boolean(mcpRows.length);
+          document.getElementById("audioSettingsSection").hidden = !audioRows.length;
+          const full = rows.length >= __MAX_INTEGRATION_CONNECTIONS__;
+          for (const id of ["addConnectionButton", "addAudioServiceButton", "addMcpConnectionButton"]) {
+            document.getElementById(id).disabled = busy || saving || full;
+          }
+          const sources = document.getElementById("pluginConnectionSources");
+          sources.replaceChildren();
+          for (const plugin of plugins()) for (const server of plugin.mcpServers) {
+            if (!server.credentialFields.length) continue;
+            const add = button(`${plugin.id} · ${server.id}`, "secondary plugin-add-connection", () => openPlugin(plugin, server));
+            add.dataset.pluginId = plugin.id;
+            add.dataset.serverId = server.id;
+            add.disabled = busy || saving || full;
+            sources.append(add);
+          }
+          sources.hidden = !sources.childElementCount;
+          renderEditor();
+        }
+
+        return {
+          render,
+          addAudio: () => { if (!busy && !saving) showAudio(addAudioConnection); },
+          clearSecrets,
+          selectAudio,
+          openPluginConnections,
+          setBusy(value) { if (busy !== value) { busy = value; render(true); } },
+          initialize() {
+            document.getElementById("addConnectionButton").addEventListener("click", () => {
+              const picker = document.getElementById("connectionSourcePicker");
+              picker.hidden = !picker.hidden;
+              document.getElementById("addConnectionButton").setAttribute("aria-expanded", String(!picker.hidden));
+              if (!picker.hidden) document.getElementById("addMcpConnectionButton").focus();
+            });
+            document.getElementById("addMcpConnectionButton").addEventListener("click", () => openStandalone());
+          },
+        };
+      };

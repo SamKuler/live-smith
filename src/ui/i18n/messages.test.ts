@@ -9,6 +9,7 @@ import { timelineMessages } from "./timeline-messages.js";
 import { profileMessages } from "./profile-messages.js";
 import { mainMessages } from "./main-messages.js";
 import { audioMessages } from "./audio-messages.js";
+import { connectionsMessages } from "./connections-messages.js";
 import { AUDIO_OUTPUT_LABELS } from "../../audio-services/contracts.js";
 import { actionMessages } from "./action-messages.js";
 import { UI_LANGUAGES, DEFAULT_UI_LOCALE } from "../../i18n/languages.js";
@@ -17,7 +18,7 @@ const translatedLocales = UI_LANGUAGES.map(language => language.id).filter(id =>
 test("message catalogs agree on shared messages and preserve interpolation fields", () => {
   const seen = new Map<string,string>();
   const fields = (text: string) => [...new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(match => match[1]))].sort();
-  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages]) {
+  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages, connectionsMessages]) {
     for (const [source, translated] of Object.entries(catalog)) {
       assert.ok(translated.trim(), source);
       if (seen.has(source)) assert.equal(translated, seen.get(source), source);

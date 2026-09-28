@@ -12,7 +12,7 @@ import {
 } from "./chat-dialog.test-harness.js";
 
 const skillId = "arranging-section-energy";
-const viewSelector = `[data-skill-id="${skillId}"] .skill-view`;
+const viewSelector = `#skillManager [data-skill-id="${skillId}"] .skill-view`;
 type Harness = Awaited<ReturnType<typeof createDialogHarness>>;
 
 function readerElements(harness: Harness) {
@@ -27,11 +27,11 @@ function readerElements(harness: Harness) {
 test("Skills keeps one compact Session-level help affordance", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     const heading = harness.document.getElementById("skillsHeading");
     const help = heading?.parentElement?.querySelector<HTMLElement>(".inline-help");
     assert.ok(help);
-    assert.equal(heading?.nextElementSibling, help);
+    assert.equal(heading?.parentElement?.querySelectorAll(".inline-help").length, 1);
     assert.equal(help.textContent, "?");
     assert.equal(help.getAttribute("role"), "note");
     assert.equal(help.getAttribute("tabindex"), "0");
@@ -71,7 +71,7 @@ test("Skills keeps one compact Session-level help affordance", async () => {
 test("every built-in opens its full canonical Markdown without enabling it or calling the bridge", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     harness.input("#prompt", "Keep this draft");
     const { manager, viewer, back, body } = readerElements(harness);
     assert.equal(viewer.hidden, true);
@@ -85,7 +85,7 @@ test("every built-in opens its full canonical Markdown without enabling it or ca
     };
     const callsBefore = harness.calls.length;
     for (const skill of availableSkillSummaries([])) {
-      const row = harness.document.querySelector(`[data-skill-id="${skill.id}"]`);
+      const row = harness.document.querySelector(`#skillManager [data-skill-id="${skill.id}"]`);
       const view = row?.querySelector<HTMLButtonElement>(".skill-view");
       const toggle = row?.querySelector<HTMLInputElement>('input[type="checkbox"]');
       const definition = builtInSkillDefinition(skill.id);
@@ -124,7 +124,7 @@ test("every built-in opens its full canonical Markdown without enabling it or ca
 test("Escape returns from Skill details to its View button", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     harness.click(viewSelector);
     const { viewer, back } = readerElements(harness);
     const escape = new harness.window.KeyboardEvent("keydown", {
@@ -134,10 +134,50 @@ test("Escape returns from Skill details to its View button", async () => {
     assert.equal(escape.defaultPrevented, true);
     assert.equal(viewer.hidden, true);
     assert.equal(harness.document.activeElement, harness.document.querySelector(viewSelector));
-    assert.equal(harness.document.querySelector<HTMLElement>("#contextPanel")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#skillsPanel")?.hidden, false);
   } finally {
     harness.close();
   }
+});
+
+test("global built-in details stay in the library and return to their originating View control", async () => {
+  const harness = await createDialogHarness();
+  try {
+    harness.click("#extensionsTab");
+    harness.click("#skillsExtensionTab");
+    const library = harness.document.getElementById("skillLibrary");
+    const libraryContent = harness.document.querySelector<HTMLElement>("#skillLibraryContent");
+    const sessionPanel = harness.document.querySelector<HTMLElement>("#skillsPanel");
+    const libraryViewSelector = `#builtInSkillLibraryList [data-skill-id="${skillId}"] .skill-view`;
+    const view = harness.document.querySelector<HTMLButtonElement>(libraryViewSelector);
+    const { manager, viewer, back, body } = readerElements(harness);
+    const callsBefore = harness.calls.length;
+    assert.ok(view && libraryContent && sessionPanel);
+    view.focus();
+    view.click();
+    assert.equal(library?.contains(viewer), true);
+    assert.equal(libraryContent.hidden, true);
+    assert.equal(sessionPanel.hidden, true);
+    assert.equal(manager.hidden, false);
+    assert.equal(viewer.hidden, false);
+    assert.ok(body.querySelector("h1"));
+    assert.equal(harness.document.activeElement, back);
+    const escape = new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    back.dispatchEvent(escape);
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(viewer.hidden, true);
+    assert.equal(libraryContent.hidden, false);
+    assert.equal(sessionPanel.contains(viewer), true);
+    assert.equal(harness.document.activeElement, view);
+    harness.click("#skillsTab");
+    harness.click(viewSelector);
+    assert.equal(sessionPanel.contains(viewer), true);
+    assert.equal(manager.hidden, true);
+    back.click();
+    assert.equal(harness.document.activeElement, harness.document.querySelector(viewSelector));
+    assert.equal(harness.calls.length, callsBefore);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
 });
 
 test("Skill details remain mounted across Session changes and busy operations", async () => {
@@ -146,11 +186,11 @@ test("Skill details remain mounted across Session changes and busy operations", 
   const harness = await createDialogHarness(state);
   let sendHeld = false;
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     harness.click(viewSelector);
     const { viewer, back, body } = readerElements(harness);
     const content = body.firstChild;
-    const panel = harness.document.querySelector<HTMLElement>("#agentPanel");
+    const panel = harness.document.querySelector<HTMLElement>("#skillsPanel");
     assert.ok(panel);
     panel.scrollTop = 120;
     await harness.window.LiveSmithUI.runCommand("select_session", { sessionId: "session-2" });
@@ -195,7 +235,7 @@ test("read-only Skill controls keep focus while a pending operation completes", 
   const harness = await createDialogHarness();
   let commandHeld = false;
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     const view = harness.document.querySelector<HTMLButtonElement>(viewSelector);
     assert.ok(view);
     view.focus();
@@ -220,7 +260,7 @@ test("Skill details close when the available entry disappears or becomes a User 
     for (const moveFocusAway of [false, true]) {
       const harness = await createDialogHarness();
       try {
-        harness.click("#contextTab");
+        harness.click("#skillsTab");
         harness.click(viewSelector);
         const { viewer, body } = readerElements(harness);
         const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt");
@@ -252,7 +292,7 @@ test("Skill details close when the available entry disappears or becomes a User 
 test("Skill Markdown falls back to readable text if the renderer fails", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#contextTab");
+    harness.click("#skillsTab");
     const renderer = harness.window.LiveSmithMarkdown;
     assert.ok(renderer);
     renderer.renderInto = () => { throw new Error("Renderer unavailable"); };

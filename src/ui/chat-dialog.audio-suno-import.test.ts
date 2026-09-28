@@ -20,6 +20,22 @@ function assertNoRetainedCookie(harness: Harness) {
   }
 }
 
+test("leaving the audio category clears the Cookie and disables its Connect action", async () => {
+  const harness = await createDialogHarness(audioState([website]));
+  try {
+    harness.click("#extensionsTab");
+    harness.input("#sunoSessionValue", cookie);
+    const connect = harness.document.querySelector<HTMLButtonElement>("#connectSunoButton")!;
+    assert.equal(connect.disabled, false);
+    harness.click("#mcpExtensionTab");
+    harness.click("#audioExtensionTab");
+    assertNoRetainedCookie(harness);
+    assert.equal(connect.disabled, true);
+    assert.equal(commandCalls(harness).length, 0);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("opening Suno from a draft only opens the default browser, without saving or claiming sign-in", async () => {
   const harness = await createDialogHarness(audioState([musicService]));
   try {
@@ -136,7 +152,7 @@ for (const change of ["provider", "removed", "newer identical save", "close"] as
 test("Cookie input never becomes a connection draft and is cleared on selection, provider, editor, inspector, tab and window closure", async () => {
   const harness = await createDialogHarness(audioState([website, musicService]));
   try {
-    harness.click("#appTab");
+    harness.click("#extensionsTab");
     selectAudioService(harness, website.id);
     harness.input("#sunoSessionValue", cookie);
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
@@ -156,12 +172,12 @@ test("Cookie input never becomes a connection draft and is cleared on selection,
     harness.click("#settingsButton");
     await harness.settle();
     assertNoRetainedCookie(harness);
-    harness.click("#appTab");
+    harness.click("#extensionsTab");
     harness.input("#sunoSessionValue", cookie);
     harness.click("#agentTab");
     await harness.settle();
     assertNoRetainedCookie(harness);
-    harness.click("#appTab");
+    harness.click("#extensionsTab");
     harness.input("#sunoSessionValue", cookie);
     harness.window.dispatchEvent(new harness.window.Event("pagehide"));
     assertNoRetainedCookie(harness);

@@ -8,6 +8,8 @@ const clientFragments = [
   "attachments",
   "composer-input",
   "skill-manager",
+  "plugin-manager",
+  "connections-manager",
   "bridge-client",
   "session-timeline",
   "action-preview",

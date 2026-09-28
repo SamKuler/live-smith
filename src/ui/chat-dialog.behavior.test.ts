@@ -27,7 +27,14 @@ test("real script boots and Add then Discard restores the saved profile", async 
     ]);
     assert.equal(harness.document.activeElement?.id, "profileName");
 
+    const remove = harness.document.querySelector<HTMLButtonElement>("#deleteProfileButton")!;
+    const discard = harness.document.querySelector<HTMLButtonElement>("#discardProfileButton")!;
+    const save = harness.document.querySelector<HTMLButtonElement>("#saveProfileButton")!;
+    assert.deepEqual([...remove.parentElement!.children], [remove, discard, save]);
+    assert.equal(remove.hidden, false);
+
     harness.clickButton("Add");
+    assert.equal(remove.hidden, true);
     assert.equal(harness.document.querySelector("#draftStatus")?.textContent, "Unsaved changes");
     assert.equal(
       [...(selector?.options ?? [])].some((option) => option.text === "Unsaved profile"),
@@ -35,6 +42,7 @@ test("real script boots and Add then Discard restores the saved profile", async 
     );
 
     harness.click("#discardProfileButton");
+    assert.equal(remove.hidden, false);
     assert.equal(selector?.value, "profile-1");
     assert.equal(
       harness.document.querySelector<HTMLInputElement>("#profileName")?.value,
@@ -94,6 +102,7 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
     assert.equal(profileControl?.getAttribute("aria-expanded"), "false");
     profileControl?.click();
 
+    harness.click("#sessionInspectorScope");
     harness.click("#contextTab");
     assert.equal(
       harness.document.querySelector("#contextTab")?.getAttribute("aria-selected"),
@@ -107,10 +116,10 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       new harness.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
     );
     assert.equal(
-      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#skillsTab")?.getAttribute("aria-selected"),
       "true",
     );
-    harness.document.querySelector("#agentTab")?.dispatchEvent(
+    harness.document.querySelector("#skillsTab")?.dispatchEvent(
       new harness.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
     );
     assert.equal(
@@ -179,7 +188,7 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       harness.document.querySelector("#agentPanel")?.getAttribute("role"),
       "tabpanel",
     );
-    for (const selector of ["#agentPanel", "#appPanel", "#contextPanel"]) {
+    for (const selector of ["#agentPanel", "#appPanel", "#extensionsPanel", "#contextPanel", "#skillsPanel"]) {
       assert.equal(harness.document.querySelector(selector)?.getAttribute("tabindex"), "0");
     }
     assert.equal(
@@ -333,8 +342,8 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
       "#extraBodySettings",
     ]) assert.equal(harness.document.querySelector(removedDisclosure), null);
     assert.equal(
-      harness.document.querySelector("#skillManager")?.closest("#contextPanel")?.id,
-      "contextPanel",
+      harness.document.querySelector("#skillManager")?.closest("#skillsPanel")?.id,
+      "skillsPanel",
     );
     harness.click("#appTab");
     assert.equal(
@@ -600,17 +609,17 @@ test("Apply approval mode follows the selected Session", async () => {
   }
 });
 
-test("Agent keeps Profile actions while Context owns Session Skills", async () => {
+test("Inspector scope navigation separates Session Skills from global management", async () => {
   const harness = await createDialogHarness();
   try {
     const agentPanel = harness.document.querySelector<HTMLElement>("#agentPanel");
-    const contextPanel = harness.document.querySelector<HTMLElement>("#contextPanel");
+    const skillsPanel = harness.document.querySelector<HTMLElement>("#skillsPanel");
     const profile = harness.document.querySelector<HTMLElement>("#modelProfileSettings");
     const actions = harness.document.querySelector<HTMLElement>(".settings-actions");
     const skills = harness.document.querySelector<HTMLElement>("#skillManager");
 
     assert.ok(agentPanel);
-    assert.ok(contextPanel);
+    assert.ok(skillsPanel);
     assert.ok(profile);
     assert.ok(actions);
     assert.ok(skills);
@@ -618,9 +627,27 @@ test("Agent keeps Profile actions while Context owns Session Skills", async () =
     assert.equal(profile.contains(actions), true);
     assert.equal(agentPanel.contains(actions), true);
     assert.equal(agentPanel.contains(skills), false);
-    assert.equal(contextPanel.contains(skills), true);
-    harness.click("#contextTab");
-    assert.equal(contextPanel.hidden, false);
+    assert.equal(skillsPanel.contains(skills), true);
+    harness.click("#sessionInspectorScope");
+    const visibleTabs = () => [...harness.document.querySelectorAll<HTMLElement>('.tab-bar [role="tab"]')]
+      .filter((tab) => !tab.hidden).map((tab) => tab.id);
+    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab"]);
+    harness.click("#skillsTab");
+    assert.equal(skillsPanel.hidden, false);
+    harness.click("#manageSkillsButton");
+    assert.equal(harness.document.querySelector<HTMLElement>("#extensionsPanel")?.hidden, false);
+    assert.equal(harness.document.activeElement?.id, "skillLibrary");
+    assert.deepEqual(visibleTabs(), ["agentTab", "extensionsTab", "appTab"]);
+    const returnToSkills = harness.document.querySelector<HTMLButtonElement>("#skillLibrary .plugin-section-heading button");
+    returnToSkills?.focus();
+    returnToSkills?.click();
+    assert.equal(harness.document.activeElement?.id, "skillsTab");
+    assert.equal(skillsPanel.hidden, false);
+    harness.click("#settingsInspectorScope");
+    harness.click("#sessionInspectorScope");
+    assert.equal(skillsPanel.hidden, false);
+    harness.click("#settingsInspectorScope");
+    assert.equal(harness.document.querySelector<HTMLElement>("#extensionsPanel")?.hidden, false);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1893,10 +1920,10 @@ test("a background send keeps global Skill mutations locked until it settles", a
     await harness.settle();
 
     const skillRow = harness.document.querySelector<HTMLElement>(
-      '[data-skill-id="mix-review"]',
+      '#skillManager [data-skill-id="mix-review"]',
     );
     assert.equal(skillRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled, true);
-    assert.equal(skillRow?.querySelector<HTMLButtonElement>("button")?.disabled, true);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="mix-review"] button')?.disabled, true);
     assert.equal(
       harness.document.querySelector("#skillDropZone")?.getAttribute("aria-disabled"),
       "true",
@@ -1918,13 +1945,13 @@ test("a background send keeps global Skill mutations locked until it settles", a
     harness.releaseHeldSend();
     await harness.settle();
     const restoredSkillRow = harness.document.querySelector<HTMLElement>(
-      '[data-skill-id="mix-review"]',
+      '#skillManager [data-skill-id="mix-review"]',
     );
     assert.equal(
       restoredSkillRow?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled,
       false,
     );
-    assert.equal(restoredSkillRow?.querySelector<HTMLButtonElement>("button")?.disabled, false);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="mix-review"] button')?.disabled, false);
     assert.equal(
       harness.document.querySelector("#skillDropZone")?.getAttribute("aria-disabled"),
       "false",

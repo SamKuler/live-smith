@@ -57,6 +57,7 @@ export interface ChatClientScripts {
   markdownRenderer: string;
   profileEditor: string;
   pluginManager: string;
+  connectionsManager: string;
   sessionTimeline: string;
   skillManager: string;
 }
@@ -243,6 +244,7 @@ export function composeChatDocument(
     __COMPOSER_INPUT_SCRIPT__: scripts.composerInput,
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
     __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
+    __CONNECTIONS_MANAGER_SCRIPT__: injectSessionContract(scripts.connectionsManager),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(scripts.sessionTimeline),

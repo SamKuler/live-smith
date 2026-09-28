@@ -167,6 +167,7 @@ const clientScripts = {
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
   pluginManager: readClientScript("plugin-manager"),
+  connectionsManager: readClientScript("connections-manager"),
   sessionTimeline: readClientScript("session-timeline"),
   skillManager: readClientScript("skill-manager"),
 };

@@ -230,7 +230,7 @@ test("rejected stale save retains non-secret draft fields and never restores a s
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")!.value, "");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, "Keep my draft");
     assert.match(harness.document.querySelector("#status")!.textContent!, /changed in another window/);
-    assert.equal(harness.document.querySelector("#appTab")?.getAttribute("aria-selected"), "true");
+    assert.equal(harness.document.querySelector("#extensionsTab")?.getAttribute("aria-selected"), "true");
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

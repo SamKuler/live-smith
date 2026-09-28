@@ -164,7 +164,7 @@
       }
 
       function inspectorTabForField(field) {
-        if (field === "customInstructions") return "context";
+        if (field === "customInstructions") return "agent";
         return controlIdByGlobalSettingsField[field] ? "app" : "agent";
       }
 
@@ -2614,6 +2614,7 @@
           getState().oauthAuthProfileId === draftProfile?.id &&
           getState().oauthAuthProvider === oauthProvider();
         const hasSaved = Boolean(savedProfileSnapshot);
+        setPropertyIfChanged(document.getElementById("deleteProfileButton"), "hidden", !hasSaved);
         setPropertyIfChanged(
           document.getElementById("saveProfileButton"),
           "disabled",

@@ -28,7 +28,13 @@
         minute: "2-digit",
         month: "short",
       });
-      const inspectorTabs = ["agent", "app", "context"];
+      const inspectorGroups = {
+        session: ["context", "skills"],
+        settings: ["agent", "extensions", "app"],
+      };
+      const inspectorTabs = Object.values(inspectorGroups).flat();
+      const selectedInspectorTabs = { session: "context", settings: "agent" };
+      let activeInspectorGroup = "settings";
       let focusedConfirmationId = null;
       let confirmationReturnFocus = null;
       const selectedSessionIds = new Set();
@@ -185,11 +191,18 @@
       document.addEventListener("keydown", handleConfirmationKeydown);
 
       function switchInspectorTab(tab) {
-        const selected = inspectorTabs.includes(tab) ? tab : inspectorTabs[0];
+        const selected = inspectorTabs.includes(tab) ? tab : "agent";
+        activeInspectorGroup = inspectorGroups.session.includes(selected) ? "session" : "settings";
+        selectedInspectorTabs[activeInspectorGroup] = selected;
+        for (const group of Object.keys(inspectorGroups)) {
+          document.getElementById(`${group}InspectorScope`)
+            .setAttribute("aria-pressed", String(group === activeInspectorGroup));
+        }
         for (const name of inspectorTabs) {
           const active = name === selected;
           const tabButton = document.getElementById(`${name}Tab`);
           const panel = document.getElementById(`${name}Panel`);
+          tabButton.hidden = !inspectorGroups[activeInspectorGroup].includes(name);
           tabButton.classList.toggle("active", active);
           tabButton.setAttribute("aria-selected", String(active));
           tabButton.tabIndex = active ? 0 : -1;
@@ -197,22 +210,27 @@
         }
       }
 
+      function switchInspectorGroup(group) {
+        switchInspectorTab(selectedInspectorTabs[group] || "agent");
+      }
+
       function handleInspectorTabKeydown(event) {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
         const currentTab = String(event.currentTarget?.id || "")
           .replace(/Tab$/, "");
-        const currentIndex = Math.max(0, inspectorTabs.indexOf(currentTab));
+        const tabs = inspectorGroups[activeInspectorGroup];
+        const currentIndex = Math.max(0, tabs.indexOf(currentTab));
         const targetTab = event.key === "Home"
-          ? inspectorTabs[0]
+          ? tabs[0]
           : event.key === "End"
-            ? inspectorTabs[inspectorTabs.length - 1]
-            : inspectorTabs[
+            ? tabs[tabs.length - 1]
+            : tabs[
               (
                 currentIndex +
                 (event.key === "ArrowRight" ? 1 : -1) +
-                inspectorTabs.length
-              ) % inspectorTabs.length
+                tabs.length
+              ) % tabs.length
             ];
         switchInspectorTab(targetTab);
         document.getElementById(`${targetTab}Tab`).focus();
@@ -3034,6 +3052,7 @@
         renderTimeline,
         syncMessageActions,
         setConfirmationState,
+        switchInspectorGroup,
         switchInspectorTab,
       };
       };

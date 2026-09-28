@@ -103,6 +103,12 @@ for (const language of ["en", "zh-CN"] as const) {
         assert.equal(row.querySelector(".skill-copy strong")?.textContent, skill.id);
         assert.equal(row.querySelector(".skill-copy span")?.textContent, skill.description);
         assert.equal(row.querySelector(".skill-view"), null);
+        const libraryRow = harness.document.querySelector(
+          `#userSkillLibraryList [data-skill-id="${skill.id}"]`,
+        );
+        assert.equal(libraryRow?.querySelector(".skill-copy strong")?.textContent, skill.id);
+        assert.equal(libraryRow?.querySelector(".skill-copy span")?.textContent, skill.description);
+        assert.equal(libraryRow?.querySelector(".skill-copy span")?.children.length, 0);
         prompt.focus();
         harness.input("#prompt", `Use $${skill.id}`);
         assert.equal(listbox.hidden, false);
@@ -180,7 +186,7 @@ test("localized built-in details pass original bodies to Markdown and keep ident
     state.settings.uiLanguage = language;
     const harness = await createDialogHarness(state);
     try {
-      harness.click("#contextTab");
+      harness.click("#skillsTab");
       const body = harness.document.getElementById("skillViewerBody");
       assert.ok(body);
       const renderer = harness.window.LiveSmithMarkdown;
@@ -192,7 +198,7 @@ test("localized built-in details pass original bodies to Markdown and keep ident
         renderInto(target, source);
       };
       for (const skill of builtInSkillDefinitions()) {
-        harness.click(`[data-skill-id="${skill.id}"] .skill-view`);
+        harness.click(`#skillManager [data-skill-id="${skill.id}"] .skill-view`);
         assert.equal(harness.document.getElementById("skillViewerId")?.textContent, skill.id);
         assert.equal(
           harness.document.getElementById("skillViewerDescription")?.textContent,

@@ -1554,11 +1554,28 @@ details.timeline-item > .timeline-content {
 .inspector-pane {
   @apply grid min-w-0 overflow-hidden bg-pane;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .inspector-pane[hidden] {
   @apply hidden;
+}
+
+.inspector-scope-switch {
+  @apply grid grid-cols-2 gap-1 border-b border-b-border bg-chrome px-3 py-2;
+}
+
+.inspector-scope-switch button {
+  @apply h-control-compact rounded-control border border-transparent bg-transparent px-2 py-0 text-body text-quiet normal-case;
+  letter-spacing: 0;
+}
+
+.inspector-scope-switch button[aria-pressed="true"] {
+  @apply border-border bg-pane-raised text-text;
+}
+
+.inspector-scope-switch button:hover {
+  @apply bg-surface-hover-soft text-text;
 }
 
 .tab-bar {
@@ -1578,6 +1595,8 @@ details.timeline-item > .timeline-content {
 .tab-bar button.active {
   @apply border-border bg-pane-raised text-text;
 }
+
+.tab-bar button[hidden] { @apply hidden; }
 
 .tab-panel {
   @apply min-h-0 overflow-y-scroll overscroll-contain;
@@ -1611,15 +1630,12 @@ details.timeline-item > .timeline-content {
   padding-inline-end: calc(var(--inspector-padding) - var(--scrollbar-size));
 }
 
-.settings-scope {
+.settings-scope,
+.settings-sections {
   @apply grid min-w-0;
 }
 
-.model-profile-controls {
-  @apply grid min-w-0;
-}
-
-.settings-scope + .settings-scope {
+.settings-scope:not([hidden]) ~ .settings-scope:not([hidden]) {
   @apply mt-6;
 }
 
@@ -1627,9 +1643,45 @@ details.timeline-item > .timeline-content {
   @apply relative flex items-center gap-2;
 }
 
+.inspector-heading-action {
+  @apply ml-auto shrink-0;
+}
+
+.context-attachment-list {
+  @apply m-0 grid list-none gap-2 p-0 text-label text-muted;
+  overflow-wrap: anywhere;
+}
+
+.context-attachment-list:empty { @apply hidden; }
+
+.skill-library {
+  @apply grid gap-2;
+}
+.skill-library > .field-hint { @apply m-0; }
+.skill-library-content { @apply grid min-w-0 gap-3; }
+.skill-library-content > .field-hint { @apply m-0; }
+.extension-page[hidden], .extension-page [hidden] { @apply hidden; }
+.extension-navigation {
+  @apply mb-4 grid min-w-0 gap-1 border-b border-b-divider pb-2;
+  grid-template-columns: minmax(max-content, 1fr) repeat(3, minmax(0, 1fr));
+}
+.extension-navigation > button { @apply min-w-0 h-control-compact whitespace-nowrap border-transparent bg-transparent px-2 py-0 text-label text-muted; }
+.extension-navigation > button[aria-selected="true"] { @apply border-border bg-pane-raised text-text; }
+.extension-navigation > button:focus-visible { outline: 2px solid var(--color-border-hover); outline-offset: -2px; }
+.extension-navigation > .extension-source-tab { @apply border-l-border; }
+.connections-manager { @apply grid min-w-0 gap-3; }
+.plugin-mcp-sources { @apply grid min-w-0 gap-3; }
+.plugin-capability-links { @apply flex flex-wrap gap-2; }
+.plugin-capability-links > button, .plugin-source-link, .skill-plugin-link { @apply h-control-compact px-2 py-0 text-label; }
+.skill-source { @apply m-0 min-w-0 text-small text-quiet; overflow-wrap: anywhere; }
+.skill-plugin-link { @apply shrink-0; }
+.skill-plugin-source { @apply grid min-w-0 gap-2; }
+.skill-plugin-source + .skill-plugin-source { @apply mt-2 border-t border-t-divider pt-3; }
+
 .settings-scope > .inspector-scope-header {
   @apply mb-4;
 }
+
 
 .session-results {
   @apply mx-3 mb-2 mt-0 min-w-0 overflow-hidden rounded-panel border border-border bg-pane;
@@ -1670,21 +1722,32 @@ details.timeline-item > .timeline-content {
 .audio-output iframe { @apply mt-2 block h-[180px] w-full rounded-control border-0; }
 .audio-download-help { margin-top: var(--spacing-2) !important; }
 #audioSettingsSection [hidden] { @apply hidden; }
-#audioSettingsSection { @apply gap-2; }
-#audioServiceFields:not([open]) + .audio-commit-actions { @apply hidden; }
+#audioServiceFields:not([open]) ~ .audio-commit-actions,
+#audioServiceFields:not([open]) ~ .audio-editor-status { @apply hidden; }
 .audio-settings-actions { @apply mt-1 flex flex-wrap gap-1; }
 .audio-settings-actions:not(.settings-peer-actions) { @apply justify-end; }
-.audio-section-heading { @apply mb-0 flex items-center justify-between gap-2; }
-.audio-section-heading h3 { @apply m-0; }
-.audio-service-list { @apply grid max-h-[230px] gap-1 overflow-y-auto overscroll-contain; }
+.connection-list { @apply grid max-h-[276px] overflow-y-auto overscroll-contain rounded-control border border-border; }
+.connection-row { @apply min-w-0; }
+.connection-row + .connection-row { @apply border-t border-t-divider; }
+.connection-row:has(.connection-choice[aria-pressed="true"]) { @apply bg-pane-raised; }
+.connection-row .connection-choice { @apply rounded-none border-0 bg-transparent; }
+.connection-row .connection-choice[aria-pressed="true"] { @apply bg-transparent; }
+.connection-source-picker { @apply grid gap-2 rounded-control border border-border bg-pane p-2; }
+.connection-source-options { @apply flex flex-wrap gap-1; }
+.connection-source-options > button { @apply h-control-compact px-2 py-0 text-small; }
+.connections-manager [hidden] { @apply hidden; }
+.audio-settings-editor { @apply grid; }
 .audio-service-row { @apply flex min-h-[46px] w-full items-center gap-2 rounded-control border border-border bg-transparent px-2 py-[6px] text-left text-text cursor-pointer; }
 .audio-service-row[aria-pressed="true"] { @apply border-border-hover bg-pane-raised; }
 .audio-service-row:not(:disabled):not([aria-pressed="true"]):hover { @apply border-border-hover bg-surface-hover; }
 .audio-service-row:disabled { @apply opacity-[0.65] cursor-default; }
 .audio-service-label { @apply min-w-0 flex-1; }
 .audio-service-label strong { @apply block overflow-hidden text-ellipsis whitespace-nowrap text-label; }
-.audio-service-label small { @apply mt-1 block text-small text-muted; line-height: 1.4; overflow-wrap: anywhere; }
-.audio-service-status { @apply max-w-[118px] flex-none text-right; }
+.connection-meta { @apply mt-1 flex min-w-0 items-center gap-1 text-small text-quiet; line-height: 1.4; }
+.connection-source { @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap; }
+.connection-meta .activity-state::before { @apply hidden; }
+.audio-service-status { @apply shrink-0 whitespace-nowrap; }
+.connection-edit { @apply ml-2 shrink-0 text-label text-muted; }
 .audio-connection-editor { @apply mt-0; }
 .audio-editor-body { @apply grid gap-2 pt-2; }
 .audio-editor-body > * { margin-block: 0; }
@@ -1700,10 +1763,6 @@ details.timeline-item > .timeline-content {
 #audioServiceModel { @apply font-code; }
 .danger-action { @apply text-danger; }
 .audio-output-meta { @apply text-small text-quiet; font-variant-numeric: tabular-nums; }
-
-.plugin-manager {
-  @apply mt-3 gap-2 border-t border-t-divider pt-3;
-}
 
 .plugin-manager [hidden] { @apply hidden; }
 .plugin-manager.drop-target { outline: 2px dashed var(--color-accent); outline-offset: -2px; }
@@ -1756,8 +1815,8 @@ details.timeline-item > .timeline-content {
   @apply hidden;
 }
 
-.plugin-card {
-  @apply grid min-w-0 gap-2 rounded-panel border border-border bg-field p-2;
+.plugin-card, .plugin-mcp-source {
+  @apply grid min-w-0 gap-3 rounded-control border border-border bg-transparent p-3;
 }
 
 .plugin-card-header {
@@ -1803,8 +1862,14 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-server-row {
-  @apply grid min-w-0 gap-[6px] rounded-control border border-border bg-pane px-2 py-[7px];
+  @apply grid min-w-0 gap-2 border-t border-t-divider pt-2;
 }
+
+.plugin-server-details { @apply min-w-0 text-small text-quiet; }
+.plugin-server-details > summary { @apply cursor-pointer py-1 text-small text-muted; }
+.plugin-server-details dl { @apply my-2 grid min-w-0 gap-1; }
+.plugin-server-details dt { @apply mt-1 text-small text-quiet; }
+.plugin-server-details dd { @apply m-0 whitespace-pre-wrap font-code text-label text-muted; overflow-wrap: anywhere; }
 
 .plugin-server-approval,
 .plugin-artifact-permission,
@@ -1813,45 +1878,30 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-server-controls {
-  @apply grid justify-items-start gap-1;
+  @apply flex flex-wrap items-center gap-1;
 }
 
 .plugin-server-permissions { @apply flex flex-wrap gap-1; }
 
 .plugin-server-group { @apply grid gap-1; }
-.plugin-server-connections { @apply grid min-w-0 gap-1 border-l border-divider pl-2; }
-.plugin-orphan-connections { @apply grid gap-1 rounded-control border border-border px-2 py-1; }
-.plugin-connection-row {
-  @apply grid min-w-0 items-center py-1 text-small text-muted;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 6px;
-  row-gap: 3px;
-}
-.plugin-connection-label { display: contents; }
-.plugin-connection-name {
-  @apply text-label text-text;
-  grid-column: 1 / -1;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
 .plugin-connection-state,
 .plugin-connection-unbound { @apply text-small text-quiet; overflow-wrap: anywhere; }
-.plugin-connection-state { grid-column: 1; }
-.plugin-connection-row-actions { @apply flex flex-wrap justify-end gap-1; grid-column: 2; grid-row: 2; }
-.plugin-connection-row-actions > button,
-.plugin-add-connection,
-.plugin-connection-actions > button { @apply h-control-compact px-2 py-0 text-small; }
-.plugin-add-connection { @apply justify-self-start; }
-.plugin-connection-editor { @apply grid min-w-0 gap-2 rounded-control border border-border bg-pane px-2 py-2; }
-.plugin-connection-editor > label { @apply grid gap-1 text-label text-muted; }
-.plugin-connection-editor > .plugin-connection-enabled { @apply text-small; }
+.plugin-manage-connections { @apply h-control-compact px-2 py-0 text-small; }
+.plugin-connection-editor { @apply grid min-w-0 gap-3 border-t border-t-divider pt-3; }
+.plugin-connection-editor h4 { @apply m-0 text-label text-text font-control; }
+.plugin-connection-editor > label:not(.settings-switch):not(.plugin-clear-secret) { @apply grid gap-1 text-label text-muted; }
+.plugin-connection-editor > .plugin-connection-enabled { @apply text-label; }
+.plugin-connection-editor > .field-hint { @apply m-0; }
 .plugin-connection-editor > .plugin-clear-secret { @apply flex items-center gap-2 cursor-pointer; }
+.mcp-secret-fields { @apply grid gap-2 border-t border-t-divider pt-3; }
+.mcp-secret-fields > .field-hint { @apply m-0; }
+.mcp-secret-row { @apply grid items-end gap-1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.mcp-secret-row > label { @apply grid gap-1 text-small text-muted; }
+.mcp-secret-row > .plugin-clear-secret { @apply flex items-center gap-1; grid-column: 1 / -1; }
+.mcp-secret-row > button { @apply h-control-compact justify-self-end px-2 py-0 text-small; grid-column: 1 / -1; }
+.plugin-connection-editor textarea { @apply min-h-[68px] font-code; }
 .plugin-clear-secret > input { @apply m-0 size-[14px] flex-none p-0; accent-color: var(--color-accent); }
 .plugin-clear-secret > input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-.plugin-connection-actions { @apply flex justify-end gap-1; }
 
 .plugin-artifact-permission[aria-pressed="true"] {
   @apply border-accent-soft bg-accent-soft text-text;
@@ -1924,7 +1974,7 @@ details.timeline-item > .timeline-content {
   @apply grid gap-3;
 }
 
-.settings-scope .settings-section + .settings-section {
+.settings-sections > .settings-section:not([hidden]) ~ .settings-section:not([hidden]) {
   @apply mt-3 border-t border-t-divider pt-3;
 }
 
@@ -2397,6 +2447,19 @@ label {
   margin-bottom: calc(-1 * var(--inspector-padding));
 }
 
+.editor-status { @apply mt-3 min-w-0 text-small text-muted; }
+.editor-status:not(:has(.draft-status:not(:empty))) { @apply hidden; }
+.editor-actions {
+  @apply grid min-w-0 items-center gap-2 border-t border-t-divider py-2;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.settings-actions.editor-actions { @apply static mb-0 mt-3 py-2; }
+.editor-actions > button { @apply h-control min-w-0 px-2 py-0 text-label whitespace-nowrap; }
+.editor-actions > .editor-remove { grid-column: 1; @apply justify-self-start; }
+.editor-actions > .editor-discard { grid-column: 2; }
+.editor-actions > .editor-save { grid-column: 3; }
+.editor-actions > [hidden] { @apply hidden; }
+
 .settings-actions button,
 .app-confirmation-actions button,
 .audio-settings-actions button,
@@ -2526,15 +2589,9 @@ label {
   @apply min-h-0 content-start text-muted;
 }
 
-.context-settings > .custom-instructions-settings {
+.context-settings > .settings-scope {
   @apply mt-3 border-t border-t-divider pt-3;
 }
-
-.context-settings > .skill-manager {
-  @apply mt-3 border-t border-t-divider pt-3;
-}
-
-.context-settings > .skill-viewer { @apply mt-6; }
 
 .custom-instructions-settings > .inspector-scope-header {
   @apply mb-2;

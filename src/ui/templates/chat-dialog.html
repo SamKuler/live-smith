@@ -16,6 +16,7 @@
       __COMPOSER_INPUT_SCRIPT__
       __SKILL_MANAGER_SCRIPT__
       __PLUGIN_MANAGER_SCRIPT__
+      __CONNECTIONS_MANAGER_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
@@ -129,10 +130,16 @@
         </section>
 
         <aside id="inspectorPane" class="inspector-pane" aria-label="Inspector" hidden data-i18n-aria-label="Inspector">
+          <div class="inspector-scope-switch" role="group" aria-label="Inspector scope" data-i18n-aria-label="Inspector scope">
+            <button id="sessionInspectorScope" type="button" aria-pressed="false" onclick="LiveSmithUI.openInspectorGroup('session')" data-i18n="Session">Session</button>
+            <button id="settingsInspectorScope" type="button" aria-pressed="true" onclick="LiveSmithUI.openInspectorGroup('settings')" data-i18n="Settings">Settings</button>
+          </div>
           <div class="tab-bar" role="tablist" aria-label="Inspector Views" data-i18n-aria-label="Inspector Views">
+            <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Context">Context</button>
+            <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Skills">Skills</button>
             <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Agent">Agent</button>
+            <button id="extensionsTab" type="button" role="tab" aria-selected="false" aria-controls="extensionsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('extensions')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Extensions">Extensions</button>
             <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="App">App</button>
-            <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Context">Context</button>
           </div>
           <div id="agentPanel" class="tab-panel agent-panel" role="tabpanel" aria-labelledby="agentTab" tabindex="0">
             <div class="settings">
@@ -141,7 +148,7 @@
                   <h2 id="modelProfileSettingsHeading" data-i18n="Model Profile">Model Profile</h2>
                 </div>
               <div id="settingsLockNotice" class="settings-lock-notice" role="status" aria-live="polite" hidden data-i18n="Profile settings are locked while another Session is running. You can keep working in this Session.">Profile settings are locked while another Session is running. You can keep working in this Session.</div>
-              <div id="modelProfileControls" class="model-profile-controls" role="group" aria-labelledby="modelProfileSettingsHeading" aria-busy="false">
+              <div id="modelProfileControls" class="settings-sections" role="group" aria-labelledby="modelProfileSettingsHeading" aria-busy="false">
               <section id="modelSetupGuide" class="model-setup-guide" aria-labelledby="modelSetupGuideHeading">
                 <h3 id="modelSetupGuideHeading" data-i18n="Connect a model">Connect a model</h3>
                 <ol>
@@ -160,7 +167,6 @@
                   <div class="profile-actions settings-peer-actions">
                     <button id="addProfileButton" class="secondary" type="button" onclick="LiveSmithUI.addProfile()" data-i18n="Add">Add</button>
                     <button id="duplicateProfileButton" class="secondary" type="button" onclick="LiveSmithUI.duplicateProfile()" data-i18n="Duplicate">Duplicate</button>
-                    <button id="deleteProfileButton" class="secondary danger-action" type="button" data-idle-label="Delete" data-i18n-data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()" data-i18n="Delete">Delete</button>
                   </div>
                 </div>
                 <div class="field">
@@ -434,22 +440,41 @@
                   </div>
                 </details>
               </section>
-              <div class="settings-actions" role="group" aria-labelledby="settingsProfileActionsLabel">
-                <span class="settings-actions-status">
-                  <span id="settingsProfileActionsLabel" class="settings-actions-owner" data-i18n="Profile">Profile</span>
+              <div class="settings-actions-status editor-status">
+                  <span id="settingsProfileActionsLabel" class="visually-hidden" data-i18n="Profile">Profile</span>
                   <span id="draftStatus" class="draft-status"></span>
-                </span>
-                <button id="discardProfileButton" class="secondary" type="button" onclick="LiveSmithUI.discardProfileChanges()" data-i18n="Discard">Discard</button>
-                <button id="saveProfileButton" class="primary" type="button" data-idle-label="Save &amp; Use" data-i18n-data-idle-label="Save &amp; Use" onclick="LiveSmithUI.saveProfile()" data-i18n="Save &amp; Use">Save &amp; Use</button>
+              </div>
+              <div class="settings-actions editor-actions" role="group" aria-labelledby="settingsProfileActionsLabel">
+                <button id="deleteProfileButton" class="secondary danger-action editor-remove" type="button" data-idle-label="Delete" data-i18n-data-idle-label="Delete" onclick="LiveSmithUI.deleteProfile()" data-i18n="Delete">Delete</button>
+                <button id="discardProfileButton" class="secondary editor-discard" type="button" onclick="LiveSmithUI.discardProfileChanges()" data-i18n="Discard">Discard</button>
+                <button id="saveProfileButton" class="primary editor-save" type="button" data-idle-label="Save &amp; Use" data-i18n-data-idle-label="Save &amp; Use" onclick="LiveSmithUI.saveProfile()" data-i18n="Save &amp; Use">Save &amp; Use</button>
               </div>
               </div>
               </section>
 
+              <section id="customInstructionsSettings" class="settings-scope custom-instructions-settings" aria-labelledby="customInstructionsHeading">
+                <div class="inspector-scope-header">
+                  <h2 id="customInstructionsHeading" data-i18n="Custom Instructions">Custom Instructions</h2>
+                  <span class="inline-help" tabindex="0" role="note" aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced.">?</span>
+                </div>
+                <div class="field">
+                  <label class="visually-hidden" for="customInstructions" data-i18n="Custom Instructions">Custom Instructions</label>
+                  <textarea id="customInstructions" name="customInstructions" autocomplete="off" maxlength="16000" spellcheck="true" placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…" aria-describedby="customInstructionsHint customInstructionsCount" oninput="LiveSmithUI.handleCustomInstructionsInput()" data-i18n-placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…"></textarea>
+                  <span id="customInstructionsHint" class="field-hint" data-i18n="Applies as a default across Sessions; the current request takes precedence.">Applies as a default across Sessions; the current request takes precedence.</span>
+                </div>
+                <div class="custom-instructions-meta">
+                  <span id="customInstructionsStatus" class="draft-status" role="status" aria-live="polite"></span>
+                  <span id="customInstructionsCount" class="field-hint" aria-hidden="true"></span>
+                </div>
+                <div class="custom-instructions-actions">
+                  <button id="saveCustomInstructionsButton" class="primary" type="button" onclick="LiveSmithUI.saveCustomInstructions()" disabled data-i18n="Save instructions">Save instructions</button>
+                </div>
+              </section>
             </div>
           </div>
           <div id="appPanel" class="tab-panel app-panel" role="tabpanel" aria-labelledby="appTab" tabindex="0" hidden>
             <div class="settings">
-              <section id="appPreferencesSettings" class="settings-scope settings-scope-app" aria-labelledby="appPreferencesSettingsHeading">
+              <section id="appPreferencesSettings" class="settings-scope settings-scope-app settings-sections" aria-labelledby="appPreferencesSettingsHeading">
                 <div class="inspector-scope-header">
                   <h2 id="appPreferencesSettingsHeading" data-i18n="App Preferences">App Preferences</h2>
                 </div>
@@ -508,13 +533,27 @@
                   </div>
                 </div>
               </section>
-              <section id="audioSettingsSection" class="settings-section" aria-labelledby="audioSettingsHeading">
-                <div class="audio-section-heading">
-                  <h3 id="audioSettingsHeading" data-i18n="Audio services">Audio services</h3>
-                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add audio connection">Add audio connection</button>
+              </section>
+            </div>
+          </div>
+          <div id="extensionsPanel" class="tab-panel" role="tabpanel" aria-labelledby="extensionsTab" tabindex="0" hidden>
+            <div class="settings">
+              <section class="settings-scope settings-sections" aria-labelledby="extensionsHeading">
+                <div class="inspector-scope-header"><h2 id="extensionsHeading" data-i18n="Extensions">Extensions</h2></div>
+                <div id="extensionsNavigation" class="extension-navigation" role="tablist" aria-label="Extension settings" data-i18n-aria-label="Extension settings">
+                  <button id="audioExtensionTab" type="button" role="tab" aria-selected="true" aria-controls="audioServicesSettings" tabindex="0" onclick="LiveSmithUI.openExtensionCategory('audio')" onkeydown="LiveSmithUI.handleExtensionCategoryKeydown(event)" data-i18n="Audio services">Audio services</button>
+                  <button id="mcpExtensionTab" type="button" role="tab" aria-selected="false" aria-controls="mcpSettings" tabindex="-1" onclick="LiveSmithUI.openExtensionCategory('mcp')" onkeydown="LiveSmithUI.handleExtensionCategoryKeydown(event)">MCP</button>
+                  <button id="skillsExtensionTab" type="button" role="tab" aria-selected="false" aria-controls="skillLibrary" tabindex="-1" onclick="LiveSmithUI.openExtensionCategory('skills')" onkeydown="LiveSmithUI.handleExtensionCategoryKeydown(event)" data-i18n="Skills">Skills</button>
+                  <button id="pluginsExtensionTab" class="extension-source-tab" type="button" role="tab" aria-selected="false" aria-controls="pluginManager" tabindex="-1" onclick="LiveSmithUI.openExtensionCategory('plugins')" onkeydown="LiveSmithUI.handleExtensionCategoryKeydown(event)" data-i18n="Plugins">Plugins</button>
                 </div>
-                <div id="audioServiceSelector" class="audio-service-list" role="group" aria-label="Audio services" data-i18n-aria-label="Audio services"></div>
-                <p id="audioServiceEmpty" class="field-hint" data-i18n="Add an audio service connection to use its tools.">Add an audio service connection to use its tools.</p>
+              <section id="audioServicesSettings" class="settings-section extension-page" data-extension-page="audio" role="tabpanel" aria-labelledby="audioExtensionTab" tabindex="-1">
+                <div class="plugin-section-heading">
+                  <h3 id="audioSettingsHeading" data-i18n="Audio services">Audio services</h3>
+                  <button id="addAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.addAudioService()" data-i18n="Add connection">Add connection</button>
+                </div>
+                <div id="audioServiceSelector" class="connection-list" role="list" aria-labelledby="audioSettingsHeading"></div>
+                <p id="audioConnectionsEmpty" class="field-hint" data-i18n="Add an audio service account to use its tools.">Add an audio service account to use its tools.</p>
+                <div id="audioSettingsSection" class="audio-settings-editor">
                 <details id="audioServiceFields" class="audio-connection-editor settings-disclosure" hidden>
                   <summary id="audioServiceEditorSummary" data-i18n="Connection settings">Connection settings</summary>
                   <div class="audio-editor-body">
@@ -607,16 +646,11 @@
                     <div id="sunoPlatformActions" class="connection-auth-actions settings-peer-actions" hidden>
                       <button id="openSunoPlatformButton" class="secondary" type="button" data-i18n="Open Suno Platform">Open Suno Platform</button>
                     </div>
+                    <div class="connection-auth-actions settings-peer-actions">
+                      <button id="clearAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.saveAudioServiceSettings(true)" data-i18n="Clear key" hidden disabled>Clear key</button>
+                    </div>
                   </section>
                   <p id="audioServiceConflict" class="field-hint" role="status" hidden data-i18n="Connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.">Connections changed since this draft opened. Your fields are retained; reload the saved connection before editing.</p>
-                  <details id="audioServiceMaintenance" class="settings-disclosure audio-settings-details" hidden>
-                    <summary data-i18n="Connection maintenance">Connection maintenance</summary>
-                    <p id="audioServiceMaintenanceHint" class="field-hint"></p>
-                    <div class="audio-settings-actions settings-peer-actions">
-                      <button id="clearAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.saveAudioServiceSettings(true)" data-i18n="Clear key" hidden disabled>Clear key</button>
-                      <button id="removeAudioServiceButton" class="secondary danger-action" type="button" onclick="LiveSmithUI.removeAudioService()" data-i18n="Remove connection" disabled>Remove connection</button>
-                    </div>
-                  </details>
                   <label id="audioServiceEnabledField" class="context-usage-setting settings-switch" for="audioServiceEnabled">
                     <span data-i18n="Enable connection">Enable connection</span>
                     <input id="audioServiceEnabled" name="audioConnectionEnabled" type="checkbox" role="switch" aria-describedby="audioServiceDisclosure" onchange="LiveSmithUI.handleAudioSettingsInput()" />
@@ -624,19 +658,40 @@
                   </label>
                   </div>
                 </details>
-                <div class="settings-actions audio-commit-actions" role="group" aria-labelledby="audioConnectionActionsLabel">
-                  <span class="settings-actions-status">
-                    <span id="audioConnectionActionsLabel" class="settings-actions-owner" data-i18n="Connection">Connection</span>
+                <div class="settings-actions-status editor-status audio-editor-status">
+                    <span id="audioConnectionActionsLabel" class="visually-hidden" data-i18n="Connection">Connection</span>
                     <span id="audioDraftStatus" class="draft-status" role="status" aria-live="polite"></span>
-                  </span>
-                  <button id="reloadAudioServiceButton" class="secondary" type="button" onclick="LiveSmithUI.reloadAudioService()" data-i18n="Reload connection" hidden>Reload connection</button>
-                  <button id="saveAudioServiceButton" class="primary" type="button" onclick="LiveSmithUI.saveAudioServiceSettings()" data-i18n="Save connection">Save connection</button>
+                </div>
+                <div class="settings-actions editor-actions audio-commit-actions" role="group" aria-labelledby="audioConnectionActionsLabel">
+                  <button id="removeAudioServiceButton" class="secondary danger-action editor-remove" type="button" onclick="LiveSmithUI.removeAudioService()" data-i18n="Remove" aria-label="Remove connection" data-i18n-aria-label="Remove connection" disabled>Remove</button>
+                  <button id="reloadAudioServiceButton" class="secondary editor-discard" type="button" onclick="LiveSmithUI.reloadAudioService()" data-i18n="Discard" disabled>Discard</button>
+                  <button id="saveAudioServiceButton" class="primary editor-save" type="button" onclick="LiveSmithUI.saveAudioServiceSettings()" data-i18n="Save" aria-label="Save connection" data-i18n-aria-label="Save connection">Save</button>
+                </div>
                 </div>
               </section>
-              <section id="pluginManager" class="settings-section plugin-manager" aria-labelledby="pluginsHeading" aria-busy="false">
+              <section id="mcpSettings" class="settings-section extension-page" data-extension-page="mcp" role="tabpanel" aria-labelledby="mcpExtensionTab" tabindex="-1" hidden>
+                <div id="connectionsManager" class="connections-manager" aria-labelledby="connectionsHeading" aria-busy="false" tabindex="-1">
+                  <div class="plugin-section-heading">
+                    <h3 id="connectionsHeading" data-i18n="MCP servers">MCP servers</h3>
+                    <button id="addConnectionButton" class="secondary" type="button" aria-expanded="false" aria-controls="connectionSourcePicker" data-i18n="Add connection">Add connection</button>
+                  </div>
+                  <div id="connectionSourcePicker" class="connection-source-picker" hidden>
+                    <div class="connection-source-options"><button id="addMcpConnectionButton" class="secondary" type="button" data-i18n="Standalone MCP">Standalone MCP</button></div>
+                    <div id="pluginConnectionSources" class="connection-source-options"></div>
+                  </div>
+                  <p id="connectionsStatus" class="plugin-status" role="status" aria-live="polite" hidden></p>
+                  <div id="mcpConnectionList" class="connection-list" role="list" aria-labelledby="connectionsHeading"></div>
+                  <p id="connectionsEmpty" class="field-hint" data-i18n="Add an MCP server or configure a server provided by a Plugin.">Add an MCP server or configure a server provided by a Plugin.</p>
+                  <div id="mcpConnectionEditor" hidden></div>
+                </div>
+                <p id="pluginMcpStatus" class="plugin-status" role="status" aria-live="polite" hidden></p>
+                <p id="pluginMcpEmptyState" class="field-hint" data-i18n="No Plugin-provided MCP servers.">No Plugin-provided MCP servers.</p>
+                <div id="pluginMcpServers" class="plugin-mcp-sources" role="list" aria-label="Plugin MCP servers" data-i18n-aria-label="Plugin MCP servers" tabindex="-1"></div>
+              </section>
+              <section id="pluginManager" class="settings-section plugin-manager extension-page" data-extension-page="plugins" role="tabpanel" aria-labelledby="pluginsExtensionTab" aria-busy="false" tabindex="-1" hidden>
                 <div class="plugin-section-heading">
                   <div class="field-label-row">
-                    <h3 id="pluginsHeading" data-i18n="Plugins">Plugins</h3>
+                    <h3 id="pluginsHeading" data-i18n="Installed Plugins">Installed Plugins</h3>
                     <span class="inline-help" tabindex="0" role="note" aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately.">?</span>
                   </div>
                   <button id="choosePluginButton" class="secondary" type="button" data-i18n="Install Plugin">Install Plugin</button>
@@ -649,49 +704,18 @@
                 </div>
                 <div id="pluginList" class="plugin-list" role="list" aria-labelledby="pluginsHeading"></div>
               </section>
-              </section>
-            </div>
-          </div>
-          <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
-            <div class="settings context-settings">
-              <div id="context" class="context"></div>
-              <section id="customInstructionsSettings" class="settings-scope custom-instructions-settings" aria-labelledby="customInstructionsHeading">
-                <div class="inspector-scope-header">
-                  <h2 id="customInstructionsHeading" data-i18n="Custom Instructions">Custom Instructions</h2>
-                  <span class="inline-help" tabindex="0" role="note" aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced.">?</span>
+              <section id="skillLibrary" class="settings-section skill-library extension-page" data-extension-page="skills" role="tabpanel" aria-labelledby="skillsExtensionTab" aria-busy="false" tabindex="-1" hidden>
+                <div id="skillLibraryContent" class="skill-library-content">
+                <div class="plugin-section-heading">
+                  <h3 id="skillLibraryHeading" data-i18n="Skills">Skills</h3>
+                  <button class="secondary" type="button" onclick="LiveSmithUI.openInspector('skills')" data-i18n="Session Skills">Session Skills</button>
                 </div>
-                <div class="field">
-                  <label class="visually-hidden" for="customInstructions" data-i18n="Custom Instructions">Custom Instructions</label>
-                  <textarea id="customInstructions" name="customInstructions" autocomplete="off" maxlength="16000" spellcheck="true" placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…" aria-describedby="customInstructionsHint customInstructionsCount" oninput="LiveSmithUI.handleCustomInstructionsInput()" data-i18n-placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…"></textarea>
-                  <span id="customInstructionsHint" class="field-hint" data-i18n="Applies as a default across Sessions; the current request takes precedence.">Applies as a default across Sessions; the current request takes precedence.</span>
-                </div>
-                <div class="custom-instructions-meta">
-                  <span id="customInstructionsStatus" class="draft-status" role="status" aria-live="polite"></span>
-                  <span id="customInstructionsCount" class="field-hint" aria-hidden="true"></span>
-                </div>
-                <div class="custom-instructions-actions">
-                  <button id="saveCustomInstructionsButton" class="primary" type="button" onclick="LiveSmithUI.saveCustomInstructions()" disabled data-i18n="Save instructions">Save instructions</button>
-                </div>
-              </section>
-              <section id="skillManager" class="settings-scope skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
-                <div class="inspector-scope-header">
-                  <h2 id="skillsHeading" data-i18n="Session Skills">Session Skills</h2>
-                  <span class="inline-help" tabindex="0" role="note" aria-label="Enable for this Session, or use $skill-id for one turn." data-tooltip="Enable for this Session, or use $skill-id for one turn." data-i18n-aria-label="Enable for this Session, or use $skill-id for one turn." data-i18n-data-tooltip="Enable for this Session, or use $skill-id for one turn.">?</span>
-                </div>
-                <section class="skill-group" aria-labelledby="builtInSkillsHeading">
-                  <h3 id="builtInSkillsHeading" data-i18n="Built-in">Built-in</h3>
-                  <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
-                  <p id="builtInSkillEmptyState" class="skill-empty" hidden data-i18n="Same-ID User Skills are shown below.">Same-ID User Skills are shown below.</p>
-                </section>
-                <section class="skill-group" aria-labelledby="pluginSkillsHeading">
-                  <h3 id="pluginSkillsHeading" data-i18n="Plugin Skills">Plugin Skills</h3>
-                  <div id="pluginSkillList" class="skill-list" role="list" aria-labelledby="pluginSkillsHeading"></div>
-                  <p id="pluginSkillEmptyState" class="skill-empty" data-i18n="No enabled Plugin Skills.">No enabled Plugin Skills.</p>
-                </section>
-                <section class="skill-group" aria-labelledby="userSkillsHeading">
-                  <h3 id="userSkillsHeading" data-i18n="User Skills">User Skills</h3>
-                  <div id="userSkillList" class="skill-list" role="list" aria-labelledby="userSkillsHeading"></div>
-                  <p id="userSkillEmptyState" class="skill-empty" data-i18n="No user Skills.">No user Skills.</p>
+                <p class="field-hint" data-i18n="View Skill sources here. Choose which Skills to use in the Session view.">View Skill sources here. Choose which Skills to use in the Session view.</p>
+                <div class="skill-group"><h3 data-i18n="Built-in Skills">Built-in Skills</h3><div id="builtInSkillLibraryList" class="skill-list" role="list" data-i18n-aria-label="Built-in Skills" aria-label="Built-in Skills"></div><p id="builtInSkillLibraryEmptyState" class="skill-empty" data-i18n="No Skills available.">No Skills available.</p></div>
+                <div class="skill-group"><h3 data-i18n="Plugin Skills">Plugin Skills</h3><div id="pluginSkillLibraryList" class="skill-list" role="list" data-i18n-aria-label="Plugin Skills" aria-label="Plugin Skills"></div><p id="pluginSkillLibraryEmptyState" class="skill-empty" data-i18n="No Skills available.">No Skills available.</p></div>
+                <h3 data-i18n="User Skills">User Skills</h3>
+                <div id="userSkillLibraryList" class="skill-list" role="list" aria-labelledby="skillLibraryHeading"></div>
+                <p id="userSkillLibraryEmptyState" class="skill-empty" data-i18n="No user Skills.">No user Skills.</p>
                   <details class="skill-paste">
                     <summary data-i18n="Import Skill">Import Skill</summary>
                     <div class="skill-import-body">
@@ -707,6 +731,33 @@
                       </div>
                     </div>
                   </details>
+                </div>
+              </section>
+              </section>
+            </div>
+          </div>
+          <div id="skillsPanel" class="tab-panel" role="tabpanel" aria-labelledby="skillsTab" tabindex="0" hidden>
+            <div class="settings">
+              <section id="skillManager" class="settings-scope skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
+                <div class="inspector-scope-header">
+                  <h2 id="skillsHeading" data-i18n="Session Skills">Session Skills</h2>
+                  <span class="inline-help" tabindex="0" role="note" aria-label="Enable for this Session, or use $skill-id for one turn." data-tooltip="Enable for this Session, or use $skill-id for one turn." data-i18n-aria-label="Enable for this Session, or use $skill-id for one turn." data-i18n-data-tooltip="Enable for this Session, or use $skill-id for one turn.">?</span>
+                  <button id="manageSkillsButton" class="secondary inspector-heading-action" type="button" onclick="LiveSmithUI.openInspectorSection('extensions', 'skillLibrary')" data-i18n="Manage Skills">Manage Skills</button>
+                </div>
+                <section class="skill-group" aria-labelledby="builtInSkillsHeading">
+                  <h3 id="builtInSkillsHeading" data-i18n="Built-in">Built-in</h3>
+                  <div id="builtInSkillList" class="skill-list" role="list" aria-labelledby="builtInSkillsHeading"></div>
+                  <p id="builtInSkillEmptyState" class="skill-empty" hidden data-i18n="Same-ID User Skills are shown below.">Same-ID User Skills are shown below.</p>
+                </section>
+                <section class="skill-group" aria-labelledby="pluginSkillsHeading">
+                  <h3 id="pluginSkillsHeading" data-i18n="Plugin Skills">Plugin Skills</h3>
+                  <div id="pluginSkillList" class="skill-list" role="list" aria-labelledby="pluginSkillsHeading"></div>
+                  <p id="pluginSkillEmptyState" class="skill-empty" data-i18n="No enabled Plugin Skills.">No enabled Plugin Skills.</p>
+                </section>
+                <section class="skill-group" aria-labelledby="userSkillsHeading">
+                  <h3 id="userSkillsHeading" data-i18n="User Skills">User Skills</h3>
+                  <div id="userSkillList" class="skill-list" role="list" aria-labelledby="userSkillsHeading"></div>
+                  <p id="userSkillEmptyState" class="skill-empty" data-i18n="No user Skills.">No user Skills.</p>
                 </section>
               </section>
               <section id="skillViewer" class="settings-scope skill-viewer" aria-labelledby="skillViewerId" hidden>
@@ -717,6 +768,18 @@
                 <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
                 <p id="skillViewerDescription" class="skill-viewer-description"></p>
                 <div id="skillViewerBody" class="skill-viewer-body"></div>
+              </section>
+            </div>
+          </div>
+          <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
+            <div class="settings context-settings">
+              <div id="context" class="context"></div>
+              <section class="settings-scope" aria-labelledby="contextInputsHeading">
+                <div class="inspector-scope-header"><h2 id="contextInputsHeading" data-i18n="Message context">Message context</h2></div>
+                <p id="inspectorContextUsage" class="field-hint"></p>
+                <h3 data-i18n="Next message attachments">Next message attachments</h3>
+                <ul id="contextAttachmentList" class="context-attachment-list"></ul>
+                <p id="contextAttachmentEmpty" class="field-hint" data-i18n="No attachments in the next message.">No attachments in the next message.</p>
               </section>
             </div>
           </div>

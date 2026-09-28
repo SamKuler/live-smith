@@ -29,7 +29,12 @@ without changing the draft or choosing a task mode.
 The message box starts at one line, grows with its content, and scrolls within a
 bounded height for long drafts so conversation history remains visible.
 
-Choose **App → Interface language** to use **English**, **简体中文**, or follow the
+The Inspector separates **Session** views (**Context**, **Skills**) from
+global **Settings** (**Agent**, **Extensions**, **App**). Context shows the bound
+Live object, context usage, and the next message's attachments. Skills selects
+workflow instructions for the current Session.
+
+Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching
 languages keeps drafts and ongoing work; user messages, model replies, object
 names, and raw provider/SDK output stay in their original language.
@@ -58,14 +63,17 @@ names, and raw provider/SDK output stay in their original language.
   threshold defaults to 90% when the context window is known.
 - **Guide the musical approach.** Enable arrangement Skills per Session or
   mention one for a single request. Open a built-in Skill to read its instructions
-  before enabling it. **Inspector → Context → Custom Instructions** stores
+  before enabling it in **Session → Skills**. **Settings → Agent → Custom Instructions** stores
   standing creative, workflow, and tool preferences across Sessions; the current
   request can choose a different workflow at any time.
-- **Install extension packages.** **Inspector → App → Plugins** accepts portable
+- **Install extension packages.** **Settings → Extensions → Plugins** accepts portable
   Agent Plugin ZIPs and compatible Codex or Claude Code packages. Installation
   runs nothing: enable the Plugin, review each MCP server, and grant artifact
   input or output separately. Platform-only commands, hooks, agents, and apps are
   reported as unsupported rather than executed.
+- **Connect MCP tools directly.** **Settings → Extensions → MCP** accepts
+  a Streamable HTTP endpoint or a local stdio command without a Plugin package.
+  Review the endpoint or process before enabling it.
 - **Bring reference material.** Paste or drag images, documents, or audio into
   the composer. Input support depends on the model and connection.
 - **Keep work moving.** Queue a follow-up for the next turn, steer the response
@@ -78,7 +86,7 @@ names, and raw provider/SDK output stay in their original language.
 - **Search when needed.** Compatible Direct API connections can enable hosted
   Web Search, with search activity and citations visible in the conversation.
 - **Generate music and sound effects.** Add an ElevenLabs connection under
-  **Inspector → App → Connections**, then describe the music or sound you want.
+  **Settings → Extensions → Audio services**, then describe the music or sound you want.
   Multiple named audio connections, including separate accounts at the same
   provider, can be enabled together.
 - **Generate songs or instrumentals with Mureka.** Add a **Mureka** connection
@@ -179,7 +187,7 @@ existing Cmd/Ctrl+Enter shortcut remains available.
 
 1. Install and run the extension using the [development guide](docs/DEVELOPMENT.md).
 2. In Live, right-click a supported object and choose **Ask Live Smith**.
-3. Open **Inspector → Agent**, create a named Profile, and choose a connection.
+3. Open **Settings → Agent**, create a named Profile, and choose a connection.
 4. Use **Load Models**, choose a default model, and **Save & Use** the Profile.
    Direct API connections also allow entering a model ID manually.
 5. Ask for help. Review proposed edits according to the Session’s approval mode.
@@ -239,7 +247,7 @@ provider-specific limitations.
 
 ## Network proxy
 
-**Inspector → App → Network Proxy** provides three global modes: **No proxy**,
+**Settings → App → Network Proxy** provides three global modes: **No proxy**,
 **System proxy**, and **Manual proxy**. The selected route applies consistently to
 Direct API requests, subscription sign-in, token refresh, model catalog and
 model traffic, and external audio-service HTTP or WebSocket traffic. Loopback
@@ -358,27 +366,46 @@ attachments are not reattached automatically.
 
 **Skills** provide musical workflow guidance. Three built-ins cover section
 energy, musical variation, and instrument roles. They start disabled; **View**
-opens the full instructions without enabling them. You can import a local
-[SKILL.md](docs/MODEL_PROVIDERS.md#skill-instructions), enable up to four Skills
-per Session, or use `$skill-id` for one request.
+opens the full instructions without enabling them. Import and manage standalone
+[SKILL.md](docs/MODEL_PROVIDERS.md#skill-instructions) files in
+**Settings → Extensions → Skills**. The library groups built-in, user, and
+Plugin-provided Skills by source, including disabled Plugin packages. Enable up to four Skills in
+**Session → Skills**, or use `$skill-id` for one request.
 Skills do not grant additional permissions or tools.
 
 **Plugins** are installed packages that can contribute namespaced Skills and MCP
-tools. A Plugin starts disabled. Local MCP servers require explicit approval and
+tools. Manage packages in **Settings → Extensions → Plugins**; each package links
+to its capabilities in **MCP** and **Skills**. A Plugin starts disabled. Local MCP servers require explicit approval and
 run as your operating-system user; Live Smith does not provide an OS sandbox.
 Remote MCP servers also require approval. A Plugin tool cannot edit Live directly:
 declared audio input is staged as a temporary read-only file, declared MIDI output
 is validated and saved to the Session, and importing it remains a separate scoped
 and approved Live action. Removing a Plugin does not remove already saved Session
-artifacts. Each MCP server can have multiple named connections with separately
-saved credentials when its configuration declares credential fields. Add them
-under the server in Plugin settings; servers without credential fields need no
-named connection. Credentials are write-only and are used only for declared
-local environment values or remote headers, never as model tool arguments. A
-connection remains bound to the exact installed package version; after
-replacement, review it and enter credentials again. Remove a Plugin's
-connections and stop referencing its Skills before
+artifacts. Remove a Plugin's connections and stop referencing its Skills before
 deleting the Plugin.
+
+**Connections** save named accounts or servers. **Settings → Extensions → Audio
+services** manages audio accounts; **MCP** manages directly configured servers and
+servers provided by Plugins, including their permissions. One source can have multiple named
+connections; a Skill-only Plugin needs none. Package MCP servers without
+credential fields run under their server approval and need no account record.
+Select **Edit** to configure a connection. Its bottom action bar places **Remove**
+on the left and **Discard** / **Save** on the right. Removal requires confirmation;
+unchanged saved connections disable Discard and Save, and new connections have no
+Remove action. Switching between Audio services and MCP preserves nonsecret drafts
+and clears newly entered credentials.
+For a direct MCP server, choose Streamable HTTP and enter its URL, or choose a
+local process and enter its command and individual arguments. Local commands run
+without a shell. Only HTTPS and loopback HTTP endpoints are supported; legacy
+SSE and MCP OAuth sign-in are not supported.
+
+Credentials remain write-only environment variables or HTTP headers, never model
+tool arguments. Plugin connections bind to the exact installed package and
+server; direct connections bind to their exact launch configuration or URL.
+Changing that target requires entering credentials again. Direct local MCP
+connections have separate audio-input and MIDI-output grants. Disabling or
+removing a connection closes its active MCP clients and preserves saved Session
+artifacts.
 
 **Attachments** support PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
 Office documents are read as text. Image, native PDF, and audio use depends on
@@ -414,7 +441,7 @@ remain because the beta SDK does not expose deletion or rollback for imported
 files.
 
 Queue and Steer are configured under
-**Inspector → App → Conversation & Display**.
+**Settings → App → Conversation & Display**.
 The same section can show or hide the compact context-window indicator in the
 composer.
 Queued follow-ups belong to the open window; Live Smith warns before closing
@@ -435,11 +462,11 @@ provider identities. Saving a connection keeps only the provider selected by
 that Profile; Direct API and Profile deletion clear that Profile's OAuth
 credentials. Do not commit, share, or cloud-sync either storage location.
 
-An approved Plugin MCP server receives the arguments declared by its tool. A
+An enabled MCP server receives the arguments declared by its tool. A
 local server can access anything available to the current operating-system user,
 subject to that program's own behavior; a remote server receives network traffic
-at its declared endpoint. Review third-party Plugin code and permissions before
-enabling it. Plugin tool results are treated as untrusted data and cannot grant
+at its declared endpoint. Review third-party code, launch commands, and permissions before
+enabling a server. MCP tool results are treated as untrusted data and cannot grant
 Live permissions or bypass confirmation.
 
 The selected proxy mode and credential-free Manual proxy URL are stored in the

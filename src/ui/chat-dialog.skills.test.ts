@@ -10,7 +10,7 @@ import {
   waitForCondition,
 } from "./chat-dialog.test-harness.js";
 
-test("built-in and user Skills have separate controls and built-ins start disabled", async () => {
+test("Session Skill selection and global Skill management have separate controls", async () => {
   const state = stateFixture();
   state.availableSkills = availableSkillSummaries([{
     id: "user-mix-notes",
@@ -18,8 +18,12 @@ test("built-in and user Skills have separate controls and built-ins start disabl
   }]);
   const harness = await createDialogHarness(state);
   try {
+    harness.click("#skillsTab");
     const builtInList = harness.document.querySelector("#builtInSkillList");
     const userList = harness.document.querySelector("#userSkillList");
+    const library = harness.document.querySelector("#skillLibrary");
+    const libraryList = harness.document.querySelector("#userSkillLibraryList");
+    assert.ok(library && libraryList);
     assert.equal(builtInList?.getAttribute("aria-labelledby"), "builtInSkillsHeading");
     assert.equal(userList?.getAttribute("aria-labelledby"), "userSkillsHeading");
     assert.equal(builtInList?.querySelectorAll(".skill-row").length, 3);
@@ -40,7 +44,22 @@ test("built-in and user Skills have separate controls and built-ins start disabl
       '[data-skill-id="user-mix-notes"]',
     );
     assert.equal(userRow?.dataset.skillSource, "user");
-    assert.equal(userRow?.querySelector<HTMLButtonElement>(".skill-delete")?.textContent, "Delete");
+    assert.equal(userRow?.querySelector(".skill-delete"), null);
+    const libraryRow = libraryList.querySelector<HTMLElement>(
+      '[data-skill-id="user-mix-notes"]',
+    );
+    assert.equal(libraryList.querySelectorAll(".skill-row").length, 1);
+    assert.equal(libraryRow?.dataset.skillSource, "user");
+    assert.equal(libraryRow?.querySelector("strong")?.textContent, "user-mix-notes");
+    assert.equal(libraryRow?.querySelector(".skill-copy span")?.textContent,
+      "Remember the user's mix process");
+    assert.equal(libraryRow?.querySelector("input"), null);
+    assert.equal(libraryRow?.querySelector<HTMLButtonElement>(".skill-delete")?.textContent, "Delete");
+    assert.equal(harness.document.querySelector("#skillManager")?.contains(
+      harness.document.getElementById("skillDropZone"),
+    ), false);
+    assert.equal(library.contains(harness.document.getElementById("skillDropZone")), true);
+    assert.equal(library.contains(harness.document.getElementById("skillPasteText")), true);
 
     const builtInToggle = builtInRow?.querySelector<HTMLInputElement>(
       'input[type="checkbox"]',
@@ -62,6 +81,8 @@ test("built-in and user Skills have separate controls and built-ins start disabl
       harness.document.querySelector("#skillManager")?.getAttribute("aria-busy"),
       "true",
     );
+    assert.equal(library.getAttribute("aria-busy"), "true");
+    assert.equal(libraryRow?.querySelector<HTMLButtonElement>(".skill-delete")?.disabled, true);
     harness.releaseHeldCommand();
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
@@ -79,6 +100,47 @@ test("built-in and user Skills have separate controls and built-ins start disabl
   } finally {
     harness.close();
   }
+});
+
+test("global Skill inventory includes disabled package contents without Session activation controls", async () => {
+  const state = stateFixture();
+  state.availableSkills = availableSkillSummaries([{ id: "user-guide", description: "Local guide" }]);
+  const disabledSkill = { id: "offline-tools:convert", description: "Authored <b>conversion</b> summary" };
+  const enabledSkill = { id: "active-tools:analyze", description: "Analyze notes" };
+  state.availableSkills.push({ ...enabledSkill, source: "plugin", pluginId: "active-tools" });
+  state.plugins = [
+    { id: "offline-tools", sha256: "a".repeat(64), sourceFormat: "codex", enabled: false,
+      skillCount: 1, skills: [disabledSkill], mcpServers: [], unsupportedComponents: [], issues: [] },
+    { id: "active-tools", sha256: "b".repeat(64), sourceFormat: "codex", enabled: true,
+      skillCount: 1, mcpServers: [], unsupportedComponents: [], issues: [] },
+    { id: "older-tools", sha256: "c".repeat(64), sourceFormat: "codex", enabled: false,
+      skillCount: 1, mcpServers: [], unsupportedComponents: [], issues: [] },
+  ];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#extensionsTab");
+    harness.click("#skillsExtensionTab");
+    const library = harness.document.querySelector("#skillLibrary");
+    assert.equal(library?.querySelectorAll('input[type="checkbox"]').length, 0);
+    assert.equal(library?.querySelectorAll("#builtInSkillLibraryList .skill-view").length, 3);
+    assert.equal(library?.querySelectorAll("#userSkillLibraryList .skill-delete").length, 1);
+    assert.equal(library?.querySelector("#userSkillLibraryList .skill-view"), null);
+    assert.equal(library?.querySelector("#pluginSkillLibraryList .skill-view"), null);
+    assert.equal(library?.querySelector("#pluginSkillLibraryList .skill-delete"), null);
+    const disabled = harness.document.getElementById("pluginSkillSource-offline-tools");
+    assert.match(disabled?.textContent ?? "", /Plugin offline-tools.*Disabled/u);
+    assert.equal(disabled?.querySelector(".skill-copy strong")?.textContent, disabledSkill.id);
+    assert.equal(disabled?.querySelector(".skill-copy span")?.textContent, disabledSkill.description);
+    assert.equal(disabled?.querySelector(".skill-copy span")?.children.length, 0);
+    assert.equal(disabled?.querySelectorAll(".skill-plugin-link").length, 1);
+    assert.equal(disabled?.querySelector(".skill-row button"), null);
+    assert.equal(harness.document.querySelector("#pluginSkillSource-active-tools .skill-copy strong")?.textContent, enabledSkill.id);
+    assert.match(harness.document.querySelector("#pluginSkillSource-older-tools")?.textContent ?? "", /Skill metadata is unavailable/u);
+    assert.equal(harness.document.querySelector("#pluginSkillList [data-skill-id='offline-tools:convert']"), null);
+    assert.equal(harness.document.querySelectorAll("#pluginSkillList .skill-row").length, 1);
+    assert.deepEqual(commandCalls(harness), []);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
 });
 
 test("built-in Skills participate in prompt autocomplete", async () => {
@@ -265,34 +327,51 @@ test("Skill toggle focus survives command failure and the four-Skill limit", asy
   }
 });
 
-test("Skill completion does not steal focus moved elsewhere while busy", async () => {
-  const harness = await createDialogHarness(stateFixture());
-  try {
-    const toggle = harness.document.querySelector<HTMLInputElement>(
-      '[data-skill-id="arranging-section-energy"] input[type="checkbox"]',
-    );
-    const close = harness.document.querySelector<HTMLButtonElement>("#closeButton");
-    assert.ok(toggle && close);
-    harness.holdNextCommand();
-    toggle.focus();
-    toggle.click();
-    await waitForCondition(
-      () => commandCalls(harness).length === 1,
-      "Expected the held Skill command to start.",
-    );
-    close.focus();
-    assert.equal(harness.document.activeElement, close);
-    harness.releaseHeldCommand();
-    await harness.settle();
-    assert.equal(harness.document.activeElement, close);
-  } finally {
-    harness.close();
-  }
-});
+for (const surface of ["Session", "library"] as const) {
+  test(`${surface} Skill completion does not steal focus moved elsewhere while busy`, async () => {
+    const state = stateFixture();
+    state.availableSkills = availableSkillSummaries([
+      { id: "user-notes", description: "Session notes" },
+    ]);
+    state.activeSkillIds = ["user-notes"];
+    state.sessions[0]!.activeSkillIds = ["user-notes"];
+    const harness = await createDialogHarness(state);
+    let commandHeld = false;
+    try {
+      harness.click(surface === "Session" ? "#skillsTab" : "#extensionsTab");
+      const control = harness.document.querySelector<HTMLInputElement | HTMLButtonElement>(
+        surface === "Session"
+          ? '#userSkillList [data-skill-id="user-notes"] input'
+          : '#userSkillLibraryList [data-skill-id="user-notes"] .skill-delete',
+      );
+      const close = harness.document.querySelector<HTMLButtonElement>("#closeButton");
+      assert.ok(control && close);
+      harness.holdNextCommand();
+      commandHeld = true;
+      control.focus();
+      control.click();
+      if (surface === "library") await harness.acceptAppConfirmation();
+      await waitForCondition(
+        () => commandCalls(harness).length === 1,
+        "Expected the held Skill command to start.",
+      );
+      close.focus();
+      assert.equal(harness.document.activeElement, close);
+      harness.releaseHeldCommand();
+      commandHeld = false;
+      await harness.settle();
+      assert.equal(harness.document.activeElement, close);
+    } finally {
+      if (commandHeld) harness.releaseHeldCommand();
+      harness.close();
+    }
+  });
+}
 
 test("keyboard users can paste Skill Markdown without a native file picker", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
+    harness.click("#extensionsTab");
     const install = harness.document.querySelector<HTMLButtonElement>(
       "#installPastedSkillButton",
     );
@@ -331,9 +410,17 @@ test("keyboard users can paste Skill Markdown without a native file picker", asy
     assert.equal(
       harness.document.activeElement,
       harness.document.querySelector(
-        '[data-skill-id="pasted-skill"] input[type="checkbox"]',
+        '#userSkillLibraryList [data-skill-id="pasted-skill"] .skill-delete',
       ),
     );
+    assert.equal(
+      harness.document.querySelector<HTMLInputElement>(
+        '#userSkillList [data-skill-id="pasted-skill"] input',
+      )?.checked,
+      false,
+    );
+    assert.equal(harness.document.querySelector("#userSkillLibraryEmptyState")?.hasAttribute("hidden"), true);
+    assert.deepEqual(commandCalls(harness), []);
 
     harness.input("#skillPasteText", [
       "---",
@@ -410,7 +497,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
       skillIds: ["mix-review"],
     });
     const deleteButton = harness.document.querySelector<HTMLButtonElement>(
-      "[data-skill-id='mix-review'] .skill-delete",
+      "#userSkillLibraryList [data-skill-id='mix-review'] .skill-delete",
     );
     assert.equal(deleteButton?.disabled, false);
     assert.equal(deleteButton?.textContent, "Disable");
@@ -424,7 +511,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
       skillIds: [],
     });
     const enabledDelete = harness.document.querySelector<HTMLButtonElement>(
-      "[data-skill-id='mix-review'] .skill-delete",
+      "#userSkillLibraryList [data-skill-id='mix-review'] .skill-delete",
     );
     assert.equal(enabledDelete?.disabled, false);
     enabledDelete?.focus();
@@ -434,8 +521,12 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
     assert.ok(harness.calls.some((call) => call.path === "/skills/mix-review"));
     assert.equal(
       harness.document.activeElement,
-      harness.document.querySelector(".skill-paste > summary"),
+      harness.document.querySelector("#skillLibrary .skill-paste > summary"),
     );
+    assert.equal(harness.document.querySelector("#userSkillList .skill-row"), null);
+    assert.equal(harness.document.querySelector("#userSkillLibraryList .skill-row"), null);
+    assert.equal(harness.document.querySelector<HTMLElement>("#userSkillEmptyState")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#userSkillLibraryEmptyState")?.hidden, false);
     assert.equal(
       harness.calls.filter((call) => call.jsonBody !== undefined)
         .some((call) => JSON.stringify(call.jsonBody).includes("PRIVATE SKILL BODY")),
@@ -594,7 +685,7 @@ test("a committed Skill delete with truncated JSON reconciles before an idempote
   try {
     harness.truncateNextSkillResponseAfterCommit();
     const deleteButton = harness.document.querySelector<HTMLButtonElement>(
-      "[data-skill-id='mix-review'] .skill-delete",
+      "#userSkillLibraryList [data-skill-id='mix-review'] .skill-delete",
     );
     assert.equal(deleteButton?.disabled, false);
     deleteButton?.click();
@@ -656,7 +747,7 @@ test("a response-lost legacy override delete stays idempotent after its built-in
       null,
     );
     const deleteButton = harness.document.querySelector<HTMLButtonElement>(
-      `[data-skill-id='${skillId}'] .skill-delete`,
+      `#userSkillLibraryList [data-skill-id='${skillId}'] .skill-delete`,
     );
     assert.equal(
       deleteButton?.closest<HTMLElement>(".skill-row")?.dataset.skillSource,
@@ -688,7 +779,7 @@ test("a response-lost legacy override delete stays idempotent after its built-in
       [`/skills/${skillId}`, "/state", `/skills/${skillId}`],
     );
     const builtInRow = harness.document.querySelector<HTMLElement>(
-      `[data-skill-id='${skillId}']`,
+      `#skillManager [data-skill-id='${skillId}']`,
     );
     assert.equal(builtInRow?.dataset.skillSource, "built-in");
     assert.equal(
@@ -698,7 +789,7 @@ test("a response-lost legacy override delete stays idempotent after its built-in
     assert.equal(builtInRow?.querySelector(".skill-delete"), null);
     assert.equal(
       harness.document.activeElement,
-      builtInRow?.querySelector('input[type="checkbox"]'),
+      harness.document.querySelector("#skillLibrary .skill-paste > summary"),
     );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
@@ -817,14 +908,28 @@ test("a Skill can be disabled from archived history before deletion", async () =
     updatedAt: "2026-08-09T00:00:00.000Z",
   }];
   const harness = await createDialogHarness(state);
+  let commandHeld = false;
   try {
+    harness.click("#extensionsTab");
     const disable = harness.document.querySelector<HTMLButtonElement>(
-      "[data-skill-id='history-guide'] .skill-delete",
+      "#userSkillLibraryList [data-skill-id='history-guide'] .skill-delete",
     );
     assert.equal(disable?.textContent, "Disable");
     disable?.focus();
+    harness.holdNextCommand();
+    commandHeld = true;
     disable?.click();
     await harness.acceptAppConfirmation();
+    await waitForCondition(
+      () => commandCalls(harness).length === 1,
+      "Expected the global disable command to start.",
+    );
+    assert.equal(harness.document.activeElement, harness.document.getElementById("skillLibrary"));
+    assert.equal(harness.document.getElementById("skillLibrary")?.getAttribute("aria-busy"), "true");
+    assert.equal(disable?.disabled, true);
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#userSkillList input")?.disabled, true);
+    harness.releaseHeldCommand();
+    commandHeld = false;
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_session_skills",
@@ -832,7 +937,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
       skillIds: [],
     });
     const deletion = harness.document.querySelector<HTMLButtonElement>(
-      "[data-skill-id='history-guide'] .skill-delete",
+      "#userSkillLibraryList [data-skill-id='history-guide'] .skill-delete",
     );
     assert.equal(deletion?.textContent, "Delete");
     assert.equal(harness.document.activeElement, deletion);
@@ -841,6 +946,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
     await harness.settle();
     assert.ok(harness.calls.some((call) => call.path === "/skills/history-guide"));
   } finally {
+    if (commandHeld) harness.releaseHeldCommand();
     harness.close();
   }
 });

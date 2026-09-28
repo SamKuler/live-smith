@@ -181,8 +181,10 @@ test("Chinese audio settings and result controls render through the real dialog"
   const harness = await createDialogHarness(state);
   try {
     assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "音频服务");
-    assert.equal(harness.document.querySelector("#addAudioServiceButton")?.textContent, "添加音频连接");
-    assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存连接");
+    assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "MCP 服务器");
+    assert.equal(harness.document.querySelector("#addAudioServiceButton")?.textContent, "添加连接");
+    assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存");
+    assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.getAttribute("aria-label"), "保存连接");
     assert.equal(harness.document.querySelector("[data-resume-audio-job]")?.textContent, "恢复音频任务");
     assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /分钟数/);
     assert.deepEqual(harness.errors, []);

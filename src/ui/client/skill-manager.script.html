@@ -4,6 +4,7 @@
         deleteSkill,
         getState,
         installSkill,
+        openPlugin,
         runCommand,
         showStatus,
         updateComposerAutocomplete,
@@ -18,6 +19,8 @@
       let retainedSkillFocus = null;
       let renderedSkillStateKey = null;
       let viewedBuiltInSkillId = null;
+      let viewedSkillOrigin = null;
+      let skillViewerHome = null;
 
       function allSessions() {
         const state = getState();
@@ -36,32 +39,48 @@
 
       function focusedSkillControl() {
         const element = document.activeElement;
-        if (!element?.matches?.('input[type="checkbox"], .skill-delete, .skill-view')) return null;
+        if (!element?.matches?.('input[type="checkbox"], .skill-delete, .skill-view, .skill-plugin-link')) return null;
         const row = element.closest(".skill-row");
         const skillId = row?.dataset.skillId;
-        if (!skillId) return null;
+        const pluginId = element.matches(".skill-plugin-link")
+          ? element.closest(".skill-plugin-source")?.dataset.pluginId : undefined;
+        if (!skillId && !pluginId) return null;
         return {
           skillId,
+          pluginId,
+          containerId: element.closest("#skillManager, #skillLibrary")?.id,
           control: element.matches(".skill-view") ? "view"
-            : element.matches(".skill-delete") ? "manage" : "toggle",
+            : element.matches(".skill-delete") ? "manage"
+            : element.matches(".skill-plugin-link") ? "plugin" : "toggle",
         };
       }
 
       function restoreSkillFocus(target) {
         if (!target) return;
-        const row = [...document.querySelectorAll(".skill-row")].find(
+        const container = skillControlContainer(target);
+        const row = target.pluginId ? document.getElementById(`pluginSkillSource-${target.pluginId}`)
+          : [...container.querySelectorAll(".skill-row")].find(
           (candidate) => candidate.dataset.skillId === target.skillId,
         );
         const selector = target.control === "view" ? ".skill-view"
-          : target.control === "manage" ? ".skill-delete" : 'input[type="checkbox"]';
+          : target.control === "manage" ? ".skill-delete"
+          : target.control === "plugin" ? ".skill-plugin-link" : 'input[type="checkbox"]';
         const fallback = [
           row?.querySelector(selector),
           row?.querySelector('input[type="checkbox"]'),
-          target.control === "view" ? document.querySelector(".skill-view") : null,
-          document.querySelector('#userSkillList input[type="checkbox"]'),
-          document.querySelector(".skill-paste > summary"),
+          target.control === "view" ? container.querySelector(".skill-view") : null,
+          target.control === "plugin" ? container.querySelector(".skill-plugin-link") : null,
+          container.querySelector('input[type="checkbox"], .skill-delete'),
+          container.querySelector(".skill-paste > summary"),
+          container,
         ].find((element) => element && !element.disabled);
         fallback?.focus();
+      }
+
+      function skillControlContainer(target) {
+        return document.getElementById(
+          target.containerId || (target.control === "manage" ? "skillLibrary" : "skillManager"),
+        );
       }
 
       function availableBuiltInDefinition(skillId) {
@@ -70,9 +89,10 @@
         ) ? builtInDefinitions.get(skillId) : undefined;
       }
 
-      function openSkillViewer(skillId) {
+      function openSkillViewer(skillId, containerId = "skillManager") {
         const definition = availableBuiltInDefinition(skillId);
         if (!definition) return;
+        if (viewedBuiltInSkillId) closeSkillViewer(false);
         const body = document.getElementById("skillViewerBody");
         document.getElementById("skillViewerId").textContent = definition.id;
         document.getElementById("skillViewerDescription").textContent = t(definition.description);
@@ -85,29 +105,52 @@
           body.textContent = definition.body;
         }
         viewedBuiltInSkillId = skillId;
-        document.getElementById("skillManager").hidden = true;
-        document.getElementById("skillViewer").hidden = false;
+        viewedSkillOrigin = { skillId, control: "view", containerId };
+        const viewer = document.getElementById("skillViewer");
+        if (containerId === "skillLibrary") {
+          document.getElementById("skillLibrary").append(viewer);
+          document.getElementById("skillLibraryContent").hidden = true;
+        } else {
+          skillViewerHome.append(viewer);
+          document.getElementById("skillManager").hidden = true;
+        }
+        viewer.hidden = false;
         document.getElementById("closeSkillViewer").focus();
       }
 
       function closeSkillViewer(restoreFocus = true) {
-        const skillId = viewedBuiltInSkillId;
+        const origin = viewedSkillOrigin;
         viewedBuiltInSkillId = null;
-        document.getElementById("skillViewer").hidden = true;
-        document.getElementById("skillManager").hidden = false;
+        viewedSkillOrigin = null;
+        const viewer = document.getElementById("skillViewer");
+        viewer.hidden = true;
+        document.getElementById(origin?.containerId === "skillLibrary" ? "skillLibraryContent" : "skillManager").hidden = false;
+        if (viewer.parentElement !== skillViewerHome) skillViewerHome.append(viewer);
         document.getElementById("skillViewerId").textContent = "";
         document.getElementById("skillViewerDescription").textContent = "";
         document.getElementById("skillViewerBody").replaceChildren();
-        if (restoreFocus) restoreSkillFocus({ skillId, control: "view" });
+        if (restoreFocus) restoreSkillFocus(origin);
       }
 
-      function renderSkillRow(skill, active, usedSkillIds) {
+      function createSkillRow(skill) {
         const row = document.createElement("div");
         row.className = "skill-row";
         row.dataset.skillId = skill.id;
         row.dataset.skillSource = skill.source;
         row.setAttribute("role", "listitem");
+        const copy = document.createElement("span");
+        copy.className = "skill-copy";
+        const id = document.createElement("strong");
+        id.setAttribute("translate", "no");
+        id.textContent = skill.id;
+        const description = document.createElement("span");
+        description.textContent = skill.source === "built-in" ? t(skill.description) : skill.description;
+        copy.append(id, description);
+        return { row, copy };
+      }
 
+      function renderSessionSkillRow(skill, active) {
+        const { row, copy } = createSkillRow(skill);
         const toggleLabel = document.createElement("label");
         toggleLabel.className = "skill-toggle";
         const toggle = document.createElement("input");
@@ -119,47 +162,92 @@
         toggle.addEventListener("change", () => {
           void toggleSkill(skill.id, toggle.checked);
         });
-        const copy = document.createElement("span");
-        copy.className = "skill-copy";
-        const id = document.createElement("strong");
-        id.setAttribute("translate", "no");
-        id.textContent = skill.id;
-        const description = document.createElement("span");
-        description.textContent = skill.source === "built-in" ? t(skill.description) : skill.description;
-        copy.append(id, description);
         toggleLabel.append(toggle, copy);
         row.append(toggleLabel);
 
         if (skill.source === "built-in" && builtInDefinitions.has(skill.id)) {
-          const view = document.createElement("button");
-          view.type = "button";
-          view.className = "skill-view secondary";
-          view.textContent = t("View");
-          view.setAttribute("aria-label", t("View Skill {id}", { id: skill.id }));
-          view.addEventListener("click", () => openSkillViewer(skill.id));
-          row.append(view);
+          row.append(skillViewButton(skill.id, "skillManager"));
         }
-        if (skill.source === "user") {
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.className = "skill-delete secondary";
-          const inUse = usedSkillIds.has(skill.id);
-          remove.textContent = inUse ? t("Disable") : t("Delete");
-          remove.title = inUse
-            ? t("Disable this Skill in every Session before deleting it.")
-            : t("Delete Skill {id}", { id: skill.id });
-          remove.setAttribute(
-            "aria-label",
-            inUse
-              ? t("Disable Skill {id} in every Session", { id: skill.id })
-              : t("Delete Skill {id}", { id: skill.id }),
-          );
-          remove.addEventListener("click", () => {
-            if (inUse) void disableSkillEverywhere(skill.id);
-            else void removeSkill(skill.id);
-          });
-          row.append(remove);
+        return row;
+      }
+
+      function skillViewButton(skillId, containerId) {
+        const view = document.createElement("button");
+        view.type = "button";
+        view.className = "skill-view secondary";
+        view.textContent = t("View");
+        view.setAttribute("aria-label", t("View Skill {id}", { id: skillId }));
+        view.addEventListener("click", () => openSkillViewer(skillId, containerId));
+        return view;
+      }
+
+      function pluginManagementButton(pluginId) {
+        const manage = document.createElement("button");
+        manage.type = "button";
+        manage.className = "skill-plugin-link secondary";
+        manage.textContent = t("Manage Plugin");
+        manage.addEventListener("click", () => openPlugin(pluginId));
+        return manage;
+      }
+
+      function renderPluginLibrarySource(plugin, availablePluginSkills) {
+        const group = document.createElement("section");
+        group.id = `pluginSkillSource-${plugin.id}`;
+        group.className = "skill-plugin-source";
+        group.dataset.pluginId = plugin.id;
+        group.setAttribute("role", "listitem");
+        group.tabIndex = -1;
+        const header = document.createElement("div");
+        header.className = "plugin-card-header";
+        const source = document.createElement("p");
+        source.className = "skill-source";
+        source.textContent = t("Plugin {pluginId} · {status}", {
+          pluginId: plugin.id,
+          status: t(plugin.enabled ? "Enabled" : "Disabled"),
+        });
+        header.append(source, pluginManagementButton(plugin.id));
+        group.append(header);
+        const skills = plugin.skills ?? availablePluginSkills.filter((skill) => skill.pluginId === plugin.id);
+        if (skills.length) {
+          const list = document.createElement("div");
+          list.className = "skill-list";
+          list.setAttribute("role", "list");
+          for (const skill of skills) {
+            const { row, copy } = createSkillRow({ ...skill, source: "plugin" });
+            row.append(copy);
+            list.append(row);
+          }
+          group.append(list);
+        } else {
+          const unavailable = document.createElement("p");
+          unavailable.className = "skill-empty";
+          unavailable.textContent = t("Skill metadata is unavailable.");
+          group.append(unavailable);
         }
+        return group;
+      }
+
+      function renderLibrarySkillRow(skill, usedSkillIds) {
+        const { row, copy } = createSkillRow(skill);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "skill-delete secondary";
+        const inUse = usedSkillIds.has(skill.id);
+        remove.textContent = inUse ? t("Disable") : t("Delete");
+        remove.title = inUse
+          ? t("Disable this Skill in every Session before deleting it.")
+          : t("Delete Skill {id}", { id: skill.id });
+        remove.setAttribute(
+          "aria-label",
+          inUse
+            ? t("Disable Skill {id} in every Session", { id: skill.id })
+            : t("Delete Skill {id}", { id: skill.id }),
+        );
+        remove.addEventListener("click", () => {
+          if (inUse) void disableSkillEverywhere(skill.id);
+          else void removeSkill(skill.id);
+        });
+        row.append(copy, remove);
         return row;
       }
 
@@ -170,7 +258,15 @@
         const pluginEmpty = document.getElementById("pluginSkillEmptyState");
         const userList = document.getElementById("userSkillList");
         const userEmpty = document.getElementById("userSkillEmptyState");
-        if (!builtInList || !builtInEmpty || !pluginList || !pluginEmpty || !userList || !userEmpty) return;
+        const libraryList = document.getElementById("userSkillLibraryList");
+        const libraryEmpty = document.getElementById("userSkillLibraryEmptyState");
+        const builtInLibraryList = document.getElementById("builtInSkillLibraryList");
+        const builtInLibraryEmpty = document.getElementById("builtInSkillLibraryEmptyState");
+        const pluginLibraryList = document.getElementById("pluginSkillLibraryList");
+        const pluginLibraryEmpty = document.getElementById("pluginSkillLibraryEmptyState");
+        if (!builtInList || !builtInEmpty || !pluginList || !pluginEmpty ||
+          !userList || !userEmpty || !libraryList || !libraryEmpty ||
+          !builtInLibraryList || !builtInLibraryEmpty || !pluginLibraryList || !pluginLibraryEmpty) return;
         const state = getState();
         const available = [...(state.availableSkills || [])].sort(
           (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
@@ -181,6 +277,7 @@
         const renderKey = JSON.stringify({
           locale: window.LiveSmithI18n.locale,
           available,
+          plugins: state.plugins,
           activeSkillIds: [...(state.activeSkillIds || [])].sort(),
           usedSkillIds: [...usedSkillIds].sort(),
         });
@@ -190,38 +287,53 @@
         }
         const focusedControl = focusedSkillControl();
         const focusTarget = focusedControl || (
-          document.activeElement === document.getElementById("skillManager")
+          retainedSkillFocus && document.activeElement === skillControlContainer(retainedSkillFocus)
             ? retainedSkillFocus
             : null
         );
         builtInList.replaceChildren();
         pluginList.replaceChildren();
         userList.replaceChildren();
+        libraryList.replaceChildren();
+        builtInLibraryList.replaceChildren();
         const active = new Set(state.activeSkillIds || []);
         const builtInSkills = available.filter((skill) => skill.source === "built-in");
         const pluginSkills = available.filter((skill) => skill.source === "plugin");
         const userSkills = available.filter((skill) => skill.source === "user");
+        const pluginSources = [...(state.plugins || [])].filter((plugin) =>
+          plugin.skillCount > 0 || pluginSkills.some((skill) => skill.pluginId === plugin.id)
+        ).sort((left, right) => left.id.localeCompare(right.id));
         builtInEmpty.hidden = builtInSkills.length !== 0;
         pluginEmpty.hidden = pluginSkills.length !== 0;
         userEmpty.hidden = userSkills.length !== 0;
+        libraryEmpty.hidden = userSkills.length !== 0;
+        builtInLibraryEmpty.hidden = builtInSkills.length !== 0;
+        pluginLibraryEmpty.hidden = pluginSources.length !== 0;
+        pluginLibraryList.replaceChildren(...pluginSources.map((plugin) => renderPluginLibrarySource(plugin, pluginSkills)));
 
         for (const skill of builtInSkills) {
-          builtInList.append(renderSkillRow(skill, active, usedSkillIds));
+          builtInList.append(renderSessionSkillRow(skill, active));
+          const { row, copy } = createSkillRow(skill);
+          row.append(copy);
+          if (builtInDefinitions.has(skill.id)) row.append(skillViewButton(skill.id, "skillLibrary"));
+          builtInLibraryList.append(row);
         }
         for (const skill of pluginSkills) {
-          pluginList.append(renderSkillRow(skill, active, usedSkillIds));
+          pluginList.append(renderSessionSkillRow(skill, active));
         }
         for (const skill of userSkills) {
-          userList.append(renderSkillRow(skill, active, usedSkillIds));
+          userList.append(renderSessionSkillRow(skill, active));
+          libraryList.append(renderLibrarySkillRow(skill, usedSkillIds));
         }
         if (busy) {
-          retainedSkillFocus = focusTarget?.control === "view" ? null : focusTarget;
+          const readOnlyFocus = ["view", "plugin"].includes(focusTarget?.control);
+          retainedSkillFocus = readOnlyFocus ? null : focusTarget;
           for (const control of document.querySelectorAll(
             ".skill-list input, .skill-delete",
           )) {
             control.disabled = true;
           }
-          if (focusTarget?.control === "view") restoreSkillFocus(focusTarget);
+          if (readOnlyFocus) restoreSkillFocus(focusTarget);
         } else {
           retainedSkillFocus = null;
           restoreSkillFocus(focusTarget);
@@ -358,26 +470,29 @@
         ));
         if (receipt && text) text.value = "";
         syncPastedSkillAction();
-        if (document.activeElement !== document.getElementById("skillManager")) {
+        const library = document.getElementById("skillLibrary");
+        if (document.activeElement !== library) {
           return;
         }
         const focusTarget = receipt
-          ? [...document.querySelectorAll(".skill-row")]
+          ? [...library.querySelectorAll(".skill-row")]
               .find((row) => row.dataset.skillId === receipt.id)
-              ?.querySelector('input[type="checkbox"]')
+              ?.querySelector(".skill-delete")
           : document.getElementById("installPastedSkillButton");
-        (focusTarget || document.querySelector(".skill-paste > summary"))?.focus();
+        (focusTarget || library.querySelector(".skill-paste > summary"))?.focus();
       }
 
       function setBusy(nextBusy) {
         const manager = document.getElementById("skillManager");
+        const library = document.getElementById("skillLibrary");
         if (nextBusy && !busy) {
           const focused = focusedSkillControl();
-          if (focused?.control !== "view") retainedSkillFocus = focused;
-          if (manager?.contains(document.activeElement) && document.activeElement.matches(
+          if (!["view", "plugin"].includes(focused?.control)) retainedSkillFocus = focused;
+          const container = document.activeElement.closest("#skillManager, #skillLibrary");
+          if (container && document.activeElement.matches(
             'input, textarea, .skill-delete, #installPastedSkillButton',
           )) {
-            manager.focus({ preventScroll: true });
+            container.focus({ preventScroll: true });
           }
         }
         const wasBusy = busy;
@@ -396,11 +511,14 @@
           if (control.disabled !== busy) control.disabled = busy;
         }
         syncPastedSkillAction();
-        if (manager?.getAttribute("aria-busy") !== busyValue) {
-          manager?.setAttribute("aria-busy", busyValue);
+        for (const container of [manager, library]) {
+          if (container?.getAttribute("aria-busy") !== busyValue) {
+            container?.setAttribute("aria-busy", busyValue);
+          }
         }
         if (wasBusy && !busy) {
-          const focusTarget = document.activeElement === manager
+          const focusTarget = retainedSkillFocus &&
+            document.activeElement === skillControlContainer(retainedSkillFocus)
             ? retainedSkillFocus
             : null;
           retainedSkillFocus = null;
@@ -409,6 +527,7 @@
       }
 
       function initialize() {
+        skillViewerHome = document.getElementById("skillViewer").parentElement;
         document.getElementById("closeSkillViewer").addEventListener(
           "click", () => closeSkillViewer(),
         );
@@ -453,5 +572,9 @@
         render();
       }
 
-      return { initialize, render, setBusy };
+      function showLibrary() {
+        if (viewedSkillOrigin?.containerId === "skillLibrary") closeSkillViewer(false);
+      }
+
+      return { initialize, render, setBusy, showLibrary };
       };

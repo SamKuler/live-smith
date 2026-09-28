@@ -23,6 +23,8 @@
         let retainedSessionControlFocus = null;
         let renderedContextSummary = null;
         let sessionsPaneCollapsed = false;
+        let selectedExtensionCategory = "audio";
+        const extensionPages = { audio: "audioServicesSettings", mcp: "mcpSettings", skills: "skillLibrary", plugins: "pluginManager" };
         let statusUnderlay = {
           canceledFollowUpCount: 0,
           isError: false,
@@ -261,7 +263,19 @@
           installSkill: bridgeClient.installSkill,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
+          openPlugin: (pluginId) => openInspectorSection("extensions", `installedPlugin-${pluginId}`),
           updateComposerAutocomplete: composerInput.updateAutocomplete,
+        });
+
+        const connectionsManager = factories.createConnectionsManager({
+          addAudioConnection: bridgeClient.addAudioService,
+          clearAudioSecrets: bridgeClient.clearAudioConnectionSecrets,
+          confirmAction,
+          getAudioConnections: bridgeClient.getAudioConnections,
+          getState,
+          openSection: openExtensionCategory,
+          runCommand: bridgeClient.runCommand,
+          selectAudioConnection: bridgeClient.handleAudioServiceSelection,
         });
 
         const pluginManager = factories.createPluginManager({
@@ -269,6 +283,13 @@
           getState,
           inspectPlugin: bridgeClient.inspectPlugin,
           installPlugin: bridgeClient.installPlugin,
+          openPlugin: (pluginId) => openInspectorSection("extensions", `installedPlugin-${pluginId}`),
+          openMcpServers: (pluginId) => openInspectorSection("extensions", `pluginMcpSource-${pluginId}`),
+          openSkills: (pluginId) => openInspectorSection("extensions", `pluginSkillSource-${pluginId}`),
+          openConnections: (pluginId, serverId) => {
+            openInspectorSection("extensions", "mcpSettings");
+            connectionsManager.openPluginConnections(pluginId, serverId);
+          },
           runCommand: bridgeClient.runCommand,
         });
 
@@ -410,6 +431,7 @@
           const usage = bridgeClient.getContextUsage();
           if (!usage) {
             const unavailable = t("Context usage unavailable for the active Session.");
+            setPropertyIfChanged(document.getElementById("inspectorContextUsage"), "textContent", unavailable);
             setDataIfChanged(indicator, "state", "unavailable");
             if (indicator.style.getPropertyValue("--context-usage-offset")) {
               indicator.style.removeProperty("--context-usage-offset");
@@ -425,6 +447,7 @@
           );
           const roundedPercentage = Math.round(percentage);
           const description = t("Context usage: {usedTokens} of {totalTokens} tokens ({percentage}%). Latest accepted model turn.", { usedTokens: contextTokenFormatter.format(usage.usedTokens), totalTokens: contextTokenFormatter.format(usage.contextWindowTokens), percentage: roundedPercentage });
+          setPropertyIfChanged(document.getElementById("inspectorContextUsage"), "textContent", description);
           setDataIfChanged(indicator, "state", "exact");
           const offset = String(100 - percentage);
           if (indicator.style.getPropertyValue("--context-usage-offset") !== offset) {
@@ -433,6 +456,17 @@
           setAttributeIfChanged(indicator, "aria-label", description);
           setPropertyIfChanged(indicator, "title", description);
           setPropertyIfChanged(value, "textContent", `${roundedPercentage}%`);
+        }
+
+        function renderContextAttachments() {
+          const attachments = getState().pendingAttachments || [];
+          document.getElementById("contextAttachmentEmpty").hidden = attachments.length > 0;
+          document.getElementById("contextAttachmentList").replaceChildren(...attachments.map((attachment) => {
+            const item = document.createElement("li");
+            item.textContent = attachment.fileName;
+            item.setAttribute("translate", "no");
+            return item;
+          }));
         }
 
         function renderLiveContext() {
@@ -818,8 +852,59 @@
         }
 
         function openInspector(tab) {
+          const origin = document.activeElement;
           sessionTimeline.switchInspectorTab(tab || "agent");
           setInspectorOpen(true);
+          if (origin?.closest("#inspectorPane") && origin.closest("[hidden]")) {
+            document.querySelector('.tab-bar [aria-selected="true"]')?.focus({ preventScroll: true });
+          }
+        }
+
+        function openInspectorGroup(group) {
+          sessionTimeline.switchInspectorGroup(group);
+          setInspectorOpen(true);
+        }
+
+        function openInspectorSection(tab, sectionId) {
+          openInspector(tab);
+          const section = document.getElementById(sectionId);
+          if (section?.closest("#skillLibrary")) skillManager.showLibrary();
+          const category = section?.closest("[data-extension-page]")?.dataset.extensionPage;
+          if (category) openExtensionCategory(category);
+          section?.scrollIntoView?.({ block: "start" });
+          const target = section?.matches("[tabindex]") ? section
+            : section?.querySelector("button, input, select, textarea, summary");
+          target?.focus({ preventScroll: true });
+        }
+
+        function openExtensionCategory(category) {
+          if (!Object.hasOwn(extensionPages, category)) return;
+          const origin = document.activeElement;
+          if (selectedExtensionCategory !== category) {
+            if (selectedExtensionCategory === "audio") bridgeClient.clearAudioConnectionSecrets();
+            if (selectedExtensionCategory === "mcp") connectionsManager.clearSecrets();
+          }
+          selectedExtensionCategory = category;
+          for (const [name, id] of Object.entries(extensionPages)) {
+            const active = name === category;
+            const button = document.getElementById(`${name}ExtensionTab`);
+            button.setAttribute("aria-selected", String(active));
+            button.tabIndex = active ? 0 : -1;
+            document.getElementById(id).hidden = !active;
+          }
+          openInspector("extensions");
+          if (origin?.closest("[hidden]")) document.getElementById(`${category}ExtensionTab`).focus({ preventScroll: true });
+        }
+
+        function handleExtensionCategoryKeydown(event) {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const names = Object.keys(extensionPages);
+          const index = names.indexOf(selectedExtensionCategory);
+          const category = event.key === "Home" ? names[0] : event.key === "End" ? names.at(-1)
+            : names[(index + (event.key === "ArrowRight" ? 1 : -1) + names.length) % names.length];
+          openExtensionCategory(category);
+          document.getElementById(`${category}ExtensionTab`).focus();
         }
 
         function toggleInspector() {
@@ -1116,6 +1201,7 @@
           renderComposerRuntimeControls();
           renderSendPresentation();
           renderComposerContextUsage();
+          renderContextAttachments();
           bridgeClient.renderDefaultFollowUpBehavior();
           bridgeClient.renderNetworkProxySettings();
           bridgeClient.renderCustomInstructions();
@@ -1526,6 +1612,7 @@
           attachments.setBusy(operationBusy);
           skillManager.setBusy(skillsBusy);
           pluginManager.setBusy(skillsBusy);
+          connectionsManager.setBusy(skillsBusy);
 
           if (
             !settingsBusy &&
@@ -1576,10 +1663,11 @@
           renderSendPresentation,
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
+          renderConnections: connectionsManager.render,
           showFieldError: (field, message) => {
             if (field === "integrationConnections") {
-              openInspector("app");
-              document.getElementById("audioServiceApiKey").focus({ preventScroll: true });
+              openInspector("extensions");
+              if (selectedExtensionCategory === "audio") document.getElementById("audioServiceApiKey").focus({ preventScroll: true });
               return false;
             }
             openInspector(profileEditor.inspectorTabForField(field));
@@ -1592,9 +1680,11 @@
         delete window.LiveSmithFactories;
 
         window.LiveSmithUI = {
+          openExtensionCategory,
+          handleExtensionCategoryKeydown,
           handleAudioSettingsInput: bridgeClient.handleAudioSettingsInput,
-          handleAudioServiceSelection: bridgeClient.handleAudioServiceSelection,
-          addAudioService: bridgeClient.addAudioService,
+          handleAudioServiceSelection: connectionsManager.selectAudio,
+          addAudioService: connectionsManager.addAudio,
           removeAudioService: bridgeClient.removeAudioService,
           reloadAudioService: bridgeClient.reloadAudioService,
           saveAudioServiceSettings: bridgeClient.saveAudioServiceSettings,
@@ -1622,6 +1712,8 @@
           logoutOAuth: profileEditor.logoutOAuth,
           openOAuthVerification: profileEditor.openOAuthVerification,
           openInspector,
+          openInspectorGroup,
+          openInspectorSection,
           refreshOAuthAccount: profileEditor.refreshOAuthAccount,
           requestClose,
           runCommand: bridgeClient.runCommand,
@@ -1650,6 +1742,7 @@
           composerInput.initialize();
           skillManager.initialize();
           pluginManager.initialize();
+          connectionsManager.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();

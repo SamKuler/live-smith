@@ -79,15 +79,34 @@ test("new connection opens its editor and optional model controls do not dominat
   } finally { h.close(); }
 });
 
-test("connection maintenance closes when its selected connection changes", async () => {
+test("audio connection actions share one row and removal is only offered for saved accounts", async () => {
   const h = await createDialogHarness(audioState([service, musicService]));
   try {
     selectAudioService(h, service.id);
-    const maintenance = h.document.querySelector<HTMLDetailsElement>("#audioServiceMaintenance")!;
-    h.click("#audioServiceMaintenance > summary");
-    assert.equal(maintenance.open, true);
+    const actions = h.document.querySelector(".audio-commit-actions")!;
+    const remove = h.document.querySelector<HTMLButtonElement>("#removeAudioServiceButton")!;
+    const discard = h.document.querySelector<HTMLButtonElement>("#reloadAudioServiceButton")!;
+    const save = h.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!;
+    assert.deepEqual([...actions.children], [remove, discard, save]);
+    assert.equal(remove.hidden, false);
+    assert.equal(discard.disabled, true);
+    assert.equal(save.disabled, true);
+    h.input("#audioServiceName", "Edited audio account");
+    assert.equal(discard.disabled, false);
+    assert.equal(save.disabled, false);
+    h.click("#reloadAudioServiceButton");
+    assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, service.name);
+    assert.equal(discard.disabled, true);
+    assert.equal(save.disabled, true);
+    assert.equal(audioCommands(h).length, 0);
+    assert.ok(h.document.querySelector("#audioServiceKeyField #clearAudioServiceButton"));
     selectAudioService(h, musicService.id);
-    assert.equal(maintenance.open, false);
+    assert.equal(remove.hidden, false);
+    h.click("#addAudioServiceButton");
+    assert.equal(remove.hidden, true, "an unsaved connection has nothing to remove from storage");
+    assert.equal(discard.disabled, false);
+    h.click("#reloadAudioServiceButton");
+    assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, service.name);
   } finally { h.close(); }
 });
 

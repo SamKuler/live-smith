@@ -1621,14 +1621,13 @@ test("the circular transport button preserves Send and Stop semantics", async ()
   }
 });
 
-test("Agent owns Model Profile, Context owns instructions and Session Skills, and App owns preferences", async () => {
+test("Inspector sections keep Session content separate from global Agent, Extensions and App settings", async () => {
   const harness = await createDialogHarness();
   try {
     assert.equal(harness.document.querySelector("#agentTab")?.textContent, "Agent");
     assert.equal(harness.document.querySelector("#appTab")?.textContent, "App");
     assert.equal(harness.document.querySelector("#settingsTab"), null);
-    assert.equal(harness.document.querySelector("#skillsTab"), null);
-    for (const name of ["agent", "app", "context"] as const) {
+    for (const name of ["agent", "app", "extensions", "context", "skills"] as const) {
       const tab = harness.document.querySelector(`#${name}Tab`);
       const panel = harness.document.querySelector(`#${name}Panel`);
       assert.equal(tab?.getAttribute("aria-controls"), `${name}Panel`);
@@ -1637,6 +1636,8 @@ test("Agent owns Model Profile, Context owns instructions and Session Skills, an
     const agentPanel = harness.document.querySelector("#agentPanel");
     const appPanel = harness.document.querySelector("#appPanel");
     const contextPanel = harness.document.querySelector("#contextPanel");
+    const skillsPanel = harness.document.querySelector("#skillsPanel");
+    const extensionsPanel = harness.document.querySelector("#extensionsPanel");
     const contextRoot = harness.document.querySelector("#context");
     const contextGroup = contextRoot?.querySelector(":scope > .context-shell");
     const profileGroup = harness.document.querySelector("#modelProfileSettings");
@@ -1649,6 +1650,8 @@ test("Agent owns Model Profile, Context owns instructions and Session Skills, an
     assert.ok(agentPanel);
     assert.ok(appPanel);
     assert.ok(contextPanel);
+    assert.ok(skillsPanel);
+    assert.ok(extensionsPanel);
     assert.ok(contextRoot);
     assert.ok(contextGroup);
     assert.ok(profileGroup);
@@ -1672,9 +1675,12 @@ test("Agent owns Model Profile, Context owns instructions and Session Skills, an
     assert.equal(agentPanel.contains(skillManager), false);
     assert.equal(agentPanel.contains(skillViewer), false);
     assert.equal(contextPanel.contains(contextRoot), true);
-    assert.equal(contextPanel.contains(customInstructions), true);
-    assert.equal(contextPanel.contains(skillManager), true);
-    assert.equal(contextPanel.contains(skillViewer), true);
+    assert.equal(agentPanel.contains(customInstructions), true);
+    assert.equal(skillsPanel.contains(skillManager), true);
+    assert.equal(skillsPanel.contains(skillViewer), true);
+    for (const id of ["pluginManager", "audioSettingsSection", "skillLibrary", "skillDropZone"]) {
+      assert.equal(extensionsPanel.contains(harness.document.getElementById(id)), true);
+    }
     assert.equal(appPanel.contains(appGroup), true);
     const profileHeader = profileGroup.querySelector(":scope > .inspector-scope-header");
     const appHeader = appGroup.querySelector(":scope > .inspector-scope-header");
@@ -1701,8 +1707,6 @@ test("Agent owns Model Profile, Context owns instructions and Session Skills, an
     assert.equal(profileGroup.contains(lockNotice), true);
     assert.equal(profileControls.contains(lockNotice), false);
     assert.equal(profileControls.getAttribute("aria-busy"), "false");
-    assert.equal(contextRoot.nextElementSibling, customInstructions);
-    assert.equal(customInstructions.nextElementSibling, skillManager);
 
     assert.ok(
       harness.document.querySelector("#modelSettingsSection #discoverModelsButton"),
@@ -1760,7 +1764,7 @@ test("Agent owns Model Profile, Context owns instructions and Session Skills, an
     assert.equal(harness.document.querySelector("#microphoneButton"), null);
     assert.equal(harness.document.querySelector("#voiceButton"), null);
     assert.equal(
-      harness.document.querySelector(".settings-actions-owner")?.textContent,
+      harness.document.querySelector("#settingsProfileActionsLabel")?.textContent,
       "Profile",
     );
     assert.equal(

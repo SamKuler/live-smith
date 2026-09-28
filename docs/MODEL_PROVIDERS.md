@@ -591,7 +591,7 @@ uses the Antigravity product backend.
 ## External audio tools
 
 External audio tools are provided by immutable built-in Plugins and configured
-independently of chat Profiles in **Inspector → App → Connections**. Add a named
+independently of chat Profiles in **Settings → Extensions → Audio services**. Add a named
 Connection, select its Plugin, enter the required credential, and save it before
 use. Up to 20 Connections can coexist, including multiple accounts for the same
 Plugin. The list shows each Plugin and its saved or draft status. Select a row to
@@ -813,7 +813,7 @@ verification uses the separate in-app workflow below.
 
 This is a manual Cookie import, not an automatic OAuth callback:
 
-1. Add a Suno connection in **Inspector → App → Connections** and open Suno.
+1. Add a Suno connection in **Settings → Extensions → Audio services** and open Suno.
    Opening the website does not require saving the connection first.
 2. Open the browser's developer tools → Network, reload Suno, and inspect a
    request to `auth.suno.com` or `studio-api-prod.suno.com`.

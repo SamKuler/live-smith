@@ -73,7 +73,7 @@
             renderAudioTools();
           }
         });
-        for (const id of ["inspectorPane", "appPanel"]) {
+        for (const id of ["inspectorPane", "extensionsPanel"]) {
           cookieVisibility.observe(document.getElementById(id), { attributes: true, attributeFilter: ["hidden"] });
         }
         cookieVisibility.observe(document.getElementById("audioServiceFields"), { attributes: true, attributeFilter: ["open"] });
@@ -5979,6 +5979,15 @@
         return { id, name, provider, enabled, ...(modelId ? { modelId } : {}), ...(callbackUrl ? { callbackUrl } : {}) };
       }
 
+      function discardUnchangedAudioDraft() {
+        const draft = audioSettingsDrafts.get(selectedAudioServiceId);
+        // Submission clears the key input too; its outcome still owns the draft.
+        if (audioSettingsSubmitting || !draft?.baseConnection || draft.conflict || draft.outcomeUnknown ||
+          document.getElementById("audioServiceApiKey").value ||
+          !sameJsonValue(audioConnectionFields(draft.connection), audioConnectionFields(draft.baseConnection))) return false;
+        return audioSettingsDrafts.delete(selectedAudioServiceId);
+      }
+
       function audioOperationLabel(operation) {
         return t({ separate_stems: "Stem separation", generate_music: "Music generation",
           generate_lyrics: "Generate lyrics",
@@ -6015,6 +6024,7 @@
         if (id !== selectedAudioServiceId) {
           document.getElementById("audioServiceApiKey").value = "";
           clearSunoCookieInput();
+          discardUnchangedAudioDraft();
         }
         selectedAudioServiceId = id;
         document.getElementById("audioServiceFields").open = true;
@@ -6025,7 +6035,7 @@
         if (audioSettingsBusy || audioSettingsSubmitting) return;
         const count = new Set([...(confirmedIntegrationConnections?.connections || []).map((service) => service.id),
           ...audioSettingsDrafts.keys()]).size;
-        if (count >= __MAX_INTEGRATION_CONNECTIONS__) return;
+        if (count + confirmedMcpConnections.length >= __MAX_INTEGRATION_CONNECTIONS__) return;
         const id = createCorrelationId("audio-service");
         const provider = Object.keys(audioServiceCapabilities).find((provider) =>
           audioServiceCapabilities[provider].tools.length > 0 ||
@@ -6033,6 +6043,7 @@
         if (!provider) return;
         clearSunoCookieInput();
         document.getElementById("audioServiceApiKey").value = "";
+        discardUnchangedAudioDraft();
         audioSettingsDrafts.set(id, { connection: { id, name: "", provider, enabled: false },
           baseConnection: null, expectedRevision: confirmedIntegrationConnections?.revision || "0", conflict: false });
         selectedAudioServiceId = id;
@@ -6074,7 +6085,9 @@
           baseConnection: previous ? previous.baseConnection : saved,
           expectedRevision: previous?.expectedRevision || confirmedIntegrationConnections?.revision || "0",
           conflict: previous?.conflict || false,
+          ...(previous?.outcomeUnknown ? { outcomeUnknown: true } : {}),
         });
+        discardUnchangedAudioDraft();
         renderAudioTools();
       }
 
@@ -6141,6 +6154,8 @@
         try {
           await runCommand("save_global_settings", { integrationConnections: patch }, {
             onOutcome: (outcome) => {
+              if (draft && audioSettingsDrafts.get(id) === draft &&
+                !outcome.known && (outcome.succeeded || commandReconciliationBlocked)) draft.outcomeUnknown = true;
               const current = savedAudioConnection(id);
               if (outcome.known && outcome.succeeded && current &&
                 compareDecimalRevisions(confirmedIntegrationConnections.revision, patch.expectedRevision) > 0 &&
@@ -6178,6 +6193,8 @@
             action: "remove", connectionId: id,
             expectedRevision: draft?.expectedRevision || confirmedIntegrationConnections?.revision || "0",
           } }, { onOutcome: (outcome) => {
+            if (draft && audioSettingsDrafts.get(id) === draft &&
+              !outcome.known && (outcome.succeeded || commandReconciliationBlocked)) draft.outcomeUnknown = true;
             if (outcome.known && outcome.succeeded && !savedAudioConnection(id)) {
               audioSettingsDrafts.delete(id);
               selectedAudioServiceId = confirmedIntegrationConnections?.connections[0]?.id || null;
@@ -6397,6 +6414,27 @@
           : "Load this account's versions without generating music or spending credits.");
       }
 
+      function getAudioConnections() {
+        const choices = new Map((confirmedIntegrationConnections?.connections || []).map((connection) => [connection.id, connection]));
+        for (const [id, value] of audioSettingsDrafts) choices.set(id, value.connection);
+        return [...choices].map(([id, value]) => {
+          const presentation = audioConnectionPresentation(value, savedAudioConnection(id), audioSettingsDrafts.get(id));
+          return { id, name: value.name || t("New connection"),
+            source: t(audioServiceCapabilities[value.provider].label), ...presentation,
+            title: (value.name || t("New connection")) + " · " + t(audioServiceCapabilities[value.provider].label) +
+              " · " + (usesImportedSession(audioServiceCapabilities[value.provider]) ? sunoAccountStatus(id) : presentation.label),
+            selected: id === selectedAudioServiceId,
+            disabled: audioSettingsSubmitting || audioSettingsBusy && !sunoLoginCommands.has(commandInProgress) };
+        });
+      }
+
+      function clearAudioConnectionSecrets() {
+        document.getElementById("audioServiceApiKey").value = "";
+        clearSunoCookieInput();
+        discardUnchangedAudioDraft();
+        renderAudioTools();
+      }
+
       function renderAudioTools() {
         bindAudioControls();
         const saved = savedAudioConnection();
@@ -6411,42 +6449,9 @@
         }
         document.getElementById("sunoAccountName").textContent = "";
         document.getElementById("sunoAccountName").hidden = true;
-        const picker = document.getElementById("audioServiceSelector");
-        const choices = new Map((confirmedIntegrationConnections?.connections || []).map((connection) => [connection.id, connection]));
-        for (const [id, value] of audioSettingsDrafts) choices.set(id, value.connection);
-        const existingRows = new Map([...picker.children].map((row) => [row.dataset.audioServiceId, row]));
-        for (const [id, row] of existingRows) if (!choices.has(id)) row.remove();
-        for (const [id, value] of choices) {
-          let row = existingRows.get(id);
-          if (!row) {
-            row = document.createElement("button"); row.type = "button";
-            row.className = "audio-service-row"; row.dataset.audioServiceId = id;
-            const label = document.createElement("span"); label.className = "audio-service-label";
-            label.append(document.createElement("strong"), document.createElement("small"));
-            const status = document.createElement("span"); status.className = "audio-service-status activity-state";
-            row.append(label, status);
-            row.addEventListener("click", () => handleAudioServiceSelection(id));
-            picker.append(row);
-          }
-          const rowDraft = audioSettingsDrafts.get(id);
-          const configured = savedAudioConnection(id);
-          const presentation = audioConnectionPresentation(value, configured, rowDraft);
-          row.children[0].children[0].textContent = value.name || t("New connection");
-          row.children[0].children[1].textContent = t(audioServiceCapabilities[value.provider].label);
-          row.children[1].textContent = presentation.label;
-          row.children[1].dataset.status = presentation.status;
-          row.title = (value.name || t("New connection")) + " · " + t(audioServiceCapabilities[value.provider].label) +
-            " · " + (usesImportedSession(audioServiceCapabilities[value.provider])
-              ? sunoAccountStatus(id) : presentation.label);
-          row.disabled = audioSettingsSubmitting || audioSettingsBusy && !sunoLoginCommands.has(commandInProgress);
-          row.setAttribute("aria-pressed", String(id === selectedAudioServiceId));
-        }
-        picker.hidden = !choices.size;
-        document.getElementById("addAudioServiceButton").disabled = busy || choices.size >= __MAX_INTEGRATION_CONNECTIONS__;
         const editor = document.getElementById("audioServiceFields");
         editor.hidden = !service;
         if (!service) editor.open = false;
-        document.getElementById("audioServiceEmpty").hidden = Boolean(service);
         const provider = document.getElementById("audioServiceProvider");
         provider.replaceChildren();
         for (const [id, capability] of Object.entries(audioServiceCapabilities)) {
@@ -6590,8 +6595,8 @@
         draftStatus.classList.toggle("dirty", Boolean(draft) && !conflict);
         draftStatus.classList.toggle("field-error", conflict);
         const reload = document.getElementById("reloadAudioServiceButton");
-        reload.hidden = !draft;
-        reload.disabled = busy;
+        reload.hidden = false;
+        reload.disabled = busy || !draft;
         reload.dataset.i18n = conflict ? "Reload connection" : "Discard";
         reload.textContent = t(reload.dataset.i18n);
         document.getElementById("saveAudioServiceButton").disabled = busy || conflict || !draft;
@@ -6600,18 +6605,9 @@
           service && usesImportedSession(audioServiceCapabilities[service.provider]),
         );
         document.getElementById("removeAudioServiceButton").disabled = busy || conflict || !service;
-        const maintenance = document.getElementById("audioServiceMaintenance");
-        const maintenanceOwner = service ? service.id + ":" + service.provider : "";
-        if (maintenance.dataset.owner !== maintenanceOwner) {
-          maintenance.dataset.owner = maintenanceOwner;
-          maintenance.open = false;
-        }
-        maintenance.hidden = !saved;
-        document.getElementById("audioServiceMaintenanceHint").textContent = service &&
-          usesImportedSession(audioServiceCapabilities[service.provider])
-          ? t("Remove this connection. Downloaded audio stays available.")
-          : t("Clear the saved API key or remove this connection. Downloaded audio stays available.");
+        document.getElementById("removeAudioServiceButton").hidden = !saved;
         renderAudioJobs();
+        view?.renderConnections();
       }
 
       function audioResultLabel(role, job) {
@@ -10052,6 +10048,8 @@
       return {
         connectView,
         renderAudioTools,
+        getAudioConnections,
+        clearAudioConnectionSecrets,
         setAudioToolsBusy,
         handleAudioSettingsInput,
         handleAudioServiceSelection,

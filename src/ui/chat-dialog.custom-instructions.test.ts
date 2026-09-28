@@ -16,19 +16,18 @@ function customInstructionCommands(
       Object.hasOwn(body, "customInstructions"));
 }
 
-test("Context exposes compact Custom Instructions and saves the current draft", async () => {
+test("Agent settings expose global Custom Instructions and save the current draft", async () => {
   const state = stateFixture();
   state.settings.customInstructions = "Prefer editable MIDI arrangements.";
   const harness = await createDialogHarness(state);
   try {
-    harness.click("#contextTab");
-    const panel = harness.document.querySelector<HTMLElement>("#contextPanel");
+    harness.click("#agentTab");
+    const panel = harness.document.querySelector<HTMLElement>("#agentPanel");
     const section = harness.document.querySelector<HTMLElement>("#customInstructionsSettings");
-    const skills = harness.document.querySelector<HTMLElement>("#skillManager");
     const control = harness.document.querySelector<HTMLTextAreaElement>("#customInstructions");
     const save = harness.document.querySelector<HTMLButtonElement>("#saveCustomInstructionsButton");
     assert.equal(panel?.hidden, false);
-    assert.ok(section && skills && section.compareDocumentPosition(skills) & harness.window.Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.ok(section && panel?.contains(section));
     assert.equal(control?.value, "Prefer editable MIDI arrangements.");
     assert.equal(save?.disabled, true);
 
@@ -51,7 +50,7 @@ test("Context exposes compact Custom Instructions and saves the current draft", 
   }
 });
 
-test("Custom Instructions errors focus Context and a newer clean peer value is adopted", async () => {
+test("Custom Instructions errors focus Agent settings and a newer clean value is adopted", async () => {
   const state = stateFixture();
   const harness = await createDialogHarness(state);
   try {
@@ -59,7 +58,7 @@ test("Custom Instructions errors focus Context and a newer clean peer value is a
     harness.failNextCommand("Custom Instructions are invalid.", "customInstructions");
     harness.click("#saveCustomInstructionsButton");
     await harness.settle();
-    assert.equal(harness.document.querySelector("#contextTab")?.getAttribute("aria-selected"), "true");
+    assert.equal(harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"), "true");
     assert.equal(harness.document.activeElement?.id, "customInstructions");
     assert.match(harness.document.querySelector("#customInstructionsError")?.textContent ?? "", /invalid/i);
   } finally {

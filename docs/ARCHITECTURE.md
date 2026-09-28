@@ -718,6 +718,27 @@ the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
+The Inspector separates Session Context and Skills from global Agent,
+Extensions, and App settings. Session Skill selection has no installation or
+deletion controls; standalone Skill management and Plugin/Connection management
+belong to Extensions. Global Custom Instructions belong to Agent settings.
+Extensions separates Audio services, MCP, Skills, and Plugins. Audio services
+owns audio account editors. MCP owns standalone and package-provided server
+connections, launch details, and server permissions. Skills groups built-in,
+user, and package-provided definitions by source. Plugin cards own package
+lifecycle and link to the capabilities they provide. A Plugin that contributes
+only Skills requires no Connection. Both connection views use the same persisted
+collection, revision, unique-name rule, and quota. Switching capability pages
+preserves nonsecret drafts and clears newly entered credentials. Resource editors
+use one bottom action bar: removal on the left, discard and save on the right.
+Read-only package and Skill content has no draft-save controls.
+
+Installed package views expose parsed Skill IDs and descriptions independently
+of package enablement. Absent Skill summary metadata remains explicitly unavailable;
+it is not interpreted as an empty package. Session Skill activation continues to
+resolve only enabled packages. Browsing the library neither reads full imported
+Skill bodies into the dialog nor starts an MCP server.
+
 The `load_session_tools` handler builds a modal tool directory from canonical
 Live and built-in definitions and the ordinary approved MCP discovery path.
 The read-only `POST /session-tools` endpoint accepts the Session identifier,

@@ -68,6 +68,7 @@ function installedPlugin(enabled = false) {
     sourceFormat: "agent-plugins-1.0" as const,
     enabled,
     skillCount: 1,
+    skills: [{ id: "music-tools:convert", description: "Convert Session audio to MIDI" }],
     mcpServers: [
       {
         id: "converter",
@@ -95,23 +96,151 @@ function installedPlugin(enabled = false) {
   };
 }
 
-test("Plugin cards expose bounded capabilities and compact management actions", async () => {
+test("Plugin cards link to capabilities while MCP sources retain declared servers and launch details", async () => {
   const state = stateFixture();
   state.plugins = [installedPlugin()];
   const harness = await createDialogHarness(state);
   try {
-    const card = harness.document.querySelector<HTMLElement>('[data-plugin-id="music-tools"]');
+    const card = harness.document.querySelector<HTMLElement>('#installedPlugin-music-tools');
+    const mcpSource = harness.document.querySelector<HTMLElement>('#pluginMcpSource-music-tools');
     assert.ok(card);
+    assert.ok(mcpSource);
     assert.match(card.textContent ?? "", /1\.2\.0.*Agent Plugin/s);
-    assert.match(card.textContent ?? "", /1 Skills.*2 MCP servers/s);
-    assert.match(card.textContent ?? "", /converter.*Local process.*\.\/bin\/converter/s);
-    assert.match(card.textContent ?? "", /catalog.*Remote MCP.*https:\/\/plugins\.example\.test/s);
+    assert.match(card.querySelector(".plugin-capability-links")?.textContent ?? "", /Skills · 1.*MCP servers · 2/s);
+    assert.equal(card.querySelector(".plugin-server-row"), null);
+    assert.equal(card.querySelector(".plugin-server-approval"), null);
+    assert.match(mcpSource.textContent ?? "", /music-tools.*Disabled/s);
+    assert.match(mcpSource.textContent ?? "", /converter.*Local process.*\.\/bin\/converter/s);
+    assert.match(mcpSource.textContent ?? "", /catalog.*Remote MCP.*https:\/\/plugins\.example\.test/s);
+    assert.equal(mcpSource.querySelectorAll(".plugin-connection-unbound").length, 2);
+    assert.equal(mcpSource.querySelectorAll(".plugin-manage-connections").length, 0);
     assert.match(card.textContent ?? "", /Not used by Live Smith: hooks/);
     assert.doesNotMatch(card.textContent ?? "", /private\/catalog|token=hidden/u);
     assert.equal(card.querySelector<HTMLButtonElement>(".danger-action")?.disabled, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#pluginDropZone")?.hidden, true);
+    const details = mcpSource.querySelector<HTMLDetailsElement>('.plugin-server-details[data-server-id="converter"]');
+    assert.equal(details?.open, false);
+    harness.click('.plugin-server-details[data-server-id="converter"] > summary');
+    assert.equal(details?.open, true);
+    assert.match(details?.textContent ?? "", /Command.*\.\/bin\/converter.*Arguments.*Working directory/s);
+    assert.equal(commandCalls(harness).length, 0, "reading launch details does not grant permission or start a server");
+    harness.select("#uiLanguage", "zh-CN");
+    await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLDetailsElement>('.plugin-server-details[data-server-id="converter"]')?.open, true);
+    assert.equal(harness.document.querySelector('.plugin-server-details[data-server-id="converter"] > summary')?.textContent, "启动详情");
     assert.deepEqual(harness.errors, []);
   } finally {
+    harness.close();
+  }
+});
+
+test("Plugin capability links open their source page and return to the installed package", async () => {
+  const state = stateFixture();
+  state.plugins = [installedPlugin(false)];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#extensionsTab");
+    harness.click("#pluginsExtensionTab");
+    harness.click("#installedPlugin-music-tools .plugin-open-mcp");
+    assert.equal(harness.document.querySelector<HTMLElement>("#mcpSettings")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#pluginManager")?.hidden, true);
+    assert.equal(harness.document.activeElement?.id, "pluginMcpSource-music-tools");
+    harness.click("#pluginMcpSource-music-tools .plugin-source-link");
+    assert.equal(harness.document.querySelector<HTMLElement>("#pluginManager")?.hidden, false);
+    assert.equal(harness.document.activeElement?.id, "installedPlugin-music-tools");
+    harness.click("#installedPlugin-music-tools .plugin-open-skills");
+    assert.equal(harness.document.querySelector<HTMLElement>("#skillLibrary")?.hidden, false);
+    assert.equal(harness.document.activeElement?.id, "pluginSkillSource-music-tools");
+    harness.click("#builtInSkillLibraryList .skill-view");
+    assert.equal(harness.document.querySelector<HTMLElement>("#skillLibraryContent")?.hidden, true);
+    harness.click("#pluginsExtensionTab");
+    harness.click("#installedPlugin-music-tools .plugin-open-skills");
+    assert.equal(harness.document.querySelector<HTMLElement>("#skillLibraryContent")?.hidden, false);
+    assert.equal(harness.document.querySelector<HTMLElement>("#skillViewer")?.hidden, true);
+    assert.equal(harness.document.activeElement?.id, "pluginSkillSource-music-tools");
+    harness.click("#pluginSkillSource-music-tools .skill-plugin-link");
+    assert.equal(harness.document.querySelector<HTMLElement>("#pluginManager")?.hidden, false);
+    assert.equal(harness.document.activeElement?.id, "installedPlugin-music-tools");
+    assert.deepEqual(commandCalls(harness), []);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("MCP server permission focus returns to the same control after the state update", async () => {
+  const state = stateFixture();
+  const plugin = installedPlugin(true);
+  plugin.mcpServers[0]!.approved = true;
+  state.plugins = [plugin];
+  const harness = await createDialogHarness(state);
+  let commandHeld = false;
+  try {
+    harness.click("#extensionsTab");
+    harness.click("#mcpExtensionTab");
+    const selector = '#pluginMcpSource-music-tools .plugin-server-group[data-server-id="converter"] .plugin-server-approval';
+    const approval = harness.document.querySelector<HTMLButtonElement>(selector);
+    assert.ok(approval);
+    approval.focus();
+    harness.holdNextCommand();
+    commandHeld = true;
+    approval.click();
+    await waitForCondition(() => commandCalls(harness).length === 1, "Expected a revoke command.");
+    assert.equal(harness.document.activeElement?.id, "pluginMcpSource-music-tools");
+    harness.releaseHeldCommand();
+    commandHeld = false;
+    await harness.settle();
+    assert.equal(harness.document.activeElement, harness.document.querySelector(selector));
+    assert.equal(harness.document.querySelector(selector)?.textContent, "Approve");
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (commandHeld) harness.releaseHeldCommand();
+    harness.close();
+  }
+});
+
+test("Plugin Skill summary wire data rejects private fields and inconsistent contents", async () => {
+  const state = stateFixture();
+  state.plugins = [installedPlugin(false)];
+  const harness = await createDialogHarness(state);
+  let sendHeld = false;
+  try {
+    harness.holdNextSend();
+    sendHeld = true;
+    harness.input("#prompt", "Read the current Session");
+    harness.click("#sendButton");
+    await waitForCondition(() => harness.sendIds.length === 1, "Expected a held send.");
+    const summary = state.plugins[0]!.skills![0]!;
+    const invalidContents = [
+      { skills: [{ ...summary, body: "private-body" }] },
+      { skills: [{ ...summary, id: "another-plugin:convert" }] },
+      { skills: [{ ...summary, id: "music-tools:" + "a".repeat(65) }] },
+      { skills: [{ ...summary, description: "a".repeat(241) }] },
+      { skills: [{ ...summary, description: " " }] },
+      { skills: [] },
+      { skillCount: 2, skills: [summary, summary] },
+      { skillCount: 2049, skills: Array.from({ length: 2049 }, (_, index) => ({ ...summary, id: `music-tools:skill-${index}` })) },
+    ];
+    for (const contents of invalidContents) {
+      harness.emitServerEvent({
+        type: "done", sendId: harness.sendIds[0], sessionId: state.activeSessionId,
+        state: { ...state, plugins: [{ ...state.plugins[0], description: "Rejected package state", ...contents }] },
+      });
+      await harness.settle();
+      assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Stop");
+      assert.doesNotMatch(harness.document.querySelector("#installedPlugin-music-tools")?.textContent ?? "", /Rejected package state/u);
+    }
+    harness.emitServerEvent({
+      type: "done", sendId: harness.sendIds[0], sessionId: state.activeSessionId,
+      state: { ...state, plugins: [{ ...state.plugins[0], description: "Accepted package state" }] },
+    });
+    await harness.settle();
+    assert.equal(harness.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.match(harness.document.querySelector("#installedPlugin-music-tools")?.textContent ?? "", /Accepted package state/u);
+    harness.releaseHeldSend();
+    sendHeld = false;
+    await harness.settle();
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    if (sendHeld) harness.releaseHeldSend();
     harness.close();
   }
 });
@@ -140,7 +269,7 @@ test("an installed Plugin still accepts ZIP replacement drops without a persiste
     assert.equal(harness.document.querySelector<HTMLElement>("#pluginDropZone")?.hidden, true);
     const event = new harness.window.Event("drop", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "dataTransfer", { value: { files: [pluginFile(harness)], types: ["Files"] } });
-    harness.document.querySelector('[data-plugin-id="music-tools"]')?.dispatchEvent(event);
+    harness.document.querySelector('#installedPlugin-music-tools')?.dispatchEvent(event);
     assert.equal(event.defaultPrevented, true);
     await waitForCondition(() => harness.calls.some((call) => call.path === "/plugins/inspect"),
       "Expected a replacement ZIP to be inspected.");
@@ -161,8 +290,9 @@ test("Plugin permission errors are announced inside the Inspector", async () => 
     harness.click('[data-plugin-id="music-tools"] .plugin-server-approval');
     await harness.acceptAppConfirmation();
     await harness.settle();
-    assert.match(harness.document.querySelector("#pluginStatus")?.textContent ?? "", /Unable to approve this server/u);
-    assert.equal(harness.document.querySelector("#pluginStatus")?.getAttribute("role"), "status");
+    assert.match(harness.document.querySelector("#pluginMcpStatus")?.textContent ?? "", /Unable to approve this server/u);
+    assert.doesNotMatch(harness.document.querySelector("#pluginStatus")?.textContent ?? "", /Unable to approve this server/u);
+    assert.equal(harness.document.querySelector("#pluginMcpStatus")?.getAttribute("role"), "status");
     assert.doesNotMatch(harness.document.querySelector("#status")?.textContent ?? "", /Unable to approve this server/u);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
@@ -251,9 +381,10 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
       enabled: false,
     });
     assert.equal(
-      harness.document.querySelector('[data-skill-id="music-tools:convert"]'),
+      harness.document.querySelector('#pluginSkillList [data-skill-id="music-tools:convert"]'),
       null,
     );
+    assert.match(harness.document.querySelector('#pluginSkillSource-music-tools')?.textContent ?? "", /Disabled.*music-tools:convert/s);
 
     harness.click('[data-plugin-id="music-tools"] .danger-action');
     await harness.acceptAppConfirmation();
@@ -374,7 +505,7 @@ test("Plugin replacement is reviewed, disabled, and reconciled after a lost resp
     await waitForPluginIdle(harness);
     assert.ok(harness.calls.filter((call) => call.path === "/plugins")
       .every((call) => /replace=true/u.test(call.url)));
-    assert.equal(harness.document.querySelectorAll('[data-plugin-id="music-tools"]').length, 1);
+    assert.equal(harness.document.querySelectorAll('#pluginList [data-plugin-id="music-tools"]').length, 1);
     assert.equal(
       harness.document.querySelector<HTMLInputElement>(
         '[data-plugin-id="music-tools"] .plugin-enabled-toggle input',
@@ -397,7 +528,7 @@ test("Plugin controls and review copy follow the selected UI language", async ()
   });
   try {
     assert.match(
-      harness.document.querySelector('[data-plugin-id="music-tools"]')?.textContent ?? "",
+      harness.document.querySelector('#pluginMcpSource-music-tools')?.textContent ?? "",
       /已禁用.*本地进程.*远程 MCP/s,
     );
     harness.dropPluginFile(pluginFile(harness, pluginArchive("更新版本")));
