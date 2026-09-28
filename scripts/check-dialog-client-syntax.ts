@@ -10,6 +10,7 @@ const clientFragments = [
   "skill-manager",
   "plugin-manager",
   "connections-manager",
+  "tools-inspector",
   "bridge-client",
   "session-timeline",
   "action-preview",

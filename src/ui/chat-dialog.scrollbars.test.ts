@@ -5,7 +5,7 @@ import { createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js
 test("scroll visibility is owned by each scrolled surface and scrollend hides only that surface", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
-    const surfaces = ["#sessions", "#prompt", ".status", "#agentPanel", "#appPanel", "#extensionsPanel", "#contextPanel", "#skillsPanel"].map(selector => {
+    const surfaces = ["#sessions", "#prompt", ".status", "#agentPanel", "#appPanel", "#extensionsPanel", "#contextPanel", "#skillsPanel", "#toolsPanel"].map(selector => {
       const element = harness.document.querySelector<HTMLElement>(selector)!;
       assert.ok(element);
       Object.defineProperty(element, "onscrollend", { configurable: true, value: null });

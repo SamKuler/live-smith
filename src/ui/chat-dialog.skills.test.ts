@@ -594,7 +594,7 @@ test("a response-lost Skill replacement crosses the state barrier before a new-I
     );
     await harness.settle();
 
-    const paths = harness.calls.map((call) => call.path);
+    const paths = harness.calls.filter((call) => call.path !== "/session-tools").map((call) => call.path);
     assert.deepEqual(paths, ["/skills", "/skills", "/state", "/skills"]);
     const replacementCalls = harness.calls.filter(
       (call) => call.path === "/skills" && call.url.includes("replace=true"),
@@ -700,7 +700,7 @@ test("a committed Skill delete with truncated JSON reconciles before an idempote
     await harness.settle();
 
     assert.deepEqual(
-      harness.calls.map((call) => call.path),
+      harness.calls.filter((call) => call.path !== "/session-tools").map((call) => call.path),
       ["/skills/mix-review", "/state", "/skills/mix-review"],
     );
     const deletes = harness.calls.filter(
@@ -775,7 +775,7 @@ test("a response-lost legacy override delete stays idempotent after its built-in
     await harness.settle();
 
     assert.deepEqual(
-      harness.calls.map((call) => call.path),
+      harness.calls.filter((call) => call.path !== "/session-tools").map((call) => call.path),
       [`/skills/${skillId}`, "/state", `/skills/${skillId}`],
     );
     const builtInRow = harness.document.querySelector<HTMLElement>(

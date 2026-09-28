@@ -157,6 +157,7 @@
         "set_session_edit_scopes",
         "set_session_model_selection",
         "load_session_model_capabilities",
+        "load_session_tools",
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
@@ -471,7 +472,7 @@
 
       function captureCausalState() {
         const state = getState();
-        return JSON.parse(JSON.stringify({
+        const snapshot = JSON.parse(JSON.stringify({
           sessions: state.sessions,
           previousSessions: state.previousSessions,
           archivedSessions: state.archivedSessions,
@@ -493,6 +494,8 @@
           activeProfileRevision: state.activeProfileRevision,
           status: state.status,
         }));
+        snapshot.sessionToolCatalog = state.sessionToolCatalog;
+        return snapshot;
       }
 
       function mergeChangedEntries(
@@ -1022,6 +1025,26 @@
         );
       }
 
+      function stateCoversSessionModelSelection(state, sessionId) {
+        return compareDecimalRevisions(
+          modelSelectionProjectionsBySession.get(sessionId)?.revision || "0",
+          state.bridgeStateCoveredThroughRevision,
+        ) <= 0;
+      }
+
+      function sessionToolCatalogOwner(state) {
+        return JSON.stringify([
+          state.activeSessionId,
+          state.activeProfileRevision,
+          state.runtimeProfile,
+          state.integrationConnections?.revision ?? "0",
+          state.plugins,
+          state.sunoAccounts ?? [],
+          (state.audioJobs ?? []).map(({ id, status, outputs }) => [id, status, outputs.map(({ id: assetId }) => assetId)]),
+          state.events.at(-1)?.id,
+        ]);
+      }
+
       function preserveNewerCausalState(state, attempt) {
         const baseline = attempt.causalStateSnapshot;
         const current = getState();
@@ -1217,12 +1240,7 @@
           authoritativeOwnsSelection ||
           attempt.ownsActiveRuntimeProjection ||
           attempt.ownsRuntimeCatalogProjection;
-        const stateCoversActiveModelSelection = compareDecimalRevisions(
-          modelSelectionProjectionsBySession.get(
-            merged.activeSessionId,
-          )?.revision || "0",
-          state.bridgeStateCoveredThroughRevision,
-        ) <= 0;
+        const stateCoversActiveModelSelection = stateCoversSessionModelSelection(state, merged.activeSessionId);
         const runtimeProjection =
           useAuthoritativeProfileProjection &&
             authoritativeRuntimeOwned &&
@@ -1293,6 +1311,15 @@
         );
         merged.approvalMode = activeSession?.approvalMode || "manual";
         merged.activeSkillIds = [...(activeSession?.activeSkillIds || [])];
+        const catalogUnchanged = current.sessionToolCatalog === baseline.sessionToolCatalog ||
+          sameJsonValue(current.sessionToolCatalog, baseline.sessionToolCatalog);
+        const catalogSource = catalogUnchanged ? state : current;
+        if (catalogSource.sessionToolCatalog?.sessionId === merged.activeSessionId &&
+          sessionToolCatalogOwner(catalogSource) === sessionToolCatalogOwner(merged)) {
+          merged.sessionToolCatalog = catalogSource.sessionToolCatalog;
+        } else {
+          delete merged.sessionToolCatalog;
+        }
         return merged;
       }
 
@@ -3142,6 +3169,57 @@
             server.artifactInputApproved === false && server.artifactOutputApproved === false);
       }
 
+      function isWireSessionToolCatalog(value, activeSessionId) {
+        if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
+          "sessionId", "loadedAt", "modelToolsSupported", "truncated", "groups", "issues",
+        ]) || value.sessionId !== activeSessionId ||
+          typeof value.loadedAt !== "string" ||
+          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.loadedAt) ||
+          !Number.isFinite(Date.parse(value.loadedAt)) ||
+          typeof value.modelToolsSupported !== "boolean" ||
+          typeof value.truncated !== "boolean" ||
+          !Array.isArray(value.groups) || value.groups.length > __MAX_SESSION_TOOL_CATALOG_TOOLS__ ||
+          !Array.isArray(value.issues) || value.issues.length > __MAX_SESSION_TOOL_CATALOG_ISSUES__) return false;
+        let toolCount = 0;
+        for (const group of value.groups) {
+          if (!isWireRecord(group) || !hasOnlyWireKeys(group, [
+            "kind", "pluginId", "serverId", "connectionId", "connectionName", "tools",
+          ]) || !["live", "audio", "mcp"].includes(group.kind) ||
+            (group.pluginId !== undefined && (typeof group.pluginId !== "string" ||
+              !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(group.pluginId))) ||
+            (group.kind === "audio" && group.pluginId === undefined) ||
+            (group.kind === "mcp" && (group.pluginId === undefined && group.connectionId === undefined ||
+              typeof group.serverId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(group.serverId))) ||
+            (group.kind !== "mcp" && (group.serverId !== undefined ||
+              group.connectionId !== undefined || group.connectionName !== undefined)) ||
+            (group.connectionId === undefined) !== (group.connectionName === undefined) ||
+            (group.connectionId !== undefined && !isWireStorageId(group.connectionId)) ||
+            (group.connectionName !== undefined && (typeof group.connectionName !== "string" ||
+              !group.connectionName.trim() || group.connectionName.length > 120 ||
+              /[\u0000-\u001f\u007f]/.test(group.connectionName))) ||
+            !Array.isArray(group.tools) || !group.tools.length) return false;
+          toolCount += group.tools.length;
+          if (toolCount > __MAX_SESSION_TOOL_CATALOG_TOOLS__ || !group.tools.every((tool) =>
+            isWireRecord(tool) && hasOnlyWireKeys(tool, ["name", "description"]) &&
+            typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 128 &&
+            !/[\u0000-\u001f\u007f]/.test(tool.name) &&
+            typeof tool.description === "string" && tool.description.length > 0 &&
+            tool.description.length <= __MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH__ && !tool.description.includes("\0"))) return false;
+        }
+        return value.issues.every((issue) => isWireRecord(issue) &&
+          hasOnlyWireKeys(issue, ["pluginId", "connectionId", "serverId", "code", "message"]) &&
+          (issue.pluginId !== undefined || issue.connectionId !== undefined) &&
+          (issue.pluginId === undefined || typeof issue.pluginId === "string" &&
+            /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(issue.pluginId)) &&
+          (issue.connectionId === undefined || isWireStorageId(issue.connectionId)) &&
+          (issue.serverId === undefined || typeof issue.serverId === "string" &&
+            /^[A-Za-z0-9_-]{1,64}$/.test(issue.serverId)) &&
+          ["invalid_configuration", "unsupported_transport", "approval_required",
+            "artifact_permission_required", "connection_failed", "invalid_tool"].includes(issue.code) &&
+          typeof issue.message === "string" && issue.message.length <= __MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH__ &&
+          !issue.message.includes("\0"));
+      }
+
       function isWireChatBridgeState(value) {
         if (
           !isWireRecord(value) ||
@@ -3150,6 +3228,7 @@
             "integrationConnections",
             "sunoAccounts",
             "sunoModelCatalog",
+            "sessionToolCatalog",
             "audioJobs",
             "liveContext",
             "sessionContinueTarget",
@@ -3187,6 +3266,8 @@
           (value.integrationConnections !== undefined && !isWireIntegrationConnections(value.integrationConnections)) ||
           (value.sunoAccounts !== undefined && !isWireSunoAccounts(value.sunoAccounts, value.integrationConnections)) ||
           !isWireSunoModelCatalog(value.sunoModelCatalog, value.integrationConnections, value.sunoAccounts) ||
+          (value.sessionToolCatalog !== undefined &&
+            !isWireSessionToolCatalog(value.sessionToolCatalog, value.activeSessionId)) ||
           (value.audioJobs !== undefined && !isWireAudioJobs(value.audioJobs, value.activeSessionId)) ||
           !isWireLiveContext(value.liveContext) ||
           !isWireRecord(value.sessionContinueTarget) ||
@@ -3444,7 +3525,7 @@
       }
 
       function decodeBridgeHttpSuccess(path, value, context) {
-        if (path === "/command" || path === "/session-model-capabilities") {
+        if (path === "/command" || path === "/session-model-capabilities" || path === "/session-tools") {
           if (isWireChatBridgeState(value)) return value;
           throw invalidBridgeHttpResponse(path);
         }
@@ -3539,7 +3620,7 @@
         if (typeof value.error !== "string" || !value.error) {
           throw invalidBridgeHttpResponse(path);
         }
-        if (path === "/command" || path === "/session-model-capabilities") {
+        if (path === "/command" || path === "/session-model-capabilities" || path === "/session-tools") {
           const hasOutcomeProjection = value.commandOutcome !== undefined ||
             value.state !== undefined ||
             value.reconciliationRequired !== undefined;
@@ -4371,6 +4452,19 @@
         return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token || "")}`;
       }
 
+      async function loadSessionTools(signal) {
+        const initial = getState();
+        const owner = sessionToolCatalogOwner(initial);
+        const state = await postBridge("/session-tools", {
+          kind: "load_session_tools", sessionId: initial.activeSessionId,
+        }, { "X-Live-Smith-Command-Id": createCorrelationId("tools") }, signal);
+        if (signal.aborted || owner !== sessionToolCatalogOwner(getState()) ||
+          !sameJsonData(JSON.parse(owner), JSON.parse(sessionToolCatalogOwner(state)))) return false;
+        if (!state.sessionToolCatalog) throw invalidBridgeHttpResponse("/session-tools");
+        getState().sessionToolCatalog = state.sessionToolCatalog;
+        return true;
+      }
+
       function loadSessionModelCapabilities(input) {
         const initial = getState();
         const profileRevision = initial.activeProfileRevision;
@@ -4402,9 +4496,10 @@
               { "X-Live-Smith-Command-Id": attempt.id },
             );
             if (!isCurrent()) return false;
-            if (state.activeSessionId !== activeSessionId()) {
+            if (state.activeSessionId !== activeSessionId() ||
+              !stateCoversSessionModelSelection(state, activeSessionId())) {
               // The catalog is shared by the Profile, but the runtime summary
-              // belongs to the currently selected Session.
+              // must cover the current Session and its acknowledged model selection.
               const response = await fetch(bridgeUrl("/state"));
               if (!response.ok) return false;
               const currentState = await response.json();
@@ -7851,11 +7946,12 @@
         }
       }
 
-      async function postBridge(path, payload, extraHeaders) {
+      async function postBridge(path, payload, extraHeaders, signal) {
         const response = await fetch(bridgeUrl(path), {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(extraHeaders || {}) },
           body: JSON.stringify(payload),
+          ...(signal ? { signal } : {}),
         });
         let result;
         try {
@@ -10097,6 +10193,8 @@
           sessionStateRefreshesBySession.has(activeSessionId()),
         isConfirmationLocked: activeConfirmationIsLocked,
         loadSessionModelCapabilities,
+        loadSessionTools,
+        getSessionToolCatalogOwner: () => sessionToolCatalogOwner(getState()),
         resolveConfirm,
         renderDefaultFollowUpBehavior,
         renderCustomInstructions,

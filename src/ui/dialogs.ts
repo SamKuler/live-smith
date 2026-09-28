@@ -9,6 +9,7 @@ import sessionTimelineScript from "./client/session-timeline.script.html";
 import skillManagerScript from "./client/skill-manager.script.html";
 import pluginManagerScript from "./client/plugin-manager.script.html";
 import connectionsManagerScript from "./client/connections-manager.script.html";
+import toolsInspectorScript from "./client/tools-inspector.script.html";
 import actionPreviewScript from "./client/action-preview.script.html";
 import i18nScript from "./client/i18n.script.html";
 import { serializeUiI18nData } from "./i18n/messages.js";
@@ -49,6 +50,7 @@ export function chatHtml(
     connectionsManager: connectionsManagerScript,
     sessionTimeline: sessionTimelineScript,
     skillManager: skillManagerScript,
+    toolsInspector: toolsInspectorScript,
   }, __LIVE_SMITH_CHAT_STYLES__);
 }
 

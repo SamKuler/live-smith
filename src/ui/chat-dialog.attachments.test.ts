@@ -960,7 +960,7 @@ test("a committed attachment upload with truncated JSON reconciles as an unknown
     await harness.settleAttachmentOperation();
 
     assert.deepEqual(
-      harness.calls.map((call) => call.path),
+      harness.calls.filter((call) => call.path !== "/session-tools").map((call) => call.path),
       ["/attachments", "/state"],
     );
     assert.match(

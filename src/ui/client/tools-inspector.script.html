@@ -1,0 +1,204 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createToolsInspector = function createToolsInspector({
+        getState, getCatalogOwner, loadCatalog, humanizeToolName,
+      }) {
+        const t = (source, params) => window.LiveSmithI18n.t(source, params);
+        const descriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+        let renderedKey = null;
+        let disabled = false;
+        let started = false;
+        let activeLoad = null;
+        let attemptedOwner = null;
+        let failedOwner = null;
+
+        function cancelLoad() {
+          if (!activeLoad) return;
+          activeLoad.controller.abort();
+          activeLoad = null;
+          attemptedOwner = null;
+        }
+
+        async function load() {
+          if (disabled || activeLoad) return;
+          const attempt = { owner: getCatalogOwner(), controller: new window.AbortController() };
+          activeLoad = attempt;
+          attemptedOwner = attempt.owner;
+          failedOwner = null;
+          render();
+          try {
+            const loaded = await loadCatalog(attempt.controller.signal);
+            if (activeLoad === attempt && !loaded) failedOwner = attempt.owner;
+          } catch {
+            if (activeLoad === attempt) failedOwner = attempt.owner;
+          } finally {
+            if (activeLoad === attempt) {
+              activeLoad = null;
+              render();
+            }
+          }
+        }
+
+        function loadIfNeeded() {
+          if (started && !disabled && !activeLoad && !getState().sessionToolCatalog &&
+            attemptedOwner !== getCatalogOwner()) void load();
+        }
+
+        function element(tag, className, text) {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text !== undefined) node.textContent = text;
+          return node;
+        }
+
+        function sourceRow(name, detail, status) {
+          const row = element("div", "tool-source");
+          const copy = element("div", "tool-source-copy");
+          copy.append(element("strong", "", name), element("span", "", detail));
+          row.append(copy, element("span", "tool-source-status", status));
+          return row;
+        }
+
+        function renderSources(state) {
+          const rows = [sourceRow("Live Smith", t("Live observation and editing"), t("Built-in"))];
+          const connections = state.integrationConnections?.connections || [];
+          for (const connection of connections) {
+            if (connection.mcp) {
+              rows.push(sourceRow(connection.name, t("Standalone MCP"), connection.enabled ? t("Enabled") : t("Disabled")));
+              continue;
+            }
+            const descriptor = descriptors[connection.pluginId];
+            if (!descriptor) continue;
+            rows.push(sourceRow(connection.name, t(descriptor.label), connection.enabled ? t("Enabled") : t("Disabled")));
+          }
+          for (const plugin of state.plugins || []) {
+            for (const server of plugin.mcpServers) {
+              const bound = connections.filter((connection) => connection.pluginId === plugin.id &&
+                connection.configuration.serverId === server.id);
+              const status = !plugin.enabled ? t("Plugin disabled")
+                : !server.approved ? t("Approval required") : t("Approved");
+              const group = element("div", "tool-source-group");
+              group.append(sourceRow(server.id, plugin.id, status));
+              const children = element("div", "tool-source-connections");
+              for (const connection of bound) {
+                const current = connection.configuration.pluginDigest === plugin.sha256;
+                children.append(sourceRow(connection.name, t("MCP connection"), !current ? t("Package changed")
+                  : connection.enabled ? t("Enabled") : t("Disabled")));
+              }
+              if (server.credentialFields.some((field) => field.required) && !bound.some((connection) =>
+                connection.enabled && connection.configuration.pluginDigest === plugin.sha256)) {
+                children.append(sourceRow(t("Connection required"), plugin.id + " / " + server.id, t("Needs setup")));
+              }
+              if (children.childElementCount) group.append(children);
+              rows.push(group);
+            }
+          }
+          document.getElementById("sessionToolSources").replaceChildren(...rows);
+        }
+
+        function groupLabel(group) {
+          if (group.kind === "live") return "Live Smith";
+          if (group.kind === "audio") return descriptors[group.pluginId]
+            ? t(descriptors[group.pluginId].label) : t("Session media");
+          return group.connectionName || group.serverId || group.pluginId;
+        }
+
+        function renderGroup(group) {
+          const section = element("details", "tool-group settings-disclosure");
+          section.dataset.toolSource = group.kind;
+          if (group.pluginId) section.dataset.pluginId = group.pluginId;
+          if (group.serverId) section.dataset.serverId = group.serverId;
+          if (group.connectionId) section.dataset.connectionId = group.connectionId;
+          const summary = element("summary", "tool-group-heading");
+          summary.append(element("strong", "", groupLabel(group)),
+            element("span", "tool-count", t("{count} tools", { count: group.tools.length })));
+          section.append(summary);
+          const content = element("div", "tool-group-content");
+          if (group.kind === "mcp") content.append(element("p", "field-hint", group.pluginId
+            ? [group.pluginId, group.serverId].join(" / ") : t("Standalone MCP")));
+          for (const tool of group.tools) {
+            const entry = element("details", "tool-entry");
+            const title = element("summary", "");
+            title.textContent = group.kind === "mcp" ? tool.name : humanizeToolName(tool.name);
+            const name = element("code", "tool-name", tool.name);
+            name.setAttribute("translate", "no");
+            const description = element("p", "tool-description", tool.description);
+            description.setAttribute("translate", "no");
+            entry.append(title, name, element("span", "tool-description-label", t("Original tool description")), description);
+            content.append(entry);
+          }
+          section.append(content);
+          return section;
+        }
+
+        function issueLabel(issue) {
+          return {
+            invalid_configuration: t("Check the connection settings."),
+            unsupported_transport: t("This MCP transport is not supported."),
+            approval_required: t("Approval required"),
+            artifact_permission_required: t("Some tools require artifact access."),
+            connection_failed: t("The MCP server could not be reached."),
+            invalid_tool: t("Some tool definitions could not be loaded."),
+          }[issue.code];
+        }
+
+        function updateButton() {
+          const button = document.getElementById("loadSessionToolsButton");
+          button.disabled = disabled || Boolean(activeLoad);
+          button.textContent = activeLoad ? t("Loading…")
+            : getState().sessionToolCatalog ? t("Reload tools") : t("Load tools");
+          document.getElementById("sessionTools").setAttribute("aria-busy", String(Boolean(activeLoad)));
+        }
+
+        function render(force = false) {
+          const state = getState();
+          if (activeLoad && activeLoad.owner !== getCatalogOwner()) cancelLoad();
+          const loading = Boolean(activeLoad);
+          const catalog = state.sessionToolCatalog?.sessionId === state.activeSessionId ? state.sessionToolCatalog : null;
+          const loadFailed = failedOwner === getCatalogOwner();
+          const key = JSON.stringify([window.LiveSmithI18n.locale, state.activeSessionId, catalog?.loadedAt,
+            state.plugins, state.integrationConnections, loading, loadFailed]);
+          updateButton();
+          if (!force && key === renderedKey) { loadIfNeeded(); return; }
+          renderedKey = key;
+          renderSources(state);
+          const status = document.getElementById("sessionToolsStatus");
+          status.textContent = loading ? t("Loading tool descriptions…")
+            : loadFailed ? t("The tool list was not loaded. You can try again.")
+            : catalog ? t("Loaded at {time}. Tools may change with connection settings and the next message's inputs.", {
+              time: new Intl.DateTimeFormat(window.LiveSmithI18n.locale, { hour: "2-digit", minute: "2-digit" })
+                .format(new Date(catalog.loadedAt)),
+            }) : t("Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.");
+          const root = document.getElementById("sessionToolCatalog");
+          const nodes = [];
+          if (catalog) {
+            if (!catalog.modelToolsSupported) nodes.push(element("p", "tool-catalog-notice",
+              t("The selected model is not configured to use tools. This list shows the configured tool sources.")));
+            if (catalog.truncated) nodes.push(element("p", "tool-catalog-notice",
+              t("The tool directory is large. Some tools are not shown.")));
+            nodes.push(...catalog.groups.map(renderGroup));
+            for (const issue of catalog.issues) {
+              nodes.push(element("p", "tool-catalog-notice",
+                [state.integrationConnections?.connections.find((connection) => connection.id === issue.connectionId)?.name ||
+                  issue.pluginId || issue.connectionId, issue.serverId].filter(Boolean).join(" / ") + ": " + issueLabel(issue)));
+            }
+          }
+          root.replaceChildren(...nodes);
+          loadIfNeeded();
+        }
+
+        function setBusy(nextDisabled) {
+          disabled = Boolean(nextDisabled);
+          if (disabled) cancelLoad();
+          render();
+        }
+
+        function initialize() {
+          document.getElementById("loadSessionToolsButton").addEventListener("click", () => { void load(); });
+          window.addEventListener("pagehide", () => { started = false; cancelLoad(); });
+          render();
+        }
+
+        function start() { started = true; render(); }
+
+        return { initialize, start, render, setBusy };
+      };

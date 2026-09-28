@@ -30,6 +30,7 @@ const scripts: ChatClientScripts = {
   connectionsManager: "",
   sessionTimeline: "",
   skillManager: "",
+  toolsInspector: "",
 };
 
 test("chat document projects complete canonical built-ins only into the Skill client", () => {

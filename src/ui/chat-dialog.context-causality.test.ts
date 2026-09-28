@@ -89,10 +89,8 @@ test("an older same-Session send preserves newer context without blocking a subs
     await waitForCondition(() => sendBodyHeld, "Expected the completed send's HTTP body to be held");
 
     const oldSend = snapshots.find((snapshot) => snapshot.path === "/send")!.state;
-    assert.deepEqual(
-      [oldSend.bridgeStateRevision, oldSend.bridgeStateCoveredThroughRevision],
-      ["2", "1"],
-    );
+    assert.ok(BigInt(oldSend.bridgeStateCoveredThroughRevision) >= BigInt(state.bridgeStateRevision));
+    assert.ok(BigInt(oldSend.bridgeStateRevision) > BigInt(oldSend.bridgeStateCoveredThroughRevision));
     assert.equal(harness.sendIds.length, 1);
     assert.ok(harness.sendIds[0]);
     assert.deepEqual(jsonCalls(harness, "/send").map(({ body }) => body), [
@@ -100,8 +98,7 @@ test("an older same-Session send preserves newer context without blocking a subs
     ]);
     assert.equal(control(harness, "#sendButtonLabel").textContent, "Stop");
 
-    // The send snapshot is already publication 2. This later command therefore
-    // captures cut 2 and publishes 3, while the original HTTP body stays held.
+    // The later command includes the send publication while its HTTP body stays held.
     const newer = cloneState(completed);
     newer.contextSummary = "The bound Bass clip is unavailable.";
     newer.liveContext = { sessionId: state.activeSessionId, availability: "unavailable", label: "Unavailable Bass" };
@@ -109,10 +106,8 @@ test("an older same-Session send preserves newer context without blocking a subs
     harness.select("#approvalMode", "everything");
     await harness.settle();
     const commandState = snapshots.find((snapshot) => snapshot.path === "/command")!.state;
-    assert.deepEqual(
-      [commandState.bridgeStateRevision, commandState.bridgeStateCoveredThroughRevision],
-      ["3", "2"],
-    );
+    assert.ok(BigInt(commandState.bridgeStateCoveredThroughRevision) >= BigInt(oldSend.bridgeStateRevision));
+    assert.ok(BigInt(commandState.bridgeStateRevision) > BigInt(commandState.bridgeStateCoveredThroughRevision));
     assert.equal(control(harness, "#liveContextTitle").textContent, "Unavailable Bass");
 
     releaseSendBody();
@@ -128,8 +123,7 @@ test("an older same-Session send preserves newer context without blocking a subs
     assert.ok(control(harness, "#context").textContent?.includes(newer.contextSummary));
     assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "everything");
 
-    // A later request must still be able to refresh this same Session. It starts
-    // after publication 3, so its genuinely newer snapshot is publication 4 / cut 3.
+    // A later request observes the command publication and refreshes the same Session.
     const latest = cloneState(commandState);
     latest.contextSummary = "The bound Bass clip is available in the latest observation.";
     latest.liveContext = cloneState(state.liveContext);
@@ -144,10 +138,8 @@ test("an older same-Session send preserves newer context without blocking a subs
     harness.click("#sendButton");
     await harness.settle();
     const latestSend = snapshots.filter((snapshot) => snapshot.path === "/send").at(-1)!.state;
-    assert.deepEqual(
-      [latestSend.bridgeStateRevision, latestSend.bridgeStateCoveredThroughRevision],
-      ["4", "3"],
-    );
+    assert.ok(BigInt(latestSend.bridgeStateCoveredThroughRevision) >= BigInt(commandState.bridgeStateRevision));
+    assert.ok(BigInt(latestSend.bridgeStateRevision) > BigInt(latestSend.bridgeStateCoveredThroughRevision));
     assert.equal(control(harness, "#liveContextTitle").textContent, "Latest observed Bass");
     assert.ok(control(harness, "#context").textContent?.includes(latest.contextSummary));
     assert.equal(harness.sendIds.length, 2);

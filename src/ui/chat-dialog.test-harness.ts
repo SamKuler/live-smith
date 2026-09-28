@@ -23,6 +23,8 @@ import {
 } from "../skills/builtins.js";
 import { previewPluginArchive } from "../plugins/view.js";
 import { builtInAudioPluginById } from "../plugins/builtins/index.js";
+import { liveSmithTools } from "../agent/tool-definitions.js";
+import { sessionToolCatalogOwner } from "../app/session-tool-catalog.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -170,6 +172,7 @@ const clientScripts = {
   connectionsManager: readClientScript("connections-manager"),
   sessionTimeline: readClientScript("session-timeline"),
   skillManager: readClientScript("skill-manager"),
+  toolsInspector: readClientScript("tools-inspector"),
 };
 
 function renderChatHtml(
@@ -435,6 +438,7 @@ async function createDialogHarness(
     initialCommandError?: string;
     holdInitialCommand?: boolean;
     holdInitialCommandResponse?: boolean;
+    toolCatalogResponse?: (state: ChatBridgeState, signal?: AbortSignal | null) => Promise<ChatBridgeState>;
   } = {},
 ): Promise<DialogHarness> {
   const calls: BridgeCall[] = [];
@@ -540,6 +544,10 @@ async function createDialogHarness(
     sendId?: string;
   }> = [];
   let serverState = cloneState(options.serverState ?? initialState);
+  let serverCatalogOwner = sessionToolCatalogOwner(serverState);
+  const invalidateServerToolCatalog = () => {
+    if (serverCatalogOwner !== sessionToolCatalogOwner(serverState)) delete serverState.sessionToolCatalog;
+  };
   let fallbackSessionSequence = 0;
   const synchronizeActiveSessionProjection = (): void => {
     let active = serverState.sessions.find(
@@ -705,6 +713,7 @@ async function createDialogHarness(
     state: ChatBridgeState,
     requestCutRevision: string,
   ): ChatBridgeState => {
+    if (state === serverState) invalidateServerToolCatalog();
     const override = queuedStatePublications.shift();
     const bridgeStateRevision = override?.bridgeStateRevision ??
       allocateBridgeStateRevision();
@@ -1439,6 +1448,27 @@ async function createDialogHarness(
                 serverState,
                 stateSnapshotCutRevision,
               ));
+            }
+
+            if (url.pathname === "/session-tools") {
+              const requested = body as { kind: string; sessionId: string };
+              assert.equal(requested.kind, "load_session_tools");
+              invalidateServerToolCatalog();
+              let result = cloneState(serverState);
+              result.sessionToolCatalog ??= {
+                sessionId: result.activeSessionId, loadedAt: new Date().toISOString(),
+                modelToolsSupported: result.runtimeProfile?.capabilities.tools === true,
+                truncated: false, issues: [], groups: [{ kind: "live", tools: liveSmithTools().map(({ function: tool }) => ({
+                  name: tool.name, description: tool.description.slice(0, 512),
+                })) }],
+              };
+              if (options.toolCatalogResponse) result = await options.toolCatalogResponse(result, init?.signal);
+              if (!init?.signal?.aborted && sessionToolCatalogOwner(result) === sessionToolCatalogOwner(serverState)) {
+                if (result.sessionToolCatalog) serverState.sessionToolCatalog = result.sessionToolCatalog;
+                else delete serverState.sessionToolCatalog;
+                serverCatalogOwner = sessionToolCatalogOwner(serverState);
+              }
+              return response(publishBridgeState(result, stateSnapshotCutRevision));
             }
 
             if (
@@ -2245,6 +2275,7 @@ async function createDialogHarness(
       await Promise.resolve();
     },
     close() {
+      window.dispatchEvent(new window.Event("pagehide"));
       window.close();
     },
     deferServerEvent(payload) {
@@ -2482,6 +2513,7 @@ async function createDialogHarness(
     },
     setServerState(state) {
       serverState = cloneState(state);
+      serverCatalogOwner = sessionToolCatalogOwner(serverState);
     },
     stopIds,
     select(selector, value) {

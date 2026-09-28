@@ -29,7 +29,7 @@
         month: "short",
       });
       const inspectorGroups = {
-        session: ["context", "skills"],
+        session: ["context", "skills", "tools"],
         settings: ["agent", "extensions", "app"],
       };
       const inspectorTabs = Object.values(inspectorGroups).flat();
@@ -3044,6 +3044,7 @@
 
       return {
         announceAssistantMessage,
+        humanizeToolName,
         handleInspectorTabKeydown,
         renderAssistantDraft,
         syncSessionPresentation,

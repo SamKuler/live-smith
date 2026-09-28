@@ -188,7 +188,7 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
       harness.document.querySelector("#agentPanel")?.getAttribute("role"),
       "tabpanel",
     );
-    for (const selector of ["#agentPanel", "#appPanel", "#extensionsPanel", "#contextPanel", "#skillsPanel"]) {
+    for (const selector of ["#agentPanel", "#appPanel", "#extensionsPanel", "#contextPanel", "#skillsPanel", "#toolsPanel"]) {
       assert.equal(harness.document.querySelector(selector)?.getAttribute("tabindex"), "0");
     }
     assert.equal(
@@ -631,7 +631,7 @@ test("Inspector scope navigation separates Session Skills from global management
     harness.click("#sessionInspectorScope");
     const visibleTabs = () => [...harness.document.querySelectorAll<HTMLElement>('.tab-bar [role="tab"]')]
       .filter((tab) => !tab.hidden).map((tab) => tab.id);
-    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab"]);
+    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab", "toolsTab"]);
     harness.click("#skillsTab");
     assert.equal(skillsPanel.hidden, false);
     harness.click("#manageSkillsButton");

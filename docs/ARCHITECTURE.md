@@ -302,8 +302,8 @@ src/
       Chat layout and styles.
     client/*.script.html
       Shared WebView host adapter plus Profile/model settings, bridge lifecycle,
-      attachment, local and Plugin Skill, Plugin manager, Connection, composer
-      input, and session/timeline factories.
+      attachment, local and Plugin Skill, Plugin manager, Connection, tool
+      inspector, composer input, and session/timeline factories.
       The composer-input factory owns prompt commands, completion, and keyboard
       semantics; Bootstrap owns final composer/status presentation and explicit
       dependency and operation-policy wiring.
@@ -718,7 +718,7 @@ the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
-The Inspector separates Session Context and Skills from global Agent,
+The Inspector separates Session Context, Skills, and Tools from global Agent,
 Extensions, and App settings. Session Skill selection has no installation or
 deletion controls; standalone Skill management and Plugin/Connection management
 belong to Extensions. Global Custom Instructions belong to Agent settings.
@@ -741,9 +741,12 @@ Skill bodies into the dialog nor starts an MCP server.
 
 The `load_session_tools` handler builds a modal tool directory from canonical
 Live and built-in definitions and the ordinary approved MCP discovery path.
-The read-only `POST /session-tools` endpoint accepts the Session identifier,
-runs outside the command lock, and cancels discovery when its request closes.
-Reading `/state` alone does not start an MCP connection.
+The dialog requests it through the read-only `POST /session-tools` endpoint on
+startup and when its catalog owner changes. Discovery waits for foreground work
+to finish, runs outside the command lock, and keeps errors local to Tools.
+Obsolete reads are cancelled; only an owner-matched catalog is merged into the
+current browser state. Failed loads wait for an explicit retry. Reading `/state`
+alone does not start an MCP connection.
 Discovery closes its packages after collecting descriptions and never invokes a
 tool. The bounded display snapshot is cleared when its Session, model, Plugin,
 or connection owner changes; display limits do not change executable toolsets.

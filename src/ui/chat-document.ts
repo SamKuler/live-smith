@@ -1,6 +1,9 @@
 import { serializeUiI18nData } from "./i18n/messages.js";
 import {
   MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
+  MAX_SESSION_TOOL_CATALOG_TOOLS,
+  MAX_SESSION_TOOL_CATALOG_ISSUES,
+  MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH,
   serializeChatStateForHtml,
   type ChatBridgeState,
 } from "./chat-state.js";
@@ -60,6 +63,7 @@ export interface ChatClientScripts {
   connectionsManager: string;
   sessionTimeline: string;
   skillManager: string;
+  toolsInspector: string;
 }
 
 function injectPluginContract(script: string): string {
@@ -150,7 +154,10 @@ export function injectBuiltInSkillDefinitions(
 
 function injectModelContract(script: string): string {
   return script
+    .replaceAll("__MAX_SESSION_TOOL_CATALOG_TOOLS__", String(MAX_SESSION_TOOL_CATALOG_TOOLS))
     .replaceAll("__CURRENT_AGENT_SETTINGS_SCHEMA_VERSION__", String(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION))
+    .replaceAll("__MAX_SESSION_TOOL_CATALOG_ISSUES__", String(MAX_SESSION_TOOL_CATALOG_ISSUES))
+    .replaceAll("__MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH__", String(MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH))
     .replaceAll(
       "__MAX_PROFILE_MODEL_COUNT__",
       String(MAX_PROFILE_MODEL_COUNT),
@@ -245,6 +252,7 @@ export function composeChatDocument(
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
     __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
     __CONNECTIONS_MANAGER_SCRIPT__: injectSessionContract(scripts.connectionsManager),
+    __TOOLS_INSPECTOR_SCRIPT__: injectSessionContract(scripts.toolsInspector),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(scripts.sessionTimeline),

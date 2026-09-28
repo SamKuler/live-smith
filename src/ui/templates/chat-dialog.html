@@ -17,6 +17,7 @@
       __SKILL_MANAGER_SCRIPT__
       __PLUGIN_MANAGER_SCRIPT__
       __CONNECTIONS_MANAGER_SCRIPT__
+      __TOOLS_INSPECTOR_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
@@ -137,6 +138,7 @@
           <div class="tab-bar" role="tablist" aria-label="Inspector Views" data-i18n-aria-label="Inspector Views">
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Context">Context</button>
             <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Skills">Skills</button>
+            <button id="toolsTab" type="button" role="tab" aria-selected="false" aria-controls="toolsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('tools')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Tools">Tools</button>
             <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Agent">Agent</button>
             <button id="extensionsTab" type="button" role="tab" aria-selected="false" aria-controls="extensionsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('extensions')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Extensions">Extensions</button>
             <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="App">App</button>
@@ -768,6 +770,26 @@
                 <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
                 <p id="skillViewerDescription" class="skill-viewer-description"></p>
                 <div id="skillViewerBody" class="skill-viewer-body"></div>
+              </section>
+            </div>
+          </div>
+          <div id="toolsPanel" class="tab-panel" role="tabpanel" aria-labelledby="toolsTab" tabindex="0" hidden>
+            <div class="settings">
+              <section id="sessionTools" class="settings-scope session-tools" aria-labelledby="sessionToolsHeading" aria-busy="false">
+                <div class="inspector-scope-header">
+                  <h2 id="sessionToolsHeading" data-i18n="Session tools">Session tools</h2>
+                  <span id="sessionToolsHint" class="inline-help" tabindex="0" role="note" aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed.">?</span>
+                  <button id="loadSessionToolsButton" class="secondary inspector-heading-action" type="button" data-i18n="Load tools">Load tools</button>
+                </div>
+                <p id="sessionToolsStatus" class="field-hint" role="status" aria-live="polite"></p>
+                <div id="sessionToolCatalog" class="tool-catalog"></div>
+                <section class="tool-sources" aria-labelledby="toolSourcesHeading">
+                  <div class="plugin-section-heading">
+                    <h3 id="toolSourcesHeading" data-i18n="Sources and connections">Sources and connections</h3>
+                    <button class="secondary" type="button" onclick="LiveSmithUI.openInspectorSection('extensions', 'pluginManager')" data-i18n="Manage">Manage</button>
+                  </div>
+                  <div id="sessionToolSources"></div>
+                </section>
               </section>
             </div>
           </div>

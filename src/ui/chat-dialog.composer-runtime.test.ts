@@ -1627,7 +1627,7 @@ test("Inspector sections keep Session content separate from global Agent, Extens
     assert.equal(harness.document.querySelector("#agentTab")?.textContent, "Agent");
     assert.equal(harness.document.querySelector("#appTab")?.textContent, "App");
     assert.equal(harness.document.querySelector("#settingsTab"), null);
-    for (const name of ["agent", "app", "extensions", "context", "skills"] as const) {
+    for (const name of ["agent", "app", "extensions", "context", "skills", "tools"] as const) {
       const tab = harness.document.querySelector(`#${name}Tab`);
       const panel = harness.document.querySelector(`#${name}Panel`);
       assert.equal(tab?.getAttribute("aria-controls"), `${name}Panel`);

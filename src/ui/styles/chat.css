@@ -1678,10 +1678,48 @@ details.timeline-item > .timeline-content {
 .skill-plugin-source { @apply grid min-w-0 gap-2; }
 .skill-plugin-source + .skill-plugin-source { @apply mt-2 border-t border-t-divider pt-3; }
 
+.session-tools, .tool-catalog, .tool-sources {
+  @apply grid min-w-0 gap-3;
+}
+
+.session-tools > .field-hint { @apply m-0; }
+.tool-catalog:empty { @apply hidden; }
+
+.tool-sources { @apply border-t border-t-divider pt-3; }
+.tool-sources h3 { @apply m-0 text-label font-semibold; }
+
+.tool-source {
+  @apply flex min-w-0 items-start justify-between gap-2 border-b border-b-divider py-2;
+}
+.tool-source:last-child { @apply border-b-0; }
+.tool-source-group { @apply border-b border-b-divider; }
+.tool-source-group:last-child { @apply border-b-0; }
+.tool-source-connections { @apply ml-3; }
+.tool-source-copy { @apply grid min-w-0 gap-1; overflow-wrap: anywhere; }
+.tool-source-copy strong { @apply text-label font-medium text-text; }
+.tool-source-copy span, .tool-source-status, .tool-count { @apply text-small text-quiet; }
+.tool-source-status { @apply shrink-0; }
+
+.tool-group { @apply overflow-hidden rounded-panel border border-border bg-field; }
+.tool-group > summary {
+  @apply text-label;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.tool-group-heading strong { @apply min-w-0 font-medium; overflow-wrap: anywhere; }
+.tool-group-content { @apply px-3 pb-2; }
+.tool-group-content > .field-hint { @apply my-2; overflow-wrap: anywhere; }
+.tool-entry { @apply border-t border-t-divider py-1; }
+.tool-entry > summary { @apply cursor-pointer py-1 text-label text-text; overflow-wrap: anywhere; }
+.tool-name { @apply block text-small text-quiet; overflow-wrap: anywhere; }
+.tool-description-label { @apply mt-2 block text-small text-quiet; }
+.tool-description { @apply my-1 whitespace-pre-wrap text-label text-muted; overflow-wrap: anywhere; }
+.tool-catalog-notice { @apply m-0 text-label text-muted; overflow-wrap: anywhere; }
+
 .settings-scope > .inspector-scope-header {
   @apply mb-4;
 }
 
+.session-tools > .inspector-scope-header { @apply mb-0; }
 
 .session-results {
   @apply mx-3 mb-2 mt-0 min-w-0 overflow-hidden rounded-panel border border-border bg-pane;

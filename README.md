@@ -29,10 +29,16 @@ without changing the draft or choosing a task mode.
 The message box starts at one line, grows with its content, and scrolls within a
 bounded height for long drafts so conversation history remains visible.
 
-The Inspector separates **Session** views (**Context**, **Skills**) from
+The Inspector separates **Session** views (**Context**, **Skills**, **Tools**) from
 global **Settings** (**Agent**, **Extensions**, **App**). Context shows the bound
 Live object, context usage, and the next message's attachments. Skills selects
-workflow instructions for the current Session.
+workflow instructions for the current Session. Tools automatically loads its
+directory when the dialog opens and refreshes it when the Session or tool sources
+change. Discovery waits for foreground work to finish and leaves the composer
+usable. **Reload tools** refreshes descriptions; a failed load can be retried.
+Only enabled, approved MCP sources are contacted, and no tool is executed.
+The directory is a snapshot; the next request's inputs and connection settings
+can change which tools are available.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching
@@ -73,7 +79,8 @@ names, and raw provider/SDK output stay in their original language.
   reported as unsupported rather than executed.
 - **Connect MCP tools directly.** **Settings → Extensions → MCP** accepts
   a Streamable HTTP endpoint or a local stdio command without a Plugin package.
-  Review the endpoint or process before enabling it.
+  Review the endpoint or process before enabling it; loading the Tools directory
+  discovers its tools without invoking them.
 - **Bring reference material.** Paste or drag images, documents, or audio into
   the composer. Input support depends on the model and connection.
 - **Keep work moving.** Queue a follow-up for the next turn, steer the response

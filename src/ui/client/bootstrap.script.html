@@ -325,6 +325,13 @@
           showStatus: bridgeClient.showStatus,
         });
 
+        const toolsInspector = factories.createToolsInspector({
+          getState,
+          getCatalogOwner: bridgeClient.getSessionToolCatalogOwner,
+          loadCatalog: bridgeClient.loadSessionTools,
+          humanizeToolName: sessionTimeline.humanizeToolName,
+        });
+
         function renderStateStatus() {
           const state = getState();
           presentStatus({
@@ -1213,6 +1220,7 @@
           attachments.renderPending();
           skillManager.render();
           pluginManager.render();
+          toolsInspector.render();
           renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
         }
@@ -1351,6 +1359,9 @@
           },
           resume_audio_job: {
             status: t("Resuming audio job…"),
+          },
+          load_session_tools: {
+            status: t("Loading tool descriptions…"),
           },
           start_oauth_login: {
             controlId: "oauthSignInButton",
@@ -1613,6 +1624,7 @@
           skillManager.setBusy(skillsBusy);
           pluginManager.setBusy(skillsBusy);
           connectionsManager.setBusy(skillsBusy);
+          toolsInspector.setBusy(operationBusy);
 
           if (
             !settingsBusy &&
@@ -1743,6 +1755,7 @@
           skillManager.initialize();
           pluginManager.initialize();
           connectionsManager.initialize();
+          toolsInspector.initialize();
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();
@@ -1767,5 +1780,6 @@
           ) {
             void ensureSessionModelCapabilities();
           }
+          toolsInspector.start();
         });
       })();

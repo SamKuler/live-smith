@@ -848,7 +848,7 @@ for (const command of [
         harness.readBootstrappedClientStateReference().activeSessionId,
         "session-1",
       );
-      assert.deepEqual(harness.calls.slice(0, 2).map((call) => call.path), [
+      assert.deepEqual(harness.calls.filter((call) => call.path !== "/session-tools").slice(0, 2).map((call) => call.path), [
         "/command",
         "/state",
       ]);
@@ -868,7 +868,7 @@ for (const input of ["/unknown", "/clear extra", "/queue", "/steer"] as const) {
       submitComposer(harness);
       await harness.settle();
 
-      assert.equal(harness.calls.length, 0);
+      assert.equal(harness.calls.filter((call) => call.path !== "/session-tools").length, 0);
       assert.equal(
         harness.document.querySelector<HTMLTextAreaElement>("#prompt")?.value,
         input,
