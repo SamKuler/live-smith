@@ -7,7 +7,10 @@ import {
 } from "../plugins/builtins/index.js";
 import type { BuiltInAudioPluginDefinition } from "../plugins/builtins/contracts.js";
 import type { BuiltInIntegrationConnectionChoice } from "../plugins/builtins/contracts.js";
-import type { IntegrationConnection } from "../plugins/integration-connections.js";
+import {
+  isPluginIntegrationConnection,
+  type PluginIntegrationConnection,
+} from "../plugins/integration-connections.js";
 import { loadAgentSettings } from "../storage/settings.js";
 import {
   SunoSessions,
@@ -16,7 +19,7 @@ import {
 } from "../storage/suno-sessions.js";
 
 /** Private only: never serialize this record into tool schemas or UI state. */
-export interface RuntimeIntegrationConnection extends IntegrationConnection {
+export interface RuntimeIntegrationConnection extends PluginIntegrationConnection {
   provider: AudioProvider;
   apiKey: string;
   modelId?: string;
@@ -46,7 +49,8 @@ export async function captureIntegrationConnections(
   const settings = await loadAgentSettings(storageDirectory);
   const result: RuntimeIntegrationConnection[] = [];
   for (const connection of settings.integrationConnections?.connections ?? []) {
-    if (!connection.enabled || !builtInAudioPluginById(connection.pluginId)) continue;
+    if (!isPluginIntegrationConnection(connection) || !connection.enabled ||
+        !builtInAudioPluginById(connection.pluginId)) continue;
     try {
       const credential = await runtimeConnection(storageDirectory, connection);
       if (credential) result.push(Object.freeze(credential));
@@ -61,7 +65,7 @@ export async function captureIntegrationConnections(
 
 async function runtimeConnection(
   storageDirectory: string,
-  connection: IntegrationConnection,
+  connection: PluginIntegrationConnection,
 ): Promise<RuntimeIntegrationConnection | undefined> {
   const plugin = requiredPlugin(connection);
   const runtime = {
@@ -112,11 +116,12 @@ export async function resolveIntegrationConnection(
   const saved = settings.integrationConnections?.connections.find(
     (entry) => entry.id === connectionId,
   );
-  const connection = saved?.enabled
+  const connection = saved?.enabled && isPluginIntegrationConnection(saved) &&
+    builtInAudioPluginById(saved.pluginId)
     ? await runtimeConnection(storageDirectory, saved)
     : undefined;
   if (!connection) {
-    throw new Error("The selected Integration Connection is unavailable. Enable it in Inspector → App.");
+    throw new Error("The selected Integration Connection is unavailable. Enable it in Settings → Extensions.");
   }
   if (admitted && (
     connection.name !== admitted.name ||
@@ -137,7 +142,7 @@ export async function resolveIntegrationConnection(
 }
 
 function requiredPlugin(
-  connection: Pick<IntegrationConnection, "pluginId">,
+  connection: Pick<PluginIntegrationConnection, "pluginId">,
 ): BuiltInAudioPluginDefinition {
   const plugin = builtInAudioPluginById(connection.pluginId);
   if (!plugin) {

@@ -6,6 +6,7 @@ import { cloneJsonValue } from "../../model/json-clone.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import type { PreparedPluginRuntime } from "../../storage/plugins.js";
 import type {
+  McpToolSource,
   PluginPackage,
   PluginToolContext,
   PluginToolDefinition,
@@ -13,6 +14,7 @@ import type {
   PluginToolResult,
   PluginToolsResult,
 } from "../contracts.js";
+import type { StandaloneMcpConnection } from "../integration-connections.js";
 import {
   assertPluginResultHasNoPrivatePaths,
   modelSchemaForArtifactTool,
@@ -22,6 +24,7 @@ import {
   connectPluginMcpServer,
   type ConnectedPluginMcpServer,
   type ConnectPluginMcpServerOptions,
+  type PluginMcpRuntimePaths,
 } from "./client.js";
 import {
   pluginMcpConfigFromArchive,
@@ -39,13 +42,16 @@ const MAX_TOOL_RESULT_BYTES = 4 * 1024 * 1024;
 
 export type PluginMcpConnector = (
   server: PluginMcpServer,
-  paths: { pluginRoot: string; pluginData: string },
+  paths: PluginMcpRuntimePaths | undefined,
   signal: AbortSignal,
   options?: ConnectPluginMcpServerOptions,
 ) => Promise<ConnectedPluginMcpServer>;
 
-export interface McpPluginPackageOptions extends ConnectPluginMcpServerOptions {
+export interface McpSourceOptions extends ConnectPluginMcpServerOptions {
   connector?: PluginMcpConnector;
+}
+
+export interface McpPluginPackageOptions extends McpSourceOptions {
   connection?: { id: string; name: string; serverId: string; secrets: Readonly<Record<string, string>> };
   serverIds?: readonly string[];
 }
@@ -61,11 +67,20 @@ export function createMcpPluginPackage(
   prepared: PreparedPluginRuntime,
   options: McpPluginPackageOptions = {},
 ): PluginPackage {
-  return new McpPluginPackage(prepared, options);
+  return Object.assign(new McpToolRuntime(prepared, options), {
+    manifest: cloneJsonValue(prepared.archive.manifest),
+  });
 }
 
-class McpPluginPackage implements PluginPackage {
-  readonly manifest;
+export function createStandaloneMcpConnection(
+  connection: StandaloneMcpConnection,
+  options: McpSourceOptions = {},
+): McpToolSource {
+  return new McpToolRuntime(connection, options);
+}
+
+class McpToolRuntime implements McpToolSource {
+  private readonly prepared: PreparedPluginRuntime | undefined;
   private readonly config: ParsedPluginMcpConfig | undefined;
   private readonly configError: PluginMcpConfigError | undefined;
   private readonly connector: PluginMcpConnector;
@@ -77,16 +92,24 @@ class McpPluginPackage implements PluginPackage {
   private closed = false;
 
   constructor(
-    private readonly prepared: PreparedPluginRuntime,
+    source: PreparedPluginRuntime | StandaloneMcpConnection,
     options: McpPluginPackageOptions,
   ) {
-    this.manifest = cloneJsonValue(prepared.archive.manifest);
     this.connector = options.connector ?? connectPluginMcpServer;
-    this.boundConnection = options.connection;
     this.serverIds = options.serverIds === undefined ? undefined : new Set(options.serverIds);
     this.connectionOptions = options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl };
+    if ("mcp" in source) {
+      this.boundConnection = { id: source.id, name: source.name, serverId: "server", secrets: {} };
+      this.config = { issues: [], servers: [source.mcp.type === "stdio"
+        ? { id: "server", ...cloneJsonValue(source.mcp), env: { ...source.secrets } }
+        : { id: "server", ...cloneJsonValue(source.mcp), headers: { ...source.secrets } }],
+      };
+      return;
+    }
+    this.prepared = source;
+    this.boundConnection = options.connection;
     try {
-      this.config = pluginMcpConfigFromArchive(prepared.archive);
+      this.config = pluginMcpConfigFromArchive(source.archive);
       this.configError = undefined;
     } catch (error) {
       if (!(error instanceof PluginMcpConfigError)) throw error;
@@ -101,8 +124,8 @@ class McpPluginPackage implements PluginPackage {
     for (const server of this.config?.servers ?? []) {
       if (this.serverIds && !this.serverIds.has(server.id) ||
           this.boundConnection && server.id !== this.boundConnection.serverId) continue;
-      if (!this.prepared.plugin.approvedMcpServerIds.includes(server.id)) {
-        issues.push(issue(this.manifest.id, server.id, "approval_required", "MCP server requires user approval."));
+      if (this.prepared && !this.prepared.plugin.approvedMcpServerIds.includes(server.id)) {
+        issues.push(this.issue(server.id, "approval_required", "MCP server requires user approval."));
         continue;
       }
       let tools: readonly Tool[];
@@ -110,11 +133,11 @@ class McpPluginPackage implements PluginPackage {
         tools = await this.serverTools(server, context.signal);
       } catch {
         throwIfAborted(context.signal);
-        issues.push(issue(this.manifest.id, server.id, "connection_failed", "MCP server could not be reached."));
+        issues.push(this.issue(server.id, "connection_failed", "MCP server could not be reached."));
         continue;
       }
       if (tools.length > MAX_TOOLS_PER_SERVER) {
-        issues.push(issue(this.manifest.id, server.id, "invalid_tool", "MCP server exposes too many tools."));
+        issues.push(this.issue(server.id, "invalid_tool", "MCP server exposes too many tools."));
         tools = tools.slice(0, MAX_TOOLS_PER_SERVER);
       }
       const names = new Set<string>();
@@ -122,9 +145,9 @@ class McpPluginPackage implements PluginPackage {
         try {
           if (names.has(tool.name)) throw new Error("MCP server exposes a duplicate tool name.");
           names.add(tool.name);
-          definitions.push(toolDefinition(this.manifest.id, server, tool, this.boundConnection));
+          definitions.push(toolDefinition(this.prepared?.plugin.id, server, tool, this.boundConnection));
         } catch {
-          issues.push(issue(this.manifest.id, server.id, "invalid_tool", "MCP server exposes an invalid tool definition."));
+          issues.push(this.issue(server.id, "invalid_tool", "MCP server exposes an invalid tool definition."));
         }
       }
     }
@@ -145,7 +168,7 @@ class McpPluginPackage implements PluginPackage {
     if (this.boundConnection && this.boundConnection.serverId !== serverId) {
       throw new PluginToolRuntimeError("Plugin MCP server is not bound to this connection.");
     }
-    if (!this.prepared.plugin.approvedMcpServerIds.includes(serverId)) {
+    if (this.prepared && !this.prepared.plugin.approvedMcpServerIds.includes(serverId)) {
       throw new PluginToolRuntimeError("Plugin MCP server is not approved.");
     }
     let tools: readonly Tool[];
@@ -159,7 +182,7 @@ class McpPluginPackage implements PluginPackage {
     }
     if (!tools.some((tool) => tool.name === name)) throw new PluginToolRuntimeError("Plugin MCP tool is unavailable.");
     const result = await connection.callTool(name, argumentsValue, context.signal);
-    return boundedToolResult(result, [this.prepared.pluginRoot, this.prepared.pluginData]);
+    return boundedToolResult(result, this.prepared ? [this.prepared.pluginRoot, this.prepared.pluginData] : []);
   }
 
   async close(): Promise<void> {
@@ -173,10 +196,9 @@ class McpPluginPackage implements PluginPackage {
 
   private configurationIssues(): PluginToolIssue[] {
     if (this.configError) {
-      return [issue(this.manifest.id, undefined, "invalid_configuration", "Plugin MCP configuration is invalid.")];
+      return [this.issue(undefined, "invalid_configuration", "Plugin MCP configuration is invalid.")];
     }
-    return (this.config?.issues ?? []).map((entry) => issue(
-      this.manifest.id,
+    return (this.config?.issues ?? []).map((entry) => this.issue(
       entry.serverId,
       entry.code === "unsupported_transport" ? "unsupported_transport" : "invalid_configuration",
       entry.message,
@@ -184,9 +206,11 @@ class McpPluginPackage implements PluginPackage {
   }
 
   private async serverTools(server: PluginMcpServer, signal: AbortSignal): Promise<readonly Tool[]> {
+    if (this.closed) throw new PluginToolRuntimeError("MCP connection has been closed.");
     const cached = this.toolCache.get(server.id);
     if (cached) return cached;
     const tools = cloneJsonValue(await (await this.connection(server, signal)).listTools(signal));
+    if (this.closed) throw new PluginToolRuntimeError("MCP connection has been closed.");
     this.toolCache.set(server.id, tools);
     return tools;
   }
@@ -195,21 +219,30 @@ class McpPluginPackage implements PluginPackage {
     if (this.closed) throw new PluginToolRuntimeError("Plugin MCP connection has been closed.");
     const existing = this.connections.get(server.id);
     if (existing) return existing;
-    const bound = bindMcpServerCredentials(server, this.boundConnection?.secrets ?? {});
-    const pending = this.connector(bound, {
+    const bound = this.prepared ? bindMcpServerCredentials(server, this.boundConnection?.secrets ?? {}) : server;
+    const pending = this.connector(bound, this.prepared ? {
       pluginRoot: this.prepared.pluginRoot,
       pluginData: this.prepared.pluginData,
-    }, signal, this.connectionOptions);
+    } : undefined, signal, this.connectionOptions);
     this.connections.set(server.id, pending);
     void pending.catch(() => {
       if (this.connections.get(server.id) === pending) this.connections.delete(server.id);
     });
     return pending;
   }
+
+  private issue(serverId: string | undefined, code: PluginToolIssue["code"], message: string): PluginToolIssue {
+    return {
+      ...(this.prepared ? { pluginId: this.prepared.plugin.id } : {}),
+      ...(this.boundConnection ? { connectionId: this.boundConnection.id } : {}),
+      ...(serverId === undefined ? {} : { serverId }),
+      code, message,
+    };
+  }
 }
 
 function toolDefinition(
-  pluginId: string,
+  pluginId: string | undefined,
   server: PluginMcpServer,
   tool: Tool,
   connection?: McpPluginPackageOptions["connection"],
@@ -226,15 +259,18 @@ function toolDefinition(
   const parameters = modelSchemaForArtifactTool(tool.inputSchema, artifactContract);
   if (!plainRecord(parameters) || jsonBytes(parameters) > MAX_TOOL_SCHEMA_BYTES) throw new Error("Invalid tool schema.");
   return {
-    pluginId,
+    ...(pluginId === undefined ? {} : { pluginId }),
     serverId: server.id,
     ...(connection ? { connectionId: connection.id } : {}),
     name: tool.name,
+    description,
     ...(artifactContract ? { artifactContract } : {}),
     tool: {
       type: "function",
       function: {
-        name: pluginToolCallName(pluginId, server.id, tool.name, connection?.id),
+        name: pluginId === undefined
+          ? standaloneMcpToolCallName(connection!.id, tool.name)
+          : pluginToolCallName(pluginId, server.id, tool.name, connection?.id),
         description: `${connection ? `Named connection: ${connection.name}. ` : ""}${artifactContract
           ? `${description} Live Smith stages declared Session audio inputs and saves one validated MIDI output; arguments never contain user filesystem paths. Do not retry an unknown outcome automatically; use list_session_artifacts to check saved results first.`
           : description}`,
@@ -248,6 +284,11 @@ export function pluginToolCallName(pluginId: string, serverId: string, toolName:
   const identity = `${pluginId}\0${serverId}\0${toolName}${connectionId === undefined ? "" : `\0${connectionId}`}`;
   const digest = createHash("sha256").update(identity).digest("hex").slice(0, 16);
   return `plg_${slug(pluginId, 8)}_${slug(serverId, 8)}_${slug(toolName, 20)}_${digest}`;
+}
+
+export function standaloneMcpToolCallName(connectionId: string, toolName: string): string {
+  const digest = createHash("sha256").update(`${connectionId}\0${toolName}`).digest("hex").slice(0, 16);
+  return `mcp_${slug(connectionId, 16)}_${slug(toolName, 20)}_${digest}`;
 }
 
 function slug(value: string, maximum: number): string {
@@ -273,13 +314,4 @@ function jsonBytes(value: unknown): number {
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function issue(
-  pluginId: string,
-  serverId: string | undefined,
-  code: PluginToolIssue["code"],
-  message: string,
-): PluginToolIssue {
-  return { pluginId, ...(serverId === undefined ? {} : { serverId }), code, message };
 }

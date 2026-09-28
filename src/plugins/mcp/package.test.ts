@@ -71,6 +71,7 @@ test("PluginPackage exposes only approved MCP servers and keeps generic tool rou
     pluginId: "acme.audio-tools",
     serverId: "primary",
     name: "primary.echo",
+    description: "Echo through primary",
     tool: {
       type: "function",
       function: {

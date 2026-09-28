@@ -359,7 +359,7 @@ function stateFixture(): ChatBridgeState {
     oauthAuthProvider: "openai",
     oauthAuthGeneration: 0,
     settings: {
-      schemaVersion: 9,
+      schemaVersion: 10,
       activeProfileId: "profile-1",
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
@@ -1585,16 +1585,18 @@ async function createDialogHarness(
                     const { secrets, ...fields } = patch.connection;
                     const index = connections.findIndex((service) => service.id === fields.id);
                     const previous = connections[index];
-                    const sameBinding = previous?.pluginId === fields.pluginId &&
-                      previous.configuration.serverId === fields.configuration.serverId &&
-                      previous.configuration.pluginDigest === fields.configuration.pluginDigest;
+                    const sameBinding = previous && (fields.mcp
+                      ? Boolean(previous.mcp) && JSON.stringify(previous.mcp) === JSON.stringify(fields.mcp)
+                      : previous.pluginId === fields.pluginId &&
+                        previous.configuration?.serverId === fields.configuration.serverId &&
+                        previous.configuration?.pluginDigest === fields.configuration.pluginDigest);
                     const service = {
                       ...fields,
                       configuredSecrets: secrets === undefined
                         ? sameBinding
                           ? [...(previous?.configuredSecrets ?? [])]
                           : []
-                        : sameBinding && !builtInAudioPluginById(fields.pluginId)
+                        : sameBinding && (!fields.pluginId || !builtInAudioPluginById(fields.pluginId))
                           ? [...new Set([...previous?.configuredSecrets ?? [], ...Object.keys(secrets)])]
                             .filter((name) => !Object.hasOwn(secrets, name) || Boolean(secrets[name]))
                           : Object.entries(secrets)
@@ -1607,8 +1609,8 @@ async function createDialogHarness(
                   const after = connections.find((connection) => connection.id === changedId);
                   serverState.integrationConnections = { connections, revision: incrementNetworkProxyRevision(current.revision),
                     lastChangeTouchesAudio: Boolean(
-                      before && builtInAudioPluginById(before.pluginId) ||
-                      after && builtInAudioPluginById(after.pluginId)),
+                      before?.pluginId && builtInAudioPluginById(before.pluginId) ||
+                      after?.pluginId && builtInAudioPluginById(after.pluginId)),
                   };
                 } else if (command.uiLanguage) {
                   serverState.settings.uiLanguage = command.uiLanguage;

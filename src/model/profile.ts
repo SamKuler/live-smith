@@ -191,7 +191,7 @@ export type CustomInstructionsRevision = string;
 
 export const MAX_CUSTOM_INSTRUCTIONS_CODE_POINTS = 8_000;
 
-export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 9 as const;
+export const CURRENT_AGENT_SETTINGS_SCHEMA_VERSION = 10 as const;
 
 export interface AgentSettings {
   schemaVersion: typeof CURRENT_AGENT_SETTINGS_SCHEMA_VERSION;

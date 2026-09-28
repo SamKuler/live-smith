@@ -255,6 +255,11 @@ test("every JSON route requires one unambiguous application/json media type", as
       headers: { "X-Live-Smith-Command-Id": "media-capabilities" },
     },
     {
+      path: "/session-tools",
+      body: JSON.stringify({ kind: "load_session_tools", sessionId: "session-1" }),
+      headers: { "X-Live-Smith-Command-Id": "media-tools" },
+    },
+    {
       path: "/steer",
       body: JSON.stringify({ prompt: "change", sessionId: "session-1" }),
       headers: {

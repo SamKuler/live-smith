@@ -28,17 +28,20 @@ const MAX_MIDI_DURATION_BEATS = 100_000;
 const MAX_MIDI_METADATA_BYTES = 4 * 1024;
 const supportsPosixPermissions = platform !== "win32";
 const metadataKeys = new Set([
-  "id", "sessionId", "pluginId", "serverId", "toolName", "label", "byteLength",
+  "id", "sessionId", "pluginId", "connectionId", "serverId", "toolName", "label", "byteLength",
   "sha256", "format", "trackCount", "ticksPerQuarterNote", "noteCount",
   "durationBeats", "createdAt",
 ]);
 const hashPattern = /^[a-f0-9]{64}$/u;
 const ownerIdPattern = /^[^\u0000-\u001f\u007f]{1,128}$/u;
 
-export interface MidiArtifact {
+export type MidiArtifactSource =
+  | { pluginId: string; connectionId?: never }
+  | { connectionId: string; pluginId?: never };
+
+export type MidiArtifact = MidiArtifactSource & {
   id: string;
   sessionId: string;
-  pluginId: string;
   serverId: string;
   toolName: string;
   label: string;
@@ -50,7 +53,7 @@ export interface MidiArtifact {
   noteCount: number;
   durationBeats: number;
   createdAt: string;
-}
+};
 
 export interface ParsedMidiArtifact {
   format: 0 | 1;
@@ -123,8 +126,7 @@ export function parseMidiArtifact(bytes: Uint8Array, signal?: AbortSignal): Pars
 export async function saveMidiArtifact(
   storageDirectory: string | undefined,
   sessionId: string,
-  input: {
-    pluginId: string;
+  input: MidiArtifactSource & {
     serverId: string;
     toolName: string;
     label: string;
@@ -134,7 +136,7 @@ export async function saveMidiArtifact(
 ): Promise<MidiArtifact> {
   if (!storageDirectory || !path.isAbsolute(storageDirectory)) throw new MidiArtifactStorageError();
   requireSafeStorageId(sessionId, "Session ID");
-  if (!isSafePluginId(input.pluginId) || !ownerIdPattern.test(input.serverId) ||
+  if (!validArtifactSource(input) || !ownerIdPattern.test(input.serverId) ||
       !ownerIdPattern.test(input.toolName) || !safeLabel(input.label) ||
       !(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_MIDI_ARTIFACT_BYTES) {
     throw new MidiArtifactStorageError();
@@ -145,7 +147,7 @@ export async function saveMidiArtifact(
   const artifact: MidiArtifact = {
     id: createStorageId("midi"),
     sessionId,
-    pluginId: input.pluginId,
+    ...(input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
     serverId: input.serverId,
     toolName: input.toolName,
     label: input.label,
@@ -510,7 +512,7 @@ async function readMetadata(directory: DirectoryBinding, id: string): Promise<Mi
 
 function decodeArtifact(value: unknown): MidiArtifact {
   if (!plainRecord(value) || Object.keys(value).some((key) => !metadataKeys.has(key)) ||
-      !isSafeStorageId(value.id) || !isSafeStorageId(value.sessionId) || !isSafePluginId(value.pluginId) ||
+      !isSafeStorageId(value.id) || !isSafeStorageId(value.sessionId) || !validArtifactSource(value) ||
       typeof value.serverId !== "string" || !ownerIdPattern.test(value.serverId) ||
       typeof value.toolName !== "string" || !ownerIdPattern.test(value.toolName) ||
       !safeLabel(value.label) || !Number.isInteger(value.byteLength) || (value.byteLength as number) < 22 ||
@@ -524,6 +526,12 @@ function decodeArtifact(value: unknown): MidiArtifact {
       value.durationBeats > MAX_MIDI_DURATION_BEATS || typeof value.createdAt !== "string" ||
       !Number.isFinite(Date.parse(value.createdAt))) throw new MidiArtifactStorageError();
   return cloneArtifact(value as unknown as MidiArtifact);
+}
+
+function validArtifactSource(value: { pluginId?: unknown; connectionId?: unknown }): boolean {
+  return value.pluginId === undefined
+    ? isSafeStorageId(value.connectionId)
+    : isSafePluginId(value.pluginId) && value.connectionId === undefined;
 }
 
 async function readPrivateFile(target: string, maximumBytes: number, signal?: AbortSignal): Promise<Uint8Array> {

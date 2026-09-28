@@ -1,6 +1,6 @@
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { AudioJobView } from "../audio-services/contracts.js";
-import type { IntegrationConnectionsView } from "../plugins/integration-connections.js";
+import { isStandaloneMcpConnection, type IntegrationConnectionsView } from "../plugins/integration-connections.js";
 import type { SunoAccountView } from "../audio-services/suno-session-contracts.js";
 import type { LiveContextPresentation } from "../live/context.js";
 import type { ConversationScope } from "../model/contracts.js";
@@ -32,9 +32,13 @@ import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 import type { AvailableSkillSummary } from "../skills/builtins.js";
 import type { InstalledPluginView } from "../plugins/view.js";
+import type { PluginToolIssue } from "../plugins/contracts.js";
 import type { UiMessage } from "../i18n/ui-message.js";
 
 export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
+export const MAX_SESSION_TOOL_CATALOG_TOOLS = 512;
+export const MAX_SESSION_TOOL_CATALOG_ISSUES = 256;
+export const MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH = 512;
 
 export interface ChatSessionSummary extends AgentSession {
   /** Derived display metadata; never part of the stored Session record. */
@@ -50,6 +54,22 @@ export interface SunoModelCatalogView {
   accountId: string;
   integrationConnectionsRevision: string;
   models: Array<{ id: string; name: string; canUse?: boolean; isDefault?: boolean }>;
+}
+
+export interface SessionToolCatalog {
+  sessionId: string;
+  loadedAt: string;
+  modelToolsSupported: boolean;
+  truncated: boolean;
+  groups: Array<{
+    kind: "live" | "audio" | "mcp";
+    pluginId?: string;
+    serverId?: string;
+    connectionId?: string;
+    connectionName?: string;
+    tools: Array<{ name: string; description: string }>;
+  }>;
+  issues: PluginToolIssue[];
 }
 
 export interface ChatDialogState {
@@ -87,6 +107,8 @@ export interface ChatDialogState {
   sunoAccounts?: SunoAccountView[];
   /** Modal-only catalog for one saved connection; omission clears prior results. */
   sunoModelCatalog?: SunoModelCatalogView;
+  /** Explicit, dialog-local discovery snapshot; never persisted. */
+  sessionToolCatalog?: SessionToolCatalog;
   /** Credential-free state for the selected native OAuth provider. */
   oauthAuth?: OAuthAuthState;
   oauthAuthProfileId?: string;
@@ -128,7 +150,7 @@ export function chatSessionEvent(
   };
 }
 
-/** Converts storage-backed attachment names into the complete browser wire view. */
+/** Creates public browser projections of host-owned state. */
 export function chatDialogStateForWire<State extends ChatDialogState>(
   state: State,
 ): State {
@@ -137,6 +159,30 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
   return {
     ...state,
     ...(settings ? { settings } : {}),
+    ...(Array.isArray(state.plugins) ? { plugins: state.plugins.map((plugin) => ({
+      id: plugin.id,
+      sha256: plugin.sha256,
+      ...(plugin.version === undefined ? {} : { version: plugin.version }),
+      ...(plugin.description === undefined ? {} : { description: plugin.description }),
+      sourceFormat: plugin.sourceFormat,
+      enabled: plugin.enabled,
+      skillCount: plugin.skillCount,
+      ...(plugin.skills === undefined ? {} : { skills: plugin.skills.map(({ id, description }) => ({ id, description })) }),
+      mcpServers: plugin.mcpServers.map((server) => ({
+        id: server.id,
+        type: server.type,
+        approved: server.approved,
+        artifactInputApproved: server.artifactInputApproved,
+        artifactOutputApproved: server.artifactOutputApproved,
+        target: server.target,
+        ...(server.args === undefined ? {} : { args: [...server.args] }),
+        ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+        ...(server.envNames === undefined ? {} : { envNames: [...server.envNames] }),
+        credentialFields: server.credentialFields.map(({ name, required }) => ({ name, required })),
+      })),
+      unsupportedComponents: [...plugin.unsupportedComponents],
+      issues: [...plugin.issues],
+    })) } : {}),
     ...(state.sunoModelCatalog === undefined ? {} : { sunoModelCatalog: {
       serviceId: state.sunoModelCatalog.serviceId,
       accountId: state.sunoModelCatalog.accountId,
@@ -145,6 +191,27 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
         id, name,
         ...(typeof canUse === "boolean" ? { canUse } : {}),
         ...(typeof isDefault === "boolean" ? { isDefault } : {}),
+      })),
+    } }),
+    ...(state.sessionToolCatalog === undefined ? {} : { sessionToolCatalog: {
+      sessionId: state.sessionToolCatalog.sessionId,
+      loadedAt: state.sessionToolCatalog.loadedAt,
+      modelToolsSupported: state.sessionToolCatalog.modelToolsSupported,
+      truncated: state.sessionToolCatalog.truncated,
+      groups: state.sessionToolCatalog.groups.map((group) => ({
+        kind: group.kind,
+        ...(group.pluginId === undefined ? {} : { pluginId: group.pluginId }),
+        ...(group.serverId === undefined ? {} : { serverId: group.serverId }),
+        ...(group.connectionId === undefined ? {} : { connectionId: group.connectionId }),
+        ...(group.connectionName === undefined ? {} : { connectionName: group.connectionName }),
+        tools: group.tools.map(({ name, description }) => ({ name, description })),
+      })),
+      issues: state.sessionToolCatalog.issues.map(({ pluginId, connectionId, serverId, code, message }) => ({
+        ...(pluginId === undefined ? {} : { pluginId }),
+        ...(connectionId === undefined ? {} : { connectionId }),
+        ...(serverId === undefined ? {} : { serverId }),
+        code,
+        message,
       })),
     } }),
     ...(state.sunoAccounts === undefined ? {} : { sunoAccounts: state.sunoAccounts.map(({ serviceId, status, accountId, accountName }) => ({
@@ -160,9 +227,20 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
       connections: state.integrationConnections.connections.map((connection) => ({
         id: connection.id,
         name: connection.name,
-        pluginId: connection.pluginId,
         enabled: connection.enabled,
-        configuration: { ...connection.configuration },
+        ...(isStandaloneMcpConnection(connection) ? {
+          mcp: connection.mcp.type === "stdio" ? {
+            type: connection.mcp.type,
+            command: connection.mcp.command,
+            args: [...connection.mcp.args],
+            ...(connection.mcp.cwd === undefined ? {} : { cwd: connection.mcp.cwd }),
+          } : { type: connection.mcp.type, url: connection.mcp.url },
+          artifactInputApproved: connection.artifactInputApproved,
+          artifactOutputApproved: connection.artifactOutputApproved,
+        } : {
+          pluginId: connection.pluginId,
+          configuration: { ...connection.configuration },
+        }),
         configuredSecrets: [...connection.configuredSecrets],
       })),
     } }),

@@ -1,7 +1,8 @@
 import type { AudioJobView, AudioServiceConnectionView } from "../audio-services/contracts.js";
 import { builtInAudioPluginId } from "../plugins/builtins/index.js";
 import type {
-  IntegrationConnectionView,
+  PluginIntegrationConnectionView,
+  IntegrationConnectionInput,
   IntegrationConnectionsSettingsPatch,
 } from "../plugins/integration-connections.js";
 import { commandCalls, createDialogHarness, stateFixture } from "./chat-dialog.test-harness.js";
@@ -18,7 +19,7 @@ export const sunoService: AudioServiceConnectionView = {
 };
 export function integrationConnectionView(
   connection: AudioServiceConnectionView,
-): IntegrationConnectionView {
+): PluginIntegrationConnectionView {
   return {
     id: connection.id,
     name: connection.name,
@@ -33,11 +34,10 @@ export function integrationConnectionView(
 }
 export function audioState(connections = [service]) {
   const state = stateFixture();
-  state.integrationConnections = {
+  return { ...state, integrationConnections: {
     connections: connections.map(integrationConnectionView),
     revision: "1",
-  };
-  return state;
+  } };
 }
 export function job(sessionId: string, overrides: Partial<AudioJobView> = {}): AudioJobView {
   return { id: "job-one", serviceId: service.id, provider: service.provider, operation: "separate_stems",
@@ -63,8 +63,12 @@ export function toggle(harness: Harness, enabled: boolean) {
   input.dispatchEvent(new harness.window.Event("change", { bubbles: true }));
 }
 export function audioCommands(harness: Harness) {
+  type AudioSettingsPatch = Extract<IntegrationConnectionsSettingsPatch, { action: "remove" }> |
+    (Omit<Extract<IntegrationConnectionsSettingsPatch, { action: "upsert" }>, "connection"> &
+      { connection: Extract<IntegrationConnectionInput, { pluginId: string }> });
   return commandCalls(harness).map((call) => call.body as { kind: string; integrationConnections?: IntegrationConnectionsSettingsPatch })
-    .filter((body): body is { kind: string; integrationConnections: IntegrationConnectionsSettingsPatch } => Boolean(body.integrationConnections));
+    .filter((body): body is { kind: string; integrationConnections: AudioSettingsPatch } => Boolean(body.integrationConnections &&
+      (body.integrationConnections.action === "remove" || body.integrationConnections.connection.pluginId)));
 }
 export function broadcast(state: ReturnType<typeof stateFixture>, integrationConnections: unknown) {
   return { type: "global_settings_changed", commandId: "peer-audio-save",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { BuiltInIntegrationConnectionChoice } from "./contracts.js";
-import { PluginRegistry } from "../registry.js";
+import { ToolRegistry } from "../registry.js";
 import {
   builtInAudioToolName,
   createBuiltInAudioToolsets,
@@ -18,7 +18,7 @@ const services: BuiltInIntegrationConnectionChoice[] = [
 
 test("built-in provider Plugins own distinct tools without a central generation route", async () => {
   const requests: unknown[] = [];
-  const registry = new PluginRegistry(createBuiltInAudioToolsets({
+  const registry = new ToolRegistry(createBuiltInAudioToolsets({
     services,
     includeModelAudioInput: false,
     execute: async (request) => {
@@ -103,7 +103,7 @@ test("Session media tools remain one built-in Plugin independent of connections"
     includeModelAudioInput: true,
     execute: async () => ({ content: "ok" }),
   });
-  assert.deepEqual(toolsets.map((toolset) => toolset.pluginId), ["live-smith.media"]);
+  assert.deepEqual(toolsets.map((toolset) => toolset.id), ["live-smith.media"]);
   assert.deepEqual(toolsets[0]!.tools().map((tool) => tool.function.name), [
     "listen_to_audio_asset",
     "resume_audio_job",

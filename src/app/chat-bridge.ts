@@ -1553,6 +1553,7 @@ export async function createChatBridge(
       const jsonBodyMayBeUnread = request.method === "POST" && [
         "/command",
         "/session-model-capabilities",
+        "/session-tools",
         "/confirm",
         "/send",
         "/steer",
@@ -1672,16 +1673,24 @@ export async function createChatBridge(
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/session-model-capabilities") {
-        assertExactQueryParameters(url, ["token"], "Session model capability request");
+      if (request.method === "POST" && (
+        url.pathname === "/session-model-capabilities" || url.pathname === "/session-tools"
+      )) {
+        const expectedKind = url.pathname === "/session-tools"
+          ? "load_session_tools"
+          : "load_session_model_capabilities";
+        const label = url.pathname === "/session-tools"
+          ? "Session tool request"
+          : "Session model capability request";
+        assertExactQueryParameters(url, ["token"], label);
         assertJsonContentType(request);
         commandId = commandIdForRequest(request);
         response.setHeader("X-Live-Smith-Command-Id", commandId);
         const signal = beginReadOnlyBuild(response, handlerTerminal);
         const input = parseCommandInput(await readRequestBody<unknown>(request));
-        if (input.kind !== "load_session_model_capabilities") {
+        if (input.kind !== expectedKind) {
           throw new ChatBridgeRequestValidationError(
-            "Session model capability requests only support load_session_model_capabilities.",
+            `${label}s only support ${expectedKind}.`,
           );
         }
         throwIfBridgeAborted(signal);
@@ -2043,7 +2052,8 @@ export async function createChatBridge(
               input.kind === "delete_session" ||
               input.kind === "archive_session" ||
               input.kind === "set_session_model_selection" ||
-              input.kind === "load_session_model_capabilities"
+              input.kind === "load_session_model_capabilities" ||
+              input.kind === "load_session_tools"
             ) &&
             activeSendsBySession.has(input.sessionId)
           ) {
@@ -2052,6 +2062,8 @@ export async function createChatBridge(
                 ? "Wait for this Session's active request to finish before changing its model."
                 : input.kind === "load_session_model_capabilities"
                 ? "Wait for this Session's active request to finish before loading model capabilities."
+                : input.kind === "load_session_tools"
+                ? "Wait for this Session's active request to finish before loading tools."
                 : `Stop this Session's active request before ${
                   input.kind === "delete_session" ? "deleting" : "archiving"
                 } it.`,
@@ -2515,7 +2527,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/confirm", "/send", "/steer", "/stop"].includes(
+        ["/command", "/session-model-capabilities", "/session-tools", "/confirm", "/send", "/steer", "/stop"].includes(
           requestPath,
         )
       ) request.resume();
@@ -2610,6 +2622,7 @@ export async function createChatBridge(
       if (
         !attachmentMutation &&
         requestPath !== "/session-model-capabilities" &&
+        requestPath !== "/session-tools" &&
         (
           (requestPath === "/send" && sendId !== undefined) ||
           (requestPath !== "/send" && commandId !== undefined)
@@ -3123,6 +3136,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "set_session_edit_scopes" ||
     input.kind === "set_session_model_selection" ||
     input.kind === "load_session_model_capabilities" ||
+    input.kind === "load_session_tools" ||
     input.kind === "set_session_skills";
 }
 

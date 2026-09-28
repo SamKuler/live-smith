@@ -15,7 +15,7 @@ import {
   type AgentConfirmationDecision,
   type AgentLoopTraceEvent,
 } from "../agent/loop.js";
-import { PluginRegistry } from "../plugins/registry.js";
+import { ToolRegistry } from "../plugins/registry.js";
 import {
   materializeMidiArtifactActionPlan,
   midiArtifactImportActionSchema,
@@ -337,9 +337,9 @@ export async function handleAgentRequest(
       ? { withAuthorization: callbacks.withPluginAuthorization }
       : {}),
   });
-  let externalTools: PluginRegistry;
+  let externalTools: ToolRegistry;
   try {
-    externalTools = new PluginRegistry([
+    externalTools = new ToolRegistry([
       ...audioTools.toolsets,
       ...pluginTools.toolsets,
     ]);

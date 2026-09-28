@@ -20,7 +20,7 @@ import {
   integrationConnectionsView,
   migrateAudioServiceConnection,
   normalizeIntegrationConnection,
-  type IntegrationConnection,
+  type PluginIntegrationConnection,
   type IntegrationConnectionsSettingsPatch,
 } from "../plugins/integration-connections.js";
 import { decodeAgentSettings } from "./settings-migrations.js";
@@ -41,7 +41,7 @@ function legacyConnection(
 
 function connection(
   overrides: Partial<AudioServiceConnection> = {},
-): IntegrationConnection {
+): PluginIntegrationConnection {
   return migrateAudioServiceConnection(legacyConnection(overrides));
 }
 
@@ -94,12 +94,12 @@ test("Plugin-owned Connection settings round-trip, deep clone, and hide secrets"
   assert.equal(settings.integrationConnections.connections[0]!.secrets.apiKey, "fixture-work");
   const view = integrationConnectionsView(settings.integrationConnections);
   assert.equal(view.connections.length, 2);
-  assert.equal(view.connections[1]!.configuration.modelId, "music_v2");
+  assert.equal(view.connections[1]!.configuration!.modelId, "music_v2");
   assert.deepEqual(view.connections[0]!.configuredSecrets, ["apiKey"]);
   assert.doesNotMatch(JSON.stringify(view), /fixture-work|"secrets"|"apiKey":/);
 });
 
-test("schema v8 audioServices migrate losslessly to schema v9 Integration Connections", () => {
+test("schema v8 audioServices migrate losslessly to schema v10 Integration Connections", () => {
   const source = {
     ...freshEmptyAgentSettings(),
     schemaVersion: 8,
@@ -118,7 +118,7 @@ test("schema v8 audioServices migrate losslessly to schema v9 Integration Connec
     },
   };
   const decoded = decodeAgentSettings(source);
-  assert.equal(decoded.schemaVersion, 9);
+  assert.equal(decoded.schemaVersion, 10);
   assert.deepEqual(decoded.integrationConnections, {
     revision: "7",
     connections: [connection(), connection({
@@ -165,9 +165,9 @@ test("SunoAPI configuration persists without exposing secrets and enabling requi
   assert.equal(saved.integrationConnections?.lastChangeTouchesAudio, true);
   assert.deepEqual(saved.integrationConnections!.connections[0], disabled.integrationConnections!.connections[0]);
   const clone = cloneAgentSettings(saved);
-  clone.integrationConnections!.connections[1]!.configuration.callbackUrl = "https://other.example.com/hook";
-  assert.equal(saved.integrationConnections!.connections[1]!.configuration.callbackUrl, callbackUrl);
-  assert.equal(integrationConnectionsView(saved.integrationConnections).connections[1]!.configuration.callbackUrl, callbackUrl);
+  clone.integrationConnections!.connections[1]!.configuration!.callbackUrl = "https://other.example.com/hook";
+  assert.equal(saved.integrationConnections!.connections[1]!.configuration!.callbackUrl, callbackUrl);
+  assert.equal(integrationConnectionsView(saved.integrationConnections).connections[1]!.configuration!.callbackUrl, callbackUrl);
   assert.doesNotMatch(JSON.stringify(integrationConnectionsView(saved.integrationConnections)), /fixture-suno|"secrets"/);
   await assert.rejects(save({ action: "upsert", expectedRevision: "3", connection: {
     ...suno,
@@ -248,7 +248,7 @@ test("callback validation rejects malformed or credential-bearing values without
   ]) assert.equal(isAudioServiceCallbackUrl(callbackUrl), true, callbackUrl);
 });
 
-test("historical single LALAL connection migrates on read and the next write persists only schema v9", async () => {
+test("historical single LALAL connection migrates on read and the next write persists only schema v10", async () => {
   const { directory, file, save } = await fixture();
   const source = JSON.stringify({
     ...freshEmptyAgentSettings(),
@@ -280,7 +280,7 @@ test("historical single LALAL connection migrates on read and the next write per
   assert.equal(saved.integrationConnections?.revision, "9007199254741000");
   assert.equal(saved.integrationConnections?.connections[0]!.secrets.apiKey, "fixture-legacy");
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.schemaVersion, 9);
+  assert.equal(persisted.schemaVersion, 10);
   assert.equal(Object.hasOwn(persisted, "audioService"), false);
   assert.equal(Object.hasOwn(persisted, "audioServices"), false);
 });

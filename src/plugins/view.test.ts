@@ -46,6 +46,7 @@ test("Plugin wire view exposes capabilities and approval without private runtime
     id: "audio-to-midi", sha256: createHash("sha256").update(entry.bytes).digest("hex"),
     version: "1.0.0", description: "Convert audio",
     sourceFormat: "agent-plugins-1.0", enabled: true, skillCount: 1,
+    skills: [{ id: "audio-to-midi:convert", description: "Convert audio" }],
     mcpServers: [
       { id: "local", type: "stdio", approved: false, artifactInputApproved: false,
         artifactOutputApproved: false, target: "./bin/converter", args: [], envNames: [], credentialFields: [] },
@@ -55,7 +56,17 @@ test("Plugin wire view exposes capabilities and approval without private runtime
     unsupportedComponents: [],
     issues: ["invalid_skill", "unsupported_mcp_transport"],
   });
-  assert.doesNotMatch(JSON.stringify(view), /private\/path|token=hidden|PLUGIN_DATA/u);
+  assert.doesNotMatch(JSON.stringify(view), /private\/path|token=hidden|PLUGIN_DATA|Use the tool\.|"body"/u);
+});
+
+test("disabled Plugin contents retain namespaced Skill summaries without their bodies", async () => {
+  const entry = pluginPackage();
+  entry.plugin.enabled = false;
+  const [view] = await installedPluginViews([entry]);
+  assert.equal(view?.enabled, false);
+  assert.deepEqual(view?.skills, [{ id: "audio-to-midi:convert", description: "Convert audio" }]);
+  assert.equal(view?.skillCount, view?.skills?.length);
+  assert.doesNotMatch(JSON.stringify(view), /Use the tool\.|"body"/u);
 });
 
 test("Plugin install preview binds review metadata to the exact archive", async () => {
@@ -63,6 +74,7 @@ test("Plugin install preview binds review metadata to the exact archive", async 
   const preview = await previewPluginArchive(entry.bytes);
   assert.equal(preview.id, "audio-to-midi");
   assert.equal(preview.enabled, false);
+  assert.deepEqual(preview.skills, [{ id: "audio-to-midi:convert", description: "Convert audio" }]);
   assert.equal(preview.byteLength, entry.bytes.byteLength);
   assert.match(preview.sha256, /^[a-f0-9]{64}$/u);
   assert.deepEqual(preview.mcpServers.map((server) => ({

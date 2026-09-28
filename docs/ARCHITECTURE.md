@@ -48,8 +48,8 @@ src/
       Owns send-scoped audio SampleSource locators, verified staging, Live Project
       import, and partial import progress.
     request-plugin-tools.ts
-      Discovers enabled installed Plugin MCP tools for one request, binds the
-      admitted package digest and permission generation, and mediates artifacts.
+      Discovers enabled installed and standalone MCP tools for one request,
+      binds their admitted configuration and permissions, and mediates artifacts.
     integration-connections.ts, built-in-plugin-runtime.ts
       Resolve private Plugin-owned Connection snapshots and supply explicit host
       networking primitives to built-in protocol factories.
@@ -133,11 +133,11 @@ src/
       Provider-neutral Plugin/package/tool contracts plus strict portable, Codex,
       and Claude manifest and bounded ZIP decoding.
     registry.ts
-      Combines admitted built-in and installed Plugin toolsets and routes exact
+      Combines admitted built-in, installed, and standalone MCP toolsets and routes exact
       namespaced calls without a central operation switch.
     integration-connections.ts
-      Schema-9 Plugin-owned Connection configuration, write-only secrets, public
-      views, and frozen schema-8 AudioService migration.
+      Plugin-owned and standalone MCP Connection configuration, write-only
+      secrets, public views, and frozen schema-8 AudioService migration.
     builtins/
       Immutable provider Plugin definitions. Each definition owns its Connection
       descriptor, complete `tools()/parse()` contract, model constraints, and
@@ -718,27 +718,46 @@ the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
+The `load_session_tools` handler builds a modal tool directory from canonical
+Live and built-in definitions and the ordinary approved MCP discovery path.
+The read-only `POST /session-tools` endpoint accepts the Session identifier,
+runs outside the command lock, and cancels discovery when its request closes.
+Reading `/state` alone does not start an MCP connection.
+Discovery closes its packages after collecting descriptions and never invokes a
+tool. The bounded display snapshot is cleared when its Session, model, Plugin,
+or connection owner changes; display limits do not change executable toolsets.
+Request-specific inputs and later remote changes may alter the next model turn's
+tool list.
+
 Enabled installed Plugins are discovered per request. The request snapshot binds
 the package ID, digest, exact MCP server, optional named Connection ID and
 private credential snapshot, exposed tool, server approval, and artifact
 approvals. Execution rechecks that admission inside the Plugin
 authorization fence. A changed, disabled, replaced, or unapproved package cannot
 reuse an older model-visible tool call.
+Standalone MCP Connections use the same transport, schema, result, and tool
+routing boundary without an installed package or digest. Their enabled state
+authorizes the exact saved launch configuration or endpoint. Execution rechecks
+the named Connection, private credentials, and artifact grants under the same
+authorization fence. Changing, disabling, or removing any named MCP Connection
+closes its admitted clients before the settings command returns.
 Discovery registers each MCP package before opening a connection. Cancellation
 closes packages already registered; disabling a Plugin or revoking MCP or
 artifact approval closes its active packages before the configuration command
 returns. A closed package cannot reopen a process during an in-flight request.
 
-Local MCP commands use no shell, receive a minimal environment, resolve package
-and data placeholders only inside their owned roots, and run as the current
-operating-system user. Live Smith does not claim an OS sandbox. Remote MCP uses
+Local MCP commands use no shell, receive a minimal environment, and run as the
+current operating-system user. Installed servers resolve package and data
+placeholders only inside their owned roots. Standalone commands use literal
+arguments, optional working directory, and explicitly saved environment values;
+no Plugin paths are injected. Live Smith does not claim an OS sandbox. Remote MCP uses
 the proxy-aware Fetch boundary, rejects redirects, permits HTTPS or loopback
 HTTP only, and stays bound to its declared origin. Installation and inspection
 never start either transport. MCP schemas, names, results, stderr, message sizes,
 timeouts, and cancellation are bounded; package paths, private data paths, and
 raw process or network errors cannot enter model-visible results.
 
-Plugin tools cannot call the Live executor. An approved artifact-input contract
+MCP tools cannot call the Live executor. An approved artifact-input contract
 replaces an opaque Session audio reference with one read-only temporary file for
 the duration of the call. An independently approved artifact-output contract
 supplies one host-owned temporary destination, accepts only a regular contained
@@ -750,6 +769,7 @@ metadata and are reported as unavailable while healthy artifacts remain usable.
 An unavailable artifact cannot be imported, and ordinary Session sends continue
 with a warning. Import verifies the bytes and parsed MIDI against the saved
 metadata; malformed or substituted files fail validation.
+MIDI provenance records the installed Plugin or standalone Connection identity.
 The model receives only its opaque artifact reference. A later
 `create_midi_clip_from_artifact` action still passes the ordinary schema, Edit
 Scope, Approval, preflight, cancellation, mutation queue, and drift checks.
@@ -758,16 +778,17 @@ Scope, Approval, preflight, cancellation, mutation queue, and drift checks.
 
 Built-in provider integrations are immutable Plugin definitions and do not
 consume installed-package quota. They expose the same request-level
-`PluginToolset` interface and registry routing as installed MCP packages, while
+`Toolset` interface and registry routing as installed and standalone MCP sources, while
 their trusted host adapters remain explicit local factories. Every built-in
 definition owns its complete `tools()/parse()` contract, Connection descriptor,
 model constraints, and generation or processing factory; the registry does not
 infer tools from a provider switch or central capability table.
 
-An Integration Connection is a separately persisted user instance keyed by a
-Plugin ID, with public configuration and private write-only secrets. Connection
-state is not a Plugin, a Skill, or a model Profile. Current host-managed
-Connection descriptors belong to built-in provider Plugins. Installed MCP
+An Integration Connection is a separately persisted named user instance with
+public configuration and private write-only secrets. Plugin-backed records hold
+a Plugin ID and its configuration; standalone MCP records hold their transport
+configuration directly. Built-in Connection descriptors belong to the provider
+definitions. Installed MCP
 servers can bind multiple named Connections to exact package digests and server
 IDs. Declared stdio environment and remote header placeholders resolve from
 private Connection secrets at transport admission; the browser receives only
@@ -776,10 +797,16 @@ fields or arguments. An omitted credential may inherit only from the same
 Plugin, server, and package digest. Replacing a package leaves older Connections
 visible but unable to execute until explicitly rebound with new credentials.
 The collection revision remains the compare-and-swap owner for all Connections.
+Standalone secrets are literal stdio environment values or Streamable HTTP
+headers; only configured field names reach the browser. Omitted values inherit
+only while the exact MCP transport configuration is unchanged. Empty values
+clear saved fields. Standalone artifact grants are independent and local-only.
+No installation, settings read, or Connection save starts a process or request.
 Its latest-change audio marker lets the client retain audio drafts across one
 adjacent MCP-only update; missing revisions or audio changes still conflict.
 The settings decoder migrates schema-8 `audioServices` records to
-schema-9 `integrationConnections` without rewriting on read. Existing audio job
+schema-9 `integrationConnections`; schema 10 adds standalone records while
+preserving existing Plugin records without rewriting on read. Existing audio job
 records retain historical provider, operation, and `serviceId` facts; new records
 also persist `pluginId`, `toolId`, and `toolVersion`, and legacy records derive
 that identity on read so saved assets and Resume remain valid.
@@ -1404,8 +1431,8 @@ retryable instead of leaving an unreachable conversation log.
 
 ### Settings schema compatibility
 
-Settings schema version 9 combines model connection Profiles, per-model
-configuration collections, Plugin-owned Integration Connections, the strict
+Settings schema version 10 combines model connection Profiles, per-model
+configuration collections, Plugin-backed and standalone MCP Integration Connections, the strict
 `defaultFollowUpBehavior` value `queue | steer`, the
 context-usage visibility flag, the validated `none | system | manual` network
 proxy selection, bounded global Custom Instructions, and an independent canonical nonnegative
@@ -1428,12 +1455,14 @@ connections into provider-scoped OpenAI OAuth connections in version 7. Version
 7 adds the explicit No proxy default and its initial revision in version 8.
 Version 8 migrates the historical `audioServices` collection and its secret,
 model, callback, enablement, ID, name, and revision facts to Plugin-keyed
-`integrationConnections` in version 9. A v3 containing both
+`integrationConnections` in version 9. Version 9 preserves those Plugin records
+in version 10, whose Connection union also admits standalone MCP configurations.
+A v3 containing both
 follow-up fields must contain only flat Profiles and preserves its
 behavior/revision; a v3 containing neither must contain only nested Profiles
 and receives Queue at revision `"0"`. Partial fields, mixed Profile shapes, and
 unknown fields fail closed. Reads never rewrite the file; the next authorized
-settings mutation persists version 9. A future version or incomplete adjacent
+settings mutation persists version 10. A future version or incomplete adjacent
 migration chain is reported as settings corruption.
 
 ### Capability projections

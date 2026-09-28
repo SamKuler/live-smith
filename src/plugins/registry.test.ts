@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PluginRegistry, type PluginToolset } from "./registry.js";
+import { ToolRegistry, type Toolset } from "./registry.js";
 
-function toolset(pluginId: string, name: string, calls: string[]): PluginToolset {
+function toolset(pluginId: string, name: string, calls: string[]): Toolset {
   return {
-    pluginId,
+    id: pluginId,
     tools: () => [{ type: "function", function: { name, description: name } }],
     callTool: async (call) => {
       calls.push(`${pluginId}:${call.name}`);
@@ -16,7 +16,7 @@ function toolset(pluginId: string, name: string, calls: string[]): PluginToolset
 
 test("Plugin registry exposes generic tools and routes by admitted Plugin identity", async () => {
   const calls: string[] = [];
-  const registry = new PluginRegistry([
+  const registry = new ToolRegistry([
     toolset("first.plugin", "first_tool", calls),
     toolset("second.plugin", "second_tool", calls),
   ]);
@@ -33,12 +33,12 @@ test("Plugin registry exposes generic tools and routes by admitted Plugin identi
 });
 
 test("Plugin registry rejects duplicate package identities and tool names", () => {
-  assert.throws(() => new PluginRegistry([
+  assert.throws(() => new ToolRegistry([
     toolset("same.plugin", "first", []),
     toolset("same.plugin", "second", []),
-  ]), /Plugin identity/u);
-  assert.throws(() => new PluginRegistry([
+  ]), /toolset identity/u);
+  assert.throws(() => new ToolRegistry([
     toolset("first.plugin", "same_tool", []),
     toolset("second.plugin", "same_tool", []),
-  ]), /Plugin tool/u);
+  ]), /tool name/u);
 });

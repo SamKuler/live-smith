@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
 import { pluginSkillsFromArchive } from "../skills/plugin-package.js";
+import { summarizeSkill, type SkillSummary } from "../skills/format.js";
 import type { InstalledPluginPackage } from "../storage/plugins.js";
 import { openPluginArchive, type OpenPluginArchive } from "./archive.js";
 import type { PluginManifest, PluginSourceFormat } from "./contracts.js";
@@ -35,6 +36,8 @@ export interface InstalledPluginView {
   sourceFormat: PluginSourceFormat;
   enabled: boolean;
   skillCount: number;
+  /** Packaged Skill summaries; omitted when this metadata is unavailable. */
+  skills?: SkillSummary[];
   mcpServers: PluginMcpServerView[];
   unsupportedComponents: string[];
   issues: PluginViewIssue[];
@@ -128,6 +131,7 @@ async function pluginView(
     sourceFormat: manifest.sourceFormat,
     enabled,
     skillCount: skills.length,
+    skills: skills.map(summarizeSkill),
     mcpServers,
     unsupportedComponents: [...(manifest.unsupportedComponents ?? [])],
     issues: [...new Set(issues)],

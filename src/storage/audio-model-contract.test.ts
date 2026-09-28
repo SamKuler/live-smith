@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { ProfileValidationError } from "../model/profile.js";
 import {
+  isPluginIntegrationConnection,
   migrateAudioServiceConnection,
   normalizeIntegrationConnection,
 } from "../plugins/integration-connections.js";
@@ -25,6 +26,7 @@ test("settings model IDs round-trip through jobs without task-ID restrictions or
       ...migrateAudioServiceConnection(connection),
       configuration: { modelId },
     });
+    assert.ok(isPluginIntegrationConnection(saved));
     const job = await createAudioJob(h.storage, h.session.id, {
       ...music,
       modelId: saved.configuration.modelId!,
@@ -47,6 +49,7 @@ test("settings and job model IDs reject the same empty, oversized, whitespace, c
     await assert.rejects(createAudioJob(h.storage, h.session.id, { ...music, modelId } as never), AudioStorageError);
   }
   const saved = normalizeIntegrationConnection(migrateAudioServiceConnection(connection));
+  assert.ok(isPluginIntegrationConnection(saved));
   assert.equal(Object.hasOwn(saved.configuration, "modelId"), false);
   const job = await createAudioJob(h.storage, h.session.id, music);
   assert.equal(Object.hasOwn(await loadAudioJob(h.storage, h.session.id, job.id), "modelId"), false);

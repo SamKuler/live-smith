@@ -236,6 +236,7 @@ export type ChatBridgeCommandInput =
       sessionId: string;
       profileId: string;
     }
+  | { kind: "load_session_tools"; sessionId: string }
   | { kind: "new_session" }
   | { kind: "compact_session"; sessionId: string; instructions?: string }
   | { kind: "select_session"; sessionId: string }
@@ -1208,6 +1209,13 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       sessionId: inputString(input, "sessionId"),
       profileId: inputString(input, "profileId"),
     };
+  }
+  if (kind === "load_session_tools") {
+    assertOnlyInputKeys(input, ["kind", "sessionId"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId)) {
+      throw new ChatBridgeRequestValidationError("Choose one valid Session before loading tools.");
+    }
+    return { kind, sessionId: input.sessionId };
   }
   if (kind === "new_session") {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);

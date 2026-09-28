@@ -33,7 +33,7 @@ import {
   MAX_DISCOVERED_MODEL_ID_CODE_POINTS,
   MAX_DISCOVERED_MODEL_OUTPUT_TOKENS,
 } from "../model/catalog.js";
-import { MAX_PROFILE_MODEL_COUNT } from "../model/profile.js";
+import { CURRENT_AGENT_SETTINGS_SCHEMA_VERSION, MAX_PROFILE_MODEL_COUNT } from "../model/profile.js";
 import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
@@ -149,6 +149,7 @@ export function injectBuiltInSkillDefinitions(
 
 function injectModelContract(script: string): string {
   return script
+    .replaceAll("__CURRENT_AGENT_SETTINGS_SCHEMA_VERSION__", String(CURRENT_AGENT_SETTINGS_SCHEMA_VERSION))
     .replaceAll(
       "__MAX_PROFILE_MODEL_COUNT__",
       String(MAX_PROFILE_MODEL_COUNT),

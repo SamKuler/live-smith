@@ -105,6 +105,26 @@ test("MIDI artifacts persist immutable ownership and parse again on every read",
   assert.deepEqual(await listSessionMidiArtifactDirectoryIds(h.directory), []);
 });
 
+test("MIDI provenance requires exactly one valid Plugin or standalone Connection on write and read", async (t) => {
+  const h = await harness(t);
+  const common = { serverId: "server", toolName: "transcribe", label: "MIDI", bytes: midiFile(), signal: h.signal };
+  const sources = [
+    {},
+    { pluginId: "valid.plugin", connectionId: "valid-connection" },
+    { connectionId: "../invalid" },
+  ];
+  for (const source of sources) await assert.rejects(saveMidiArtifact(h.directory, h.session.id,
+    { ...common, ...source } as Parameters<typeof saveMidiArtifact>[2]), MidiArtifactStorageError);
+  const artifact = await saveMidiArtifact(h.directory, h.session.id, { ...common, connectionId: "standalone" });
+  assert.equal(Object.hasOwn(artifact, "pluginId"), false);
+  const metadata = path.join(h.directory, "live-smith-midi", h.session.id, `${artifact.id}.midi.json`);
+  for (const source of sources) {
+    const { connectionId: _connection, ...rest } = artifact;
+    await fs.writeFile(metadata, JSON.stringify({ ...rest, ...source }));
+    await assert.rejects(readMidiArtifact(h.directory, h.session.id, artifact.id), MidiArtifactStorageError);
+  }
+});
+
 test("incomplete MIDI writes do not poison a Session or hide committed artifacts", async (t) => {
   const h = await harness(t);
   const bytes = midiFile();

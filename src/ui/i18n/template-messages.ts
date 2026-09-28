@@ -1,4 +1,5 @@
 export const templateMessages: Record<string, string> = {
+  "Loading tool descriptions…": "正在加载工具说明…",
   "Inputs": "输入",
   "Collapse Sessions": "收起会话列表",
   "Inspector": "检查器",

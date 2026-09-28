@@ -6,6 +6,7 @@ import { updateAudioJob } from "../storage/audio-jobs.js";
 import { integrationConnectionsView, loadAgentSettings } from "../storage/settings.js";
 import { audioState } from "./chat-dialog.audio-test-helpers.js";
 import { commandCalls, createDialogHarness } from "./chat-dialog.test-harness.js";
+import type { ChatBridgeState } from "./chat-state.js";
 
 for (const condition of ["disabled", "cleared", "removed", "replaced"] as const) {
   test(`host-authorized local recovery remains actionable when its connection is ${condition}`, async (t) => {
@@ -14,7 +15,7 @@ for (const condition of ["disabled", "cleared", "removed", "replaced"] as const)
     await updateAudioJob(backend.storage, backend.session.id, first.id, { status: "collecting", outputAssets: [] });
     await backend.change(condition === "removed" ? "remove" : condition === "replaced" ? { provider: "lalal" }
       : { enabled: false, ...(condition === "cleared" ? { apiKey: "" } : {}) });
-    const state = audioState();
+    const state: ChatBridgeState = audioState();
     state.activeSessionId = backend.session.id;
     state.sessions[0] = { ...state.sessions[0]!, id: backend.session.id };
     state.integrationConnections = integrationConnectionsView((await loadAgentSettings(backend.storage)).integrationConnections!);

@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { validateHeaderValue } from "node:http";
 import { URL } from "node:url";
 import { TextDecoder } from "node:util";
 
@@ -42,6 +43,48 @@ export interface PluginMcpRemoteServer {
 }
 
 export type PluginMcpServer = PluginMcpStdioServer | PluginMcpRemoteServer;
+
+export type StandaloneMcpConfig =
+  | { type: "stdio"; command: string; args: readonly string[]; cwd?: string }
+  | { type: "streamable-http"; url: string };
+
+/** Public server configuration; environment and header values remain private. */
+export function normalizeStandaloneMcpConfig(value: unknown): StandaloneMcpConfig {
+  if (!plainRecord(value)) throw invalidConfig("MCP server configuration must be an object.");
+  if (value.type === "stdio") {
+    if (Object.keys(value).some((key) => !["type", "command", "args", "cwd"].includes(key)) ||
+        !Array.isArray(value.args)) {
+      throw invalidConfig("Standalone stdio MCP requires command, args, and an optional working directory.");
+    }
+    const { command, args, cwd } = parseStdioServer("standalone", value, false);
+    return { type: "stdio", command, args, ...(cwd === undefined ? {} : { cwd }) };
+  }
+  if (value.type === "streamable-http") {
+    if (Object.keys(value).some((key) => !["type", "url"].includes(key))) {
+      throw invalidConfig("Standalone Streamable HTTP MCP requires only a URL.");
+    }
+    const { url } = parseRemoteServer("standalone", value, false);
+    return { type: "streamable-http", url };
+  }
+  throw invalidConfig("Standalone MCP supports stdio and Streamable HTTP transports.");
+}
+
+/** Standalone values are literal environment variables or HTTP headers, never templates. */
+export function normalizeStandaloneMcpSecrets(
+  config: StandaloneMcpConfig,
+  value: unknown,
+): Record<string, string> {
+  const environment = config.type === "stdio";
+  const secrets = stringMap(value, environment ? "MCP environment" : "MCP headers", environment, false);
+  if (environment) {
+    if (Object.keys(secrets).some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))) {
+      throw invalidConfig("MCP environment contains an invalid name.");
+    }
+  } else {
+    validateHeaders(secrets);
+  }
+  return secrets;
+}
 
 export interface ParsedPluginMcpConfig {
   servers: readonly PluginMcpServer[];
@@ -214,7 +257,9 @@ function validateRemoteUrl(value: string): void {
   let url: URL;
   try { url = new URL(value); }
   catch { throw new Error("MCP URL is invalid."); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) {
+  const authority = value.match(/^https?:\/\/([^/\\?#]*)/iu)?.[1];
+  if (!['http:', 'https:'].includes(url.protocol) || !authority || authority.includes("@") ||
+      url.username || url.password || value.includes("#") || /[\s\\]/u.test(value)) {
     throw new Error("MCP URL must be an absolute HTTP URL without credentials or a fragment.");
   }
   if (url.protocol === "http:" && !isLoopbackHost(url.hostname)) {
@@ -237,6 +282,8 @@ function validateHeaders(headers: Readonly<Record<string, string>>): void {
     if (!headerNamePattern.test(name) || names.has(folded) || /[\u0000\r\n]/u.test(value)) {
       throw new Error("MCP headers contain an invalid or duplicate field.");
     }
+    try { validateHeaderValue(name, value); }
+    catch { throw new Error("MCP headers contain an invalid value."); }
     names.add(folded);
   }
 }
@@ -253,12 +300,17 @@ function boundedStringArray(value: unknown, label: string, maximum: number): str
   return value.map((entry) => boundedOpaqueString(entry, label));
 }
 
-function stringMap(value: unknown, label: string, environment: boolean): Record<string, string> {
+function stringMap(
+  value: unknown,
+  label: string,
+  environment: boolean,
+  pluginVariables = true,
+): Record<string, string> {
   if (!plainRecord(value) || Object.keys(value).length > MAX_MAP_ENTRIES) throw new Error(`${label} is invalid.`);
   const result: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (!key || key.length > 256 || key.includes("\0") || (environment && key.includes("=")) ||
-        (environment && ["PLUGIN_ROOT", "PLUGIN_DATA"].includes(key.toUpperCase()))) {
+        (environment && pluginVariables && ["PLUGIN_ROOT", "PLUGIN_DATA"].includes(key.toUpperCase()))) {
       throw new Error(`${label} contains an invalid name.`);
     }
     Object.defineProperty(result, key, {

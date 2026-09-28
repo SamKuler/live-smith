@@ -272,7 +272,8 @@ import {
   steeringReceiptFor,
   type AgentModelTurnRequester,
 } from "./agent-request.js";
-import { closeActivePluginConnections } from "./request-plugin-tools.js";
+import { closeActiveMcpConnection, closeActivePluginConnections } from "./request-plugin-tools.js";
+import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session-tool-catalog.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { resolveConversationHistory } from "./attachment-context.js";
 import { createConversationCheckpoint } from "./context-compaction.js";
@@ -413,6 +414,10 @@ export async function runAgentFlow(
   let status: UiMessage | undefined;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
+  let loadedSessionToolCatalog: {
+    owner: string;
+    value: NonNullable<ChatDialogState["sessionToolCatalog"]>;
+  } | undefined;
   const modalSessionOwner = Symbol("Live Smith modal Session owner");
   const modelsByConnection = new Map<string, DiscoveredModelInfo[]>();
   const modelCatalogLoadReceiptByConnection = new Map<string, string>();
@@ -1447,7 +1452,7 @@ export async function runAgentFlow(
       const sunoAccounts = await sunoSessions.views(settings.integrationConnections?.connections ?? []);
       const catalog = await sunoModelCatalog.view(settings.integrationConnections?.revision);
       throwIfAborted(signal);
-      return {
+      const state: ChatDialogState = {
         contextSummary: activeInteraction?.summary ??
           `The Live object for this session is unavailable: ${activeSession.scope.label}`,
         liveContext: activeInteraction
@@ -1520,6 +1525,15 @@ export async function runAgentFlow(
         status,
         openSettingsOnLoad: activeProfile ? openSettingsOnLoad : true,
       };
+      if (loadedSessionToolCatalog) {
+        const owner = sessionToolCatalogOwner(state);
+        if (loadedSessionToolCatalog.owner === owner) {
+          state.sessionToolCatalog = loadedSessionToolCatalog.value;
+        } else if (options.heldSessionId === undefined) {
+          loadedSessionToolCatalog = undefined;
+        }
+      }
+      return state;
     }
   };
 
@@ -2271,18 +2285,12 @@ export async function runAgentFlow(
                 ? { customInstructions: commandInput.customInstructions }
                 : { networkProxy: commandInput.networkProxy };
             const persist = async () => {
-              const before = "integrationConnections" in commandInput
-                ? await loadAgentSettings(storageDirectory) : undefined;
               const saved = await (dependencies.saveGlobalSettings ?? saveGlobalSettings)(storageDirectory, patch);
               if ("integrationConnections" in commandInput) {
                 const changedId = commandInput.integrationConnections.action === "remove"
                   ? commandInput.integrationConnections.connectionId
                   : commandInput.integrationConnections.connection.id;
-                const affected = new Set([
-                  before?.integrationConnections?.connections.find((entry) => entry.id === changedId)?.pluginId,
-                  saved.integrationConnections?.connections.find((entry) => entry.id === changedId)?.pluginId,
-                ].filter((id): id is string => Boolean(id)));
-                for (const pluginId of affected) await closeActivePluginConnections(storageDirectory, pluginId, changedId);
+                await closeActiveMcpConnection(storageDirectory, changedId);
               }
               return saved;
             };
@@ -2452,6 +2460,42 @@ export async function runAgentFlow(
       });
       status = undefined;
       return buildStateAfterCommandMutation();
+    }
+
+    if (commandInput.kind === "load_session_tools") {
+      if (sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId),
+        "send",
+      )) {
+        throw new ChatBridgeConflictError(
+          "Wait for this Session's active request to finish before loading tools.",
+        );
+      }
+      loadedSessionToolCatalog = undefined;
+      const before = await buildState(undefined, { signal });
+      if (before.activeSessionId !== commandInput.sessionId) {
+        throw new ChatBridgeConflictError("Choose the active Session before loading tools.");
+      }
+      const owner = sessionToolCatalogOwner(before);
+      await commandContext.progress(uiMessage("Loading tool descriptions…"));
+      const catalog = await loadSessionToolCatalog({
+        storageDirectory,
+        sessionId: commandInput.sessionId,
+        state: before,
+        signal,
+        fetchImpl: providerFetch,
+        withPluginAuthorization: (authorizationSignal, discover) => requestConfigurationFence.run(
+          requestConfigurationFenceKey,
+          authorizationSignal,
+          discover,
+        ),
+      });
+      const after = await buildState(undefined, { signal });
+      if (sessionToolCatalogOwner(after) !== owner) {
+        throw new ChatBridgeConflictError("Session tools changed while loading. Load them again.");
+      }
+      loadedSessionToolCatalog = { owner, value: catalog };
+      return { ...after, sessionToolCatalog: catalog };
     }
 
     if (commandInput.kind === "load_session_model_capabilities") {

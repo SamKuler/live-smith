@@ -134,6 +134,13 @@ test("capture retains only configured enabled connections and isolates every sav
   const h = await harness(t, suno);
   await h.save({ ...owner, id: "disabled", name: "Disabled", enabled: false });
   await h.save({ ...owner, id: "empty", name: "Unconfigured", enabled: false, apiKey: "" });
+  await saveGlobalSettings(h.storage, { integrationConnections: {
+    action: "upsert", expectedRevision: "3", connection: {
+      id: "direct-mcp", name: "Direct MCP", enabled: true,
+      mcp: { type: "streamable-http", url: "https://example.test/mcp" },
+      secrets: {}, artifactInputApproved: false, artifactOutputApproved: false,
+    },
+  } });
   const admitted = await captureIntegrationConnections(h.storage);
   assert.deepEqual(admitted, [runtimeIntegrationConnectionFixture(suno)]);
   assert.deepEqual(await availableIntegrationConnections(h.storage), [{
@@ -143,6 +150,7 @@ test("capture retains only configured enabled connections and isolates every sav
     provider: suno.provider,
     modelId: suno.modelId,
   }]);
+  await assert.rejects(resolveIntegrationConnection(h.storage, "direct-mcp", "generate_music"), /unavailable/);
   await h.save({ ...suno, apiKey: "fixture-admission-owner-b", modelId: "V5", callbackUrl: "https://hooks.example.com/replacement" });
   assert.deepEqual(admitted, [runtimeIntegrationConnectionFixture(suno)]);
   assert.throws(() => { admitted[0]!.apiKey = "fixture-unintended-mutation"; }, TypeError);

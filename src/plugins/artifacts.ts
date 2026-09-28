@@ -13,6 +13,7 @@ import {
   readMidiArtifact,
   saveMidiArtifact,
   type MidiArtifact,
+  type MidiArtifactSource,
 } from "../storage/midi-artifacts.js";
 import { isSafeStorageId } from "../storage/id.js";
 import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
@@ -108,13 +109,12 @@ export function modelSchemaForArtifactTool(
   };
 }
 
-export async function callPluginToolWithArtifacts(input: {
+export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
   contract: PluginArtifactToolContract;
   argumentsValue: unknown;
   storageDirectory: string | undefined;
   temporaryDirectory: string | undefined;
   sessionId: string;
-  pluginId: string;
   serverId: string;
   toolName: string;
   signal: AbortSignal;
@@ -168,7 +168,7 @@ export async function callPluginToolWithArtifacts(input: {
     const bytes = await readRegularOutput(outputPath, input.signal);
     parseMidiArtifact(bytes, input.signal);
     const artifact = await saveMidiArtifact(input.storageDirectory, input.sessionId, {
-      pluginId: input.pluginId,
+      ...(input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
       serverId: input.serverId,
       toolName: input.toolName,
       label: output.label,

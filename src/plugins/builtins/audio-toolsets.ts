@@ -5,7 +5,7 @@ import {
 import type { AgentExternalToolResult } from "../../agent/loop.js";
 import type { ModelToolCall } from "../../model/contracts.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
-import type { PluginToolset } from "../registry.js";
+import type { Toolset } from "../registry.js";
 import type {
   BuiltInAudioPluginDefinition,
   BuiltInIntegrationConnectionChoice,
@@ -54,8 +54,8 @@ export function createBuiltInAudioToolsets(input: {
   services: readonly BuiltInIntegrationConnectionChoice[];
   includeModelAudioInput: boolean;
   execute: BuiltInAudioExecutor;
-}): PluginToolset[] {
-  const result: PluginToolset[] = [coreAudioToolset(
+}): Toolset[] {
+  const result: Toolset[] = [coreAudioToolset(
     input.includeModelAudioInput,
     input.execute,
   )];
@@ -73,11 +73,11 @@ export function createBuiltInAudioToolsets(input: {
 function coreAudioToolset(
   includeModelAudioInput: boolean,
   execute: BuiltInAudioExecutor,
-): PluginToolset {
+): Toolset {
   const tools = sessionMediaTools(includeModelAudioInput);
   const names = new Set(tools.map((tool) => tool.function.name));
   return {
-    pluginId: "live-smith.media",
+    id: "live-smith.media",
     tools: () => tools,
     callTool: (call) => parseAndExecute(call, names, [], execute),
   };
@@ -127,7 +127,7 @@ function providerAudioToolset(
   services: readonly BuiltInIntegrationConnectionChoice[],
   localTools: readonly ModelFunctionTool[],
   execute: BuiltInAudioExecutor,
-): PluginToolset {
+): Toolset {
   const routes = new Map(localTools.map((tool) => {
     const localName = tool.function.name;
     return [builtInAudioToolName(plugin, localName), localName] as const;
@@ -140,7 +140,7 @@ function providerAudioToolset(
     },
   }));
   return {
-    pluginId: plugin.id,
+    id: plugin.id,
     tools: () => tools,
     async callTool(call) {
       const localName = routes.get(call.name);

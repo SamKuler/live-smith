@@ -15,7 +15,7 @@ import type { LiveTarget } from "../live/target.js";
 import type { ModelToolCall } from "../model/contracts.js";
 import { createBuiltInAudioToolsets } from "../plugins/builtins/audio-toolsets.js";
 import { builtInAudioPluginById } from "../plugins/builtins/index.js";
-import { PluginRegistry } from "../plugins/registry.js";
+import { ToolRegistry } from "../plugins/registry.js";
 import { readAudioAsset, readExpectedAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { readSessionAttachmentBytes, type AudioSessionAttachmentRef } from "../storage/attachments.js";
@@ -257,7 +257,7 @@ export async function createRequestAudioTools(input: {
         execute: executeRequest,
       })
     : [];
-  const registry = new PluginRegistry(toolsets);
+  const registry = new ToolRegistry(toolsets);
   return {
     toolsets,
     tools: registry.tools(),

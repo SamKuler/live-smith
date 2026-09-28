@@ -603,9 +603,9 @@ requires confirmation. Clearing a key disables only that Connection. Removing a
 Connection leaves its Session results intact but makes remote recovery through it
 unavailable.
 
-Saves check the collection revision to prevent another window's changes from
-being overwritten. Configuration requires private persistent extension storage;
-there is no environment-variable fallback. Settings schema 9 stores each entry as
+Saves check the collection revision so a stale editor cannot overwrite a changed
+connection. Configuration requires private persistent extension storage;
+there is no environment-variable fallback. Settings schema 10 stores built-in entries as
 `id`, `name`, `pluginId`, `enabled`, public `configuration`, and private `secrets`.
 Historical schema-8 `audioServices` and the older single LALAL.AI service are
 migrated on read without rewriting their file. The next authorized settings write

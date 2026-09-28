@@ -179,6 +179,7 @@ for (const changed of ["account", "account-away-and-back", "signed-out", "disabl
       else if (["disabled", "removed", "provider", "model"].includes(changed)) {
         next.integrationConnections!.revision = "2";
         const service = next.integrationConnections!.connections[0]!;
+        assert.ok(service.configuration);
         if (changed === "disabled") service.enabled = false;
         if (changed === "removed") { next.integrationConnections!.connections.shift(); next.sunoAccounts = []; }
         if (changed === "provider") {

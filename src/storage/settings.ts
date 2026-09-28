@@ -1,7 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
+  isPluginIntegrationConnection,
+  isStandaloneMcpConnection,
   normalizeIntegrationConnection,
   normalizeIntegrationConnectionsSettings,
   type IntegrationConnectionsSettingsPatch,
@@ -363,18 +366,26 @@ export async function saveGlobalSettings(
       } else {
         const previous = connections[index];
         const replacement = connectionPatch.connection;
-        const sameIdentity = previous?.pluginId === replacement.pluginId &&
-          previous.configuration.serverId === replacement.configuration.serverId &&
-          previous.configuration.pluginDigest === replacement.configuration.pluginDigest;
+        const sameIdentity = previous !== undefined && (
+          isStandaloneMcpConnection(previous) && isStandaloneMcpConnection(replacement)
+            ? isDeepStrictEqual(previous.mcp, replacement.mcp)
+            : isPluginIntegrationConnection(previous) && isPluginIntegrationConnection(replacement) &&
+              previous.pluginId === replacement.pluginId &&
+              previous.configuration.serverId === replacement.configuration.serverId &&
+              previous.configuration.pluginDigest === replacement.configuration.pluginDigest
+        );
+        const secrets = replacement.secrets === undefined
+          ? sameIdentity ? previous?.secrets ?? {} : {}
+          : sameIdentity && (isStandaloneMcpConnection(replacement) || !builtInAudioPluginById(replacement.pluginId))
+            ? { ...previous?.secrets, ...replacement.secrets }
+            : replacement.secrets;
         const connection = normalizeIntegrationConnection({
           ...replacement,
-          secrets: replacement.secrets === undefined
-            ? sameIdentity ? previous?.secrets ?? {} : {}
-            : sameIdentity && !builtInAudioPluginById(replacement.pluginId)
-              ? { ...previous?.secrets, ...replacement.secrets }
-              : replacement.secrets,
+          secrets: isStandaloneMcpConnection(replacement)
+            ? Object.fromEntries(Object.entries(secrets).filter(([, value]) => value !== ""))
+            : secrets,
         });
-        if (!builtInAudioPluginById(connection.pluginId)) {
+        if (isPluginIntegrationConnection(connection) && !builtInAudioPluginById(connection.pluginId)) {
           const installed = await readInstalledPluginPackageInTransaction(transaction, storageDirectory, connection.pluginId);
           if (!installed || installed.plugin.sha256 !== connection.configuration.pluginDigest) {
             throw new ProfileValidationError("integrationConnections", "The Plugin package changed. Review this MCP connection and enter its credentials again.");
@@ -398,8 +409,8 @@ export async function saveGlobalSettings(
       const integrationConnections = normalizeIntegrationConnectionsSettings({ connections,
         revision: incrementNetworkProxyRevision(revision),
         lastChangeTouchesAudio: Boolean(
-          previous && builtInAudioPluginById(previous.pluginId) ||
-          next && builtInAudioPluginById(next.pluginId)),
+          previous && isPluginIntegrationConnection(previous) && builtInAudioPluginById(previous.pluginId) ||
+          next && isPluginIntegrationConnection(next) && builtInAudioPluginById(next.pluginId)),
       });
       const sunoPluginId = builtInAudioPluginId("suno");
       const clearedSession = previous?.pluginId === sunoPluginId && next?.pluginId !== sunoPluginId

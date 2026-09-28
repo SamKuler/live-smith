@@ -1,7 +1,7 @@
 import type { AudioServiceConnection } from "../audio-services/contracts.js";
 import {
   migrateAudioServiceConnection,
-  type IntegrationConnection,
+  type PluginIntegrationConnection,
   type IntegrationConnectionsSettingsPatch,
 } from "../plugins/integration-connections.js";
 import { saveGlobalSettings } from "../storage/settings.js";
@@ -9,7 +9,7 @@ import type { RuntimeIntegrationConnection } from "./integration-connections.js"
 
 export function integrationConnectionFixture(
   input: AudioServiceConnection,
-): IntegrationConnection {
+): PluginIntegrationConnection {
   return migrateAudioServiceConnection(input);
 }
 

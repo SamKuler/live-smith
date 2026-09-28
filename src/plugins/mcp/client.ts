@@ -47,7 +47,7 @@ export class PluginMcpConnectionError extends Error {
 
 export async function connectPluginMcpServer(
   server: PluginMcpServer,
-  paths: PluginMcpRuntimePaths,
+  paths: PluginMcpRuntimePaths | undefined,
   signal: AbortSignal,
   options: ConnectPluginMcpServerOptions = {},
 ): Promise<ConnectedPluginMcpServer> {
@@ -131,8 +131,14 @@ export async function connectPluginMcpServer(
 
 function resolveStdioServer(
   server: PluginMcpStdioServer,
-  paths: PluginMcpRuntimePaths,
-): { command: string; args: string[]; env: Record<string, string>; cwd: string } {
+  paths: PluginMcpRuntimePaths | undefined,
+): { command: string; args: string[]; env: Record<string, string>; cwd?: string } {
+  if (!paths) return {
+    command: server.command,
+    args: [...server.args],
+    env: { ...getDefaultEnvironment(), ...server.env },
+    ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+  };
   const replacements = new Map([
     ["${PLUGIN_ROOT}", paths.pluginRoot],
     ["${PLUGIN_DATA}", paths.pluginData],

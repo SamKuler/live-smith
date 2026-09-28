@@ -25,10 +25,11 @@ export interface PluginManifest {
 }
 
 export interface PluginToolDefinition {
-  pluginId: PluginId;
+  pluginId?: PluginId;
   serverId: string;
   connectionId?: string;
   name: string;
+  description: string;
   tool: ModelFunctionTool;
   artifactContract?: PluginArtifactToolContract;
 }
@@ -45,7 +46,8 @@ export interface PluginToolResult {
 }
 
 export interface PluginToolIssue {
-  pluginId: PluginId;
+  pluginId?: PluginId;
+  connectionId?: string;
   serverId?: string;
   code: "invalid_configuration" | "unsupported_transport" | "approval_required" |
     "artifact_permission_required" | "connection_failed" | "invalid_tool";
@@ -62,9 +64,12 @@ export interface PluginToolContext {
   sessionId: string;
 }
 
-export interface PluginPackage {
-  readonly manifest: PluginManifest;
+export interface McpToolSource {
   tools(context: PluginToolContext): Promise<PluginToolsResult>;
   callTool(serverId: string, name: string, argumentsValue: unknown, context: PluginToolContext): Promise<PluginToolResult>;
   close(): Promise<void>;
+}
+
+export interface PluginPackage extends McpToolSource {
+  readonly manifest: PluginManifest;
 }

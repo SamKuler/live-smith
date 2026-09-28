@@ -8,7 +8,7 @@ import { createHostAbortController } from "../runtime/host.js";
 import { installPlugin, setPluginEnabled, setPluginMcpServerApproved } from "../storage/plugins.js";
 import { createSession } from "../storage/sessions.js";
 import { saveGlobalSettings } from "../storage/settings.js";
-import { closeActivePluginConnections, createRequestPluginTools } from "./request-plugin-tools.js";
+import { closeActiveMcpConnection, closeActivePluginConnections, createRequestPluginTools } from "./request-plugin-tools.js";
 
 const serverSource = String.raw`
 import readline from "node:readline";
@@ -67,6 +67,13 @@ test("one MCP server routes two named accounts privately and rejects a changed c
   t.after(() => request.close());
   const tools = request.tools();
   assert.equal(tools.length, 2);
+  assert.deepEqual(request.catalogTools().map(({ pluginId, serverId, connectionId, connectionName, name }) => ({
+    pluginId, serverId, connectionId, connectionName, name,
+  })), [
+    { pluginId: plugin.id, serverId: "local", connectionId: "first", connectionName: "First account", name: "account" },
+    { pluginId: plugin.id, serverId: "local", connectionId: "second", connectionName: "Second account", name: "account" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(request.catalogTools()), /first-secret|second-secret|plg_/u);
   assert.notEqual(tools[0]!.function.name, tools[1]!.function.name);
   assert.doesNotMatch(JSON.stringify(tools), /first-secret|second-secret/u);
   const invoke = (name: string) => request.callTool({ id: "call", name, arguments: "{}" });
@@ -85,6 +92,10 @@ test("one MCP server routes two named accounts privately and rejects a changed c
   await closeActivePluginConnections(directory, plugin.id, "first");
   const unchanged = await invoke(tools.find((tool) => tool.function.description.includes("Second account"))!.function.name);
   assert.equal(unchanged.failed, undefined);
+  await closeActiveMcpConnection(directory, "second");
+  const retired = await invoke(tools.find((tool) => tool.function.description.includes("Second account"))!.function.name);
+  assert.equal(retired.failed, true);
+  assert.equal(retired.stop, true);
 });
 
 test("replacement between metadata listing and admission cannot send old secrets to the new package", async (t) => {

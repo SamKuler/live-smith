@@ -3,9 +3,11 @@ import {
   type AudioServicesSettings,
 } from "../audio-services/contracts.js";
 import {
+  isPluginIntegrationConnection,
   migrateAudioServicesSettings,
   normalizeIntegrationConnectionsSettings,
   normalizeLegacyAudioServicesSettings,
+  type PluginIntegrationConnection,
 } from "../plugins/integration-connections.js";
 import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
@@ -134,6 +136,16 @@ interface AgentSettingsV8 extends SharedAgentSettings<SavedProfile> {
   audioServices?: AudioServicesSettings;
 }
 
+/** Schema-v9 Connections belong to built-in or installed Plugins. */
+interface AgentSettingsV9 extends Omit<AgentSettingsV8, "schemaVersion" | "audioServices"> {
+  schemaVersion: 9;
+  integrationConnections?: {
+    connections: PluginIntegrationConnection[];
+    revision: string;
+    lastChangeTouchesAudio?: boolean;
+  };
+}
+
 type SettingsMigration = (value: unknown) => unknown;
 
 const migrations = new Map<number, SettingsMigration>([
@@ -145,6 +157,7 @@ const migrations = new Map<number, SettingsMigration>([
   [6, migrateSettingsV6ToV7],
   [7, migrateSettingsV7ToV8],
   [8, migrateSettingsV8ToV9],
+  [9, migrateSettingsV9ToV10],
 ]);
 
 export function decodeAgentSettings(value: unknown): AgentSettings {
@@ -163,7 +176,7 @@ export function decodeAgentSettings(value: unknown): AgentSettings {
   if (version !== CURRENT_AGENT_SETTINGS_SCHEMA_VERSION) {
     throw unsupportedSchemaVersion();
   }
-  return validateSettingsV9(migrated);
+  return validateSettingsV10(migrated);
 }
 
 function migrateSettingsV1ToV2(value: unknown): AgentSettingsV2 {
@@ -278,16 +291,20 @@ function migrateSettingsV7ToV8(value: unknown): AgentSettingsV8 {
   };
 }
 
-function migrateSettingsV8ToV9(value: unknown): AgentSettings {
+function migrateSettingsV8ToV9(value: unknown): AgentSettingsV9 {
   const settings = validateSettingsV8(value);
   const { audioServices, ...shared } = settings;
-  return {
+  return validateSettingsV9({
     ...shared,
     schemaVersion: 9,
     ...(audioServices === undefined ? {} : {
       integrationConnections: migrateAudioServicesSettings(audioServices),
     }),
-  };
+  });
+}
+
+function migrateSettingsV9ToV10(value: unknown): AgentSettings {
+  return { ...validateSettingsV9(value), schemaVersion: 10 };
 }
 
 function validateSettingsV1(value: unknown): AgentSettingsV1 {
@@ -571,7 +588,7 @@ function validateSettingsV8(value: unknown): AgentSettingsV8 {
   };
 }
 
-function validateSettingsV9(value: unknown): AgentSettings {
+function validateSettingsV9(value: unknown): AgentSettingsV9 {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 9) throw unsupportedSchemaVersion();
   assertOnlyKeys(
@@ -601,9 +618,28 @@ function validateSettingsV9(value: unknown): AgentSettings {
   } = record;
   const validated = validateSettingsV8({ ...settingsV8, schemaVersion: 8 });
   const { audioServices: _legacyAudioServices, ...shared } = validated;
+  const connections = integrationConnections === undefined
+    ? undefined : normalizeIntegrationConnectionsSettings(integrationConnections);
+  if (connections?.connections.some((connection) => !isPluginIntegrationConnection(connection))) {
+    throw new ProfileValidationError("integrationConnections", "Schema version 9 requires Plugin-owned Connections.");
+  }
   return {
     ...shared,
     schemaVersion: 9,
+    ...(connections === undefined ? {} : {
+      integrationConnections: { ...connections, connections: connections.connections.filter(isPluginIntegrationConnection) },
+    }),
+  };
+}
+
+function validateSettingsV10(value: unknown): AgentSettings {
+  const record = settingsRecord(value);
+  if (settingsSchemaVersion(record) !== 10) throw unsupportedSchemaVersion();
+  const { integrationConnections, ...settingsV9 } = record;
+  const validated = validateSettingsV9({ ...settingsV9, schemaVersion: 9 });
+  return {
+    ...validated,
+    schemaVersion: 10,
     ...(integrationConnections === undefined ? {} : {
       integrationConnections: normalizeIntegrationConnectionsSettings(integrationConnections),
     }),

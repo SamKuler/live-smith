@@ -21,7 +21,7 @@ const schemaV7Settings = {
 test("schema-v7 settings migrate without changing the existing direct route", () => {
   assert.deepEqual(decodeAgentSettings(schemaV7Settings), {
     ...schemaV7Settings,
-    schemaVersion: 9,
+    schemaVersion: 10,
     networkProxy: { mode: "none", url: "" },
     networkProxyRevision: "0",
     uiLanguage: "system",
@@ -34,7 +34,7 @@ test("schema-v7 settings migrate without changing the existing direct route", ()
 test("current network proxy settings are strict and normalize proxy origins", () => {
   const current = {
     ...schemaV7Settings,
-    schemaVersion: 9,
+    schemaVersion: 10,
     networkProxy: {
       mode: "manual",
       url: "  HTTPS://Proxy.Example:443/  ",

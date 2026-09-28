@@ -12,20 +12,42 @@ import {
 import { isSafePluginId } from "./contracts.js";
 import { MAX_MCP_CREDENTIAL_FIELDS } from "./mcp/credentials.js";
 import {
+  normalizeStandaloneMcpConfig,
+  normalizeStandaloneMcpSecrets,
+  type StandaloneMcpConfig,
+} from "./mcp/config.js";
+import {
   builtInAudioPluginById,
   builtInAudioPluginId,
 } from "./builtins/index.js";
 
 export const MAX_INTEGRATION_CONNECTIONS = 20;
 
-export interface IntegrationConnection {
+export interface PluginIntegrationConnection {
   id: string;
   name: string;
   pluginId: string;
   enabled: boolean;
   configuration: Record<string, string>;
   secrets: Record<string, string>;
+  mcp?: never;
+  artifactInputApproved?: never;
+  artifactOutputApproved?: never;
 }
+
+export interface StandaloneMcpConnection {
+  id: string;
+  name: string;
+  enabled: boolean;
+  mcp: StandaloneMcpConfig;
+  secrets: Record<string, string>;
+  artifactInputApproved: boolean;
+  artifactOutputApproved: boolean;
+  pluginId?: never;
+  configuration?: never;
+}
+
+export type IntegrationConnection = PluginIntegrationConnection | StandaloneMcpConnection;
 
 export interface IntegrationConnectionsSettings {
   connections: IntegrationConnection[];
@@ -33,8 +55,24 @@ export interface IntegrationConnectionsSettings {
   lastChangeTouchesAudio?: boolean;
 }
 
-export interface IntegrationConnectionView extends Omit<IntegrationConnection, "secrets"> {
-  configuredSecrets: string[];
+export type PluginIntegrationConnectionView = Omit<PluginIntegrationConnection, "secrets"> & { configuredSecrets: string[] };
+export type StandaloneMcpConnectionView = Omit<StandaloneMcpConnection, "secrets"> & { configuredSecrets: string[] };
+export type IntegrationConnectionView = PluginIntegrationConnectionView | StandaloneMcpConnectionView;
+
+export type IntegrationConnectionInput =
+  | (Omit<PluginIntegrationConnection, "secrets"> & { secrets?: Record<string, string> })
+  | (Omit<StandaloneMcpConnection, "secrets"> & { secrets?: Record<string, string> });
+
+export function isStandaloneMcpConnection<T extends { mcp?: StandaloneMcpConfig }>(
+  connection: T,
+): connection is T & { mcp: StandaloneMcpConfig } {
+  return connection.mcp !== undefined;
+}
+
+export function isPluginIntegrationConnection<T extends { pluginId?: string }>(
+  connection: T,
+): connection is T & { pluginId: string } {
+  return connection.pluginId !== undefined;
 }
 
 export interface IntegrationConnectionsView {
@@ -47,7 +85,7 @@ export type IntegrationConnectionsSettingsPatch =
   | {
       action: "upsert";
       expectedRevision: string;
-      connection: Omit<IntegrationConnection, "secrets"> & { secrets?: Record<string, string> };
+      connection: IntegrationConnectionInput;
     }
   | { action: "remove"; expectedRevision: string; connectionId: string };
 
@@ -60,7 +98,49 @@ const connectionKeys = new Set([
   "secrets",
 ]);
 
+const standaloneConnectionKeys = new Set([
+  "id", "name", "enabled", "mcp", "secrets", "artifactInputApproved", "artifactOutputApproved",
+]);
+
 export function normalizeIntegrationConnection(value: unknown): IntegrationConnection {
+  const record = plainRecord(value);
+  return record && Object.hasOwn(record, "mcp")
+    ? normalizeStandaloneMcpConnection(value)
+    : normalizePluginIntegrationConnection(value);
+}
+
+export function normalizeStandaloneMcpConnection(value: unknown): StandaloneMcpConnection {
+  const record = plainRecord(value);
+  if (!record || Object.keys(record).some((key) => !standaloneConnectionKeys.has(key)) ||
+      !safeConnectionId(record.id) || typeof record.name !== "string" ||
+      !record.name.trim() || record.name.length > 120 || /[\x00-\x1f\x7f]/u.test(record.name) ||
+      typeof record.enabled !== "boolean" || typeof record.artifactInputApproved !== "boolean" ||
+      typeof record.artifactOutputApproved !== "boolean") {
+    throw invalid("Standalone MCP connections require a safe ID, name, enabled state, server configuration, secrets, and artifact permissions.");
+  }
+  let mcp: StandaloneMcpConfig;
+  let secrets: Record<string, string>;
+  try {
+    mcp = normalizeStandaloneMcpConfig(record.mcp);
+    secrets = normalizeStandaloneMcpSecrets(mcp, record.secrets);
+  } catch (error) {
+    throw invalid(error instanceof Error ? error.message : "Standalone MCP configuration is invalid.");
+  }
+  if (mcp.type !== "stdio" && (record.artifactInputApproved || record.artifactOutputApproved)) {
+    throw invalid("MCP audio input and MIDI output permissions require a local stdio server.");
+  }
+  return {
+    id: record.id,
+    name: record.name.trim(),
+    enabled: record.enabled,
+    mcp,
+    secrets,
+    artifactInputApproved: record.artifactInputApproved,
+    artifactOutputApproved: record.artifactOutputApproved,
+  };
+}
+
+export function normalizePluginIntegrationConnection(value: unknown): PluginIntegrationConnection {
   const record = plainRecord(value);
   if (!record || Object.keys(record).some((key) => !connectionKeys.has(key)) ||
       !safeConnectionId(record.id) || typeof record.name !== "string" ||
@@ -221,8 +301,8 @@ export function normalizeLegacyAudioServicesSettings(value: unknown): AudioServi
 
 export function migrateAudioServiceConnection(
   connection: AudioServiceConnection,
-): IntegrationConnection {
-  return normalizeIntegrationConnection({
+): PluginIntegrationConnection {
+  return normalizePluginIntegrationConnection({
     id: connection.id,
     name: connection.name,
     pluginId: builtInAudioPluginId(connection.provider),
@@ -239,12 +319,18 @@ export function integrationConnectionsView(
   settings: IntegrationConnectionsSettings | undefined,
 ): IntegrationConnectionsView {
   return {
-    connections: (settings?.connections ?? []).map((connection) => ({
+    connections: (settings?.connections ?? []).map((connection): IntegrationConnectionView => ({
       id: connection.id,
       name: connection.name,
-      pluginId: connection.pluginId,
       enabled: connection.enabled,
-      configuration: { ...connection.configuration },
+      ...(isStandaloneMcpConnection(connection) ? {
+        mcp: normalizeStandaloneMcpConfig(connection.mcp),
+        artifactInputApproved: connection.artifactInputApproved,
+        artifactOutputApproved: connection.artifactOutputApproved,
+      } : {
+        pluginId: connection.pluginId,
+        configuration: { ...connection.configuration },
+      }),
       configuredSecrets: Object.entries(connection.secrets)
         .filter(([, secret]) => Boolean(secret))
         .map(([name]) => name)
@@ -260,7 +346,7 @@ export function integrationConnectionsView(
 export function integrationConnectionProvider(
   connection: Pick<IntegrationConnection, "pluginId">,
 ): AudioProvider | undefined {
-  return builtInAudioPluginById(connection.pluginId)?.provider;
+  return connection.pluginId === undefined ? undefined : builtInAudioPluginById(connection.pluginId)?.provider;
 }
 
 export function isIntegrationConnectionForProvider(

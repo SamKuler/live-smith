@@ -2471,7 +2471,7 @@
             "customInstructions",
             "customInstructionsRevision",
           ]) ||
-          value.schemaVersion !== 9 ||
+          value.schemaVersion !== __CURRENT_AGENT_SETTINGS_SCHEMA_VERSION__ ||
           !Array.isArray(value.profiles) ||
           !value.profiles.every(isWireSavedProfile) ||
           new Set(value.profiles.map((profile) => profile.id)).size !==
@@ -2897,16 +2897,27 @@
           (value.lastChangeTouchesAudio === undefined || typeof value.lastChangeTouchesAudio === "boolean") &&
           value.connections.length <= __MAX_INTEGRATION_CONNECTIONS__ &&
           value.connections.every((connection) => {
-            if (!isWireRecord(connection) || !hasOnlyWireKeys(connection, [
-              "id", "name", "pluginId", "enabled", "configuration", "configuredSecrets",
-            ]) || !isWireStorageId(connection.id) || typeof connection.name !== "string" ||
+            if (!isWireRecord(connection) || !isWireStorageId(connection.id) || typeof connection.name !== "string" ||
               connection.name !== connection.name.trim() || connection.name.length === 0 ||
               connection.name.length > 120 || /[\x00-\x1f\x7f]/.test(connection.name) ||
-              typeof connection.pluginId !== "string" ||
-              !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(connection.pluginId) ||
-              typeof connection.enabled !== "boolean" || !isWireRecord(connection.configuration) ||
+              typeof connection.enabled !== "boolean" ||
               !Array.isArray(connection.configuredSecrets) ||
               new Set(connection.configuredSecrets).size !== connection.configuredSecrets.length) return false;
+            if (connection.mcp !== undefined) {
+              return hasOnlyWireKeys(connection, ["id", "name", "enabled", "mcp", "configuredSecrets",
+                "artifactInputApproved", "artifactOutputApproved"]) &&
+                isWireStandaloneMcpConfig(connection.mcp) &&
+                typeof connection.artifactInputApproved === "boolean" &&
+                typeof connection.artifactOutputApproved === "boolean" &&
+                (connection.mcp.type === "stdio" || !connection.artifactInputApproved && !connection.artifactOutputApproved) &&
+                connection.configuredSecrets.length <= 64 && connection.configuredSecrets.every((name) =>
+                  typeof name === "string" && name.length > 0 && name.length <= 256 &&
+                  (connection.mcp.type === "stdio" ? /^[A-Za-z_][A-Za-z0-9_]*$/ : /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/).test(name));
+            }
+            if (!hasOnlyWireKeys(connection, ["id", "name", "pluginId", "enabled", "configuration", "configuredSecrets"]) ||
+                typeof connection.pluginId !== "string" ||
+                !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(connection.pluginId) ||
+                !isWireRecord(connection.configuration)) return false;
             if (!isBuiltInAudioPluginId(connection.pluginId)) {
               return hasOnlyWireKeys(connection.configuration, ["serverId", "pluginDigest"]) &&
                 /^[A-Za-z0-9_-]{1,64}$/.test(connection.configuration.serverId || "") &&
@@ -2928,6 +2939,25 @@
           }) &&
           new Set(value.connections.map((service) => service.id)).size === value.connections.length &&
           new Set(value.connections.map((service) => service.name.toLowerCase())).size === value.connections.length;
+      }
+
+      function isWireStandaloneMcpConfig(value) {
+        if (!isWireRecord(value)) return false;
+        const bounded = (text) => typeof text === "string" && text.length <= 8192 && !text.includes("\0");
+        if (value.type === "stdio") return hasOnlyWireKeys(value, ["type", "command", "args", "cwd"]) &&
+          bounded(value.command) && value.command.length > 0 &&
+          Array.isArray(value.args) && value.args.length <= 128 && value.args.every(bounded) &&
+          (value.cwd === undefined || bounded(value.cwd) && value.cwd.length > 0);
+        if (value.type !== "streamable-http" || !hasOnlyWireKeys(value, ["type", "url"]) ||
+            !bounded(value.url) || /[\s\\#]/.test(value.url)) return false;
+        try {
+          const url = new URL(value.url);
+          const authority = value.url.match(/^https?:\/\/([^/\\?#]*)/i)?.[1];
+          const loopback = url.hostname === "localhost" || url.hostname === "[::1]" ||
+            /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+          return Boolean(authority && !authority.includes("@") && !url.username && !url.password &&
+            (url.protocol === "https:" || url.protocol === "http:" && loopback));
+        } catch { return false; }
       }
 
       function isWireAudioAsset(value, sessionId, jobId) {
@@ -3039,7 +3069,7 @@
         ]);
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
           "id", "sha256", "version", "description", "sourceFormat", "enabled",
-          "skillCount", "mcpServers", "unsupportedComponents", "issues",
+          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues",
         ]) ||
           typeof value.id !== "string" ||
           !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(value.id) ||
@@ -3049,6 +3079,14 @@
           !["agent-plugins-1.0", "codex", "claude"].includes(value.sourceFormat) ||
           typeof value.enabled !== "boolean" ||
           !Number.isInteger(value.skillCount) || value.skillCount < 0 || value.skillCount > 2048 ||
+          (value.skills !== undefined && (!Array.isArray(value.skills) || value.skills.length !== value.skillCount ||
+            !value.skills.every((skill) => isWireRecord(skill) && hasOnlyWireKeys(skill, ["id", "description"]) &&
+              typeof skill.id === "string" && skill.id.startsWith(value.id + ":") &&
+              skill.id.length <= value.id.length + 65 &&
+              /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill.id.slice(value.id.length + 1)) &&
+              typeof skill.description === "string" && skill.description.trim().length > 0 &&
+              [...skill.description].length <= 240) ||
+            new Set(value.skills.map((skill) => skill.id)).size !== value.skills.length)) ||
           !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
           !value.mcpServers.every((server) => isWireRecord(server) &&
             hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "args", "cwd", "envNames", "credentialFields"]) &&
@@ -3092,7 +3130,7 @@
       function isWirePluginInstallPreview(value) {
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
           "id", "version", "description", "sourceFormat", "enabled",
-          "skillCount", "mcpServers", "unsupportedComponents", "issues", "sha256", "byteLength",
+          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues", "sha256", "byteLength",
         ]) ||
           !/^[a-f0-9]{64}$/.test(value.sha256 || "") ||
           !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 ||

@@ -74,6 +74,52 @@ test("chatDialogStateForWire safely projects pending legacy attachment names", (
   assert.equal(state.pendingAttachments[0]?.fileName, "\u202e\u0085e\u0301.png");
 });
 
+test("standalone MCP wire state keeps launch details and drops private values", () => {
+  const state = {
+    integrationConnections: { revision: "1", connections: [{
+      id: "local-transcriber", name: "Local transcriber", enabled: true,
+      mcp: { type: "stdio", command: "node", args: ["server.mjs"], cwd: "/tools/transcriber",
+        env: { TOKEN: "synthetic-private-value" } },
+      configuredSecrets: ["TOKEN"], secrets: { TOKEN: "synthetic-private-value" },
+      artifactInputApproved: true, artifactOutputApproved: false,
+    }, {
+      id: "remote-tools", name: "Remote tools", enabled: false,
+      mcp: { type: "streamable-http", url: "https://example.test/mcp",
+        headers: { Authorization: "synthetic-private-value" } },
+      configuredSecrets: ["Authorization"], secrets: { Authorization: "synthetic-private-value" },
+      artifactInputApproved: false, artifactOutputApproved: false,
+    }] },
+  } as unknown as ChatDialogState;
+  const projected = chatDialogStateForWire(state);
+  assert.deepEqual(projected.integrationConnections?.connections, [{
+    id: "local-transcriber", name: "Local transcriber", enabled: true,
+    mcp: { type: "stdio", command: "node", args: ["server.mjs"], cwd: "/tools/transcriber" },
+    configuredSecrets: ["TOKEN"], artifactInputApproved: true, artifactOutputApproved: false,
+  }, {
+    id: "remote-tools", name: "Remote tools", enabled: false,
+    mcp: { type: "streamable-http", url: "https://example.test/mcp" },
+    configuredSecrets: ["Authorization"], artifactInputApproved: false, artifactOutputApproved: false,
+  }]);
+  assert.doesNotMatch(JSON.stringify(projected), /synthetic-private-value|pluginId|headers|"env"/u);
+});
+
+test("Plugin wire state publishes only package summaries and reviewed server metadata", () => {
+  const state = { plugins: [{
+    id: "music-tools", sha256: "a".repeat(64), sourceFormat: "codex", enabled: false,
+    skillCount: 1, skills: [{ id: "music-tools:convert", description: "Convert audio", body: "Private Skill body" }],
+    mcpServers: [{ id: "remote", type: "streamable-http", target: "https://example.test",
+      approved: false, artifactInputApproved: false, artifactOutputApproved: false,
+      credentialFields: [{ name: "TOKEN", required: true, value: "synthetic-private-value" }],
+      headers: { Authorization: "synthetic-private-value" } }],
+    unsupportedComponents: [], issues: [], archivePath: "/private/package.zip",
+  }] } as unknown as ChatDialogState;
+  const projected = chatDialogStateForWire(state);
+  assert.deepEqual(projected.plugins[0]?.skills, [{ id: "music-tools:convert", description: "Convert audio" }]);
+  assert.deepEqual(projected.plugins[0]?.mcpServers[0]?.credentialFields, [{ name: "TOKEN", required: true }]);
+  assert.doesNotMatch(JSON.stringify(projected), /Private Skill body|synthetic-private-value|archivePath|headers|"body"/u);
+  assert.match(JSON.stringify(state), /Private Skill body/u);
+});
+
 test("chatRuntimeSummary keeps Runtime display aligned without credentials", () => {
   const capabilities = {
     tools: true,
@@ -195,7 +241,7 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
     activeProfileRevision: null,
     oauthAuthGeneration: 0,
     settings: {
-      schemaVersion: 9,
+      schemaVersion: 10,
       activeProfileId: null,
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
