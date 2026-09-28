@@ -710,9 +710,10 @@ async function requirePrivateDirectory(target: string): Promise<void> {
   if (!before.isDirectory() || before.isSymbolicLink() || (supportsPosixPermissions && getuid && before.uid !== getuid())) {
     throw new PluginStorageCorruptionError();
   }
-  if (supportsPosixPermissions) await fs.chmod(target, 0o700);
+  if (supportsPosixPermissions && (before.mode & 0o7777) !== 0o700) await fs.chmod(target, 0o700);
   const after = await fs.lstat(target);
-  if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
+  if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
+      (supportsPosixPermissions && (after.mode & 0o7777) !== 0o700)) {
     throw new PluginStorageCorruptionError();
   }
 }
@@ -736,9 +737,14 @@ async function readPrivateFile(target: string, maximumBytes: number): Promise<Ui
       (supportsPosixPermissions && getuid && before.uid !== getuid())) throw new PluginStorageCorruptionError();
   const handle = await fs.open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
-    if (supportsPosixPermissions) await handle.chmod(0o600);
-    const opened = await handle.stat();
+    let opened = await handle.stat();
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new PluginStorageCorruptionError();
+    }
+    if (supportsPosixPermissions && (opened.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
+    opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size ||
+        (supportsPosixPermissions && (opened.mode & 0o7777) !== 0o600)) {
       throw new PluginStorageCorruptionError();
     }
     const bytes = new Uint8Array(await handle.readFile());
