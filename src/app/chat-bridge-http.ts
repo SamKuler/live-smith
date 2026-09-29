@@ -1,3 +1,4 @@
+import type { MidiArtifactImportCommand } from "./midi-artifact-import.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -15,6 +16,7 @@ import {
   MAX_SKILL_FILE_BYTES,
 } from "../skills/format.js";
 import { isSafePluginId } from "../plugins/contracts.js";
+import { configRecord, MAX_PLUGIN_CONFIG_BYTES } from "../plugins/user-config.js";
 import { requireSafeStorageId, isSafeStorageId } from "../storage/id.js";
 import { normalizeIntegrationConnectionsSettingsPatch, type IntegrationConnectionsSettingsPatch } from "../storage/settings.js";
 import {
@@ -117,6 +119,7 @@ export interface RawSkillBodyReadOptions {
 export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {}
 
 export type ChatBridgeCommandInput =
+  | MidiArtifactImportCommand
   | {
       kind: "save_profile";
       profile: DraftProfile;
@@ -237,6 +240,7 @@ export type ChatBridgeCommandInput =
       profileId: string;
     }
   | { kind: "load_session_tools"; sessionId: string }
+  | { kind: "run_plugin_tool"; sessionId: string; toolName: string; signature: string; arguments: Record<string, unknown> }
   | { kind: "new_session" }
   | { kind: "compact_session"; sessionId: string; instructions?: string }
   | { kind: "select_session"; sessionId: string }
@@ -247,6 +251,7 @@ export type ChatBridgeCommandInput =
   | { kind: "unarchive_session"; sessionId: string }
   | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
   | { kind: "set_plugin_enabled"; pluginId: string; enabled: boolean }
+  | { kind: "set_plugin_user_config"; pluginId: string; sha256: string; revision: string; values: Record<string, unknown>; secretUpdates: Record<string, unknown> }
   | { kind: "set_plugin_mcp_server_approved"; pluginId: string; serverId: string; approved: boolean }
   | { kind: "set_plugin_artifact_permission"; pluginId: string; serverId: string; permission: "input" | "output"; approved: boolean }
   | { kind: "delete_plugin"; pluginId: string }
@@ -1217,6 +1222,29 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     }
     return { kind, sessionId: input.sessionId };
   }
+  if (kind === "import_midi_artifact") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "startBeat", "name"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef) ||
+        typeof input.trackName !== "string" || !input.trackName.trim() ||
+        typeof input.startBeat !== "number" || !Number.isFinite(input.startBeat) || input.startBeat < 0 ||
+        (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim()))) {
+      throw new ChatBridgeRequestValidationError("Choose a MIDI artifact, target track, and non-negative start beat.");
+    }
+    return { kind, sessionId: input.sessionId, artifactRef: input.artifactRef,
+      trackName: input.trackName, startBeat: input.startBeat,
+      ...(input.name === undefined ? {} : { name: input.name as string }) };
+  }
+  if (kind === "run_plugin_tool") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "toolName", "signature", "arguments"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || typeof input.toolName !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/u.test(input.toolName) || typeof input.signature !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(input.signature) || !input.arguments ||
+        typeof input.arguments !== "object" || Array.isArray(input.arguments)) {
+      throw new ChatBridgeRequestValidationError("Choose a loaded Plugin tool and valid parameters.");
+    }
+    return { kind, sessionId: input.sessionId, toolName: input.toolName, signature: input.signature,
+      arguments: input.arguments as Record<string, unknown> };
+  }
   if (kind === "new_session") {
     assertOnlyInputKeys(input, ["kind"], `${kind} command`);
     return { kind };
@@ -1345,6 +1373,17 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       sessionId: inputString(input, "sessionId"),
       skillIds: [...skillIds],
     };
+  }
+  if (kind === "set_plugin_user_config") {
+    assertOnlyInputKeys(input, ["kind", "pluginId", "sha256", "revision", "values", "secretUpdates"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(input.sha256) ||
+        typeof input.revision !== "string" || !/^(?:0|[1-9]\d{0,30})$/u.test(input.revision) ||
+        !configRecord(input.values) || !configRecord(input.secretUpdates) ||
+        Buffer.byteLength(JSON.stringify([input.values, input.secretUpdates]), "utf8") > MAX_PLUGIN_CONFIG_BYTES) {
+      throw new ChatBridgeRequestValidationError("Plugin configuration is invalid.");
+    }
+    return { kind, pluginId: input.pluginId, sha256: input.sha256, revision: input.revision,
+      values: input.values, secretUpdates: input.secretUpdates };
   }
   if (kind === "set_plugin_enabled") {
     assertOnlyInputKeys(input, ["kind", "pluginId", "enabled"], `${kind} command`);

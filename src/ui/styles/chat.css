@@ -1657,7 +1657,7 @@ details.timeline-item > .timeline-content {
 .skill-library {
   @apply grid gap-2;
 }
-.skill-library > .field-hint { @apply m-0; }
+.extension-page .field-hint { @apply m-0; }
 .skill-library-content { @apply grid min-w-0 gap-3; }
 .skill-library-content > .field-hint { @apply m-0; }
 .extension-page[hidden], .extension-page [hidden] { @apply hidden; }
@@ -1670,7 +1670,7 @@ details.timeline-item > .timeline-content {
 .extension-navigation > button:focus-visible { outline: 2px solid var(--color-border-hover); outline-offset: -2px; }
 .extension-navigation > .extension-source-tab { @apply border-l-border; }
 .connections-manager { @apply grid min-w-0 gap-3; }
-.plugin-mcp-sources { @apply grid min-w-0 gap-3; }
+.plugin-mcp-sources, .plugin-mcp-section { @apply grid min-w-0 gap-3; }
 .plugin-capability-links { @apply flex flex-wrap gap-2; }
 .plugin-capability-links > button, .plugin-source-link, .skill-plugin-link { @apply h-control-compact px-2 py-0 text-label; }
 .skill-source { @apply m-0 min-w-0 text-small text-quiet; overflow-wrap: anywhere; }
@@ -1713,6 +1713,69 @@ details.timeline-item > .timeline-content {
 .tool-name { @apply block text-small text-quiet; overflow-wrap: anywhere; }
 .tool-description-label { @apply mt-2 block text-small text-quiet; }
 .tool-description { @apply my-1 whitespace-pre-wrap text-label text-muted; overflow-wrap: anywhere; }
+.plugin-parameters { @apply mt-3 border-t border-t-divider pt-3; }
+.plugin-parameters-title { @apply m-0 mb-2 text-label font-medium text-text; }
+.tool-information { @apply my-2 text-small text-muted; }
+.tool-information > summary, .tool-parameter-fallback > summary { @apply cursor-pointer py-2; }
+.tool-parameter-fallback { @apply mt-2 border-t border-divider text-label; }
+.tool-parameter-fallback .plugin-parameters { @apply mt-0 border-0 pt-2; }
+.plugin-parameters > .field-hint, .plugin-parameter-field .field-hint { @apply m-0; }
+.plugin-parameters > .field-hint { @apply mt-2; }
+.plugin-parameter-field[data-field-type="choice"] select { max-width: 22rem; }
+.plugin-parameter-field > input[type="number"] { width: min(100%, 8rem); }
+.plugin-parameters-fields, .plugin-user-config-fields { @apply m-0 grid min-w-0 gap-3 border-0 p-0; }
+.plugin-user-config { @apply mt-3 min-w-0 border-t border-divider pt-2; }
+.plugin-user-config > summary { @apply cursor-pointer text-label font-medium text-text; }
+.plugin-user-config .plugin-parameters { @apply border-0 pt-0; }
+.plugin-user-config-list { @apply grid min-w-0 gap-2; }
+.plugin-user-config-list-item { @apply flex min-w-0 items-center gap-2; }
+.plugin-user-config-list-item input { @apply min-w-0 grow; }
+.plugin-user-config-list-item button { @apply shrink-0; }
+.plugin-user-config-secret-status { @apply text-small text-quiet; }
+.plugin-user-config-status { @apply text-label; overflow-wrap: anywhere; }
+.plugin-open-app { @apply my-2; }
+.plugin-app-dialog { width: min(1000px, 94vw); height: min(800px, 92vh); @apply rounded-panel border border-border bg-pane p-4 text-text; }
+.plugin-app-dialog[open] { @apply flex flex-col gap-3; }
+.plugin-app-dialog::backdrop { background: rgb(0 0 0 / 60%); }
+.plugin-app-dialog h3 { @apply m-0 pr-16 text-heading font-medium; }
+.plugin-app-close { @apply absolute right-4 top-4; }
+.plugin-app-description { @apply m-0 text-label text-muted; overflow-wrap: anywhere; }
+.plugin-app-status { @apply m-0 text-label text-muted; }
+.plugin-app-status.error { @apply text-danger; }
+.plugin-app-frame { @apply block min-h-0 w-full grow rounded-control border border-border bg-field; }
+.plugin-app-results { @apply max-h-64 shrink-0 overflow-auto; }
+.plugin-result-card { @apply mt-3 min-w-0 rounded-panel border border-divider bg-field p-3; }
+.plugin-app-results .plugin-result-card { @apply mt-0; }
+.plugin-result-title { @apply m-0 text-label font-medium; }
+.plugin-result-summary { @apply my-2 max-h-24 overflow-auto whitespace-pre-wrap text-label text-muted; overflow-wrap: anywhere; }
+.plugin-result-controls { @apply m-0 grid min-w-0 gap-2 border-0 p-0; }
+.plugin-result-controls > button { @apply justify-self-start; }
+.plugin-result-import > summary { @apply cursor-pointer py-2 text-label; }
+.plugin-result-import-form { @apply grid min-w-0 gap-2; }
+.plugin-result-field { @apply grid min-w-0 gap-1 text-label; }
+.plugin-result-field > input[type="number"] { max-width: 8rem; }
+.plugin-result-import-form > .field-hint, .plugin-result-import-status { @apply m-0 text-small text-muted; }
+.plugin-result-apply { @apply justify-self-end; }
+.app-confirmation-details { @apply max-h-96 overflow-auto text-label; }
+.app-confirmation-details h3 { @apply my-2 text-label font-medium; }
+.app-confirmation-details ul { @apply my-2 pl-5; }
+.plugin-parameter-field { @apply grid min-w-0 gap-1; }
+.plugin-parameter-heading { @apply flex flex-wrap items-center justify-between gap-2 text-label; }
+.plugin-parameter-heading > label:first-child { @apply min-w-0; overflow-wrap: anywhere; }
+.plugin-parameter-field .field-hint { overflow-wrap: anywhere; }
+.plugin-parameter-optional { @apply flex shrink-0 items-center gap-1 whitespace-nowrap text-small text-muted; }
+.plugin-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
+.plugin-parameter-field input[type="range"] { accent-color: var(--color-accent); }
+.plugin-parameter-field input:is([type="checkbox"], [type="range"]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.plugin-parameter-field textarea { @apply w-full; resize: vertical; }
+.plugin-parameter-field select { @apply w-full min-w-0; }
+.plugin-parameter-numeric { display: grid; grid-template-columns: minmax(0, 1fr) minmax(4rem, 5rem); @apply items-center gap-3; }
+.plugin-parameter-numeric input { @apply w-full min-w-0; }
+.plugin-parameter-actions { @apply flex flex-wrap justify-end gap-2; }
+.plugin-parameter-result { @apply max-h-64 overflow-auto whitespace-pre-wrap rounded-panel bg-field p-2 text-small text-muted; overflow-wrap: anywhere; }
 .tool-catalog-notice { @apply m-0 text-label text-muted; overflow-wrap: anywhere; }
 
 .settings-scope > .inspector-scope-header {
@@ -1770,9 +1833,6 @@ details.timeline-item > .timeline-content {
 .connection-row:has(.connection-choice[aria-pressed="true"]) { @apply bg-pane-raised; }
 .connection-row .connection-choice { @apply rounded-none border-0 bg-transparent; }
 .connection-row .connection-choice[aria-pressed="true"] { @apply bg-transparent; }
-.connection-source-picker { @apply grid gap-2 rounded-control border border-border bg-pane p-2; }
-.connection-source-options { @apply flex flex-wrap gap-1; }
-.connection-source-options > button { @apply h-control-compact px-2 py-0 text-small; }
 .connections-manager [hidden] { @apply hidden; }
 .audio-settings-editor { @apply grid; }
 .audio-service-row { @apply flex min-h-[46px] w-full items-center gap-2 rounded-control border border-border bg-transparent px-2 py-[6px] text-left text-text cursor-pointer; }
@@ -1919,13 +1979,14 @@ details.timeline-item > .timeline-content {
   @apply flex flex-wrap items-center gap-1;
 }
 
-.plugin-server-permissions { @apply flex flex-wrap gap-1; }
+.plugin-server-permissions, .plugin-server-connections { @apply flex flex-wrap gap-1; }
+.plugin-server-connections > button { @apply max-w-full overflow-hidden text-ellipsis whitespace-nowrap; }
 
 .plugin-server-group { @apply grid gap-1; }
 .plugin-connection-state,
 .plugin-connection-unbound { @apply text-small text-quiet; overflow-wrap: anywhere; }
-.plugin-manage-connections { @apply h-control-compact px-2 py-0 text-small; }
-.plugin-connection-editor { @apply grid min-w-0 gap-3 border-t border-t-divider pt-3; }
+.plugin-manage-connections, .plugin-add-connection { @apply h-control-compact px-2 py-0 text-small; }
+.plugin-connection-editor { @apply grid min-w-0 gap-3; }
 .plugin-connection-editor h4 { @apply m-0 text-label text-text font-control; }
 .plugin-connection-editor > label:not(.settings-switch):not(.plugin-clear-secret) { @apply grid gap-1 text-label text-muted; }
 .plugin-connection-editor > .plugin-connection-enabled { @apply text-label; }

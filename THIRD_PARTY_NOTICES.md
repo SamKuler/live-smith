@@ -47,7 +47,7 @@ extension bundle; Tailwind does not run in the WebView.
 
 ## Network client
 
-### `undici` 7.29.0
+### `undici` 7.29.1
 
 Copyright (c) Matteo Collina and Undici contributors
 
@@ -58,6 +58,7 @@ section above.
 
 - `@modelcontextprotocol/client` 2.0.0
 - `@modelcontextprotocol/core` 2.0.0
+- `@modelcontextprotocol/ext-apps` 2.0.0
 
 Copyright (c) 2024-2025 Model Context Protocol, a Series of LF Projects, LLC.
 
@@ -66,6 +67,9 @@ relicensing consent and new contributions is licensed under Apache-2.0;
 remaining contributions retain the MIT License. The MIT terms are reproduced
 in the Document parser section above, and the Apache License is reproduced in
 the DOMPurify section below.
+
+`@standard-schema/spec` 1.1.0 is Copyright (c) 2024 Colin McDonnell and is
+distributed under the MIT License reproduced in the Document parser section.
 
 The MCP client distribution also contains its JSON Schema validator runtime:
 

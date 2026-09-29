@@ -53,6 +53,19 @@ test("official MCP client connects to stdio, lists tools, calls them, and closes
   assert.deepEqual(result.structuredContent, { echoed: "hello" });
 });
 
+test("installed stdio inline scripts keep JavaScript templates literal", async (t) => {
+  const root = await fs.mkdtemp("/private/tmp/live-smith-mcp-inline-");
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const script = 'const name = "template result"; const message = `${name}`;\n' +
+    serverSource.replace('String(request.params.arguments?.text ?? "")', 'message');
+  const connection = await connectPluginMcpServer({ id: "inline", type: "stdio", command: execPath,
+    args: ["--input-type=module", "-e", script], env: {},
+  }, { pluginRoot: root, pluginData: root }, createHostAbortController().signal);
+  t.after(() => connection.close());
+  const result = await connection.callTool("echo", {}, createHostAbortController().signal);
+  assert.deepEqual(result.content, [{ type: "text", text: "template result" }]);
+});
+
 test("MCP client rejects non-object arguments before sending a tool call", async (t) => {
   const root = await fs.mkdtemp("/private/tmp/live-smith-mcp-client-");
   t.after(() => fs.rm(root, { recursive: true, force: true }));

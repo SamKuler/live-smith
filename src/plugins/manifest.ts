@@ -1,6 +1,7 @@
 import { TextDecoder } from "node:util";
 
 import { isSafePluginId, type PluginComponents, type PluginManifest, type PluginSourceFormat } from "./contracts.js";
+import { pluginConfigDeclaration, PLUGIN_CONFIG_NAMESPACE } from "./user-config.js";
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const portableManifestSchema = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
@@ -10,7 +11,7 @@ const portableKeys = new Set([
 const authorKeys = new Set(["name", "email", "url"]);
 const compatibilityMetadataKeys = new Set([
   "$schema", "name", "version", "description", "author", "homepage",
-  "repository", "license", "keywords", "skills", "mcpServers",
+  "repository", "license", "keywords", "skills", "mcpServers", "userConfig",
 ]);
 const unsupportedPackageComponents = [
   { path: "commands/", label: "commands" },
@@ -34,14 +35,13 @@ export function parsePluginPackageManifest(input: readonly PluginPackageFile[]):
   const portable = decodeOptional(files, "plugin.json");
   const codex = decodeOptional(files, ".codex-plugin/plugin.json");
   const claude = decodeOptional(files, ".claude-plugin/plugin.json");
-  if (!portable && codex && claude) throw new Error("Plugin package has ambiguous compatibility manifests.");
   const selected = portable ?? codex ?? claude;
   if (!selected) throw new Error("Plugin package manifest is missing.");
   const sourceFormat: PluginSourceFormat = portable ? "agent-plugins-1.0" : codex ? "codex" : "claude";
   const selectedPath = portable ? "plugin.json" : codex ? ".codex-plugin/plugin.json" : ".claude-plugin/plugin.json";
   const identity = portable ? readPortableIdentity(selected) : readIdentity(selected);
   for (const overlay of [codex, claude]) {
-    if (!portable || !overlay) continue;
+    if (!overlay || overlay === selected) continue;
     const candidate = readIdentity(overlay);
     if (candidate.id !== identity.id ||
         (candidate.version !== undefined && identity.version !== undefined && candidate.version !== identity.version)) {
@@ -60,10 +60,14 @@ export function parsePluginPackageManifest(input: readonly PluginPackageFile[]):
     files,
     [codex, claude].filter((value): value is Record<string, unknown> => value !== undefined),
   );
+  const userConfig = pluginConfigDeclaration([portable, codex, claude].filter(
+    (value): value is Record<string, unknown> => value !== undefined,
+  ));
   return {
     ...identity,
     sourceFormat,
     components,
+    ...(userConfig.length ? { userConfig } : {}),
     ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
   };
 }
@@ -80,7 +84,9 @@ function discoverUnsupportedComponents(
     if (plainRecord(extensions)) {
       for (const [namespace, extension] of Object.entries(extensions)) {
         if (!plainRecord(extension)) continue;
-        for (const key of Object.keys(extension)) addComponentLabel(found, `${namespace}.${key}`);
+        for (const key of Object.keys(extension)) {
+          if (namespace !== PLUGIN_CONFIG_NAMESPACE || key !== "userConfig") addComponentLabel(found, `${namespace}.${key}`);
+        }
       }
     }
   }

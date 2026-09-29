@@ -9,6 +9,8 @@ const clientFragments = [
   "composer-input",
   "skill-manager",
   "plugin-manager",
+  "plugin-parameters",
+  "plugin-user-config",
   "connections-manager",
   "tools-inspector",
   "bridge-client",

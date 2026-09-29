@@ -26,6 +26,7 @@ import { builtInAudioPluginById } from "../plugins/builtins/index.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import { sessionToolCatalogOwner } from "../app/session-tool-catalog.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
+import { buildPluginAppsScript } from "../../scripts/build-plugin-apps.js";
 import type { ChatBridgeState, ChatDialogState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 import { isEditScopes, resolveEditScopes, type EditScope } from "../agent/edit-scopes.js";
@@ -158,6 +159,7 @@ const chatTemplate = fs.readFileSync(
   "utf8",
 );
 const markdownRendererScript = await buildMarkdownRendererScript(false);
+const pluginAppsScript = await buildPluginAppsScript(false);
 const clientScripts = {
   actionPreview: readClientScript("action-preview"),
   i18n: readClientScript("i18n"),
@@ -169,6 +171,9 @@ const clientScripts = {
   markdownRenderer: markdownRendererScript,
   profileEditor: readClientScript("profile-editor"),
   pluginManager: readClientScript("plugin-manager"),
+  pluginParameters: readClientScript("plugin-parameters"),
+  pluginUserConfig: readClientScript("plugin-user-config"),
+  pluginApps: pluginAppsScript,
   connectionsManager: readClientScript("connections-manager"),
   sessionTimeline: readClientScript("session-timeline"),
   skillManager: readClientScript("skill-manager"),

@@ -1,0 +1,242 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      (() => {
+        const limits = __PLUGIN_PARAMETER_LIMITS__;
+        const numberKeys = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"];
+        const fieldKeys = ["name", "title", "description", "type", "required", "default", "enum", ...numberKeys];
+        const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+        const scalar = (value) => typeof value === "boolean" || typeof value === "number" && Number.isFinite(value) ||
+          typeof value === "string" && [...value].length <= limits.text && !value.includes("\0");
+        const text = (value, maximum) => typeof value === "string" && value.length > 0 && value.length <= maximum && !value.includes("\0");
+        const typedScalar = (field, value) => scalar(value) && (field.type === "integer"
+          ? typeof value === "number" && Number.isInteger(value) : typeof value === field.type);
+
+        window.LiveSmithFactories.isPluginParameterPanel = (value) => {
+          if (!record(value) || Object.keys(value).some((key) => !["toolName", "signature", "fields"].includes(key)) ||
+              typeof value.toolName !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.toolName) ||
+              typeof value.signature !== "string" || !/^[a-f0-9]{64}$/.test(value.signature) ||
+              !Array.isArray(value.fields) || value.fields.length > limits.fields ||
+              new Set(value.fields.map((field) => field?.name)).size !== value.fields.length) return false;
+          return value.fields.every((field) => record(field) &&
+            Object.keys(field).every((key) => fieldKeys.includes(key)) && text(field.name, 128) && text(field.title, 128) &&
+            (field.description === undefined || text(field.description, 1024)) &&
+            ["string", "number", "integer", "boolean"].includes(field.type) && typeof field.required === "boolean" &&
+            (field.default === undefined || typedScalar(field, field.default)) &&
+            (field.enum === undefined || Array.isArray(field.enum) && field.enum.length > 0 && field.enum.length <= 64 && field.enum.every((item) => typedScalar(field, item))) &&
+            numberKeys.every((key) => field[key] === undefined || typeof field[key] === "number" && Number.isFinite(field[key])));
+        };
+
+        window.LiveSmithFactories.createPluginParameterPanels = ({ getState, runCommand, resultActions }) => {
+          const t = (source, values) => window.LiveSmithI18n.t(source, values);
+          const drafts = new Map();
+          let owner = null;
+          let disabled = false;
+          let nextId = 0;
+
+          function element(tag, className, content) {
+            const node = document.createElement(tag);
+            node.className = className;
+            if (content !== undefined) node.textContent = content;
+            return node;
+          }
+
+          function defaults(panel) {
+            return new Map(panel.fields.map((field) => [field.name, {
+              included: field.required || field.default !== undefined,
+              value: field.default ?? (field.enum ? field.enum[0] : field.type === "boolean" ? false : ""),
+            }]));
+          }
+
+          function currentOwner() {
+            const state = getState();
+            return JSON.stringify([state.activeSessionId, state.plugins, state.integrationConnections?.revision]);
+          }
+
+          function valueError(field, value) {
+            if (field.type === "string") {
+              const length = [...value].length;
+              if (value.includes("\0") || length < (field.minLength ?? 0) ||
+                  length > Math.min(field.maxLength ?? limits.text, limits.text)) return true;
+            } else if (field.type !== "boolean") {
+              if (value === "" || !Number.isFinite(Number(value)) || field.type === "integer" && !Number.isInteger(Number(value))) return true;
+              const number = Number(value);
+              if (field.minimum !== undefined && number < field.minimum || field.maximum !== undefined && number > field.maximum ||
+                  field.exclusiveMinimum !== undefined && number <= field.exclusiveMinimum ||
+                  field.exclusiveMaximum !== undefined && number >= field.exclusiveMaximum) return true;
+              if (field.multipleOf !== undefined && Math.abs(number / field.multipleOf - Math.round(number / field.multipleOf)) > 1e-8) return true;
+            }
+            return false;
+          }
+
+          function readableResult(content) {
+            try {
+              const result = JSON.parse(content);
+              const parts = Array.isArray(result.content)
+                ? result.content.filter((part) => part.type === "text" && typeof part.text === "string").map((part) => part.text) : [];
+              if (!parts.length && result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent, null, 2));
+              for (const artifact of result.artifacts || []) parts.push(t("Saved MIDI: {name}", { name: artifact.label || artifact.artifactRef }));
+              return parts.length ? parts.join("\n\n") : content;
+            } catch { return content; }
+          }
+
+          function create(panel) {
+            const nextOwner = currentOwner();
+            if (owner !== nextOwner) { owner = nextOwner; drafts.clear(); }
+            const sessionId = getState().activeSessionId;
+            const key = panel.toolName + ":" + panel.signature;
+            if (!drafts.has(key)) drafts.set(key, defaults(panel));
+            const draft = drafts.get(key);
+            const container = element("div", "plugin-parameter-panel");
+            const form = element("form", "plugin-parameters");
+            container.append(form);
+            form.dataset.parameterTool = panel.toolName;
+            form.append(element("h4", "plugin-parameters-title", t("Parameters")));
+            const fieldset = element("fieldset", "plugin-parameters-fields");
+            fieldset.disabled = disabled;
+            form.append(fieldset);
+            const controls = new Map();
+            for (const field of panel.fields) {
+              const saved = draft.get(field.name);
+              const row = element("div", "plugin-parameter-field");
+              row.dataset.fieldType = field.enum ? "choice" : field.type;
+              const heading = element("div", "plugin-parameter-heading");
+              const id = "plugin-parameter-" + ++nextId;
+              const label = element("label", "", field.title);
+              label.htmlFor = id;
+              label.setAttribute("translate", "no");
+              heading.append(label);
+              let include;
+              if (!field.required) {
+                const optional = element("label", "plugin-parameter-optional");
+                include = document.createElement("input");
+                include.type = "checkbox";
+                include.checked = saved.included;
+                include.setAttribute("aria-label", t("Include {name}", { name: field.title }));
+                optional.append(include, document.createTextNode(t("Use parameter")));
+                heading.append(optional);
+              }
+              row.append(heading);
+              let control;
+              if (field.enum) {
+                control = document.createElement("select");
+                field.enum.forEach((value, index) => {
+                  const option = document.createElement("option");
+                  option.value = String(index);
+                  option.textContent = String(value);
+                  option.selected = value === saved.value;
+                  control.append(option);
+                });
+              } else if (field.type === "string") {
+                control = document.createElement("textarea");
+                control.rows = 2;
+                control.value = String(saved.value);
+              } else {
+                control = document.createElement("input");
+                if (field.type === "boolean") { control.type = "checkbox"; control.checked = Boolean(saved.value); }
+                else {
+                  control.type = "number";
+                  control.value = String(saved.value);
+                  control.step = field.type === "integer" ? "1" : "any";
+                  if (field.minimum !== undefined) control.min = String(field.type === "integer" ? Math.ceil(field.minimum) : field.minimum);
+                  if (field.maximum !== undefined) control.max = String(field.type === "integer" ? Math.floor(field.maximum) : field.maximum);
+                }
+              }
+              control.id = id;
+              control.name = field.name;
+              control.disabled = !saved.included;
+              control.setAttribute("translate", "no");
+              if (field.required) control.setAttribute("aria-required", "true");
+              let slider;
+              const rangeStep = field.multipleOf ?? (field.type === "integer" ? 1 : undefined);
+              const rangeAligned = rangeStep === undefined ||
+                (field.type !== "integer" || Number.isInteger(rangeStep)) &&
+                Math.abs(Number(control.min) / rangeStep - Math.round(Number(control.min) / rangeStep)) <= 1e-8;
+              if (!field.enum && ["number", "integer"].includes(field.type) &&
+                  field.minimum !== undefined && field.maximum !== undefined && Number(control.min) < Number(control.max) &&
+                  field.exclusiveMinimum === undefined && field.exclusiveMaximum === undefined && rangeAligned) {
+                const numeric = element("div", "plugin-parameter-numeric");
+                slider = document.createElement("input");
+                slider.type = "range";
+                slider.min = control.min; slider.max = control.max; slider.step = String(rangeStep ?? "any");
+                slider.value = control.value || control.min;
+                slider.disabled = control.disabled;
+                slider.setAttribute("aria-label", field.title);
+                slider.addEventListener("input", () => {
+                  control.value = slider.value;
+                  control.dispatchEvent(new Event("input", { bubbles: true }));
+                });
+                numeric.append(slider, control);
+                row.append(numeric);
+              } else row.append(control);
+              const update = () => {
+                control.setCustomValidity("");
+                saved.value = field.enum ? field.enum[Number(control.value)] : field.type === "boolean" ? control.checked : control.value;
+                if (slider && control.value !== "") slider.value = control.value;
+              };
+              control.addEventListener("input", update);
+              control.addEventListener("change", update);
+              include?.addEventListener("change", () => {
+                saved.included = include.checked;
+                control.disabled = !include.checked;
+                control.setCustomValidity("");
+                if (slider) slider.disabled = control.disabled;
+              });
+              if (field.description) {
+                const hint = element("p", "field-hint", field.description);
+                hint.id = id + "-description";
+                hint.setAttribute("translate", "no");
+                control.setAttribute("aria-describedby", hint.id);
+                row.append(hint);
+              }
+              controls.set(field.name, control);
+              fieldset.append(row);
+            }
+            if (!panel.fields.length) fieldset.append(element("p", "field-hint", t("This tool has no editable parameters.")));
+            const actions = element("div", "plugin-parameter-actions");
+            const reset = element("button", "secondary", t("Reset parameters"));
+            reset.type = "button";
+            reset.addEventListener("click", () => { drafts.set(key, defaults(panel)); container.replaceWith(create(panel)); });
+            const run = element("button", "primary", t("Run tool"));
+            run.type = "submit";
+            actions.append(reset, run);
+            fieldset.append(actions);
+            form.append(element("p", "field-hint", t("Runs this tool with these values. Results are saved in this Session.")));
+            const latest = [...getState().events].reverse().find((event) => event.kind === "tool_result" && event.name === panel.toolName);
+            if (latest) {
+              let parsed;
+              try { parsed = JSON.parse(latest.content); } catch {}
+              if (resultActions && parsed) container.append(resultActions.create(panel.toolName, parsed));
+              else {
+                form.append(element("h4", "plugin-parameters-title", t("Last result")));
+                const result = element("pre", "plugin-parameter-result", readableResult(latest.content));
+                result.setAttribute("translate", "no");
+                form.append(result);
+              }
+            }
+            form.addEventListener("submit", async (event) => {
+              event.preventDefault();
+              if (disabled || currentOwner() !== nextOwner || sessionId !== getState().activeSessionId) return;
+              const entries = [];
+              for (const field of panel.fields) {
+                const saved = draft.get(field.name);
+                if (!saved.included) continue;
+                const control = controls.get(field.name);
+                control.setCustomValidity(valueError(field, saved.value) ? t("Check the value for {name}.", { name: field.title }) : "");
+                const value = ["number", "integer"].includes(field.type) ? Number(saved.value) : saved.value;
+                entries.push([field.name, value]);
+              }
+              if (!form.reportValidity()) return;
+              await runCommand("run_plugin_tool", {
+                sessionId, toolName: panel.toolName, signature: panel.signature, arguments: Object.fromEntries(entries),
+              }, { cancellable: true });
+            });
+            return container;
+          }
+
+          function setBusy(value) {
+            disabled = Boolean(value);
+            for (const fieldset of document.querySelectorAll(".plugin-parameters-fields")) fieldset.disabled = disabled;
+          }
+
+          return { create, setBusy };
+        };
+      })();

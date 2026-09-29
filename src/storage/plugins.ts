@@ -9,6 +9,10 @@ import { TextDecoder } from "node:util";
 import { openPluginArchive, type OpenPluginArchive } from "../plugins/archive.js";
 import { isSafePluginId, type PluginComponents, type PluginSourceFormat } from "../plugins/contracts.js";
 import { pluginMcpConfigFromArchive } from "../plugins/mcp/config.js";
+import {
+  decodeStoredPluginConfig, emptyPluginConfig, invalidPluginConfigFields, updatePluginConfig,
+  PluginConfigError, PluginConfigConflictError, MAX_PLUGIN_CONFIG_BYTES, type StoredPluginConfig,
+} from "../plugins/user-config.js";
 import { isMissingFileError } from "./errors.js";
 import {
   removeDirectoryDurably,
@@ -41,6 +45,7 @@ export interface InstalledPlugin {
 export interface InstalledPluginPackage {
   plugin: InstalledPlugin;
   bytes: Uint8Array;
+  userConfig?: StoredPluginConfig;
 }
 
 export interface PreparedPluginRuntime {
@@ -48,6 +53,7 @@ export interface PreparedPluginRuntime {
   archive: OpenPluginArchive;
   pluginRoot: string;
   pluginData: string;
+  userConfig?: StoredPluginConfig;
 }
 
 interface StoredPluginCatalog {
@@ -109,8 +115,9 @@ export async function installPlugin(
     const total = state.plugins.reduce((sum, entry) => sum + entry.byteLength, 0) - (previous?.byteLength ?? 0) + owned.byteLength;
     if (total > maximumStoredBytes) throw new Error("Installed Plugin storage limit reached.");
     const now = new Date().toISOString();
+    const { userConfig: _definition, ...manifestMetadata } = opened.manifest;
     const next: InstalledPlugin = {
-      ...opened.manifest,
+      ...manifestMetadata,
       components: { ...opened.manifest.components },
       sha256: digest,
       byteLength: owned.byteLength,
@@ -195,7 +202,8 @@ export function readInstalledPluginPackageInTransaction(
     if (!storageDirectory) return undefined;
     const directory = requireStorageDirectory(storageDirectory);
     const plugin = (await loadCatalog(directory)).plugins.find((entry) => entry.id === pluginId);
-    return plugin ? { plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin) } : undefined;
+    return plugin ? { plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin),
+      userConfig: await readPluginConfigFile(directory, plugin.id) } : undefined;
   })();
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
@@ -212,7 +220,8 @@ function readPluginPackagesInTransaction(
     const state = await loadCatalog(directory);
     const result: InstalledPluginPackage[] = [];
     for (const plugin of state.plugins.filter((entry) => !enabledOnly || entry.enabled)) {
-      result.push({ plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin) });
+      result.push({ plugin: clonePlugin(plugin), bytes: await readVerifiedArchive(directory, plugin),
+        userConfig: await readPluginConfigFile(directory, plugin.id) });
     }
     return result;
   })();
@@ -262,6 +271,11 @@ export function setPluginEnabledInTransaction(
     const state = await loadCatalog(directory);
     const index = state.plugins.findIndex((entry) => entry.id === pluginId);
     if (index < 0) throw new Error("This Plugin is not installed.");
+    if (enabled) {
+      const archive = await openPluginArchive(await readVerifiedArchive(directory, state.plugins[index]!));
+      const invalid = invalidPluginConfigFields(archive.manifest.userConfig ?? [], await readPluginConfigFile(directory, pluginId));
+      if (invalid.length) throw new PluginConfigError(`Configure Plugin parameters: ${invalid.join(", ")}.`);
+    }
     const next = { ...state.plugins[index]!, components: { ...state.plugins[index]!.components }, enabled,
       updatedAt: new Date().toISOString() };
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
@@ -414,8 +428,43 @@ export async function preparePluginRuntime(
       archive,
       pluginRoot: await fs.realpath(pluginRoot),
       pluginData: await fs.realpath(pluginData),
+      userConfig: await readPluginConfigFile(directory, plugin.id),
     };
   });
+}
+
+export async function readPluginConfig(storageDirectory: string | undefined, pluginId: string): Promise<StoredPluginConfig> {
+  return withStorageTransaction(storageDirectory, async () => {
+    const directory = requireStorageDirectory(storageDirectory);
+    if (!(await loadCatalog(directory)).plugins.some((plugin) => plugin.id === pluginId)) throw new Error("This Plugin is not installed.");
+    return readPluginConfigFile(directory, pluginId);
+  });
+}
+
+export function savePluginConfigInTransaction(
+  transaction: StorageTransactionContext, storageDirectory: string | undefined,
+  input: { pluginId: string; sha256: string; revision: string; values: Record<string, unknown>; secretUpdates: Record<string, unknown> },
+): Promise<void> {
+  requireActiveStorageTransaction(transaction, storageDirectory);
+  const operation = (async () => {
+    const directory = requireStorageDirectory(storageDirectory);
+    const plugin = (await loadCatalog(directory)).plugins.find((entry) => entry.id === input.pluginId);
+    if (!plugin || plugin.sha256 !== input.sha256) throw new PluginConfigConflictError("Plugin changed. Reload its parameters before saving.");
+    const current = await readPluginConfigFile(directory, plugin.id);
+    if (current.revision !== input.revision) throw new PluginConfigConflictError("Plugin parameters changed in another window. Reload before saving.");
+    const archive = await openPluginArchive(await readVerifiedArchive(directory, plugin));
+    const next = updatePluginConfig(archive.manifest.userConfig ?? [], current, input.values, input.secretUpdates);
+    await writeJsonAtomically(path.join(pluginDirectory(directory, plugin.id), "user-config.json"), next);
+  })();
+  return trackStorageTransactionOperation(transaction, storageDirectory, operation);
+}
+
+async function readPluginConfigFile(directory: string, pluginId: string): Promise<StoredPluginConfig> {
+  let bytes;
+  try { bytes = await readPrivateFile(path.join(pluginDirectory(directory, pluginId), "user-config.json"), MAX_PLUGIN_CONFIG_BYTES); }
+  catch (error) { if (isMissingFileError(error)) return emptyPluginConfig(); throw error; }
+  try { return decodeStoredPluginConfig(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))); }
+  catch { throw new PluginStorageCorruptionError(); }
 }
 
 export async function deletePlugin(storageDirectory: string | undefined, pluginId: string): Promise<boolean> {

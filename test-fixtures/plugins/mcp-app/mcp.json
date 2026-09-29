@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "fixture": {
+      "type": "stdio", "command": "node", "args": ["${PLUGIN_ROOT}/server.mjs"],
+      "env": { "DEFAULT_STYLE": "${user_config.style}", "DEFAULT_BARS": "${user_config.default_bars}" }
+    }
+  }
+}

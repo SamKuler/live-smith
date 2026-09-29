@@ -10,6 +10,8 @@ import skillManagerScript from "./client/skill-manager.script.html";
 import pluginManagerScript from "./client/plugin-manager.script.html";
 import connectionsManagerScript from "./client/connections-manager.script.html";
 import toolsInspectorScript from "./client/tools-inspector.script.html";
+import pluginParametersScript from "./client/plugin-parameters.script.html";
+import pluginUserConfigScript from "./client/plugin-user-config.script.html";
 import actionPreviewScript from "./client/action-preview.script.html";
 import i18nScript from "./client/i18n.script.html";
 import { serializeUiI18nData } from "./i18n/messages.js";
@@ -18,6 +20,7 @@ import type { ChatBridgeState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
 
 declare const __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: string;
+declare const __LIVE_SMITH_PLUGIN_APPS_SCRIPT__: string;
 declare const __LIVE_SMITH_CHAT_STYLES__: string;
 declare const __LIVE_SMITH_RESULT_STYLES__: string;
 
@@ -45,8 +48,11 @@ export function chatHtml(
     composerInput: composerInputScript,
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
+    pluginApps: __LIVE_SMITH_PLUGIN_APPS_SCRIPT__,
     profileEditor: profileEditorScript,
     pluginManager: pluginManagerScript,
+    pluginParameters: pluginParametersScript,
+    pluginUserConfig: pluginUserConfigScript,
     connectionsManager: connectionsManagerScript,
     sessionTimeline: sessionTimelineScript,
     skillManager: skillManagerScript,

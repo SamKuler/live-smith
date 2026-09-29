@@ -1,0 +1,380 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      (() => {
+        const limits = __PLUGIN_CONFIG_LIMITS__;
+        const fieldKeys = ["name", "type", "title", "description", "required", "default", "options", "multiple", "sensitive", "min", "max"];
+        const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+        const text = (value, maximum = limits.text) => typeof value === "string" && value.length <= maximum && !value.includes("\0");
+        const name = (value) => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value);
+        const wireValue = (value) => text(value) || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value) ||
+          Array.isArray(value) && value.length <= 64 && value.every((entry) => text(entry));
+        const validValue = (field, value) => {
+          if (field.multiple) return Array.isArray(value) && value.length <= 64 && (!field.required || value.length > 0) &&
+            value.every((entry) => text(entry) && (!field.required || entry.trim().length > 0));
+          if (field.type === "number") return typeof value === "number" && Number.isFinite(value) &&
+            (field.min === undefined || value >= field.min) && (field.max === undefined || value <= field.max);
+          if (field.type === "boolean") return typeof value === "boolean";
+          return text(value) && (!field.required || value.trim().length > 0) && (!field.options || field.options.includes(value));
+        };
+        const validField = (field) => record(field) && Object.keys(field).every((key) => fieldKeys.includes(key)) &&
+          name(field.name) && ["string", "number", "boolean", "directory", "file"].includes(field.type) &&
+          text(field.title, 256) && Boolean(field.title.trim()) && text(field.description, 2048) &&
+          ["required", "multiple", "sensitive"].every((key) => field[key] === undefined || typeof field[key] === "boolean") &&
+          ["min", "max"].every((key) => field[key] === undefined || field.type === "number" && typeof field[key] === "number" && Number.isFinite(field[key])) &&
+          !(field.min !== undefined && field.max !== undefined && field.min > field.max) &&
+          !(field.multiple && field.type !== "string") &&
+          (field.options === undefined || field.type === "string" && !field.multiple && !field.sensitive &&
+            Array.isArray(field.options) && field.options.length > 0 && field.options.length <= 64 &&
+            new Set(field.options).size === field.options.length && field.options.every((option) => text(option, 64) && option.length > 0) &&
+            (field.default !== undefined || field.required)) &&
+          (field.default === undefined || !field.sensitive && validValue(field, field.default));
+
+        const isPluginConfigView = (value) => {
+          if (!record(value) || Object.keys(value).some((key) => !["revision", "fields", "values", "configuredSecrets", "invalidFields"].includes(key)) ||
+              typeof value.revision !== "string" || !/^(?:0|[1-9]\d{0,30})$/.test(value.revision) ||
+              !Array.isArray(value.fields) || value.fields.length > limits.fields || !value.fields.every(validField) ||
+              new Set(value.fields.map((field) => field.name)).size !== value.fields.length || !record(value.values)) return false;
+          const fields = new Map(value.fields.map((field) => [field.name, field]));
+          const names = (items, predicate) => Array.isArray(items) && items.length <= fields.size && new Set(items).size === items.length &&
+            items.every((item) => typeof item === "string" && fields.has(item) && predicate(fields.get(item)));
+          if (!names(value.configuredSecrets, (field) => field.sensitive) || !names(value.invalidFields, () => true)) return false;
+          return Object.entries(value.values).every(([key, entry]) => {
+            const field = fields.get(key);
+            return field && !field.sensitive && wireValue(entry) && (value.invalidFields.includes(key) || validValue(field, entry));
+          });
+        };
+
+        window.LiveSmithFactories.isPluginConfigView = isPluginConfigView;
+        window.LiveSmithFactories.createPluginUserConfigPanels = ({ getState, runCommand }) => {
+          const t = (source, values) => window.LiveSmithI18n.t(source, values);
+          const drafts = new Map();
+          let busy = false;
+          let nextId = 0;
+          const copy = (value) => Array.isArray(value) ? [...value] : value;
+          const plugins = () => getState().plugins || [];
+          const matches = (plugin, draft) => plugin?.sha256 === draft.sha256 && plugin.userConfig?.revision === draft.revision;
+
+          function prune() {
+            for (const [id, draft] of drafts) if (!matches(plugins().find((plugin) => plugin.id === id), draft)) drafts.delete(id);
+          }
+
+          function element(tag, className, content) {
+            const node = document.createElement(tag);
+            node.className = className;
+            if (content !== undefined) node.textContent = content;
+            return node;
+          }
+
+          function initialField(field, config, restoreDefault = false) {
+            const value = field.sensitive ? undefined : restoreDefault ? field.default : Object.hasOwn(config.values, field.name) ? config.values[field.name] : undefined;
+            return {
+              included: Boolean(field.required || value !== undefined),
+              value: copy(value === undefined ? field.multiple ? [] : field.type === "boolean" && !field.sensitive ? false : "" : value),
+              changed: false,
+              clear: false,
+              error: !restoreDefault && config.invalidFields.includes(field.name),
+            };
+          }
+
+          function newDraft(plugin, open = false) {
+            return { sha256: plugin.sha256, revision: plugin.userConfig.revision, open, saving: false, status: "", statusError: false,
+              fields: new Map(plugin.userConfig.fields.map((field) => [field.name, initialField(field, plugin.userConfig)])) };
+          }
+
+          function current(plugin, draft) {
+            return drafts.get(plugin.id) === draft && matches(plugins().find((entry) => entry.id === plugin.id), draft);
+          }
+
+          function panelFor(id) {
+            return document.getElementById("pluginUserConfig-" + id);
+          }
+
+          function replacePanel(plugin, action) {
+            const panel = panelFor(plugin.id);
+            if (!panel) return;
+            const replacement = create(plugin);
+            if (!replacement) { panel.remove(); return; }
+            panel.replaceWith(replacement);
+            if (action) replacement.querySelector('[data-config-action="' + action + '"]')?.focus({ preventScroll: true });
+          }
+
+          function create(plugin) {
+            prune();
+            const config = plugin.userConfig;
+            if (!isPluginConfigView(config) || !config.fields.length) return undefined;
+            if (!drafts.has(plugin.id)) drafts.set(plugin.id, newDraft(plugin, panelFor(plugin.id)?.open || false));
+            const draft = drafts.get(plugin.id);
+            const panel = element("details", "plugin-user-config");
+            panel.id = "pluginUserConfig-" + plugin.id;
+            panel.dataset.pluginId = plugin.id;
+            panel.open = draft.open;
+            const summary = element("summary", "", t("Plugin parameters"));
+            summary.addEventListener("click", () => { draft.open = !panel.open; });
+            panel.addEventListener("toggle", () => { if (panel.isConnected && current(plugin, draft)) draft.open = panel.open; });
+            panel.append(summary);
+            const form = element("form", "plugin-parameters plugin-user-config-form");
+            form.noValidate = true;
+            const fieldset = element("fieldset", "plugin-user-config-fields");
+            fieldset.disabled = busy || draft.saving;
+            panel.append(form);
+            const controls = new Map();
+
+            for (const field of config.fields) {
+              const saved = draft.fields.get(field.name);
+              const row = element("div", "plugin-parameter-field");
+              row.dataset.configField = field.name;
+              const heading = element("div", "plugin-parameter-heading");
+              const id = "plugin-user-config-field-" + ++nextId;
+              const label = element("label", "", field.title);
+              label.htmlFor = id;
+              label.setAttribute("translate", "no");
+              heading.append(label);
+              row.append(heading);
+              const error = element("p", "field-hint error plugin-user-config-field-error");
+              error.id = id + "-error";
+              error.setAttribute("role", "alert");
+              const describedBy = [error.id];
+              const inputs = [];
+              let control;
+              let refreshDisabled;
+              const setError = (invalid) => {
+                saved.error = invalid;
+                error.hidden = !invalid;
+                error.textContent = invalid ? t("Check the value for {name}.", { name: field.title }) : "";
+                for (const input of inputs) input.setAttribute("aria-invalid", String(invalid));
+              };
+              const changed = () => { saved.changed = true; setError(false); };
+              if (!field.sensitive && !field.required) {
+                const optional = element("label", "plugin-parameter-optional");
+                const include = document.createElement("input");
+                include.type = "checkbox";
+                include.checked = saved.included;
+                include.setAttribute("aria-label", t("Include {name}", { name: field.title }));
+                include.addEventListener("change", () => { saved.included = include.checked; setError(false); refreshDisabled(); });
+                optional.append(include, document.createTextNode(t("Use parameter")));
+                heading.append(optional);
+              }
+              if (field.sensitive) {
+                heading.append(element("span", "plugin-user-config-secret-status", t(config.configuredSecrets.includes(field.name) ? "Configured" : "Not configured")));
+                const clearLabel = element("label", "plugin-parameter-optional");
+                const clear = document.createElement("input");
+                clear.type = "checkbox";
+                clear.checked = saved.clear;
+                clear.setAttribute("aria-label", t("Clear {name}", { name: field.title }));
+                clear.addEventListener("change", () => { saved.clear = clear.checked; setError(false); refreshDisabled(); });
+                clearLabel.append(clear, document.createTextNode(t("Clear saved value")));
+                heading.append(clearLabel);
+              }
+
+              if (field.multiple) {
+                control = element("div", "plugin-user-config-list");
+                control.setAttribute("role", "group");
+                control.setAttribute("aria-label", field.title);
+                const list = element("div", "plugin-user-config-list-items");
+                const add = element("button", "secondary", t("Add item"));
+                add.type = "button";
+                add.setAttribute("aria-label", t("Add {name} item", { name: field.title }));
+                const renderItems = () => {
+                  inputs.length = 0;
+                  list.replaceChildren();
+                  const values = Array.isArray(saved.value) ? saved.value : [];
+                  values.forEach((value, index) => {
+                    const item = element("div", "plugin-user-config-list-item");
+                    const input = document.createElement(field.sensitive ? "input" : "textarea");
+                    if (field.sensitive) { input.type = "password"; input.autocomplete = "new-password"; }
+                    else input.rows = 1;
+                    input.value = value;
+                    input.maxLength = limits.text;
+                    input.name = field.name;
+                    input.dataset.itemIndex = String(index);
+                    input.setAttribute("aria-label", field.title + " " + (index + 1));
+                    input.setAttribute("aria-describedby", describedBy.join(" "));
+                    input.setAttribute("translate", "no");
+                    input.addEventListener("input", () => { saved.value[index] = input.value; changed(); });
+                    const remove = element("button", "secondary", t("Remove"));
+                    remove.type = "button";
+                    remove.setAttribute("aria-label", t("Remove {name} item {number}", { name: field.title, number: index + 1 }));
+                    remove.addEventListener("click", () => {
+                      saved.value.splice(index, 1); changed(); renderItems(); (inputs[Math.min(index, inputs.length - 1)] || add).focus();
+                    });
+                    inputs.push(input);
+                    item.append(input, remove);
+                    list.append(item);
+                  });
+                  refreshDisabled();
+                  setError(saved.error);
+                };
+                refreshDisabled = () => {
+                  const disabled = field.sensitive ? saved.clear : !saved.included;
+                  for (const input of control.querySelectorAll("input, textarea, button")) input.disabled = disabled;
+                  add.disabled = disabled || Array.isArray(saved.value) && saved.value.length >= 64;
+                };
+                add.addEventListener("click", () => {
+                  saved.value = [...(Array.isArray(saved.value) ? saved.value : []), ""];
+                  changed(); renderItems(); inputs.at(-1)?.focus();
+                });
+                control.append(list, add);
+                renderItems();
+              } else {
+                if (field.options) {
+                  control = document.createElement("select");
+                  for (const value of field.options) {
+                    const option = document.createElement("option");
+                    option.value = value;
+                    option.textContent = value;
+                    control.append(option);
+                  }
+                  control.value = String(saved.value);
+                } else if (field.type === "string" && !field.sensitive) {
+                  control = document.createElement("textarea");
+                  control.rows = 2;
+                  control.value = String(saved.value);
+                } else {
+                  control = document.createElement("input");
+                  control.type = field.sensitive ? "password" : field.type === "boolean" ? "checkbox" : field.type === "number" ? "number" : "text";
+                  if (field.type === "boolean" && !field.sensitive) {
+                    control.setAttribute("role", "switch");
+                    control.checked = saved.value === true;
+                  } else control.value = String(saved.value);
+                  if (field.type === "number") {
+                    if (field.sensitive) control.inputMode = "decimal";
+                    else {
+                      control.step = "any";
+                      if (field.min !== undefined) control.min = String(field.min);
+                      if (field.max !== undefined) control.max = String(field.max);
+                    }
+                  }
+                }
+                control.name = field.name;
+                if (field.sensitive || ["string", "file", "directory"].includes(field.type)) control.maxLength = limits.text;
+                if (field.sensitive) control.autocomplete = "new-password";
+                inputs.push(control);
+                const update = () => {
+                  saved.value = field.type === "boolean" && !field.sensitive ? control.checked : control.value;
+                  changed();
+                };
+                control.addEventListener("input", update);
+                control.addEventListener("change", update);
+                refreshDisabled = () => { control.disabled = field.sensitive ? saved.clear : !saved.included; };
+              }
+              control.id = id;
+              control.setAttribute("translate", "no");
+              if (field.required) control.setAttribute("aria-required", "true");
+              row.append(control);
+              if (field.description) {
+                const hint = element("p", "field-hint", field.description);
+                hint.id = id + "-description";
+                hint.setAttribute("translate", "no");
+                describedBy.unshift(hint.id);
+                row.append(hint);
+              }
+              if (field.sensitive) {
+                const hint = element("p", "field-hint", t(field.type === "boolean"
+                  ? "Enter true or false to replace the saved value."
+                  : "Enter a new value to replace the saved value."));
+                hint.id = id + "-secret-hint";
+                describedBy.push(hint.id);
+                row.append(hint);
+              }
+              for (const input of inputs) input.setAttribute("aria-describedby", describedBy.join(" "));
+              control.setAttribute("aria-describedby", describedBy.join(" "));
+              row.append(error);
+              refreshDisabled();
+              setError(saved.error);
+              controls.set(field.name, { setError, focus: () => (inputs[0] || control.querySelector("button") || control).focus() });
+              fieldset.append(row);
+            }
+
+            const actions = element("div", "plugin-parameter-actions");
+            const defaults = element("button", "secondary", t("Restore defaults"));
+            defaults.type = "button";
+            defaults.dataset.configAction = "defaults";
+            defaults.addEventListener("click", () => {
+              if (!current(plugin, draft)) return;
+              for (const field of config.fields) if (!field.sensitive) draft.fields.set(field.name, initialField(field, config, true));
+              draft.status = "";
+              replacePanel(plugin, "defaults");
+            });
+            const discard = element("button", "secondary", t("Discard"));
+            discard.type = "button";
+            discard.dataset.configAction = "discard";
+            discard.addEventListener("click", () => {
+              if (!current(plugin, draft)) return;
+              drafts.set(plugin.id, newDraft(plugin, draft.open));
+              replacePanel(plugin, "discard");
+            });
+            const save = element("button", "primary", t("Save"));
+            save.type = "submit";
+            save.dataset.configAction = "save";
+            actions.append(defaults, discard, save);
+            fieldset.append(actions);
+            const status = element("p", "field-hint plugin-user-config-status");
+            status.setAttribute("role", "status");
+            status.setAttribute("aria-live", "polite");
+            const presentStatus = (message, isError = false) => {
+              draft.status = window.LiveSmithI18n.text(message);
+              draft.statusError = isError;
+              const active = drafts.get(plugin.id);
+              if (active && active !== draft) { active.status = draft.status; active.statusError = isError; }
+              const liveStatus = panelFor(plugin.id)?.querySelector(".plugin-user-config-status");
+              for (const target of new Set([status, liveStatus].filter(Boolean))) {
+                target.textContent = draft.status;
+                target.hidden = !draft.status;
+                target.classList.toggle("error", Boolean(isError));
+              }
+            };
+            presentStatus(draft.status, draft.statusError);
+            form.addEventListener("submit", async (event) => {
+              event.preventDefault();
+              if (busy || draft.saving) return;
+              if (!current(plugin, draft)) { presentStatus(t("Plugin parameters changed. Review the current values before saving."), true); return; }
+              const values = [];
+              const secretUpdates = [];
+              let firstInvalid;
+              for (const field of config.fields) {
+                const saved = draft.fields.get(field.name);
+                let invalid = false;
+                if (field.sensitive && saved.clear) secretUpdates.push([field.name, null]);
+                else if (field.sensitive && !saved.changed) invalid = field.required && !config.configuredSecrets.includes(field.name);
+                else if (field.sensitive || saved.included) {
+                  let value = field.type === "number" && typeof saved.value === "string" && saved.value.trim() ? Number(saved.value) : saved.value;
+                  if (field.sensitive && field.type === "boolean" && ["true", "false"].includes(value)) value = value === "true";
+                  invalid = !validValue(field, value);
+                  (field.sensitive ? secretUpdates : values).push([field.name, copy(value)]);
+                }
+                controls.get(field.name).setError(Boolean(invalid));
+                if (invalid && !firstInvalid) firstInvalid = controls.get(field.name);
+              }
+              if (firstInvalid) { firstInvalid.focus(); return; }
+              presentStatus("");
+              draft.saving = true;
+              fieldset.disabled = true;
+              try {
+                let saved = false;
+                await runCommand("set_plugin_user_config", { pluginId: plugin.id, sha256: plugin.sha256, revision: config.revision,
+                  values: Object.fromEntries(values), secretUpdates: Object.fromEntries(secretUpdates) }, {
+                  statusPresenter: presentStatus, onOutcome: (outcome) => { saved = outcome.known && outcome.succeeded; },
+                });
+                if (saved && drafts.get(plugin.id) === draft) {
+                  drafts.delete(plugin.id);
+                  const latest = plugins().find((entry) => entry.id === plugin.id);
+                  if (latest) { const replacement = newDraft(latest, draft.open); drafts.set(plugin.id, replacement); replacePanel(latest, "save"); }
+                }
+              } catch (error) { presentStatus(error.message || String(error), true); }
+              finally { draft.saving = false; setBusy(busy); }
+            });
+            form.append(fieldset, status);
+            return panel;
+          }
+
+          function setBusy(value) {
+            busy = Boolean(value);
+            prune();
+            for (const fieldset of document.querySelectorAll(".plugin-user-config-fields")) {
+              const id = fieldset.closest(".plugin-user-config").dataset.pluginId;
+              fieldset.disabled = busy || Boolean(drafts.get(id)?.saving);
+            }
+          }
+
+          return { create, setBusy };
+        };
+      })();

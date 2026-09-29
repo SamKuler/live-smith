@@ -24,6 +24,9 @@ import type {
 } from "../model/contracts.js";
 import type { OAuthAuthState } from "../model/provider.js";
 import type { PluginInstallPreview } from "../plugins/view.js";
+import { parsePluginAppRequest, type PluginAppRequest } from "./plugin-apps.js";
+import { startPluginAppSandbox, type PluginAppSandbox } from "./plugin-app-sandbox.js";
+import type { McpUiResourceCsp } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   compareContextUsageVisibilityRevisions,
   compareDefaultFollowUpBehaviorRevisions,
@@ -163,6 +166,7 @@ export interface ChatBridgeSendContext {
 
 export interface ChatBridgeCommandContext {
   commandId: string;
+  requestConfirmation?(request: ChatBridgeConfirmationRequest): Promise<boolean>;
   progress(message: UiMessage): Promise<void>;
 }
 
@@ -358,6 +362,8 @@ export interface ChatBridge {
 }
 
 interface ChatBridgeOptions {
+  handlePluginAppRequest?(input: PluginAppRequest, signal: AbortSignal): Promise<unknown>;
+  closePluginApps?(): Promise<void>;
   readAudioAsset?(sessionId: string, assetId: string, signal: AbortSignal): Promise<{
     bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg";
   }>;
@@ -433,6 +439,14 @@ async function lookupSteeringReceiptSafely(
   } catch {
     return "unknown";
   }
+}
+
+interface PendingCommandConfirmation {
+  id: string;
+  commandId: string;
+  sessionId: string;
+  request: ChatBridgeConfirmationRequest;
+  resolve(apply: boolean): void;
 }
 
 interface PendingConfirmation {
@@ -650,6 +664,8 @@ type SsePayload =
       commandId: string;
       message: UiMessage;
     }
+  | ({ type: "command_confirm_request"; commandId: string; sessionId: string; id: string } & ChatBridgeConfirmationRequest)
+  | { type: "command_confirm_resolved"; commandId: string; sessionId: string; id: string }
   | StateChangeSsePayload
   | { type: "state"; commandId: string; state: ChatBridgeState }
   | { type: "done"; sendId: string; sessionId: string; state: ChatBridgeState }
@@ -671,10 +687,13 @@ export async function createChatBridge(
   options: ChatBridgeOptions,
 ): Promise<ChatBridge> {
   const token = randomUUID();
+  let appSandbox: Promise<PluginAppSandbox> | undefined;
+  const appSandboxRegistrations = new Map<string, { dispose(): void }>();
   const audioDownloads = new Map<string, { sessionId: string; assetId: string; expiresAt: number }>();
   const clients = new Set<ServerResponse>();
   const backpressuredClients = new Set<ServerResponse>();
   const pendingConfirmations = new Map<string, PendingConfirmation>();
+  let pendingCommandConfirmation: PendingCommandConfirmation | undefined;
   const pendingRequestBodies = new Set<IncomingMessage>();
   const inFlightMutationHandlers = new Set<Promise<void>>();
   const readOnlyBuilds = new Map<ServerResponse, {
@@ -1558,6 +1577,7 @@ export async function createChatBridge(
         "/send",
         "/steer",
         "/stop",
+        "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates",
       ].includes(requestPath);
       if (request.method === "POST" && requestPath === "/send") {
         sendPromptPersistence = "not_persisted";
@@ -1774,6 +1794,10 @@ export async function createChatBridge(
             bridgeStateRevision: nextStateRevision(),
           });
         }
+        if (pendingCommandConfirmation) {
+          const { id, commandId, sessionId, request: confirmation } = pendingCommandConfirmation;
+          replay({ type: "command_confirm_request", id, commandId, sessionId, ...confirmation });
+        }
         for (const payload of replayPayloads) {
           if (writeSse(response, payload, options.writeSseFrame)) continue;
           if (response.writableEnded || response.destroyed) return;
@@ -1941,6 +1965,39 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname.startsWith("/plugin-apps/")) {
+        if (!options.handlePluginAppRequest) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Plugin app request");
+        const input = parsePluginAppRequest(url.pathname.slice("/plugin-apps/".length), await readRequestBody(request));
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const result = await options.handlePluginAppRequest(input, signal);
+        if (input.operation === "open") {
+          const app = result as { id: string; csp?: McpUiResourceCsp };
+          try {
+            if (closing || response.destroyed || signal.aborted) throw new Error("Plugin app window closed.");
+            appSandbox ??= startPluginAppSandbox(bridgeBaseUrl(server));
+            const sandbox = await appSandbox;
+            if (closing || response.destroyed || signal.aborted) throw new Error("Plugin app window closed.");
+            const registration = sandbox.register(app.csp);
+            appSandboxRegistrations.set(app.id, registration);
+            if (closing || response.destroyed || signal.aborted) throw new Error("Plugin app window closed.");
+            sendJson(response, { ...(result as Record<string, unknown>), sandboxUrl: registration.url });
+          } catch (error) {
+            appSandboxRegistrations.get(app.id)?.dispose();
+            appSandboxRegistrations.delete(app.id);
+            await options.handlePluginAppRequest({ operation: "close", id: app.id }, createHostAbortController().signal);
+            throw error;
+          }
+        } else {
+          if (input.operation === "close") {
+            appSandboxRegistrations.get(input.id)?.dispose();
+            appSandboxRegistrations.delete(input.id);
+          }
+          sendJson(response, result);
+        }
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/plugins/inspect") {
         if (!options.handlePluginInspect) {
           request.resume();
@@ -2053,7 +2110,8 @@ export async function createChatBridge(
               input.kind === "archive_session" ||
               input.kind === "set_session_model_selection" ||
               input.kind === "load_session_model_capabilities" ||
-              input.kind === "load_session_tools"
+              input.kind === "load_session_tools" ||
+              input.kind === "run_plugin_tool"
             ) &&
             activeSendsBySession.has(input.sessionId)
           ) {
@@ -2064,17 +2122,45 @@ export async function createChatBridge(
                 ? "Wait for this Session's active request to finish before loading model capabilities."
                 : input.kind === "load_session_tools"
                 ? "Wait for this Session's active request to finish before loading tools."
+                : input.kind === "run_plugin_tool"
+                ? "Wait for this Session's active request to finish before running a Plugin tool."
                 : `Stop this Session's active request before ${
                   input.kind === "delete_session" ? "deleting" : "archiving"
                 } it.`,
             }, 409);
             return;
           }
+          const confirmationCommandId = commandId;
           const commandState = await options.handleCommand(
             input,
             controller.signal,
             {
               commandId,
+              requestConfirmation: (confirmation) => {
+                if (closing || controller.signal.aborted || activeCommandAbort !== controller ||
+                    activeCommandId !== confirmationCommandId || activeCommandStopRequested) return Promise.resolve(false);
+                if (!("sessionId" in input) || typeof input.sessionId !== "string") {
+                  throw new ChatBridgeConflictError("Command confirmation requires a Session.");
+                }
+                if (pendingCommandConfirmation) throw new ChatBridgeConflictError("A command confirmation is already pending.");
+                const id = randomUUID();
+                const sessionId = input.sessionId;
+                return new Promise<boolean>((resolve) => {
+                  const abort = () => pending.resolve(false);
+                  const pending: PendingCommandConfirmation = { id, commandId: confirmationCommandId, sessionId, request: confirmation,
+                    resolve: (apply) => {
+                      if (pendingCommandConfirmation !== pending) return;
+                      pendingCommandConfirmation = undefined;
+                      controller.signal.removeEventListener("abort", abort);
+                      resolve(apply && !controller.signal.aborted && !closing && activeCommandId === confirmationCommandId);
+                      broadcast({ type: "command_confirm_resolved", id, commandId: confirmationCommandId, sessionId });
+                    },
+                  };
+                  pendingCommandConfirmation = pending;
+                  controller.signal.addEventListener("abort", abort, { once: true });
+                  broadcast({ type: "command_confirm_request", id, commandId: confirmationCommandId, sessionId, ...confirmation });
+                });
+              },
               progress: async (message) => {
                 if (
                   activeCommandAbort !== controller ||
@@ -2435,6 +2521,11 @@ export async function createChatBridge(
           sendJson(response, { error: "Live Smith bridge is closing." }, 503);
           return;
         }
+        if (pendingCommandConfirmation?.id === input.id) {
+          pendingCommandConfirmation.resolve(input.apply);
+          sendJson(response, { ok: true });
+          return;
+        }
         const pending = pendingConfirmations.get(input.id);
         if (pending) {
           pendingConfirmations.delete(input.id);
@@ -2527,7 +2618,8 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/confirm", "/send", "/steer", "/stop"].includes(
+        ["/command", "/session-model-capabilities", "/session-tools", "/confirm", "/send", "/steer", "/stop",
+          "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )
       ) request.resume();
@@ -2695,6 +2787,7 @@ export async function createChatBridge(
         commandId !== undefined &&
         activeCommandId === commandId
       ) {
+        pendingCommandConfirmation?.resolve(false);
         activeCommandAbort = null;
         activeCommandId = null;
         activeCommandStopRequested = false;
@@ -2943,6 +3036,8 @@ export async function createChatBridge(
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      for (const registration of appSandboxRegistrations.values()) registration.dispose();
+      appSandboxRegistrations.clear();
       audioDownloads.clear();
       const mutationTerminals = [...inFlightMutationHandlers];
       const pendingReads = [...readOnlyBuilds.entries()];
@@ -2956,6 +3051,7 @@ export async function createChatBridge(
       retainedCommandIds.clear();
       for (const request of pendingRequestBodies) request.destroy();
       pendingRequestBodies.clear();
+      pendingCommandConfirmation?.resolve(false);
       resolveAllConfirmations(false);
       for (const activeSend of activeSendsById.values()) {
         const closedError = new SteeringClosedError("Live Smith window closed.");
@@ -2973,6 +3069,7 @@ export async function createChatBridge(
       for (const client of connectedClients) client.end();
 
       closePromise = (async () => {
+        await Promise.allSettled([options.closePluginApps?.(), appSandbox?.then((sandbox) => sandbox.close())]);
         await Promise.allSettled([
           ...mutationTerminals,
           ...pendingReads.map(([, read]) => read.terminal),
@@ -3137,6 +3234,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "set_session_model_selection" ||
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||
+    input.kind === "run_plugin_tool" ||
+    input.kind === "import_midi_artifact" ||
     input.kind === "set_session_skills";
 }
 

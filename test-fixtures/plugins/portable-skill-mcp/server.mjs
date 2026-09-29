@@ -27,7 +27,12 @@ lines.on("line", (line) => {
           description: "Echo fixture text",
           inputSchema: {
             type: "object",
-            properties: { text: { type: "string" } },
+            properties: {
+              text: { type: "string", title: "Text", maxLength: 256 },
+              repeat: { type: "integer", title: "Repetitions", minimum: 1, maximum: 8, default: 1 },
+              letterCase: { type: "string", title: "Letter case", enum: ["original", "upper", "lower"], default: "original" },
+              showLength: { type: "boolean", title: "Include character count", default: false }
+            },
             required: ["text"],
             additionalProperties: false
           }
@@ -35,13 +40,17 @@ lines.on("line", (line) => {
       }
     });
   } else if (request.method === "tools/call") {
-    const text = String(request.params.arguments?.text ?? "");
+    const args = request.params.arguments || {};
+    let text = String(args.text ?? "");
+    if (args.letterCase === "upper") text = text.toUpperCase();
+    if (args.letterCase === "lower") text = text.toLowerCase();
+    text = Array(args.repeat ?? 1).fill(text).join(" ");
     send({
       jsonrpc: "2.0",
       id: request.id,
       result: {
         content: [{ type: "text", text }],
-        structuredContent: { echoed: text }
+        structuredContent: { echoed: text, ...(args.showLength ? { characters: [...text].length } : {}) }
       }
     });
   }

@@ -166,7 +166,9 @@ for (const source of ["plugin", "standalone"] as const) test(`explicit Session t
       assert.equal(catalog.modelToolsSupported, false, "no active Profile cannot use function tools");
       assert.ok(catalog.groups.some((group) => group.kind === "live" &&
         group.tools.some((tool) => tool.name === "inspect_current_object")));
-      assert.deepEqual(catalog.groups.filter((group) => group.kind === "mcp"), [{
+      const mcpGroups = catalog.groups.filter((group) => group.kind === "mcp");
+      assert.ok(mcpGroups.every((group) => group.tools.every((tool) => tool.panel?.fields.length === 0)));
+      assert.deepEqual(mcpGroups.map((group) => ({ ...group, tools: group.tools.map(({ name, description }) => ({ name, description })) })), [{
         kind: "mcp", ...(source === "plugin" ? { pluginId: "catalog-fixture", serverId: "local" }
           : { serverId: "server", connectionId: directConnection.id, connectionName: directConnection.name }), tools: [
           { name: "convert_audio", description: "Convert one audio asset" },
@@ -174,7 +176,7 @@ for (const source of ["plugin", "standalone"] as const) test(`explicit Session t
         ],
       }]);
       assert.deepEqual(catalog.issues, []);
-      assert.doesNotMatch(JSON.stringify(catalog), /plg_catalog|synthetic-secret/u);
+      assert.doesNotMatch(JSON.stringify(catalog), /synthetic-secret/u);
       assert.deepEqual((await readState()).sessionToolCatalog, catalog);
       await command({ kind: "rename_session", sessionId: initial.activeSessionId, title: "Original" });
       const nextSession = await command({ kind: "new_session" });

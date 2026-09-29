@@ -1,15 +1,18 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createToolsInspector = function createToolsInspector({
-        getState, getCatalogOwner, loadCatalog, humanizeToolName,
+        getState, getCatalogOwner, loadCatalog, humanizeToolName, runCommand, pluginApps, resultActions,
       }) {
         const t = (source, params) => window.LiveSmithI18n.t(source, params);
         const descriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+        const parameterPanels = window.LiveSmithFactories.createPluginParameterPanels({ getState, runCommand, resultActions });
         let renderedKey = null;
         let disabled = false;
         let started = false;
         let activeLoad = null;
         let attemptedOwner = null;
         let failedOwner = null;
+        const openToolKeys = new Set();
+        let renderedSessionId = null;
 
         function cancelLoad() {
           if (!activeLoad) return;
@@ -108,6 +111,7 @@
           if (group.pluginId) section.dataset.pluginId = group.pluginId;
           if (group.serverId) section.dataset.serverId = group.serverId;
           if (group.connectionId) section.dataset.connectionId = group.connectionId;
+          section.dataset.toolKey = JSON.stringify([group.kind, group.pluginId, group.serverId, group.connectionId]);
           const summary = element("summary", "tool-group-heading");
           summary.append(element("strong", "", groupLabel(group)),
             element("span", "tool-count", t("{count} tools", { count: group.tools.length })));
@@ -117,13 +121,34 @@
             ? [group.pluginId, group.serverId].join(" / ") : t("Standalone MCP")));
           for (const tool of group.tools) {
             const entry = element("details", "tool-entry");
+            entry.dataset.toolKey = section.dataset.toolKey + ":" + tool.name;
             const title = element("summary", "");
             title.textContent = group.kind === "mcp" ? tool.name : humanizeToolName(tool.name);
             const name = element("code", "tool-name", tool.name);
             name.setAttribute("translate", "no");
             const description = element("p", "tool-description", tool.description);
             description.setAttribute("translate", "no");
-            entry.append(title, name, element("span", "tool-description-label", t("Original tool description")), description);
+            const information = element("details", "tool-information");
+            information.append(element("summary", "", t("Tool details")));
+            if (group.kind !== "mcp") information.append(name);
+            information.append(description);
+            entry.append(title, information);
+            if (tool.app) {
+              const open = element("button", "secondary plugin-open-app", t("Open interface"));
+              open.type = "button";
+              open.disabled = disabled;
+              open.addEventListener("click", () => { void pluginApps.open(tool); });
+              entry.append(open);
+            }
+            if (group.kind === "mcp" && (tool.panel || !tool.app)) {
+              const panel = tool.panel ? parameterPanels.create(tool.panel)
+                : element("p", "field-hint", t("This tool's parameter structure is not supported by the panel. Use it through chat."));
+              if (tool.app) {
+                const fallback = element("details", "tool-parameter-fallback");
+                fallback.append(element("summary", "", t("Standard parameter form")), panel);
+                entry.append(fallback);
+              } else entry.append(panel);
+            }
             content.append(entry);
           }
           section.append(content);
@@ -169,12 +194,17 @@
                 .format(new Date(catalog.loadedAt)),
             }) : t("Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.");
           const root = document.getElementById("sessionToolCatalog");
+          if (renderedSessionId !== state.activeSessionId) openToolKeys.clear();
+          else for (const node of root.querySelectorAll("details[data-tool-key]")) {
+            if (node.open) openToolKeys.add(node.dataset.toolKey); else openToolKeys.delete(node.dataset.toolKey);
+          }
+          renderedSessionId = state.activeSessionId;
           const nodes = [];
           if (catalog) {
             if (!catalog.modelToolsSupported) nodes.push(element("p", "tool-catalog-notice",
               t("The selected model is not configured to use tools. This list shows the configured tool sources.")));
             if (catalog.truncated) nodes.push(element("p", "tool-catalog-notice",
-              t("The tool directory is large. Some tools are not shown.")));
+              t("The tool directory is large. Some tools or parameters are not shown.")));
             nodes.push(...catalog.groups.map(renderGroup));
             for (const issue of catalog.issues) {
               nodes.push(element("p", "tool-catalog-notice",
@@ -183,11 +213,13 @@
             }
           }
           root.replaceChildren(...nodes);
+          for (const node of root.querySelectorAll("details[data-tool-key]")) node.open = openToolKeys.has(node.dataset.toolKey);
           loadIfNeeded();
         }
 
         function setBusy(nextDisabled) {
           disabled = Boolean(nextDisabled);
+          parameterPanels.setBusy(disabled);
           if (disabled) cancelLoad();
           render();
         }

@@ -187,6 +187,164 @@ loading, a real stdio tool call, disable, and uninstall. Add format changes to
 these fixtures and tests rather than creating credential-bearing or executable
 samples. Keep every fixture file tracked and mode `0644`.
 
+#### Native Plugin parameter panels
+
+Session Tools builds parameter panels directly from MCP `inputSchema`.
+No extra manifest component, HTML file, or UI metadata is required. Both
+installed Plugins and standalone MCP connections use the same panel contract.
+The portable fixture's `echo` tool demonstrates text, bounded integers, an enum,
+and a Boolean parameter without external services.
+
+Supported schemas describe an object with up to 32 named scalar properties:
+`string`, `number`, `integer`, or `boolean`. Property `title` and `description`
+provide labels and hints; `default` initializes a control. `enum` supplies up to
+64 typed choices. Numeric fields support `minimum`, `maximum`,
+`exclusiveMinimum`, `exclusiveMaximum`, and `multipleOf`. Inclusive finite bounds
+with a compatible step enable a slider alongside the number input; other numeric
+constraints retain the validated number input. Strings support
+`minLength` and `maxLength`, measured in Unicode code points, with a 16,384-code-point
+panel limit. `required` controls property presence. Optional fields can be
+omitted explicitly, including optional Booleans whose value is false.
+
+The object may declare `additionalProperties` as a Boolean; panel calls send
+only declared properties. Nested objects, arrays, references, unions, patterns,
+formats, and other unsupported constraints disable the form for that tool,
+preserving its ordinary chat availability. Parameter payloads are bounded to
+64 KiB, individual form descriptions to 16 KiB, and the directory's combined
+form descriptions to 256 KiB. Host-managed artifact output paths stay outside
+the form; declared audio inputs use existing Session asset references.
+
+Selecting **Run tool** sends one typed argument object directly to the tool.
+The host validates values and rechecks the current definition and Connection
+before execution. Changing a package, schema, or Connection invalidates an older
+form. Results are recorded in Session history and shown in the panel; generated
+MIDI is saved as a Session artifact for a separate Live import. **Stop** requests
+cancellation; it does not undo work already performed by the external server.
+Parameter controls do not establish a persistent background service or playback
+scheduler.
+
+Tool descriptions are collapsed separately from their controls. Tools with an
+MCP App offer the custom interface first and keep **Standard parameter form**
+as an expandable alternative. Completed results share the same host actions:
+**Use in chat** appends a reference to the composer without sending it, and
+saved MIDI exposes **Insert into Live** with an existing MIDI track name and a
+one-based Arrangement start beat. Import does not require a model connection.
+The host observes and validates the destination, checks Session Edit Scope,
+applies the saved approval policy, and revalidates in the Live mutation queue.
+Uncertain or partial writes leave a recovery record and are not retried.
+
+#### Persistent Plugin configuration
+
+Compatibility manifests may declare Claude Code's `userConfig` object. Portable
+packages put the same object under
+`extensions["io.github.samkuler.live-smith"].userConfig` in root `plugin.json`.
+Matching Codex and Claude manifests can coexist in one package; any repeated
+configuration declarations must agree. Portable identity and component locations
+remain canonical. Without a portable manifest, the Codex manifest selects the
+component locations when both compatibility manifests are present.
+
+Each field declares `type`, `title`, and `description`. Supported types are
+`string`, `number`, `boolean`, `file`, and `directory`; optional attributes are
+`required`, `default`, `options`, `multiple`, `sensitive`, `min`, and `max`.
+`multiple` applies to strings. `options` applies to a non-sensitive, single
+string and requires a matching default or a required selection. Limits are 64
+fields, 64 list entries or choices, 8,192 characters per value, and 64 KiB per
+configuration. File and directory fields accept path text and grant no file
+access by themselves.
+
+```json
+{
+  "userConfig": {
+    "style": {
+      "type": "string", "title": "Style", "description": "Default music style",
+      "options": ["ambient", "jazz"], "default": "ambient"
+    },
+    "buffer_bars": {
+      "type": "number", "title": "Buffer bars", "description": "Target buffered bars",
+      "min": 1, "max": 32, "default": 8
+    }
+  }
+}
+```
+
+Users edit these fields under **Extensions → Plugins → Plugin parameters**.
+Save commits configuration; Discard restores saved values; Restore defaults
+changes the draft without clearing saved secrets. Sensitive inputs are
+write-only, with an explicit clear action. Values live in host-owned private
+Plugin storage, separately from the immutable package and mutable `PLUGIN_DATA`.
+They survive restarts and package replacement; deleting the Plugin removes
+them. A replacement revalidates values against its new declaration. Invalid
+values remain visible for repair. Missing required values or values that fail
+validation prevent enabling the Plugin. Configuration edits take effect on subsequent
+requests; they are not Session overrides or live automation controls.
+
+Selected Plugin Skill bodies can reference `${user_config.style}`. MCP launch
+and connection fields can reference the same values, for example
+`"env": { "BUFFER_BARS": "${user_config.buffer_bars}" }`. Expansion is a single
+text substitution; substituted values are never evaluated or expanded again.
+Lists expand as JSON arrays, and numbers/Booleans retain their JSON text form.
+Sensitive references in Skills become `[sensitive value]`; actual sensitive
+values are available only to authorized MCP configuration. Bare `${NAME}`
+credential placeholders and package-path placeholders retain their existing
+MCP meaning. OpenAI hosts do not expand Claude `user_config` references; reading
+this declaration in a Codex-compatible package is a Live Smith capability.
+
+#### MCP Apps
+
+An approved MCP server can provide an interactive interface using the MCP Apps
+extension `io.modelcontextprotocol/ui`. Register a tool with
+`_meta.ui.resourceUri: "ui://example/app.html"` and serve the corresponding
+resource as `text/html;profile=mcp-app`. The deprecated
+`_meta["ui/resourceUri"]` spelling is also accepted. UI metadata is retained
+outside the model tool schema. Tools with visibility `["app"]` remain available
+to their App and are omitted from model tool lists.
+
+The tool directory shows **Open interface**, and discovered interfaces also
+appear on their Plugin card. Opening reads the resource without invoking the
+entry tool. The interface may then call its server tools. The host uses the
+official `@modelcontextprotocol/ext-apps` AppBridge for initialization, tool
+input/result notifications, resource reads/listing, scoped tool calls,
+cancellation, sizing, and teardown. A prior saved invocation supplies its
+actual input and model-visible result when the interface reopens. UI-only
+result `_meta` is delivered to the current interface and is not stored in
+Session history. Standard parameter forms remain available for supported
+tool input schemas.
+
+The host reserves `_meta["io.github.samkuler/live-smith-artifacts"]` in App
+results for `{ "version": 1, "artifacts": [...] }`. Its entries contain validated
+Session MIDI references and summaries. Server-supplied values at this key are
+replaced. Reopening rebuilds these references from saved history and the current
+Session artifact store. The host result controls display the entry tool's result;
+background App helper calls do not replace it. Other UI-only metadata is not
+restored from history.
+
+Views run in an opaque inner iframe behind a sandbox proxy on a separate
+loopback origin. The host enforces CSP from the resource's `_meta.ui.csp`.
+Supported domain entries are exact HTTPS origins and loopback HTTP origins;
+wildcards, WebSocket origins, browser permissions, model-context updates,
+chat messages, external-link requests, and downloads are not advertised.
+Bundle scripts and styles into the HTML when no external resources are needed.
+Images, media, and fonts may use local `data:` and `blob:` resources.
+The interface receives neither the chat bridge token nor connection credentials.
+Its RPC is restricted to its original server/connection and is revalidated before
+execution. Calls and results enter Session history. Closing cancels pending
+operations and releases the server connection; cancellation cannot undo effects
+already performed by a server. UI-local drafts are not automatically saved as
+Plugin configuration; persistent application data can be managed by server tools
+under `PLUGIN_DATA`.
+
+Build the offline Pattern Lab example, which uses the official App SDK and a
+deterministic local note generator:
+
+```sh
+npx tsx scripts/build-plugin-app-example.ts /private/tmp/live-smith-mcp-app.zip
+```
+
+Install the ZIP, enable the Plugin, approve its `fixture` MCP server and its
+**MIDI output** permission, then open its interface. The authored fixture includes matching portable, Codex, and
+Claude manifests; its UI exercises mode selection, parameter controls, scoped
+App-only tools, and saved MIDI results without a model or external service.
+
 ## Packaging
 
 ```sh

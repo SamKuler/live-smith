@@ -48,6 +48,8 @@ import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECON
 
 import { BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS } from "../plugins/builtins/index.js";
 import { MAX_INTEGRATION_CONNECTIONS } from "../plugins/integration-connections.js";
+import { MAX_PLUGIN_PARAMETER_FIELDS, MAX_PLUGIN_PARAMETER_TEXT } from "../plugins/parameter-panel.js";
+import { MAX_PLUGIN_CONFIG_FIELDS, MAX_PLUGIN_CONFIG_TEXT } from "../plugins/user-config.js";
 
 export interface ChatClientScripts {
   actionPreview: string;
@@ -60,6 +62,9 @@ export interface ChatClientScripts {
   markdownRenderer: string;
   profileEditor: string;
   pluginManager: string;
+  pluginParameters: string;
+  pluginUserConfig: string;
+  pluginApps: string;
   connectionsManager: string;
   sessionTimeline: string;
   skillManager: string;
@@ -251,8 +256,13 @@ export function composeChatDocument(
     __COMPOSER_INPUT_SCRIPT__: scripts.composerInput,
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
     __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
+    __PLUGIN_APPS_SCRIPT__: scripts.pluginApps,
     __CONNECTIONS_MANAGER_SCRIPT__: injectSessionContract(scripts.connectionsManager),
     __TOOLS_INSPECTOR_SCRIPT__: injectSessionContract(scripts.toolsInspector),
+    __PLUGIN_PARAMETERS_SCRIPT__: scripts.pluginParameters.replace("__PLUGIN_PARAMETER_LIMITS__", () => JSON.stringify({
+      fields: MAX_PLUGIN_PARAMETER_FIELDS, text: MAX_PLUGIN_PARAMETER_TEXT,
+    })),
+    __PLUGIN_USER_CONFIG_SCRIPT__: scripts.pluginUserConfig.replace("__PLUGIN_CONFIG_LIMITS__", () => JSON.stringify({ fields: MAX_PLUGIN_CONFIG_FIELDS, text: MAX_PLUGIN_CONFIG_TEXT })),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(scripts.sessionTimeline),

@@ -1,3 +1,4 @@
+import { importMidiArtifact } from "./midi-artifact-import.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { createHash } from "node:crypto";
 
@@ -71,6 +72,9 @@ import {
 } from "../skills/builtins.js";
 import { pluginSkillsFromPackages } from "../skills/plugin-package.js";
 import { installedPluginViews, previewPluginArchive } from "../plugins/view.js";
+import { PluginConfigError, PluginConfigConflictError } from "../plugins/user-config.js";
+import { createPluginAppSessions } from "./plugin-apps.js";
+import { ChatBridgeRequestValidationError } from "./chat-bridge-http.js";
 import { openPluginArchive, PluginArchiveError } from "../plugins/archive.js";
 import {
   createDirectApiBackend,
@@ -140,6 +144,7 @@ import {
   readEnabledPluginPackagesInTransaction,
   readInstalledPluginPackagesInTransaction,
   setPluginEnabledInTransaction,
+  savePluginConfigInTransaction,
   setPluginArtifactPermissionApprovedInTransaction,
   setPluginMcpServerApprovedInTransaction,
   PluginStorageCorruptionError,
@@ -274,6 +279,7 @@ import {
 } from "./agent-request.js";
 import { closeActiveMcpConnection, closeActivePluginConnections } from "./request-plugin-tools.js";
 import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session-tool-catalog.js";
+import { runPluginParameterTool } from "./plugin-parameter-tool.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { resolveConversationHistory } from "./attachment-context.js";
 import { createConversationCheckpoint } from "./context-compaction.js";
@@ -2462,6 +2468,65 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (commandInput.kind === "import_midi_artifact") {
+      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) throw new ChatBridgeConflictError("Choose an idle active Session before importing MIDI.");
+      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
+        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before MIDI import.");
+        const session = (await listSessions(storageDirectory, projectKey)).find((entry) =>
+          entry.id === commandInput.sessionId && !entry.archivedAt);
+        if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        const sessionInteraction = resolveSessionInteraction(session);
+        if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
+        try {
+          await commandContext.progress(uiMessage("Preparing MIDI import…"));
+          const applied = await importMidiArtifact({
+            ...commandInput, context, storageDirectory, projectKey, interaction: sessionInteraction,
+            signal, mutationQueue: liveMutationQueue,
+            confirm: (plan, guard) => decidePlanApproval(storageDirectory, session.id, plan, async () => {
+              if (!commandContext.requestConfirmation) throw new Error("MIDI import confirmation is unavailable.");
+              return commandContext.requestConfirmation({ kind: "apply", message: plan.message,
+                groups: actionDiffGroups(plan.actions, plan.targets),
+                ...(guard.previews === undefined ? {} : { previews: guard.previews }),
+              });
+            }),
+          });
+          status = uiMessage(applied ? "MIDI imported into Live." : "MIDI import cancelled.");
+        } finally {
+          notifySessionStateChanged(session.id);
+        }
+        return buildStateAfterCommandMutation(undefined, { heldSessionId: session.id, sessionMutationHeld: true });
+      });
+    }
+
+    if (commandInput.kind === "run_plugin_tool") {
+      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) throw new ChatBridgeConflictError("Choose an idle active Session before running a Plugin tool.");
+      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
+        const session = (await listSessions(storageDirectory, projectKey)).find((entry) =>
+          entry.id === commandInput.sessionId && !entry.archivedAt);
+        if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        try {
+          await commandContext.progress(uiMessage("Running Plugin tool…"));
+          const result = await runPluginParameterTool({
+            ...commandInput, storageDirectory, signal, fetchImpl: providerFetch,
+            withPluginAuthorization: (authorizationSignal, operation) => requestConfigurationFence.run(
+              requestConfigurationFenceKey, authorizationSignal, operation,
+            ),
+          });
+          status = uiMessage(result.failed ? "The Plugin tool reported a failure. Review its result before retrying." : "Plugin tool completed.");
+        } finally {
+          loadedSessionToolCatalog = undefined;
+          notifySessionStateChanged(session.id);
+        }
+        return buildStateAfterCommandMutation(undefined, {
+          heldSessionId: session.id, sessionMutationHeld: true,
+        });
+      });
+    }
+
     if (commandInput.kind === "load_session_tools") {
       if (sessionMutationFence.hasQueuedOrActive(
         sessionMutationFenceKey(storageDirectory, commandInput.sessionId),
@@ -3177,6 +3242,24 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (commandInput.kind === "set_plugin_user_config") {
+      try {
+        await requestConfigurationFence.run(requestConfigurationFenceKey, signal, async () => {
+          await withStorageTransaction(storageDirectory, (transaction) =>
+            savePluginConfigInTransaction(transaction, storageDirectory, commandInput));
+          await closeActivePluginConnections(storageDirectory, commandInput.pluginId);
+        });
+      } catch (error) {
+        if (error instanceof PluginConfigConflictError) throw new ChatBridgeConflictError(error.message);
+        if (error instanceof PluginConfigError) throw new ChatBridgeRequestValidationError(error.message);
+        if (isStorageCommitOutcomeUnknownError(error)) notifyGlobalStateChanged();
+        throw error;
+      }
+      notifyGlobalStateChanged();
+      status = uiMessage("Plugin parameters saved.");
+      return buildStateAfterCommandMutation();
+    }
+
     if (
       commandInput.kind === "set_plugin_enabled" ||
       commandInput.kind === "set_plugin_mcp_server_approved" ||
@@ -3280,6 +3363,7 @@ export async function runAgentFlow(
           },
         );
       } catch (error) {
+        if (error instanceof PluginConfigError) throw new ChatBridgeRequestValidationError(error.message);
         if (error instanceof PluginStorageCorruptionError) {
           throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
         }
@@ -4545,7 +4629,30 @@ export async function runAgentFlow(
       },
     );
     await reconcileStartupSessionOrphans();
+    const pluginApps = createPluginAppSessions({
+      storageDirectory, fetchImpl: providerFetch,
+      withAuthorization: (signal, operation) => requestConfigurationFence.run(requestConfigurationFenceKey, signal, operation),
+      validateSession: async (sessionId, signal) => {
+        throwIfAborted(signal);
+        if (sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the Plugin app's active Session first.");
+        const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId && !entry.archivedAt);
+        if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+      },
+      mutateSession: (sessionId, signal, operation) => {
+        if (sessionMutationFence.hasQueuedOrActive(sessionMutationFenceKey(storageDirectory, sessionId), "send")) {
+          throw new ChatBridgeConflictError("Wait for this Session's current operation before using the Plugin app.");
+        }
+        return withNamedSessionMutation(sessionId, "send", signal, operation);
+      },
+      sessionChanged: (sessionId) => {
+        loadedSessionToolCatalog = undefined;
+        notifySessionStateChanged(sessionId);
+        bridge?.publishSessionStateInvalidation(sessionId);
+      },
+    });
     bridge = await createChatBridge({
+      handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
+      closePluginApps: () => pluginApps.close(),
       readAudioAsset: async (sessionId, assetId, signal) => {
         const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);
         if (!session) throw new ChatBridgeResourceNotFoundError("Audio Session is unavailable in this Live Set.");

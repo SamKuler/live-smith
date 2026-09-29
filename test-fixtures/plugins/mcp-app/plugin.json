@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fixture.mcp-app",
+  "version": "1.0.0",
+  "description": "An offline MCP Apps note-pattern workbench",
+  "extensions": {
+    "io.github.samkuler.live-smith": {
+      "userConfig": {
+        "style": {
+          "type": "string",
+          "title": "Default style",
+          "description": "Initial style for the pattern workbench.",
+          "options": [
+            "ambient",
+            "jazz"
+          ],
+          "default": "ambient"
+        },
+        "default_bars": {
+          "type": "number",
+          "title": "Default pattern length",
+          "description": "Default generated bars, rounded to a whole bar.",
+          "min": 1,
+          "max": 8,
+          "default": 4
+        }
+      }
+    }
+  }
+}

@@ -143,6 +143,7 @@
           const confirmation = activeAppConfirmation;
           if (!confirmation) return;
           activeAppConfirmation = null;
+          confirmation.signal?.removeEventListener("abort", confirmation.cancel);
           document.getElementById("appConfirmation").hidden = true;
           document.querySelector(".app").removeAttribute("inert");
           confirmation.resolve(accepted);
@@ -153,13 +154,28 @@
 
         function renderAppConfirmation() {
           if (!activeAppConfirmation) return;
-          const { title, message, acceptLabel, danger } = activeAppConfirmation;
+          const { title, message, acceptLabel, danger, groups, previews } = activeAppConfirmation;
           document.getElementById("appConfirmationTitle").textContent = i18n.text(title);
           document.getElementById("appConfirmationMessage").textContent = i18n.text(message);
           const acceptButton = document.getElementById("appConfirmationAccept");
           acceptButton.textContent = i18n.text(acceptLabel);
           acceptButton.classList.toggle("stop", danger);
           document.getElementById("appConfirmationCancel").textContent = t("Cancel");
+          const details = document.getElementById("appConfirmationDetails");
+          details.replaceChildren();
+          for (const preview of previews || []) details.append(actionPreview.render(preview));
+          for (const group of groups || []) {
+            const heading = document.createElement("h3");
+            heading.textContent = i18n.text(group.title);
+            const list = document.createElement("ul");
+            for (const row of group.rows) {
+              const item = document.createElement("li");
+              item.textContent = i18n.text(row);
+              list.append(item);
+            }
+            details.append(heading, list);
+          }
+          details.hidden = !details.childElementCount;
         }
 
         function confirmAction({
@@ -167,14 +183,19 @@
           message,
           acceptLabel = i18n.message("Continue"),
           danger = false,
+          groups,
+          previews,
+          signal,
         }) {
-          if (activeAppConfirmation) return Promise.resolve(false);
+          if (activeAppConfirmation || signal?.aborted) return Promise.resolve(false);
           const layer = document.getElementById("appConfirmation");
           const returnFocus = document.activeElement;
           document.querySelector(".app").setAttribute("inert", "");
           layer.hidden = false;
           return new Promise((resolve) => {
-            activeAppConfirmation = { resolve, returnFocus, title, message, acceptLabel, danger };
+            const cancel = () => finishAppConfirmation(false);
+            activeAppConfirmation = { resolve, returnFocus, title, message, acceptLabel, danger, groups, previews, signal, cancel };
+            signal?.addEventListener("abort", cancel, { once: true });
             renderAppConfirmation();
             document.getElementById("appConfirmationCancel").focus({ preventScroll: true });
           });
@@ -227,6 +248,8 @@
         });
         try {
           bridgeClient = factories.createBridgeClient({
+            isPluginParameterPanel: factories.isPluginParameterPanel,
+            isPluginConfigView: factories.isPluginConfigView,
             bridgeConfig,
             closeComposerAutocomplete: composerInput.closeAutocomplete,
             confirmAction,
@@ -278,7 +301,43 @@
           selectAudioConnection: bridgeClient.handleAudioServiceSelection,
         });
 
+        const pluginResults = factories.createPluginResults({
+          getState,
+          useInChat: async (text) => {
+            const sessionId = getState().activeSessionId;
+            try { await pluginApps.close(); }
+            catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return; }
+            if (getState().activeSessionId !== sessionId) return;
+            const prompt = document.getElementById("prompt");
+            prompt.value = [prompt.value.trimEnd(), text].filter(Boolean).join("\n\n");
+            prompt.dispatchEvent(new Event("input", { bubbles: true }));
+            prompt.focus();
+          },
+          importMidi: async (input) => {
+            try { await pluginApps.close(); }
+            catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return false; }
+            if (getState().activeSessionId !== input.sessionId) return false;
+            let known = false;
+            const completed = await bridgeClient.runCommand("import_midi_artifact", input, {
+              cancellable: true, onOutcome: (outcome) => { known = outcome.known; },
+            });
+            return completed && known;
+          },
+        });
+        const pluginApps = factories.createPluginApps({
+          resultActions: pluginResults,
+          getState,
+          openApp: (input) => bridgeClient.requestPluginApp("open", input),
+          callTool: (input, signal) => bridgeClient.requestPluginApp("call", input, signal),
+          readResource: (input, signal) => bridgeClient.requestPluginApp("resource", input, signal),
+          listResources: (input, templates, signal) => bridgeClient.requestPluginApp(templates ? "resource-templates" : "resources", input, signal),
+          closeApp: (id) => bridgeClient.requestPluginApp("close", { id }),
+        });
+        window.addEventListener("pagehide", () => { void pluginApps.close(); });
+        const pluginUserConfig = factories.createPluginUserConfigPanels({ getState, runCommand: bridgeClient.runCommand });
         const pluginManager = factories.createPluginManager({
+          pluginUserConfig,
+          pluginApps,
           confirmAction,
           getState,
           inspectPlugin: bridgeClient.inspectPlugin,
@@ -286,9 +345,9 @@
           openPlugin: (pluginId) => openInspectorSection("extensions", `installedPlugin-${pluginId}`),
           openMcpServers: (pluginId) => openInspectorSection("extensions", `pluginMcpSource-${pluginId}`),
           openSkills: (pluginId) => openInspectorSection("extensions", `pluginSkillSource-${pluginId}`),
-          openConnections: (pluginId, serverId) => {
+          openConnections: (pluginId, serverId, addNew, connectionId) => {
             openInspectorSection("extensions", "mcpSettings");
-            connectionsManager.openPluginConnections(pluginId, serverId);
+            connectionsManager.openPluginConnections(pluginId, serverId, addNew, connectionId);
           },
           runCommand: bridgeClient.runCommand,
         });
@@ -326,10 +385,16 @@
         });
 
         const toolsInspector = factories.createToolsInspector({
+          pluginApps,
+          resultActions: pluginResults,
           getState,
           getCatalogOwner: bridgeClient.getSessionToolCatalogOwner,
-          loadCatalog: bridgeClient.loadSessionTools,
+          loadCatalog: async (signal) => {
+            try { return await bridgeClient.loadSessionTools(signal); }
+            finally { pluginManager.render(); }
+          },
           humanizeToolName: sessionTimeline.humanizeToolName,
+          runCommand: bridgeClient.runCommand,
         });
 
         function renderStateStatus() {
@@ -1220,6 +1285,7 @@
           attachments.renderPending();
           skillManager.render();
           pluginManager.render();
+          pluginApps.sync();
           toolsInspector.render();
           renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
@@ -1362,6 +1428,9 @@
           },
           load_session_tools: {
             status: t("Loading tool descriptions…"),
+          },
+          run_plugin_tool: {
+            status: t("Running Plugin tool…"),
           },
           start_oauth_login: {
             controlId: "oauthSignInButton",
@@ -1625,6 +1694,8 @@
           pluginManager.setBusy(skillsBusy);
           connectionsManager.setBusy(skillsBusy);
           toolsInspector.setBusy(operationBusy);
+          pluginApps.setBusy(operationBusy);
+          pluginResults.setBusy(operationBusy);
 
           if (
             !settingsBusy &&

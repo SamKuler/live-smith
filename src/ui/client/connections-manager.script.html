@@ -31,14 +31,8 @@
           status.classList.toggle("error", Boolean(isError));
         }
 
-        function closeSourcePicker() {
-          document.getElementById("connectionSourcePicker").hidden = true;
-          document.getElementById("addConnectionButton").setAttribute("aria-expanded", "false");
-        }
-
         function showAudio(action) {
           clearSecrets();
-          closeSourcePicker();
           openSection("audio");
           action();
           render(true);
@@ -52,7 +46,6 @@
         function openEditor(next) {
           if (busy || saving) return;
           clearAudioSecrets();
-          closeSourcePicker();
           openSection("mcp");
           draft = {
             id: next.saved?.id || (window.crypto?.randomUUID?.() || `mcp-${Date.now()}-${Math.random().toString(16).slice(2)}`),
@@ -85,11 +78,12 @@
           return { plugin, server: plugin?.mcpServers.find((entry) => entry.id === current.serverId) };
         }
 
-        function openPluginConnections(pluginId, serverId) {
+        function openPluginConnections(pluginId, serverId, addNew = false, connectionId) {
           const plugin = plugins().find((entry) => entry.id === pluginId);
           const server = plugin?.mcpServers.find((entry) => entry.id === serverId);
           if (!server) return;
-          const saved = connections().find((entry) => entry.pluginId === pluginId && entry.configuration?.serverId === serverId);
+          const saved = addNew ? undefined : connections().find((entry) => entry.pluginId === pluginId && entry.configuration?.serverId === serverId && (!connectionId || entry.id === connectionId));
+          if (!saved && connections().length >= __MAX_INTEGRATION_CONNECTIONS__) return;
           openPlugin(plugin, server, saved);
         }
 
@@ -334,9 +328,11 @@
           const unavailable = current.kind === "plugin" && !server;
           const form = document.createElement("form");
           form.className = "plugin-connection-editor";
-          const heading = document.createElement("h4");
-          heading.textContent = current.kind === "standalone" ? t("MCP server") : `${current.pluginId} · ${current.serverId}`;
-          form.append(heading);
+          form.setAttribute("aria-label", t("Connection settings"));
+          if (current.kind === "plugin") {
+            const source = hint(form, t("Plugin: {pluginId}", { pluginId: current.pluginId }) + ` · ${current.serverId}`);
+            source.classList.add("connection-editor-source");
+          }
           form.addEventListener("submit", (event) => { event.preventDefault(); void save(); });
           const nameInput = textField(form, "Connection name", "connectionName", current.name, (value) => { current.name = value; }, { required: true, maxLength: 120 });
           nameInput.disabled = unavailable;
@@ -600,23 +596,12 @@
           renderRows(document.getElementById("audioServiceSelector"), audioRows);
           renderRows(document.getElementById("mcpConnectionList"), mcpRows);
           document.getElementById("audioConnectionsEmpty").hidden = Boolean(audioRows.length);
-          document.getElementById("connectionsEmpty").hidden = Boolean(mcpRows.length);
+          document.getElementById("connectionsEmpty").hidden = Boolean(mcpRows.length || draft);
           document.getElementById("audioSettingsSection").hidden = !audioRows.length;
           const full = rows.length >= __MAX_INTEGRATION_CONNECTIONS__;
-          for (const id of ["addConnectionButton", "addAudioServiceButton", "addMcpConnectionButton"]) {
+          for (const id of ["addConnectionButton", "addAudioServiceButton"]) {
             document.getElementById(id).disabled = busy || saving || full;
           }
-          const sources = document.getElementById("pluginConnectionSources");
-          sources.replaceChildren();
-          for (const plugin of plugins()) for (const server of plugin.mcpServers) {
-            if (!server.credentialFields.length) continue;
-            const add = button(`${plugin.id} · ${server.id}`, "secondary plugin-add-connection", () => openPlugin(plugin, server));
-            add.dataset.pluginId = plugin.id;
-            add.dataset.serverId = server.id;
-            add.disabled = busy || saving || full;
-            sources.append(add);
-          }
-          sources.hidden = !sources.childElementCount;
           renderEditor();
         }
 
@@ -628,13 +613,7 @@
           openPluginConnections,
           setBusy(value) { if (busy !== value) { busy = value; render(true); } },
           initialize() {
-            document.getElementById("addConnectionButton").addEventListener("click", () => {
-              const picker = document.getElementById("connectionSourcePicker");
-              picker.hidden = !picker.hidden;
-              document.getElementById("addConnectionButton").setAttribute("aria-expanded", String(!picker.hidden));
-              if (!picker.hidden) document.getElementById("addMcpConnectionButton").focus();
-            });
-            document.getElementById("addMcpConnectionButton").addEventListener("click", () => openStandalone());
+            document.getElementById("addConnectionButton").addEventListener("click", () => openStandalone());
           },
         };
       };

@@ -327,6 +327,7 @@ export async function handleAgentRequest(
   });
   const pluginTools = await createRequestPluginTools({
     storageDirectory,
+    pluginConfigSnapshots: prepared.skillContext.pluginConfigSnapshots ?? {},
     ...(context.environment?.tempDirectory === undefined
       ? {}
       : { temporaryDirectory: context.environment.tempDirectory }),

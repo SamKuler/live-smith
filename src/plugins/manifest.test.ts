@@ -77,7 +77,7 @@ test("unsupported platform components are preserved as inert compatibility facts
       description: "Fixture tools",
       commands: "./commands",
       lspServers: { typescript: {} },
-      userConfig: { token: "prompt" },
+      userConfig: { token: { type: "string", title: "Token", description: "Service token", sensitive: true } },
     }),
     { path: "commands/convert.md", bytes: Buffer.from("Convert") },
     file("hooks/hooks.json", { hooks: {} }),
@@ -88,7 +88,6 @@ test("unsupported platform components are preserved as inert compatibility facts
     "commands",
     "hooks",
     "lspServers",
-    "userConfig",
   ]);
 
   const portable = parsePluginPackageManifest([file("plugin.json", {
@@ -153,13 +152,13 @@ test("manifest paths and identities cannot escape their package", () => {
   })]).version, "1.2.3-beta.1+build.7");
 });
 
-test("manifest discovery rejects duplicate normalized paths and ambiguous compatibility roots", () => {
+test("manifest discovery rejects duplicate normalized paths and conflicting compatibility identities", () => {
   assert.throws(() => parsePluginPackageManifest([
     file("plugin.json", { name: "fixture", version: "1.0.0", description: "Fixture" }),
     file("./plugin.json", { name: "fixture", version: "1.0.0", description: "Fixture" }),
   ]), /duplicate/u);
   assert.throws(() => parsePluginPackageManifest([
     file(".codex-plugin/plugin.json", { name: "fixture", version: "1.0.0", description: "Fixture" }),
-    file(".claude-plugin/plugin.json", { name: "fixture", version: "1.0.0", description: "Fixture" }),
-  ]), /ambiguous/u);
+    file(".claude-plugin/plugin.json", { name: "different", version: "1.0.0", description: "Fixture" }),
+  ]), /identity/u);
 });

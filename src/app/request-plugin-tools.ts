@@ -2,7 +2,8 @@ import { ToolRegistry, type Toolset } from "../plugins/registry.js";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentExternalToolResult } from "../agent/loop.js";
 import type { ModelToolCall } from "../model/contracts.js";
-import type { McpToolSource, PluginToolDefinition, PluginToolIssue } from "../plugins/contracts.js";
+import type { McpToolSource, PluginToolDefinition, PluginToolIssue, PluginToolResult } from "../plugins/contracts.js";
+import { appVisibility, pluginAppDescriptor, type PluginAppDescriptor } from "../plugins/mcp/apps.js";
 import { createMcpPluginPackage, createStandaloneMcpConnection } from "../plugins/mcp/package.js";
 import { pluginMcpConfigFromArchive, PluginMcpConfigError } from "../plugins/mcp/config.js";
 import { mcpCredentialFields } from "../plugins/mcp/credentials.js";
@@ -13,24 +14,37 @@ import {
   type StandaloneMcpConnection,
 } from "../plugins/integration-connections.js";
 import { loadAgentSettings } from "../storage/settings.js";
-import { callPluginToolWithArtifacts } from "../plugins/artifacts.js";
+import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY } from "../plugins/artifacts.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { inspectMidiArtifacts, type MidiArtifact } from "../storage/midi-artifacts.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../storage/scope.js";
+import { pluginParameterPanel, type PluginParameterPanel } from "../plugins/parameter-panel.js";
 import {
   listInstalledPlugins,
   preparePluginRuntime,
+  readPluginConfig,
   type InstalledPlugin,
   type PreparedPluginRuntime,
 } from "../storage/plugins.js";
 
+export interface RequestPluginToolResult extends AgentExternalToolResult {
+  outcomeUnknown?: boolean;
+}
+
 export interface RequestPluginTools extends Toolset {
+  callTool(call: ModelToolCall): Promise<RequestPluginToolResult>;
   toolsets: readonly Toolset[];
   catalogTools(): readonly RequestPluginCatalogTool[];
   issues: readonly PluginToolIssue[];
   unavailableMidiArtifacts: number;
   midiArtifacts(): readonly MidiArtifact[];
   close(): Promise<void>;
+  appTool(owner: string, name: string): PluginToolDefinition;
+  readAppResource(owner: string, uri: string, signal: AbortSignal): Promise<unknown>;
+  listAppResources(owner: string, templates: boolean, cursor: string | undefined, signal: AbortSignal): Promise<unknown>;
+  callAppTool(owner: string, name: string, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<{
+    result: PluginToolResult; history: RequestPluginToolResult;
+  }>;
 }
 
 export interface RequestPluginCatalogTool {
@@ -40,6 +54,8 @@ export interface RequestPluginCatalogTool {
   connectionName?: string;
   name: string;
   description: string;
+  panel?: PluginParameterPanel;
+  app?: PluginAppDescriptor;
 }
 
 export type PluginExecutionAuthorization = <T>(
@@ -57,6 +73,7 @@ interface ManagedMcpSource {
 type McpRoute = {
   definition: PluginToolDefinition;
   managed: ManagedMcpSource;
+  configurationRevision: string;
 } & ({
   runtime: PreparedPluginRuntime;
   connection?: PluginIntegrationConnection;
@@ -134,6 +151,7 @@ export async function createRequestPluginTools(input: {
   withAuthorization?: PluginExecutionAuthorization;
   createPackage?: typeof createMcpPluginPackage;
   createStandaloneConnection?: typeof createStandaloneMcpConnection;
+  pluginConfigSnapshots?: Readonly<Record<string, { sha256: string; revision: string }>>;
 }): Promise<RequestPluginTools> {
   const packages: ManagedMcpSource[] = [];
   const toolsets: Toolset[] = [];
@@ -158,12 +176,17 @@ export async function createRequestPluginTools(input: {
         try {
           const admit = async () => {
             const runtime = await preparePluginRuntime(input.storageDirectory, metadata.id);
+            if (input.pluginConfigSnapshots && (input.pluginConfigSnapshots[metadata.id]?.revision !== (runtime.userConfig?.revision ?? "0") ||
+                input.pluginConfigSnapshots[metadata.id]?.sha256 !== runtime.plugin.sha256)) {
+              throw new Error("Plugin parameters changed after request admission.");
+            }
             let config;
             try { config = pluginMcpConfigFromArchive(runtime.archive); }
             catch (error) {
               if (!(error instanceof PluginMcpConfigError)) throw error;
             }
-            const connections = (await loadAgentSettings(input.storageDirectory)).integrationConnections?.connections
+            const settings = await loadAgentSettings(input.storageDirectory);
+            const connections = settings.integrationConnections?.connections
               .filter(isPluginIntegrationConnection)
               .filter((connection) => connection.enabled && connection.pluginId === metadata.id &&
                 connection.configuration.pluginDigest === runtime.plugin.sha256) ?? [];
@@ -186,7 +209,7 @@ export async function createRequestPluginTools(input: {
                   code: "invalid_configuration", message: "MCP server requires an enabled named connection." });
               }
             }
-            return { runtime, selections: selections.map((selection) => {
+            return { runtime, configurationRevision: settings.integrationConnections?.revision ?? "0", selections: selections.map((selection) => {
               const plugin = (input.createPackage ?? createMcpPluginPackage)(runtime, {
                 ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
                 serverIds: selection.serverIds,
@@ -237,14 +260,14 @@ export async function createRequestPluginTools(input: {
                 });
                 continue;
               }
-              routes.set(callName, { definition, managed, runtime,
+              routes.set(callName, { definition, managed, runtime, configurationRevision: admitted.configurationRevision,
                 ...(connection ? { connection } : {}) });
             }
           }
           catalogRoutes.push(routes);
           toolsets.push({
             id: admission.id,
-            tools: () => [...routes.values()].map(({ definition }) => definition.tool),
+            tools: () => [...routes.values()].filter(({ definition }) => appVisibility(definition.app, "model")).map(({ definition }) => definition.tool),
             callTool: (call) => callMcpTool(
               routes,
               call,
@@ -263,7 +286,8 @@ export async function createRequestPluginTools(input: {
           });
         }
       }
-      const connections = (await loadAgentSettings(input.storageDirectory)).integrationConnections?.connections
+      const settings = await loadAgentSettings(input.storageDirectory);
+      const connections = settings.integrationConnections?.connections
         .filter(isStandaloneMcpConnection).filter((connection) => connection.enabled) ?? [];
       for (const connection of connections) {
         throwIfAborted(input.signal);
@@ -299,12 +323,12 @@ export async function createRequestPluginTools(input: {
                 code: "invalid_tool", message: "MCP tool identity conflicts with another tool." });
               continue;
             }
-            routes.set(callName, { definition, managed, connection });
+            routes.set(callName, { definition, managed, connection, configurationRevision: settings.integrationConnections?.revision ?? "0" });
           }
           catalogRoutes.push(routes);
           toolsets.push({
             id: `mcp:${connection.id}`,
-            tools: () => [...routes.values()].map(({ definition }) => definition.tool),
+            tools: () => [...routes.values()].filter(({ definition }) => appVisibility(definition.app, "model")).map(({ definition }) => definition.tool),
             callTool: (call) => callMcpTool(routes, call, input, midiArtifacts),
             close: () => managed!.close(),
           });
@@ -320,21 +344,79 @@ export async function createRequestPluginTools(input: {
       toolsets.unshift(sessionArtifactToolset(input, midiArtifacts));
     }
     const registry = new ToolRegistry(toolsets);
+    const allRoutes = new Map(catalogRoutes.flatMap((routes) => [...routes]));
+    const appRoute = (owner: string, name?: string): McpRoute => {
+      const source = allRoutes.get(owner);
+      if (!source?.definition.app?.resourceUri) throw new Error("Plugin app is unavailable.");
+      if (name === undefined) return source;
+      const target = [...allRoutes.values()].find((route) => route.managed === source.managed &&
+        route.definition.serverId === source.definition.serverId && route.definition.name === name);
+      if (!target || !appVisibility(target.definition.app, "app")) throw new Error("Tool is not available to this Plugin app.");
+      return target;
+    };
+    const withAppResourceRoute = <T>(owner: string, signal: AbortSignal, operation: (route: McpRoute) => Promise<T>): Promise<T> => {
+      const route = appRoute(owner);
+      if (!input.withAuthorization) throw new Error("Plugin resources are unavailable.");
+      return input.withAuthorization(signal, async () => {
+        if (route.runtime) await assertPluginAdmission(input.storageDirectory, route.runtime.plugin, route.definition,
+          route.connection as PluginIntegrationConnection | undefined, route.runtime.userConfig?.revision ?? "0");
+        else await assertStandaloneAdmission(input.storageDirectory, route.connection as StandaloneMcpConnection);
+        return operation(route);
+      });
+    };
     return {
       id: "live-smith.mcp",
       toolsets,
-      catalogTools: () => catalogRoutes.flatMap((routes) => [...routes.values()].map(({ definition, connection }) => ({
-        ...(definition.pluginId === undefined ? {} : { pluginId: definition.pluginId }),
-        serverId: definition.serverId,
-        ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}),
-        name: definition.name,
-        description: definition.description,
-      }))),
+      catalogTools: () => catalogRoutes.flatMap((routes) => [...routes.values()].filter(({ definition }) =>
+        appVisibility(definition.app, "model") || definition.app?.resourceUri).map(({ definition, connection, runtime, configurationRevision }) => {
+        const identity = {
+          packageDigest: runtime?.plugin.sha256,
+          connectionId: connection?.id,
+          configuration: connection?.configuration ?? connection?.mcp,
+          configurationRevision,
+          pluginConfigRevision: runtime?.userConfig?.revision ?? "0",
+          description: definition.description,
+          artifactContract: definition.artifactContract,
+          parameters: definition.tool.function.parameters,
+        };
+        const panel = appVisibility(definition.app, "model")
+          ? pluginParameterPanel(definition.tool.function.name, definition.tool.function.parameters, identity) : undefined;
+        const app = pluginAppDescriptor(definition.app, definition.tool.function.name, identity);
+        return {
+          ...(definition.pluginId === undefined ? {} : { pluginId: definition.pluginId }),
+          serverId: definition.serverId,
+          ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}),
+          name: definition.name,
+          description: definition.description,
+          ...(panel ? { panel } : {}),
+          ...(app ? { app } : {}),
+        };
+      })),
       issues,
       unavailableMidiArtifacts: artifactListing.unavailableCount,
       midiArtifacts: () => [...midiArtifacts.values()].map((artifact) => ({ ...artifact })),
       tools: () => registry.tools(),
       callTool: (call) => registry.callTool(call),
+      appTool: (owner, name) => appRoute(owner, name).definition,
+      async readAppResource(owner, uri, signal) {
+        return withAppResourceRoute(owner, signal, async (route) => {
+          if (!route.managed.source.readResource) throw new Error("Plugin resources are unavailable.");
+          return route.managed.source.readResource!(route.definition.serverId, uri, { sessionId: input.sessionId, signal });
+        });
+      },
+      async listAppResources(owner, templates, cursor, signal) {
+        return withAppResourceRoute(owner, signal, async (route) => {
+          if (!route.managed.source.listResources) throw new Error("Plugin resources are unavailable.");
+          return route.managed.source.listResources(route.definition.serverId, templates, cursor, { sessionId: input.sessionId, signal });
+        });
+      },
+      async callAppTool(owner, name, argumentsValue, signal) {
+        const route = appRoute(owner, name);
+        let result: PluginToolResult | undefined;
+        const history = await callMcpTool(allRoutes, { id: "plugin-app", name: route.definition.tool.function.name,
+          arguments: JSON.stringify(argumentsValue) }, { ...input, signal }, midiArtifacts, (value) => { result = value; });
+        return { history, result: result ?? { content: [{ type: "text", text: history.content }], isError: true } };
+      },
       async close() {
         await Promise.allSettled(packages.map((plugin) => plugin.close()));
       },
@@ -356,7 +438,8 @@ async function callMcpTool(
     withAuthorization?: PluginExecutionAuthorization;
   },
   midiArtifacts: Map<string, MidiArtifact>,
-): Promise<AgentExternalToolResult> {
+  onAppResult?: (result: PluginToolResult) => void,
+): Promise<RequestPluginToolResult> {
   const route = routes.get(call.name);
   if (!route) return { content: "MCP tool is unavailable.", failed: true, invalidArguments: true };
   const { managed, definition, runtime, connection } = route;
@@ -366,17 +449,19 @@ async function callMcpTool(
   } catch {
     return { content: "MCP tool arguments are not valid JSON.", failed: true, invalidArguments: true };
   }
+  let invoked = false;
   try {
     if (!input.withAuthorization) throw new Error("MCP execution authorization is unavailable.");
     const execution = await input.withAuthorization(input.signal, async () => {
       try {
-        if (runtime) await assertPluginAdmission(input.storageDirectory, runtime.plugin, definition, connection);
+        if (runtime) await assertPluginAdmission(input.storageDirectory, runtime.plugin, definition, connection, runtime.userConfig?.revision ?? "0");
         else await assertStandaloneAdmission(input.storageDirectory, connection);
       } catch (error) {
         await managed.close();
         throw error;
       }
       if (!definition.artifactContract) {
+        invoked = true;
         return {
           result: await managed.source.callTool(
             definition.serverId,
@@ -398,19 +483,24 @@ async function callMcpTool(
         toolName: definition.name,
         signal: input.signal,
         forbiddenPaths: [input.storageDirectory ?? "", ...(runtime ? [runtime.pluginRoot, runtime.pluginData] : [])],
-        call: (stagedArguments) => managed.source.callTool(
-          definition.serverId,
-          definition.name,
-          stagedArguments,
-          { sessionId: input.sessionId, signal: input.signal },
-        ),
+        call: (stagedArguments) => {
+          invoked = true;
+          return managed.source.callTool(
+            definition.serverId,
+            definition.name,
+            stagedArguments,
+            { sessionId: input.sessionId, signal: input.signal },
+          );
+        },
       });
     });
     for (const artifact of execution.artifacts) midiArtifacts.set(artifact.id, artifact);
+    onAppResult?.(appToolResultWithArtifacts(execution.result, execution.artifacts));
     return {
       content: JSON.stringify({
         notice: runtime ? "Untrusted Plugin tool result." : "Untrusted MCP tool result.",
         content: execution.result.content,
+        ...(execution.result.isError ? { isError: true } : {}),
         ...(execution.result.structuredContent === undefined ? {} : {
           structuredContent: execution.result.structuredContent,
         }),
@@ -423,7 +513,10 @@ async function callMcpTool(
   } catch {
     throwIfAborted(input.signal);
     return {
-      content: "MCP tool could not complete. Check the connection and server status before retrying.",
+      content: invoked
+        ? "The MCP tool did not return a confirmed result. Check the server state and Session artifacts before retrying."
+        : "MCP tool could not start. Check the connection and server status before retrying.",
+      ...(invoked ? { outcomeUnknown: true } : {}),
       failed: true,
       stop: true,
     };
@@ -477,6 +570,7 @@ async function assertPluginAdmission(
   expected: InstalledPlugin,
   route: PluginToolDefinition,
   connection?: PluginIntegrationConnection,
+  configRevision = "0",
 ): Promise<void> {
   const current = (await listInstalledPlugins(storageDirectory)).find((plugin) => plugin.id === expected.id);
   if (!current || !current.enabled || current.sha256 !== expected.sha256 ||
@@ -495,6 +589,9 @@ async function assertPluginAdmission(
       throw new Error("MCP Integration Connection changed before tool execution.");
     }
   }
+  if ((await readPluginConfig(storageDirectory, expected.id)).revision !== configRevision) {
+    throw new Error("Plugin parameters changed before tool execution.");
+  }
 }
 
 async function assertStandaloneAdmission(
@@ -506,6 +603,13 @@ async function assertStandaloneAdmission(
   if (!saved?.enabled || !isStandaloneMcpConnection(saved) || !isDeepStrictEqual(saved, expected)) {
     throw new Error("MCP Connection changed before tool execution.");
   }
+}
+
+/** Replaces the reserved result extension with artifacts validated and owned by this host. */
+export function appToolResultWithArtifacts(result: PluginToolResult, artifacts: readonly MidiArtifact[]): PluginToolResult {
+  return { ...result, _meta: { ...result._meta,
+    [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, artifacts: artifacts.map(midiArtifactView) },
+  } };
 }
 
 function midiArtifactView(artifact: MidiArtifact) {

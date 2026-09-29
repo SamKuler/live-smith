@@ -1,4 +1,6 @@
 import type { ModelFunctionTool } from "../model/provider.js";
+import type { PluginConfigField } from "./user-config.js";
+import type { PluginAppMetadata } from "./mcp/apps.js";
 
 export type PluginId = string;
 export type PluginSourceFormat = "agent-plugins-1.0" | "codex" | "claude";
@@ -22,6 +24,7 @@ export interface PluginManifest {
   sourceFormat: PluginSourceFormat;
   components: PluginComponents;
   unsupportedComponents?: string[];
+  userConfig?: PluginConfigField[];
 }
 
 export interface PluginToolDefinition {
@@ -32,6 +35,7 @@ export interface PluginToolDefinition {
   description: string;
   tool: ModelFunctionTool;
   artifactContract?: PluginArtifactToolContract;
+  app?: PluginAppMetadata;
 }
 
 export interface PluginArtifactToolContract {
@@ -43,6 +47,7 @@ export interface PluginToolResult {
   content: readonly unknown[];
   structuredContent?: unknown;
   isError?: boolean;
+  _meta?: Record<string, unknown>;
 }
 
 export interface PluginToolIssue {
@@ -67,6 +72,8 @@ export interface PluginToolContext {
 export interface McpToolSource {
   tools(context: PluginToolContext): Promise<PluginToolsResult>;
   callTool(serverId: string, name: string, argumentsValue: unknown, context: PluginToolContext): Promise<PluginToolResult>;
+  readResource?(serverId: string, uri: string, context: PluginToolContext): Promise<unknown>;
+  listResources?(serverId: string, templates: boolean, cursor: string | undefined, context: PluginToolContext): Promise<unknown>;
   close(): Promise<void>;
 }
 

@@ -32,7 +32,8 @@ import {
   type ParsedPluginMcpConfig,
   type PluginMcpServer,
 } from "./config.js";
-import { bindMcpServerCredentials } from "./credentials.js";
+import { emptyPluginConfig } from "../user-config.js";
+import { pluginAppMetadata } from "./apps.js";
 
 const MAX_TOOLS_PER_SERVER = 128;
 const MAX_TOOL_NAME_LENGTH = 128;
@@ -194,6 +195,32 @@ class McpToolRuntime implements McpToolSource {
     await Promise.allSettled(pending.map(async (connection) => (await connection).close()));
   }
 
+  async readResource(serverId: string, uri: string, context: PluginToolContext): Promise<unknown> {
+    const connection = await this.resourceConnection(serverId, context.signal);
+    if (!connection.readResource) throw new PluginToolRuntimeError("Plugin MCP resources are unavailable.");
+    const result = await connection.readResource(uri, context.signal);
+    if (jsonBytes(result) > MAX_TOOL_RESULT_BYTES) throw new PluginToolRuntimeError("Plugin MCP resource is too large.");
+    return cloneJsonValue(result);
+  }
+
+  async listResources(serverId: string, templates: boolean, cursor: string | undefined, context: PluginToolContext): Promise<unknown> {
+    const connection = await this.resourceConnection(serverId, context.signal);
+    if (!connection.listResources) throw new PluginToolRuntimeError("Plugin MCP resources are unavailable.");
+    const result = await connection.listResources(templates, cursor, context.signal);
+    if (jsonBytes(result) > MAX_TOOL_RESULT_BYTES) throw new PluginToolRuntimeError("Plugin MCP resource list is too large.");
+    return cloneJsonValue(result);
+  }
+
+  private resourceConnection(serverId: string, signal: AbortSignal): Promise<ConnectedPluginMcpServer> {
+    const server = this.config?.servers.find((candidate) => candidate.id === serverId);
+    if (this.closed || !server || this.serverIds && !this.serverIds.has(serverId) ||
+        this.boundConnection && this.boundConnection.serverId !== serverId ||
+        this.prepared && !this.prepared.plugin.approvedMcpServerIds.includes(serverId)) {
+      throw new PluginToolRuntimeError("Plugin MCP resource route is unavailable.");
+    }
+    return this.connection(server, signal);
+  }
+
   private configurationIssues(): PluginToolIssue[] {
     if (this.configError) {
       return [this.issue(undefined, "invalid_configuration", "Plugin MCP configuration is invalid.")];
@@ -219,10 +246,11 @@ class McpToolRuntime implements McpToolSource {
     if (this.closed) throw new PluginToolRuntimeError("Plugin MCP connection has been closed.");
     const existing = this.connections.get(server.id);
     if (existing) return existing;
-    const bound = this.prepared ? bindMcpServerCredentials(server, this.boundConnection?.secrets ?? {}) : server;
-    const pending = this.connector(bound, this.prepared ? {
+    const pending = this.connector(server, this.prepared ? {
       pluginRoot: this.prepared.pluginRoot,
       pluginData: this.prepared.pluginData,
+      secrets: this.boundConnection?.secrets ?? {},
+      userConfig: { fields: this.prepared.archive.manifest.userConfig ?? [], stored: this.prepared.userConfig ?? emptyPluginConfig() },
     } : undefined, signal, this.connectionOptions);
     this.connections.set(server.id, pending);
     void pending.catch(() => {
@@ -253,6 +281,7 @@ function toolDefinition(
   if (typeof description !== "string" || !description || description.length > MAX_TOOL_DESCRIPTION_LENGTH ||
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(description)) throw new Error("Invalid tool description.");
   const artifactContract = pluginArtifactContract(tool);
+  const app = pluginAppMetadata(tool._meta);
   if (artifactContract && server.type !== "stdio") {
     throw new Error("Plugin artifact tools require a local MCP server.");
   }
@@ -265,6 +294,7 @@ function toolDefinition(
     name: tool.name,
     description,
     ...(artifactContract ? { artifactContract } : {}),
+    ...(app ? { app } : {}),
     tool: {
       type: "function",
       function: {

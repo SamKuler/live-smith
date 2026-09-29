@@ -685,8 +685,10 @@ and wire invariants are canonicalized in
 ### Packages, compatibility, and storage
 
 A Plugin is an installed package and namespace, not an audio provider class or a
-Skill. `plugins/manifest.ts` accepts one portable Agent Plugins 1.0 root manifest,
-one Codex compatibility manifest, or one Claude compatibility manifest. A
+Skill. `plugins/manifest.ts` accepts a portable Agent Plugins 1.0 root manifest,
+Codex compatibility metadata, or Claude compatibility metadata. Matching Codex
+and Claude manifests may coexist; without a portable root, Codex selects the
+component paths. Repeated user configuration declarations must agree. A
 portable root identity takes precedence only when any compatibility overlay has
 the same identity and version. All declared component paths are relative,
 normalized, and contained in the package. ZIP import applies the shared bounded
@@ -752,6 +754,97 @@ tool. The bounded display snapshot is cleared when its Session, model, Plugin,
 or connection owner changes; display limits do not change executable toolsets.
 Request-specific inputs and later remote changes may alter the next model turn's
 tool list.
+
+`plugins/parameter-panel.ts` derives native parameter controls from a supported
+MCP tool input schema. It owns the scalar field contract, argument validation,
+and the signature binding the schema to the package digest and Connection
+configuration revision. Catalog projections contain bounded form fields and
+opaque signatures; they contain no credentials or executable UI content.
+Unsupported schemas remain available through the normal model tool path.
+
+`run_plugin_tool` is an explicit Session command. It admits only the active,
+unarchived Session in the current Live Set, holds the existing Session mutation
+fence, rediscovers the MCP tool, and checks its displayed signature and parameter
+values before invoking the ordinary authorized MCP route. Tool calls and results
+use Session events. The command shares Stop and command-correlation handling with
+other foreground operations; uncertain outcomes are not retried automatically.
+MIDI artifacts use the existing grants and private staging path. A panel call
+cannot invoke the Live executor. Request resources close on success, failure,
+or cancellation.
+
+`ui/client/plugin-parameters.script.html` renders the native controls inside
+Session Tools. Optional parameters have an explicit inclusion control; omitted
+fields stay absent from the request. Form drafts survive directory redraws while
+their Session, source settings, and definition match. They are dialog-local and
+never write Profile, Connection, or Session settings. Author-provided labels,
+values, descriptions, and results render as text. Ordinary parameter edits do
+not run a tool; submission goes through the authenticated command bridge.
+
+### Plugin configuration and interactive Apps
+
+`plugins/user-config.ts` owns the bounded Claude-compatible `userConfig` contract,
+typed values, public projection, and `${user_config.KEY}` substitution. Portable
+manifests carry the contract in the Live Smith extension namespace. Configuration
+definitions belong to immutable package bytes; `storage/plugins.ts` saves values
+and sensitive values in separate maps in the private per-Plugin configuration
+record. The record has an independent revision, survives replacement, and is
+removed with the package on uninstall. Sensitive values never move into the
+public map when an updated declaration changes a field's sensitivity.
+
+The `set_plugin_user_config` command checks the displayed package digest and
+configuration revision inside the storage transaction and configuration fence.
+It validates the complete resulting configuration, commits atomically, closes
+existing Plugin connections, and invalidates public state. The settings panel
+owns drafts and writes only on Save; sensitive inputs are write-only. Package
+replacement can leave invalid values visible for repair without enabling them.
+
+Request admission snapshots Plugin package digests and configuration revisions
+with selected Skill text. MCP discovery must match that snapshot, and each tool
+or resource operation rechecks current admission. The MCP client resolves original
+path, credential, and user configuration placeholders in one pass before starting
+the process or opening HTTP transport. Saved strings are never reinterpreted as
+templates. Skill interpolation substitutes non-sensitive values and a fixed
+placeholder for sensitive fields before the existing instruction wrapper escapes
+the result. Configuration cannot grant tools, permissions, or Live actions.
+
+`plugins/mcp/apps.ts` owns tool-UI metadata and bounded HTML resource validation.
+Both modern `_meta.ui.resourceUri` and legacy `ui/resourceUri` metadata are
+recognized. App-only tools stay out of `ToolRegistry`'s model-facing definitions;
+interactive calls resolve the original tool name within the App's exact admitted
+server and named connection. Results keep UI-only `_meta` outside model history.
+The reserved `io.github.samkuler/live-smith-artifacts` result metadata is rebuilt
+from host-validated artifacts. Server values cannot forge these references;
+reopening an App resolves saved references against the current Session store.
+
+`app/plugin-apps.ts` retains request resources for each open App. Authenticated
+bridge endpoints open, call, read/list resources, and close an instance. Opening
+does not execute the entry tool. Tool calls revalidate the active Session after
+acquiring its mutation fence, append history, and use the existing MCP execution
+route and artifact grants. Completed and unconfirmed outcomes invalidate the
+current dialog as well as peer dialogs. Instance close aborts pending requests
+and releases connections; bridge close also owns pending opens and sandbox
+startup. Read-only resources are bounded and restricted to the same admitted
+server.
+
+`ui/client/plugin-results.ts` supplies shared composer and MIDI import actions
+for App and native parameter results. `import_midi_artifact` admits an explicit
+Session artifact, track name, and Arrangement position. `app/midi-artifact-import.ts`
+materializes its ordinary action plan and reuses preflight, approval policy,
+Edit Scope subscriptions, the shared mutation queue, and executor. Commands
+request host-owned confirmation tokens through the bridge; Stop, shutdown, and
+command completion settle pending approvals. Partial or uncertain execution
+persists the normal recovery ledger and returns an unknown command outcome.
+An existing active recovery blocks another direct import until resolved.
+
+`ui/client/plugin-apps.ts` bundles the official MCP Apps AppBridge and uses manual
+handlers so every RPC passes through the host. `app/plugin-app-sandbox.ts` serves
+a fixed proxy from a separate loopback origin; its inner App iframe has an opaque
+origin. Both directions check source windows and origins. The proxy receives the
+HTML through the standard sandbox handshake and enforces an HTTP CSP. Main bridge
+tokens, credentials, and the host DOM remain outside the App. Capability negotiation
+advertises only implemented tool/resource access and sandbox configuration.
+The detailed author contract and current domain restrictions belong to
+[Development](DEVELOPMENT.md#mcp-apps).
 
 Enabled installed Plugins are discovered per request. The request snapshot binds
 the package ID, digest, exact MCP server, optional named Connection ID and

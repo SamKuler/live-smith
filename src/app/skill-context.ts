@@ -21,12 +21,15 @@ import {
   type InstalledPlugin,
 } from "../storage/plugins.js";
 import { withStorageTransaction, type StorageTransactionContext } from "../storage/persistence.js";
+import { emptyPluginConfig, renderPluginConfigText } from "../plugins/user-config.js";
+import { openPluginArchive } from "../plugins/archive.js";
 
 export const MAX_ACTIVE_SKILL_INSTRUCTION_BYTES = 128 * 1024;
 
 export interface ResolvedSkillContext {
   activeSkillIds: string[];
   instructionBlock: string;
+  pluginConfigSnapshots?: Record<string, { sha256: string; revision: string }>;
 }
 
 export class SkillContextError extends Error {
@@ -55,10 +58,9 @@ export async function resolveSkillContextInTransaction(
 ): Promise<ResolvedSkillContext> {
   assertSessionSkillIds(input.sessionSkillIds);
   const plugins = await listInstalledPluginsInTransaction(transaction, input.storageDirectory);
-  const pluginSkills = await pluginSkillsFromPackages(
-    await readEnabledPluginPackagesInTransaction(transaction, input.storageDirectory),
-  );
-  return resolveSkillContextFromCatalog({
+  const packages = await readEnabledPluginPackagesInTransaction(transaction, input.storageDirectory);
+  const pluginSkills = await pluginSkillsFromPackages(packages);
+  const result = await resolveSkillContextFromCatalog({
     ...input,
     sessionSkillIds: sessionSkillIdsForEnabledPlugins(input.sessionSkillIds, plugins),
   }, {
@@ -71,7 +73,13 @@ export async function resolveSkillContextInTransaction(
       input.storageDirectory,
       skillId,
     ),
-  }, pluginSkills);
+  }, pluginSkills, async (definition) => {
+    const entry = packages.find((candidate) => candidate.plugin.id === definition.pluginId)!;
+    const archive = await openPluginArchive(entry.bytes);
+    return renderPluginConfigText(definition.body, archive.manifest.userConfig ?? [], entry.userConfig ?? emptyPluginConfig());
+  });
+  return { ...result, ...(packages.length ? { pluginConfigSnapshots: Object.fromEntries(packages.map((entry) =>
+    [entry.plugin.id, { sha256: entry.plugin.sha256, revision: entry.userConfig?.revision ?? "0" }])) } : {}) };
 }
 
 export function sessionSkillIdsForEnabledPlugins(
@@ -92,6 +100,7 @@ async function resolveSkillContextFromCatalog(
   },
   catalog: Pick<SkillCatalogTransaction, "listInstalledSkills" | "readInstalledSkill">,
   pluginSkills: readonly PluginSkillDefinition[] = [],
+  renderPluginBody: (definition: PluginSkillDefinition) => Promise<string> = async (definition) => definition.body,
 ): Promise<ResolvedSkillContext> {
   const mentionedCandidates = skillMentionCandidates(input.prompt);
   if (input.sessionSkillIds.length === 0 && mentionedCandidates.length === 0) {
@@ -132,7 +141,7 @@ async function resolveSkillContextFromCatalog(
   for (const skillId of activeSkillIds) {
     const pluginDefinition = pluginDefinitions.get(skillId);
     if (pluginDefinition) {
-      definitions.push({ id: pluginDefinition.id, description: pluginDefinition.description, body: pluginDefinition.body });
+      definitions.push({ id: pluginDefinition.id, description: pluginDefinition.description, body: await renderPluginBody(pluginDefinition) });
     } else if (installedIds.has(skillId)) {
       try {
         definitions.push(await catalog.readInstalledSkill(skillId));

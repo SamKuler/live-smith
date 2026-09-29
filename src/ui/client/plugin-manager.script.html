@@ -8,6 +8,8 @@
         openMcpServers,
         openPlugin,
         openSkills,
+        pluginUserConfig,
+        pluginApps,
         runCommand,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
@@ -168,13 +170,31 @@
         details.append(summary, fields);
         row.append(copy, controls, details);
         group.append(row);
-        if (server.credentialFields.length || (getState().integrationConnections?.connections || []).some((connection) =>
-            connection.pluginId === plugin.id && connection.configuration?.serverId === server.id)) {
-          const manage = makeButton(t("Connections"), "secondary plugin-manage-connections", async () =>
-            openConnections(plugin.id, server.id));
-          manage.disabled = busy;
-          controls.append(manage);
-        } else {
+        const connections = getState().integrationConnections?.connections || [];
+        const serverConnections = connections.filter((connection) =>
+          connection.pluginId === plugin.id && connection.configuration?.serverId === server.id);
+        if (server.credentialFields.length) {
+          const add = makeButton(t("Add connection"), "secondary plugin-add-connection", () =>
+            openConnections(plugin.id, server.id, true));
+          add.dataset.pluginId = plugin.id;
+          add.dataset.serverId = server.id;
+          add.disabled = busy || connections.length >= __MAX_INTEGRATION_CONNECTIONS__;
+          add.setAttribute("aria-label", `${t("Add connection")} · ${plugin.id} / ${server.id}`);
+          controls.append(add);
+        }
+        if (serverConnections.length) {
+          const links = document.createElement("div");
+          links.className = "plugin-server-connections";
+          for (const connection of serverConnections) {
+            const manage = makeButton(connection.name, "secondary plugin-manage-connections", () =>
+              openConnections(plugin.id, server.id, false, connection.id));
+            manage.dataset.connectionId = connection.id;
+            manage.setAttribute("aria-label", t("Edit connection {name}", { name: connection.name }));
+            manage.disabled = busy;
+            links.append(manage);
+          }
+          group.append(links);
+        } else if (!server.credentialFields.length) {
           const noSetup = document.createElement("span");
           noSetup.className = "plugin-connection-unbound";
           noSetup.textContent = t("No connection setup needed");
@@ -198,7 +218,7 @@
         title.textContent = plugin.id;
         title.setAttribute("translate", "no");
         const status = document.createElement("span");
-        status.textContent = t(plugin.enabled ? "Enabled" : "Disabled");
+        status.textContent = [sourceLabel(plugin.sourceFormat), t(plugin.enabled ? "Enabled" : "Disabled")].join(" · ");
         identity.append(title, status);
         const manage = makeButton(t("Manage Plugin"), "secondary plugin-source-link", () => openPlugin(plugin.id));
         header.append(identity, manage);
@@ -280,7 +300,27 @@
             "secondary plugin-open-mcp", () => openMcpServers(plugin.id),
           ));
           card.append(links);
+          if (plugin.mcpServers.length) {
+            const hint = document.createElement("p");
+            hint.className = "field-hint";
+            hint.textContent = t("Connections and server permissions are managed in MCP.");
+            card.append(hint);
+          }
         }
+        const apps = (getState().sessionToolCatalog?.groups || []).filter((group) => group.pluginId === plugin.id)
+          .flatMap((group) => group.tools.filter((tool) => tool.app));
+        if (apps.length) {
+          const links = document.createElement("div");
+          links.className = "plugin-capability-links";
+          for (const tool of apps) {
+            const open = makeButton(t("Open interface: {name}", { name: tool.name }), "secondary plugin-open-app", () => pluginApps.open(tool));
+            open.disabled = busy;
+            links.append(open);
+          }
+          card.append(links);
+        }
+        const configuration = pluginUserConfig.create(plugin);
+        if (configuration) card.append(configuration);
         const actions = document.createElement("div");
         actions.className = "plugin-card-actions";
         const remove = makeButton(t("Delete"), "secondary danger-action", () => deleteInstalledPlugin(plugin));
@@ -303,17 +343,18 @@
       }
 
       function render(force = false) {
+        pluginUserConfig.setBusy(busy);
         const list = document.getElementById("pluginList");
         const drop = document.getElementById("pluginDropZone");
         const mcpList = document.getElementById("pluginMcpServers");
         if (!list || !drop || !mcpList) return;
         const plugins = [...(getState().plugins || [])].sort((left, right) => left.id.localeCompare(right.id));
         const key = JSON.stringify({ locale: window.LiveSmithI18n.locale, plugins,
-          connections: getState().integrationConnections, busy });
+          connections: getState().integrationConnections, tools: getState().sessionToolCatalog?.loadedAt, busy });
         if (!force && key === renderedKey) return;
         const focusedContainer = document.activeElement?.closest?.(".plugin-card, .plugin-mcp-source");
         const focusedControlIndex = focusedContainer
-          ? [...focusedContainer.querySelectorAll("input, button, summary")].indexOf(document.activeElement) : -1;
+          ? [...focusedContainer.querySelectorAll("input, textarea, select, button, summary")].indexOf(document.activeElement) : -1;
         const focusTarget = focusedContainer
           ? focusedControlIndex === -1 && retainedControlFocus?.containerId === focusedContainer.id
             ? retainedControlFocus : { containerId: focusedContainer.id, index: focusedControlIndex }
@@ -324,7 +365,7 @@
         list.replaceChildren(...plugins.map(renderPlugin));
         const mcpPlugins = plugins.filter((plugin) => plugin.mcpServers.length);
         mcpList.replaceChildren(...mcpPlugins.map(renderMcpSource));
-        document.getElementById("pluginMcpEmptyState").hidden = mcpPlugins.length !== 0;
+        document.getElementById("pluginMcpSection").hidden = mcpPlugins.length === 0;
         for (const detail of mcpList.querySelectorAll(".plugin-server-details")) {
           detail.open = expanded.has(`${detail.closest(".plugin-mcp-source").dataset.pluginId}/${detail.dataset.serverId}`);
         }
@@ -332,7 +373,7 @@
         renderedKey = key;
         if (focusTarget) {
           const container = document.getElementById(focusTarget.containerId);
-          const target = container?.querySelectorAll("input, button, summary")[focusTarget.index];
+          const target = container?.querySelectorAll("input, textarea, select, button, summary")[focusTarget.index];
           (target && !target.disabled ? target : container)?.focus({ preventScroll: true });
         }
       }

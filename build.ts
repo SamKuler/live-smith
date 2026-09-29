@@ -7,6 +7,7 @@ import * as vm from "node:vm";
 import ts from "typescript";
 
 import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
+import { buildPluginAppsScript } from "./scripts/build-plugin-apps.js";
 import { compileUiStyles } from "./scripts/build-ui-styles.js";
 import { readNativeVerifierCapsule } from "./scripts/build-native-verifier.js";
 import { assertPackagedBundleContainsThirdPartyNotices } from "./src/release/package-verification.js";
@@ -20,6 +21,7 @@ const networkRuntimeInject = "src/runtime/network-node-globals.ts";
 
 verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);
+const pluginAppsScript = await buildPluginAppsScript(production);
 const chatStyles = await compileUiStyles("src/ui/styles/chat.css", production);
 const resultStyles = await compileUiStyles("src/ui/styles/result.css", production);
 const verificationStyles = await compileUiStyles("src/ui/styles/suno-verification.css", production);
@@ -41,6 +43,7 @@ const buildResult = await esbuild.build({
   loader: { ".html": "text" },
   define: {
     __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
+    __LIVE_SMITH_PLUGIN_APPS_SCRIPT__: JSON.stringify(pluginAppsScript),
     __LIVE_SMITH_CHAT_STYLES__: JSON.stringify(chatStyles),
     __LIVE_SMITH_RESULT_STYLES__: JSON.stringify(resultStyles),
     __LIVE_SMITH_SUNO_VERIFICATION_STYLES__: JSON.stringify(verificationStyles),

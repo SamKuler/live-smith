@@ -39,6 +39,19 @@ usable. **Reload tools** refreshes descriptions; a failed load can be retried.
 Only enabled, approved MCP sources are contacted, and no tool is executed.
 The directory is a snapshot; the next request's inputs and connection settings
 can change which tools are available.
+Expand an MCP tool to edit its supported parameters and select **Run tool**.
+Native controls use the tool's defaults, choices, and value limits. The tool
+runs directly, and its result appears in the panel and Session history without
+a model request. Use the composer's **Stop** control to cancel a running tool.
+Parameter drafts last within the current dialog and Session; switching Sessions
+or changing connections resets them.
+Tools that provide an MCP App also offer **Open interface**. The Plugin supplies
+the layout and interaction; its interface runs in an isolated frame and uses the
+same approved MCP server. Closing the interface cancels pending operations.
+Completed tool results offer **Use in chat**, which adds a reference to the
+composer, and saved MIDI offers **Insert into Live**. Choose an existing MIDI
+track and the Arrangement start beat; import follows the Session's Edit Scope
+and approval mode, without requiring a model request.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching
@@ -391,6 +404,14 @@ and approved Live action. Removing a Plugin does not remove already saved Sessio
 artifacts. Remove a Plugin's connections and stop referencing its Skills before
 deleting the Plugin.
 
+Plugins can declare persistent **Plugin parameters** on their package card.
+Save commits values for subsequent requests; sensitive fields remain write-only.
+Parameters survive restarts and package updates, and selected Skills and MCP
+configuration can reference them through `${user_config.KEY}`. Discovered MCP
+Apps can also be opened from the Plugin card. See the [configuration and UI
+author guide](docs/DEVELOPMENT.md#persistent-plugin-configuration) for supported
+formats, scope, and a runnable offline example.
+
 **Connections** save named accounts or servers. **Settings → Extensions → Audio
 services** manages audio accounts; **MCP** manages directly configured servers and
 servers provided by Plugins, including their permissions. One source can have multiple named
@@ -401,10 +422,11 @@ on the left and **Discard** / **Save** on the right. Removal requires confirmati
 unchanged saved connections disable Discard and Save, and new connections have no
 Remove action. Switching between Audio services and MCP preserves nonsecret drafts
 and clears newly entered credentials.
-For a direct MCP server, choose Streamable HTTP and enter its URL, or choose a
-local process and enter its command and individual arguments. Local commands run
-without a shell. Only HTTPS and loopback HTTP endpoints are supported; legacy
-SSE and MCP OAuth sign-in are not supported.
+In **Extensions → MCP**, **Add connection** opens the direct server configuration.
+For a Plugin server, use **Add connection** beside that server. Direct connections
+support Streamable HTTP with a URL, or a local process with a command and
+individual arguments. Local commands run without a shell. Only HTTPS and
+loopback HTTP endpoints are supported; legacy SSE and MCP OAuth sign-in are not.
 
 Credentials remain write-only environment variables or HTTP headers, never model
 tool arguments. Plugin connections bind to the exact installed package and

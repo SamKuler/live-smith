@@ -8,6 +8,7 @@ import { openPluginArchive, type OpenPluginArchive } from "./archive.js";
 import type { PluginManifest, PluginSourceFormat } from "./contracts.js";
 import { pluginMcpConfigFromArchive, PluginMcpConfigError } from "./mcp/config.js";
 import { mcpCredentialFields, type McpCredentialField } from "./mcp/credentials.js";
+import { emptyPluginConfig, pluginConfigView, type PluginConfigView, type StoredPluginConfig } from "./user-config.js";
 
 export type PluginViewIssue =
   | "invalid_skill"
@@ -41,6 +42,7 @@ export interface InstalledPluginView {
   mcpServers: PluginMcpServerView[];
   unsupportedComponents: string[];
   issues: PluginViewIssue[];
+  userConfig?: PluginConfigView;
 }
 
 export interface PluginInstallPreview extends InstalledPluginView {
@@ -64,6 +66,7 @@ async function installedPluginView(entry: InstalledPluginPackage): Promise<Insta
     entry.plugin.approvedMcpServerIds,
     entry.plugin.approvedArtifactInputServerIds,
     entry.plugin.approvedArtifactOutputServerIds,
+    entry.userConfig,
   );
 }
 
@@ -89,6 +92,7 @@ async function pluginView(
   approvedMcpServerIds: readonly string[],
   approvedArtifactInputServerIds: readonly string[],
   approvedArtifactOutputServerIds: readonly string[],
+  storedConfig: StoredPluginConfig = emptyPluginConfig(),
 ): Promise<InstalledPluginView> {
   const skills = await pluginSkillsFromArchive(manifest.id, bytes);
   const skillDirectory = archive.manifest.components.skillsDirectory;
@@ -108,7 +112,7 @@ async function pluginView(
         approved: approvedMcpServerIds.includes(server.id),
         artifactInputApproved: approvedArtifactInputServerIds.includes(server.id),
         artifactOutputApproved: approvedArtifactOutputServerIds.includes(server.id),
-        target: server.type === "stdio" ? server.command : new URL(server.url).origin,
+        target: server.type === "stdio" ? server.command : server.url.includes("${user_config.") ? "Configured MCP URL" : new URL(server.url).origin,
         ...(server.type === "stdio" ? {
           args: [...server.args],
           ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
@@ -135,5 +139,6 @@ async function pluginView(
     mcpServers,
     unsupportedComponents: [...(manifest.unsupportedComponents ?? [])],
     issues: [...new Set(issues)],
+    ...(archive.manifest.userConfig?.length ? { userConfig: pluginConfigView(archive.manifest.userConfig, storedConfig) } : {}),
   };
 }

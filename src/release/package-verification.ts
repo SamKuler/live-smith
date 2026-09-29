@@ -18,6 +18,8 @@ const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "`tailwindcss` 4.3.3",
   "Copyright (c) Tailwind Labs, Inc.",
   "`@modelcontextprotocol/client` 2.0.0",
+  "`@modelcontextprotocol/ext-apps` 2.0.0",
+  "`@standard-schema/spec` 1.1.0",
   "Copyright (c) 2024-2025 Model Context Protocol",
   "`eventsource` 3.0.7",
   "`jose` 6.2.12",

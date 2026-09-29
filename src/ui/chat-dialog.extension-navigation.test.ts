@@ -21,7 +21,7 @@ test("extension categories expose one capability page without starting tools or 
       }
     }
     assert.ok(h.document.querySelector('#audioServicesSettings #addAudioServiceButton'));
-    assert.ok(h.document.querySelector('#mcpSettings #addMcpConnectionButton'));
+    assert.ok(h.document.querySelector('#mcpSettings #addConnectionButton'));
     assert.equal(h.document.querySelector<HTMLElement>("#audioConnectionsEmpty")!.hidden, true);
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.errors, []);

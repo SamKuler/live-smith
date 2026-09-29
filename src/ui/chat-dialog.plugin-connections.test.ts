@@ -18,14 +18,16 @@ test("MCP offers standalone servers and packaged credentials alongside Plugin se
   try {
     assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "MCP servers");
     harness.click("#addConnectionButton");
-    assert.equal(harness.document.querySelector<HTMLElement>("#connectionSourcePicker")?.hidden, false);
-    assert.equal(harness.document.querySelector("#connectionSourcePicker #addAudioServiceButton"), null);
-    assert.equal(harness.document.querySelector("#addMcpConnectionButton")?.textContent, "Standalone MCP");
+    assert.equal(harness.document.querySelector("#connectionSourcePicker"), null);
+    assert.ok(harness.document.querySelector('.plugin-connection-editor [name="mcpUrl"]'));
+    harness.click(".plugin-connection-editor .editor-discard");
     const servers = [...harness.document.querySelectorAll("#pluginMcpServers .plugin-server-group")];
     assert.equal(servers[0]?.querySelector(".plugin-add-connection"), null);
     assert.match(servers[0]?.textContent ?? "", /No connection setup needed/u);
-    assert.equal(servers[1]?.querySelector(".plugin-manage-connections")?.textContent, "Connections");
-    assert.equal(harness.document.querySelectorAll("#pluginConnectionSources .plugin-add-connection").length, 1);
+    assert.equal(servers[1]?.querySelector(".plugin-manage-connections"), null);
+    assert.equal(servers[1]?.querySelector(".plugin-add-connection")?.textContent, "Add connection");
+    harness.click('#pluginMcpSource-tool-plugin .plugin-server-group[data-server-id="private-api"] .plugin-add-connection');
+    assert.ok(harness.document.querySelector('.plugin-connection-editor [name="TOKEN"]'));
     assert.equal(harness.document.querySelector("#pluginManager .plugin-connection-editor"), null);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
@@ -85,7 +87,7 @@ test("saved MCP connection actions identify their account and keep state separat
     assert.equal(row?.querySelector("button.danger-action"), null);
     assert.equal(row?.querySelector(".connection-edit")?.textContent, "Edit");
     assert.equal(row?.querySelector(".connection-meta .plugin-connection-state")?.textContent, "Enabled");
-    harness.click(".plugin-connection-row .connection-choice");
+    harness.click('#pluginMcpSource-tool-plugin .plugin-server-group[data-server-id="private-api"] .plugin-manage-connections');
     assert.match(harness.document.querySelector<HTMLButtonElement>(".plugin-connection-editor .connection-remove")?.getAttribute("aria-label") ?? "",
       /Remove.*A long named account/u);
     const actions = () => [...harness.document.querySelectorAll<HTMLButtonElement>(".plugin-connection-actions > button")];

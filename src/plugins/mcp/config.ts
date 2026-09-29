@@ -217,7 +217,7 @@ function parseRemoteServer(
     throw new Error("Streamable HTTP server contains an unknown field.");
   }
   const url = boundedString(value.url, "MCP URL");
-  validateRemoteUrl(url);
+  if (!/\$\{user_config\.[A-Za-z_][A-Za-z0-9_]*\}/u.test(url)) validateRemoteUrl(url);
   const headers = value.headers === undefined ? {} : stringMap(value.headers, "MCP headers", false);
   validateHeaders(headers);
   return { id, type: "streamable-http", url, headers };
@@ -253,7 +253,7 @@ function containedRelativePath(value: string): boolean {
   return true;
 }
 
-function validateRemoteUrl(value: string): void {
+export function validateRemoteUrl(value: string): void {
   let url: URL;
   try { url = new URL(value); }
   catch { throw new Error("MCP URL is invalid."); }

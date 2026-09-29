@@ -12,9 +12,11 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { TransformStream } from "node:stream/web";
 import { URL } from "node:url";
 import { TextDecoder } from "node:util";
+import { Buffer } from "node:buffer";
 
 import { resolveFetchImplementation, throwIfAborted } from "../../runtime/host.js";
-import type { PluginMcpServer, PluginMcpStdioServer } from "./config.js";
+import { validateRemoteUrl, type PluginMcpServer, type PluginMcpStdioServer } from "./config.js";
+import { emptyPluginConfig, resolvePluginConfigReference, type PluginConfigField, type StoredPluginConfig } from "../user-config.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const LIST_TIMEOUT_MS = 30_000;
@@ -26,11 +28,15 @@ const TERMINATE_TIMEOUT_MS = 1_000;
 export interface PluginMcpRuntimePaths {
   pluginRoot: string;
   pluginData: string;
+  userConfig?: { fields: readonly PluginConfigField[]; stored: StoredPluginConfig };
+  secrets?: Readonly<Record<string, string>>;
 }
 
 export interface ConnectedPluginMcpServer {
   listTools(signal: AbortSignal): Promise<readonly Tool[]>;
   callTool(name: string, argumentsValue: unknown, signal: AbortSignal): Promise<CallToolResult>;
+  readResource?(uri: string, signal: AbortSignal): Promise<unknown>;
+  listResources?(templates: boolean, cursor: string | undefined, signal: AbortSignal): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -53,6 +59,7 @@ export async function connectPluginMcpServer(
 ): Promise<ConnectedPluginMcpServer> {
   throwIfAborted(signal);
   const client = new Client({ name: "live-smith", version: "0.2.2" }, {
+    capabilities: { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } },
     listMaxPages: 16,
     defaultCacheTtlMs: 0,
     versionNegotiation: { mode: "auto", probe: { timeoutMs: 5_000, maxRetries: 0 } },
@@ -69,10 +76,15 @@ export async function connectPluginMcpServer(
     stdio.stderr?.on("data", () => undefined);
     transport = stdio;
   } else {
+    const url = expandPluginMcpTemplate(server.url, paths);
+    validateRemoteUrl(url);
+    const headers = Object.fromEntries(Object.entries(server.headers).map(([name, value]) =>
+      [name, expandPluginMcpTemplate(value, paths, "credentials")]));
+    if (Object.values(headers).some((value) => /[\u0000\r\n]/u.test(value))) throw new PluginMcpConnectionError("connect", server.id);
     const fetchImpl = redirectRejectingFetch(resolveFetchImplementation(options.fetchImpl));
-    remoteTransport = new StreamableHTTPClientTransport(new URL(server.url), {
+    remoteTransport = new StreamableHTTPClientTransport(new URL(url), {
       fetch: fetchImpl,
-      requestInit: { headers: { ...server.headers }, redirect: "manual" },
+      requestInit: { headers, redirect: "manual" },
       onInsufficientScope: "throw",
       maxStepUpRetries: 0,
     });
@@ -85,6 +97,22 @@ export async function connectPluginMcpServer(
     throw new PluginMcpConnectionError("connect", server.id);
   }
   return {
+    async listResources(templates, cursor, requestSignal) {
+      try {
+        const params = cursor === undefined ? {} : { cursor };
+        const options = { signal: requestSignal, timeout: LIST_TIMEOUT_MS };
+        const result = templates ? await client.listResourceTemplates(params, options) : await client.listResources(params, options);
+        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Oversized resources.");
+        return result;
+      } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("list", server.id); }
+    },
+    async readResource(uri, requestSignal) {
+      try {
+        const result = await client.readResource({ uri }, { signal: requestSignal, timeout: LIST_TIMEOUT_MS });
+        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Oversized resource.");
+        return result;
+      } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("call", server.id); }
+    },
     async listTools(requestSignal) {
       try {
         const result = await client.listTools(undefined, {
@@ -139,17 +167,7 @@ function resolveStdioServer(
     env: { ...getDefaultEnvironment(), ...server.env },
     ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
   };
-  const replacements = new Map([
-    ["${PLUGIN_ROOT}", paths.pluginRoot],
-    ["${PLUGIN_DATA}", paths.pluginData],
-    ["${CLAUDE_PLUGIN_ROOT}", paths.pluginRoot],
-    ["${CLAUDE_PLUGIN_DATA}", paths.pluginData],
-  ]);
-  const expand = (value: string): string => {
-    let expanded = value;
-    for (const [placeholder, replacement] of replacements) expanded = expanded.replaceAll(placeholder, replacement);
-    return expanded;
-  };
+  const expand = (value: string): string => expandPluginMcpTemplate(value, paths);
   const expandedCommand = expand(server.command);
   const command = expandedCommand.startsWith("./")
     ? containedPath(paths.pluginRoot, path.resolve(paths.pluginRoot, expandedCommand))
@@ -160,13 +178,35 @@ function resolveStdioServer(
     : containedPath(paths.pluginRoot, path.resolve(paths.pluginRoot, cwdValue));
   const env = {
     ...getDefaultEnvironment(),
-    ...Object.fromEntries(Object.entries(server.env).map(([name, value]) => [name, expand(value)])),
+    ...Object.fromEntries(Object.entries(server.env).map(([name, value]) => [name, expandPluginMcpTemplate(value, paths, "credentials")])),
     PLUGIN_ROOT: paths.pluginRoot,
     PLUGIN_DATA: paths.pluginData,
     CLAUDE_PLUGIN_ROOT: paths.pluginRoot,
     CLAUDE_PLUGIN_DATA: paths.pluginData,
   };
   return { command, args: server.args.map(expand), env, cwd };
+}
+
+/** Resolves original placeholders once; configured strings are never templates. */
+export function expandPluginMcpTemplate(
+  value: string, paths: PluginMcpRuntimePaths | undefined, mode: "literal" | "credentials" = "literal",
+): string {
+  if (!paths) return value;
+  const variables = new Map([
+    ["PLUGIN_ROOT", paths.pluginRoot], ["PLUGIN_DATA", paths.pluginData],
+    ["CLAUDE_PLUGIN_ROOT", paths.pluginRoot], ["CLAUDE_PLUGIN_DATA", paths.pluginData],
+  ]);
+  return value.replace(/\$\{(?:user_config\.([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?)\}/gu,
+    (whole, configName: string | undefined, name: string | undefined, fallback: string | undefined) => {
+      if (configName) return resolvePluginConfigReference(configName, paths.userConfig?.fields ?? [],
+        paths.userConfig?.stored ?? emptyPluginConfig(), "mcp");
+      if (variables.has(name!)) return variables.get(name!)!;
+      if (mode === "literal") return whole;
+      const secret = paths.secrets && Object.hasOwn(paths.secrets, name!) ? paths.secrets[name!] : undefined;
+      if (secret) return secret;
+      if (fallback !== undefined) return fallback;
+      throw new Error(`MCP credential ${name} is not configured.`);
+    });
 }
 
 function containedPath(root: string, target: string): string {

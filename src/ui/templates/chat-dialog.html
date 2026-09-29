@@ -17,6 +17,9 @@
       __SKILL_MANAGER_SCRIPT__
       __PLUGIN_MANAGER_SCRIPT__
       __CONNECTIONS_MANAGER_SCRIPT__
+      __PLUGIN_PARAMETERS_SCRIPT__
+      __PLUGIN_USER_CONFIG_SCRIPT__
+      __PLUGIN_APPS_SCRIPT__
       __TOOLS_INSPECTOR_SCRIPT__
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
@@ -675,11 +678,7 @@
                 <div id="connectionsManager" class="connections-manager" aria-labelledby="connectionsHeading" aria-busy="false" tabindex="-1">
                   <div class="plugin-section-heading">
                     <h3 id="connectionsHeading" data-i18n="MCP servers">MCP servers</h3>
-                    <button id="addConnectionButton" class="secondary" type="button" aria-expanded="false" aria-controls="connectionSourcePicker" data-i18n="Add connection">Add connection</button>
-                  </div>
-                  <div id="connectionSourcePicker" class="connection-source-picker" hidden>
-                    <div class="connection-source-options"><button id="addMcpConnectionButton" class="secondary" type="button" data-i18n="Standalone MCP">Standalone MCP</button></div>
-                    <div id="pluginConnectionSources" class="connection-source-options"></div>
+                    <button id="addConnectionButton" class="secondary" type="button" data-i18n="Add connection">Add connection</button>
                   </div>
                   <p id="connectionsStatus" class="plugin-status" role="status" aria-live="polite" hidden></p>
                   <div id="mcpConnectionList" class="connection-list" role="list" aria-labelledby="connectionsHeading"></div>
@@ -687,8 +686,10 @@
                   <div id="mcpConnectionEditor" hidden></div>
                 </div>
                 <p id="pluginMcpStatus" class="plugin-status" role="status" aria-live="polite" hidden></p>
-                <p id="pluginMcpEmptyState" class="field-hint" data-i18n="No Plugin-provided MCP servers.">No Plugin-provided MCP servers.</p>
-                <div id="pluginMcpServers" class="plugin-mcp-sources" role="list" aria-label="Plugin MCP servers" data-i18n-aria-label="Plugin MCP servers" tabindex="-1"></div>
+                <div id="pluginMcpSection" class="plugin-mcp-section" hidden>
+                  <h3 data-i18n="Plugin-provided servers">Plugin-provided servers</h3>
+                  <div id="pluginMcpServers" class="plugin-mcp-sources" role="list" aria-label="Plugin MCP servers" data-i18n-aria-label="Plugin MCP servers" tabindex="-1"></div>
+                </div>
               </section>
               <section id="pluginManager" class="settings-section plugin-manager extension-page" data-extension-page="plugins" role="tabpanel" aria-labelledby="pluginsExtensionTab" aria-busy="false" tabindex="-1" hidden>
                 <div class="plugin-section-heading">
@@ -812,6 +813,7 @@
       <section class="app-confirmation-card">
         <h2 id="appConfirmationTitle" data-i18n="Confirm action">Confirm action</h2>
         <p id="appConfirmationMessage"></p>
+        <div id="appConfirmationDetails" class="app-confirmation-details" hidden></div>
         <div class="app-confirmation-actions">
           <button id="appConfirmationCancel" class="secondary" type="button" data-i18n="Cancel">Cancel</button>
           <button id="appConfirmationAccept" class="primary" type="button" data-i18n="Continue">Continue</button>

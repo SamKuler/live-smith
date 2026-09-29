@@ -72,8 +72,11 @@ test("standalone stdio executes literal configuration without a package or injec
     t.after(() => request.close());
     assert.deepEqual(request.issues, []);
     assert.deepEqual(await listInstalledPlugins(h.storageDirectory), []);
-    assert.deepEqual(request.catalogTools(), [{ connectionId: "local", connectionName: "Connection local",
+    assert.deepEqual(request.catalogTools().map(({ panel: _panel, ...tool }) => tool), [{ connectionId: "local", connectionName: "Connection local",
       serverId: "server", name: "environment", description: "Inspect fixture environment" }]);
+    assert.deepEqual(request.catalogTools()[0]!.panel?.fields, []);
+    assert.equal(request.catalogTools()[0]!.panel?.toolName, request.tools()[0]!.function.name);
+    assert.doesNotMatch(JSON.stringify(request.catalogTools()), /synthetic-secret|server\.mjs/u);
     assert.doesNotMatch(JSON.stringify(request.tools()), /synthetic-secret|server\.mjs|pluginId/u);
     const result = await request.callTool({ id: "invoke", name: request.tools()[0]!.function.name, arguments: "{}" });
     assert.equal(result.failed, undefined);

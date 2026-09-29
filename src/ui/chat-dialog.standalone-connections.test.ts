@@ -46,7 +46,7 @@ test("audio and MCP have separate lists and preserve public drafts without start
     assert.equal(harness.document.querySelector<HTMLInputElement>(field("secretValue-0"))?.value, "");
     harness.click(`${editor} .editor-discard`);
     assert.equal(harness.document.querySelector<HTMLInputElement>(field("connectionName"))?.value, direct.name);
-    harness.click("#addMcpConnectionButton");
+    harness.click("#addConnectionButton");
     harness.click(`${editor} .editor-discard`);
     assert.equal(harness.document.activeElement?.id, "addConnectionButton");
     assert.equal(harness.document.querySelector<HTMLElement>("#mcpConnectionEditor")?.hidden, true);
@@ -106,7 +106,7 @@ test("audio and MCP lists retain one shared connection quota and unique names", 
   } finally { full.close(); }
   const harness = await createDialogHarness(state);
   try {
-    harness.click("#addMcpConnectionButton");
+    harness.click("#addConnectionButton");
     harness.input(field("connectionName"), service.name.toUpperCase());
     harness.input(field("mcpUrl"), "https://mcp.example.test");
     harness.click(`${editor} .editor-save`);
@@ -121,8 +121,10 @@ test("a new MCP draft requires a name and target and Discard closes it without a
   const harness = await createDialogHarness();
   try {
     harness.click("#addConnectionButton");
-    assert.equal(harness.document.activeElement?.id, "addMcpConnectionButton");
-    harness.click("#addMcpConnectionButton");
+    assert.equal(harness.document.querySelector("#connectionSourcePicker"), null);
+    assert.equal(harness.document.querySelector<HTMLElement>("#mcpConnectionEditor")?.hidden, false);
+    assert.equal((harness.document.activeElement as HTMLInputElement).name, "connectionName");
+    assert.equal(harness.document.querySelector<HTMLElement>("#connectionsEmpty")?.hidden, true);
     const save = () => harness.document.querySelector<HTMLButtonElement>(`${editor} .editor-save`)!;
     assert.equal(harness.document.querySelector(`${editor} .editor-remove`), null);
     assert.equal(save().disabled, true);
@@ -146,7 +148,6 @@ test("new HTTP MCP saves an explicit endpoint after confirmation and keeps heade
   const harness = await createDialogHarness();
   try {
     harness.click("#addConnectionButton");
-    harness.click("#addMcpConnectionButton");
     harness.input(field("connectionName"), "Remote tools");
     harness.input(field("mcpUrl"), "http://127.0.0.2:8181/mcp");
     harness.click(".mcp-secret-fields .plugin-section-heading button");
@@ -178,7 +179,7 @@ test("new HTTP MCP saves an explicit endpoint after confirmation and keeps heade
 test("stdio review shows literal command arguments, cwd and env names with independent artifact grants", async () => {
   const harness = await createDialogHarness();
   try {
-    harness.click("#addMcpConnectionButton");
+    harness.click("#addConnectionButton");
     harness.input(field("connectionName"), "Local MIDI");
     harness.select(field("mcpTransport"), "stdio");
     harness.input(field("mcpCommand"), "/opt/local/bin/node");
@@ -353,10 +354,10 @@ test("switching from audio to MCP clears the entered audio key and a pure Skills
     sourceFormat: "agent-plugins-1.0", enabled: true, skillCount: 1, mcpServers: [], unsupportedComponents: [], issues: [] }] });
   try {
     harness.input("#audioServiceApiKey", "audio-draft-secret");
-    harness.click("#addMcpConnectionButton");
+    harness.click("#addConnectionButton");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceApiKey")?.value, "");
     assert.equal(harness.document.querySelector("#pluginManager .plugin-manage-connections"), null);
-    assert.equal(harness.document.querySelector("#pluginConnectionSources")?.childElementCount, 0);
+    assert.equal(harness.document.querySelector("#connectionSourcePicker"), null);
     assert.equal(commandCalls(harness).length, 0);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }

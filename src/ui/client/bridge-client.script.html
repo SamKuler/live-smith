@@ -4,6 +4,8 @@
         closeComposerAutocomplete,
         confirmAction,
         getState,
+        isPluginParameterPanel,
+        isPluginConfigView,
         parseComposerInput,
         presentStatus,
         setState,
@@ -158,6 +160,8 @@
         "set_session_model_selection",
         "load_session_model_capabilities",
         "load_session_tools",
+        "run_plugin_tool",
+        "import_midi_artifact",
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
@@ -3096,7 +3100,7 @@
         ]);
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
           "id", "sha256", "version", "description", "sourceFormat", "enabled",
-          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues",
+          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues", "userConfig",
         ]) ||
           typeof value.id !== "string" ||
           !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(value.id) ||
@@ -3114,6 +3118,7 @@
               typeof skill.description === "string" && skill.description.trim().length > 0 &&
               [...skill.description].length <= 240) ||
             new Set(value.skills.map((skill) => skill.id)).size !== value.skills.length)) ||
+          (value.userConfig !== undefined && !isPluginConfigView(value.userConfig)) ||
           !Array.isArray(value.mcpServers) || value.mcpServers.length > 32 ||
           !value.mcpServers.every((server) => isWireRecord(server) &&
             hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "args", "cwd", "envNames", "credentialFields"]) &&
@@ -3157,7 +3162,7 @@
       function isWirePluginInstallPreview(value) {
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
           "id", "version", "description", "sourceFormat", "enabled",
-          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues", "sha256", "byteLength",
+          "skillCount", "skills", "mcpServers", "unsupportedComponents", "issues", "userConfig", "sha256", "byteLength",
         ]) ||
           !/^[a-f0-9]{64}$/.test(value.sha256 || "") ||
           !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 ||
@@ -3200,7 +3205,12 @@
             !Array.isArray(group.tools) || !group.tools.length) return false;
           toolCount += group.tools.length;
           if (toolCount > __MAX_SESSION_TOOL_CATALOG_TOOLS__ || !group.tools.every((tool) =>
-            isWireRecord(tool) && hasOnlyWireKeys(tool, ["name", "description"]) &&
+            isWireRecord(tool) && hasOnlyWireKeys(tool, ["name", "description", "panel", "app"]) &&
+            (tool.panel === undefined || group.kind === "mcp" && isPluginParameterPanel(tool.panel)) &&
+            (tool.app === undefined || group.kind === "mcp" && isWireRecord(tool.app) &&
+              hasOnlyWireKeys(tool.app, ["resourceUri", "signature", "toolName"]) &&
+              typeof tool.app.resourceUri === "string" && /^ui:\/\/[^\s]{1,2048}$/.test(tool.app.resourceUri) &&
+              /^[a-f0-9]{64}$/.test(tool.app.signature || "") && /^[A-Za-z0-9_-]{1,128}$/.test(tool.app.toolName || "")) &&
             typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 128 &&
             !/[\u0000-\u001f\u007f]/.test(tool.name) &&
             typeof tool.description === "string" && tool.description.length > 0 &&
@@ -4584,6 +4594,7 @@
         }
         const attempt = {
           id: options?.commandId || createCorrelationId("command"),
+          sessionId: targetSessionId,
           kind,
           cancellable: options?.cancellable === true,
           stopRequested: false,
@@ -4793,6 +4804,7 @@
             delete payload.sessionValue;
             delete extra.sessionValue;
           }
+          attempt.confirmation?.controller.abort();
           if (activeCommandAttempt === attempt) activeCommandAttempt = null;
           commandInProgress = null;
           syncOperationState();
@@ -9170,6 +9182,37 @@
             return;
           }
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
+          if (payload.type === "command_confirm_resolved") {
+            const attempt = activeCommandAttempt;
+            if (hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id"]) &&
+                attempt?.id === payload.commandId && attempt.sessionId === payload.sessionId &&
+                attempt.confirmation?.id === payload.id) attempt.confirmation.controller.abort();
+            return;
+          }
+          if (payload.type === "command_confirm_request") {
+            const attempt = activeCommandAttempt;
+            if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews"]) ||
+                !attempt || attempt.stopRequested || attempt.id !== payload.commandId || attempt.sessionId !== payload.sessionId ||
+                activeSessionId() !== payload.sessionId || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
+                typeof payload.message !== "string" || !payload.message || !isWireActionDiffGroups(payload.groups) ||
+                !isWireActionPreviews(payload.previews, payload.kind, payload.groups) || attempt.confirmation?.id === payload.id) return;
+            attempt.confirmation?.controller.abort();
+            const controller = new window.AbortController();
+            attempt.confirmation = { id: payload.id, controller };
+            void (async () => {
+              const apply = await confirmAction({ title: window.LiveSmithI18n.message("Confirm action"),
+                message: payload.message, groups: payload.groups, previews: payload.previews,
+                acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal });
+              if (controller.signal.aborted || activeCommandAttempt !== attempt) return;
+              try {
+                await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && activeSessionId() === payload.sessionId });
+              } catch (error) {
+                showStatus(error.message || String(error), true);
+                await stopActiveCommand();
+              }
+            })();
+            return;
+          }
           if (payload.type === "session_state_invalidated") {
             if (
               !hasOnlyWireKeys(payload, [
@@ -10217,6 +10260,15 @@
         },
         showStatus,
         startEventStream,
+        requestPluginApp: async (operation, input, signal) => {
+          const response = await fetch(bridgeUrl("/plugin-apps/" + operation), {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input), ...(signal ? { signal } : {}),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Plugin app request failed."));
+          return result;
+        },
         inspectPlugin,
         installSkill,
         installPlugin,

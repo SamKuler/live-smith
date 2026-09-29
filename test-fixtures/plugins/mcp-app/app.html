@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pattern lab</title>
+    <style>
+      :root { color-scheme: dark; --shell:#25292b; --surface:#333a3d; --line:#495456; --text:#eef0e9; --muted:#abb5b5; --accent:#d8ae68; --notes:#83b3ab; font-family:"Segoe UI","Helvetica Neue",sans-serif; color:var(--text); background:var(--shell); }
+      * { box-sizing:border-box; }
+      body { margin:0; min-width:260px; }
+      button,input,textarea { font:inherit; }
+      button { cursor:pointer; }
+      button:disabled { cursor:wait; opacity:.55; }
+      button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+      .workbench { padding:22px; max-width:1100px; margin:auto; }
+      .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; border-bottom:1px solid var(--line); padding-bottom:18px; }
+      .eyebrow { color:var(--accent); font:10px ui-monospace,"SFMono-Regular",Consolas,monospace; letter-spacing:.14em; text-transform:uppercase; }
+      h1 { font-family:"Avenir Next Condensed","Arial Narrow",sans-serif; font-size:30px; line-height:1; font-weight:600; letter-spacing:-.035em; margin:7px 0 0; }
+      .counter { text-align:right; color:var(--muted); font:11px ui-monospace,"SFMono-Regular",Consolas,monospace; white-space:nowrap; }
+      .counter strong { display:block; font-size:25px; font-weight:400; color:var(--text); margin-bottom:4px; }
+      .workspace { display:grid; grid-template-columns:minmax(240px,.9fr) minmax(300px,1.3fr); gap:26px; padding-top:20px; }
+      .tabs { display:flex; border:1px solid var(--line); border-radius:4px; padding:3px; gap:3px; margin-bottom:20px; }
+      .tabs button { flex:1; color:var(--muted); background:transparent; border:0; border-radius:2px; padding:9px 5px; font-size:12px; }
+      .tabs button[aria-selected="true"] { background:var(--surface); color:var(--text); }
+      .field { display:block; margin-bottom:18px; }
+      .field-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; font-weight:600; margin-bottom:8px; }
+      .field-heading output { font:11px ui-monospace,"SFMono-Regular",Consolas,monospace; color:var(--accent); }
+      textarea { width:100%; min-height:112px; resize:vertical; border:1px solid var(--line); background:var(--shell); color:var(--text); border-radius:4px; padding:12px; line-height:1.6; font-size:13px; }
+      .help { margin:6px 0 0; color:var(--muted); font-size:11px; line-height:1.5; }
+      .styles { display:flex; gap:7px; flex-wrap:wrap; }
+      .styles button { border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:30px; padding:6px 13px; font-size:12px; }
+      .styles button[aria-pressed="true"] { color:var(--shell); background:var(--notes); border-color:var(--notes); }
+      input[type="range"] { width:100%; accent-color:var(--accent); }
+      .generate { width:100%; padding:12px; border:0; border-radius:4px; background:var(--accent); color:var(--shell); font-size:13px; font-weight:700; }
+      .generate span { margin-right:7px; }
+      .sequence { min-width:0; }
+      .sequence-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:3px 0 16px; }
+      h2 { margin:0; font-size:13px; font-weight:600; }
+      .sequence-tag { color:var(--notes); font:10px ui-monospace,"SFMono-Regular",Consolas,monospace; letter-spacing:.06em; }
+      .roll { border:1px solid var(--line); border-radius:4px; overflow:hidden; background:var(--surface); }
+      svg { width:100%; display:block; min-height:210px; }
+      .roll-footer { border-top:1px solid var(--line); padding:10px 12px; color:var(--muted); font:10px ui-monospace,"SFMono-Regular",Consolas,monospace; }
+      .empty { font-size:12px; color:var(--muted); line-height:1.6; margin:14px 0; }
+      details { font-size:11px; color:var(--muted); margin-top:16px; }
+      summary { cursor:pointer; padding:4px 0; }
+      .note-list { list-style:none; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px 14px; font:10px/1.8 ui-monospace,"SFMono-Regular",Consolas,monospace; max-height:180px; overflow:auto; }
+      .status { min-height:20px; font-size:11px; color:var(--muted); margin:12px 0 0; line-height:1.5; }
+      .footer { border-top:1px solid var(--line); margin-top:22px; padding-top:12px; color:var(--muted); display:flex; justify-content:space-between; gap:12px; font-size:10px; line-height:1.5; }
+      [hidden] { display:none !important; }
+      @media(max-width:620px) { .workbench{padding:16px} .workspace{grid-template-columns:1fr;gap:22px} .counter strong{font-size:21px} .footer{flex-direction:column;gap:3px} }
+    </style>
+  </head>
+  <body>
+    <main class="workbench">
+      <header class="topbar">
+        <div><div class="eyebrow">MCP Apps demo</div><h1>Pattern lab</h1></div>
+        <div class="counter"><strong id="callCount">0</strong>server calls</div>
+      </header>
+      <div class="workspace">
+        <section aria-label="Pattern controls">
+          <div class="tabs" role="tablist" aria-label="Pattern source">
+            <button id="instrumentalTab" type="button" role="tab" aria-selected="true" aria-controls="instrumentalPanel">Instrumental</button>
+            <button id="lyricsTab" type="button" role="tab" aria-selected="false" aria-controls="lyricsPanel" tabindex="-1">Lyrics</button>
+          </div>
+          <div id="instrumentalPanel" role="tabpanel" aria-labelledby="instrumentalTab">
+            <label class="field"><span class="field-heading">Describe the pattern</span><textarea id="prompt" maxlength="3000">A spacious D minor motif with gentle offbeat movement.</textarea></label>
+          </div>
+          <div id="lyricsPanel" role="tabpanel" aria-labelledby="lyricsTab" hidden>
+            <label class="field"><span class="field-heading">Lyric rhythm</span><textarea id="lyrics" maxlength="3000" placeholder="Write a few lines to shape your note sketch">City lights are fading slow&#10;Every step finds room to grow</textarea><span class="help">Use words as the seed for a repeatable note sketch.</span></label>
+          </div>
+          <div class="field"><div class="field-heading" id="styleLabel">Style</div><div class="styles" role="group" aria-labelledby="styleLabel">
+            <button type="button" data-style="ambient" aria-pressed="true">Ambient</button><button type="button" data-style="jazz" aria-pressed="false">Jazz</button>
+          </div></div>
+          <div class="field"><div class="field-heading"><label for="bars">Pattern length</label><output id="barsLabel" for="bars">4 bars</output></div><input id="bars" type="range" min="1" max="8" step="1" value="4" aria-describedby="barsLabel"></div>
+          <button id="generate" class="generate" type="button" disabled><span aria-hidden="true">▥</span>Generate pattern</button>
+          <p id="status" class="status" role="status">Connecting to the workbench…</p>
+        </section>
+        <section class="sequence" aria-labelledby="sequenceTitle">
+          <div class="sequence-heading"><h2 id="sequenceTitle">Note sequence</h2><span id="resultTag" class="sequence-tag">D MINOR · 4/4</span></div>
+          <div class="roll"><svg id="pianoRoll" viewBox="0 0 760 236" role="img" aria-label="Empty piano roll"></svg><div id="patternSummary" class="roll-footer">No pattern yet</div></div>
+          <p id="empty" class="empty">Choose a source and style, then generate a pattern to fill the roll.</p>
+          <details id="noteDetails" hidden><summary>Read note sequence</summary><ol id="notesList" class="note-list"></ol></details>
+        </section>
+      </div>
+      <footer class="footer"><span>Local note-pattern generator · MIDI data only</span><span id="savedDefaults">Saved defaults loading…</span></footer>
+    </main>
+    <script>__MCP_APP_SCRIPT__</script>
+  </body>
+</html>

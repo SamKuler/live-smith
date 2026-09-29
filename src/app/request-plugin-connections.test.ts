@@ -73,7 +73,9 @@ test("one MCP server routes two named accounts privately and rejects a changed c
     { pluginId: plugin.id, serverId: "local", connectionId: "first", connectionName: "First account", name: "account" },
     { pluginId: plugin.id, serverId: "local", connectionId: "second", connectionName: "Second account", name: "account" },
   ]);
-  assert.doesNotMatch(JSON.stringify(request.catalogTools()), /first-secret|second-secret|plg_/u);
+  assert.doesNotMatch(JSON.stringify(request.catalogTools()), /first-secret|second-secret/u);
+  assert.deepEqual(request.catalogTools().map((tool) => tool.panel?.toolName), tools.map((tool) => tool.function.name));
+  assert.notEqual(request.catalogTools()[0]!.panel!.signature, request.catalogTools()[1]!.panel!.signature);
   assert.notEqual(tools[0]!.function.name, tools[1]!.function.name);
   assert.doesNotMatch(JSON.stringify(tools), /first-secret|second-secret/u);
   const invoke = (name: string) => request.callTool({ id: "call", name, arguments: "{}" });

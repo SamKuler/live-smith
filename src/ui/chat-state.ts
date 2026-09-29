@@ -32,7 +32,10 @@ import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 import type { AvailableSkillSummary } from "../skills/builtins.js";
 import type { InstalledPluginView } from "../plugins/view.js";
+import { pluginConfigView } from "../plugins/user-config.js";
+import type { PluginAppDescriptor } from "../plugins/mcp/apps.js";
 import type { PluginToolIssue } from "../plugins/contracts.js";
+import type { PluginParameterPanel } from "../plugins/parameter-panel.js";
 import type { UiMessage } from "../i18n/ui-message.js";
 
 export const MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES = 1024 * 1024;
@@ -67,7 +70,7 @@ export interface SessionToolCatalog {
     serverId?: string;
     connectionId?: string;
     connectionName?: string;
-    tools: Array<{ name: string; description: string }>;
+    tools: Array<{ name: string; description: string; panel?: PluginParameterPanel; app?: PluginAppDescriptor }>;
   }>;
   issues: PluginToolIssue[];
 }
@@ -182,6 +185,11 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
       })),
       unsupportedComponents: [...plugin.unsupportedComponents],
       issues: [...plugin.issues],
+      ...(plugin.userConfig ? { userConfig: {
+        ...pluginConfigView(plugin.userConfig.fields, { revision: plugin.userConfig.revision,
+          values: plugin.userConfig.values, secrets: {} }),
+        configuredSecrets: [...plugin.userConfig.configuredSecrets], invalidFields: [...plugin.userConfig.invalidFields],
+      } } : {}),
     })) } : {}),
     ...(state.sunoModelCatalog === undefined ? {} : { sunoModelCatalog: {
       serviceId: state.sunoModelCatalog.serviceId,
@@ -204,7 +212,19 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
         ...(group.serverId === undefined ? {} : { serverId: group.serverId }),
         ...(group.connectionId === undefined ? {} : { connectionId: group.connectionId }),
         ...(group.connectionName === undefined ? {} : { connectionName: group.connectionName }),
-        tools: group.tools.map(({ name, description }) => ({ name, description })),
+        tools: group.tools.map(({ name, description, panel, app }) => ({ name, description,
+          ...(app ? { app: { resourceUri: app.resourceUri, signature: app.signature, toolName: app.toolName } } : {}),
+          ...(panel === undefined ? {} : { panel: {
+            toolName: panel.toolName, signature: panel.signature,
+            fields: panel.fields.map((field) => ({
+              name: field.name, title: field.title, type: field.type, required: field.required,
+              ...Object.fromEntries([
+                "description", "default", "enum", "minimum", "maximum", "exclusiveMinimum",
+                "exclusiveMaximum", "multipleOf", "minLength", "maxLength",
+              ].filter((key) => Object.hasOwn(field, key)).map((key) => [key, field[key as keyof typeof field]])),
+            })),
+          } }),
+        })),
       })),
       issues: state.sessionToolCatalog.issues.map(({ pluginId, connectionId, serverId, code, message }) => ({
         ...(pluginId === undefined ? {} : { pluginId }),

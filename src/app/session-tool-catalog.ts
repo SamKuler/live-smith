@@ -1,4 +1,7 @@
 import { liveSmithTools } from "../agent/tool-definitions.js";
+import { Buffer } from "node:buffer";
+import type { PluginParameterPanel } from "../plugins/parameter-panel.js";
+import type { PluginAppDescriptor } from "../plugins/mcp/apps.js";
 import { inputTransportSupport } from "../model/input-support.js";
 import { createBuiltInAudioToolsets } from "../plugins/builtins/audio-toolsets.js";
 import type { Toolset } from "../plugins/registry.js";
@@ -51,17 +54,24 @@ export async function loadSessionToolCatalog(input: {
   const groups: SessionToolCatalog["groups"] = [];
   let projectedTools = 0;
   let truncated = false;
-  const addTool = (group: ToolGroup, name: string, description: string): void => {
+  let panelBytes = 0;
+  const addTool = (group: ToolGroup, name: string, description: string, panel?: PluginParameterPanel, app?: PluginAppDescriptor): void => {
     if (projectedTools >= MAX_SESSION_TOOL_CATALOG_TOOLS) {
       truncated = true;
       return;
     }
     const shortened = description.length > MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH;
+    if (panel) {
+      panelBytes += Buffer.byteLength(JSON.stringify(panel), "utf8");
+      if (panelBytes > 256 * 1024) { panel = undefined; truncated = true; }
+    }
     group.tools.push({
       name,
       description: shortened
         ? `${description.slice(0, MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH - 1)}…`
         : description,
+      ...(panel ? { panel } : {}),
+      ...(app ? { app } : {}),
     });
     projectedTools += 1;
   };
@@ -116,7 +126,7 @@ export async function loadSessionToolCatalog(input: {
         };
         mcpGroups.set(key, group);
       }
-      addTool(group, tool.name, tool.description);
+      addTool(group, tool.name, tool.description, tool.panel, tool.app);
     }
     groups.push(...[...mcpGroups.values()].filter((group) => group.tools.length));
     if (pluginTools.issues.length > MAX_SESSION_TOOL_CATALOG_ISSUES) truncated = true;
