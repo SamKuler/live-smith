@@ -2111,7 +2111,7 @@ export async function createChatBridge(
               input.kind === "set_session_model_selection" ||
               input.kind === "load_session_model_capabilities" ||
               input.kind === "load_session_tools" ||
-              input.kind === "run_plugin_tool"
+              input.kind === "run_plugin_tool" || input.kind === "run_audio_tool"
             ) &&
             activeSendsBySession.has(input.sessionId)
           ) {
@@ -2122,8 +2122,8 @@ export async function createChatBridge(
                 ? "Wait for this Session's active request to finish before loading model capabilities."
                 : input.kind === "load_session_tools"
                 ? "Wait for this Session's active request to finish before loading tools."
-                : input.kind === "run_plugin_tool"
-                ? "Wait for this Session's active request to finish before running a Plugin tool."
+                : input.kind === "run_plugin_tool" || input.kind === "run_audio_tool"
+                ? "Wait for this Session's active request to finish before running a tool."
                 : `Stop this Session's active request before ${
                   input.kind === "delete_session" ? "deleting" : "archiving"
                 } it.`,
@@ -3234,7 +3234,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "set_session_model_selection" ||
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||
-    input.kind === "run_plugin_tool" ||
+    input.kind === "run_plugin_tool" || input.kind === "run_audio_tool" ||
     input.kind === "import_midi_artifact" ||
     input.kind === "set_session_skills";
 }

@@ -2808,3 +2808,38 @@ label {
   }
 }
 }
+
+.audio-parameter-dialog { width: min(780px, 94vw); max-height: 90vh; @apply rounded-panel border border-border bg-pane p-5 text-text; }
+.audio-parameter-dialog::backdrop { background: rgb(0 0 0 / 60%); }
+.audio-parameter-header { @apply flex items-center justify-between gap-4; }
+.audio-parameter-header h3 { @apply m-0 text-heading font-medium; }
+.audio-parameter-connection { @apply my-2 text-label text-muted; }
+.audio-parameter-description { @apply my-3 text-small text-muted; }
+.audio-parameter-description summary { @apply cursor-pointer; }
+.audio-parameter-description p { @apply whitespace-pre-wrap; }
+.audio-parameter-form { @apply grid gap-4; }
+.audio-parameter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); @apply gap-4; }
+.audio-parameter-field { @apply grid min-w-0 content-start gap-2; }
+.audio-parameter-wide { grid-column: 1 / -1; }
+.audio-parameter-heading { @apply flex items-center justify-between gap-2 text-label; }
+.audio-parameter-optional, .audio-parameter-choice { @apply flex items-center gap-2 text-small text-muted; }
+.audio-parameter-value { @apply m-0 min-w-0 border-0 p-0; }
+.audio-parameter-value:disabled { opacity: .55; }
+.audio-parameter-value > :is(input:not([type="checkbox"]), textarea, select) { @apply w-full min-w-0; }
+.audio-parameter-value textarea { resize: vertical; }
+.audio-parameter-object > .audio-parameter-value { @apply rounded-control border border-divider p-3; }
+.audio-parameter-root > .audio-parameter-heading, .audio-parameter-variant > .audio-parameter-object > .audio-parameter-heading { display: none; }
+.audio-parameter-root > .audio-parameter-value, .audio-parameter-variant > .audio-parameter-object > .audio-parameter-value { @apply border-0 p-0; }
+.audio-parameter-variant { @apply mt-4; }
+.audio-parameter-items { @apply grid gap-3; }
+.audio-parameter-item { @apply flex items-start gap-3; }
+.audio-parameter-item > .audio-parameter-field { @apply grow; }
+.audio-parameter-item > button { @apply mt-6 shrink-0; }
+.audio-parameter-numeric { display: grid; grid-template-columns: minmax(0, 1fr) 5rem; @apply items-center gap-3; }
+.audio-parameter-field input:is([type="checkbox"], [type="range"]) { accent-color: var(--color-accent); }
+.audio-parameter-error { @apply m-0 text-small; }
+.audio-parameter-footer { @apply flex justify-end border-t border-divider pt-3; }
+@media (max-width: 560px) { .audio-parameter-grid { grid-template-columns: minmax(0, 1fr); } }
+.audio-parameter-optional { @apply shrink-0 whitespace-nowrap; }
+.audio-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; }
+.audio-parameter-field input:is([type="checkbox"], [type="range"]):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }

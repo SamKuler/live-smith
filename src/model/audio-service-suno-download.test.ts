@@ -222,7 +222,7 @@ test("explicit authority does not authorize on inspect and rejects forged output
     status: "completed", outputs: [output],
   });
   for (const value of [{ ...output, key: B }, { ...output, url: FORBIDDEN },
-    { ...output, url: sunoDownloadPath(B) }, { ...output, role: "sound_effect" as const }]) {
+    { ...output, url: sunoDownloadPath(B) }, { ...output, role: "vocals" as const }]) {
     await assert.rejects(h.adapter.download!(value, signal()), safeFailure);
   }
   assert.deepEqual(h.api().map(call => [call.path, call.init.method]), [[FEED, "GET"]]);

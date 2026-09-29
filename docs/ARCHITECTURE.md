@@ -1267,8 +1267,8 @@ configuration; a verified automatic Cookie rotation reloads only that account's
 current private credential. Recovery fingerprints likewise bind verified account
 IDs so rotation does not orphan accepted tasks. Custom options are typed,
 capability-gated and validated against
-the selected account's model catalog. Read-only preparation and challenge checks
-precede the paid submission boundary. `audio-services/suno-verification.ts`
+the selected account's model catalog. Read-only preparation and the endpoint's
+required challenge checks precede the paid submission boundary. `audio-services/suno-verification.ts`
 owns transient proof validation and provider-specific lifetimes. A successful
 challenge adds only proof fields to the original prepared body, consumed once;
 the HTTP boundary rechecks freshness after authentication and the app rechecks
@@ -1276,7 +1276,10 @@ account/network admission before dispatch. Generation holds the shared global
 settings lifecycle fence only after preparation, through authentication and the
 bounded paid receipt, not while the human solves a challenge. Known pre-dispatch rejections use
 `AudioSubmissionNotStartedError`, not the unknown-paid-outcome path. Challenge
-proof mapping for concat is unverified and remains fail-closed. A multi-clip receipt is persisted atomically
+preflight applies to the shared `v2-web` generation endpoint. Whole-song and
+replacement concatenation validate their source and submit directly to `concat/v2`;
+remaster uses its dedicated `upsample` endpoint. These routes retain the same
+dispatch authorization and receipt persistence boundaries. A multi-clip receipt is persisted atomically
 before polling and has immutable ID/role associations, including failed siblings.
 Only library/job-observed clip IDs on the selected connection can be used by the
 chat tools for extension/whole-song requests or retrieval of existing songs.
@@ -1305,6 +1308,24 @@ Live mutation recovery. Chat transports continue to exchange ordinary function
 calls and textual results. When an enabled processing service can consume the
 audio but the chat model cannot, the host validates and retains the attachment
 without adding its bytes to the model request.
+
+`plugins/builtins/parameter-panel.ts` derives per-connection manual forms from
+the same tool schemas and parsers used by model calls. Catalog signatures bind
+the schema and saved connection identity. `run_audio_tool` rederives that
+signature under admission authorization, validates the complete arguments, and
+uses the existing request audio runtime without invoking a chat model. It holds
+the Session send fence, records tool calls and results, and retains the ordinary
+generation authorization, cancellation and durable job lifecycle. Manual forms
+offer saved Session assets and Arrangement sources; request-only attachment
+locators remain exclusive to model requests. Observed Suno clip IDs are scoped
+to the Session, connection configuration and verified account; credential
+rotation preserves ownership. The host derives Clip, model and Persona
+suggestions from matching job ownership and query results tagged with the public
+connection/account/model identity. Untagged historical queries remain readable
+but supply no suggestions. Private fingerprints never enter the form descriptor.
+Browser form drafts are transient and cleared when their Session, account or
+saved configuration changes.
+
 For a runtime with function tools plus verified audio-input delivery,
 `listen_to_audio_asset` reads one immutable local asset already registered from
 the current Session. The tool is absent for incompatible Profiles. Admission
@@ -1325,6 +1346,15 @@ automatically. Resume first reconciles and verifies complete local results,
 even if the connection has been disabled, removed, or replaced. Only an
 incomplete local result proceeds to saved-connection authorization and the
 original credential fingerprint check before querying the existing task.
+
+Suno uploads use a separate typed receipt in the same job store. The frozen
+source hash, upload ID and initialized clip ID have separate meanings and cannot
+be replaced. Each remote mutation is preceded by a durable stage marker and
+followed by its receipt. Recovery polls or advances only acknowledged safe
+stages; it cannot replay an unconfirmed create, transfer, finish or initialize
+request. Signed upload locations and form credentials are never persisted or
+projected into Session state.
+
 Task-based generation acknowledges an immutable remote output ID/role mapping
 before collection. Downloads may refresh their URLs, but cannot change the
 confirmed output identities during recovery. Required roles derive from that

@@ -30,9 +30,11 @@ async function downloadUnlocked(http: SunoHttp, clipId: string, signal: AbortSig
 export async function downloadSunoClip(
   http: SunoHttp, clipId: string, signal: AbortSignal, authorizeDownload = false,
   authorization?: AudioDownloadAuthorization,
+  authorizationClipId = clipId,
 ): Promise<Uint8Array> {
   sunoActive(signal, http);
   sunoUuid(clipId, http);
+  sunoUuid(authorizationClipId, http);
   const controller = createHostAbortController();
   const stop = () => controller.abort();
   signal.addEventListener("abort", stop, { once: true });
@@ -40,18 +42,18 @@ export async function downloadSunoClip(
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, DOWNLOAD_TIMEOUT_MS);
   try {
     sunoActive(signal, http);
-    if (!await downloadUnlocked(http, clipId, controller.signal)) {
+    if (!await downloadUnlocked(http, authorizationClipId, controller.signal)) {
       if (authorizeDownload !== true) {
         throw http.fail("song download is locked. Use Download for this song and confirm its download allowance use.");
       }
       // One explicit allowance use, outside the preparation polling loop. An
       // absent/failed receipt or unconfirmed permission must never replay it.
       const authorize = () => http.request("POST", "/api/download/authorize", {
-        item_id: clipId, item_type: "clip",
+        item_id: authorizationClipId, item_type: "clip",
       }, controller.signal);
       const receipt = sunoObject(await (authorization ? authorization(controller.signal, authorize) : authorize()), http);
       if (receipt.ok !== true) throw http.fail("song download authorization was not confirmed. Check its download access on Suno.com before explicitly retrying Download for this song; no automatic retry was attempted.");
-      if (!await downloadUnlocked(http, clipId, controller.signal)) {
+      if (!await downloadUnlocked(http, authorizationClipId, controller.signal)) {
         throw http.fail("song download remains locked after authorization. Check its download access on Suno.com before explicitly retrying Download for this song; no automatic retry was attempted.");
       }
     }

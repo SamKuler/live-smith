@@ -293,7 +293,7 @@ test("only the enumerated method and route pairs reach the API", async () => {
 test("unlisted routes, query injection, malformed or oversized ID lists fail before authentication", async () => {
   const paths = ["https://example.test/", "//example.test/", "/api/billing/info/?x=1", "/api/billing/info",
     "/api/../api/billing/info/", "/api/%62illing/info/", "/api/billing/info/#fragment", "/api/billing/info/\n",
-    "/api/playlist/me", "/api/session/", "/api/project/me", `/api/gen/${ID}/set_visibility/`,
+    "/api/playlist/me", "/api/session/?secret=1", "/api/project/me", `/api/gen/${ID}/set_visibility/`,
     "/api/download/authorize", `/api/download/clip/${ID}`, `/api/download/clip/${ID}?format=wav`,
     `/api/download/clip/${ID}?format=mp3&unlock=true`, `/api/download/clip/${ID}/?format=mp3`,
     "/api/feed/", "/api/feed/?ids=", "/api/feed/?ids=not-a-uuid", `/api/feed/?ids=${ID}&page=1`,

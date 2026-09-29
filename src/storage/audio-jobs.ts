@@ -8,9 +8,9 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   LEGACY_AUDIO_SERVICE_ID, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
-  MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SESSION_JOBS, SEPARATION_STEMS,
+  MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SESSION_JOBS, SEPARATION_STEMS, SUNO_STEM_ROLES,
   MAX_AUDIO_JOB_TITLE_CHARACTERS,
-  type AudioAsset, type AudioJob, type AudioOrigin, type SeparationStem,
+  type AudioAsset, type AudioJob, type AudioOrigin, type SeparationStem, type SunoUploadReceipt,
 } from "../audio-services/contracts.js";
 import { isAudioServiceModelId } from "../audio-services/model-id.js";
 import { isUiMessage } from "../i18n/ui-message.js";
@@ -35,6 +35,9 @@ export const audioAssetInspectionLimits = {
   maxBytes: MAX_AUDIO_ASSET_BYTES,
   maxDurationSeconds: MAX_AUDIO_ASSET_DURATION_SECONDS,
 };
+const uploadStages: readonly SunoUploadReceipt["stage"][] = [
+  "prepared", "creating", "created", "uploading", "uploaded", "finishing", "processing", "processed", "initializing", "complete",
+];
 const jobStatuses: readonly AudioJob["status"][] = [
   "preparing", "submitting", "running", "collecting", "ready", "completed",
   "partial", "failed", "interrupted", "unknown", "cancelled",
@@ -49,15 +52,15 @@ const jobFields = [
   "id", "sessionId", "pluginId", "toolId", "toolVersion", ...jobConfigurationFields,
   "status", "createdAt", "updatedAt", "sourceAssetId", "remoteSourceId",
   "remoteTaskId", "expectedOutputRoles", "expectedOutputs", "remoteOutputs", "remoteTaskTerminal", "failedOutputKeys",
-  "outputAssets", "message",
+  "outputAssets", "message", "upload",
 ];
 const updateFields = [
   "status", "sourceAssetId", "remoteSourceId", "remoteTaskId", "expectedOutputRoles", "expectedOutputs", "remoteOutputs",
-  "remoteTaskTerminal", "failedOutputKeys", "outputAssets", "message",
+  "remoteTaskTerminal", "failedOutputKeys", "outputAssets", "message", "upload",
 ];
 type JobUpdate = Partial<Pick<AudioJob,
   "status" | "sourceAssetId" | "remoteSourceId" | "remoteTaskId" | "expectedOutputRoles" | "expectedOutputs" | "remoteOutputs" |
-  "remoteTaskTerminal" | "failedOutputKeys" | "outputAssets" | "message"
+  "remoteTaskTerminal" | "failedOutputKeys" | "outputAssets" | "message" | "upload"
 >>;
 type InitialRetrievalReceipt = {
   remoteTaskId: string;
@@ -154,6 +157,12 @@ export async function updateAudioJob(
     // A first identity mapping replaces, rather than duplicates, the historical shape.
     if (patch.expectedOutputs && !Object.hasOwn(patch, "expectedOutputRoles")) delete job.expectedOutputRoles;
     if (!isAudioJob(job)) throw new AudioStorageError("Audio job update is invalid.");
+    if (job.upload && (!current.upload ? job.upload.stage !== "prepared" :
+      job.upload.sourceSha256 !== current.upload.sourceSha256 ||
+      current.upload.uploadId !== undefined && job.upload.uploadId !== current.upload.uploadId ||
+      current.upload.clipId !== undefined && job.upload.clipId !== current.upload.clipId ||
+      ![uploadStages.indexOf(current.upload.stage), uploadStages.indexOf(current.upload.stage) + 1].includes(uploadStages.indexOf(job.upload.stage))) ||
+      current.upload && !job.upload) throw new AudioStorageError("The saved upload receipt changed.");
     if (current.expectedOutputs && (current.remoteTaskId !== job.remoteTaskId ||
       !isDeepStrictEqual(current.expectedOutputs, job.expectedOutputs))) {
       throw new AudioStorageError("The confirmed audio output identities changed.");
@@ -214,7 +223,8 @@ function addLegacyPluginToolIdentity(value: Record<string, unknown>): Record<str
 async function verifyJobAssets(directory: AudioDirectoryBinding, job: AudioJob): Promise<void> {
   if (job.sourceAssetId !== undefined) {
     const source = await readAudioAssetRecord(directory, job.sessionId, job.sourceAssetId);
-    if (!source || source.jobId !== job.id || source.role !== "source") throw new AudioStorageError();
+    if (!source || source.jobId !== job.id || source.role !== "source" ||
+        job.upload && source.sha256 !== job.upload.sourceSha256) throw new AudioStorageError();
   }
   for (const expected of job.outputAssets) {
     const actual = await readAudioAssetRecord(directory, job.sessionId, expected.id);
@@ -230,7 +240,10 @@ function isAudioJob(value: unknown): value is AudioJob {
     validDate(value.createdAt) && validDate(value.updatedAt) &&
     value.updatedAt >= value.createdAt &&
     (!Object.hasOwn(value, "sourceAssetId") ||
-      (value.operation === "separate_stems" && isSafeStorageId(value.sourceAssetId))) &&
+      (["separate_stems", "upload_music"].includes(value.operation) && isSafeStorageId(value.sourceAssetId))) &&
+    (!Object.hasOwn(value, "upload") || validUploadReceipt(value)) &&
+    (value.operation !== "upload_music" || value.upload !== undefined ||
+      value.remoteTaskId === undefined && value.expectedOutputs === undefined && value.remoteOutputs === undefined) &&
     (!Object.hasOwn(value, "remoteSourceId") ||
       (value.operation === "separate_stems" && validProviderIdentifier(value.remoteSourceId))) &&
     (!Object.hasOwn(value, "remoteTaskId") || validProviderIdentifier(value.remoteTaskId)) &&
@@ -253,6 +266,23 @@ function isAudioJob(value: unknown): value is AudioJob {
     new Set(value.outputAssets.map((asset: AudioAsset) => asset.role)).size === value.outputAssets.length;
 }
 
+function validUploadReceipt(job: Record<string, unknown> & JobConfiguration): boolean {
+  const receipt = job.upload;
+  if (job.provider !== "suno" || job.operation !== "upload_music" || !isSafeStorageId(job.sourceAssetId) ||
+      !audioRecordHasOnly(receipt, ["stage", "sourceSha256", "rightsConfirmed", "uploadId", "clipId"]) ||
+      !isAudioHash(receipt.sourceSha256) || receipt.rightsConfirmed !== true ||
+      !uploadStages.includes(receipt.stage as SunoUploadReceipt["stage"])) return false;
+  const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
+  const hasUploadId = !["prepared", "creating"].includes(receipt.stage as string);
+  if (hasUploadId ? !uuid(receipt.uploadId) : receipt.uploadId !== undefined) return false;
+  if (receipt.stage !== "complete") return receipt.clipId === undefined && job.remoteTaskId === undefined && job.expectedOutputs === undefined && job.remoteOutputs === undefined;
+  return uuid(receipt.clipId) && receipt.clipId === job.remoteTaskId &&
+    Array.isArray(job.expectedOutputs) && job.expectedOutputs.length === 1 &&
+    job.expectedOutputs[0]?.key === receipt.clipId && job.expectedOutputs[0]?.role === "uploaded_audio" &&
+    Array.isArray(job.remoteOutputs) && job.remoteOutputs.length === 1 &&
+    job.remoteOutputs[0]?.key === receipt.clipId && job.remoteOutputs[0]?.role === "uploaded_audio";
+}
+
 function validPluginToolIdentity(value: Record<string, unknown> & JobConfiguration): boolean {
   if (typeof value.pluginId !== "string" || typeof value.toolId !== "string" ||
       typeof value.toolVersion !== "string") return false;
@@ -273,7 +303,7 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
     : value.provider === "google-lyria" ? value.operation === "generate_music"
     : value.provider === "mureka" ? ["generate_music", "generate_song_from_lyrics"].includes(value.operation as string)
     : value.provider === "suno-platform" ? value.operation === "generate_music"
-    : value.provider === "suno" ? ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(value.operation as string)
+    : value.provider === "suno" ? ["generate_music", "extend_music", "get_whole_song", "retrieve_music", "generate_sound_sample", "cover_music", "remaster_music", "add_vocals", "add_instrumental", "replace_music_section", "finish_music_replacement", "upload_music", "extract_music_stems"].includes(value.operation as string)
     : value.provider === "sunoapi" && value.operation === "generate_music";
   return validOperation && isSafeStorageId(value.serviceId) && isAudioHash(value.connectionFingerprint) &&
     (!Object.hasOwn(value, "title") || typeof value.title === "string" && Boolean(value.title.trim()) &&
@@ -285,9 +315,13 @@ function isJobConfiguration(value: Record<string, unknown>): value is Record<str
 
 function validExpectedOutputRoles(job: JobConfiguration, roles: unknown): boolean {
   if (!Array.isArray(roles)) return false;
+  if (job.operation === "upload_music") return job.provider === "suno" && roles.length === 1 && roles[0] === "uploaded_audio";
+  if (job.operation === "extract_music_stems") return job.provider === "suno" && roles.length > 0 && roles.length <= SUNO_STEM_ROLES.length &&
+    roles.every((role) => SUNO_STEM_ROLES.includes(role)) && new Set(roles).size === roles.length;
+  if (job.operation === "generate_sound_sample") return roles[0] === "sound_effect" && (roles.length === 1 || roles.length === 2 && roles[1] === "sound_effect_alternative");
   if (job.operation === "generate_sound_effect") return roles.length === 1 && roles[0] === "sound_effect";
-  return ["generate_music", "generate_song_from_lyrics", "extend_music", "get_whole_song", "retrieve_music"].includes(job.operation) && roles[0] === "music" &&
-    (roles.length === 1 || job.operation !== "get_whole_song" && ["sunoapi", "suno"].includes(job.provider) &&
+  return ["generate_music", "generate_song_from_lyrics", "extend_music", "get_whole_song", "retrieve_music", "cover_music", "remaster_music", "add_vocals", "add_instrumental", "replace_music_section", "finish_music_replacement"].includes(job.operation) && roles[0] === "music" &&
+    (roles.length === 1 || job.operation !== "get_whole_song" && job.operation !== "finish_music_replacement" && ["sunoapi", "suno"].includes(job.provider) &&
       roles.length === 2 && roles[1] === "music_alternative");
 }
 
@@ -330,19 +364,29 @@ function validFailedOutputKeys(job: Record<string, unknown> & JobConfiguration):
 export function audioJobOwnsAssetRole(
   job: Pick<AudioJob, "provider" | "operation" | "stems"> & { expectedOutputRoles?: unknown; expectedOutputs?: unknown }, role: AudioAsset["role"],
 ): boolean {
+  if (job.operation === "upload_music" && role === "source") return job.provider === "suno";
   if (job.expectedOutputs !== undefined &&
     (!Array.isArray(job.expectedOutputs) || !job.expectedOutputs.some((output) => output.role === role))) return false;
   if (job.expectedOutputRoles !== undefined &&
     (!Array.isArray(job.expectedOutputRoles) || !job.expectedOutputRoles.includes(role))) return false;
   switch (job.operation) {
+    case "upload_music": return job.provider === "suno" && role === "uploaded_audio";
+    case "extract_music_stems": return job.provider === "suno" && SUNO_STEM_ROLES.includes(role as typeof SUNO_STEM_ROLES[number]);
     case "separate_stems": return job.provider === "lalal" &&
       (role === "source" || role === "residual" || job.stems.some((stem) => stem === role));
     case "generate_music": return (["elevenlabs", "google-lyria", "mureka", "suno-platform"].includes(job.provider) && role === "music") ||
       (["sunoapi", "suno"].includes(job.provider) && (role === "music" || role === "music_alternative"));
     case "generate_song_from_lyrics": return job.provider === "mureka" && role === "music";
+    case "add_vocals":
+    case "add_instrumental":
+    case "replace_music_section":
+    case "cover_music":
+    case "remaster_music":
     case "extend_music":
     case "retrieve_music": return job.provider === "suno" && (role === "music" || role === "music_alternative");
+    case "finish_music_replacement":
     case "get_whole_song": return job.provider === "suno" && role === "music";
+    case "generate_sound_sample": return job.provider === "suno" && (role === "sound_effect" || role === "sound_effect_alternative");
     case "generate_sound_effect": return job.provider === "elevenlabs" && role === "sound_effect";
   }
 }
@@ -415,13 +459,13 @@ export function isAudioAsset(value: unknown): value is AudioAsset {
     "id", "sessionId", "jobId", "label", "role", "mediaType", "byteLength", "sha256",
     "durationSeconds", "sampleRate", "channels", "origin",
   ]) && isSafeStorageId(value.sessionId) && isSafeStorageId(value.jobId) &&
-    [...SEPARATION_STEMS, "residual", "source", "music", "music_alternative", "sound_effect"].includes(value.role as string) &&
+    [...SEPARATION_STEMS, "residual", "source", "music", "music_alternative", "sound_effect", "sound_effect_alternative", "uploaded_audio", ...SUNO_STEM_ROLES].includes(value.role as string) &&
     value.id === audioAssetId(value.jobId, value.role as AudioAsset["role"]) &&
     boundedAudioText(value.label, 256) && isAudioHash(value.sha256) &&
     Number.isSafeInteger(value.byteLength) && (value.byteLength as number) > 0 &&
     (value.byteLength as number) <= MAX_AUDIO_ASSET_BYTES &&
     isAudioAttachmentInspection(value, audioAssetInspectionLimits) && isAudioOrigin(value.origin) &&
-    (["music", "music_alternative", "sound_effect"].includes(value.role as string) === (value.origin.kind === "generated"));
+    (["music", "music_alternative", "sound_effect", "sound_effect_alternative", "uploaded_audio", ...SUNO_STEM_ROLES].includes(value.role as string) === (value.origin.kind === "generated"));
 }
 
 export async function readAudioAssetRecord(

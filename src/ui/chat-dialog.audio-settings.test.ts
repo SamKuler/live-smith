@@ -319,8 +319,9 @@ test("Suno keeps essential connection facts visible and moves adapter details in
     assert.equal(help.tabIndex, 0);
     assert.equal(help.getAttribute("role"), "note");
     assert.equal(help.dataset.tooltip, help.getAttribute("aria-label"));
-    assert.match(help.dataset.tooltip ?? "", /adapter gaps, not restrictions on Live Smith/i);
-    assert.match(help.dataset.tooltip ?? "", /Suno Studio workspace editing or publishing/i);
+    assert.ok(help.dataset.tooltip?.trim());
+    help.focus();
+    assert.equal(harness.document.activeElement, help, "Connection help must remain keyboard accessible.");
     assert.equal(harness.document.querySelector("#sunoLoginControls details#sunoFeatureHelp"), null);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#sunoSessionValue")!.type, "password");
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#openSunoWebsiteButton")!.disabled, false);

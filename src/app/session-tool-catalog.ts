@@ -3,17 +3,16 @@ import { Buffer } from "node:buffer";
 import type { PluginParameterPanel } from "../plugins/parameter-panel.js";
 import type { PluginAppDescriptor } from "../plugins/mcp/apps.js";
 import { inputTransportSupport } from "../model/input-support.js";
-import { createBuiltInAudioToolsets } from "../plugins/builtins/audio-toolsets.js";
-import type { Toolset } from "../plugins/registry.js";
+import type { AudioParameterPanel } from "../plugins/builtins/parameter-panel.js";
+import { loadAudioParameterGroups } from "./audio-parameter-tool.js";
+import { sessionMediaTools } from "../plugins/builtins/audio-toolsets.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { listAudioJobs } from "../storage/audio-jobs.js";
 import type { ChatDialogState, SessionToolCatalog } from "../ui/chat-state.js";
 import {
   MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH,
   MAX_SESSION_TOOL_CATALOG_ISSUES,
   MAX_SESSION_TOOL_CATALOG_TOOLS,
 } from "../ui/chat-state.js";
-import { availableIntegrationConnections } from "./integration-connections.js";
 import {
   createRequestPluginTools,
   type PluginExecutionAuthorization,
@@ -55,7 +54,7 @@ export async function loadSessionToolCatalog(input: {
   let projectedTools = 0;
   let truncated = false;
   let panelBytes = 0;
-  const addTool = (group: ToolGroup, name: string, description: string, panel?: PluginParameterPanel, app?: PluginAppDescriptor): void => {
+  const addTool = (group: ToolGroup, name: string, description: string, panel?: PluginParameterPanel, app?: PluginAppDescriptor, audioPanel?: AudioParameterPanel): void => {
     if (projectedTools >= MAX_SESSION_TOOL_CATALOG_TOOLS) {
       truncated = true;
       return;
@@ -65,6 +64,10 @@ export async function loadSessionToolCatalog(input: {
       panelBytes += Buffer.byteLength(JSON.stringify(panel), "utf8");
       if (panelBytes > 256 * 1024) { panel = undefined; truncated = true; }
     }
+    if (audioPanel) {
+      panelBytes += Buffer.byteLength(JSON.stringify(audioPanel), "utf8");
+      if (panelBytes > 256 * 1024) { audioPanel = undefined; truncated = true; }
+    }
     group.tools.push({
       name,
       description: shortened
@@ -72,6 +75,7 @@ export async function loadSessionToolCatalog(input: {
         : description,
       ...(panel ? { panel } : {}),
       ...(app ? { app } : {}),
+      ...(audioPanel ? { audioPanel } : {}),
     });
     projectedTools += 1;
   };
@@ -81,18 +85,16 @@ export async function loadSessionToolCatalog(input: {
   }
   groups.push(liveGroup);
 
-  const services = await availableIntegrationConnections(input.storageDirectory);
-  const jobs = input.storageDirectory
-    ? await listAudioJobs(input.storageDirectory, input.sessionId)
-    : [];
-  if (services.length || jobs.length) {
-    for (const toolset of createBuiltInAudioToolsets({
-      services,
-      includeModelAudioInput: audioInputSupported,
-      execute: async () => { throw new Error("Catalog discovery cannot execute an audio tool."); },
-    })) {
-      addToolset(groups, toolset, addTool);
-    }
+  const audioCatalog = await loadAudioParameterGroups(input.storageDirectory, input.sessionId);
+  for (const audioGroup of audioCatalog.groups) {
+    const group: ToolGroup = { ...audioGroup, tools: [] };
+    for (const tool of audioGroup.tools) addTool(group, tool.name, tool.description, undefined, undefined, tool.audioPanel);
+    if (group.tools.length) groups.push(group);
+  }
+  const mediaGroup = groups.find((group) => group.pluginId === "live-smith.media");
+  if (audioInputSupported && mediaGroup) {
+    const listening = sessionMediaTools(true).find((tool) => tool.function.name === "listen_to_audio_asset")!;
+    addTool(mediaGroup, listening.function.name, listening.function.description);
   }
 
   const pluginTools = await createRequestPluginTools({
@@ -145,14 +147,4 @@ export async function loadSessionToolCatalog(input: {
   } finally {
     await pluginTools.close();
   }
-}
-
-function addToolset(
-  groups: SessionToolCatalog["groups"],
-  toolset: Toolset,
-  addTool: (group: ToolGroup, name: string, description: string) => void,
-): void {
-  const group: ToolGroup = { kind: "audio", pluginId: toolset.id, tools: [] };
-  for (const tool of toolset.tools()) addTool(group, tool.function.name, tool.function.description);
-  if (group.tools.length) groups.push(group);
 }

@@ -4,7 +4,11 @@ import type {
   AudioProvider,
   AudioServiceAdapter,
   MusicGenerationOptionField,
+  LyricWritingRequest,
+  LyricWritingResult,
+  LyricModelCatalog,
 } from "../../audio-services/contracts.js";
+import type { SunoSessionRefreshHandler } from "../../audio-services/suno-http.js";
 import type { AudioToolRequest } from "../../agent/audio-tools.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import type { OpenProviderWebSocket } from "../../runtime/proxy-websocket.js";
@@ -67,6 +71,7 @@ export interface BuiltInAudioConnectionRuntime {
 export interface BuiltInAudioHostRuntime {
   fetchImpl: typeof fetch;
   openWebSocket: OpenProviderWebSocket;
+  onSunoSessionRefresh?: SunoSessionRefreshHandler;
   createWebsiteSubscriptionAdapter?(
     connection: BuiltInAudioConnectionRuntime,
     authorizeDownloads: boolean,
@@ -96,4 +101,10 @@ export interface BuiltInAudioPluginDefinition {
     signal: AbortSignal,
     runtime: BuiltInAudioHostRuntime,
   ): Promise<{ title: string; lyrics: string }>;
+  writeLyrics?(
+    connection: BuiltInAudioConnectionRuntime, request: LyricWritingRequest, signal: AbortSignal, runtime: BuiltInAudioHostRuntime,
+  ): Promise<LyricWritingResult>;
+  inspectLyricModels?(
+    connection: BuiltInAudioConnectionRuntime, signal: AbortSignal, runtime: BuiltInAudioHostRuntime,
+  ): Promise<LyricModelCatalog>;
 }

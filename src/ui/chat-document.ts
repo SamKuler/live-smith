@@ -42,7 +42,7 @@ import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
-import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
+import { SEPARATION_STEMS, SUNO_STEM_ROLES, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_JOB_TITLE_CHARACTERS,
   AUDIO_OUTPUT_LABELS } from "../audio-services/contracts.js";
 
@@ -65,6 +65,7 @@ export interface ChatClientScripts {
   pluginParameters: string;
   pluginUserConfig: string;
   pluginApps: string;
+  audioParameters: string;
   connectionsManager: string;
   sessionTimeline: string;
   skillManager: string;
@@ -210,6 +211,7 @@ function injectSessionContract(script: string): string {
       JSON.stringify(BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS))
     .replaceAll("__MAX_INTEGRATION_CONNECTIONS__", String(MAX_INTEGRATION_CONNECTIONS))
     .replaceAll("__SEPARATION_STEMS__", () => JSON.stringify(SEPARATION_STEMS))
+    .replaceAll("__SUNO_STEM_ROLES__", () => JSON.stringify(SUNO_STEM_ROLES))
     .replaceAll("__AUDIO_OUTPUT_LABELS__", () => JSON.stringify(AUDIO_OUTPUT_LABELS))
     .replaceAll("__MAX_AUDIO_JOB_TITLE_CHARACTERS__", String(MAX_AUDIO_JOB_TITLE_CHARACTERS))
     .replaceAll("__MAX_AUDIO_ASSET_BYTES__", String(MAX_AUDIO_ASSET_BYTES))
@@ -257,6 +259,7 @@ export function composeChatDocument(
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
     __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
     __PLUGIN_APPS_SCRIPT__: scripts.pluginApps,
+    __AUDIO_PARAMETERS_SCRIPT__: scripts.audioParameters,
     __CONNECTIONS_MANAGER_SCRIPT__: injectSessionContract(scripts.connectionsManager),
     __TOOLS_INSPECTOR_SCRIPT__: injectSessionContract(scripts.toolsInspector),
     __PLUGIN_PARAMETERS_SCRIPT__: scripts.pluginParameters.replace("__PLUGIN_PARAMETER_LIMITS__", () => JSON.stringify({

@@ -1,5 +1,5 @@
 import type { AudioGenerationAdapter, AudioGenerationRequest } from "./contracts.js";
-import { createMurekaHttp, type MurekaTaskKind } from "./mureka-http.js";
+import { createMurekaHttp, MurekaError, type MurekaTaskKind } from "./mureka-http.js";
 import { exceedsAudioPromptLimit } from "./prompt.js";
 
 const RUNNING = new Set(["preparing", "queued", "running", "streaming"]);
@@ -84,6 +84,10 @@ export function createMurekaAudioAdapter(
   };
 }
 
+export class MurekaLyricsOutcomeUnknownError extends Error {
+  constructor() { super("Mureka audio service: lyric-generation result is unconfirmed. Do not submit it again automatically."); }
+}
+
 export async function generateMurekaLyrics(
   apiKey: string,
   prompt: string,
@@ -92,10 +96,18 @@ export async function generateMurekaLyrics(
 ): Promise<{ title: string; lyrics: string }> {
   const http = createMurekaHttp(apiKey, options.fetchImpl);
   if (!validText(prompt, 8000)) throw http.fail("lyrics prompt must contain 1–8000 characters.");
-  const value = await http.submit("lyrics", { prompt }, signal);
-  const title = generatedText(value.title, 200, false, http.fail);
-  const lyrics = generatedText(value.lyrics, 20_000, true, http.fail);
-  return { title, lyrics };
+  let dispatched = false;
+  try {
+    const value = await http.submit("lyrics", { prompt }, signal, () => { dispatched = true; });
+    const title = generatedText(value.title, 200, false, http.fail);
+    const lyrics = generatedText(value.lyrics, 20_000, true, http.fail);
+    return { title, lyrics };
+  } catch (error) {
+    const rejected = error instanceof MurekaError && error.status !== undefined &&
+      error.status >= 400 && error.status < 500 && error.status !== 408;
+    if (dispatched && !rejected) throw new MurekaLyricsOutcomeUnknownError();
+    throw error;
+  }
 }
 
 function validateGenerationRequest(

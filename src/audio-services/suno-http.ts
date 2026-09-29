@@ -19,22 +19,27 @@ const SUBMIT_STOP_GRACE_MS = 3_000;
 const TOKEN_REFRESH_MARGIN_MS = 30 * 60_000;
 const UUID = "[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}";
 const FEED_IDS = new RegExp(`^/api/feed/\\?ids=${UUID}(?:,${UUID}){0,49}$`, "u");
+const ALIGNED_LYRICS = new RegExp(`^/api/gen/${UUID}/aligned_lyrics/v2$`, "u");
 const PERSONA = new RegExp(`^/api/persona/get-persona-paginated/${UUID}/\\?page=(?:0|[1-9][0-9]{0,3})$`, "u");
 const DOWNLOAD = new RegExp(`^/api/download/clip/${UUID}\\?format=mp3$`, "u");
+const UPLOAD_STATUS = new RegExp(`^/api/uploads/audio/${UUID}/$`, "u");
+const UPLOAD_MUTATION = new RegExp(`^/api/uploads/audio/${UUID}/(?:upload-finish|initialize-clip)/$`, "u");
 const DOWNLOAD_ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 // Public response examples: https://github.com/serkansmg/SunoApiManager/blob/main/API.md
 // The authorized MP3 preparation endpoint also returns signed URLs on this exact
 // Suno bucket. No wildcard S3 hosts, playback endpoints or caller-selected APIs.
 const AUDIO_HOSTS = new Set(["cdn1.suno.ai", "cdn2.suno.ai", "cdn.suno.ai", "suno-data-uploads.s3.amazonaws.com"]);
 
-class SunoHttpError extends Error {}
+export class SunoHttpError extends Error {
+  constructor(message: string, readonly status?: number) { super(message); }
+}
 export type SunoSessionRefreshHandler = (
   previousSessionValue: string, nextSessionValue: string, signal: AbortSignal,
 ) => void | Promise<void>;
 
 /** Trusted local diagnostics only; network failures never supply their messages. */
-function fail(detail: string): Error {
-  return new SunoHttpError(`Suno.com audio service: ${detail}`);
+function fail(detail: string, status?: number): Error {
+  return new SunoHttpError(`Suno.com audio service: ${detail}`, status);
 }
 
 function active(signal: AbortSignal): void {
@@ -82,8 +87,9 @@ function object(value: unknown): Record<string, unknown> {
 
 function allowedRoute(method: string, path: string): boolean {
   if (typeof path !== "string" || path.length > 4096 || /[\s\\]/u.test(path)) return false;
-  if (method === "GET") return path === "/api/billing/info/" || FEED_IDS.test(path) || PERSONA.test(path) || DOWNLOAD.test(path);
-  return method === "POST" && ["/api/feed/v3", "/api/c/check", "/api/generate/v2-web/", "/api/generate/concat/v2/",
+  if (method === "GET") return path === "/api/generate/cowrite-lyrics/models/" || path === "/api/billing/info/" || path === "/api/session/" || FEED_IDS.test(path) || ALIGNED_LYRICS.test(path) || PERSONA.test(path) || DOWNLOAD.test(path) || UPLOAD_STATUS.test(path);
+  if (method === "POST" && (path === "/api/uploads/audio/" || UPLOAD_MUTATION.test(path))) return true;
+  return method === "POST" && ["/api/generate/cowrite-lyrics/", "/api/feed/v3", "/api/c/check", "/api/generate/v2-web/", "/api/generate/concat/v2/", "/api/generate/upsample",
     "/api/download/authorize"].includes(path);
 }
 
@@ -146,10 +152,10 @@ export function createSunoHttp(
         const detail = `${summary} (HTTP ${response.status}); no automatic retry was attempted.`;
         // The rejection is already known. Optional diagnostics and cancellation
         // cannot replace it with a transport/unknown-outcome failure.
-        rejection = fail(detail);
+        rejection = fail(detail, response.status);
         const diagnostic = url.startsWith(`${API_BASE}/`) && !audio
           ? await sunoErrorDiagnostic(response, controller.signal, [...credentialSecrets, ...(cached ? [cached.jwt] : [])], init.body) : "";
-        if (diagnostic) rejection = fail(`${detail} Provider diagnostic: ${diagnostic}`);
+        if (diagnostic) rejection = fail(`${detail} Provider diagnostic: ${diagnostic}`, response.status);
         throw rejection;
       }
       const mime = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
@@ -253,7 +259,7 @@ export function createSunoHttp(
               item.item_type !== "clip" || typeof item.item_id !== "string" || !DOWNLOAD_ITEM_ID.test(item.item_id)) throw new Error();
         }
       } catch { throw fail("request route or body is not allowed."); }
-      const preserveReceipt = method === "POST" && ["/api/generate/v2-web/", "/api/generate/concat/v2/"].includes(path);
+      const preserveReceipt = method === "POST" && (["/api/generate/cowrite-lyrics/", "/api/generate/v2-web/", "/api/generate/concat/v2/", "/api/generate/upsample", "/api/uploads/audio/"].includes(path) || UPLOAD_MUTATION.test(path));
       let jwt: string;
       try {
         jwt = await accessToken(signal);

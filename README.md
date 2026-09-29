@@ -109,6 +109,14 @@ names, and raw provider/SDK output stay in their original language.
   **Settings → Extensions → Audio services**, then describe the music or sound you want.
   Multiple named audio connections, including separate accounts at the same
   provider, can be enabled together.
+- **Run audio tools from a parameter panel.** Open **Session → Tools**, choose
+  a named audio connection, expand a tool and select **Open controls**. The form
+  offers that connection's supported inputs, including custom lyrics, sliders,
+  sound parameters and source selection. **Run tool** invokes the audio service
+  directly without a chat-model request. Results and tool history belong to the
+  active Session; generation can consume the connection's allowance. Form drafts
+  last while that Session, account and connection configuration remain active. Saved
+  connection settings continue to supply credentials and the default model.
 - **Generate songs or instrumentals with Mureka.** Add a **Mureka** connection
   with an API key from [Mureka API Platform](https://platform.mureka.ai/), then
   use prompt-based music generation. Live Smith polls the accepted task, saves
@@ -135,7 +143,12 @@ names, and raw provider/SDK output stay in their original language.
   access to your Google credentials. Enable the saved experimental connection
   to generate music using your subscription credits, supply lyrics/styles and
   supported sliders, select male or female vocals, request a supported 10–480
-  second duration, browse songs/models, extend songs and get whole songs.
+  second duration, browse songs/models, extend songs and get whole songs. The
+  same connection offers Sounds with loop/BPM/key controls, Cover, Remaster,
+  audio upload, Add Vocals, Add Instrumental, section replacement, native stem
+  extraction and lyric writing. Source
+  permissions and model capabilities are checked before submission. Replacement
+  candidates are finalized through a separate explicit operation.
   Load account versions in the connection editor and choose a fixed version or
   follow the account default. The active Session's generated and processed audio
   appears above the chat composer, separately from connection settings. Completed

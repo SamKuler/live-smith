@@ -83,7 +83,7 @@ function coreAudioToolset(
   };
 }
 
-function sessionMediaTools(includeModelAudioInput: boolean): ModelFunctionTool[] {
+export function sessionMediaTools(includeModelAudioInput: boolean): ModelFunctionTool[] {
   return [
     ...(includeModelAudioInput ? [{
       type: "function" as const,

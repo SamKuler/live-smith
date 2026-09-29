@@ -5,7 +5,7 @@ import { isDeepStrictEqual, types } from "node:util";
 
 import { inspectAudioAttachment } from "../attachments/audio.js";
 import {
-  MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_SESSION_BYTES, SEPARATION_STEMS, type AudioAsset, type AudioJob, type AudioOrigin,
+  MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_SESSION_BYTES, MAX_AUDIO_JOB_OUTPUTS, SEPARATION_STEMS, SUNO_STEM_ROLES, type AudioAsset, type AudioJob, type AudioOrigin,
 } from "../audio-services/contracts.js";
 import { cloneJsonValue } from "../model/json-clone.js";
 import { throwIfAborted } from "../runtime/host.js";
@@ -84,7 +84,7 @@ export async function assertAudioOutputCapacity(
   storageDirectory: string | undefined, sessionId: string, outputCount: number,
 ): Promise<void> {
   requireAudioStorage(storageDirectory, sessionId);
-  if (!Number.isInteger(outputCount) || outputCount < 1 || outputCount > 7) throw new AudioStorageError("Invalid audio output capacity request.");
+  if (!Number.isInteger(outputCount) || outputCount < 1 || outputCount > MAX_AUDIO_JOB_OUTPUTS) throw new AudioStorageError("Invalid audio output capacity request.");
   await withStorageTransaction(storageDirectory, async () => {
     await requireAudioSession(storageDirectory, sessionId);
     const directory = await bindAudioDirectory(storageDirectory, sessionId);
@@ -157,7 +157,7 @@ async function listAssetsForJobs(
   const byJobId = new Map(jobs.map((job) => [job.id, job]));
   const committed = new Map(jobs.flatMap((job) => job.outputAssets).map((asset) => [asset.id, asset]));
   const target = oneJob ? jobs[0]! : undefined;
-  const wanted = target ? new Set(["source", "residual", ...SEPARATION_STEMS, "music", "music_alternative", "sound_effect"]
+  const wanted = target ? new Set(["source", "residual", ...SEPARATION_STEMS, "music", "music_alternative", "sound_effect", "sound_effect_alternative", "uploaded_audio", ...SUNO_STEM_ROLES]
     .map((role) => audioAssetId(target.id, role as AudioAsset["role"]))) : undefined;
   const assets: AudioAsset[] = [];
   for (const name of await audioDirectoryEntries(directory)) {

@@ -335,6 +335,8 @@
         });
         window.addEventListener("pagehide", () => { void pluginApps.close(); });
         const pluginUserConfig = factories.createPluginUserConfigPanels({ getState, runCommand: bridgeClient.runCommand });
+        const audioParameters = factories.createAudioParameterPanels({ getState, runCommand: bridgeClient.runCommand });
+        window.addEventListener("pagehide", () => { audioParameters.close(); });
         const pluginManager = factories.createPluginManager({
           pluginUserConfig,
           pluginApps,
@@ -386,6 +388,7 @@
 
         const toolsInspector = factories.createToolsInspector({
           pluginApps,
+          audioParameters,
           resultActions: pluginResults,
           getState,
           getCatalogOwner: bridgeClient.getSessionToolCatalogOwner,
@@ -1286,6 +1289,7 @@
           skillManager.render();
           pluginManager.render();
           pluginApps.sync();
+          audioParameters.sync();
           toolsInspector.render();
           renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
@@ -1695,6 +1699,7 @@
           connectionsManager.setBusy(skillsBusy);
           toolsInspector.setBusy(operationBusy);
           pluginApps.setBusy(operationBusy);
+          audioParameters.setBusy(operationBusy);
           pluginResults.setBusy(operationBusy);
 
           if (

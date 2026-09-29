@@ -1,6 +1,7 @@
 import {
   SEPARATION_STEMS,
   type MusicGenerationOptions,
+  type LyricWritingRequest,
   type SeparationStem,
 } from "../audio-services/contracts.js";
 import { exceedsAudioPromptLimit } from "../audio-services/prompt.js";
@@ -25,6 +26,9 @@ export type AudioProcessingSource =
 
 export type AudioToolRequest =
   | MusicServiceRequest
+  | ({ kind: "write_lyrics"; connectionId: string } & LyricWritingRequest)
+  | { kind: "inspect_lyric_models"; connectionId: string }
+  | { kind: "upload_music"; connectionId: string; source: AudioProcessingSource; rightsConfirmed: true }
   | { kind: "separate_stems"; connectionId: string; source: AudioProcessingSource; stems: SeparationStem[] }
   | { kind: "generate_music"; connectionId: string; prompt: string; durationSeconds?: number; instrumental: boolean; options?: MusicGenerationOptions }
   | { kind: "generate_lyrics"; connectionId: string; prompt: string }
@@ -36,7 +40,13 @@ export type AudioToolRequest =
 
 export function parseAudioToolRequest(name: string, argumentsJson: string): AudioToolRequest {
   const args: unknown = JSON.parse(argumentsJson || "{}");
-  if (["inspect_music_service", "extend_music", "get_whole_song", "retrieve_music"].includes(name)) {
+  if (name === "upload_music") {
+    const value = record(args);
+    only(value, ["connectionId", "source", "rightsConfirmed"]);
+    if (value.rightsConfirmed !== true) throw new Error("Confirm that you have the rights to upload this audio.");
+    return { kind: name, connectionId: id(value.connectionId), source: parseSource(value.source), rightsConfirmed: true };
+  }
+  if (["inspect_music_service", "extend_music", "get_whole_song", "retrieve_music", "generate_sound_sample", "cover_music", "remaster_music", "add_vocals", "add_instrumental", "replace_music_section", "finish_music_replacement", "extract_music_stems"].includes(name)) {
     return parseMusicServiceRequest(name, args);
   }
   if (name === "listen_to_audio_asset") {

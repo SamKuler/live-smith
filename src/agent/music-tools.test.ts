@@ -37,7 +37,7 @@ test("custom music options are bounded and scoped to eligible connections", () =
   }
   for (const options of [{ ...raw.options, weirdness: -1 }, { ...raw.options, styleInfluence: 101 },
     { ...raw.options, personaId: "../secret" }, { ...raw.options, title: "x".repeat(101) },
-    { ...raw.options, audioInfluence: 50 }, { ...raw.options, vocalGender: "unspecified" },
+    { ...raw.options, audioInfluence: 101 }, { ...raw.options, vocalGender: "unspecified" },
     { ...raw.options, token: "secret" }, { ...raw.options, mode: "simple" }]) {
     assert.throws(() => parse("generate_music", { ...raw, options }));
   }
@@ -53,6 +53,22 @@ test("custom instrumental permits empty lyrics, while descriptions and vocal lyr
   assert.throws(() => validateAudioServiceRequest(parse("generate_music", {
     connectionId: service.id, prompt: "x".repeat(3001), instrumental: true,
   }), [service]));
+});
+
+test("Sounds, Cover and Remaster parse their distinct controls without duration or route escape fields", () => {
+  const sound = { connectionId: service.id, prompt: "A wooden click", loop: false, bpm: 90, key: "Am" };
+  assert.deepEqual(parse("generate_sound_sample", sound), { kind: "generate_sound_sample", ...sound });
+  for (const invalid of [{ durationSeconds: 5 }, { bpm: 0 }, { bpm: 90.5 }, { key: "Any" }, { url: "https://example.com" }]) {
+    assert.throws(() => parse("generate_sound_sample", { ...sound, ...invalid }));
+  }
+  const cover = { connectionId: service.id, clipId, startSeconds: 2, endSeconds: 8, prompt: "", instrumental: true,
+    options: { mode: "custom", styles: "Piano", audioInfluence: 25 } };
+  assert.deepEqual(parse("cover_music", cover), { kind: "cover_music", ...cover });
+  assert.throws(() => parse("cover_music", { ...cover, endSeconds: 1 }));
+  assert.throws(() => parse("cover_music", { ...cover, options: { ...cover.options, personaId: clipId } }));
+  const remaster = { connectionId: service.id, clipId, modelId: "chirp-halibut-fixture", variation: "subtle" };
+  assert.deepEqual(parse("remaster_music", remaster), { kind: "remaster_music", ...remaster });
+  assert.throws(() => parse("remaster_music", { ...remaster, variation: "extreme" }));
 });
 
 test("music browsing and editing have strict action-specific fields", () => {
@@ -84,7 +100,7 @@ test("music browsing and editing have strict action-specific fields", () => {
 test("advanced tools are absent from other providers and contain no generic HTTP escape", () => {
   const tools = pluginTools([service]);
   assert.deepEqual(tools.map((tool) => builtInAudioLocalToolName(tool.function.name)), [
-    "resume_audio_job", "list_audio_jobs", "generate_music", "inspect_music_service",
+    "resume_audio_job", "list_audio_jobs", "write_lyrics", "inspect_lyric_models", "upload_music", "generate_music", "generate_sound_sample", "cover_music", "remaster_music", "add_vocals", "add_instrumental", "replace_music_section", "extract_music_stems", "finish_music_replacement", "inspect_music_service",
     "extend_music", "get_whole_song", "retrieve_music",
   ]);
   const other = pluginTools([choice({ ...service, provider: "elevenlabs" })]);

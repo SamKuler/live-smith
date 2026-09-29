@@ -889,8 +889,54 @@ website or policy changes may make it unavailable for an account.
   and any saved outputs.
 - `extend_music`: lyrics/styles for a completed, observed song starting at an
   explicit second before its end. `get_whole_song` joins one extension's
-  existing lineage, not an arbitrary collection of audio files. These operations
+  existing lineage on the same account. It requires a completed, untrashed
+  extension and an available whole-song action. These operations
   can consume credits and never import to Live without a separate scoped Apply.
+- `generate_sound_sample`: a sound description of up to 500 characters, One Shot
+  or Loop, optional integer BPM (1–300), and optional major/minor key. It uses
+  the website's structured Sounds fields and returns the acknowledged variants;
+  it does not promise a fixed duration.
+- `cover_music`: a permitted observed source, optional source interval, lyrics,
+  styles and generation controls. Source permission comes from the account's
+  action configuration, with the website's ownership/remix rules as fallback.
+- `remaster_music`: an observed source and an available remaster model, with
+  optional Subtle, Normal or High variation when that model supports it. The
+  remaster catalog is separate from the ordinary generation-model catalog.
+- `upload_music`: a current attachment, saved Session asset or isolated
+  Arrangement source, plus explicit upload-rights confirmation. The source is
+  frozen locally before transfer. The upload checks account duration limits and
+  saves a receipt after each confirmed remote stage. Recovery continues only
+  from a safe acknowledged stage; uncertain mutations are never repeated. The
+  completed Suno clip becomes available to this connection's creation tools.
+- `add_vocals` and `add_instrumental`: a permitted source, lyrics/styles and
+  supported generation controls. The website's source-type and account action
+  rules determine which operation is available.
+- `replace_music_section`: an observed source, replacement interval, optional
+  context interval and duration, and replacement lyrics. Vocal sources require
+  existing lyric alignment; preparation reads alignment without starting a new
+  alignment request. `finish_music_replacement` joins one explicitly selected
+  completed candidate into its source song. Generation and finalization are
+  separate tasks; Live Smith never chooses a candidate automatically.
+- `extract_music_stems`: native Suno extraction of twelve instrument groups from
+  a permitted observed song. Instrument identities come from the returned clip
+  metadata. Live Smith retains up to two returned banks (24 outputs), including
+  quiet tracks, with separate identities for alternate versions. Each output can
+  be previewed and downloaded independently; the download allowance belongs to
+  the source song identified by that stem's lineage.
+- `write_lyrics`: generate lyrics from an empty selection, rewrite selected text
+  with surrounding context, or request alternatives. Optional title, styles,
+  lyric-model selection and supported thinking controls use Suno's separate
+  lyric-writing API. `inspect_lyric_models` reads that model catalog. Text and
+  receipt IDs are retained in Session tool history for subsequent chat or song
+  creation. A lost submission reply remains unconfirmed and is never retried
+  automatically.
+
+Audio Influence is available for supported reference-based requests and maps to
+the website's structured audio-weight slider. Every operation is also available
+through **Session → Tools → connection → tool → Open controls**. Manual calls
+use the same schemas, source observations and durable jobs as chat calls, without
+requesting a chat-model response. Inputs and textual results enter Session tool
+history; audio results appear in the Session audio shelf.
 
 Use **Music version → Load versions** in a saved Suno connection to read that
 account's catalog directly; no chat request or generation credits are required,
@@ -912,7 +958,7 @@ credentials use the session `touch` endpoint on the current auth host, with the
 observed legacy Clerk host as a non-paid compatibility fallback; they rotate the
 returned session JWT, preserve updated Clerk timestamps when supplied, and
 atomically save the verified rotation without replacing a concurrent reimport.
-Every generation is preceded by
+Generation requests to the website's shared generation endpoint are preceded by
 account/parameter validation and a CAPTCHA check. An explicit no-challenge
 response or a fresh result from the requested official component permits
 submission. A challenge waits for manual action in the owned verification
@@ -994,9 +1040,12 @@ tunnel without intercepting HTTPS. Closing/cancelling the window, loading
 failure or an expired result does not submit generation. A silent component has
 a bounded wait and supports manual retry; there is no automatic paid retry.
 Callback success is not itself evidence of server acceptance: the validated
-generation receipt is authoritative. Unknown challenge versions, unsupported
-hosts and challenged Get Whole Song requests fail before submission; the
-whole-song proof contract is not verified and no fields are guessed.
+generation receipt is authoritative. Unknown challenge versions and unsupported
+hosts fail before submitting to the shared generation endpoint. Get Whole Song
+and completed replacement concatenation use the website's direct `concat/v2`
+flow after source validation, without a generation CAPTCHA preflight. Remaster
+similarly uses its dedicated endpoint. All retain explicit dispatch authorization,
+bounded receipt preservation and no automatic retry of an unknown outcome.
 
 Retrieval and Resume check the original Suno songs without automatically
 downloading them. A generated song can be complete but still unavailable for
@@ -1025,13 +1074,11 @@ are retained when a sibling fails. Recovery uses the same IDs without generating
 again. Renewing a Cookie for the same verified account permits recovery; switching
 the connection to another account does not. Saved files remain recoverable locally.
 
-The Suno.com adapter does not currently map Sounds/One Shot/Loop/BPM/Key,
-upload/recording, Cover/Remaster, Replace Section, Add Vocals/Instrumental,
-Suno stem extraction, Voice enrollment, custom-model training, Inspo/My Taste,
-or Suno Studio workspace editing and publishing. These are adapter gaps, not
-restrictions on Live Smith or the user's workflow, and they are not simulated
-with text tags. Ableton editing remains available; configured LALAL.AI stem and
-ElevenLabs sound-effect tools can be used independently or in the same workflow.
+The Suno.com adapter does not currently map microphone recording,
+Voice enrollment, custom-model training, Inspo/My Taste,
+or Suno Studio workspace editing and publishing. Ableton editing, configured
+LALAL.AI stem tools and ElevenLabs sound-effect tools can be used independently
+or combined with the supported Suno operations.
 
 ### Stem separation
 

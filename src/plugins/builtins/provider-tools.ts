@@ -111,7 +111,7 @@ export function validateBuiltInAudioToolRequest(
     if (!audio.musicLibrary) throw new Error("Music library unavailable.");
     return;
   }
-  if (request.kind === "generate_lyrics") return;
+  if (request.kind === "generate_lyrics" || request.kind === "write_lyrics" || request.kind === "inspect_lyric_models") return;
   if (!audio.operations.includes(request.kind as AudioOperation)) {
     throw new Error("Unavailable Integration Connection or tool.");
   }
@@ -177,11 +177,20 @@ function standardToolNames(audio: BuiltInAudioToolContract): string[] {
     ...audio.operations.filter((operation) =>
       [
         "separate_stems",
+        "upload_music",
         "generate_music",
         "generate_sound_effect",
         "extend_music",
         "get_whole_song",
         "retrieve_music",
+        "generate_sound_sample",
+        "cover_music",
+        "remaster_music",
+        "add_vocals",
+        "add_instrumental",
+        "replace_music_section",
+        "finish_music_replacement",
+        "extract_music_stems",
       ].includes(operation)),
     ...(audio.musicLibrary ? ["inspect_music_service"] : []),
   ];
@@ -193,6 +202,7 @@ function standardTools(
 ): ModelFunctionTool[] {
   const tools: ModelFunctionTool[] = [];
   if (audio.operations.includes("separate_stems")) tools.push(separationTool(services));
+  if (audio.operations.includes("upload_music")) tools.push(uploadTool(services));
   if (audio.operations.includes("generate_music")) {
     tools.push(generationTool(audio, services, "generate_music"));
   }
@@ -201,6 +211,25 @@ function standardTools(
   }
   tools.push(...musicServiceTools(audio, services));
   return tools;
+}
+
+function uploadTool(services: readonly BuiltInIntegrationConnectionChoice[]): ModelFunctionTool {
+  return {
+    type: "function",
+    function: {
+      name: "upload_music",
+      description: "Upload an exact audio source to this Suno account for subsequent creation or editing. Requires the user's explicit confirmation that they have rights to upload the audio. Inspect Arrangement state before selecting an isolated Clip range. This sends audio to Suno and does not change Live. Never repeat an upload whose remote outcome is unknown. " + describeConnections(services),
+      parameters: {
+        type: "object", additionalProperties: false,
+        properties: {
+          connectionId: connectionSchema(services),
+          source: sourceSchema,
+          rightsConfirmed: { type: "boolean", title: "I have the rights to upload this audio", description: "Required before audio is sent to Suno." },
+        },
+        required: ["connectionId", "source", "rightsConfirmed"],
+      },
+    },
+  };
 }
 
 function separationTool(
@@ -279,11 +308,13 @@ function generationTool(
         oneOf: services.flatMap((service) =>
           (music && audio.customMusic ? [false, true] : [false]).map((custom) => ({
             type: "object",
+            title: custom ? "Custom lyrics" : "Description",
             additionalProperties: false,
             properties: {
               connectionId: { const: service.id },
               prompt: {
                 type: "string",
+                title: custom ? "Lyrics" : "Description",
                 minLength: custom ? 0 : 1,
                 maxLength: music
                   ? audio.customMusic && !custom

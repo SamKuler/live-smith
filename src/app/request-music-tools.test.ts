@@ -77,6 +77,46 @@ test("custom parameters survive the chat-to-runtime boundary without connection 
   assert.doesNotMatch(JSON.stringify(h.tools.tools), /clientToken|user_personal|fixture-client/);
 });
 
+test("Cover and Remaster require an observed source on the exact connection", async (t) => {
+  const h = await harness(t);
+  const requests = [
+    { kind: "cover_music", clipId, startSeconds: 1, endSeconds: 10, prompt: "New verse", instrumental: false,
+      options: { mode: "custom", styles: "Jazz", audioInfluence: 60 } },
+    { kind: "remaster_music", clipId, modelId: "chirp-halibut-fixture", variation: "normal" },
+  ];
+  for (const { kind, ...fields } of requests) {
+    assert.equal((await h.execute(kind, { connectionId: "personal", ...fields })).invalidArguments, true);
+  }
+  assert.equal(h.calls.submissions.length, 0);
+  await h.execute("inspect_music_service", { connectionId: "personal", query: "library" });
+  for (const { kind, ...fields } of requests) {
+    assert.equal((await h.execute(kind, { connectionId: "work", ...fields })).invalidArguments, true);
+    const result = await h.execute(kind, { connectionId: "personal", ...fields });
+    assert.equal(result.failed, undefined);
+    assert.deepEqual(h.calls.submissions.at(-1), { operation: kind, ...fields });
+  }
+});
+
+test("painting, replacement candidates and explicit finalization all require connection-bound observed clips", async (t) => {
+  const h = await harness(t);
+  const requests = [
+    { kind: "add_vocals", clipId, prompt: "A vocal line" },
+    { kind: "add_instrumental", clipId, prompt: "" },
+    { kind: "replace_music_section", clipId, startSeconds: 5, endSeconds: 20, prompt: "New chorus" },
+    { kind: "finish_music_replacement", clipId },
+  ];
+  for (const { kind, ...fields } of requests) {
+    assert.equal((await h.execute(kind, { connectionId: "personal", ...fields })).invalidArguments, true);
+  }
+  await h.execute("inspect_music_service", { connectionId: "personal", query: "library" });
+  for (const { kind, ...fields } of requests) {
+    assert.equal((await h.execute(kind, { connectionId: "work", ...fields })).invalidArguments, true);
+    assert.equal((await h.execute(kind, { connectionId: "personal", ...fields })).failed, undefined);
+    assert.deepEqual(h.calls.submissions.at(-1), { operation: kind, ...fields });
+  }
+  assert.equal(h.calls.submissions.filter((request) => request.operation === "finish_music_replacement").length, 1);
+});
+
 test("a connection cleared during a library read cannot release that account's results or enable editing", async (t) => {
   const h = await harness(t);
   h.mode.changeCredential = true;

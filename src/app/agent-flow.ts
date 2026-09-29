@@ -280,6 +280,7 @@ import {
 import { closeActiveMcpConnection, closeActivePluginConnections } from "./request-plugin-tools.js";
 import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session-tool-catalog.js";
 import { runPluginParameterTool } from "./plugin-parameter-tool.js";
+import { runAudioParameterTool } from "./audio-parameter-tool.js";
 import { providerFetchForStorage } from "./provider-fetch.js";
 import { resolveConversationHistory } from "./attachment-context.js";
 import { createConversationCheckpoint } from "./context-compaction.js";
@@ -648,6 +649,7 @@ export async function runAgentFlow(
     storageDirectory,
     "request-configuration",
   );
+  const manualAudioObservations = new Map<string, Map<string, Set<string>>>();
   const notifySessionStateChanged = (sessionId: string): void => {
     invalidateSessionState(storageDirectory, {
       sessionId,
@@ -2494,6 +2496,43 @@ export async function runAgentFlow(
           });
           status = uiMessage(applied ? "MIDI imported into Live." : "MIDI import cancelled.");
         } finally {
+          notifySessionStateChanged(session.id);
+        }
+        return buildStateAfterCommandMutation(undefined, { heldSessionId: session.id, sessionMutationHeld: true });
+      });
+    }
+
+    if (commandInput.kind === "run_audio_tool") {
+      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) throw new ChatBridgeConflictError("Choose an idle active Session before running an audio tool.");
+      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
+        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before audio execution.");
+        const session = (await listSessions(storageDirectory, projectKey)).find((entry) =>
+          entry.id === commandInput.sessionId && !entry.archivedAt);
+        if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        const sessionInteraction = resolveSessionInteraction(session);
+        if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
+        let observations = manualAudioObservations.get(session.id);
+        if (!observations) { observations = new Map(); manualAudioObservations.set(session.id, observations); }
+        try {
+          await commandContext.progress(uiMessage("Running audio tool…"));
+          const result = await runAudioParameterTool({
+            ...commandInput, context, storageDirectory, signal, target: sessionInteraction.target,
+            observedMusicClips: observations,
+            onProgress: (message) => commandContext.progress(message),
+            onAssets: () => { notifySessionStateChanged(session.id); },
+            withAdmissionAuthorization: (authorizationSignal, operation) => globalSettingsMutationFence.run(
+              sessionMutationFenceKey(storageDirectory, "global-settings"), authorizationSignal,
+              () => requestConfigurationFence.run(requestConfigurationFenceKey, authorizationSignal, operation),
+            ),
+            withGenerationAuthorization: (authorizationSignal, operation) => globalSettingsMutationFence.run(
+              sessionMutationFenceKey(storageDirectory, "global-settings"), authorizationSignal, operation,
+            ),
+          });
+          status = uiMessage(result.failed ? "The audio tool reported a failure. Review its result and saved audio jobs before retrying." : "Audio tool completed.");
+        } finally {
+          loadedSessionToolCatalog = undefined;
           notifySessionStateChanged(session.id);
         }
         return buildStateAfterCommandMutation(undefined, { heldSessionId: session.id, sessionMutationHeld: true });

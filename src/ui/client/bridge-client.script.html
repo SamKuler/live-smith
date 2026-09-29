@@ -32,6 +32,8 @@
       const audioConnectionDescriptorsByPluginId = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
       const isBuiltInAudioPluginId = (pluginId) =>
         Object.hasOwn(audioConnectionDescriptorsByPluginId, pluginId);
+      const sunoStemRoles = __SUNO_STEM_ROLES__;
+      const singleOutputAudioOperations = new Set(["get_whole_song", "finish_music_replacement", "upload_music"]);
       const audioServiceCapabilities = Object.fromEntries(
         Object.values(audioConnectionDescriptorsByPluginId)
           .map((descriptor) => [descriptor.provider, descriptor]),
@@ -161,6 +163,7 @@
         "load_session_model_capabilities",
         "load_session_tools",
         "run_plugin_tool",
+        "run_audio_tool",
         "import_midi_artifact",
         "compact_session",
         "resume_audio_job",
@@ -2996,7 +2999,7 @@
           "mediaType", "byteLength", "sha256", "durationSeconds", "sampleRate", "channels", "origin"]) ||
           !isWireStorageId(value.id) || value.sessionId !== sessionId || value.jobId !== jobId ||
           typeof value.label !== "string" || value.label.length > 1024 ||
-          ![...__SEPARATION_STEMS__, "residual", "music", "music_alternative", "sound_effect"].includes(value.role) ||
+          !Object.hasOwn(__AUDIO_OUTPUT_LABELS__, value.role) ||
           !["audio/wav", "audio/mpeg"].includes(value.mediaType) ||
           !Number.isSafeInteger(value.byteLength) || value.byteLength <= 0 || value.byteLength > __MAX_AUDIO_ASSET_BYTES__ ||
           typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) ||
@@ -3028,15 +3031,21 @@
           new Set(value.map((account) => account.serviceId)).size === value.length;
       }
 
+      function audioJobOutputLimit(job) {
+        return job.operation === "extract_music_stems" ? sunoStemRoles.length : singleOutputAudioOperations.has(job.operation) ? 1 : audioServiceCapabilities[job.provider].generationOutputCount;
+      }
+
       function isWireRemoteAudioOutputs(job) {
         if (!Object.hasOwn(job, "remoteOutputs")) return job.status !== "ready";
         const outputs = job.remoteOutputs;
-        return job.provider === "suno" && ["generate_music", "extend_music", "get_whole_song", "retrieve_music"].includes(job.operation) &&
-          Array.isArray(outputs) && outputs.length <= (job.operation === "get_whole_song" ? 1 : audioServiceCapabilities.suno.generationOutputCount) &&
+        return job.provider === "suno" && audioServiceCapabilities.suno.operations.includes(job.operation) &&
+          Array.isArray(outputs) && outputs.length <= audioJobOutputLimit(job) &&
           (job.status !== "ready" || outputs.length > 0) &&
           outputs.every((output) => isWireRecord(output) && hasOnlyWireKeys(output, ["key", "role"]) &&
             typeof output.key === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(output.key) &&
-            (output.role === "music" || output.role === "music_alternative" && job.operation !== "get_whole_song")) &&
+            (job.operation === "extract_music_stems" ? sunoStemRoles.includes(output.role) : job.operation === "upload_music" ? output.role === "uploaded_audio" : job.operation === "generate_sound_sample"
+              ? ["sound_effect", "sound_effect_alternative"].includes(output.role)
+              : output.role === "music" || output.role === "music_alternative" && !singleOutputAudioOperations.has(job.operation))) &&
           new Set(outputs.map((output) => output.key)).size === outputs.length &&
           new Set(outputs.map((output) => output.role)).size === outputs.length;
       }
@@ -3080,15 +3089,16 @@
             typeof job.resumable === "boolean" &&
             (!job.resumable || !["completed", "cancelled"].includes(job.status)) &&
             Array.isArray(job.outputs) && job.outputs.length <= __MAX_AUDIO_JOB_OUTPUTS__ &&
-            (job.operation === "separate_stems" || job.outputs.length <= (job.operation === "get_whole_song" ? 1 : audioServiceCapabilities[job.provider].generationOutputCount)) &&
+            (job.operation === "separate_stems" || job.outputs.length <= audioJobOutputLimit(job)) &&
             new Set(job.outputs.map((asset) => asset?.id)).size === job.outputs.length &&
             new Set(job.outputs.map((asset) => asset?.role)).size === job.outputs.length &&
             job.outputs.every((asset) => isWireAudioAsset(asset, sessionId, job.id) &&
               (job.operation === "separate_stems"
                 ? (job.stems.includes(asset.role) || asset.role === "residual") && asset.origin.kind !== "generated"
-                : asset.origin.kind === "generated" && (job.operation !== "generate_sound_effect"
-                  ? asset.role === "music" || asset.role === "music_alternative" && job.operation !== "get_whole_song" && audioServiceCapabilities[job.provider].generationOutputCount > 1
-                  : asset.role === "sound_effect"))));
+                : asset.origin.kind === "generated" && (job.operation === "extract_music_stems" ? sunoStemRoles.includes(asset.role) : job.operation === "upload_music" ? asset.role === "uploaded_audio" : job.operation === "generate_sound_sample"
+                  ? ["sound_effect", "sound_effect_alternative"].includes(asset.role)
+                  : job.operation === "generate_sound_effect" ? asset.role === "sound_effect"
+                  : asset.role === "music" || asset.role === "music_alternative" && !singleOutputAudioOperations.has(job.operation) && audioServiceCapabilities[job.provider].generationOutputCount > 1))));
       }
 
       function isWireInstalledPlugin(value) {
@@ -3174,6 +3184,23 @@
             server.artifactInputApproved === false && server.artifactOutputApproved === false);
       }
 
+      function isWireAudioParameterSuggestions(value) {
+        return isWireRecord(value) && Object.entries(value).every(([kind, entries]) =>
+          ["clips", "models", "personas"].includes(kind) && Array.isArray(entries) && entries.length <= 40 &&
+          entries.every((entry) => isWireRecord(entry) && hasOnlyWireKeys(entry, ["id", "label"]) &&
+            typeof entry.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.id) &&
+            typeof entry.label === "string" && Array.from(entry.label).length <= 160 && !entry.label.includes("\0")));
+      }
+
+      function isWireAudioParameterPanel(value) {
+        return isWireRecord(value) && hasOnlyWireKeys(value, ["toolName", "signature", "connectionId", "schema", "suggestions"]) &&
+          (value.suggestions === undefined || isWireAudioParameterSuggestions(value.suggestions)) &&
+          typeof value.toolName === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value.toolName) &&
+          typeof value.signature === "string" && /^[a-f0-9]{64}$/.test(value.signature) &&
+          (value.connectionId === undefined || isWireStorageId(value.connectionId)) &&
+          isWireRecord(value.schema) && wireUtf8ByteLength(JSON.stringify(value.schema)) <= 32 * 1024;
+      }
+
       function isWireSessionToolCatalog(value, activeSessionId) {
         if (!isWireRecord(value) || !hasOnlyWireKeys(value, [
           "sessionId", "loadedAt", "modelToolsSupported", "truncated", "groups", "issues",
@@ -3195,8 +3222,8 @@
             (group.kind === "audio" && group.pluginId === undefined) ||
             (group.kind === "mcp" && (group.pluginId === undefined && group.connectionId === undefined ||
               typeof group.serverId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(group.serverId))) ||
-            (group.kind !== "mcp" && (group.serverId !== undefined ||
-              group.connectionId !== undefined || group.connectionName !== undefined)) ||
+            (group.kind !== "mcp" && group.serverId !== undefined) ||
+            (group.kind === "live" && (group.connectionId !== undefined || group.connectionName !== undefined)) ||
             (group.connectionId === undefined) !== (group.connectionName === undefined) ||
             (group.connectionId !== undefined && !isWireStorageId(group.connectionId)) ||
             (group.connectionName !== undefined && (typeof group.connectionName !== "string" ||
@@ -3205,7 +3232,9 @@
             !Array.isArray(group.tools) || !group.tools.length) return false;
           toolCount += group.tools.length;
           if (toolCount > __MAX_SESSION_TOOL_CATALOG_TOOLS__ || !group.tools.every((tool) =>
-            isWireRecord(tool) && hasOnlyWireKeys(tool, ["name", "description", "panel", "app"]) &&
+            isWireRecord(tool) && hasOnlyWireKeys(tool, ["name", "description", "panel", "app", "audioPanel"]) &&
+            (tool.audioPanel === undefined || group.kind === "audio" && isWireAudioParameterPanel(tool.audioPanel) &&
+              tool.audioPanel.toolName === tool.name && tool.audioPanel.connectionId === group.connectionId) &&
             (tool.panel === undefined || group.kind === "mcp" && isPluginParameterPanel(tool.panel)) &&
             (tool.app === undefined || group.kind === "mcp" && isWireRecord(tool.app) &&
               hasOnlyWireKeys(tool.app, ["resourceUri", "signature", "toolName"]) &&
@@ -6100,6 +6129,9 @@
           generate_lyrics: "Generate lyrics",
           generate_song_from_lyrics: "Lyrics to song",
           generate_sound_effect: "Sound effect generation", extend_music: "Extend song", get_whole_song: "Get Whole Song",
+          generate_sound_sample: "Generate sound samples", cover_music: "Cover music", remaster_music: "Remaster music",
+          extract_music_stems: "Extract music stems", upload_music: "Upload audio to Suno", add_vocals: "Add vocals", add_instrumental: "Add instrumental",
+          replace_music_section: "Replace music section", finish_music_replacement: "Finish music replacement",
           retrieve_music: "Existing Suno songs" }[operation] || operation);
       }
 
@@ -6976,12 +7008,12 @@
 
       function audioJobPresentation(job) {
         const statuses = { preparing: "Preparing audio", submitting: "Submitting audio", running: "Processing audio", collecting: "Collecting audio",
-          ready: job.operation === "retrieve_music" ? "Ready to play" : "Generated · online", completed: "Audio ready",
+          ready: job.operation === "upload_music" ? "Uploaded · online" : job.operation === "retrieve_music" ? "Ready to play" : "Generated · online", completed: "Audio ready",
           partial: "Partial audio results", failed: "Audio processing failed", interrupted: "Audio processing interrupted",
           unknown: "Audio submission outcome unknown", cancelled: "Audio processing cancelled" };
         if (["preparing", "submitting", "running", "collecting"].includes(job.status)) return { label: t(statuses[job.status]), tone: "pending" };
         if (job.remoteOutcome === "completed") return {
-          label: job.outputs.length ? t(job.operation === "retrieve_music" ? "Ready · {count} downloaded" : "Generated · {count} downloaded",
+          label: job.outputs.length ? t(["retrieve_music", "upload_music"].includes(job.operation) ? "Ready · {count} downloaded" : "Generated · {count} downloaded",
             { count: new Intl.NumberFormat(window.LiveSmithI18n.locale).format(job.outputs.length) }) : t(statuses.ready),
           tone: "complete",
         };

@@ -1,3 +1,4 @@
+import { MAX_AUDIO_PARAMETER_BYTES } from "../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "./midi-artifact-import.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
@@ -240,6 +241,7 @@ export type ChatBridgeCommandInput =
       profileId: string;
     }
   | { kind: "load_session_tools"; sessionId: string }
+  | { kind: "run_audio_tool"; sessionId: string; toolName: string; signature: string; arguments: Record<string, unknown> }
   | { kind: "run_plugin_tool"; sessionId: string; toolName: string; signature: string; arguments: Record<string, unknown> }
   | { kind: "new_session" }
   | { kind: "compact_session"; sessionId: string; instructions?: string }
@@ -1234,13 +1236,15 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       trackName: input.trackName, startBeat: input.startBeat,
       ...(input.name === undefined ? {} : { name: input.name as string }) };
   }
-  if (kind === "run_plugin_tool") {
+  if (kind === "run_plugin_tool" || kind === "run_audio_tool") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "toolName", "signature", "arguments"], `${kind} command`);
     if (!isSafeStorageId(input.sessionId) || typeof input.toolName !== "string" ||
         !/^[A-Za-z0-9_-]{1,128}$/u.test(input.toolName) || typeof input.signature !== "string" ||
         !/^[a-f0-9]{64}$/u.test(input.signature) || !input.arguments ||
-        typeof input.arguments !== "object" || Array.isArray(input.arguments)) {
-      throw new ChatBridgeRequestValidationError("Choose a loaded Plugin tool and valid parameters.");
+        typeof input.arguments !== "object" || Array.isArray(input.arguments) ||
+        kind === "run_audio_tool" && Buffer.byteLength(JSON.stringify(input.arguments), "utf8") > MAX_AUDIO_PARAMETER_BYTES) {
+      throw new ChatBridgeRequestValidationError(kind === "run_audio_tool"
+        ? "Choose a loaded audio tool and valid parameters." : "Choose a loaded Plugin tool and valid parameters.");
     }
     return { kind, sessionId: input.sessionId, toolName: input.toolName, signature: input.signature,
       arguments: input.arguments as Record<string, unknown> };

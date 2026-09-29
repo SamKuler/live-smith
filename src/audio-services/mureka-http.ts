@@ -15,7 +15,9 @@ const JSON_TIMEOUT_MS = 120_000;
 const MEDIA_TIMEOUT_MS = 10 * 60_000;
 const SUBMIT_STOP_GRACE_MS = 3_000;
 
-class MurekaError extends Error {}
+export class MurekaError extends Error {
+  constructor(message: string, readonly status?: number) { super(message); }
+}
 
 export type MurekaTaskKind = "song" | "instrumental";
 export type MurekaSubmitKind = "prompt-song" | "lyrics-song" | "instrumental" | "lyrics";
@@ -69,7 +71,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
 
   const request = async (
     url: string, init: RequestInit, signal: AbortSignal, maximumBytes: number, timeoutMs: number,
-    acceptedStatuses: readonly number[], preserveReceipt = false,
+    acceptedStatuses: readonly number[], preserveReceipt = false, onDispatch?: () => void,
   ): Promise<Uint8Array> => {
     active(signal);
     const controller = createHostAbortController();
@@ -83,7 +85,9 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     let response: Response | undefined;
     try {
-      const pending = Promise.resolve(resolveFetchImplementation(injected)(url, {
+      const fetchImpl = resolveFetchImplementation(injected);
+      onDispatch?.();
+      const pending = Promise.resolve(fetchImpl(url, {
         ...init, signal: controller.signal, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer",
       }));
       void pending.then((late) => {
@@ -92,7 +96,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
       response = await waitForPromiseWithSignal(pending, controller.signal);
       active(controller.signal);
       if (response.redirected || (response.url && response.url !== url)) throw fail("unexpected response redirect.");
-      if (!acceptedStatuses.includes(response.status)) throw fail(`request failed (HTTP ${response.status}).`);
+      if (!acceptedStatuses.includes(response.status)) throw new MurekaError(`Mureka audio service: request failed (HTTP ${response.status}).`, response.status);
       const mime = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
       if (maximumBytes === MAX_JSON_BYTES ? mime !== "application/json" :
           !["audio/mpeg", "audio/wav", "audio/x-wav", "application/octet-stream"].includes(mime ?? "")) {
@@ -105,6 +109,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
     } catch (error) {
       controller.abort();
       cancelStreamBestEffort(response?.body);
+      if (error instanceof MurekaError && error.status !== undefined) throw error;
       active(signal);
       if (timedOut) throw fail("request timed out; its remote outcome may be unknown.");
       if (error instanceof MurekaError) throw error;
@@ -118,7 +123,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
 
   const json = async (
     method: "GET" | "POST", kind: MurekaTaskKind | MurekaSubmitKind, taskId: string | undefined,
-    body: Record<string, unknown> | undefined, signal: AbortSignal, preserveReceipt = false,
+    body: Record<string, unknown> | undefined, signal: AbortSignal, preserveReceipt = false, onDispatch?: () => void,
   ): Promise<Record<string, unknown>> => {
     let encoded: string | undefined;
     let path: string;
@@ -142,7 +147,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json",
         ...(encoded === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(encoded === undefined ? {} : { body: encoded }),
-    }, signal, MAX_JSON_BYTES, JSON_TIMEOUT_MS, [200], preserveReceipt);
+    }, signal, MAX_JSON_BYTES, JSON_TIMEOUT_MS, [200], preserveReceipt, onDispatch);
     try {
       const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       const value: unknown = JSON.parse(decoded);
@@ -158,8 +163,8 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
 
   return {
     fail, active, object, identifier, outputUrl,
-    submit: (kind: MurekaSubmitKind, body: Record<string, unknown>, signal: AbortSignal) =>
-      json("POST", kind, undefined, body, signal, true),
+    submit: (kind: MurekaSubmitKind, body: Record<string, unknown>, signal: AbortSignal, onDispatch?: () => void) =>
+      json("POST", kind, undefined, body, signal, true, onDispatch),
     inspect: (kind: MurekaTaskKind, taskId: string, signal: AbortSignal) =>
       json("GET", kind, taskId, undefined, signal),
     download: (url: string, signal: AbortSignal) => request(outputUrl(url), {

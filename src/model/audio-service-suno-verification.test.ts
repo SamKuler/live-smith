@@ -5,7 +5,7 @@ import type { AudioGenerationRequest } from "../audio-services/contracts.js";
 import { createSunoAudioAdapter } from "../audio-services/suno.js";
 import { createHostAbortController } from "../runtime/host.js";
 import {
-  API, AUTH, A, MUSIC, session, replay, accountStep, gateStep, submitStep, clip,
+  API, AUTH, A, B, MUSIC, accountId, session, replay, accountStep, gateStep, submitStep, clip,
 } from "./audio-service-suno-harness.js";
 
 const PRIVATE_PROOF = "synthetic-private-verification-proof";
@@ -151,18 +151,22 @@ test("callback failures never expose a proof or raw credential-bearing cause", a
   assert.equal(h.api().length, 2);
 });
 
-test("a challenged concat keeps its existing fail-closed boundary without speculative proof fields", async () => {
+test("whole-song concat uses source admission and never requests a generation challenge", async () => {
   let calls = 0;
   const h = replay([
-    { path: `/api/feed/?ids=${A}`, value: [clip(A, "complete", { metadata: { task: "extend" } })] },
-    gateStep({ required: true, captcha_version: 2 }),
-  ], undefined, { verifyHuman: async () => { calls++; return proof(2); } });
+    { path: "/api/session/", value: { user: { clerk_id: accountId, id: "owner" } } },
+    { path: `/api/feed/?ids=${A}`, value: [clip(A, "complete", { user_id: "owner", metadata: { task: "extend" } })] },
+    { path: "/api/generate/concat/v2/", value: clip(B, "submitted") },
+  ], undefined, { verifyHuman: async () => { calls++; throw new Error("Concat must not invoke verification"); } });
   const request: AudioGenerationRequest = { operation: "get_whole_song", clipId: A };
   const signal = createHostAbortController().signal;
-  await assert.rejects(h.adapter.prepare!(request, signal));
-  await assert.rejects(h.adapter.submit(request, signal));
+  await h.adapter.prepare!(request, signal);
+  const result = await h.adapter.submit(request, signal);
+  assert.equal(result.kind, "task");
   assert.equal(calls, 0);
-  assert.equal(h.api().length, 2);
+  assert.deepEqual(h.api().map((entry) => entry.path), ["/api/session/", `/api/feed/?ids=${A}`, "/api/generate/concat/v2/"]);
+  assert.deepEqual(h.api()[2]!.body, { clip_id: A, is_infill: false });
+  h.done();
 });
 
 test("proof expiry during authentication work rejects before actual generation dispatch", async (t) => {

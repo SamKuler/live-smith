@@ -278,16 +278,19 @@ test("extend rejects absent, mismatched, duplicate, unfinished and invalid-durat
 });
 
 test("get whole song acknowledges a single clip and does not read a generation model catalog", async () => {
-  const h = replay([pollStep([clip(C, "complete", { metadata: { duration: 30, task: "extend" } })], C), gateStep(),
+  const h = replay([{ path: "/api/session/", value: { user: { clerk_id: accountId, id: "owner" } } },
+    pollStep([clip(C, "complete", { user_id: "owner", metadata: { duration: 30, task: "extend" } })], C),
     { path: "/api/generate/concat/v2/", value: clip(A, "submitted") }]);
   assert.deepEqual(await preparedSubmit(h, { operation: "get_whole_song", clipId: C }), { kind: "task", taskId: A, expectedOutputs: single });
-  assert.deepEqual(h.api().at(-1)!.body, { clip_id: C });
+  assert.deepEqual(h.api().at(-1)!.body, { clip_id: C, is_infill: false });
+  assert.equal(h.api().some((entry) => entry.path === "/api/c/check"), false);
 });
 
 test("get whole song rejects a completed clip without extension lineage before submission", async () => {
-  const h = replay([pollStep([clip(C)], C)]);
+  const h = replay([{ path: "/api/session/", value: { user: { clerk_id: accountId, id: "owner" } } },
+    pollStep([clip(C, "complete", { user_id: "owner" })], C)]);
   await safeFailure(h.adapter.prepare!({ operation: "get_whole_song", clipId: C }, signal()));
-  assert.equal(h.api().length, 1);
+  assert.equal(h.api().length, 2);
 });
 
 test("submission receipts require one or two unique canonical UUIDs and never reflect remote messages", async () => {
@@ -351,7 +354,7 @@ test("Stop cannot turn a malformed paid response into an acknowledged task", asy
 test("inspect requires the original sorted UUID and role manifest before any network access", async () => {
   const h = replay();
   for (const manifest of [undefined, [], [MANIFEST[1]], [...MANIFEST].reverse(), [MANIFEST[0], MANIFEST[0]],
-    [...MANIFEST, { key: C, role: "music" }], [{ key: A, role: "sound_effect" }], [{ key: "bad", role: "music" }],
+    [...MANIFEST, { key: C, role: "music" }], [{ key: A, role: "sound_effect_alternative" }], [{ key: "bad", role: "music" }],
     [{ ...MANIFEST[0], url: "https://untrusted.test" }]]) {
     await safeFailure(h.adapter.inspect!(A, signal(), manifest as AudioJob["expectedOutputs"]));
   }

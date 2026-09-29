@@ -3,7 +3,7 @@ import { setTimeout, clearTimeout } from "node:timers";
 import { isDeepStrictEqual } from "node:util";
 import { parseRetrievalClipIds } from "../agent/music-tools.js";
 import {
-  audioJobRemoteSettled,
+  AUDIO_OUTPUT_LABELS, audioJobRemoteSettled, SUNO_STEM_ROLES,
   AudioSubmissionNotStartedError,
   type AudioGenerationAdapter, type AudioGenerationRequest, type AudioJob,
   type GeneratedAudioOutput, type RemoteAudioStatus,
@@ -51,15 +51,16 @@ export async function generateAudio(
     throw new Error("The selected Integration Connection Plugin is unavailable.");
   }
   const capability = plugin.audio;
-  if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
+  const musicOptions = "options" in request ? request.options : undefined;
+  if (musicOptions &&
     !capability.customMusic) throw new Error("This service does not support custom music parameters.");
-  if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
-    Object.keys(request.options).some((field) => field !== "mode" &&
+  if (musicOptions &&
+    Object.keys(musicOptions).some((field) => field !== "mode" &&
       !capability.customMusicOptions?.includes(field as never))) {
     throw new Error("This service does not support one or more custom music parameters.");
   }
-  if ((request.operation === "generate_music" || request.operation === "extend_music") && request.options &&
-    capability.requiredCustomMusicOptions?.some((field) => request.options?.[field] === undefined)) {
+  if (musicOptions &&
+    capability.requiredCustomMusicOptions?.some((field) => musicOptions[field] === undefined)) {
     throw new Error("This service requires another custom music parameter.");
   }
   if (request.operation === "generate_music" && exceedsAudioPromptLimit(request.prompt, capability.musicPromptCharacters)) {
@@ -97,12 +98,14 @@ export async function generateAudio(
   }
   const adapter = pluginGenerationAdapter(context, settings);
   if (settings.provider !== "suno") await assertAudioOutputCapacity(context.storageDirectory, context.sessionId,
-    request.operation === "get_whole_song" ? 1 : capability.generationOutputCount);
+    request.operation === "get_whole_song" || request.operation === "finish_music_replacement" ? 1 : capability.generationOutputCount);
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: request.operation,
-    ...(request.operation !== "generate_sound_effect" && settings.modelId ? { modelId: settings.modelId } : {}),
-    ...((request.operation === "generate_music" || request.operation === "extend_music") && request.options?.title?.trim()
-      ? { title: request.options.title } : {}),
+    ...(request.operation === "extract_music_stems" ? { modelId: "chirp-v3-5-b" }
+      : request.operation === "remaster_music" ? request.modelId ? { modelId: request.modelId } : {}
+      : request.operation !== "generate_sound_effect" && settings.modelId ? { modelId: settings.modelId } : {}),
+    ...(musicOptions?.title?.trim()
+      ? { title: musicOptions.title } : {}),
     connectionFingerprint: integrationConnectionFingerprint(settings), stems: [],
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
@@ -206,7 +209,7 @@ export async function downloadAudioOutput(
       });
       throwIfAborted(context.signal);
       const asset = await saveAudioAsset(context.storageDirectory, context.sessionId, {
-        jobId: job.id, role: selected.role, label: selected.role === "music_alternative" ? "Music alternative" : "Music",
+        jobId: job.id, role: selected.role, label: AUDIO_OUTPUT_LABELS[selected.role],
         bytes, origin: { kind: "generated" }, signal: context.signal,
       });
       const outputAssets = [...job.outputAssets, asset];
@@ -230,7 +233,7 @@ function confirmedGenerationOutputs(
   job: AudioJob, remote: Extract<RemoteAudioStatus, { status: "completed" }>,
 ): NonNullable<AudioJob["expectedOutputs"]> {
   const roles = (job.expectedOutputs ?? remote.outputs).map((output) => output.role);
-  if (roles.some((role) => !["music", "music_alternative", "sound_effect"].includes(role))) throw new Error("Unexpected generated audio role.");
+  if (roles.some((role) => !["music", "music_alternative", "sound_effect", "sound_effect_alternative", "uploaded_audio", ...SUNO_STEM_ROLES].includes(role))) throw new Error("Unexpected generated audio role.");
   if (!job.expectedOutputs && job.outputAssets.length) {
     throw new Error("This historical partial result has no saved remote output identities. Existing audio is retained, but missing files cannot be safely matched.");
   }
@@ -262,7 +265,7 @@ async function runGeneration(
     if (job.outputAssets.some((asset) => asset.role === output.role)) return;
     const persist = () => saveAudioAsset(context.storageDirectory, context.sessionId, {
       jobId: job.id, role: output.role,
-      label: output.role === "sound_effect" ? "Sound effect" : output.role === "music_alternative" ? "Music alternative" : "Music",
+      label: AUDIO_OUTPUT_LABELS[output.role],
       bytes: output.bytes, origin: { kind: "generated" },
       // A complete paid result may race Stop. Persist that result, without
       // authorizing another remote request or a Live mutation.

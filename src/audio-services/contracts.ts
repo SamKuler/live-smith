@@ -4,16 +4,34 @@ import type { UiMessage } from "../i18n/ui-message.js";
 export const SEPARATION_STEMS = [
   "vocals", "drums", "bass", "piano", "electric_guitar", "acoustic_guitar",
 ] as const;
+export const SUNO_STEM_BASE_ROLES = [
+  "suno_stem_vocals", "suno_stem_backing_vocals", "suno_stem_drums", "suno_stem_bass", "suno_stem_guitar", "suno_stem_keyboard",
+  "suno_stem_percussion", "suno_stem_strings", "suno_stem_synth", "suno_stem_fx", "suno_stem_brass", "suno_stem_woodwinds",
+] as const;
+export type SunoStemBaseRole = typeof SUNO_STEM_BASE_ROLES[number];
+export const SUNO_STEM_ROLES = [...SUNO_STEM_BASE_ROLES,
+  ...SUNO_STEM_BASE_ROLES.map((role): `${SunoStemBaseRole}_alternative` => `${role}_alternative`),
+] as const;
+export type SunoStemRole = typeof SUNO_STEM_ROLES[number];
 export type SeparationStem = (typeof SEPARATION_STEMS)[number];
+const sunoStemLabels: Record<SunoStemBaseRole, string> = {
+  suno_stem_vocals: "Lead vocals", suno_stem_backing_vocals: "Backing vocals", suno_stem_drums: "Drums",
+  suno_stem_bass: "Bass", suno_stem_guitar: "Guitar", suno_stem_keyboard: "Keyboards", suno_stem_percussion: "Percussion",
+  suno_stem_strings: "Strings", suno_stem_synth: "Synth", suno_stem_fx: "Effects", suno_stem_brass: "Brass", suno_stem_woodwinds: "Woodwinds",
+};
 export const AUDIO_OUTPUT_LABELS = {
   vocals: "Vocals", drums: "Drums", bass: "Bass", piano: "Piano",
   electric_guitar: "Electric guitar", acoustic_guitar: "Acoustic guitar", residual: "Remaining audio",
   music: "Music", music_alternative: "Alternative music", sound_effect: "Sound effect",
+  sound_effect_alternative: "Alternative sound effect",
+  uploaded_audio: "Uploaded audio",
+  ...sunoStemLabels,
+  ...Object.fromEntries(SUNO_STEM_BASE_ROLES.map((role) => [`${role}_alternative`, `Alternative ${sunoStemLabels[role].toLowerCase()}`])) as Record<`${SunoStemBaseRole}_alternative`, string>,
 } as const;
 
 export const MAX_AUDIO_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_AUDIO_ASSET_DURATION_SECONDS = 15 * 60;
-export const MAX_AUDIO_JOB_OUTPUTS = 7;
+export const MAX_AUDIO_JOB_OUTPUTS = 24;
 export const MAX_AUDIO_SESSION_BYTES = 1024 * 1024 * 1024;
 export const MAX_AUDIO_SESSION_JOBS = 40;
 export const MAX_AUDIO_JOB_TITLE_CHARACTERS = 200;
@@ -22,7 +40,9 @@ export const LEGACY_AUDIO_SERVICE_ID = "audio-service-lalal";
 export const AUDIO_PROVIDERS = ["lalal", "elevenlabs", "google-lyria", "mureka", "suno-platform", "suno", "sunoapi"] as const;
 export type AudioProvider = (typeof AUDIO_PROVIDERS)[number];
 export type AudioOperation = "separate_stems" | "generate_music" | "generate_song_from_lyrics" |
-  "generate_sound_effect" | "extend_music" | "get_whole_song" | "retrieve_music";
+  "generate_sound_effect" | "generate_sound_sample" | "cover_music" | "remaster_music" |
+  "add_vocals" | "add_instrumental" | "replace_music_section" | "finish_music_replacement" |
+  "extend_music" | "get_whole_song" | "retrieve_music" | "upload_music" | "extract_music_stems";
 
 export interface AudioServiceConnection {
   id: string;
@@ -61,21 +81,63 @@ export interface MusicGenerationOptions {
   negativeStyles?: string;
   weirdness?: number;
   styleInfluence?: number;
+  audioInfluence?: number;
   vocalGender?: "male" | "female";
   personaId?: string;
 }
 
 export type MusicGenerationOptionField = Exclude<keyof MusicGenerationOptions, "mode">;
 
+export interface LyricWritingRequest {
+  selected: string;
+  instruction: string;
+  contextBefore?: string;
+  contextAfter?: string;
+  title?: string;
+  styles?: string;
+  mode?: "rewrite" | "alternatives";
+  modelId?: string;
+  enableThinking?: boolean;
+}
+export interface LyricWritingResult {
+  status: "completed";
+  lyrics: string;
+  variants?: string[];
+  lyricsRequestId?: string;
+  lyricsId?: string;
+}
+export interface LyricModelCatalog {
+  query: "lyric_models";
+  models: Array<{ id: string; name: string; family?: string; supportsThinking?: boolean }>;
+}
+
+export const SOUND_SAMPLE_KEYS = [
+  "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+  "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "A#m", "Bm",
+] as const;
+export type SoundSampleKey = typeof SOUND_SAMPLE_KEYS[number];
+export const REMASTER_VARIATIONS = ["subtle", "normal", "high"] as const;
+export type RemasterVariation = typeof REMASTER_VARIATIONS[number];
+
 export type AudioGenerationRequest =
+  | { operation: "extract_music_stems"; clipId: string }
   | { operation: "generate_music"; prompt: string; durationSeconds?: number; instrumental: boolean; options?: MusicGenerationOptions }
   | { operation: "generate_song_from_lyrics"; lyrics: string; prompt?: string; gender?: "female" | "male" }
   | { operation: "extend_music"; clipId: string; startSeconds: number; prompt: string; instrumental: boolean; options?: MusicGenerationOptions }
   | { operation: "get_whole_song"; clipId: string }
+  | { operation: "generate_sound_sample"; prompt: string; loop: boolean; bpm?: number; key?: SoundSampleKey }
+  | { operation: "cover_music"; clipId: string; startSeconds?: number; endSeconds?: number; prompt: string; instrumental: boolean; options?: MusicGenerationOptions }
+  | { operation: "remaster_music"; clipId: string; modelId?: string; variation?: RemasterVariation }
+  | { operation: "add_vocals"; clipId: string; prompt: string; options?: MusicGenerationOptions }
+  | { operation: "add_instrumental"; clipId: string; prompt: string; options?: MusicGenerationOptions }
+  | { operation: "replace_music_section"; clipId: string; startSeconds: number; endSeconds: number;
+      contextStartSeconds?: number; contextEndSeconds?: number; replacementDurationSeconds?: number;
+      prompt: string; options?: MusicGenerationOptions }
+  | { operation: "finish_music_replacement"; clipId: string }
   | { operation: "generate_sound_effect"; prompt: string; durationSeconds: number; loop: boolean };
 
 export interface GeneratedAudioOutput {
-  role: "music" | "music_alternative" | "sound_effect";
+  role: "music" | "music_alternative" | "sound_effect" | "sound_effect_alternative" | "uploaded_audio" | SunoStemRole;
   bytes: Uint8Array;
 }
 
@@ -157,6 +219,15 @@ export type AudioJobStatus =
   | "preparing" | "submitting" | "running" | "collecting" | "ready"
   | "completed" | "partial" | "failed" | "interrupted" | "unknown" | "cancelled";
 
+export interface SunoUploadReceipt {
+  sourceSha256: string;
+  rightsConfirmed: true;
+  stage: "prepared" | "creating" | "created" | "uploading" | "uploaded" | "finishing" |
+    "processing" | "processed" | "initializing" | "complete";
+  uploadId?: string;
+  clipId?: string;
+}
+
 export interface AudioJob {
   id: string;
   sessionId: string;
@@ -179,6 +250,8 @@ export interface AudioJob {
   sourceAssetId?: string;
   remoteSourceId?: string;
   remoteTaskId?: string;
+  /** Private multi-stage upload receipt; presigned URLs and fields are never stored. */
+  upload?: SunoUploadReceipt;
   /** Immutable remote identities acknowledged before collection; never include URLs. */
   expectedOutputs?: Array<{ key: string; role: GeneratedAudioOutput["role"] }>;
   /** Observed successful Suno outputs, a URL-free subset of the immutable manifest. */
@@ -225,9 +298,14 @@ export function audioJobView(job: AudioJob): AudioJobView {
         ? job.remoteOutputs.length ? "partial" as const : job.remoteTaskTerminal === "cancelled" ? "cancelled" as const : "failed" as const
         : "completed" as const,
     } : {}),
-    resumable: Boolean(job.remoteTaskId) && job.status !== "completed" && job.status !== "cancelled" &&
+    resumable: job.operation === "upload_music" ? sunoUploadCanResume(job) : Boolean(job.remoteTaskId) && job.status !== "completed" && job.status !== "cancelled" &&
       !audioJobRemoteSettled(job),
   };
+}
+
+export function sunoUploadCanResume(job: Pick<AudioJob, "operation" | "upload" | "status">): boolean {
+  return job.operation === "upload_music" && job.status !== "completed" && job.status !== "cancelled" && job.status !== "failed" &&
+    Boolean(job.upload && ["prepared", "uploaded", "processing", "processed"].includes(job.upload.stage));
 }
 
 /** True when another provider status read cannot reveal a new successful output. */

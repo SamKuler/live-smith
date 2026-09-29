@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { setTimeout, clearTimeout } from "node:timers";
 
 import {
-  audioJobRemoteSettled, audioJobView, type AudioAsset, type AudioJob, type AudioJobView,
+  audioJobRemoteSettled, audioJobView, sunoUploadCanResume, type AudioAsset, type AudioJob, type AudioJobView,
   type AudioOrigin, type AudioServiceAdapter, type AudioGenerationAdapter,
   type SeparationStem, type AudioDownloadAuthorization, type AudioServiceAuthorization,
 } from "../audio-services/contracts.js";
@@ -23,6 +23,8 @@ import { resumeAudioGeneration } from "./audio-generation.js";
 import { audioPollScheduler } from "./audio-polling.js";
 import { formatUiMessage, type UiMessage } from "../i18n/ui-message.js";
 import { audioMessage as m, audioRoleMessage } from "./audio-messages.js";
+import { resumeSunoUpload } from "./suno-upload.js";
+import type { SunoUploadAdapter } from "../audio-services/suno-upload.js";
 export { integrationConnectionFingerprint } from "./integration-connections.js";
 export { downloadAudioOutput } from "./audio-generation.js";
 
@@ -40,6 +42,7 @@ export interface AudioProcessingContext {
   /** Injected service and wait are used by protocol-independent lifecycle tests. */
   adapter?: AudioServiceAdapter;
   generationAdapter?: AudioGenerationAdapter;
+  sunoUploadAdapter?: SunoUploadAdapter;
   wait?: (signal: AbortSignal) => Promise<void>;
 }
 
@@ -60,7 +63,8 @@ export async function audioJobViews(
       view.status = job.remoteOutputs?.length ? job.outputAssets.length ? "partial" : "ready"
         : job.status === "submitting" && !job.remoteTaskId ? "unknown" : "interrupted";
     }
-    if (active) view.resumable = false;
+    if (job.operation === "upload_music") view.resumable = !active && sunoUploadCanResume(job);
+    else if (active) view.resumable = false;
     else if (!job.remoteTaskId && job.operation !== "separate_stems" &&
       job.status !== "completed" && job.status !== "cancelled") {
       view.resumable = localAssets.some((asset) => asset.jobId === job.id && asset.role !== "source");
@@ -112,6 +116,7 @@ export async function resumeAudioJob(context: AudioProcessingContext, jobId: str
   try {
     let job = await loadAudioJob(context.storageDirectory, context.sessionId, jobId);
     if (job.status === "completed" || job.status === "cancelled") return job;
+    if (job.operation === "upload_music") return resumeSunoUpload(context, job);
     job = await reconcileLocalAudioJob(context.storageDirectory, context.sessionId, job, context.signal);
     if (job.status === "completed" || audioJobRemoteSettled(job)) return job;
     if (job.operation !== "separate_stems") return await resumeAudioGeneration(context, job);

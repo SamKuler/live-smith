@@ -21,6 +21,7 @@ import { composeChatDocument } from "./chat-document.js";
 
 declare const __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: string;
 declare const __LIVE_SMITH_PLUGIN_APPS_SCRIPT__: string;
+declare const __LIVE_SMITH_AUDIO_PARAMETERS_SCRIPT__: string;
 declare const __LIVE_SMITH_CHAT_STYLES__: string;
 declare const __LIVE_SMITH_RESULT_STYLES__: string;
 
@@ -49,6 +50,7 @@ export function chatHtml(
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,
     pluginApps: __LIVE_SMITH_PLUGIN_APPS_SCRIPT__,
+    audioParameters: __LIVE_SMITH_AUDIO_PARAMETERS_SCRIPT__,
     profileEditor: profileEditorScript,
     pluginManager: pluginManagerScript,
     pluginParameters: pluginParametersScript,

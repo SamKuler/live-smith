@@ -1,3 +1,4 @@
+import type { AudioParameterPanel } from "../plugins/builtins/parameter-panel.js";
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { AudioJobView } from "../audio-services/contracts.js";
 import { isStandaloneMcpConnection, type IntegrationConnectionsView } from "../plugins/integration-connections.js";
@@ -70,7 +71,7 @@ export interface SessionToolCatalog {
     serverId?: string;
     connectionId?: string;
     connectionName?: string;
-    tools: Array<{ name: string; description: string; panel?: PluginParameterPanel; app?: PluginAppDescriptor }>;
+    tools: Array<{ name: string; description: string; panel?: PluginParameterPanel; audioPanel?: AudioParameterPanel; app?: PluginAppDescriptor }>;
   }>;
   issues: PluginToolIssue[];
 }
@@ -212,7 +213,12 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
         ...(group.serverId === undefined ? {} : { serverId: group.serverId }),
         ...(group.connectionId === undefined ? {} : { connectionId: group.connectionId }),
         ...(group.connectionName === undefined ? {} : { connectionName: group.connectionName }),
-        tools: group.tools.map(({ name, description, panel, app }) => ({ name, description,
+        tools: group.tools.map(({ name, description, panel, app, audioPanel }) => ({ name, description,
+          ...(audioPanel ? { audioPanel: { toolName: audioPanel.toolName, signature: audioPanel.signature,
+            ...(audioPanel.connectionId === undefined ? {} : { connectionId: audioPanel.connectionId }),
+            schema: cloneJsonValue(audioPanel.schema),
+            ...(audioPanel.suggestions ? { suggestions: cloneJsonValue(audioPanel.suggestions) } : {}),
+          } } : {}),
           ...(app ? { app: { resourceUri: app.resourceUri, signature: app.signature, toolName: app.toolName } } : {}),
           ...(panel === undefined ? {} : { panel: {
             toolName: panel.toolName, signature: panel.signature,

@@ -1,6 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createToolsInspector = function createToolsInspector({
-        getState, getCatalogOwner, loadCatalog, humanizeToolName, runCommand, pluginApps, resultActions,
+        getState, getCatalogOwner, loadCatalog, humanizeToolName, runCommand, pluginApps, resultActions, audioParameters,
       }) {
         const t = (source, params) => window.LiveSmithI18n.t(source, params);
         const descriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
@@ -100,6 +100,7 @@
 
         function groupLabel(group) {
           if (group.kind === "live") return "Live Smith";
+          if (group.kind === "audio" && group.connectionName) return group.connectionName;
           if (group.kind === "audio") return descriptors[group.pluginId]
             ? t(descriptors[group.pluginId].label) : t("Session media");
           return group.connectionName || group.serverId || group.pluginId;
@@ -119,6 +120,9 @@
           const content = element("div", "tool-group-content");
           if (group.kind === "mcp") content.append(element("p", "field-hint", group.pluginId
             ? [group.pluginId, group.serverId].join(" / ") : t("Standalone MCP")));
+          if (group.kind === "audio" && group.connectionName && descriptors[group.pluginId]) {
+            content.append(element("p", "field-hint", t(descriptors[group.pluginId].label)));
+          }
           for (const tool of group.tools) {
             const entry = element("details", "tool-entry");
             entry.dataset.toolKey = section.dataset.toolKey + ":" + tool.name;
@@ -133,6 +137,13 @@
             if (group.kind !== "mcp") information.append(name);
             information.append(description);
             entry.append(title, information);
+            if (tool.audioPanel) {
+              const open = element("button", "secondary audio-open-panel", t("Open controls"));
+              open.type = "button";
+              open.disabled = disabled;
+              open.addEventListener("click", () => { audioParameters.open({ ...tool, name: humanizeToolName(tool.name) }, groupLabel(group)); });
+              entry.append(open);
+            }
             if (tool.app) {
               const open = element("button", "secondary plugin-open-app", t("Open interface"));
               open.type = "button";

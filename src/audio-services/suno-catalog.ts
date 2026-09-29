@@ -18,6 +18,10 @@ export interface SunoMusicModel {
   isDefault?: boolean;
   supportsDuration?: boolean;
   maxLengths: Partial<Record<LimitField, number>>;
+  capabilities?: string[];
+  features?: string[];
+  allowedConditionCombinations?: string[][];
+  supportsVariation?: boolean;
 }
 
 export function sunoObject(value: unknown, http: SunoHttp): Record<string, unknown> {
@@ -62,7 +66,7 @@ function opaqueCursor(value: unknown, session: SunoSession, http: SunoHttp): str
 export async function readSunoCatalog(http: SunoHttp, session: SunoSession, signal: AbortSignal) {
   const body = sunoObject(await http.request("GET", "/api/billing/info/", undefined, signal), http);
   if (!Array.isArray(body.models) || body.models.length > 100) throw http.fail("invalid model catalog.");
-  const models: SunoMusicModel[] = body.models.map((entry: unknown) => {
+  const projectModel = (entry: unknown, remaster = false): SunoMusicModel => {
     const model = sunoObject(entry, http);
     if (typeof model.external_key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(model.external_key) ||
         model.external_key.includes(session.clientToken)) throw http.fail("invalid catalog model identifier.");
@@ -86,14 +90,24 @@ export async function readSunoCatalog(http: SunoHttp, session: SunoSession, sign
       ...(typeof model.can_use === "boolean" ? { canUse: model.can_use } : {}),
       ...(typeof model.is_default_model === "boolean" ? { isDefault: model.is_default_model } : {}), maxLengths,
       ...(typeof majorVersion === "number" ? { supportsDuration: majorVersion >= 6 } : {}),
+      ...(model.capabilities === undefined ? {} : { capabilities: evidenceList(model.capabilities, http) }),
+      ...(model.features === undefined ? {} : { features: evidenceList(model.features, http) }),
+      ...(model.allowed_condition_combinations === undefined ? {} : {
+        allowedConditionCombinations: conditionCombinations(model.allowed_condition_combinations, http),
+      }),
+      ...(remaster ? { supportsVariation: supportsRemasterVariation(model.external_key) } : {}),
     };
-  });
+  };
+  const models = body.models.map((entry: unknown) => projectModel(entry));
+  const remasterModels = body.remaster_model_types === undefined ? undefined : modelList(body.remaster_model_types, http).map((entry) => projectModel(entry, true));
+  if (remasterModels && new Set(remasterModels.map((model) => model.id)).size !== remasterModels.length) throw http.fail("duplicate remaster model identifier.");
   if (new Set(models.map((model) => model.id)).size !== models.length) throw http.fail("duplicate catalog model identifier.");
   const credits = body.total_credits_left;
   const plan = body.plan && typeof body.plan === "object" && !Array.isArray(body.plan)
     ? display((body.plan as Record<string, unknown>).name, session.clientToken, 80) : "";
   return {
     query: "catalog" as const, models,
+    ...(remasterModels === undefined ? {} : { remasterModels }),
     ...(typeof credits === "number" && Number.isFinite(credits) && credits >= 0 && credits <= Number.MAX_SAFE_INTEGER
       ? { creditsLeft: credits } : {}),
     ...(plan ? { plan } : {}),
@@ -161,4 +175,24 @@ export async function readSunoMusicService(
   const nextCursor = body.next_cursor == null ? undefined : opaqueCursor(body.next_cursor, session, http);
   if (body.has_more && (!nextCursor || nextCursor === cursor)) throw http.fail("missing or repeated library cursor.");
   return http.publicResult({ query: "library" as const, clips, hasMore: body.has_more, ...(nextCursor ? { nextCursor } : {}) });
+}
+
+function evidenceList(value: unknown, http: SunoHttp): string[] {
+  if (!Array.isArray(value) || value.length > 100 || value.some((entry) =>
+    typeof entry !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(entry))) {
+    throw http.fail("invalid model capability evidence.");
+  }
+  return [...value];
+}
+function conditionCombinations(value: unknown, http: SunoHttp): string[][] {
+  if (!Array.isArray(value) || value.length > 100) throw http.fail("invalid model condition evidence.");
+  return value.map((entry) => evidenceList(entry, http));
+}
+function modelList(value: unknown, http: SunoHttp): unknown[] {
+  if (!Array.isArray(value) || value.length > 100) throw http.fail("invalid remaster model catalog.");
+  return value;
+}
+/** First-party Remaster client capability mapping; kept inside the website protocol. */
+function supportsRemasterVariation(id: string): boolean {
+  return ["chirp-carp", "chirp-dorado", "chirp-flounder", "chirp-haddock", "chirp-halibut"].some((family) => id.includes(family));
 }
