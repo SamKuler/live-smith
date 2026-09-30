@@ -6,7 +6,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
-import { setImmediate } from "node:timers/promises";
 
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate/browser";
 
@@ -24,6 +23,7 @@ import type { ChatBridgeState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { ChatBridgeConflictError } from "./chat-bridge-http.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
+import { createOpenResponseRelay } from "./plugin-apps-test-http-relay.js";
 import { MAX_PLUGIN_APP_PAGE_REQUEST_BYTES, createPluginAppSessions } from "./plugin-apps.js";
 import { createRequestPluginTools, type PluginExecutionAuthorization } from "./request-plugin-tools.js";
 import { SessionMutationFence, sessionMutationFenceKey } from "./session-mutation-fence.js";
@@ -257,28 +257,39 @@ test("MCP App resource continuation preserves long opaque strings", { timeout: 1
 });
 
 test("MCP App ownership survives cancellation during its open response body", { timeout: 15_000 }, async (t) => {
-  const files = unzipSync(exampleBytes);
-  const source = strFromU8(files["server.mjs"]!);
-  const changed = source.replace('const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");',
-    'const html = "<p>" + "x".repeat(1_500_000) + "</p>";');
-  assert.notEqual(changed, source);
-  files["server.mjs"] = strToU8(changed);
-  const { directory } = await fixture(t, zipSync(files));
+  const { directory } = await fixture(t);
   await withFlow(directory, async (bridge) => {
     const sessionId = (await bridge.state()).activeSessionId;
     const descriptor = appDescriptor(await bridge.catalog(sessionId));
     for (let attempt = 0; attempt < 4; attempt++) {
       const id = randomUUID();
       const controller = createHostAbortController();
-      const response = await fetch(bridge.endpoint("/plugin-apps/open"), {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ id, sessionId, toolName: descriptor.toolName, signature: descriptor.signature }),
-      });
-      assert.equal(response.status, 200);
-      const parsed = response.json().then((value) => ({ value }), (error: unknown) => ({ error }));
-      await setImmediate();
-      controller.abort(new Error("App window closed during response reading."));
-      assert.ok("error" in await parsed, "The cancelled open cannot depend on receiving the instance ID.");
+      const relay = await createOpenResponseRelay(t, bridge.endpoint("/plugin-apps/open"));
+      try {
+        const response = await fetch(relay.url, {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+          body: JSON.stringify({ id, sessionId, toolName: descriptor.toolName, signature: descriptor.signature }),
+        });
+        assert.equal(response.status, 200);
+        let settled = false;
+        const parsed = response.json().then((value) => { settled = true; return { value }; },
+          (error: unknown) => { settled = true; return { error }; });
+        const held = await relay.held;
+        assert.equal(held.body.id, id, "The real bridge has completed the open and registered the requested owner.");
+        assert.ok(held.sentBytes < held.totalBytes);
+        assert.equal(response.bodyUsed, true);
+        const owned = await bridge.post("/plugin-apps/resource", { id, uri: resourceUri });
+        assert.equal(owned.status, 200, "The open instance exists before its client receives the complete response.");
+        assert.equal(settled, false, "The JSON reader must still be waiting for the withheld response body.");
+        assert.equal(relay.isBodyHeld(), true);
+        controller.abort(new Error("App window closed during response reading."));
+        assert.ok("error" in await parsed, "The cancelled open cannot depend on receiving the instance ID.");
+        await relay.clientClosed;
+        assert.equal(relay.isBodyHeld(), false);
+      } finally {
+        controller.abort();
+        await relay.close();
+      }
       const closed = await bridge.post("/plugin-apps/close", { id });
       assert.equal(closed.status, 200, closed.raw);
       const resource = await bridge.post("/plugin-apps/resource", { id, uri: resourceUri });
