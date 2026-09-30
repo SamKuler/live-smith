@@ -1,5 +1,6 @@
 import {
   Client,
+  specTypeSchemas,
   StreamableHTTPClientTransport,
   type CallToolResult,
   type FetchLike,
@@ -101,7 +102,10 @@ export async function connectPluginMcpServer(
       try {
         const params = cursor === undefined ? {} : { cursor };
         const options = { signal: requestSignal, timeout: LIST_TIMEOUT_MS };
-        const result = templates ? await client.listResourceTemplates(params, options) : await client.listResources(params, options);
+        // App resource RPCs preserve server pagination; the SDK list helpers aggregate pages.
+        const result = templates
+          ? await client.request({ method: "resources/templates/list", params }, specTypeSchemas.ListResourceTemplatesResult, options)
+          : await client.request({ method: "resources/list", params }, specTypeSchemas.ListResourcesResult, options);
         if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Oversized resources.");
         return result;
       } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("list", server.id); }

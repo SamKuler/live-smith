@@ -32,6 +32,16 @@ function panelState() {
 
 type Harness = Awaited<ReturnType<typeof createDialogHarness>>;
 const form = ".plugin-parameters";
+function controlFor(h: Harness, title: string) {
+  const label = [...h.document.querySelectorAll<HTMLLabelElement>(`${form} label[for]`)]
+    .find((entry) => entry.textContent === title);
+  return label ? h.document.getElementById(label.htmlFor) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null : null;
+}
+function field(h: Harness, title: string): string {
+  const control = controlFor(h, title);
+  assert.ok(control, `Expected the control labelled ${title}.`);
+  return "#" + control.id;
+}
 function openPanel(h: Harness) {
   h.click("#sessionInspectorScope");
   h.click("#toolsTab");
@@ -46,16 +56,16 @@ test("native parameter controls submit typed values directly and display the sav
   }) });
   try {
     openPanel(h);
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)!.value, "4");
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="note"]`)!.disabled, true);
+    assert.equal(controlFor(h, "Bars")!.value, "4");
+    assert.equal(controlFor(h, "Note")!.disabled, true);
     const densitySlider = h.document.querySelector<HTMLInputElement>(`${form} input[type="range"][aria-label="Density"]`)!;
     densitySlider.stepUp();
     densitySlider.dispatchEvent(new h.window.Event("input", { bubbles: true }));
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="density"]`)!.value, "0.6");
-    h.input(`${form} [name="bars"]`, "6");
+    assert.equal(controlFor(h, "Density")!.value, "0.6");
+    h.input(field(h, "Bars"), "6");
     h.input(`${form} input[type="range"][aria-label="Density"]`, "0.7");
-    h.select(`${form} [name="division"]`, "2");
-    h.click(`${form} [name="keepDrums"]`);
+    h.select(field(h, "Division"), "2");
+    h.click(field(h, "Keep drums"));
     const result = cloneState(state);
     result.events.push({ id: "panel-result", createdAt: "2026-09-28T00:01:00.000Z", kind: "tool_result",
       name: "mcp_generator_generate", content: JSON.stringify({ content: [{ type: "text", text: "Pattern ready <img src=x>" }] }) });
@@ -73,7 +83,7 @@ test("native parameter controls submit typed values directly and display the sav
     assert.equal(h.calls.some((call) => call.path === "/send"), false);
     assert.match(h.document.querySelector(".plugin-result-summary")?.textContent ?? "", /Pattern ready <img src=x>/);
     assert.equal(h.document.querySelector(".plugin-result-card img"), null);
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)!.value, "6");
+    assert.equal(controlFor(h, "Bars")!.value, "6");
     assert.equal(h.document.querySelector<HTMLDetailsElement>(".tool-entry")!.open, true);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -84,13 +94,13 @@ test("optional omission, constraints and reset preserve form semantics", async (
   const h = await createDialogHarness(state);
   try {
     openPanel(h);
-    h.input(`${form} [name="bars"]`, "9");
+    h.input(field(h, "Bars"), "9");
     h.click(`${form} button[type="submit"]`);
     await h.settle();
     assert.equal(commandCalls(h).length, 0);
-    h.input(`${form} [name="bars"]`, "3");
+    h.input(field(h, "Bars"), "3");
     h.click(`${form} [aria-label="Include Note"]`);
-    h.input(`${form} [name="note"]`, "x");
+    h.input(field(h, "Note"), "x");
     h.click(`${form} button[type="submit"]`);
     await h.settle();
     assert.equal(commandCalls(h).length, 0);
@@ -103,9 +113,9 @@ test("optional omission, constraints and reset preserve form semantics", async (
     await waitForCondition(() => h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")?.disabled === false,
       "Expected the command to release the parameter form.");
     h.click(`${form} button[type="button"]`);
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)!.value, "4");
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="density"]`)!.disabled, false);
-    assert.equal(h.document.querySelector<HTMLInputElement>(`${form} [name="note"]`)!.disabled, true);
+    assert.equal(controlFor(h, "Bars")!.value, "4");
+    assert.equal(controlFor(h, "Density")!.disabled, false);
+    assert.equal(controlFor(h, "Note")!.disabled, true);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -118,17 +128,17 @@ test("parameter drafts follow their Session and connection, and invalid remote p
   }) });
   try {
     openPanel(h);
-    h.input(`${form} [name="bars"]`, "7");
+    h.input(field(h, "Bars"), "7");
     h.click('.session-entry[data-session-id="session-2"] .session-row');
-    await waitForCondition(() => h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)?.value === "4",
+    await waitForCondition(() => controlFor(h, "Bars")?.value === "4",
       "Expected the new Session to start with defaults.");
-    h.input(`${form} [name="bars"]`, "6");
+    h.input(field(h, "Bars"), "6");
     const changed = cloneState(state);
     changed.integrationConnections!.revision = "2";
     delete changed.sessionToolCatalog;
     h.setServerState(changed);
     h.emitServerEvent({ type: "global_state_invalidated" });
-    await waitForCondition(() => h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)?.value === "4",
+    await waitForCondition(() => controlFor(h, "Bars")?.value === "4",
       "Expected a changed connection to discard its old parameter draft.");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -194,7 +204,7 @@ test("integer bounds use valid integral steps when the schema limits are fractio
   const h = await createDialogHarness(state);
   try {
     openPanel(h);
-    const input = h.document.querySelector<HTMLInputElement>(`${form} [name="bars"]`)!;
+    const input = controlFor(h, "Bars")!;
     assert.equal(input.validity.stepMismatch, false);
     h.input(`${form} input[type="range"]`, "2");
     h.click(`${form} button[type="submit"]`);
@@ -213,10 +223,49 @@ test("non-aligned numeric multiples keep an editable number control without an i
   try {
     openPanel(h);
     assert.equal(h.document.querySelector(`${form} input[type="range"]`), null);
-    h.input(`${form} [name="bars"]`, "4");
+    h.input(field(h, "Bars"), "4");
     h.click(`${form} button[type="submit"]`);
     await h.settle();
     assert.deepEqual((commandCalls(h)[0]!.body as { arguments: unknown }).arguments, { bars: 4 });
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
+});
+
+test("schema parameter names stay separate from native form methods and retain typed payload keys", async () => {
+  const definitions = new Map<string, Record<string, unknown>>([
+    ["append", { type: "string", default: "Initial text" }],
+    ["addEventListener", { type: "boolean", default: true }],
+    ["reportValidity", { type: "integer", minimum: 1, maximum: 8, default: 4 }],
+    ["constructor", { type: "number", minimum: 0, maximum: 1, multipleOf: 0.1, default: 0.5 }],
+    ["__proto__", { type: "string", minLength: 1 }],
+  ]);
+  for (const names of [["append"], ["addEventListener"], ["reportValidity"], [...definitions.keys()]]) {
+    const state = panelState();
+    state.sessionToolCatalog!.groups[0]!.tools[0]!.panel = pluginParameterPanel("mcp_generator_generate", {
+      type: "object", additionalProperties: false,
+      properties: Object.fromEntries(names.map((name) => [name, definitions.get(name)])),
+      required: names.filter((name) => name !== "__proto__"),
+    }, {})!;
+    const h = await createDialogHarness(state);
+    try {
+      openPanel(h);
+      const nativeForm = h.document.querySelector<HTMLFormElement>(form)!;
+      const expected = new Map<string, string | number | boolean>();
+      for (const name of names) {
+        assert.equal(nativeForm.elements.namedItem(name), null, `Schema name ${name} must not become a form property.`);
+        if (name === "addEventListener") { h.click(field(h, name)); expected.set(name, false); }
+        else {
+          if (name === "__proto__") h.click(`${form} [aria-label="Include __proto__"]`);
+          const value = name === "reportValidity" ? 6 : name === "constructor" ? 0.7 : "Edited " + name;
+          h.input(field(h, name), String(value));
+          expected.set(name, value);
+        }
+      }
+      h.click(`${form} button[type="submit"]`);
+      await h.settle();
+      assert.equal(commandCalls(h).length, 1);
+      assert.deepEqual((commandCalls(h)[0]!.body as { arguments: unknown }).arguments, Object.fromEntries(expected));
+      assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  }
 });

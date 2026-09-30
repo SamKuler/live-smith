@@ -86,13 +86,14 @@ const remoteServer: PluginMcpRemoteServer = {
 
 function remoteFetch(options: {
   listResponse?: (id: unknown) => Response;
+  resourcesResponse?: (request: { id?: unknown; method: string; params?: { cursor?: string } }) => Response | Promise<Response>;
   getResponse?: () => Response;
   terminate?: (signal: AbortSignal | null | undefined) => Promise<Response>;
 } = {}): typeof fetch {
   return (async (_input: unknown, init?: RequestInit): Promise<Response> => {
     if (init?.method === "GET") return options.getResponse?.() ?? new Response(null, { status: 405 });
     if (init?.method === "DELETE") return options.terminate?.(init.signal) ?? new Response(null, { status: 200 });
-    const message = JSON.parse(String(init?.body)) as { id?: unknown; method: string };
+    const message = JSON.parse(String(init?.body)) as { id?: unknown; method: string; params?: { cursor?: string } };
     const reply = (result: unknown, headers: Record<string, string> = {}) => new Response(
       JSON.stringify({ jsonrpc: "2.0", id: message.id, result }),
       { headers: { "content-type": "application/json", ...headers } },
@@ -101,13 +102,95 @@ function remoteFetch(options: {
       jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" },
     }), { headers: { "content-type": "application/json" } });
     if (message.method === "initialize") return reply({
-      protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" },
+      protocolVersion: "2025-03-26", capabilities: { tools: {}, ...(options.resourcesResponse ? { resources: {} } : {}) },
+      serverInfo: { name: "fixture", version: "1" },
     }, { "mcp-session-id": "session-fixture" });
     if (message.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (message.method === "notifications/cancelled") return new Response(null, { status: 202 });
     if (message.method === "tools/list") return options.listResponse?.(message.id) ?? reply({ tools: [] });
+    if (message.method === "resources/list" || message.method === "resources/templates/list") {
+      return options.resourcesResponse?.(message) ?? reply({ resources: [] });
+    }
     throw new Error("Unexpected MCP request.");
   }) as typeof fetch;
 }
+
+test("MCP resource lists preserve each page and opaque cursor beyond sixteen pages", async (t) => {
+  for (const templates of [false, true]) {
+    await t.test(templates ? "templates" : "resources", async (t) => {
+      const cursors = Array.from({ length: 16 }, (_unused, index) => `opaque page/${index + 1} +?&=`);
+      const requests: Array<{ cursor?: string }> = [];
+      const fetchImpl = remoteFetch({ resourcesResponse(request) {
+        assert.equal(request.method, templates ? "resources/templates/list" : "resources/list");
+        requests.push(request.params ?? {});
+        const page = request.params?.cursor === undefined ? 0 : cursors.indexOf(request.params.cursor) + 1;
+        assert.ok(page === 0 ? request.params?.cursor === undefined : page > 0);
+        const item = templates
+          ? { name: `Page ${page}`, uriTemplate: `resource://page/${page}/{id}` }
+          : { name: `Page ${page}`, uri: `resource://page/${page}` };
+        const result = { [templates ? "resourceTemplates" : "resources"]: [item],
+          ...(page < 16 ? { nextCursor: cursors[page] } : {}), _meta: { page } };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+          headers: { "content-type": "application/json" },
+        });
+      } });
+      const signal = createHostAbortController().signal;
+      const connection = await connectPluginMcpServer(remoteServer, undefined, signal, { fetchImpl });
+      t.after(() => connection.close());
+      let cursor: string | undefined;
+      for (let page = 0; page < 17; page++) {
+        const result = await connection.listResources!(templates, cursor, signal) as {
+          resources?: unknown[]; resourceTemplates?: unknown[]; nextCursor?: string; _meta: { page: number };
+        };
+        assert.equal((templates ? result.resourceTemplates : result.resources)?.length, 1);
+        assert.deepEqual(result._meta, { page });
+        assert.equal(result.nextCursor, page < 16 ? cursors[page] : undefined);
+        assert.equal(requests.length, page + 1, "one server page per caller request");
+        assert.deepEqual(requests.at(-1), cursor === undefined ? {} : { cursor });
+        cursor = result.nextCursor;
+      }
+      assert.equal(cursor, undefined);
+    });
+  }
+});
+
+test("MCP resource lists preserve cancellation and reject invalid or oversized pages", async (t) => {
+  for (const templates of [false, true]) {
+    await t.test(templates ? "templates" : "resources", async (t) => {
+      const key = templates ? "resourceTemplates" : "resources";
+      const uriKey = templates ? "uriTemplate" : "uri";
+      for (const failure of ["schema", "size", "abort"] as const) {
+        await t.test(failure, async (t) => {
+          let started!: () => void;
+          const dispatched = new Promise<void>((resolve) => { started = resolve; });
+          let release!: () => void;
+          const blocked = new Promise<void>((resolve) => { release = resolve; });
+          const controller = createHostAbortController();
+          const reason = new Error("Resource listing stopped.");
+          const fetchImpl = remoteFetch({ async resourcesResponse(request) {
+            started();
+            if (failure === "abort") await blocked;
+            const result = { [key]: [{ name: "Resource", [uriKey]: failure === "schema" ? 42 : "resource://fixture/{id}",
+              ...(failure === "size" ? { description: "x".repeat(4 * 1024 * 1024 + 1024) } : {}) }] };
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+              headers: { "content-type": "application/json" },
+            });
+          } });
+          const connection = await connectPluginMcpServer(remoteServer, undefined, createHostAbortController().signal, { fetchImpl });
+          t.after(() => connection.close());
+          const pending = connection.listResources!(templates, undefined, controller.signal);
+          const rejected = assert.rejects(pending, failure === "abort"
+            ? (error: unknown) => error === reason : PluginMcpConnectionError);
+          try {
+            await dispatched;
+            if (failure === "abort") controller.abort(reason);
+            await rejected;
+          } finally { release(); }
+        });
+      }
+    });
+  }
+});
 
 test("remote MCP rejects oversized JSON and SSE before accepting tool definitions", async (t) => {
   const largeDescription = "x".repeat(4 * 1024 * 1024 + 1024);

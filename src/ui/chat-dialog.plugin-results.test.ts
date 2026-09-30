@@ -4,7 +4,8 @@ import { URL } from "node:url";
 import { pluginParameterPanel } from "../plugins/parameter-panel.js";
 import { commandCalls, createDialogHarness, jsonCalls, stateFixture, waitForCondition } from "./chat-dialog.test-harness.js";
 
-async function fixture(withApp = false) {
+async function fixture(withApp = false, result: unknown = { content: [{ type: "text", text: "Three bars saved <img src=x>" }],
+  artifacts: [{ kind: "midi", artifactRef: "midi-one", label: "Pattern", noteCount: 24, durationBeats: 12 }] }) {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   state.integrationConnections = { revision: "1", connections: [{ id: "patterns", name: "Patterns", enabled: true,
@@ -17,8 +18,7 @@ async function fixture(withApp = false) {
         ...(withApp ? { app: { resourceUri: "ui://pattern/view", signature: "b".repeat(64), toolName: "mcp_pattern" } } : {}) },
     ] }] };
   state.events.push({ id: "result-one", createdAt: "2026-09-30T00:01:00.000Z", kind: "tool_result", name: "mcp_pattern",
-    content: JSON.stringify({ content: [{ type: "text", text: "Three bars saved <img src=x>" }],
-      artifacts: [{ kind: "midi", artifactRef: "midi-one", label: "Pattern", noteCount: 24, durationBeats: 12 }] }) });
+    content: JSON.stringify(result) });
   const h = await createDialogHarness(state);
   h.click("#sessionInspectorScope"); h.click("#toolsTab");
   h.click(".tool-group > summary"); h.click(".tool-entry > summary");
@@ -41,6 +41,53 @@ test("saved tool result enters the composer without sending or losing existing t
     assert.equal(h.document.querySelector(".plugin-result-card img"), null);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
+});
+
+test("structured-only results display literal bounded JSON and preserve artifact actions", async () => {
+  const structuredContent = { tempo: 115, tracks: ["Lead", "<img src=x onerror=alert(1)>"] };
+  const artifact = { kind: "midi", artifactRef: "structured-midi", label: "Structured pattern", noteCount: 24, durationBeats: 12 };
+  const { h } = await fixture(false, { content: [], structuredContent,
+    _meta: { "io.github.samkuler/live-smith-artifacts": { version: 1, artifacts: [artifact] } } });
+  try {
+    assert.equal(h.document.querySelector(".plugin-result-summary")!.textContent, JSON.stringify(structuredContent, null, 2));
+    assert.equal(h.document.querySelector(".plugin-result-summary")!.tagName, "PRE");
+    assert.equal(h.document.querySelector(".plugin-result-card img"), null);
+    assert.equal(h.document.querySelector<HTMLOptionElement>(".plugin-result-artifact option")!.value, "structured-midi");
+    h.click(".plugin-result-chat");
+    await h.settle();
+    assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /structured-midi/);
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+
+  const large = await fixture(false, { content: [], structuredContent: { data: "x".repeat(8_000) } });
+  try {
+    const summary = large.h.document.querySelector(".plugin-result-summary")!.textContent!;
+    assert.match(summary, /^\{\n  "data": "x/u);
+    assert.equal(summary.length, 2000);
+    assert.deepEqual(large.h.errors, []);
+  } finally { large.h.close(); }
+});
+
+test("structured errors retain their failure state and text results remain the summary", async () => {
+  const structuredContent = { error: "<script>fixture()</script>", code: "invalid_pattern" };
+  const failed = await fixture(false, { content: [], structuredContent, isError: true,
+    artifacts: [{ kind: "midi", artifactRef: "failed-midi", label: "Failed pattern", noteCount: 0, durationBeats: 0 }] });
+  try {
+    assert.equal(failed.h.document.querySelector(".plugin-result-title")!.textContent, "Tool reported an error");
+    assert.equal(failed.h.document.querySelector(".plugin-result-summary")!.textContent, JSON.stringify(structuredContent, null, 2));
+    assert.equal(failed.h.document.querySelector(".plugin-result-card script"), null);
+    assert.equal(failed.h.document.querySelector(".plugin-result-apply"), null);
+    assert.ok(failed.h.document.querySelector(".plugin-result-chat"));
+    assert.deepEqual(failed.h.errors, []);
+  } finally { failed.h.close(); }
+
+  const text = await fixture(false, { content: [{ type: "text", text: "Literal <img src=x> result" }], structuredContent });
+  try {
+    assert.equal(text.h.document.querySelector(".plugin-result-summary")!.textContent, "Literal <img src=x> result");
+    assert.equal(text.h.document.querySelector(".plugin-result-card img"), null);
+    assert.deepEqual(text.h.errors, []);
+  } finally { text.h.close(); }
 });
 
 test("a delayed App close cannot place its result in another Session's composer", async () => {

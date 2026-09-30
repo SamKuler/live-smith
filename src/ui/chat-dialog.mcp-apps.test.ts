@@ -92,7 +92,8 @@ test("automatic App discovery adds the Plugin card entry without visiting Tools 
     h.click(".tool-entry > summary");
     const entry = h.document.querySelector(".tool-entry")!;
     assert.equal(entry.querySelector(".plugin-open-app")!.textContent, "Open interface");
-    assert.ok(entry.querySelector('.plugin-parameters [name="bars"]'));
+    const parameterLabel = entry.querySelector<HTMLLabelElement>('.plugin-parameters label[for]')!;
+    assert.ok(entry.querySelector("#" + parameterLabel.htmlFor));
     assert.equal(entry.querySelector<HTMLDetailsElement>(".tool-parameter-fallback")!.open, false);
     assert.equal(entry.querySelector<HTMLDetailsElement>(".tool-information")!.open, false);
     assert.equal(entry.querySelector('.plugin-parameters button[type="submit"]')!.textContent, "Run tool");
@@ -142,4 +143,42 @@ test("malformed App metadata cannot create Plugin or Tools interface entries", a
     assert.equal(jsonCalls(h, "/plugin-apps/open").length, 0);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
+});
+
+test("closing a loading App cancels its HTTP open through the composed dialog", async () => {
+  const h = await createDialogHarness(appState(), undefined, { toolCatalogResponse: async (state) => withCatalog(state) });
+  let requestSignal: AbortSignal | undefined;
+  let cancelled = false;
+  let release!: (value: unknown) => void;
+  const operations: string[] = [];
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/plugin-apps/open") {
+      operations.push("open"); requestSignal = init?.signal ?? undefined;
+      const body = await new Promise((resolve, reject) => {
+        release = resolve;
+        requestSignal?.addEventListener("abort", () => { cancelled = true; reject(new Error("Opening cancelled")); }, { once: true });
+      });
+      return { ok: true, json: async () => body };
+    }
+    if (path === "/plugin-apps/close") { operations.push("close"); return { ok: true, json: async () => ({}) }; }
+    return originalFetch(input, init);
+  } });
+  try {
+    showPlugins(h);
+    await waitForCondition(() => Boolean(h.document.querySelector(cardButton)), "Expected the App entry.");
+    h.click(cardButton);
+    await waitForCondition(() => operations.length > 0, "Expected the open request.");
+    assert.ok(requestSignal, "The actual HTTP request must carry the opening signal.");
+    h.click(".plugin-app-close");
+    await waitForCondition(() => cancelled && !h.document.querySelector(".plugin-app-dialog"), "Closing must cancel pending discovery.");
+    assert.equal(requestSignal.aborted, true);
+    assert.deepEqual(operations, ["open"]);
+    await h.settle();
+    assert.deepEqual(h.errors, []);
+  } finally {
+    release?.({ id: "late-instance", toolName: "pattern_lab", html: "<p>Pattern</p>", sandboxUrl: "http://127.0.0.1:31400/apps/fixture" });
+    await h.settle(); h.close();
+  }
 });

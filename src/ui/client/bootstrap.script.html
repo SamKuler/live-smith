@@ -327,7 +327,7 @@
         const pluginApps = factories.createPluginApps({
           resultActions: pluginResults,
           getState,
-          openApp: (input) => bridgeClient.requestPluginApp("open", input),
+          openApp: (input, signal) => bridgeClient.requestPluginApp("open", input, signal),
           callTool: (input, signal) => bridgeClient.requestPluginApp("call", input, signal),
           readResource: (input, signal) => bridgeClient.requestPluginApp("resource", input, signal),
           listResources: (input, templates, signal) => bridgeClient.requestPluginApp(templates ? "resource-templates" : "resources", input, signal),

@@ -17,7 +17,7 @@ import "./plugin-results.js";
 interface PluginAppsDependencies {
   resultActions?: PluginResultActions;
   getState(): { activeSessionId?: string; plugins?: unknown[]; integrationConnections?: { revision: string } };
-  openApp(input: { sessionId: string; toolName: string; signature: string }): Promise<{
+  openApp(input: { sessionId: string; toolName: string; signature: string }, signal: AbortSignal): Promise<{
     id: string; toolName: string; resourceUri: string; html: string; sandboxUrl: string; csp?: McpUiResourceCsp;
     toolInput?: Record<string, unknown>; toolResult?: CallToolResult;
   }>;
@@ -62,6 +62,7 @@ class AppFrameTransport implements Transport {
 
 interface OpenApp {
   owner: string;
+  openController: AbortController;
   dialog: HTMLDialogElement;
   frame: HTMLIFrameElement;
   status: HTMLElement;
@@ -91,6 +92,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
   async function dispose(app: OpenApp): Promise<void> {
     if (app.closed) return;
     app.closed = true;
+    app.openController.abort();
     if (app.timer !== undefined) window.clearTimeout(app.timer);
     const closed = app.id ? deps.closeApp(app.id) : Promise.resolve();
     // Begin backend cancellation before waiting for the App's bounded teardown.
@@ -124,6 +126,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
 
   async function failLoad(app: OpenApp): Promise<void> {
     if (!isCurrent(app)) return;
+    app.openController.abort();
     app.status.textContent = t("MCP App could not load.");
     app.frame.remove();
     if (app.timer !== undefined) window.clearTimeout(app.timer);
@@ -179,7 +182,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
       results.hidden = true;
       dialog.append(results);
       const app: OpenApp = {
-        owner: owner(), dialog, frame, status, previousFocus: document.activeElement, initialized: false, closed: false,
+        owner: owner(), openController: new window.AbortController(), dialog, frame, status, previousFocus: document.activeElement, initialized: false, closed: false,
       };
       active = app;
       const showResult = (result: CallToolResult) => {
@@ -194,7 +197,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
       else dialog.setAttribute("open", "");
       closeButton.focus();
       try {
-        const resource = await deps.openApp({ sessionId, toolName: tool.app.toolName ?? tool.name, signature: tool.app.signature });
+        const resource = await deps.openApp({ sessionId, toolName: tool.app.toolName ?? tool.name, signature: tool.app.signature }, app.openController.signal);
         if (sequence !== attempt || !isCurrent(app)) {
           await deps.closeApp(resource.id);
           if (active === app) await close();
@@ -245,7 +248,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
           const list = async (params: { cursor?: string | undefined } | undefined, signal: AbortSignal, templates: boolean) => {
             assertRequest(app, signal);
             if (busy) throw new Error(t("Wait for the current operation to finish."));
-            const result = await deps.listResources!({ id: resource.id, ...(params?.cursor ? { cursor: params.cursor } : {}) }, templates, signal);
+            const result = await deps.listResources!({ id: resource.id, ...(params?.cursor === undefined ? {} : { cursor: params.cursor }) }, templates, signal);
             assertRequest(app, signal);
             return result;
           };

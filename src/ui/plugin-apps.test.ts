@@ -21,8 +21,9 @@ interface Controller {
 }
 
 function harness(overrides: {
-  openApp?: () => Promise<AppResource>;
+  openApp?: (input: unknown, signal: AbortSignal) => Promise<AppResource>;
   callTool?: (input: { id: string; name: string; arguments?: Record<string, unknown> }, signal?: AbortSignal) => Promise<CallToolResult>;
+  listResources?: (input: { id: string; cursor?: string }, templates: boolean, signal: AbortSignal) => Promise<unknown>;
 } = {}) {
   const dom = new JSDOM("<!doctype html><html lang='en'><body><button id='opener'>Open</button></body></html>", {
     url: HOST + "/chat?token=private-dialog-token", runScripts: "outside-only", virtualConsole: new VirtualConsole(),
@@ -41,7 +42,7 @@ function harness(overrides: {
       return dom.window.document.createElement("section");
     } },
     getState: () => state,
-    openApp: async (input: unknown) => { opened.push(input); return overrides.openApp ? overrides.openApp() : resource; },
+    openApp: async (input: unknown, signal: AbortSignal) => { opened.push(input); return overrides.openApp ? overrides.openApp(input, signal) : resource; },
     callTool: async (input: { id: string; name: string; arguments?: Record<string, unknown> }, signal?: AbortSignal) => {
       calls.push(input);
       return overrides.callTool ? overrides.callTool(input, signal) : { content: [{ type: "text", text: "tool result" }] };
@@ -49,6 +50,7 @@ function harness(overrides: {
     readResource: async (input: unknown): Promise<ReadResourceResult> => {
       reads.push(input); return { contents: [{ uri: "data://status", mimeType: "text/plain", text: "ready" }] };
     },
+    ...(overrides.listResources ? { listResources: overrides.listResources } : {}),
     closeApp: async (id: string) => { closed.push(id); },
   });
   const messages: { data: Record<string, unknown>; origin: string }[] = [];
@@ -155,6 +157,30 @@ test("App RPC rejects calls before initialization, while busy and from spoofed w
   assert.ok(h.messages.find(({ data }) => data.id === 7)!.data.error);
 });
 
+test("App resource RPCs preserve optional opaque cursors and the returned server page", async (t) => {
+  const calls: unknown[] = [];
+  const h = harness({ listResources: async (input, templates, signal) => {
+    calls.push({ input, templates });
+    assert.equal(signal.aborted, false);
+    return { [templates ? "resourceTemplates" : "resources"]: [], nextCursor: "", _meta: { source: "server page" } };
+  } });
+  t.after(async () => { await h.app.close(); h.dom.window.close(); });
+  await h.open(); await h.initialize();
+  let id = 40;
+  for (const templates of [false, true]) for (const cursor of [undefined, "", "opaque page/2 +?&="]) {
+    h.dispatch({ jsonrpc: "2.0", id: ++id, method: templates ? "resources/templates/list" : "resources/list",
+      params: cursor === undefined ? {} : { cursor } });
+    await setImmediate();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {
+      input: { id: resource.id, ...(cursor === undefined ? {} : { cursor }) }, templates,
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(h.messages.find(({ data }) => data.id === id)!.data.result)), {
+      [templates ? "resourceTemplates" : "resources"]: [], nextCursor: "", _meta: { source: "server page" },
+    });
+  }
+  assert.equal(calls.length, 6);
+});
+
 test("initialization delivers genuine saved input before its saved tool result", async (t) => {
   const saved = { ...resource, toolInput: { prompt: "saved prompt", count: 2 }, toolResult: {
     content: [{ type: "text" as const, text: "saved result" }], structuredContent: { count: 2 }, _meta: { appState: "saved" },
@@ -235,4 +261,33 @@ test("closing an App aborts its outstanding SDK handler and concurrent opens mou
   assert.equal(concurrent.opened.length, 1);
   assert.equal(concurrent.dom.window.document.querySelectorAll("dialog").length, 1);
   assert.equal(concurrent.dom.window.document.querySelector("h3")!.textContent, "newer-tool");
+});
+
+for (const reason of ["close", "owner-change", "superseded"] as const) test(`a pending App open is cancelled on ${reason}`, async (t) => {
+  const signals: AbortSignal[] = [];
+  let unresolved = 0;
+  const h = harness({ openApp: async (_input, signal) => {
+    signals.push(signal);
+    if (signals.length > 1) return { ...resource, id: "replacement-instance" };
+    unresolved++;
+    return new Promise<AppResource>((_resolve, reject) => signal?.addEventListener("abort", () => {
+      unresolved--; reject(new Error("Opening cancelled"));
+    }, { once: true }));
+  } });
+  t.after(async () => { await h.app.close(); h.dom.window.close(); });
+  const pending = h.app.open(tool);
+  await setImmediate();
+  assert.ok(signals[0], "Opening must receive a cancellable request signal.");
+  assert.equal(unresolved, 1);
+  if (reason === "close") await h.app.close();
+  if (reason === "owner-change") { h.state.activeSessionId = "session-2"; h.app.sync(); }
+  if (reason === "superseded") await h.app.open({ ...tool, name: "replacement" });
+  await pending;
+  assert.equal(signals[0]!.aborted, true);
+  assert.equal(unresolved, 0, "Closed windows cannot retain pending backend opens.");
+  if (reason === "superseded") {
+    assert.equal(signals[1]!.aborted, false);
+    assert.equal(h.dom.window.document.querySelector("h3")!.textContent, "replacement");
+  } else assert.equal(h.dom.window.document.querySelector("dialog"), null);
+  assert.deepEqual(h.closed, [], "A cancelled open has no confirmed instance ID to close.");
 });

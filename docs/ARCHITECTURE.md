@@ -777,8 +777,10 @@ Session Tools. Optional parameters have an explicit inclusion control; omitted
 fields stay absent from the request. Form drafts survive directory redraws while
 their Session, source settings, and definition match. They are dialog-local and
 never write Profile, Connection, or Session settings. Author-provided labels,
-values, descriptions, and results render as text. Ordinary parameter edits do
-not run a tool; submission goes through the authenticated command bridge.
+values, descriptions, and results render as text. Generated DOM control names
+remain separate from schema keys; submission preserves the original argument
+names and types. Ordinary parameter edits do not run a tool; submission goes
+through the authenticated command bridge.
 
 ### Plugin configuration and interactive Apps
 
@@ -824,11 +826,14 @@ route and artifact grants. Completed and unconfirmed outcomes invalidate the
 current dialog as well as peer dialogs. Instance close aborts pending requests
 and releases connections; bridge close also owns pending opens and sandbox
 startup. Read-only resources are bounded and restricted to the same admitted
-server.
+server. Resource and resource-template RPCs preserve server pages and opaque
+continuation cursors.
 
 `ui/client/plugin-results.ts` supplies shared composer and MIDI import actions
-for App and native parameter results. `import_midi_artifact` admits an explicit
-Session artifact, track name, and Arrangement position. `app/midi-artifact-import.ts`
+for App and native parameter results. Result summaries use bounded plain text,
+with formatted JSON for structured content when no text content is present.
+`import_midi_artifact` admits an explicit Session artifact, track name, and
+Arrangement position. `app/midi-artifact-import.ts`
 materializes its ordinary action plan and reuses preflight, approval policy,
 Edit Scope subscriptions, the shared mutation queue, and executor. Commands
 request host-owned confirmation tokens through the bridge; Stop, shutdown, and
@@ -839,8 +844,10 @@ An existing active recovery blocks another direct import until resolved.
 `ui/client/plugin-apps.ts` bundles the official MCP Apps AppBridge and uses manual
 handlers so every RPC passes through the host. `app/plugin-app-sandbox.ts` serves
 a fixed proxy from a separate loopback origin; its inner App iframe has an opaque
-origin. Both directions check source windows and origins. The proxy receives the
-HTML through the standard sandbox handshake and enforces an HTTP CSP. Main bridge
+origin. Closing a loading App, changing its owner, or opening a replacement
+cancels the pending HTTP open request and its backend discovery. Both directions
+check source windows and origins. The proxy receives the HTML through the
+standard sandbox handshake and enforces an HTTP CSP. Main bridge
 tokens, credentials, and the host DOM remain outside the App. Capability negotiation
 advertises only implemented tool/resource access and sandbox configuration.
 The detailed author contract and current domain restrictions belong to

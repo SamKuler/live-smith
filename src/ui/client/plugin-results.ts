@@ -48,6 +48,9 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
         .map((part) => (part as { text: string }).text).join("\n") : "";
       card.append(node("h4", "plugin-result-title", t(raw.isError ? "Tool reported an error" : "Tool result")));
       if (text) card.append(node("p", "plugin-result-summary", text.slice(0, 2000)));
+      else if (raw.structuredContent !== undefined) {
+        card.append(node("pre", "plugin-result-summary", JSON.stringify(raw.structuredContent, null, 2).slice(0, 2000)));
+      }
       const controls = node("fieldset", "plugin-result-controls");
       controls.disabled = busy;
       const chat = node("button", "secondary plugin-result-chat", t("Use in chat"));

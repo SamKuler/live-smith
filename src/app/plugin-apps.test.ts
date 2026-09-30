@@ -173,6 +173,53 @@ test("MCP App reports an unconfirmed outcome when a server exits after its side 
   });
 });
 
+test("MCP App HTTP resource lists preserve single pages and opaque server cursors", { timeout: 15_000 }, async (t) => {
+  const files = unzipSync(exampleBytes);
+  let source = strFromU8(files["server.mjs"]!);
+  const list = 'case "resources/list": return { result: { resources: [{ uri: RESOURCE_URI, name: "Pattern lab", mimeType: MIME_TYPE }] } };';
+  const templates = 'case "resources/templates/list": return { result: { resourceTemplates: [] } };';
+  assert.ok(source.includes(list) && source.includes(templates));
+  const pageFunction = String.raw`
+function resourcePage(request, templates) {
+  const cursors = Array.from({ length: 16 }, (_unused, index) => "opaque page/" + (index + 1) + " +?&=");
+  const cursor = request.params?.cursor;
+  const page = cursor === undefined ? 0 : cursors.indexOf(cursor) + 1;
+  if (cursor !== undefined && page === 0) return { error: { code: -32602, message: "Unknown cursor." } };
+  return { result: {
+    [templates ? "resourceTemplates" : "resources"]: [templates
+      ? { name: "Page " + page, uriTemplate: "resource://pattern/" + page + "/{id}" }
+      : { name: "Page " + page, uri: "resource://pattern/" + page }],
+    ...(page < 16 ? { nextCursor: cursors[page] } : {}),
+    _meta: { page, received: request.params ?? {} },
+  } };
+}
+`;
+  source = source.replace(list, 'case "resources/list": return resourcePage(request, false);')
+    .replace(templates, 'case "resources/templates/list": return resourcePage(request, true);') + pageFunction;
+  files["server.mjs"] = strToU8(source);
+  const { directory } = await fixture(t, zipSync(files));
+  await withFlow(directory, async (bridge) => {
+    const sessionId = (await bridge.state()).activeSessionId;
+    const opened = await openApp(bridge, sessionId, appDescriptor(await bridge.catalog(sessionId)));
+    for (const operation of ["resources", "resource-templates"] as const) {
+      let cursor: string | undefined;
+      for (let page = 0; page < 17; page++) {
+        const response = await bridge.post(`/plugin-apps/${operation}`, { id: opened.id, ...(cursor === undefined ? {} : { cursor }) });
+        assert.equal(response.status, 200, response.raw);
+        assert.deepEqual(response.body._meta, { page, received: cursor === undefined ? {} : { cursor } });
+        assert.deepEqual(response.body[operation === "resources" ? "resources" : "resourceTemplates"], [operation === "resources"
+          ? { name: `Page ${page}`, uri: `resource://pattern/${page}` }
+          : { name: `Page ${page}`, uriTemplate: `resource://pattern/${page}/{id}` }]);
+        assert.equal(response.body.nextCursor, page < 16 ? `opaque page/${page + 1} +?&=` : undefined);
+        cursor = response.body.nextCursor as string | undefined;
+      }
+      assert.equal(cursor, undefined);
+    }
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+    assert.equal((await bridge.post("/plugin-apps/close", { id: opened.id })).status, 200);
+  });
+});
+
 test("MCP App HTTP lifecycle delivers resources, enforces tool visibility, publishes local Session changes and reopens real history", { timeout: 15_000 }, async (t) => {
   const { directory, plugin } = await fixture(t, visibilityArchive());
   await setPluginMcpServerApproved(directory, pluginId, "foreign", true);
