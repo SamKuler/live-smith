@@ -54,6 +54,16 @@ export interface BoundedOoxmlZip {
   retainedEntries: ReadonlyMap<string, Uint8Array>;
 }
 
+/** Validates the ZIP directory without inflating file data for format routing. */
+export async function inspectBoundedZipEntryNames(
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<readonly string[]> {
+  assertDocumentAttachmentBytesWithinLimit(bytes);
+  throwIfAborted(signal);
+  return (await parseCentralDirectory(bytes, signal)).map((entry) => entry.name);
+}
+
 export async function openBoundedOoxmlZip(
   bytes: Uint8Array,
   shouldRetain: (name: string) => boolean,
@@ -227,7 +237,7 @@ async function parseCentralDirectoryAt(
         invalidDocument("Multi-disk OOXML ZIP entries are not supported."),
       );
     }
-    const flagsViolation = unsupportedFlagsError(flags);
+    const flagsViolation = unsupportedFlagsError(flags, compression);
     if (flagsViolation) notePolicyViolation(flagsViolation);
     if (compression !== 0 && compression !== 8) {
       notePolicyViolation(
@@ -673,16 +683,17 @@ function normalizeEntryName(raw: Uint8Array): { name: string; isDirectory: boole
   return { name: segments.join("/"), isDirectory };
 }
 
-function unsupportedFlagsError(flags: number): AttachmentProcessingError | undefined {
+function unsupportedFlagsError(flags: number, compression: number): AttachmentProcessingError | undefined {
   if (flags & 0x0001 || flags & 0x0040) {
     return new AttachmentProcessingError(
       "encrypted_document",
       "Encrypted Office documents are not supported.",
     );
   }
-  // Data descriptors complicate local/central integrity comparison. OOXML files
-  // with explicit local sizes are deterministic and sufficient for this boundary.
-  if (flags & 0x0008 || (flags & ~0x0800) !== 0) {
+  // Deflate option bits describe compression level; data descriptors are checked
+  // against central CRC/sizes and exact local record ranges before extraction.
+  const allowed = compression === 8 ? 0x080e : 0x0808;
+  if ((flags & ~allowed) !== 0) {
     return invalidDocument("OOXML ZIP flags are not supported.");
   }
   return undefined;

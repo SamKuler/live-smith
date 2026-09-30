@@ -6,6 +6,8 @@ import * as path from "node:path";
 import { getuid, platform } from "node:process";
 import { TextDecoder } from "node:util";
 
+import { AttachmentProcessingError } from "../attachments/contracts.js";
+import { parseStandardMidi } from "../attachments/midi.js";
 import { isSafePluginId } from "../plugins/contracts.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
@@ -22,7 +24,6 @@ export const MAX_MIDI_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const MAX_MIDI_ARTIFACTS_PER_SESSION = 64;
 export const MAX_MIDI_SESSION_BYTES = 64 * 1024 * 1024;
 const MAX_MIDI_NOTES = 4096;
-const MAX_MIDI_EVENTS = 200_000;
 const MAX_MIDI_TRACKS = 32;
 const MAX_MIDI_DURATION_BEATS = 100_000;
 const MAX_MIDI_METADATA_BYTES = 4 * 1024;
@@ -79,45 +80,33 @@ export function parseMidiArtifact(bytes: Uint8Array, signal?: AbortSignal): Pars
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 22 || bytes.byteLength > MAX_MIDI_ARTIFACT_BYTES) {
     throw new MidiArtifactStorageError("MIDI artifacts must be valid Standard MIDI Files of at most 8 MiB.");
   }
-  throwIfAborted(signal);
-  const cursor = new MidiCursor(bytes);
-  if (cursor.ascii(4) !== "MThd" || cursor.uint32() !== 6) throw invalidMidi();
-  const format = cursor.uint16();
-  const trackCount = cursor.uint16();
-  const division = cursor.uint16();
-  if ((format !== 0 && format !== 1) || trackCount < 1 || trackCount > MAX_MIDI_TRACKS ||
-      format === 0 && trackCount !== 1 || division === 0 || (division & 0x8000) !== 0) {
+  let midi;
+  try {
+    midi = parseStandardMidi(bytes, { purpose: "artifact", ...(signal ? { signal } : {}) });
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof AttachmentProcessingError) throw invalidMidi();
+    throw error;
+  }
+  const tickNotes = midi.tracks.flatMap((track) => track.notes.map((note) => ({ ...note, trackIndex: track.index })));
+  if (tickNotes.length < 1 || tickNotes.some((note) => note.durationTicks === null || note.durationTicks <= 0)) {
     throw invalidMidi();
   }
-  const ticksPerQuarterNote = division;
-  const tickNotes: TickNote[] = [];
-  let maximumTick = 0;
-  let eventCount = 0;
-  for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-    if (cursor.ascii(4) !== "MTrk") throw invalidMidi();
-    const trackBytes = cursor.slice(cursor.uint32());
-    const parsed = parseTrack(trackBytes, trackIndex, signal, eventCount);
-    eventCount = parsed.eventCount;
-    maximumTick = Math.max(maximumTick, parsed.maximumTick);
-    tickNotes.push(...parsed.notes);
-    if (tickNotes.length > MAX_MIDI_NOTES) throw invalidMidi();
-  }
-  if (!cursor.done() || tickNotes.length < 1) throw invalidMidi();
   tickNotes.sort((left, right) => left.startTick - right.startTick || left.pitch - right.pitch ||
     left.trackIndex - right.trackIndex || left.velocity - right.velocity);
-  const durationBeats = maximumTick / ticksPerQuarterNote;
+  const { durationBeats, ticksPerQuarterNote, trackCount } = midi;
   if (!Number.isFinite(durationBeats) || durationBeats <= 0 || durationBeats > MAX_MIDI_DURATION_BEATS) {
     throw invalidMidi();
   }
   return {
-    format,
+    format: midi.format as 0 | 1,
     trackCount,
     ticksPerQuarterNote,
     durationBeats,
     notes: tickNotes.map((note) => ({
       pitch: note.pitch,
       startTime: note.startTick / ticksPerQuarterNote,
-      duration: note.durationTicks / ticksPerQuarterNote,
+      duration: note.durationTicks! / ticksPerQuarterNote,
       velocity: note.velocity,
     })),
   };
@@ -263,129 +252,6 @@ export async function listSessionMidiArtifactDirectoryIds(
     throw new MidiArtifactStorageError();
   }
   return ids.sort();
-}
-
-function parseTrack(
-  bytes: Uint8Array,
-  trackIndex: number,
-  signal: AbortSignal | undefined,
-  initialEventCount: number,
-): { notes: TickNote[]; maximumTick: number; eventCount: number } {
-  const cursor = new MidiCursor(bytes);
-  const active = new Map<string, Array<{ tick: number; velocity: number }>>();
-  const notes: TickNote[] = [];
-  let tick = 0;
-  let runningStatus: number | undefined;
-  let eventCount = initialEventCount;
-  let ended = false;
-  while (!cursor.done()) {
-    if (++eventCount > MAX_MIDI_EVENTS) throw invalidMidi();
-    if ((eventCount & 1023) === 0) throwIfAborted(signal);
-    tick += cursor.variableLength();
-    if (!Number.isSafeInteger(tick)) throw invalidMidi();
-    const first = cursor.peek();
-    let status: number;
-    let firstData: number | undefined;
-    if (first < 0x80) {
-      if (runningStatus === undefined) throw invalidMidi();
-      status = runningStatus;
-      firstData = cursor.uint8();
-    } else {
-      status = cursor.uint8();
-      if (status >= 0x80 && status <= 0xef) runningStatus = status;
-    }
-    if (status >= 0x80 && status <= 0xef) {
-      const type = status & 0xf0;
-      const channel = status & 0x0f;
-      const firstByte = firstData ?? cursor.dataByte();
-      const secondByte = type === 0xc0 || type === 0xd0 ? undefined : cursor.dataByte();
-      if (type === 0x80 || type === 0x90) {
-        const key = `${channel}:${firstByte}`;
-        if (type === 0x90 && secondByte! > 0) {
-          const stack = active.get(key) ?? [];
-          stack.push({ tick, velocity: secondByte! });
-          active.set(key, stack);
-          if ([...active.values()].reduce((sum, entries) => sum + entries.length, 0) > MAX_MIDI_NOTES) {
-            throw invalidMidi();
-          }
-        } else {
-          const stack = active.get(key);
-          const started = stack?.shift();
-          if (started && tick > started.tick) {
-            notes.push({
-              pitch: firstByte,
-              startTick: started.tick,
-              durationTicks: tick - started.tick,
-              velocity: started.velocity,
-              trackIndex,
-            });
-          } else if (started) {
-            throw invalidMidi();
-          }
-          if (stack?.length === 0) active.delete(key);
-          if (notes.length > MAX_MIDI_NOTES) throw invalidMidi();
-        }
-      }
-      continue;
-    }
-    if (status === 0xff) {
-      const type = cursor.uint8();
-      const length = cursor.variableLength();
-      if (type === 0x2f) {
-        if (length !== 0 || !cursor.done()) throw invalidMidi();
-        ended = true;
-        break;
-      }
-      cursor.skip(length);
-      continue;
-    }
-    if (status === 0xf0 || status === 0xf7) {
-      cursor.skip(cursor.variableLength());
-      continue;
-    }
-    throw invalidMidi();
-  }
-  if (!ended || active.size > 0) throw invalidMidi();
-  return {
-    notes,
-    maximumTick: tick,
-    eventCount,
-  };
-}
-
-class MidiCursor {
-  private offset = 0;
-  constructor(private readonly bytes: Uint8Array) {}
-  done(): boolean { return this.offset === this.bytes.byteLength; }
-  peek(): number { this.require(1); return this.bytes[this.offset]!; }
-  uint8(): number { this.require(1); return this.bytes[this.offset++]!; }
-  dataByte(): number { const value = this.uint8(); if (value >= 0x80) throw invalidMidi(); return value; }
-  uint16(): number { this.require(2); const value = this.bytes[this.offset]! * 0x100 + this.bytes[this.offset + 1]!; this.offset += 2; return value; }
-  uint32(): number {
-    this.require(4);
-    const value = this.bytes[this.offset]! * 0x1000000 + this.bytes[this.offset + 1]! * 0x10000 +
-      this.bytes[this.offset + 2]! * 0x100 + this.bytes[this.offset + 3]!;
-    this.offset += 4;
-    return value;
-  }
-  ascii(length: number): string {
-    const bytes = this.slice(length);
-    return String.fromCharCode(...bytes);
-  }
-  slice(length: number): Uint8Array { this.require(length); const value = this.bytes.subarray(this.offset, this.offset + length); this.offset += length; return value; }
-  skip(length: number): void { this.require(length); this.offset += length; }
-  variableLength(): number {
-    let value = 0;
-    for (let index = 0; index < 4; index++) {
-      const byte = this.uint8();
-      value = value * 128 + (byte & 0x7f);
-      if ((byte & 0x80) === 0) return value;
-    }
-    throw invalidMidi();
-  }
-  private require(length: number): void {
-    if (!Number.isInteger(length) || length < 0 || this.offset + length > this.bytes.byteLength) throw invalidMidi();
-  }
 }
 
 interface DirectoryBinding { path: string; dev: bigint | number; ino: bigint | number }
@@ -583,12 +449,4 @@ function isAlreadyExistsError(error: unknown): boolean {
 }
 function invalidMidi(): MidiArtifactStorageError {
   return new MidiArtifactStorageError("MIDI artifact is not a supported bounded Standard MIDI File.");
-}
-
-interface TickNote {
-  pitch: number;
-  startTick: number;
-  durationTicks: number;
-  velocity: number;
-  trackIndex: number;
 }

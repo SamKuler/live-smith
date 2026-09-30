@@ -47,7 +47,7 @@ test("the attachment menu explains the supported drop and paste path without ima
     harness.click("#attachmentMenuButton");
     const menuText = harness.document.querySelector("#attachmentMenu")?.textContent ?? "";
     assert.match(menuText, /drop or paste files/i);
-    assert.match(menuText, /images, PDF, Office documents, WAV, and MP3/i);
+    assert.match(menuText, /images, audio, MIDI, PDF, documents, and text files/i);
     assert.match(menuText, /file browsing is not available in this Ableton window/i);
     assert.match(menuText, /active model does not support image input/i);
     assert.equal(harness.document.querySelector("#attachSelectedAudioButton"), null);
@@ -371,7 +371,7 @@ test("PDF Send uses the active saved runtime mode and verified PDF evidence", as
     );
     assert.equal(
       harness.document.querySelector("#status")?.textContent,
-      "PDF attachments require verified PDF input support with OpenAI Responses or Anthropic Messages. Remove the attached PDFs or activate a compatible saved Profile.",
+      "PDF attachments require verified PDF input support with OpenAI Responses, Anthropic Messages, or a compatible OpenAI, Anthropic, or Google subscription Profile. Remove the attached PDFs or activate a compatible saved Profile.",
     );
 
     harness.select("#profileSelector", "profile-2");
@@ -444,6 +444,8 @@ test("document local preflight accepts exactly 20 MiB and rejects one byte over"
 test("document rejection messages are fixed while valid files in the batch remain", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
+    harness.failAttachmentNamed("invalid.doc", "The attachment is not a valid supported document.", 400);
+    harness.failAttachmentNamed("unknown.zip", "The attachment is not a supported readable document.", 400);
     harness.failAttachmentNamed(
       "encrypted.docx",
       "Encrypted Office documents are not supported.",
@@ -451,7 +453,7 @@ test("document rejection messages are fixed while valid files in the batch remai
     );
     harness.dropAttachmentFiles([
       documentFile(harness.window, "macro.docm", "", 24),
-      documentFile(harness.window, "legacy.doc", "", 24),
+      documentFile(harness.window, "invalid.doc", "", 24),
       documentFile(harness.window, "unknown.zip", "application/zip", 24),
       documentFile(harness.window, "encrypted.docx", "", 24),
       documentFile(harness.window, "kept.pdf", "application/pdf", 24),
@@ -462,12 +464,12 @@ test("document rejection messages are fixed while valid files in the batch remai
       harness.calls
         .filter((call) => call.path === "/attachments")
         .map((call) => new URL(call.url).searchParams.get("fileName")),
-      ["encrypted.docx", "kept.pdf"],
+      ["invalid.doc", "unknown.zip", "encrypted.docx", "kept.pdf"],
     );
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
-    assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
-    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3/i);
+    assert.match(status, /invalid\.doc: The attachment is not a valid supported document/i);
+    assert.match(status, /unknown\.zip: The attachment is not a supported readable document/i);
     assert.match(status, /encrypted\.docx: Encrypted Office documents are not supported\./);
     assert.match(
       harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
@@ -479,24 +481,26 @@ test("document rejection messages are fixed while valid files in the batch remai
   }
 });
 
-test("a rejected-only document drop is intercepted and reports every fixed classification", async () => {
+test("a rejected-only document drop is intercepted and reports local and server validation", async () => {
   const harness = await createDialogHarness(stateFixture());
   try {
+    harness.failAttachmentNamed("invalid.doc", "The attachment is not a valid supported document.", 400);
+    harness.failAttachmentNamed("unknown.zip", "The attachment is not a supported readable document.", 400);
     assert.equal(harness.dispatchDrop([
       documentFile(harness.window, "macro.docm", ""),
-      documentFile(harness.window, "legacy.doc", ""),
+      documentFile(harness.window, "invalid.doc", ""),
       documentFile(harness.window, "unknown.zip", "application/zip"),
     ]), true);
-    await harness.settle();
+    await harness.settleAttachmentOperation();
 
     assert.equal(
-      harness.calls.some((call) => call.path === "/attachments"),
-      false,
+      harness.calls.filter((call) => call.path === "/attachments").length,
+      2,
     );
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /macro\.docm: macro-enabled Office documents are not supported/i);
-    assert.match(status, /legacy\.doc: legacy Office files are not supported/i);
-    assert.match(status, /unknown\.zip: only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3/i);
+    assert.match(status, /invalid\.doc: The attachment is not a valid supported document/i);
+    assert.match(status, /unknown\.zip: The attachment is not a supported readable document/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -1321,6 +1325,7 @@ test("the compact attachment menu stays available while image capability gates o
     );
     assert.equal(unverifiedHarness.dispatchPaste([unverifiedImage], "Pasted text"), false);
     assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), true);
+    await unverifiedHarness.settleAttachmentOperation();
     const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
       '[data-attachment-id="attachment-unverified"] button',
     );

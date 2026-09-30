@@ -1071,7 +1071,10 @@ correlation and authoritative-state reconciliation. `/send` stays exactly
 
 ### Size limits and private storage
 
-The accepted formats are PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
+`src/attachments/contracts.ts` defines the canonical stored media types and
+browser import formats. Storage, event validation, and composed WebView scripts
+consume that same format contract. The supported categories and concrete
+formats are listed in [Sessions, Skills, and attachments](../README.md#sessions-skills-and-attachments).
 Shared policy constants allow at most 4 attachments and 30 MiB of raw bytes in
 pending Session state or one model request. Each image is limited to 5 MiB and
 the image subtotal to 16 MiB. Each document and the document subtotal are
@@ -1082,6 +1085,14 @@ limits: parsing, base64 wire encoding, and multi-round replay must remain
 bounded in the Extension Host even when a provider accepts more. The server
 detects the actual file type and is authoritative over WebView extension/MIME
 hints.
+
+MIDI is a locally extracted document with canonical media type `audio/midi`,
+limited to 8 MiB. Its MIME name does not grant audio model input or an audio
+SampleSource. Browser conversion reads at most 20 MiB of source data and applies
+the ordinary stored-format quotas to its resulting PNG/WAV bytes. It runs inside
+the serialized attachment operation, so hashing, response reconciliation,
+Session controls, and Send admission refer to the converted file. A failed
+conversion does not prevent the remaining files in its batch from being added.
 
 Attachment blobs and JSON integrity metadata live under a private
 Session-specific directory. Creation is create-only with collision retry;
@@ -1131,6 +1142,44 @@ and 200,000 code points across the request; per-file truncation is labelled in
 the untrusted document wrapper, while a current request that exceeds the
 aggregate limit fails before event append.
 
+Ordinary text is identified by strict UTF-8 or UTF-16 decoding and content
+validation rather than a code-extension allowlist. HTML, XML, scripts, and
+configuration files remain inert text. RTF extraction interprets visible text
+and Unicode escapes while omitting binary objects and non-text destinations.
+OpenDocument text, spreadsheets, and presentations use the same bounded ZIP
+inspection and ordered XML parsing, with manifest, encryption, and macro
+checks. Legacy DOC, XLS, and PPT use a bounded Compound File parser with checked
+sector chains; their format readers resolve Word piece tables, sparse BIFF8
+cells and cached formula values, and live PowerPoint slide/persist ordering.
+Legacy Excel numbers retain stored values, so dates may remain serial values
+rather than formatted display strings. Embedded images, chart geometry, and
+Office style rendering are outside this local text representation.
+These formats share the extracted-text budgets and untrusted-data envelope.
+
+The shared Standard MIDI parser owns both attachment inspection and generated
+MIDI artifact validation. Attachment context supports SMF formats 0, 1, and 2
+with PPQN timing, at most 256 tracks, 200,000 events, and 100,000 note-ons. Track
+summaries precede interleaved event detail so truncation preserves the existence
+of every track. Beat positions use quarter notes, channels are numbered 1–16,
+and pitch/program values use 0–127. Tempo and meter changes, names, notes,
+programs, controllers, pitch bend, and pressure events retain their track and
+position. Unfinished notes have an explicit unknown duration; unmatched note
+offs are labelled. Text metadata is bounded to 4 KiB per event and 256 KiB
+total; unknown metadata and SysEx payloads retain their type and length without
+exposing binary contents. The final extraction summary reports total and
+represented counts. Generated artifacts retain their existing stricter
+format-0/1, track, note, duration, and complete-note requirements before Live
+import.
+
+Additional images are rasterized to a static PNG only when the WebView can
+decode them; SVG rasterization excludes active content and external resource
+references. Additional audio is decoded locally and encoded as 32-kHz PCM16
+WAV. Mono/stereo remain separate channels; larger channel layouts are mixed to
+mono with an explicit notice. Both conversion paths have a 30-second deadline,
+observe cancellation, and release object URLs, canvas buffers, and audio
+contexts. Stored conversion output is authoritative; source files are not
+modified or uploaded alongside it.
+
 ### Send admission and historical context
 
 Upload, pending-quota validation, deletion, request
@@ -1163,7 +1212,8 @@ Antigravity maps catalog-verified images, PDFs, WAV, and MP3 as inline data.
 Audio additionally requires explicit `supported` evidence on the active saved
 `RuntimeProfile`; only Direct OpenAI Chat Completions and Google Antigravity
 deliver it. OpenAI Responses and Anthropic Messages reject audio locally.
-Model tool support is unrelated and is not a gate. Office content is locally
+Model tool support is unrelated and is not a gate. Text, rich documents, tables,
+and MIDI content are locally
 extracted and encoded with its filename and media type in a JSON-escaped block
 explicitly labelled untrusted. File names, embedded metadata, document text,
 audio, and other binary content have no instruction authority. Attachment IDs
@@ -1171,7 +1221,7 @@ and local paths are not exposed. A current audio attachment may become a Live
 sample only through the separate host-created request locator described below;
 the model cannot turn attachment content or an arbitrary path into that
 capability. See
-[Image, document, and audio input mapping](MODEL_PROVIDERS.md#image-document-and-audio-input-mapping)
+[Input mapping](MODEL_PROVIDERS.md#input-mapping)
 for protocol encodings and capability evidence.
 
 ### Current-request audio SampleSources

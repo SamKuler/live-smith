@@ -455,7 +455,7 @@ test("session attachment rejects invalid document bytes and per-image overflow",
   await assert.rejects(
     saveSessionAttachment(undefined, `memory-unsupported-${Date.now()}`, {
       fileName: "payload.pdf",
-      bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+      bytes: Buffer.from("%PDF-1.7\nmissing trailer", "ascii"),
     }, noPendingAttachmentRefs),
     (error: unknown) =>
       error instanceof AttachmentProcessingError && error.code === "invalid_document",

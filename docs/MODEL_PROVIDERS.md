@@ -559,11 +559,16 @@ catalog or Direct API metadata supports `application/pdf`.
 
 Audio input uses OpenAI Chat Completions or Antigravity inline data only when
 the loaded metadata explicitly supports WAV or MP3. Other subscription
-backends, OpenAI Responses, and Anthropic Messages reject audio locally. Office
-documents are extracted locally into bounded untrusted text and do not require
-native provider document support.
+backends, OpenAI Responses, and Anthropic Messages reject audio locally. Plain
+text, code, rich documents, spreadsheets, presentations, and MIDI are extracted
+locally into bounded untrusted text and do not require native provider document
+or audio support. Additional browser-decodable images and audio are normalized
+to PNG and WAV before upload, so the provider receives the existing image/audio
+parts and capability checks. Conversion codec availability is a local WebView
+property; it does not change provider capability evidence.
 
-Attachment names, storage IDs, and filesystem paths never enter model input.
+Locally extracted text includes a JSON-escaped filename as untrusted metadata.
+Attachment storage IDs and filesystem paths never enter model input.
 Base64 bytes appear only in the send-scoped provider request for a supported
 input type.
 

@@ -1,0 +1,289 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createAttachmentMedia = function createAttachmentMedia() {
+      const t = (message, params) => window.LiveSmithI18n.t(message, params);
+      const formats = __ATTACHMENT_FORMATS__;
+      const importFormats = __ATTACHMENT_IMPORT_FORMATS__;
+      const conversionTimeoutMs = 30_000;
+      const outputSampleRate = 32_000;
+
+      function fileExtension(file) {
+        return /\.([^.]+)$/u.exec(String(file?.name || "").toLowerCase())?.[1] || "";
+      }
+
+      function classify(file) {
+        const extension = fileExtension(file);
+        const storedFormat = formats.find((format) => format.extensions.includes(extension));
+        if (storedFormat) return { kind: storedFormat.kind, format: storedFormat };
+        const importedFormat = importFormats.find((format) => format.extensions.includes(extension));
+        if (importedFormat) return importedFormat;
+        const mediaType = String(file?.type || "").split(";", 1)[0].trim().toLowerCase();
+        const storedMediaFormat = formats.find((format) => format.mediaType === mediaType);
+        if (storedMediaFormat) return { kind: storedMediaFormat.kind, format: storedMediaFormat };
+        const importedMediaFormat = importFormats.find((format) => format.mediaTypes.includes(mediaType));
+        return importedMediaFormat || { kind: "document" };
+      }
+
+      function convertedFileName(file, extension) {
+        const basename = String(file.name || "attachment")
+          .replaceAll("\\", "/").split("/").at(-1) || "attachment";
+        return `${basename.replace(/\.[^.]*$/u, "") || "attachment"}.${extension}`;
+      }
+
+      function checkCancelled(signal) {
+        if (signal.aborted) throw signal.reason;
+      }
+
+      async function convertWithinDeadline(file, upstreamSignal, conversion) {
+        if (file.size > __MAX_ATTACHMENT_IMPORT_BYTES__) {
+          throw new Error(t("Files requiring browser conversion may not exceed 20 MiB."));
+        }
+        const controller = new AbortController();
+        const cleanups = [];
+        const cancel = () => controller.abort(new Error(t("Attachment conversion was cancelled.")));
+        upstreamSignal?.addEventListener("abort", cancel, { once: true });
+        if (upstreamSignal?.aborted) cancel();
+        const timeoutId = window.setTimeout(() => controller.abort(
+          new Error(t("The browser did not finish converting this file within 30 seconds.")),
+        ), conversionTimeoutMs);
+        let rejectInterrupted;
+        const interrupted = new Promise((_, reject) => { rejectInterrupted = reject; });
+        const interrupt = () => rejectInterrupted(controller.signal.reason);
+        controller.signal.addEventListener("abort", interrupt, { once: true });
+        if (controller.signal.aborted) interrupt();
+        try {
+          return await Promise.race([
+            Promise.resolve().then(() => {
+              checkCancelled(controller.signal);
+              return conversion(controller.signal, (cleanup) => cleanups.push(cleanup));
+            }),
+            interrupted,
+          ]);
+        } finally {
+          window.clearTimeout(timeoutId);
+          upstreamSignal?.removeEventListener("abort", cancel);
+          controller.signal.removeEventListener("abort", interrupt);
+          for (const cleanup of cleanups.reverse()) {
+            try { cleanup(); } catch {}
+          }
+        }
+      }
+
+      async function safeSvgSource(file, signal) {
+        const source = await file.text();
+        checkCancelled(signal);
+        const unsafe = () => new Error(t("SVG images must contain only static graphics and local references."));
+        if (/<!DOCTYPE|<!ENTITY/iu.test(source)) throw unsafe();
+        const parsed = new DOMParser().parseFromString(source, "image/svg+xml");
+        const root = parsed.documentElement;
+        const svgNamespace = "http://www.w3.org/2000/svg";
+        if (root?.localName !== "svg" || root.namespaceURI !== svgNamespace ||
+            parsed.querySelector("parsererror") ||
+            parsed.createTreeWalker(parsed, NodeFilter.SHOW_PROCESSING_INSTRUCTION).nextNode()) throw unsafe();
+        const activeElements = new Set([
+          "script", "foreignobject", "iframe", "object", "embed", "link",
+          "audio", "video", "animate", "animatecolor", "animatemotion", "animatetransform", "set", "discard",
+        ]);
+        if ([root, ...root.querySelectorAll("*")].some((element) =>
+          activeElements.has(element.localName.toLowerCase()))) throw unsafe();
+        for (const metadata of [...root.getElementsByTagNameNS(svgNamespace, "metadata")]) metadata.remove();
+        const requireLocalReferences = (value, css = false) => {
+          const source = value.replace(/\/\*[\s\S]*?\*\//gu, "");
+          if (source.includes("\\") ||
+              (css && /@|(?:image|image-set|cross-fade|src)\s*\(/iu.test(source))) throw unsafe();
+          const externalReferences = source.replace(
+            /url\(\s*(['"]?)#[A-Za-z_][\w.:-]*\1\s*\)/giu, "",
+          );
+          if (/url\s*\(/iu.test(externalReferences)) throw unsafe();
+        };
+        for (const element of [root, ...root.querySelectorAll("*")]) {
+          if (element.namespaceURI !== svgNamespace) throw unsafe();
+          if (element.localName.toLowerCase() === "style") requireLocalReferences(element.textContent || "", true);
+          for (const attribute of [...element.attributes]) {
+            const name = attribute.localName.toLowerCase();
+            const value = attribute.value.trim();
+            if (name.startsWith("on") || name === "base" ||
+                (name === "href" && !/^#[A-Za-z_][\w.:-]*$/u.test(value))) throw unsafe();
+            requireLocalReferences(value, name === "style");
+          }
+        }
+        return new Blob([new XMLSerializer().serializeToString(parsed)], { type: "image/svg+xml" });
+      }
+
+      async function convertImage(file, signal, addCleanup) {
+        if (typeof Image !== "function" || typeof URL.createObjectURL !== "function" ||
+            typeof URL.revokeObjectURL !== "function") {
+          throw new Error(t("Image conversion is unavailable in this browser."));
+        }
+        const source = fileExtension(file) === "svg" || file.type.split(";", 1)[0].toLowerCase() === "image/svg+xml"
+          ? await safeSvgSource(file, signal) : file;
+        checkCancelled(signal);
+        const sourceUrl = URL.createObjectURL(source);
+        addCleanup(() => URL.revokeObjectURL(sourceUrl));
+        const image = new Image();
+        addCleanup(() => { image.onload = null; image.onerror = null; image.src = ""; });
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = () => reject(new Error(t("This browser cannot decode the image format.")));
+          image.src = sourceUrl;
+        });
+        checkCancelled(signal);
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
+            width > __MAX_IMAGE_ATTACHMENT_DIMENSION__ || height > __MAX_IMAGE_ATTACHMENT_DIMENSION__ ||
+            width * height > __MAX_IMAGE_ATTACHMENT_PIXELS__) {
+          throw new Error(t("The decoded image exceeds the supported dimensions or pixel count."));
+        }
+        const canvas = document.createElement("canvas");
+        addCleanup(() => { canvas.width = 0; canvas.height = 0; });
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context || typeof canvas.toBlob !== "function") {
+          throw new Error(t("Image conversion is unavailable in this browser."));
+        }
+        context.drawImage(image, 0, 0);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        checkCancelled(signal);
+        if (!blob || blob.type !== "image/png" || blob.size === 0) {
+          throw new Error(t("The browser could not convert this image to PNG."));
+        }
+        return { file: new File([blob], convertedFileName(file, "png"), { type: "image/png" }) };
+      }
+
+      async function audioMetadataDuration(file, signal, addCleanup) {
+        if (typeof Audio !== "function" || typeof URL.createObjectURL !== "function" ||
+            typeof URL.revokeObjectURL !== "function") return null;
+        let element;
+        let sourceUrl;
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          try {
+            if (element) {
+              element.onloadedmetadata = null;
+              element.onerror = null;
+              element.removeAttribute("src");
+              element.load();
+            }
+          } catch {} finally {
+            if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+          }
+        };
+        addCleanup(release);
+        try {
+          element = new Audio();
+          element.preload = "metadata";
+          element.autoplay = false;
+          element.muted = true;
+          sourceUrl = URL.createObjectURL(file);
+          const duration = await new Promise((resolve) => {
+            element.onloadedmetadata = () => resolve(element.duration);
+            element.onerror = () => resolve(null);
+            element.src = sourceUrl;
+            element.load();
+          });
+          checkCancelled(signal);
+          return Number.isFinite(duration) ? duration : null;
+        } catch {
+          checkCancelled(signal);
+          return null;
+        } finally {
+          release();
+        }
+      }
+
+      async function convertAudio(file, signal, addCleanup) {
+        const AudioDecoder = window.AudioContext || window.webkitAudioContext;
+        if (typeof AudioDecoder !== "function") {
+          throw new Error(t("Audio conversion is unavailable in this browser."));
+        }
+        const metadataDuration = await audioMetadataDuration(file, signal, addCleanup);
+        checkCancelled(signal);
+        if (metadataDuration > __MAX_AUDIO_DURATION_SECONDS__) {
+          throw new Error(t("Audio attachments may not exceed 120 seconds."));
+        }
+        let context;
+        try { context = new AudioDecoder({ sampleRate: outputSampleRate }); } catch {
+          throw new Error(t("Audio conversion is unavailable in this browser."));
+        }
+        addCleanup(() => {
+          if (typeof context.close === "function") {
+            Promise.resolve(context.close()).catch(() => {});
+          }
+        });
+        const bytes = await file.arrayBuffer();
+        checkCancelled(signal);
+        let decoded;
+        try { decoded = await context.decodeAudioData(bytes); } catch {
+          checkCancelled(signal);
+          throw new Error(t("This browser cannot decode the audio format."));
+        }
+        checkCancelled(signal);
+        const duration = decoded.length / decoded.sampleRate;
+        if (!Number.isInteger(decoded.length) || decoded.length <= 0 ||
+            !Number.isFinite(decoded.sampleRate) || decoded.sampleRate <= 0 ||
+            !Number.isInteger(decoded.numberOfChannels) || decoded.numberOfChannels < 1 ||
+            decoded.numberOfChannels > 32 || !Number.isFinite(duration) || duration <= 0) {
+          throw new Error(t("The browser returned invalid decoded audio."));
+        }
+        if (duration > __MAX_AUDIO_DURATION_SECONDS__) {
+          throw new Error(t("Audio attachments may not exceed 120 seconds."));
+        }
+        const channels = decoded.numberOfChannels === 2 ? 2 : 1;
+        const frames = Math.ceil(duration * outputSampleRate);
+        const dataBytes = frames * channels * 2;
+        const samples = Array.from({ length: decoded.numberOfChannels }, (_, index) => decoded.getChannelData(index));
+        if (samples.some((channel) => channel.length !== decoded.length)) {
+          throw new Error(t("The browser returned invalid decoded audio."));
+        }
+        const outputChannels = channels === 1 ? [samples] : samples.map((channel) => [channel]);
+        const output = new ArrayBuffer(44 + dataBytes);
+        const wav = new DataView(output);
+        const writeTag = (offset, tag) => {
+          for (let index = 0; index < tag.length; index += 1) wav.setUint8(offset + index, tag.charCodeAt(index));
+        };
+        writeTag(0, "RIFF"); wav.setUint32(4, 36 + dataBytes, true);
+        writeTag(8, "WAVE"); writeTag(12, "fmt "); wav.setUint32(16, 16, true);
+        wav.setUint16(20, 1, true); wav.setUint16(22, channels, true);
+        wav.setUint32(24, outputSampleRate, true); wav.setUint32(28, outputSampleRate * channels * 2, true);
+        wav.setUint16(32, channels * 2, true); wav.setUint16(34, 16, true);
+        writeTag(36, "data"); wav.setUint32(40, dataBytes, true);
+        for (let frame = 0; frame < frames; frame += 1) {
+          const sourcePosition = Math.min(frame * decoded.sampleRate / outputSampleRate, decoded.length - 1);
+          const before = Math.floor(sourcePosition);
+          const after = Math.min(before + 1, decoded.length - 1);
+          const fraction = sourcePosition - before;
+          for (let channel = 0; channel < channels; channel += 1) {
+            const sources = outputChannels[channel];
+            let value = 0;
+            for (const source of sources) {
+              value += source[before] + (source[after] - source[before]) * fraction;
+            }
+            value = Math.max(-1, Math.min(1, value / sources.length));
+            wav.setInt16(44 + (frame * channels + channel) * 2,
+              Math.round(value * (value < 0 ? 32_768 : 32_767)), true);
+          }
+          if (frame % 32_768 === 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+            checkCancelled(signal);
+          }
+        }
+        return {
+          file: new File([output], convertedFileName(file, "wav"), { type: "audio/wav" }),
+          ...(decoded.numberOfChannels > 2
+            ? { notice: t("Multichannel audio was converted to mono WAV.") } : {}),
+        };
+      }
+
+      async function normalize(file, classification, signal) {
+        if (!classification.conversion) return { file };
+        return convertWithinDeadline(file, signal, (conversionSignal, addCleanup) =>
+          classification.conversion === "image"
+            ? convertImage(file, conversionSignal, addCleanup)
+            : convertAudio(file, conversionSignal, addCleanup));
+      }
+
+      return { classify, fileExtension, normalize };
+      };

@@ -5,6 +5,8 @@ import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
 
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "./contracts.js";
+import { odfBytes } from "./rich-document-test-helpers.js";
+import { extractRichDocumentText } from "./rich-document.js";
 import {
   asStructurallyValidZip64,
   centralHeaders,
@@ -78,6 +80,36 @@ test("OOXML enforces the document byte limit at its public package boundary", as
     openOoxmlPackage(new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES + 1)),
     processingError("archive_limit"),
   );
+});
+
+test("ZIP accepts validated signed and unsigned data descriptors for Office and OpenDocument", async () => {
+  for (const includeSignature of [true, false]) {
+    const office = await openOoxmlPackage(withDataDescriptor(packageBytes("docx"), 0, { includeSignature }));
+    assert.equal(office.kind, "docx");
+    const bytes = withDataDescriptor(odfBytes("text", "<text:p>Document text</text:p>"), 2, { includeSignature });
+    const text = await extractRichDocumentText({ bytes, fileName: "export.odt", mediaType: "application/vnd.oasis.opendocument.text" });
+    assert.equal(text.text, "Document text\n");
+  }
+});
+
+test("ZIP accepts Deflate option flags only for Deflate and retains reserved-flag rejection", async () => {
+  for (const option of [2, 4, 6]) {
+    const deflate = mutateEntry(packageBytes("docx"), 0, (bytes, central, local) => {
+      assert.equal(readU16(bytes, central + 10), 8);
+      writeU16(bytes, central + 8, readU16(bytes, central + 8) | option);
+      writeU16(bytes, local + 6, readU16(bytes, local + 6) | option);
+    });
+    assert.equal((await openOoxmlPackage(deflate)).kind, "docx");
+    const stored = mutateEntry(odfBytes("text", ""), 0, (bytes, central, local) => {
+      assert.equal(readU16(bytes, central + 10), 0);
+      writeU16(bytes, central + 8, option); writeU16(bytes, local + 6, option);
+    });
+    await assert.rejects(extractRichDocumentText({ bytes: stored, fileName: "bad.odt", mediaType: "application/vnd.oasis.opendocument.text" }), processingError("invalid_document"));
+  }
+  const reserved = mutateEntry(packageBytes("docx"), 0, (bytes, central, local) => {
+    writeU16(bytes, central + 8, 0x10); writeU16(bytes, local + 6, 0x10);
+  });
+  await assert.rejects(openOoxmlPackage(reserved), processingError("invalid_document"));
 });
 
 test("OOXML rejects an outer archive hiding behind an offset-adjusted benign ZIP comment", async () => {

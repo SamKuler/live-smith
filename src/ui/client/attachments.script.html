@@ -7,30 +7,9 @@
         uploadAttachments,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
-      const imageMediaTypes = new Set([
-        "image/png",
-        "image/jpeg",
-        "image/webp",
-      ]);
-      const documentMediaTypes = new Set([
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      ]);
-      const audioMediaTypes = new Set(["audio/wav", "audio/mpeg"]);
-      const extensionKinds = new Map([
-        ["png", "image"],
-        ["jpg", "image"],
-        ["jpeg", "image"],
-        ["webp", "image"],
-        ["pdf", "document"],
-        ["docx", "document"],
-        ["xlsx", "document"],
-        ["pptx", "document"],
-        ["wav", "audio"],
-        ["mp3", "audio"],
-      ]);
+      const formats = __ATTACHMENT_FORMATS__;
+      const inputTransportSupport = __MODEL_INPUT_TRANSPORT_SUPPORT__;
+      const media = window.LiveSmithFactories.createAttachmentMedia();
       const macroEnabledExtensions = new Set([
         "docm",
         "dotm",
@@ -42,15 +21,6 @@
         "ppsm",
         "sldm",
       ]);
-      const legacyOfficeExtensions = new Set([
-        "doc",
-        "dot",
-        "xls",
-        "xlt",
-        "ppt",
-        "pot",
-        "pps",
-      ]);
       const maxImageAttachmentBytes = __MAX_IMAGE_ATTACHMENT_BYTES__;
       const maxDocumentAttachmentBytes = __MAX_DOCUMENT_ATTACHMENT_BYTES__;
       const maxAudioAttachmentBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
@@ -60,8 +30,6 @@
       const maxPendingAudioBytes = __MAX_PENDING_AUDIO_ATTACHMENT_BYTES__;
       const maxPendingAudioCount = __MAX_PENDING_AUDIO_ATTACHMENT_COUNT__;
       const maxPendingTotalBytes = __MAX_PENDING_TOTAL_ATTACHMENT_BYTES__;
-      const supportedFileMessage = () =>
-        t("only PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3 are supported");
       let busy = false;
       let renderedAttachmentsKey = null;
       let initialized = false;
@@ -99,15 +67,9 @@
       }
 
       function attachmentTypeLabel(attachment) {
-        if (attachment.mediaType === "image/png") return "PNG";
-        if (attachment.mediaType === "image/jpeg") return "JPEG";
-        if (attachment.mediaType === "image/webp") return "WebP";
-        if (attachment.mediaType === "application/pdf") return "PDF";
-        if (attachment.mediaType.includes("wordprocessingml")) return "DOCX";
-        if (attachment.mediaType.includes("spreadsheetml")) return "XLSX";
-        if (attachment.mediaType.includes("presentationml")) return "PPTX";
-        if (attachment.mediaType === "audio/wav") return "WAV";
-        if (attachment.mediaType === "audio/mpeg") return "MP3";
+        const format = formats.find((candidate) =>
+          candidate.kind === attachment.kind && candidate.mediaType === attachment.mediaType);
+        if (format) return t(format.label);
         if (attachment.kind === "image") return t("Image");
         if (attachment.kind === "audio") return t("Audio");
         return t("Document");
@@ -243,8 +205,7 @@
       }
 
       function fileExtension(file) {
-        const match = /\.([^.]+)$/.exec(String(file?.name || "").toLowerCase());
-        return match?.[1] || "";
+        return media.fileExtension(file);
       }
 
       function classifyFile(file) {
@@ -254,141 +215,70 @@
             reason: t("macro-enabled Office documents are not supported"),
           };
         }
-        if (legacyOfficeExtensions.has(extension)) {
-          return {
-            reason:
-              t("legacy Office files are not supported; save the file as DOCX, XLSX, or PPTX"),
-          };
-        }
-        const extensionKind = extensionKinds.get(extension);
-        if (extensionKind) return { kind: extensionKind };
-        const mediaType = String(file?.type || "").toLowerCase();
-        if (imageMediaTypes.has(mediaType)) return { kind: "image" };
-        if (documentMediaTypes.has(mediaType)) return { kind: "document" };
-        if (audioMediaTypes.has(mediaType)) return { kind: "audio" };
-        return { reason: supportedFileMessage() };
+        return media.classify(file);
       }
 
-      function selectUploadableFiles(files) {
+      function uploadPolicyReason(file, classification, checkByteLimits = true) {
+        if (classification.reason) return classification.reason;
+        const kind = classification.kind;
         const pending = pendingAttachments();
-        let count = pending.length;
-        let totalBytes = pending.reduce(
-          (total, attachment) => total + attachment.byteLength,
-          0,
-        );
-        let imageBytes = pending.reduce(
-          (total, attachment) =>
-            total + (attachment.kind === "image" ? attachment.byteLength : 0),
-          0,
-        );
-        let documentBytes = pending.reduce(
-          (total, attachment) =>
-            total + (attachment.kind === "document" ? attachment.byteLength : 0),
-          0,
-        );
-        let audioBytes = pending.reduce(
-          (total, attachment) =>
-            total + (attachment.kind === "audio" ? attachment.byteLength : 0),
-          0,
-        );
-        let audioCount = pending.filter((attachment) => attachment.kind === "audio").length;
-        const accepted = [];
-        const failures = [];
-        for (const file of files) {
-          const classification = classifyFile(file);
-          let reason = classification.reason || "";
-          if (!reason && classification.kind === "image" && imageInputStatus() !== "supported") {
-            reason = imageCapabilityReason();
-          } else if (!reason && file.size === 0) {
-            reason = t("the file is empty");
-          } else if (
-            !reason &&
-            classification.kind === "image" &&
-            file.size > maxImageAttachmentBytes
-          ) {
-            reason = t("the image is larger than {value}", { value: formatBytes(maxImageAttachmentBytes) });
-          } else if (
-            !reason &&
-            classification.kind === "document" &&
-            file.size > maxDocumentAttachmentBytes
-          ) {
-            reason = t("the document is larger than {value}", { value: formatBytes(maxDocumentAttachmentBytes) });
-          } else if (
-            !reason &&
-            classification.kind === "audio" &&
-            file.size > maxAudioAttachmentBytes
-          ) {
-            reason = t("the audio file is larger than {value}", { value: formatBytes(maxAudioAttachmentBytes) });
-          } else if (!reason && count >= maxPendingAttachmentCount) {
-            reason = t("a Session can have at most {maxPendingAttachmentCount} pending files", { maxPendingAttachmentCount: maxPendingAttachmentCount });
-          } else if (
-            !reason &&
-            classification.kind === "audio" &&
-            audioCount >= maxPendingAudioCount
-          ) {
-            reason = t("a Session can have at most {maxPendingAudioCount} pending audio files", { maxPendingAudioCount: maxPendingAudioCount });
-          } else if (!reason && totalBytes + file.size > maxPendingTotalBytes) {
-            reason = t("pending files would exceed {value}", { value: formatBytes(maxPendingTotalBytes) });
-          } else if (
-            !reason &&
-            classification.kind === "image" &&
-            imageBytes + file.size > maxPendingImageBytes
-          ) {
-            reason = t("pending images would exceed {value}", { value: formatBytes(maxPendingImageBytes) });
-          } else if (
-            !reason &&
-            classification.kind === "document" &&
-            documentBytes + file.size > maxPendingDocumentBytes
-          ) {
-            reason = t("pending documents would exceed {value}", { value: formatBytes(maxPendingDocumentBytes) });
-          } else if (
-            !reason &&
-            classification.kind === "audio" &&
-            audioBytes + file.size > maxPendingAudioBytes
-          ) {
-            reason = t("pending audio would exceed {value}", { value: formatBytes(maxPendingAudioBytes) });
-          }
-          if (reason) {
-            failures.push(`${file.name || t("Unnamed file")}: ${reason}`);
-            continue;
-          }
-          accepted.push(file);
-          count += 1;
-          totalBytes += file.size;
-          if (classification.kind === "image") imageBytes += file.size;
-          else if (classification.kind === "document") documentBytes += file.size;
-          else {
-            audioBytes += file.size;
-            audioCount += 1;
-          }
+        if (kind === "image" && imageInputStatus() !== "supported") return imageCapabilityReason();
+        if (file.size === 0) return t("the file is empty");
+        if (pending.length >= maxPendingAttachmentCount) {
+          return t("a Session can have at most {maxPendingAttachmentCount} pending files", { maxPendingAttachmentCount });
         }
-        return { accepted, failures };
-      }
-
-      function failureMessage(failures) {
-        if (!failures.length) return "";
-        return t("Some files were not attached: {value}. Resolve the stated requirement before selecting another file.", { value: failures.join("; ") });
+        if (kind === "audio" && pending.filter((attachment) => attachment.kind === "audio").length >= maxPendingAudioCount) {
+          return t("a Session can have at most {maxPendingAudioCount} pending audio files", { maxPendingAudioCount });
+        }
+        if (!checkByteLimits) return "";
+        if (classification.format?.mediaType === "audio/midi" && file.size > __MAX_MIDI_ATTACHMENT_BYTES__) {
+          return t("MIDI attachments may not exceed 8 MiB.");
+        }
+        const limits = {
+          image: { file: maxImageAttachmentBytes, pending: maxPendingImageBytes },
+          document: { file: maxDocumentAttachmentBytes, pending: maxPendingDocumentBytes },
+          audio: { file: maxAudioAttachmentBytes, pending: maxPendingAudioBytes },
+        };
+        if (file.size > limits[kind].file) {
+          const message = kind === "image" ? "the image is larger than {value}"
+            : kind === "document" ? "the document is larger than {value}"
+            : "the audio file is larger than {value}";
+          return t(message, { value: formatBytes(limits[kind].file) });
+        }
+        const totalBytes = pending.reduce((total, attachment) => total + attachment.byteLength, 0);
+        if (totalBytes + file.size > maxPendingTotalBytes) {
+          return t("pending files would exceed {value}", { value: formatBytes(maxPendingTotalBytes) });
+        }
+        const kindBytes = pending.filter((attachment) => attachment.kind === kind)
+          .reduce((total, attachment) => total + attachment.byteLength, 0);
+        if (kindBytes + file.size > limits[kind].pending) {
+          const message = kind === "image" ? "pending images would exceed {value}"
+            : kind === "document" ? "pending documents would exceed {value}"
+            : "pending audio would exceed {value}";
+          return t(message, { value: formatBytes(limits[kind].pending) });
+        }
+        return "";
       }
 
       async function uploadFiles(fileList) {
         if (busy) return;
         const files = [...(fileList || [])];
         if (!files.length) return;
-        const selection = selectUploadableFiles(files);
-        const localFailure = failureMessage(selection.failures);
-        if (!selection.accepted.length) {
-          if (localFailure) showStatus(localFailure, true);
-          return;
-        }
+        const notices = [];
         try {
-          await uploadAttachments(getState().activeSessionId, selection.accepted);
-          if (localFailure) showStatus(localFailure, true);
+          await uploadAttachments(getState().activeSessionId, files, async (file, signal) => {
+            const classification = classifyFile(file);
+            const admissionReason = uploadPolicyReason(file, classification, false);
+            if (admissionReason) throw new Error(admissionReason);
+            const normalized = await media.normalize(file, classification, signal);
+            const quotaReason = uploadPolicyReason(normalized.file, classifyFile(normalized.file));
+            if (quotaReason) throw new Error(quotaReason);
+            if (normalized.notice) notices.push(`${file.name}: ${normalized.notice}`);
+            return normalized.file;
+          });
+          if (notices.length) showStatus(notices.join(" "), false);
         } catch (error) {
-          const remoteFailure = error.message || String(error);
-          showStatus(
-            [localFailure, remoteFailure].filter(Boolean).join(" "),
-            true,
-          );
+          showStatus([...notices, error.message || String(error)].join(" "), true);
         }
       }
 
@@ -407,13 +297,15 @@
           runtime?.capabilities?.inputs?.pdf !== true ||
           runtime?.inputCapabilityEvidence?.pdf !== "supported"
         ) return false;
-        return (
-          runtime.profile.apiFamily === "openai" &&
-          runtime.profile.apiMode === "responses"
-        ) || (
-          runtime.profile.apiFamily === "anthropic" &&
-          runtime.profile.apiMode === "messages"
-        );
+        return runtimeInputTransportSupport(runtime)?.pdf === true;
+      }
+
+      function runtimeInputTransportSupport(runtime) {
+        const profile = runtime?.profile;
+        if (!profile) return null;
+        return profile.connectionKind === "oauth-subscription"
+          ? inputTransportSupport.subscription[profile.apiFamily] || null
+          : inputTransportSupport.direct[profile.apiFamily]?.[profile.apiMode] || null;
       }
 
       function audioInputStatus() {
@@ -428,10 +320,7 @@
           runtime?.capabilities?.tools === true) {
           return "supported";
         }
-        const compatible = runtime?.profile?.connectionKind === "direct-api" &&
-          runtime?.profile?.apiFamily === "openai" &&
-          runtime?.profile?.apiMode === "chat-completions";
-        if (!compatible) return "profile_incompatible";
+        if (runtimeInputTransportSupport(runtime)?.audio !== true) return "profile_incompatible";
         const evidence = runtime.inputCapabilityEvidence?.audio;
         if (
           evidence === "supported" &&
@@ -469,7 +358,7 @@
           !pdfInputSupported()
         ) {
           showStatus(
-            t("PDF attachments require verified PDF input support with OpenAI Responses or Anthropic Messages. Remove the attached PDFs or activate a compatible saved Profile."),
+            t("PDF attachments require verified PDF input support with OpenAI Responses, Anthropic Messages, or a compatible OpenAI, Anthropic, or Google subscription Profile. Remove the attached PDFs or activate a compatible saved Profile."),
             true,
           );
           return false;
@@ -482,7 +371,7 @@
                 ? t("The active model does not support audio input. Remove the attached audio or activate an audio-capable saved Profile.")
                 : status === "unverified"
                   ? unverifiedInputGuidance("audio")
-                  : t("Audio attachments require a saved OpenAI Chat Completions Profile with verified audio input support. Remove the attached audio or activate a compatible saved Profile."),
+                  : t("Audio attachments require a saved OpenAI Chat Completions Profile or Google subscription Profile with verified audio input support. Remove the attached audio or activate a compatible saved Profile."),
               true,
             );
             return false;
@@ -541,21 +430,23 @@
             void uploadFiles(files);
           }
         });
-        composer?.addEventListener("dragover", (event) => {
+        document.addEventListener("dragover", (event) => {
+          if (event.defaultPrevented) return;
           if (!transferContainsFiles(event.dataTransfer)) return;
           event.preventDefault();
-          composer.classList.add("drop-target");
+          if (!busy) composer?.classList.add("drop-target");
         });
-        composer?.addEventListener("dragleave", (event) => {
-          if (!composer.contains(event.relatedTarget)) {
-            composer.classList.remove("drop-target");
+        document.addEventListener("dragleave", (event) => {
+          if (!event.relatedTarget || !document.documentElement.contains(event.relatedTarget)) {
+            composer?.classList.remove("drop-target");
           }
         });
-        composer?.addEventListener("drop", (event) => {
+        document.addEventListener("drop", (event) => {
+          composer?.classList.remove("drop-target");
+          if (event.defaultPrevented) return;
           const files = filesFromTransfer(event.dataTransfer);
           if (!files.length) return;
           event.preventDefault();
-          composer.classList.remove("drop-target");
           void uploadFiles(files);
         });
         syncAttachAvailability();

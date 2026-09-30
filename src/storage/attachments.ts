@@ -8,15 +8,21 @@ import { types as utilTypes } from "node:util";
 
 import { persistTransientSessionInTransaction } from "./sessions.js";
 import {
+  ATTACHMENT_FORMATS,
+  attachmentMediaTypeMatchesKind as attachmentKindMatchesMediaType,
   attachmentQuotaIsWithinLimits,
   AttachmentProcessingError,
+  type AttachmentMediaType,
   type DocumentAttachmentMediaType,
+  isAttachmentMediaType,
   isLegacyAttachmentFileName,
   isSafeAttachmentFileName,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_DIMENSION,
+  MAX_IMAGE_ATTACHMENT_PIXELS,
 } from "../attachments/contracts.js";
 import {
   inspectAudioAttachment,
@@ -41,16 +47,7 @@ import {
 
 export type AttachmentKind = "image" | "document" | "audio";
 
-export type AttachmentMediaType =
-  | "image/png"
-  | "image/jpeg"
-  | "image/webp"
-  | "application/pdf"
-  | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-  | "audio/wav"
-  | "audio/mpeg";
+export type { AttachmentMediaType } from "../attachments/contracts.js";
 
 export type ImageAttachmentMediaType = "image/png" | "image/jpeg" | "image/webp";
 
@@ -137,8 +134,6 @@ interface AttachmentReadOptions {
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
-const maxImageDimension = 16_384;
-const maxImagePixels = 100_000_000;
 
 export class AttachmentTooLargeError extends Error {
   constructor() {
@@ -1026,9 +1021,9 @@ function validImageDimensions(
   if (!dimensions) return false;
   return dimensions.width > 0 &&
     dimensions.height > 0 &&
-    dimensions.width <= maxImageDimension &&
-    dimensions.height <= maxImageDimension &&
-    dimensions.width * dimensions.height <= maxImagePixels;
+    dimensions.width <= MAX_IMAGE_ATTACHMENT_DIMENSION &&
+    dimensions.height <= MAX_IMAGE_ATTACHMENT_DIMENSION &&
+    dimensions.width * dimensions.height <= MAX_IMAGE_ATTACHMENT_PIXELS;
 }
 
 function pngDimensions(
@@ -1136,31 +1131,6 @@ function isImageMediaType(value: unknown): value is ImageAttachmentMediaType {
   return value === "image/png" || value === "image/jpeg" || value === "image/webp";
 }
 
-function isDocumentMediaType(
-  value: unknown,
-): value is DocumentAttachmentMediaType {
-  return value === "application/pdf" ||
-    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    value === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    value === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-}
-
-function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
-  return isImageMediaType(value) ||
-    isDocumentMediaType(value) ||
-    value === "audio/wav" ||
-    value === "audio/mpeg";
-}
-
-function attachmentKindMatchesMediaType(
-  kind: AttachmentKind,
-  mediaType: AttachmentMediaType,
-): boolean {
-  if (kind === "image") return isImageMediaType(mediaType);
-  if (kind === "audio") return mediaType === "audio/wav" || mediaType === "audio/mpeg";
-  return isDocumentMediaType(mediaType);
-}
-
 function ascii(bytes: Uint8Array, start: number, end: number): string {
   return String.fromCharCode(...bytes.subarray(start, end));
 }
@@ -1208,6 +1178,10 @@ function defaultFileName(
       return "presentation.pptx";
     case "audio/wav": return "audio.wav";
     case "audio/mpeg": return "audio.mp3";
+    default: {
+      const format = ATTACHMENT_FORMATS.find((format) => format.mediaType === mediaType)!;
+      return `document.${format.extensions[0]}`;
+    }
   }
 }
 

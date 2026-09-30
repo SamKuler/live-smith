@@ -1,4 +1,5 @@
 import { serializeUiI18nData } from "./i18n/messages.js";
+import { inputTransportSupportTable } from "../model/input-support.js";
 import {
   MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES,
   MAX_SESSION_TOOL_CATALOG_TOOLS,
@@ -8,11 +9,17 @@ import {
   type ChatBridgeState,
 } from "./chat-state.js";
 import {
+  ATTACHMENT_FORMATS,
+  ATTACHMENT_IMPORT_FORMATS,
+  MAX_ATTACHMENT_IMPORT_BYTES,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_DIMENSION,
+  MAX_IMAGE_ATTACHMENT_PIXELS,
+  MAX_MIDI_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_BYTES,
   MAX_PENDING_ATTACHMENT_COUNT,
   MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
@@ -55,6 +62,7 @@ export interface ChatClientScripts {
   actionPreview: string;
   i18n: string;
   attachments: string;
+  attachmentMedia?: string;
   bootstrap: string;
   bridgeClient: string;
   composerInput: string;
@@ -80,6 +88,13 @@ function injectPluginContract(script: string): string {
 
 function injectAttachmentContract(script: string): string {
   return script
+    .replaceAll("__MODEL_INPUT_TRANSPORT_SUPPORT__", JSON.stringify(inputTransportSupportTable))
+    .replaceAll("__ATTACHMENT_FORMATS__", JSON.stringify(ATTACHMENT_FORMATS))
+    .replaceAll("__ATTACHMENT_IMPORT_FORMATS__", JSON.stringify(ATTACHMENT_IMPORT_FORMATS))
+    .replaceAll("__MAX_ATTACHMENT_IMPORT_BYTES__", String(MAX_ATTACHMENT_IMPORT_BYTES))
+    .replaceAll("__MAX_MIDI_ATTACHMENT_BYTES__", String(MAX_MIDI_ATTACHMENT_BYTES))
+    .replaceAll("__MAX_IMAGE_ATTACHMENT_DIMENSION__", String(MAX_IMAGE_ATTACHMENT_DIMENSION))
+    .replaceAll("__MAX_IMAGE_ATTACHMENT_PIXELS__", String(MAX_IMAGE_ATTACHMENT_PIXELS))
     .replaceAll(
       "__MAX_ATTACHMENT_FILE_NAME_BYTES__",
       String(MAX_ATTACHMENT_FILE_NAME_BYTES),
@@ -254,6 +269,7 @@ export function composeChatDocument(
     __HOST_ADAPTER_SCRIPT__: scripts.hostAdapter,
     __I18N_SCRIPT__: scripts.i18n.replace("__UI_I18N__", () => serializeUiI18nData()),
     __PROFILE_EDITOR_SCRIPT__: profileEditorScript,
+    __ATTACHMENT_MEDIA_SCRIPT__: injectAttachmentContract(scripts.attachmentMedia ?? ""),
     __ATTACHMENTS_SCRIPT__: attachmentsScript,
     __COMPOSER_INPUT_SCRIPT__: scripts.composerInput,
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,
@@ -268,7 +284,7 @@ export function composeChatDocument(
     __PLUGIN_USER_CONFIG_SCRIPT__: scripts.pluginUserConfig.replace("__PLUGIN_CONFIG_LIMITS__", () => JSON.stringify({ fields: MAX_PLUGIN_CONFIG_FIELDS, text: MAX_PLUGIN_CONFIG_TEXT })),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
-    __SESSION_TIMELINE_SCRIPT__: injectSessionContract(scripts.sessionTimeline),
+    __SESSION_TIMELINE_SCRIPT__: injectSessionContract(injectAttachmentContract(scripts.sessionTimeline)),
     __ACTION_PREVIEW_SCRIPT__: scripts.actionPreview,
     __BOOTSTRAP_SCRIPT__: injectEditScopeContract(scripts.bootstrap),
   };

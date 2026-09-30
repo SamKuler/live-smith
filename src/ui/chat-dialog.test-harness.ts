@@ -25,6 +25,7 @@ import { previewPluginArchive } from "../plugins/view.js";
 import { builtInAudioPluginById } from "../plugins/builtins/index.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
 import { sessionToolCatalogOwner } from "../app/session-tool-catalog.js";
+import { ATTACHMENT_FORMATS } from "../attachments/contracts.js";
 import { buildMarkdownRendererScript } from "../../scripts/build-markdown-renderer.js";
 import { buildPluginAppsScript } from "../../scripts/build-plugin-apps.js";
 import { buildAudioParametersScript } from "../../scripts/build-audio-parameters.js";
@@ -166,6 +167,7 @@ const clientScripts = {
   actionPreview: readClientScript("action-preview"),
   i18n: readClientScript("i18n"),
   attachments: readClientScript("attachments"),
+  attachmentMedia: readClientScript("attachment-media"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
   composerInput: readClientScript("composer-input"),
@@ -437,6 +439,7 @@ async function createDialogHarness(
   initialState: ChatBridgeState = stateFixture(),
   bridge = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
+    beforeParse?: (window: JSDOM["window"]) => void;
     oauthLoginResult?: NonNullable<ChatBridgeState["oauthAuth"]>;
     scrollendSupported?: boolean;
     navigatorLanguages?: string[];
@@ -1100,6 +1103,7 @@ async function createDialogHarness(
       pretendToBeVisual: true,
       virtualConsole,
       beforeParse(window) {
+        options.beforeParse?.(window);
         if (options.navigatorLanguages) {
           Object.defineProperty(window.navigator, "languages", { configurable: true, value: options.navigatorLanguages });
           Object.defineProperty(window.navigator, "language", { configurable: true, value: options.navigatorLanguages[0] ?? "en" });
@@ -1248,6 +1252,8 @@ async function createDialogHarness(
               const attachments = pendingAttachmentsBySession.get(sessionId) ?? [];
               const mediaType = nextAttachmentUnknown?.committedMetadata?.mediaType ??
                 attachmentMediaTypeForFile(file);
+              const kind = ATTACHMENT_FORMATS.find((format) => format.mediaType === mediaType)?.kind ?? "document";
+              const fileBytes = new Uint8Array(await file.arrayBuffer());
               const commonAttachment = {
                 id: `attachment-${attachments.length + 1}`,
                 fileName: nextAttachmentUnknown?.committedMetadata?.fileName ??
@@ -1255,24 +1261,30 @@ async function createDialogHarness(
                 byteLength: file.size,
                 sha256: nextAttachmentUnknown?.committedMetadata?.sha256 ??
                   createHash("sha256")
-                    .update(new Uint8Array(await file.arrayBuffer()))
+                    .update(fileBytes)
                     .digest("hex"),
               };
               let attachment: ChatDialogState["pendingAttachments"][number];
-              if (mediaType.startsWith("image/")) {
+              if (kind === "image") {
                 attachment = {
                   ...commonAttachment,
                   kind: "image",
                   mediaType: mediaType as "image/png" | "image/jpeg" | "image/webp",
                 };
-              } else if (mediaType.startsWith("audio/")) {
+              } else if (kind === "audio") {
+                const convertedWav = mediaType === "audio/wav" && fileBytes.length >= 44 &&
+                  NodeBuffer.from(fileBytes).toString("ascii", 0, 4) === "RIFF"
+                  ? new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength) : null;
+                const sampleRate = convertedWav?.getUint32(24, true) ?? 48_000;
+                const channels = convertedWav?.getUint16(22, true) ?? 2;
                 attachment = {
                   ...commonAttachment,
                   kind: "audio",
                   mediaType: mediaType as "audio/wav" | "audio/mpeg",
-                  durationSeconds: 83.25,
-                  sampleRate: 48_000,
-                  channels: 2,
+                  durationSeconds: convertedWav
+                    ? convertedWav.getUint32(40, true) / (sampleRate * channels * 2) : 83.25,
+                  sampleRate,
+                  channels,
                 };
               } else {
                 attachment = {
@@ -2708,41 +2720,11 @@ function audioFile(
 function attachmentMediaTypeForFile(
   file: File,
 ): ChatDialogState["pendingAttachments"][number]["mediaType"] {
-  const knownMediaTypes = new Set<
-    ChatDialogState["pendingAttachments"][number]["mediaType"]
-  >([
-    "image/png",
-    "image/jpeg",
-    "image/webp",
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "audio/wav",
-    "audio/mpeg",
-  ]);
-  if (knownMediaTypes.has(
-    file.type as ChatDialogState["pendingAttachments"][number]["mediaType"],
-  )) {
-    return file.type as ChatDialogState["pendingAttachments"][number]["mediaType"];
-  }
-  const extension = /\.([^.]+)$/.exec(file.name.toLowerCase())?.[1];
-  if (extension === "png") return "image/png";
-  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
-  if (extension === "webp") return "image/webp";
-  if (extension === "pdf") return "application/pdf";
-  if (extension === "docx") {
-    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  }
-  if (extension === "xlsx") {
-    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  }
-  if (extension === "pptx") {
-    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-  }
-  if (extension === "wav") return "audio/wav";
-  if (extension === "mp3") return "audio/mpeg";
-  throw new Error(`Unsupported test attachment ${file.name}`);
+  const extension = /\.([^.]+)$/u.exec(file.name.toLowerCase())?.[1] ?? "";
+  const format = ATTACHMENT_FORMATS.find((candidate) =>
+    (candidate.extensions as readonly string[]).includes(extension)) ??
+    ATTACHMENT_FORMATS.find((candidate) => candidate.mediaType === file.type);
+  return format?.mediaType ?? "text/plain";
 }
 
 function runtimeSummaryForHarnessProfile(
@@ -2809,10 +2791,7 @@ function pendingDocument(
   id: string,
   fileName: string,
   mediaType:
-    | "application/pdf"
-    | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    | "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    Extract<ChatDialogState["pendingAttachments"][number], { kind: "document" }>["mediaType"],
   byteLength = 24,
 ): ChatDialogState["pendingAttachments"][number] {
   return {

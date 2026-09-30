@@ -2580,7 +2580,7 @@ test("clean Direct API Profiles keep the composer shortcut available", async () 
   }
 });
 
-test("OAuth subscription image input is sendable while audio and PDF stay disabled", async () => {
+test("OpenAI subscription verified image and PDF input is sendable while audio stays incompatible", async () => {
   const state = stateFixture();
   const profile = subscriptionProfile();
   state.settings.profiles = [profile];
@@ -2651,11 +2651,7 @@ test("OAuth subscription image input is sendable while audio and PDF stay disabl
     pdfHarness.input("#prompt", "Review the PDF");
     pdfHarness.click("#sendButton");
     await pdfHarness.settle();
-    assert.equal(pdfHarness.calls.some((call) => call.path === "/send"), false);
-    assert.match(
-      pdfHarness.document.querySelector("#status")?.textContent ?? "",
-      /PDF attachments require verified PDF input support with OpenAI Responses or Anthropic Messages/i,
-    );
+    assert.equal(pdfHarness.calls.some((call) => call.path === "/send"), true);
     assert.deepEqual(pdfHarness.errors, []);
   } finally {
     pdfHarness.close();

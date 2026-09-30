@@ -5,6 +5,7 @@ const clientFragments = [
   "host-adapter",
   "i18n",
   "profile-editor",
+  "attachment-media",
   "attachments",
   "composer-input",
   "skill-manager",

@@ -11,6 +11,9 @@
         setState,
       }) {
       const t = (sourceEnglish, namedParams) => window.LiveSmithI18n.t(sourceEnglish, namedParams);
+      const attachmentFormats = __ATTACHMENT_FORMATS__;
+      const attachmentMediaTypeMatchesKind = (kind, mediaType) =>
+        attachmentFormats.some((format) => format.kind === kind && format.mediaType === mediaType);
       const maximumDiscoveredModelCount = __MAX_DISCOVERED_MODEL_COUNT__;
       const maximumProviderReportedMimeTypeCount = 128;
       const maximumProviderReportedModalityCount = 32;
@@ -1841,18 +1844,14 @@
         ];
         if (value.kind === "image") {
           return hasOnlyWireKeys(value, commonKeys) &&
-            ["image/png", "image/jpeg", "image/webp"].includes(value.mediaType) &&
+            attachmentMediaTypeMatchesKind(value.kind, value.mediaType) &&
             value.byteLength <= __MAX_IMAGE_ATTACHMENT_BYTES__;
         }
         if (value.kind === "document") {
           return hasOnlyWireKeys(value, commonKeys) &&
-            [
-              "application/pdf",
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ].includes(value.mediaType) &&
-            value.byteLength <= __MAX_DOCUMENT_ATTACHMENT_BYTES__;
+            attachmentMediaTypeMatchesKind(value.kind, value.mediaType) &&
+            value.byteLength <= (value.mediaType === "audio/midi"
+              ? __MAX_MIDI_ATTACHMENT_BYTES__ : __MAX_DOCUMENT_ATTACHMENT_BYTES__);
         }
         return hasOnlyWireKeys(value, [
           ...commonKeys,
@@ -1860,7 +1859,7 @@
           "sampleRate",
           "channels",
         ]) &&
-          ["audio/wav", "audio/mpeg"].includes(value.mediaType) &&
+          attachmentMediaTypeMatchesKind(value.kind, value.mediaType) &&
           value.byteLength <= __MAX_AUDIO_ATTACHMENT_BYTES__ &&
           Number.isFinite(value.durationSeconds) &&
           value.durationSeconds > 0 &&
@@ -1937,19 +1936,7 @@
           typeof value.sha256 !== "string" ||
           !/^[a-f0-9]{64}$/.test(value.sha256)
         ) return false;
-        if (value.kind === "image") {
-          return ["image/png", "image/jpeg", "image/webp"]
-            .includes(value.mediaType);
-        }
-        if (value.kind === "audio") {
-          return ["audio/wav", "audio/mpeg"].includes(value.mediaType);
-        }
-        return [
-          "application/pdf",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ].includes(value.mediaType);
+        return attachmentMediaTypeMatchesKind(value.kind, value.mediaType);
       }
 
       function isWireLegacySessionAttachments(value) {
@@ -8119,81 +8106,100 @@
         throw unknownError;
       }
 
-      function uploadAttachments(sessionId, files) {
+      function uploadAttachments(sessionId, files, prepareFile = (file) => file) {
         return runFileOperation("attachment", async (causalAttempt) => {
-          let state = null;
-          const committedWarnings = [];
-          const policyFailures = [];
-          const retryableFailures = [];
-          const uncertainFailures = [];
-          for (let index = 0; index < files.length; index += 1) {
-            const file = files[index];
-            const contentSha256 = await fileContentSha256(file);
-            const previousIds = new Set(
-              (getState().pendingAttachments || []).map((attachment) => attachment.id),
-            );
-            const path = "/attachments" +
-              `?sessionId=${encodeURIComponent(sessionId)}` +
-              `&fileName=${encodeURIComponent(file.name)}`;
-            try {
-              state = await requestAttachment(
-                path,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/octet-stream",
-                    "X-Live-Smith-File-Type": file.type || "application/octet-stream",
-                  },
-                  body: file,
-                },
-                causalAttempt,
-              );
-            } catch (error) {
-              const detail = `${attachmentFileLabel(file)}: ${
-                error.message || String(error)
-              }`;
-              if (newPendingAttachmentMatches(
-                file.size,
-                contentSha256,
-                previousIds,
-              )) {
-                committedWarnings.push(
-                  t("{fileName} was confirmed attached after its response was interrupted", { fileName: attachmentFileLabel(file) }),
+          const controller = new AbortController();
+          const cancelConversion = () => controller.abort();
+          window.addEventListener("pagehide", cancelConversion);
+          window.addEventListener("beforeunload", cancelConversion);
+          try {
+            let state = null;
+            const committedWarnings = [];
+            const policyFailures = [];
+            const retryableFailures = [];
+            const uncertainFailures = [];
+            for (let index = 0; index < files.length; index += 1) {
+              if (controller.signal.aborted) break;
+              let file = files[index];
+              let contentSha256 = null;
+              let previousIds = new Set();
+              let requestStarted = false;
+              try {
+                file = await prepareFile(file, controller.signal);
+                if (controller.signal.aborted) break;
+                contentSha256 = await fileContentSha256(file);
+                if (controller.signal.aborted) break;
+                previousIds = new Set(
+                  (getState().pendingAttachments || []).map((attachment) => attachment.id),
                 );
-              } else if (error.attachmentFailureKind === "policy") {
-                policyFailures.push(detail);
-              } else if (error.attachmentFailureKind === "retryable") {
-                retryableFailures.push(detail);
-              } else {
-                uncertainFailures.push(detail);
-              }
-              if (commandReconciliationBlocked) {
-                for (const remaining of files.slice(index + 1)) {
-                  uncertainFailures.push(
-                    t("{fileName}: not attempted because attachment state could not be reconciled", { fileName: attachmentFileLabel(remaining) }),
+                const path = "/attachments" +
+                  `?sessionId=${encodeURIComponent(sessionId)}` +
+                  `&fileName=${encodeURIComponent(file.name)}`;
+                requestStarted = true;
+                state = await requestAttachment(
+                  path,
+                  {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/octet-stream",
+                      "X-Live-Smith-File-Type": file.type || "application/octet-stream",
+                    },
+                    body: file,
+                  },
+                  causalAttempt,
+                );
+              } catch (error) {
+                const detail = `${attachmentFileLabel(file)}: ${
+                  error.message || String(error)
+                }`;
+                if (!requestStarted) {
+                  policyFailures.push(detail);
+                } else if (newPendingAttachmentMatches(
+                  file.size,
+                  contentSha256,
+                  previousIds,
+                )) {
+                  committedWarnings.push(
+                    t("{fileName} was confirmed attached after its response was interrupted", { fileName: attachmentFileLabel(file) }),
                   );
+                } else if (error.attachmentFailureKind === "policy") {
+                  policyFailures.push(detail);
+                } else if (error.attachmentFailureKind === "retryable") {
+                  retryableFailures.push(detail);
+                } else {
+                  uncertainFailures.push(detail);
                 }
-                break;
+                if (commandReconciliationBlocked) {
+                  for (const remaining of files.slice(index + 1)) {
+                    uncertainFailures.push(
+                      t("{fileName}: not attempted because attachment state could not be reconciled", { fileName: attachmentFileLabel(remaining) }),
+                    );
+                  }
+                  break;
+                }
               }
             }
+            const messages = [];
+            if (committedWarnings.length) {
+              messages.push(t("{files}. Do not upload those files again.", { files: committedWarnings.join("; ") }));
+            }
+            if (policyFailures.length) {
+              messages.push(t("Not attached: {files}. Resolve the stated requirement before selecting another file.", { files: policyFailures.join("; ") }));
+            }
+            if (retryableFailures.length) {
+              messages.push(t("Retryable uploads: {files}. Re-select only those named files to retry.", { files: retryableFailures.join("; ") }));
+            }
+            if (uncertainFailures.length) {
+              messages.push(t("Unconfirmed uploads: {files}. Verify current attachment state before uploading anything again.", { files: uncertainFailures.join("; ") }));
+            }
+            if (messages.length) {
+              throw new Error(messages.join(" "));
+            }
+            return state;
+          } finally {
+            window.removeEventListener("pagehide", cancelConversion);
+            window.removeEventListener("beforeunload", cancelConversion);
           }
-          const messages = [];
-          if (committedWarnings.length) {
-            messages.push(t("{files}. Do not upload those files again.", { files: committedWarnings.join("; ") }));
-          }
-          if (policyFailures.length) {
-            messages.push(t("Not attached: {files}. Resolve the stated requirement before selecting another file.", { files: policyFailures.join("; ") }));
-          }
-          if (retryableFailures.length) {
-            messages.push(t("Retryable uploads: {files}. Re-select only those named files to retry.", { files: retryableFailures.join("; ") }));
-          }
-          if (uncertainFailures.length) {
-            messages.push(t("Unconfirmed uploads: {files}. Verify current attachment state before uploading anything again.", { files: uncertainFailures.join("; ") }));
-          }
-          if (messages.length) {
-            throw new Error(messages.join(" "));
-          }
-          return state;
         });
       }
 

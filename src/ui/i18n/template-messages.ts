@@ -179,7 +179,7 @@ export const templateMessages: Record<string, string> = {
   "Add attachment": "添加附件",
   "Attachment options": "附件选项",
   "Drop or paste files": "拖入或粘贴文件",
-  "Images, PDF, Office documents, WAV, and MP3. File browsing is not available in this Ableton window.": "支持图片、PDF、Office 文档、WAV 和 MP3。此 Ableton 窗口不支持浏览文件。",
+  "Images, audio, MIDI, PDF, documents, and text files. Additional image and audio formats are converted when this browser can decode them. File browsing is not available in this Ableton window.": "支持图片、音频、MIDI、PDF、文档和文本文件。其他图片和音频格式在浏览器能够解码时会自动转换。此 Ableton 窗口不支持浏览文件。",
   "Manual requests approval for every Apply request.": "手动模式会为每次应用请求征求批准。",
   "Apply": "应用",
   "Apply approval mode": "应用审批模式",

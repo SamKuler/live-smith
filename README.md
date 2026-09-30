@@ -449,8 +449,24 @@ connections have separate audio-input and MIDI-output grants. Disabling or
 removing a connection closes its active MCP clients and preserves saved Session
 artifacts.
 
-**Attachments** support PNG, JPEG, WebP, PDF, DOCX, XLSX, PPTX, WAV, and MP3.
-Office documents are read as text. Image, native PDF, and audio use depends on
+**Attachments** can be dropped anywhere in the chat surface or pasted into the
+composer. Supported categories include:
+
+| Category | Formats and handling |
+| --- | --- |
+| Text and code | UTF-8 and UTF-16 text with any filename extension, including Markdown, CSV/TSV, JSON, YAML, XML, HTML, configuration files, logs, subtitles, and source code. Content is read as inert text. |
+| Documents and tables | PDF; DOCX, XLSX, PPTX; Word 97–2007 DOC, BIFF8 XLS, and PowerPoint 97–2007 PPT; RTF; ODT, ODS, and ODP. Non-PDF documents are extracted as text. |
+| MIDI | MID and MIDI Standard MIDI Files with format 0, 1, or 2 and PPQN timing. Context retains tracks, channels, note timing and velocity, tempo, meter, instruments, and control events. |
+| Images | PNG, JPEG, and WebP are retained directly. Additional browser-decodable images, including GIF, BMP, SVG, AVIF, TIFF, and HEIC/HEIF, are converted to a static PNG. |
+| Audio | WAV and MP3 are retained directly. Additional browser-decodable formats, including FLAC, OGG/Opus, M4A/AAC, AIFF, and WebM/MP4 audio, are converted to 32-kHz PCM WAV. Mono/stereo are retained; more channels are mixed to mono with a notice. |
+
+Browser conversion depends on the codecs available in the Ableton window. A
+conversion failure names the file and leaves other files in the batch available
+to add. Converted attachments use the new PNG/WAV filename and bytes; the source
+file is not changed. Animated images contribute one static frame. MIDI uses at
+most 8 MiB; its context is symbolic music data and does not require an audio
+model. SMPTE-timed MIDI, RMID, and MIDI 2 UMP are not supported.
+Image, native PDF, and audio use depends on
 the selected model and connection; attaching a file does not guarantee it can be
 sent to every model. Model loading consumes provider-returned input modalities
 and MIME support for both Direct API and subscription Profiles. Raw provider
@@ -458,10 +474,19 @@ evidence remains visible, while a usable input is marked Supported only when the
 provider covers Live Smith's concrete formats and the selected protocol can
 encode them; missing or coarse-only evidence stays unverified. Provider-reported
 video capability is shown, but Live Smith does not yet accept video attachments.
-Use paste or drag-and-drop rather than a system file picker.
+Use paste or drag-and-drop rather than a system file picker. Each Session may
+hold up to four pending files and 30 MiB total. Images are limited to 5 MiB each;
+their subtotal is 16 MiB. Documents are limited to 20 MiB total; audio to two
+files, 20 MiB each, and 120 seconds each.
+Browser-conversion source files are limited to 20 MiB. Locally extracted context
+is bounded and labels truncation.
+Legacy XLS uses stored/cached values; date cells may appear as Excel serial
+numbers. Office formatting, embedded images, and charts are not rendered by
+local text extraction. XLSB and video frames are not accepted as model context;
+WebM/MP4 import extracts only their decodable audio.
 The Extensions SDK does not expose selected Audio Clip, Sample, or Simpler source
 bytes to extensions, so export or locate the source file and drop it into the
-composer when you need the original file as an attachment.
+chat when you need the original file as an attachment.
 During that send, a compatible audio attachment can also be used as the source
 for an Arrangement, Session, or Take Lane Audio Clip, a Simpler sample, or a
 Drum Rack pad. When a confirmed plan first uses it, Live Smith copies the file

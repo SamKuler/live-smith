@@ -3,6 +3,7 @@ import chatDialog from "./templates/chat-dialog.html";
 import hostAdapterScript from "./client/host-adapter.script.html";
 import profileEditorScript from "./client/profile-editor.script.html";
 import attachmentsScript from "./client/attachments.script.html";
+import attachmentMediaScript from "./client/attachment-media.script.html";
 import composerInputScript from "./client/composer-input.script.html";
 import bridgeClientScript from "./client/bridge-client.script.html";
 import sessionTimelineScript from "./client/session-timeline.script.html";
@@ -44,6 +45,7 @@ export function chatHtml(
     actionPreview: actionPreviewScript,
     i18n: i18nScript,
     attachments: attachmentsScript,
+    attachmentMedia: attachmentMediaScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,
     composerInput: composerInputScript,

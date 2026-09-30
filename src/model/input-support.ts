@@ -52,21 +52,31 @@ export const googleAntigravityInputSupport: InputTransportSupport = {
   pdf: true,
 };
 
+export const inputTransportSupportTable = {
+  direct: {
+    openai: {
+      responses: openAIResponsesInputSupport,
+      "chat-completions": openAIChatInputSupport,
+    },
+    anthropic: { messages: anthropicMessagesInputSupport },
+  },
+  subscription: {
+    openai: openAIResponsesInputSupport,
+    anthropic: anthropicMessagesInputSupport,
+    google: googleAntigravityInputSupport,
+  },
+} as const;
+
 export function inputTransportSupport(
   connection: ModelConnection,
 ): InputTransportSupport {
   if (connection.kind === "oauth-subscription") {
-    if (connection.provider === "google") return googleAntigravityInputSupport;
-    return connection.provider === "openai"
-      ? openAIResponsesInputSupport
-      : anthropicMessagesInputSupport;
+    return inputTransportSupportTable.subscription[connection.provider];
   }
   if (connection.apiFamily === "anthropic") {
-    return anthropicMessagesInputSupport;
+    return inputTransportSupportTable.direct.anthropic.messages;
   }
-  return connection.apiMode === "chat-completions"
-    ? openAIChatInputSupport
-    : openAIResponsesInputSupport;
+  return inputTransportSupportTable.direct.openai[connection.apiMode];
 }
 
 export function isModelInputMediaType(

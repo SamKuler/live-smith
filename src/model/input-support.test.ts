@@ -7,6 +7,20 @@ import {
   mimeBackedInputCapabilities,
   providerSupportsMimeType,
 } from "./input-support.js";
+import type { ModelConnection } from "./profile.js";
+
+test("native input support preserves each Direct API and subscription protocol boundary", () => {
+  const direct = { kind: "direct-api" as const, baseUrl: "https://example.test", apiKey: "fixture-key" };
+  const cases: Array<[ModelConnection, { image: boolean; audio: boolean; pdf: boolean }]> = [
+    [{ ...direct, apiFamily: "openai", apiMode: "responses" }, { image: true, audio: false, pdf: true }],
+    [{ ...direct, apiFamily: "openai", apiMode: "chat-completions" }, { image: true, audio: true, pdf: false }],
+    [{ ...direct, apiFamily: "anthropic", apiMode: "messages" }, { image: true, audio: false, pdf: true }],
+    [{ kind: "oauth-subscription", provider: "openai" }, { image: true, audio: false, pdf: true }],
+    [{ kind: "oauth-subscription", provider: "anthropic" }, { image: true, audio: false, pdf: true }],
+    [{ kind: "oauth-subscription", provider: "google" }, { image: true, audio: true, pdf: true }],
+  ];
+  for (const [connection, support] of cases) assert.deepEqual(inputTransportSupport(connection), support);
+});
 
 test("model input media rules share exact, wildcard, and transport boundaries", () => {
   assert.equal(isModelInputMediaType("image", "image/webp"), true);

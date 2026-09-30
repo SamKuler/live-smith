@@ -3,7 +3,15 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 
+import { AttachmentProcessingError } from "../attachments/contracts.js";
 import { createHostAbortController } from "../runtime/host.js";
+import {
+  endTrack,
+  event,
+  midiBytes,
+  noteTrack,
+  sequentialNotes,
+} from "../attachments/midi-test-helpers.js";
 import { createSession } from "./sessions.js";
 import {
   deleteSessionMidiArtifacts,
@@ -80,6 +88,66 @@ test("MIDI parser rejects malformed chunks, unsupported timing, unfinished notes
     new Uint8Array(valid.map((byte, index) => index === 28 ? 0x90 : byte)),
   ];
   for (const bytes of cases) assert.throws(() => parseMidiArtifact(bytes), MidiArtifactStorageError);
+});
+
+test("shared MIDI parsing preserves the exact multitrack Live projection and equal-key note-off ordering", () => {
+  const bytes = midiBytes({ tracks: [
+    endTrack(960),
+    [
+      ...event(0, 0x90, 60, 80), ...event(0, 0x91, 60, 80),
+      ...event(120, 0x81, 60, 0), ...event(360, 0x80, 60, 0),
+      ...endTrack(),
+    ],
+    noteTrack({ pitch: 48, startTicks: 240, durationTicks: 240 }),
+  ] });
+  assert.deepEqual(parseMidiArtifact(bytes), {
+    format: 1, trackCount: 3, ticksPerQuarterNote: 480, durationBeats: 2,
+    notes: [
+      { pitch: 60, startTime: 0, duration: 0.25, velocity: 80 },
+      { pitch: 60, startTime: 0, duration: 1, velocity: 80 },
+      { pitch: 48, startTime: 0.5, duration: 0.5, velocity: 96 },
+    ],
+  });
+});
+
+test("artifact parsing keeps strict format/header, track/note/event/duration bounds and error messages", () => {
+  assert.equal(parseMidiArtifact(midiBytes({ tracks: [sequentialNotes(4096)] })).notes.length, 4096);
+  assert.equal(parseMidiArtifact(midiBytes({ tracks: [noteTrack(), ...Array.from({ length: 31 }, () => endTrack())] })).trackCount, 32);
+  assert.equal(parseMidiArtifact(midiFile({ durationTicks: 480 * 100000 })).durationBeats, 100000);
+  const eventLimitTrack = Array.from({ length: 199997 }, () => [0, 0xc0, 0]).flat();
+  eventLimitTrack.push(...noteTrack());
+  assert.equal(parseMidiArtifact(midiBytes({ tracks: [eventLimitTrack] })).notes.length, 1);
+  const cases = [
+    midiBytes({ format: 2, tracks: [noteTrack()] }),
+    midiBytes({ headerExtra: [0], tracks: [noteTrack()] }),
+    midiBytes({ tracks: [noteTrack(), ...Array.from({ length: 32 }, () => endTrack())] }),
+    midiBytes({ tracks: [sequentialNotes(4097)] }),
+    midiFile({ durationTicks: 480 * 100001 }),
+    midiBytes({ tracks: [[...eventLimitTrack.slice(0, -4), ...event(0, 0xc0, 0), ...endTrack()]] }),
+    midiBytes({ tracks: [endTrack()] }),
+    midiBytes({ tracks: [[...event(0, 0x90, 60, 90), ...endTrack(480)]] }),
+    midiBytes({ tracks: [noteTrack({ durationTicks: 0 })] }),
+  ];
+  for (const bytes of cases) {
+    assert.throws(() => parseMidiArtifact(bytes), {
+      name: "MidiArtifactStorageError",
+      message: "MIDI artifact is not a supported bounded Standard MIDI File.",
+    });
+  }
+  for (const bytes of [new Uint8Array(0), new Uint8Array(8 * 1024 * 1024 + 1)]) {
+    assert.throws(() => parseMidiArtifact(bytes), {
+      name: "MidiArtifactStorageError",
+      message: "MIDI artifacts must be valid Standard MIDI Files of at most 8 MiB.",
+    });
+  }
+});
+
+test("artifact parsing preserves cancellation as the original reason", () => {
+  for (const reason of [new Error("Cancelled MIDI read"), new AttachmentProcessingError("invalid_midi", "Cancelled")]) {
+    const controller = createHostAbortController();
+    controller.abort(reason);
+    assert.throws(() => parseMidiArtifact(midiFile(), controller.signal), (error) => error === reason);
+  }
 });
 
 test("MIDI artifacts persist immutable ownership and parse again on every read", async (t) => {

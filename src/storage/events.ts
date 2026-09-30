@@ -3,7 +3,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
+  attachmentMediaTypeMatchesKind as attachmentKindMatchesMediaType,
   attachmentQuotaIsWithinLimits,
+  isAttachmentMediaType,
   isSafeAttachmentFileName,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
@@ -14,7 +16,6 @@ import {
 } from "../attachments/contracts.js";
 import { isAudioAttachmentInspection } from "../attachments/audio.js";
 import type {
-  AttachmentMediaType,
   PersistedSessionAttachmentRef,
   SessionAttachmentRef,
 } from "./attachments.js";
@@ -556,28 +557,6 @@ function cloneSessionEvent(event: SessionEvent): SessionEvent {
           },
         }),
   };
-}
-
-function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
-  return value === "image/png" ||
-    value === "image/jpeg" ||
-    value === "image/webp" ||
-    value === "application/pdf" ||
-    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    value === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    value === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
-    value === "audio/wav" ||
-    value === "audio/mpeg";
-}
-
-function attachmentKindMatchesMediaType(
-  kind: "image" | "document" | "audio",
-  mediaType: AttachmentMediaType,
-): boolean {
-  if (kind === "image") return mediaType.startsWith("image/");
-  if (kind === "audio") return mediaType.startsWith("audio/");
-  return mediaType === "application/pdf" ||
-    mediaType.startsWith("application/vnd.openxmlformats-officedocument.");
 }
 
 function isSessionRecoveryLedger(value: unknown): value is SessionRecoveryLedger {

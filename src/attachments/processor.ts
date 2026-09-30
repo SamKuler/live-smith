@@ -7,9 +7,13 @@ import {
   type DocumentAttachmentMediaType,
 } from "./contracts.js";
 import { extractDocxText } from "./docx.js";
+import type { ExtractedDocumentText } from "./document-text.js";
+import { extractMidiText } from "./midi.js";
+import { classifyRichDocumentAttachment, extractRichDocumentText } from "./rich-document.js";
 import { type OoxmlPackage, openOoxmlPackage } from "./ooxml.js";
 import { extractPptxText } from "./pptx.js";
 import { extractXlsxText } from "./xlsx.js";
+import { inspectTextAttachment } from "./text.js";
 
 export {
   AttachmentProcessingError,
@@ -76,6 +80,13 @@ export async function processAttachment(input: {
       bytes: ownedInput.bytes,
     };
   }
+  if (inspected.extractedText !== undefined) {
+    throwIfAborted(ownedInput.signal);
+    return {
+      type: "text", fileName: ownedInput.fileName, mediaType: inspected.mediaType,
+      ...inspected.extractedText,
+    };
+  }
   const officePackage = inspected.package;
   if (officePackage === undefined) throw invalidDocument();
   const extracted = await extractOfficeText(officePackage, ownedInput.signal);
@@ -116,8 +127,28 @@ async function inspectDocumentAttachment(input: {
 }): Promise<{
   mediaType: DocumentAttachmentMediaType;
   package?: OoxmlPackage;
+  extractedText?: ExtractedDocumentText;
 }> {
   throwIfAborted(input.signal);
+  if (input.bytes.byteLength >= 4 && ascii(input.bytes, 0, 4) === "MThd") {
+    return {
+      mediaType: "audio/midi",
+      extractedText: await extractMidiText({ bytes: input.bytes, ...(input.signal ? { signal: input.signal } : {}) }),
+    };
+  }
+  const richMediaType = await classifyRichDocumentAttachment(input);
+  if (richMediaType !== undefined) {
+    return {
+      mediaType: richMediaType,
+      extractedText: await extractRichDocumentText({ ...input, mediaType: richMediaType }),
+    };
+  }
+  if (!isPdfHeader(input.bytes) && !isZipHeader(input.bytes)) {
+    return {
+      mediaType: "text/plain",
+      extractedText: await inspectTextAttachment(input.bytes, input.signal),
+    };
+  }
   const container = sniffAttachmentContainer(input.bytes, input.fileName);
   if (container === "pdf") {
     if (await containsPdfEncryptToken(input.bytes, input.signal)) {

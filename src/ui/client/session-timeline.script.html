@@ -275,31 +275,16 @@
       }
 
       function attachmentTypeLabel(attachment) {
-        const mediaType = attachment.mediaType;
-        if (mediaType === "image/png") return "PNG";
-        if (mediaType === "image/jpeg") return "JPEG";
-        if (mediaType === "image/webp") return "WebP";
-        if (mediaType === "application/pdf") return t("PDF · Native PDF");
-        if (mediaType.includes("wordprocessingml")) {
-          return t("DOCX · Extracted document");
+        const format = (__ATTACHMENT_FORMATS__).find((candidate) =>
+          candidate.kind === attachment.kind && candidate.mediaType === attachment.mediaType);
+        if (!format) return t("File");
+        if (format.mediaType === "application/pdf") return t("PDF · Native PDF");
+        const label = t(format.label);
+        if (format.kind === "document") {
+          return t("{format} · Extracted document", { format: label });
         }
-        if (mediaType.includes("spreadsheetml")) {
-          return t("XLSX · Extracted document");
-        }
-        if (mediaType.includes("presentationml")) {
-          return t("PPTX · Extracted document");
-        }
-        if (mediaType === "audio/wav") {
-          return ["WAV", formatAudioDuration(attachment.durationSeconds)]
-            .filter(Boolean)
-            .join(" · ");
-        }
-        if (mediaType === "audio/mpeg") {
-          return ["MP3", formatAudioDuration(attachment.durationSeconds)]
-            .filter(Boolean)
-            .join(" · ");
-        }
-        return t("File");
+        return [label, format.kind === "audio" ? formatAudioDuration(attachment.durationSeconds) : ""]
+          .filter(Boolean).join(" · ");
       }
 
       function appendTimelineAttachments(content, attachments) {

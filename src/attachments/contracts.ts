@@ -2,9 +2,13 @@ import { Buffer } from "node:buffer";
 import { types } from "node:util";
 
 export const MAX_DOCUMENT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_ATTACHMENT_IMPORT_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_IMAGE_ATTACHMENT_DIMENSION = 16_384;
+export const MAX_IMAGE_ATTACHMENT_PIXELS = 100_000_000;
 export const MAX_AUDIO_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_AUDIO_DURATION_SECONDS = 120;
+export const MAX_MIDI_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export const MAX_OOXML_XML_PART_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_FILE_NAME_BYTES = 160;
 export const MAX_PENDING_ATTACHMENT_COUNT = 4;
@@ -28,11 +32,54 @@ export interface AttachmentQuotaItem {
   byteLength: number;
 }
 
-export type DocumentAttachmentMediaType =
-  | "application/pdf"
-  | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  | "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+export type DocumentAttachmentMediaType = Extract<
+  (typeof ATTACHMENT_FORMATS)[number], { kind: "document" }
+>["mediaType"];
+
+export type AttachmentMediaType = (typeof ATTACHMENT_FORMATS)[number]["mediaType"];
+
+export const ATTACHMENT_FORMATS = [
+  { kind: "image", mediaType: "image/png", extensions: ["png"], label: "PNG" },
+  { kind: "image", mediaType: "image/jpeg", extensions: ["jpg", "jpeg"], label: "JPEG" },
+  { kind: "image", mediaType: "image/webp", extensions: ["webp"], label: "WebP" },
+  { kind: "document", mediaType: "application/pdf", extensions: ["pdf"], label: "PDF" },
+  { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", extensions: ["docx"], label: "DOCX" },
+  { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", extensions: ["xlsx"], label: "XLSX" },
+  { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", extensions: ["pptx"], label: "PPTX" },
+  { kind: "document", mediaType: "application/msword", extensions: ["doc", "dot"], label: "DOC" },
+  { kind: "document", mediaType: "application/vnd.ms-excel", extensions: ["xls", "xlt"], label: "XLS" },
+  { kind: "document", mediaType: "application/vnd.ms-powerpoint", extensions: ["ppt", "pps", "pot"], label: "PPT" },
+  { kind: "document", mediaType: "text/plain", extensions: ["txt", "text", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "htm", "log"], label: "Text" },
+  { kind: "document", mediaType: "audio/midi", extensions: ["mid", "midi"], label: "MIDI" },
+  { kind: "document", mediaType: "application/rtf", extensions: ["rtf"], label: "RTF" },
+  { kind: "document", mediaType: "application/vnd.oasis.opendocument.text", extensions: ["odt"], label: "ODT" },
+  { kind: "document", mediaType: "application/vnd.oasis.opendocument.spreadsheet", extensions: ["ods"], label: "ODS" },
+  { kind: "document", mediaType: "application/vnd.oasis.opendocument.presentation", extensions: ["odp"], label: "ODP" },
+  { kind: "audio", mediaType: "audio/wav", extensions: ["wav", "wave"], label: "WAV" },
+  { kind: "audio", mediaType: "audio/mpeg", extensions: ["mp3", "mpga"], label: "MP3" },
+] as const satisfies readonly {
+  kind: AttachmentQuotaKind;
+  mediaType: string;
+  extensions: readonly string[];
+  label: string;
+}[];
+
+export const ATTACHMENT_IMPORT_FORMATS = [
+  { kind: "image", extensions: ["gif", "bmp", "dib", "svg", "avif", "tif", "tiff", "heic", "heif", "ico", "jp2", "jxl"], mediaTypes: ["image/gif", "image/bmp", "image/x-ms-bmp", "image/svg+xml", "image/avif", "image/tiff", "image/heic", "image/heif", "image/x-icon", "image/jp2", "image/jxl"], conversion: "image" },
+  { kind: "audio", extensions: ["flac", "ogg", "oga", "opus", "m4a", "m4b", "aac", "aif", "aiff", "aifc", "webm", "weba", "mp4"], mediaTypes: ["audio/flac", "audio/x-flac", "audio/ogg", "application/ogg", "audio/opus", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/aiff", "audio/x-aiff", "audio/webm", "video/webm", "video/mp4"], conversion: "audio" },
+] as const;
+
+export function isDocumentAttachmentMediaType(value: unknown): value is DocumentAttachmentMediaType {
+  return ATTACHMENT_FORMATS.some((format) => format.kind === "document" && format.mediaType === value);
+}
+
+export function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
+  return ATTACHMENT_FORMATS.some((format) => format.mediaType === value);
+}
+
+export function attachmentMediaTypeMatchesKind(kind: unknown, mediaType: unknown): boolean {
+  return ATTACHMENT_FORMATS.some((format) => format.kind === kind && format.mediaType === mediaType);
+}
 
 export type AttachmentProcessingErrorCode =
   | "unsupported_type"
@@ -40,6 +87,7 @@ export type AttachmentProcessingErrorCode =
   | "macro_enabled"
   | "archive_limit"
   | "invalid_document"
+  | "invalid_midi"
   | "invalid_audio"
   | "audio_duration_limit"
   | "profile_incompatible";

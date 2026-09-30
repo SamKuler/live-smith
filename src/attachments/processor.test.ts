@@ -135,10 +135,10 @@ test("document processor returns native PDF bytes only for a compatible API mode
   );
 });
 
-test("document processor rejects invalid bytes regardless of claimed media type", async () => {
+test("document processor rejects binary bytes regardless of claimed media type", async () => {
   await assert.rejects(
     processAttachment({
-      bytes: Buffer.from("MZ executable", "latin1"),
+      bytes: new Uint8Array([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0]),
       fileName: "renamed.pdf",
       claimedMediaType: "application/pdf",
       nativePdfAllowed: true,
