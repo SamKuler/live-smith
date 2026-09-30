@@ -1377,6 +1377,9 @@ polls or advances only acknowledged safe stages; unresolved intents and legacy
 mutation-stage markers cannot replay a create, transfer, finish or initialize
 request. Signed upload locations and form credentials are never persisted or
 projected into Session state, so a receipt at `created` cannot resume transfer.
+The Session audio Resume command uses the shared global-settings authorization
+fence before advancing a confirmed upload stage, with the original connection
+and account rechecked before each remote mutation.
 
 Task-based generation acknowledges an immutable remote output ID/role mapping
 before collection. Downloads may refresh their URLs, but cannot change the

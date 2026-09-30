@@ -3154,7 +3154,11 @@ export async function runAgentFlow(
             },
               commandInput.jobId, commandInput.outputKey);
           } else {
-            job = await resumeAudioJob(processing, commandInput.jobId);
+            job = await resumeAudioJob({ ...processing,
+              withGenerationAuthorization: (authorizationSignal, operation) => globalSettingsMutationFence.run(
+                sessionMutationFenceKey(storageDirectory, "global-settings"), authorizationSignal, operation,
+              ),
+            }, commandInput.jobId);
           }
           status = job.message;
         } catch (error) {
