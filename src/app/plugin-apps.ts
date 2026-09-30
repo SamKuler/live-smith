@@ -1,16 +1,18 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
 import { appResourceDocument } from "../plugins/mcp/apps.js";
 import { configRecord } from "../plugins/user-config.js";
 import { createHostAbortController, throwIfAborted } from "../runtime/host.js";
 import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
 import { inspectMidiArtifacts } from "../storage/midi-artifacts.js";
-import type { PluginToolResult } from "../plugins/contracts.js";
+import { MAX_PLUGIN_MCP_MESSAGE_BYTES, type PluginToolResult } from "../plugins/contracts.js";
 import { appToolResultWithArtifacts, createRequestPluginTools, type PluginExecutionAuthorization, type RequestPluginTools } from "./request-plugin-tools.js";
 import { ChatBridgeConflictError, ChatBridgeRequestValidationError } from "./chat-bridge-http.js";
 
+// A page cursor may occupy its whole MCP frame; allow the instance ID and JSON envelope as well.
+export const MAX_PLUGIN_APP_PAGE_REQUEST_BYTES = MAX_PLUGIN_MCP_MESSAGE_BYTES + 256;
+
 export type PluginAppRequest =
-  | { operation: "open"; sessionId: string; toolName: string; signature: string }
+  | { operation: "open"; id: string; sessionId: string; toolName: string; signature: string }
   | { operation: "call"; id: string; name: string; arguments: Record<string, unknown> }
   | { operation: "resource"; id: string; uri: string }
   | { operation: "resources"; id: string; cursor?: string }
@@ -20,20 +22,20 @@ export type PluginAppRequest =
 export function parsePluginAppRequest(operation: string, value: unknown): PluginAppRequest {
   const fail = () => { throw new ChatBridgeRequestValidationError("Plugin app request is invalid."); };
   if (!configRecord(value)) return fail();
-  const keys = operation === "open" ? ["sessionId", "toolName", "signature"] : operation === "call"
+  const keys = operation === "open" ? ["id", "sessionId", "toolName", "signature"] : operation === "call"
     ? ["id", "name", "arguments"] : operation === "resource" ? ["id", "uri"]
     : operation === "resources" || operation === "resource-templates" ? ["id", "cursor"] : operation === "close" ? ["id"] : undefined;
   if (!keys || Object.keys(value).some((key) => !keys.includes(key))) return fail();
+  if (typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.id)) return fail();
   if (operation === "open") {
     if (typeof value.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.sessionId) ||
         typeof value.toolName !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.toolName) ||
         typeof value.signature !== "string" || !/^[a-f0-9]{64}$/u.test(value.signature)) return fail();
-    return { operation, sessionId: value.sessionId, toolName: value.toolName, signature: value.signature };
+    return { operation, id: value.id, sessionId: value.sessionId, toolName: value.toolName, signature: value.signature };
   }
-  if (typeof value.id !== "string" || !/^[a-f0-9-]{36}$/u.test(value.id)) return fail();
   if (operation === "close") return { operation, id: value.id };
   if (operation === "resources" || operation === "resource-templates") {
-    if (value.cursor !== undefined && (typeof value.cursor !== "string" || value.cursor.length > 2048 || value.cursor.includes("\0"))) return fail();
+    if (value.cursor !== undefined && typeof value.cursor !== "string") return fail();
     return { operation, id: value.id, ...(typeof value.cursor === "string" ? { cursor: value.cursor } : {}) };
   }
   if (operation === "resource") {
@@ -49,7 +51,8 @@ export function parsePluginAppRequest(operation: string, value: unknown): Plugin
 interface AppSession {
   sessionId: string;
   toolName: string;
-  tools: RequestPluginTools;
+  tools?: RequestPluginTools;
+  opening?: Promise<unknown>;
   controller: AbortController;
 }
 
@@ -64,51 +67,60 @@ export function createPluginAppSessions(input: {
 }) {
   const sessions = new Map<string, AppSession>();
   let closed = false;
-  let opening = 0;
   const close = async (id: string) => {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
     session.controller.abort(new Error("Plugin app closed."));
-    await session.tools.close();
+    await session.opening?.catch(() => undefined);
+    await session.tools?.close();
+  };
+  const open = (request: Extract<PluginAppRequest, { operation: "open" }>, signal: AbortSignal) => {
+    if (sessions.has(request.id)) throw new ChatBridgeConflictError("Plugin app is already open.");
+    if (sessions.size >= 4) throw new ChatBridgeConflictError("Close a Plugin app before opening another.");
+    const controller = createHostAbortController();
+    const app: AppSession = { sessionId: request.sessionId, toolName: request.toolName, controller };
+    sessions.set(request.id, app);
+    const cancel = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", cancel, { once: true });
+    app.opening = (async () => {
+      let tools: RequestPluginTools | undefined;
+      try {
+        await input.validateSession(request.sessionId, controller.signal);
+        throwIfAborted(controller.signal);
+        tools = await createRequestPluginTools({ storageDirectory: input.storageDirectory, sessionId: request.sessionId,
+          signal: controller.signal, fetchImpl: input.fetchImpl, withAuthorization: input.withAuthorization });
+        const owner = tools.catalogTools().find((tool) => tool.app?.toolName === request.toolName);
+        if (!owner?.app || owner.app.signature !== request.signature) throw new ChatBridgeConflictError("Plugin app changed. Reload tools before opening it.");
+        const resource = appResourceDocument(await tools.readAppResource(request.toolName, owner.app.resourceUri, controller.signal), owner.app.resourceUri);
+        const history = await recentAppToolResult(input.storageDirectory, request.sessionId, request.toolName);
+        throwIfAborted(controller.signal);
+        await input.validateSession(request.sessionId, controller.signal);
+        throwIfAborted(controller.signal);
+        if (closed) throw new ChatBridgeConflictError("Plugin apps are closed.");
+        app.tools = tools;
+        return { id: request.id, toolName: owner.name, resourceUri: owner.app.resourceUri, ...resource, ...history };
+      } catch (error) {
+        if (sessions.get(request.id) === app) sessions.delete(request.id);
+        controller.abort();
+        await tools?.close();
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        delete app.opening;
+      }
+    })();
+    return app.opening;
   };
   return {
     async request(request: PluginAppRequest, signal: AbortSignal): Promise<unknown> {
       throwIfAborted(signal);
       if (closed) throw new ChatBridgeConflictError("Plugin apps are closed.");
       if (request.operation === "close") { await close(request.id); return {}; }
-      if (request.operation === "open") {
-        if (sessions.size + opening >= 4) throw new ChatBridgeConflictError("Close a Plugin app before opening another.");
-        opening += 1;
-        const controller = createHostAbortController();
-        const cancel = () => controller.abort(signal.reason);
-        signal.addEventListener("abort", cancel, { once: true });
-        let tools: RequestPluginTools | undefined;
-        try {
-          await input.validateSession(request.sessionId, controller.signal);
-          tools = await createRequestPluginTools({ storageDirectory: input.storageDirectory, sessionId: request.sessionId,
-            signal: controller.signal, fetchImpl: input.fetchImpl, withAuthorization: input.withAuthorization });
-          const owner = tools.catalogTools().find((tool) => tool.app?.toolName === request.toolName);
-          if (!owner?.app || owner.app.signature !== request.signature) throw new ChatBridgeConflictError("Plugin app changed. Reload tools before opening it.");
-          const resource = appResourceDocument(await tools.readAppResource(request.toolName, owner.app.resourceUri, controller.signal), owner.app.resourceUri);
-          const history = await recentAppToolResult(input.storageDirectory, request.sessionId, request.toolName);
-          throwIfAborted(controller.signal);
-          await input.validateSession(request.sessionId, controller.signal);
-          if (closed) throw new ChatBridgeConflictError("Plugin apps are closed.");
-          const id = randomUUID();
-          sessions.set(id, { sessionId: request.sessionId, toolName: request.toolName, tools, controller });
-          return { id, toolName: owner.name, resourceUri: owner.app.resourceUri, ...resource, ...history };
-        } catch (error) {
-          controller.abort();
-          await tools?.close();
-          throw error;
-        } finally {
-          signal.removeEventListener("abort", cancel);
-          opening -= 1;
-        }
-      }
+      if (request.operation === "open") return open(request, signal);
       const app = sessions.get(request.id);
-      if (!app) throw new ChatBridgeConflictError("Plugin app is no longer open.");
+      if (!app?.tools || app.opening) throw new ChatBridgeConflictError("Plugin app is no longer open.");
+      const tools = app.tools;
       await input.validateSession(app.sessionId, signal);
       const controller = createHostAbortController();
       const abort = () => controller.abort(new Error("Plugin app operation stopped."));
@@ -116,19 +128,19 @@ export function createPluginAppSessions(input: {
       app.controller.signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted || app.controller.signal.aborted) abort();
       try {
-        if (request.operation === "resource") return await app.tools.readAppResource(app.toolName, request.uri, controller.signal);
+        if (request.operation === "resource") return await tools.readAppResource(app.toolName, request.uri, controller.signal);
         if (request.operation === "resources" || request.operation === "resource-templates") {
-          return await app.tools.listAppResources(app.toolName, request.operation === "resource-templates", request.cursor, controller.signal);
+          return await tools.listAppResources(app.toolName, request.operation === "resource-templates", request.cursor, controller.signal);
         }
         return await input.mutateSession(app.sessionId, controller.signal, async () => {
           await input.validateSession(app.sessionId, controller.signal);
-          const definition = app.tools.appTool(app.toolName, request.name);
+          const definition = tools.appTool(app.toolName, request.name);
           throwIfAborted(controller.signal);
           await appendSessionEvent(input.storageDirectory, app.sessionId, {
             kind: "tool_call", name: definition.tool.function.name, content: JSON.stringify(request.arguments),
           });
           try {
-            const result = await app.tools.callAppTool(app.toolName, request.name, request.arguments, controller.signal);
+            const result = await tools.callAppTool(app.toolName, request.name, request.arguments, controller.signal);
             if (result.history.outcomeUnknown) throw new Error("Plugin App tool outcome is unconfirmed.");
             await appendSessionEvent(input.storageDirectory, app.sessionId, {
               kind: "tool_result", name: definition.tool.function.name, content: result.history.content,

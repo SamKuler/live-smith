@@ -423,15 +423,16 @@ export function assertJsonContentType(request: IncomingMessage): void {
 }
 export async function readJsonBody<T>(
   request: AsyncIterable<string | Uint8Array>,
+  maximumBytes = maxRequestBodyBytes,
 ): Promise<T> {
   const chunks: Buffer[] = [];
   let byteLength = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     byteLength += buffer.byteLength;
-    if (byteLength > maxRequestBodyBytes) {
+    if (byteLength > maximumBytes) {
       throw new ChatBridgeRequestValidationError(
-        `Request body exceeds ${maxRequestBodyBytes} bytes.`,
+        `Request body exceeds ${maximumBytes} bytes.`,
       );
     }
     chunks.push(buffer);

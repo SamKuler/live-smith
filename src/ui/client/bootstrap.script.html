@@ -327,6 +327,7 @@
         const pluginApps = factories.createPluginApps({
           resultActions: pluginResults,
           getState,
+          createAppId: bridgeClient.createAppId,
           openApp: (input, signal) => bridgeClient.requestPluginApp("open", input, signal),
           callTool: (input, signal) => bridgeClient.requestPluginApp("call", input, signal),
           readResource: (input, signal) => bridgeClient.requestPluginApp("resource", input, signal),

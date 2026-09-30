@@ -5,6 +5,7 @@ import type { PluginAppMetadata } from "./mcp/apps.js";
 export type PluginId = string;
 export type PluginSourceFormat = "agent-plugins-1.0" | "codex" | "claude";
 export const MAX_PLUGIN_ID_LENGTH = 64;
+export const MAX_PLUGIN_MCP_MESSAGE_BYTES = 4 * 1024 * 1024;
 const pluginIdPattern = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/u;
 
 export function isSafePluginId(value: unknown): value is PluginId {

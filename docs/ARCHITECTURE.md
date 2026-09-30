@@ -819,15 +819,26 @@ from host-validated artifacts. Server values cannot forge these references;
 reopening an App resolves saved references against the current Session store.
 
 `app/plugin-apps.ts` retains request resources for each open App. Authenticated
-bridge endpoints open, call, read/list resources, and close an instance. Opening
-does not execute the entry tool. Tool calls revalidate the active Session after
-acquiring its mutation fence, append history, and use the existing MCP execution
+bridge endpoints open, call, read/list resources, and close an instance. The
+browser allocates the instance ID before sending its open request. One bounded
+map owns both pending opens and ready instances; close can cancel and await
+creation even before the response body delivers its result. Duplicate live IDs
+cannot replace an instance. Opening does not execute the entry tool. Tool calls
+revalidate the active Session after acquiring its mutation fence, append history,
+and use the existing MCP execution
 route and artifact grants. Completed and unconfirmed outcomes invalidate the
 current dialog as well as peer dialogs. Instance close aborts pending requests
 and releases connections; bridge close also owns pending opens and sandbox
 startup. Read-only resources are bounded and restricted to the same admitted
 server. Resource and resource-template RPCs preserve server pages and opaque
-continuation cursors.
+continuation cursors. Their HTTP request budget derives from the same 4 MiB MCP
+message bound with space for the instance ID and JSON envelope; other JSON
+requests keep their ordinary 1 MiB bound. Cursors remain opaque strings.
+
+MCP connection cancellation closes the transport during negotiation, including
+the SDK's disposable stdio probe process, and awaits its cleanup. The opening
+signal detaches after success; a retained connection remains owned by its
+request resources until explicit close.
 
 `ui/client/plugin-results.ts` supplies shared composer and MIDI import actions
 for App and native parameter results. Result summaries use bounded plain text,
@@ -845,9 +856,10 @@ An existing active recovery blocks another direct import until resolved.
 handlers so every RPC passes through the host. `app/plugin-app-sandbox.ts` serves
 a fixed proxy from a separate loopback origin; its inner App iframe has an opaque
 origin. Closing a loading App, changing its owner, or opening a replacement
-cancels the pending HTTP open request and its backend discovery. Both directions
-check source windows and origins. The proxy receives the HTML through the
-standard sandbox handshake and enforces an HTTP CSP. Main bridge
+cancels the pending HTTP open request and its backend discovery. The browser
+also closes its known instance ID independently of response delivery. Both
+directions check source windows and origins. The proxy receives the HTML through
+the standard sandbox handshake and enforces an HTTP CSP. Main bridge
 tokens, credentials, and the host DOM remain outside the App. Capability negotiation
 advertises only implemented tool/resource access and sandbox configuration.
 The detailed author contract and current domain restrictions belong to

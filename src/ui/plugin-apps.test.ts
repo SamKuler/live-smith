@@ -35,6 +35,7 @@ function harness(overrides: {
   const reads: unknown[] = [];
   const closed: string[] = [];
   const shownResults: unknown[] = [];
+  let appSequence = 0;
   const factory = (dom.window as unknown as { LiveSmithFactories: { createPluginApps(deps: unknown): Controller } }).LiveSmithFactories.createPluginApps;
   const app = factory({
     resultActions: { create: (name: string, result: unknown) => {
@@ -42,7 +43,12 @@ function harness(overrides: {
       return dom.window.document.createElement("section");
     } },
     getState: () => state,
-    openApp: async (input: unknown, signal: AbortSignal) => { opened.push(input); return overrides.openApp ? overrides.openApp(input, signal) : resource; },
+    createAppId: () => "instance-" + ++appSequence,
+    openApp: async (input: { id: string }, signal: AbortSignal) => {
+      opened.push(input);
+      const result = overrides.openApp ? await overrides.openApp(input, signal) : resource;
+      return { ...result, id: input.id };
+    },
     callTool: async (input: { id: string; name: string; arguments?: Record<string, unknown> }, signal?: AbortSignal) => {
       calls.push(input);
       return overrides.callTool ? overrides.callTool(input, signal) : { content: [{ type: "text", text: "tool result" }] };
@@ -116,7 +122,7 @@ test("browser container performs the SDK handshake with exact origin and sends i
   h.dispatch({ jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready" }, SANDBOX, {});
   assert.equal(h.messages.length, 0);
   await h.initialize();
-  assert.deepEqual(JSON.parse(JSON.stringify(h.opened)), [{ sessionId: "session-1", toolName: "server_tool", signature: "signature" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.opened)), [{ id: resource.id, sessionId: "session-1", toolName: "server_tool", signature: "signature" }]);
   const init = h.messages.find(({ data }) => data.id === "initialize")!.data.result as Record<string, unknown>;
   assert.equal(init.protocolVersion, "2026-01-26");
   assert.deepEqual(JSON.parse(JSON.stringify(init.hostCapabilities)), { serverTools: {}, serverResources: {}, sandbox: {} });
@@ -289,5 +295,5 @@ for (const reason of ["close", "owner-change", "superseded"] as const) test(`a p
     assert.equal(signals[1]!.aborted, false);
     assert.equal(h.dom.window.document.querySelector("h3")!.textContent, "replacement");
   } else assert.equal(h.dom.window.document.querySelector("dialog"), null);
-  assert.deepEqual(h.closed, [], "A cancelled open has no confirmed instance ID to close.");
+  assert.deepEqual(h.closed, ["instance-1"], "The pending instance remains addressable before its response arrives.");
 });

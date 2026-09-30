@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { execPath } from "node:process";
+import process, { execPath } from "node:process";
+import { randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
 import { URL } from "node:url";
 import test from "node:test";
@@ -22,7 +23,6 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 const uri = "ui://cancel-fixture/app";
-process.on("exit", () => writeFileSync(path.join(process.env.CLOSED_DIRECTORY, String(process.pid)), "closed"));
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 lines.on("line", (line) => {
@@ -53,15 +53,13 @@ async function waitFor(condition: () => Promise<boolean>, message: string): Prom
   }
 }
 
-for (const stage of ["tools/list", "resources/read"] as const) {
-  test(`HTTP App opening cancellation releases a pending ${stage} process and its capacity`, { timeout: 15_000 }, async (t) => {
+for (const stage of ["server/discover", "tools/list", "resources/read"] as const) for (const cancellation of ["disconnect", "close"] as const) {
+  test(`HTTP App opening ${cancellation} releases a pending ${stage} process and its capacity`, { timeout: 15_000 }, async (t) => {
     const directory = await fs.mkdtemp("/private/tmp/live-smith-app-cancellation-");
     const pendingDirectory = path.join(directory, "pending");
-    const closedDirectory = path.join(directory, "closed");
     const gatePath = path.join(directory, "gate");
     const serverPath = path.join(directory, "server.mjs");
     await fs.mkdir(pendingDirectory);
-    await fs.mkdir(closedDirectory);
     await fs.writeFile(serverPath, serverSource);
     const fetchImpl = resolveFetchImplementation();
     const controllers: ReturnType<typeof createHostAbortController>[] = [];
@@ -74,7 +72,7 @@ for (const stage of ["tools/list", "resources/read"] as const) {
     await saveGlobalSettings(directory, { integrationConnections: { action: "upsert", expectedRevision: "0", connection: {
       id: "cancel-fixture", name: "Local fixture", enabled: true,
       mcp: { type: "stdio", command: execPath, args: [serverPath] },
-      secrets: { GATE_PATH: gatePath, PENDING_DIRECTORY: pendingDirectory, CLOSED_DIRECTORY: closedDirectory },
+      secrets: { GATE_PATH: gatePath, PENDING_DIRECTORY: pendingDirectory },
       artifactInputApproved: false, artifactOutputApproved: false,
     } } });
     const discovery = await createRequestPluginTools({ storageDirectory: directory, sessionId: session.id,
@@ -111,22 +109,42 @@ for (const stage of ["tools/list", "resources/read"] as const) {
     const seenProcesses = new Set<string>();
     for (let attempt = 0; attempt < 4; attempt++) {
       const controller = createHostAbortController();
+      const id = randomUUID();
       controllers.push(controller);
-      const pending = post("open", input, controller.signal).then((response) => ({ response }), (error: unknown) => ({ error }));
-      await waitFor(async () => (await fs.readdir(pendingDirectory)).length === attempt + 1, "The App did not reach its pending MCP request.");
+      const pending = post("open", { id, ...input }, controller.signal).then((response) => ({ response }), (error: unknown) => ({ error }));
+      await waitFor(async () => {
+        const names = await fs.readdir(pendingDirectory);
+        const next = names.find((entry) => !seenProcesses.has(entry));
+        return names.length === attempt + 1 && next !== undefined &&
+          await fs.readFile(path.join(pendingDirectory, next), "utf8") === stage;
+      }, "The App did not publish its complete pending MCP request marker.");
       const processId = (await fs.readdir(pendingDirectory)).find((entry) => !seenProcesses.has(entry))!;
       seenProcesses.add(processId);
       assert.equal(await fs.readFile(path.join(pendingDirectory, processId), "utf8"), stage);
       const reason = new Error("App opening cancelled.");
-      controller.abort(reason);
+      if (cancellation === "disconnect") controller.abort(reason);
+      else {
+        const response = await post("close", { id });
+        assert.equal(response.status, 200);
+        await response.json();
+      }
       const outcome = await pending;
-      assert.ok("error" in outcome);
-      assert.equal(outcome.error, reason);
-      await waitFor(async () => (await fs.readdir(closedDirectory)).includes(processId), "The cancelled App retained its MCP process.");
+      if (cancellation === "disconnect") {
+        assert.ok("error" in outcome);
+        assert.equal(outcome.error, reason);
+      } else {
+        assert.ok("response" in outcome);
+        assert.notEqual(outcome.response.status, 200);
+        await outcome.response.json();
+      }
+      await waitFor(async () => {
+        try { process.kill(Number(processId), 0); return false; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+      }, "The cancelled App retained its MCP process.");
       await waitFor(async () => settledOpens === attempt + 1, "The cancelled App retained its opening handler.");
     }
     await fs.rm(gatePath);
-    const reopened = await post("open", input);
+    const reopened = await post("open", { id: randomUUID(), ...input });
     assert.equal(reopened.status, 200, "Four cancelled opens must not consume the App capacity.");
     const body = await reopened.json() as { id: string; html: string };
     assert.equal(body.html, "<p>Local App</p>");

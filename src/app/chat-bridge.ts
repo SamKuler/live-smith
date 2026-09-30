@@ -24,7 +24,7 @@ import type {
 } from "../model/contracts.js";
 import type { OAuthAuthState } from "../model/provider.js";
 import type { PluginInstallPreview } from "../plugins/view.js";
-import { parsePluginAppRequest, type PluginAppRequest } from "./plugin-apps.js";
+import { MAX_PLUGIN_APP_PAGE_REQUEST_BYTES, parsePluginAppRequest, type PluginAppRequest } from "./plugin-apps.js";
 import { startPluginAppSandbox, type PluginAppSandbox } from "./plugin-app-sandbox.js";
 import type { McpUiResourceCsp } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
@@ -871,10 +871,10 @@ export async function createChatBridge(
     }
   };
 
-  const readRequestBody = async <T>(request: IncomingMessage): Promise<T> => {
+  const readRequestBody = async <T>(request: IncomingMessage, maximumBytes?: number): Promise<T> => {
     pendingRequestBodies.add(request);
     try {
-      return await readJsonBody<T>(request);
+      return await readJsonBody<T>(request, maximumBytes);
     } finally {
       pendingRequestBodies.delete(request);
     }
@@ -1968,7 +1968,9 @@ export async function createChatBridge(
       if (request.method === "POST" && url.pathname.startsWith("/plugin-apps/")) {
         if (!options.handlePluginAppRequest) { request.resume(); response.writeHead(404).end("Not found"); return; }
         assertExactQueryParameters(url, ["token"], "Plugin app request");
-        const input = parsePluginAppRequest(url.pathname.slice("/plugin-apps/".length), await readRequestBody(request));
+        const operation = url.pathname.slice("/plugin-apps/".length);
+        const input = parsePluginAppRequest(operation, await readRequestBody(request,
+          operation === "resources" || operation === "resource-templates" ? MAX_PLUGIN_APP_PAGE_REQUEST_BYTES : undefined));
         const signal = beginReadOnlyBuild(response, handlerTerminal);
         const result = await options.handlePluginAppRequest(input, signal);
         if (input.operation === "open") {

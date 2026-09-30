@@ -59,7 +59,9 @@ async function expectFailedOpen(h: Harness, selector: string, sessionId: string,
     "Expected the deliberately rejected App open to finish.");
   const opens = jsonCalls(h, "/plugin-apps/open");
   assert.equal(opens.length, previous + 1);
-  assert.deepEqual(opens.at(-1)!.body, { sessionId, toolName, signature });
+  const body = opens.at(-1)!.body as { id: string };
+  assert.match(body.id, /^[A-Za-z0-9_-]{1,128}$/u);
+  assert.deepEqual(body, { id: body.id, sessionId, toolName, signature });
   assert.equal(h.document.querySelector(".plugin-app-frame"), null);
   assert.equal(h.calls.some((call) => call.path === "/plugin-apps/call" || call.path === "/send"), false);
   assert.equal(commandCalls(h).some((call) => (call.body as { kind: string }).kind === "run_plugin_tool"), false);
@@ -174,11 +176,52 @@ test("closing a loading App cancels its HTTP open through the composed dialog", 
     h.click(".plugin-app-close");
     await waitForCondition(() => cancelled && !h.document.querySelector(".plugin-app-dialog"), "Closing must cancel pending discovery.");
     assert.equal(requestSignal.aborted, true);
-    assert.deepEqual(operations, ["open"]);
+    assert.deepEqual(operations, ["open", "close"]);
     await h.settle();
     assert.deepEqual(h.errors, []);
   } finally {
     release?.({ id: "late-instance", toolName: "pattern_lab", html: "<p>Pattern</p>", sandboxUrl: "http://127.0.0.1:31400/apps/fixture" });
     await h.settle(); h.close();
   }
+});
+
+test("closing during the App open response body releases the already created instance", async () => {
+  const h = await createDialogHarness(appState(), undefined, { toolCatalogResponse: async (state) => withCatalog(state) });
+  const instances = new Set<string>();
+  const closed: string[] = [];
+  let reading = false;
+  let parsingRejected = false;
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string };
+    if (path === "/plugin-apps/open") {
+      instances.add(body.id ?? "server-created-instance");
+      reading = false; parsingRejected = false;
+      return { ok: true, json: () => new Promise((_resolve, reject) => {
+        reading = true;
+        init?.signal?.addEventListener("abort", () => { parsingRejected = true; reject(new Error("Response reading cancelled")); }, { once: true });
+      }) };
+    }
+    if (path === "/plugin-apps/close") {
+      assert.ok(body.id);
+      closed.push(body.id); instances.delete(body.id);
+      return { ok: true, json: async () => ({}) };
+    }
+    return originalFetch(input, init);
+  } });
+  try {
+    showPlugins(h);
+    await waitForCondition(() => Boolean(h.document.querySelector(cardButton)), "Expected the App entry.");
+    for (let attempt = 0; attempt < 4; attempt++) {
+      reading = false; parsingRejected = false;
+      h.click(cardButton);
+      await waitForCondition(() => reading, "Expected the open response to begin parsing.");
+      h.click(".plugin-app-close");
+      await waitForCondition(() => parsingRejected && !h.document.querySelector(".plugin-app-dialog"), "Closing must stop response reading.");
+      assert.equal(instances.size, 0, "The server-created instance must be addressable before its body is read.");
+    }
+    assert.equal(new Set(closed).size, 4);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });

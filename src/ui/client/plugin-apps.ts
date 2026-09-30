@@ -17,7 +17,8 @@ import "./plugin-results.js";
 interface PluginAppsDependencies {
   resultActions?: PluginResultActions;
   getState(): { activeSessionId?: string; plugins?: unknown[]; integrationConnections?: { revision: string } };
-  openApp(input: { sessionId: string; toolName: string; signature: string }, signal: AbortSignal): Promise<{
+  createAppId(): string;
+  openApp(input: { id: string; sessionId: string; toolName: string; signature: string }, signal: AbortSignal): Promise<{
     id: string; toolName: string; resourceUri: string; html: string; sandboxUrl: string; csp?: McpUiResourceCsp;
     toolInput?: Record<string, unknown>; toolResult?: CallToolResult;
   }>;
@@ -67,7 +68,7 @@ interface OpenApp {
   frame: HTMLIFrameElement;
   status: HTMLElement;
   previousFocus: Element | null;
-  id?: string;
+  id: string;
   bridge?: AppBridge;
   timer?: number;
   initialized: boolean;
@@ -94,7 +95,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
     app.closed = true;
     app.openController.abort();
     if (app.timer !== undefined) window.clearTimeout(app.timer);
-    const closed = app.id ? deps.closeApp(app.id) : Promise.resolve();
+    const closed = deps.closeApp(app.id);
     // Begin backend cancellation before waiting for the App's bounded teardown.
     const backend = closed.then(() => undefined, () => new Error(t("MCP App could not be closed.")));
     try {
@@ -132,10 +133,9 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
     if (app.timer !== undefined) window.clearTimeout(app.timer);
     const id = app.id;
     const bridge = app.bridge;
-    delete app.id;
     delete app.bridge;
     app.initialized = false;
-    await Promise.allSettled([bridge?.close(), id ? deps.closeApp(id) : undefined]);
+    await Promise.allSettled([bridge?.close(), deps.closeApp(id)]);
   }
 
   return {
@@ -182,7 +182,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
       results.hidden = true;
       dialog.append(results);
       const app: OpenApp = {
-        owner: owner(), openController: new window.AbortController(), dialog, frame, status, previousFocus: document.activeElement, initialized: false, closed: false,
+        id: deps.createAppId(), owner: owner(), openController: new window.AbortController(), dialog, frame, status, previousFocus: document.activeElement, initialized: false, closed: false,
       };
       active = app;
       const showResult = (result: CallToolResult) => {
@@ -197,13 +197,11 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
       else dialog.setAttribute("open", "");
       closeButton.focus();
       try {
-        const resource = await deps.openApp({ sessionId, toolName: tool.app.toolName ?? tool.name, signature: tool.app.signature }, app.openController.signal);
+        const resource = await deps.openApp({ id: app.id, sessionId, toolName: tool.app.toolName ?? tool.name, signature: tool.app.signature }, app.openController.signal);
         if (sequence !== attempt || !isCurrent(app)) {
-          await deps.closeApp(resource.id);
           if (active === app) await close();
           return;
         }
-        app.id = resource.id;
         const sandbox = new window.URL(resource.sandboxUrl);
         if (sandbox.origin === window.location.origin || sandbox.protocol !== "http:" || sandbox.hostname !== "127.0.0.1" ||
             sandbox.username || sandbox.password || sandbox.search || sandbox.hash) {
@@ -223,7 +221,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
           if (busy) throw new Error(t("Wait for the current operation to finish."));
           status.textContent = t("Running App tool…");
           try {
-            const result = await deps.callTool({ id: resource.id, name: params.name,
+            const result = await deps.callTool({ id: app.id, name: params.name,
               ...(params.arguments === undefined ? {} : { arguments: params.arguments }) }, signal);
             assertRequest(app, signal);
             if (params.name === resource.toolName) showResult(result);
@@ -239,7 +237,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
           assertRequest(app, signal);
           if (busy) throw new Error(t("Wait for the current operation to finish."));
           try {
-            const result = await deps.readResource({ id: resource.id, uri: params.uri }, signal);
+            const result = await deps.readResource({ id: app.id, uri: params.uri }, signal);
             assertRequest(app, signal);
             return result;
           } catch { throw new Error(t("MCP App resource could not be read.")); }
@@ -248,7 +246,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
           const list = async (params: { cursor?: string | undefined } | undefined, signal: AbortSignal, templates: boolean) => {
             assertRequest(app, signal);
             if (busy) throw new Error(t("Wait for the current operation to finish."));
-            const result = await deps.listResources!({ id: resource.id, ...(params?.cursor === undefined ? {} : { cursor: params.cursor }) }, templates, signal);
+            const result = await deps.listResources!({ id: app.id, ...(params?.cursor === undefined ? {} : { cursor: params.cursor }) }, templates, signal);
             assertRequest(app, signal);
             return result;
           };

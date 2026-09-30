@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
+import { setImmediate } from "node:timers/promises";
 
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate/browser";
 
@@ -22,7 +24,7 @@ import type { ChatBridgeState } from "../ui/chat-state.js";
 import { runAgentFlow } from "./agent-flow.js";
 import { ChatBridgeConflictError } from "./chat-bridge-http.js";
 import { liveContextPresentationFixture } from "./live-context.test-harness.js";
-import { createPluginAppSessions } from "./plugin-apps.js";
+import { MAX_PLUGIN_APP_PAGE_REQUEST_BYTES, createPluginAppSessions } from "./plugin-apps.js";
 import { createRequestPluginTools, type PluginExecutionAuthorization } from "./request-plugin-tools.js";
 import { SessionMutationFence, sessionMutationFenceKey } from "./session-mutation-fence.js";
 import { resolveSkillContext } from "./skill-context.js";
@@ -102,9 +104,10 @@ function appDescriptor(catalog: NonNullable<ChatBridgeState["sessionToolCatalog"
 }
 
 async function openApp(bridge: Bridge, sessionId: string, app: PluginAppDescriptor): Promise<Record<string, unknown> & { id: string }> {
-  const opened = await bridge.post("/plugin-apps/open", { sessionId, toolName: app.toolName, signature: app.signature });
+  const id = randomUUID();
+  const opened = await bridge.post("/plugin-apps/open", { id, sessionId, toolName: app.toolName, signature: app.signature });
   assert.equal(opened.status, 200, opened.raw);
-  assert.equal(typeof opened.body.id, "string");
+  assert.equal(opened.body.id, id);
   return opened.body as Record<string, unknown> & { id: string };
 }
 
@@ -161,7 +164,7 @@ test("MCP App reports an unconfirmed outcome when a server exits after its side 
   await withFlow(directory, async (bridge) => {
     const sessionId = (await bridge.state()).activeSessionId;
     const tool = (await bridge.catalog(sessionId)).groups.flatMap((group) => group.tools).find((entry) => entry.app)!;
-    const opened = await bridge.post("/plugin-apps/open", { sessionId, toolName: tool.app!.toolName, signature: tool.app!.signature });
+    const opened = await bridge.post("/plugin-apps/open", { id: randomUUID(), sessionId, toolName: tool.app!.toolName, signature: tool.app!.signature });
     assert.equal(opened.status, 200);
     const response = await bridge.post("/plugin-apps/call", { id: opened.body.id, name: "get_settings", arguments: {} });
     assert.equal(response.status, 409);
@@ -217,6 +220,77 @@ function resourcePage(request, templates) {
     }
     assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
     assert.equal((await bridge.post("/plugin-apps/close", { id: opened.id })).status, 200);
+  });
+});
+
+test("MCP App resource continuation preserves long opaque strings", { timeout: 15_000 }, async (t) => {
+  const files = unzipSync(exampleBytes);
+  const cursor = "opaque:\0" + "😀".repeat(300_000);
+  const source = strFromU8(files["server.mjs"]!);
+  const changed = source.replace('case "resources/list":', 'case "resources/list":\n    case "resources/templates/list": return { result: {\n' +
+    '  [request.method === "resources/list" ? "resources" : "resourceTemplates"]: [],\n' +
+    '  ...(request.params?.cursor === undefined ? { nextCursor: "opaque:\\0" + "😀".repeat(300_000) } : {}),\n' +
+    '  _meta: { received: request.params ?? {} },\n} };\n    case "unused/resources/list":');
+  assert.notEqual(changed, source);
+  files["server.mjs"] = strToU8(changed);
+  const { directory } = await fixture(t, zipSync(files));
+  await withFlow(directory, async (bridge) => {
+    const sessionId = (await bridge.state()).activeSessionId;
+    const opened = await openApp(bridge, sessionId, appDescriptor(await bridge.catalog(sessionId)));
+    for (const operation of ["resources", "resource-templates"] as const) {
+      const page = await bridge.post(`/plugin-apps/${operation}`, { id: opened.id });
+      assert.equal(page.status, 200, page.raw);
+      assert.equal(page.body.nextCursor, cursor);
+      const next = await bridge.post(`/plugin-apps/${operation}`, { id: opened.id, cursor: page.body.nextCursor });
+      assert.equal(next.status, 200, next.raw);
+      assert.deepEqual(next.body._meta, { received: { cursor } });
+      assert.equal(next.body.nextCursor, undefined);
+    }
+    const oversized = await bridge.post("/plugin-apps/resources", {
+      id: opened.id, cursor: "x".repeat(MAX_PLUGIN_APP_PAGE_REQUEST_BYTES),
+    });
+    assert.equal(oversized.status, 400);
+    assert.match(String(oversized.body.error), /Request body exceeds/u);
+    assert.equal((await bridge.post("/plugin-apps/close", { id: opened.id })).status, 200);
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
+  });
+});
+
+test("MCP App ownership survives cancellation during its open response body", { timeout: 15_000 }, async (t) => {
+  const files = unzipSync(exampleBytes);
+  const source = strFromU8(files["server.mjs"]!);
+  const changed = source.replace('const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");',
+    'const html = "<p>" + "x".repeat(1_500_000) + "</p>";');
+  assert.notEqual(changed, source);
+  files["server.mjs"] = strToU8(changed);
+  const { directory } = await fixture(t, zipSync(files));
+  await withFlow(directory, async (bridge) => {
+    const sessionId = (await bridge.state()).activeSessionId;
+    const descriptor = appDescriptor(await bridge.catalog(sessionId));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const id = randomUUID();
+      const controller = createHostAbortController();
+      const response = await fetch(bridge.endpoint("/plugin-apps/open"), {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        body: JSON.stringify({ id, sessionId, toolName: descriptor.toolName, signature: descriptor.signature }),
+      });
+      assert.equal(response.status, 200);
+      const parsed = response.json().then((value) => ({ value }), (error: unknown) => ({ error }));
+      await setImmediate();
+      controller.abort(new Error("App window closed during response reading."));
+      assert.ok("error" in await parsed, "The cancelled open cannot depend on receiving the instance ID.");
+      const closed = await bridge.post("/plugin-apps/close", { id });
+      assert.equal(closed.status, 200, closed.raw);
+      const resource = await bridge.post("/plugin-apps/resource", { id, uri: resourceUri });
+      assert.equal(resource.status, 409, "The closed instance must release its retained connection.");
+    }
+    const opened = await openApp(bridge, sessionId, descriptor);
+    const duplicate = await bridge.post("/plugin-apps/open", { id: opened.id, sessionId,
+      toolName: descriptor.toolName, signature: descriptor.signature });
+    assert.equal(duplicate.status, 409, "An existing instance must not be overwritten by another open.");
+    assert.equal((await bridge.post("/plugin-apps/resource", { id: opened.id, uri: resourceUri })).status, 200);
+    assert.equal((await bridge.post("/plugin-apps/close", { id: opened.id })).status, 200);
+    assert.deepEqual(await loadSessionEvents(directory, sessionId), []);
   });
 });
 
@@ -327,7 +401,7 @@ test("MCP App requests stay bound to their active Session and saved configuratio
     const beforeSwitch = await loadSessionEvents(directory, firstId);
     const second = await bridge.command({ kind: "new_session" });
     assert.notEqual(second.activeSessionId, firstId);
-    for (const [operation, body] of [["open", { sessionId: firstId, toolName: descriptor.toolName, signature: descriptor.signature }],
+    for (const [operation, body] of [["open", { id: randomUUID(), sessionId: firstId, toolName: descriptor.toolName, signature: descriptor.signature }],
       ["call", { id: opened.id, name: "get_settings", arguments: {} }], ["resource", { id: opened.id, uri: resourceUri }]] as const) {
       const denied = await bridge.post(`/plugin-apps/${operation}`, body);
       assert.equal(denied.status, 409, denied.raw);
@@ -337,7 +411,7 @@ test("MCP App requests stay bound to their active Session and saved configuratio
     await bridge.command({ kind: "select_session", sessionId: firstId });
     await bridge.command({ kind: "set_plugin_user_config", pluginId, sha256: plugin.sha256, revision: "0",
       values: { style: "jazz", default_bars: 5 }, secretUpdates: {} });
-    const staleOpen = await bridge.post("/plugin-apps/open", { sessionId: firstId, toolName: descriptor.toolName, signature: descriptor.signature });
+    const staleOpen = await bridge.post("/plugin-apps/open", { id: randomUUID(), sessionId: firstId, toolName: descriptor.toolName, signature: descriptor.signature });
     assert.equal(staleOpen.status, 409, staleOpen.raw);
     const staleResource = await bridge.post("/plugin-apps/resource", { id: opened.id, uri: resourceUri });
     assert.notEqual(staleResource.status, 200, staleResource.raw);
@@ -398,7 +472,7 @@ for (const change of ["delete", "switch"] as const) {
       sessionChanged(sessionId) { changedSessions.push(sessionId); },
     });
     try {
-      const opened = await apps.request({ operation: "open", sessionId: session.id,
+      const opened = await apps.request({ operation: "open", id: randomUUID(), sessionId: session.id,
         toolName: descriptor.toolName, signature: descriptor.signature }, signal) as { id: string };
       validationCount = 0;
       const preceding = fence.run(key, async () => {

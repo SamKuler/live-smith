@@ -18,12 +18,11 @@ import { Buffer } from "node:buffer";
 import { resolveFetchImplementation, throwIfAborted } from "../../runtime/host.js";
 import { validateRemoteUrl, type PluginMcpServer, type PluginMcpStdioServer } from "./config.js";
 import { emptyPluginConfig, resolvePluginConfigReference, type PluginConfigField, type StoredPluginConfig } from "../user-config.js";
+import { MAX_PLUGIN_MCP_MESSAGE_BYTES } from "../contracts.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const LIST_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 10 * 60_000;
-const MAX_STDIO_MESSAGE_BYTES = 4 * 1024 * 1024;
-const MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024;
 const TERMINATE_TIMEOUT_MS = 1_000;
 
 export interface PluginMcpRuntimePaths {
@@ -72,7 +71,7 @@ export async function connectPluginMcpServer(
     const stdio = new StdioClientTransport({
       ...resolved,
       stderr: "pipe",
-      maxBufferSize: MAX_STDIO_MESSAGE_BYTES,
+      maxBufferSize: MAX_PLUGIN_MCP_MESSAGE_BYTES,
     });
     stdio.stderr?.on("data", () => undefined);
     transport = stdio;
@@ -91,11 +90,24 @@ export async function connectPluginMcpServer(
     });
     transport = remoteTransport;
   }
+  let abortCleanup: Promise<void> | undefined;
+  const abortConnect = (): void => {
+    // Negotiation owns the transport before Client.close() can reach it;
+    // stdio transport.close() also cancels the SDK's disposable probe sibling.
+    abortCleanup = transport.close().catch(() => undefined);
+  };
+  signal.addEventListener("abort", abortConnect, { once: true });
   try {
     await client.connect(transport, { signal, timeout: CONNECT_TIMEOUT_MS, maxTotalTimeout: CONNECT_TIMEOUT_MS });
+    throwIfAborted(signal);
   } catch {
+    await abortCleanup;
     await client.close().catch(() => undefined);
+    await transport.close().catch(() => undefined);
+    throwIfAborted(signal);
     throw new PluginMcpConnectionError("connect", server.id);
+  } finally {
+    signal.removeEventListener("abort", abortConnect);
   }
   return {
     async listResources(templates, cursor, requestSignal) {
@@ -106,14 +118,14 @@ export async function connectPluginMcpServer(
         const result = templates
           ? await client.request({ method: "resources/templates/list", params }, specTypeSchemas.ListResourceTemplatesResult, options)
           : await client.request({ method: "resources/list", params }, specTypeSchemas.ListResourcesResult, options);
-        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Oversized resources.");
+        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_PLUGIN_MCP_MESSAGE_BYTES) throw new Error("Oversized resources.");
         return result;
       } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("list", server.id); }
     },
     async readResource(uri, requestSignal) {
       try {
         const result = await client.readResource({ uri }, { signal: requestSignal, timeout: LIST_TIMEOUT_MS });
-        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Oversized resource.");
+        if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_PLUGIN_MCP_MESSAGE_BYTES) throw new Error("Oversized resource.");
         return result;
       } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("call", server.id); }
     },
@@ -263,10 +275,10 @@ function boundedRemoteResponse(response: Response): Response {
             afterCarriageReturn = false;
             blankCarriageReturn = false;
           }
-          if (bytes > MAX_REMOTE_RESPONSE_BYTES) break;
+          if (bytes > MAX_PLUGIN_MCP_MESSAGE_BYTES) break;
         }
       } else bytes += chunk.byteLength;
-      if (bytes > MAX_REMOTE_RESPONSE_BYTES) {
+      if (bytes > MAX_PLUGIN_MCP_MESSAGE_BYTES) {
         throw new Error("Plugin MCP response exceeded the byte limit.");
       }
       controller.enqueue(chunk);
@@ -287,7 +299,7 @@ function boundedRemoteResponse(response: Response): Response {
         if (result.done) { completed = true; break; }
         if (sse) {
           readBytes += result.value.byteLength;
-          if (readBytes > MAX_REMOTE_RESPONSE_BYTES) {
+          if (readBytes > MAX_PLUGIN_MCP_MESSAGE_BYTES) {
             throw new Error("Plugin MCP response exceeded the byte limit.");
           }
         }

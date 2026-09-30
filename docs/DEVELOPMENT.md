@@ -310,6 +310,11 @@ result `_meta` is delivered to the current interface and is not stored in
 Session history. Standard parameter forms remain available for supported
 tool input schemas.
 
+Resource and resource-template list RPCs return one server page. Apps pass its
+opaque `nextCursor` back as `cursor` to request the next page. MCP messages are
+bounded to 4 MiB; pagination requests allow that cursor budget plus the host's
+instance ID and JSON envelope. Cursors are not interpreted as URLs or paths.
+
 The host reserves `_meta["io.github.samkuler/live-smith-artifacts"]` in App
 results for `{ "version": 1, "artifacts": [...] }`. Its entries contain validated
 Session MIDI references and summaries. Server-supplied values at this key are
